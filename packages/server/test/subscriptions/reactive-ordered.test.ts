@@ -673,6 +673,44 @@ describe("ordered reactive ownership", () => {
     }]);
   });
 
+  test("reuses one immutable canonical argument envelope across revalidations", async () => {
+    let version = 0n;
+    const input = { nested: { value: "before" }, ids: [1n, 2n] };
+    const encodedBytes = new TextEncoder().encode(stableEncode(input)).byteLength;
+    const evaluatedArgs: unknown[] = [];
+    const requestBytes: number[] = [];
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async ({ args, requestBytes: bytes }) => {
+        evaluatedArgs.push(args);
+        requestBytes.push(bytes);
+        return evaluation("value", version, "hot");
+      },
+    });
+    await reactive.subscribeQuery({
+      address: "messages.byIds",
+      args: input,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber: new RecordingSubscriber(),
+      id: 1,
+      authEpoch: 0,
+    });
+    input.nested.value = "after";
+    await publish(reactive, new Set(["hot"]), (commitVersion) => {
+      version = commitVersion;
+    });
+
+    expect(evaluatedArgs).toHaveLength(2);
+    expect(evaluatedArgs[1]).toBe(evaluatedArgs[0]);
+    expect(evaluatedArgs[1]).toEqual({ nested: { value: "before" }, ids: [1n, 2n] });
+    expect(Object.isFrozen(evaluatedArgs[1])).toBe(true);
+    expect(Object.isFrozen((evaluatedArgs[1] as { nested: object }).nested)).toBe(true);
+    expect(requestBytes).toEqual([encodedBytes, encodedBytes]);
+    await reactive.close();
+  });
+
   test("makes round-robin progress across callers independently of policy fingerprints", async () => {
     let version = 0n;
     let revalidating = false;

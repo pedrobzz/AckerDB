@@ -6,6 +6,7 @@
  *
  * Run one experiment with:
  *   bun bench/t1-hotpath-prototype.ts event-fanout
+ *   bun bench/t1-hotpath-prototype.ts query-revalidation
  */
 import type { LiveEvent, Outcome, SubscriptionTransition } from "@ackerdb/core";
 import {
@@ -20,6 +21,8 @@ const WARMUP_TRIALS = 3;
 const MEASURED_TRIALS = 20;
 const EVENT_LISTENERS = 100;
 const DELIVERY_DELAY_MS = 1;
+const REVALIDATIONS_PER_TRIAL = 500;
+const QUERY_ARGUMENT_ITEMS = 1_000;
 
 function evaluation(): QueryEvaluation {
   return {
@@ -122,7 +125,67 @@ async function eventFanout(): Promise<void> {
   }, null, 2));
 }
 
-if (process.argv[2] !== "event-fanout") {
-  throw new Error("usage: bun bench/t1-hotpath-prototype.ts event-fanout");
+async function queryRevalidationTrial(): Promise<number> {
+  let version = 0n;
+  const reactive = new OrderedReactive({
+    evaluate: async () => ({
+      value: version,
+      encoded: String(version),
+      readSet: new Set(["hot"]),
+      commitVersion: version,
+    }),
+  });
+  await reactive.subscribeQuery({
+    subscriber: new DelayedEventSubscriber(0),
+    id: 1,
+    address: "messages.largeArgs",
+    authEpoch: 0,
+    args: {
+      filters: Array.from({ length: QUERY_ARGUMENT_ITEMS }, (_, index) =>
+        `filter-${index.toString().padStart(4, "0")}`),
+    },
+    policyScopeFingerprint: "public",
+    fairnessKey: "public",
+    context: undefined,
+  });
+  const startedAt = performance.now();
+  for (let index = 0; index < REVALIDATIONS_PER_TRIAL; index++) {
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    slot.commit(new ReactiveCommit(new Set(["hot"])));
+    await slot.completion;
+  }
+  const durationMs = performance.now() - startedAt;
+  await reactive.close();
+  return durationMs;
 }
-await eventFanout();
+
+async function queryRevalidation(): Promise<void> {
+  const stats = await measure(queryRevalidationTrial);
+  console.log(JSON.stringify({
+    commit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe" })
+      .stdout.toString().trim(),
+    operation: "query-revalidation",
+    load: {
+      argumentItems: QUERY_ARGUMENT_ITEMS,
+      revalidationsPerTrial: REVALIDATIONS_PER_TRIAL,
+      measuredTrials: MEASURED_TRIALS,
+      concurrency: 1,
+    },
+    trialLatencyMs: stats,
+    p50RevalidationsPerSec: REVALIDATIONS_PER_TRIAL / (stats.p50Ms / 1_000),
+  }, null, 2));
+}
+
+switch (process.argv[2]) {
+  case "event-fanout":
+    await eventFanout();
+    break;
+  case "query-revalidation":
+    await queryRevalidation();
+    break;
+  default:
+    throw new Error(
+      "usage: bun bench/t1-hotpath-prototype.ts <event-fanout|query-revalidation>",
+    );
+}

@@ -33,6 +33,7 @@ export interface QueryEvaluation {
 export interface QueryEvaluationInput<C> {
   readonly address: string;
   readonly args: unknown;
+  readonly requestBytes: number;
   readonly policyScopeFingerprint: string;
   readonly fairnessKey: string;
   readonly context: C;
@@ -40,7 +41,7 @@ export interface QueryEvaluationInput<C> {
 
 export type QueryEvaluator<C> = (input: QueryEvaluationInput<C>) => Promise<QueryEvaluation>;
 
-export interface QuerySubscriptionOptions<C> extends QueryEvaluationInput<C> {
+export interface QuerySubscriptionOptions<C> extends Omit<QueryEvaluationInput<C>, "requestBytes"> {
   readonly subscriber: Subscriber;
   readonly id: number;
   readonly authEpoch: number;
@@ -194,7 +195,7 @@ interface QueryEntry<C> {
   readonly key: string;
   readonly identity: string;
   readonly address: string;
-  readonly encodedArgs: string;
+  readonly args: CanonicalQueryEnvelope;
   readonly policyScopeFingerprint: string;
   readonly revalidationBytes: number;
   /** Oldest active listener owns shared work; an admitted evaluation snapshots this key. */
@@ -216,6 +217,12 @@ interface QueryEntry<C> {
   evaluation?: Promise<DeliveryFailure[]>;
   dormantAtMs?: number;
   removed: boolean;
+}
+
+interface CanonicalQueryEnvelope {
+  readonly decoded: unknown;
+  readonly encoded: string;
+  readonly bytes: number;
 }
 
 type DependencyOwners<C> = QueryEntry<C> | Set<QueryEntry<C>>;
@@ -470,7 +477,7 @@ export class OrderedReactive<C = unknown> {
     const subscriptions = bindings.map((binding) => Object.freeze({
       id: binding.id,
       address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
-      args: binding.kind === "query" ? decode(binding.entry.encodedArgs) : binding.args,
+      args: binding.kind === "query" ? binding.entry.args.decoded : binding.args,
     })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];
     for (const binding of bindings) {
@@ -569,7 +576,7 @@ export class OrderedReactive<C = unknown> {
     await this.revalidation.drain();
   }
 
-  private entryFor(input: QueryEvaluationInput<C>): QueryEntry<C> {
+  private entryFor(input: QuerySubscriptionOptions<C>): QueryEntry<C> {
     const encodedArgs = stableEncode(input.args);
     const key = stableEncode([input.address, encodedArgs, input.policyScopeFingerprint]);
     const existing = this.entries.get(key);
@@ -579,7 +586,11 @@ export class OrderedReactive<C = unknown> {
       key,
       identity: createHash("sha256").update(key).digest("base64url"),
       address: input.address,
-      encodedArgs,
+      args: Object.freeze({
+        decoded: deepFreeze(decode(encodedArgs)),
+        encoded: encodedArgs,
+        bytes: byteLength(encodedArgs),
+      }),
       policyScopeFingerprint: input.policyScopeFingerprint,
       revalidationBytes: byteLength(key),
       ownerFairnessKey: input.fairnessKey,
@@ -699,7 +710,8 @@ export class OrderedReactive<C = unknown> {
       try {
         evaluated = await this.root(() => this.evaluateQuery({
           address: entry.address,
-          args: decode(entry.encodedArgs),
+          args: entry.args.decoded,
+          requestBytes: entry.args.bytes,
           policyScopeFingerprint: entry.policyScopeFingerprint,
           fairnessKey,
           context,

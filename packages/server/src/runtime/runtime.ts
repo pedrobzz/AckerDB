@@ -1394,7 +1394,7 @@ export class Runtime implements RuntimePort {
           state,
           message.id,
           message.ref,
-          snapshotValue(message.args),
+          message.args,
           message.cursor === undefined ? undefined : Object.freeze({ ...message.cursor }),
         );
       } catch (error) {
@@ -3678,7 +3678,7 @@ export class Runtime implements RuntimePort {
         "subscription",
         input.fairnessKey,
         this.shutdownController.signal,
-        byteLength(input.args),
+        input.requestBytes,
         reads,
         async (execution, commitVersion) => {
           const value = await this.invokeQuery(
