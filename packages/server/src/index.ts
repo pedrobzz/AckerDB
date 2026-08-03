@@ -517,7 +517,6 @@ export {
   type SseDeliverySnapshot,
 } from "./subscriptions/delivery/sse.ts";
 export {
-  OrderedReactive,
   ReactiveCommit,
   type AuthRotationResult,
   type DeliveryFailure,
@@ -535,7 +534,8 @@ export {
   type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
-} from "./subscriptions/reactive.ts";
+} from "./subscriptions/reactive/contract.ts";
+export { OrderedReactive } from "./subscriptions/reactive/ordered.ts";
 export {
   prepareRuntimePublication,
   Session,

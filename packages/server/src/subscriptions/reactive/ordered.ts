@@ -3,248 +3,51 @@ import { createHash } from "node:crypto";
 import {
   decode,
   stableEncode,
-  type ApplicationError,
   type LiveEvent,
-  type LiveEventCursor,
   type Outcome,
   type SubscriptionCursor,
   type SubscriptionTransition,
 } from "@ackerdb/core";
-import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
-import { BoundedExecutor, type ExecutorSnapshot } from "../runtime/executor.ts";
-import { deepFreeze } from "../shared/immutable.ts";
-import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
-import { OrderedPublication, PublicationHandoff, type Publication } from "./publication.ts";
-
-export interface Subscriber {
-  sendTransition(subscriptionId: number, transition: SubscriptionTransition): Promise<void>;
-  sendEvent(subscriptionId: number, event: LiveEvent): Promise<void>;
-  sendError(subscriptionId: number, outcome: Outcome): Promise<void>;
-}
-
-export interface QueryEvaluation {
-  readonly value: unknown;
-  readonly applicationError?: ApplicationError;
-  readonly encoded: string;
-  readonly readSet: ReadonlySet<string>;
-  readonly commitVersion: bigint;
-}
-
-export interface QueryEvaluationInput<C> {
-  readonly address: string;
-  readonly args: unknown;
-  readonly requestBytes: number;
-  readonly policyScopeFingerprint: string;
-  readonly fairnessKey: string;
-  readonly context: C;
-}
-
-export type QueryEvaluator<C> = (input: QueryEvaluationInput<C>) => Promise<QueryEvaluation>;
-
-export interface QuerySubscriptionOptions<C> extends Omit<QueryEvaluationInput<C>, "requestBytes"> {
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly authEpoch: number;
-  readonly cursor?: SubscriptionCursor;
-}
-
-export interface EventSubscriptionOptions {
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly table: string;
-  readonly authEpoch: number;
-  readonly args: unknown;
-  readonly matches: (row: unknown, args: unknown) => boolean;
-}
-
-export interface ReactiveEvent {
-  readonly table: string;
-  readonly row: unknown;
-}
-
-export interface DeliveryFailure {
-  readonly subscriber: Subscriber;
-  readonly subscriptionId: number;
-  readonly kind: "query" | "event";
-  readonly phase: "convergence" | "delivery";
-  readonly error: unknown;
-}
-
-export interface ReactiveCommitResult {
-  readonly affectedCallerIds: readonly number[];
-  readonly deliveryFailures: readonly DeliveryFailure[];
-}
-
-export class ReactiveCommit {
-  readonly writeKeys: ReadonlySet<string>;
-  readonly events: readonly ReactiveEvent[];
-  readonly affectedCallerIds: readonly number[];
-  result?: ReactiveCommitResult;
-
-  constructor(
-    writeKeys: ReadonlySet<string>,
-    events: readonly ReactiveEvent[] = [],
-    affectedCallerIds: readonly number[] = [],
-  ) {
-    this.writeKeys = new Set(writeKeys);
-    this.affectedCallerIds = Object.freeze([...affectedCallerIds]);
-    this.events = Object.freeze(events.map((event) => Object.freeze({
-      table: event.table,
-      row: deepFreeze(structuredClone(event.row)),
-    })));
-  }
-}
-
-export type ReactiveObservationPhase =
-  | "initial_evaluation"
-  | "invalidation_match"
-  | "revalidation_queue"
-  | "evaluation"
-  | "changed"
-  | "unchanged"
-  | "fanout"
-  | "listener_queue"
-  | "delivery"
-  | "event_match"
-  | "failure";
-
-export type ReactiveObservationOutcome =
-  | "ok"
-  | "changed"
-  | "unchanged"
-  | "matched"
-  | "unmatched"
-  | Outcome["code"];
-
-/** Privacy-safe metadata emitted at the realtime boundary that owns each stage. */
-export interface ReactiveObservation {
-  readonly kind: "query" | "event";
-  readonly phase: ReactiveObservationPhase;
-  readonly outcome: ReactiveObservationOutcome;
-  readonly durationMs: number;
-  readonly address?: string;
-  readonly subscriptionId?: number;
-  readonly commitVersion?: bigint;
-  readonly dependencyCount?: number;
-  readonly resultCount?: number;
-  readonly byteCount?: number;
-}
-
-export type ReactiveObserver = (observation: ReactiveObservation) => unknown;
-
-export interface OrderedReactiveOptions<C> {
-  readonly evaluate: QueryEvaluator<C>;
-  readonly limits?: ServiceLimits;
-  readonly initialVersion?: bigint;
-  readonly now?: () => number;
-  readonly generation?: () => string;
-  readonly observer?: ReactiveObserver;
-}
-
-export interface ReactiveSnapshot {
-  readonly sharedEntries: number;
-  readonly queryListeners: number;
-  readonly eventListeners: number;
-  readonly dormantEntries: number;
-  readonly dependencyKeys: number;
-  readonly dependencyEdges: number;
-  readonly multiOwnerDependencyKeys: number;
-  readonly resultBytes: number;
-  readonly historyTransitions: number;
-  readonly historyBytes: number;
-  readonly evaluatingEntries: number;
-  readonly revalidation: ExecutorSnapshot;
-}
-
-export interface AuthRotationResult {
-  readonly subscriptions: readonly {
-    readonly id: number;
-    readonly address: string;
-    readonly args: unknown;
-  }[];
-  readonly deliveryFailures: readonly DeliveryFailure[];
-}
-
-interface QueryListener<C> {
-  readonly kind: "query";
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly entry: QueryEntry<C>;
-  readonly fairnessKey: string;
-  authEpoch: number;
-  cursor?: SubscriptionCursor;
-  delivery?: Promise<void>;
-}
-
-interface EventListener<C> {
-  readonly kind: "event";
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly state: EventState<C>;
-  readonly args: unknown;
-  readonly matches: (row: unknown, args: unknown) => boolean;
-  authEpoch: number;
-  cursor: LiveEventCursor;
-  gapped: boolean;
-  delivery?: Promise<void>;
-}
-
-type Binding<C> = QueryListener<C> | EventListener<C>;
-
-interface QueryEntry<C> {
-  readonly key: string;
-  readonly identity: string;
-  readonly address: string;
-  readonly args: CanonicalQueryEnvelope;
-  readonly policyScopeFingerprint: string;
-  readonly revalidationBytes: number;
-  /** Oldest active listener owns shared work; an admitted evaluation snapshots this key. */
-  ownerFairnessKey: string;
-  context: C;
-  generation: string;
-  readSet: Set<string>;
-  listeners: Set<QueryListener<C>>;
-  history: HistoryRecord<C>[];
-  historyBytes: number;
-  initialized: boolean;
-  value: unknown;
-  applicationError?: ApplicationError;
-  encoded: string;
-  resultBytes: number;
-  commitVersion: bigint;
-  dirtyVersion: bigint;
-  evaluationGeneration: number;
-  evaluation?: Promise<DeliveryFailure[]>;
-  dormantAtMs?: number;
-  removed: boolean;
-}
-
-interface CanonicalQueryEnvelope {
-  readonly decoded: unknown;
-  readonly encoded: string;
-  readonly bytes: number;
-}
-
-type DependencyOwners<C> = QueryEntry<C> | Set<QueryEntry<C>>;
-
-interface HistoryRecord<C> {
-  readonly entry: QueryEntry<C>;
-  readonly fromVersion: bigint;
-  readonly toVersion: bigint;
-  readonly kind: "update" | "checkpoint";
-  readonly value?: unknown;
-  readonly applicationError?: ApplicationError;
-  readonly bytes: number;
-  readonly createdAtMs: number;
-  previousGlobal?: HistoryRecord<C>;
-  nextGlobal?: HistoryRecord<C>;
-  active: boolean;
-}
-
-interface EventState<C> {
-  readonly table: string;
-  readonly listeners: Set<EventListener<C>>;
-}
+import { AckerDBError } from "../../shared/errors.ts";
+import { deepFreeze } from "../../shared/immutable.ts";
+import { BoundedExecutor } from "../../runtime/executor.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "../../runtime/limits.ts";
+import { OrderedPublication, PublicationHandoff, type Publication } from "../publication.ts";
+import type {
+  AuthRotationResult,
+  DeliveryFailure,
+  EventSubscriptionOptions,
+  OrderedReactiveOptions,
+  QueryEvaluation,
+  QueryEvaluator,
+  QuerySubscriptionOptions,
+  ReactiveCommit,
+  ReactiveCommitResult,
+  ReactiveEvent,
+  ReactiveObservation,
+  ReactiveObserver,
+  ReactiveSnapshot,
+  Subscriber,
+} from "./contract.ts";
+import { DependencyIndex } from "./dependencies.ts";
+import {
+  failure,
+  type Binding,
+  type EventListener,
+  type EventState,
+  type QueryEntry,
+  type QueryListener,
+} from "./entry.ts";
+import { TransitionHistory } from "./history.ts";
+import {
+  authOutcome,
+  errorOutcome,
+  isAuthFailure,
+  observationOutcome,
+  overloadOutcome,
+  overloaded,
+  unavailable,
+} from "./outcome.ts";
 
 interface InstalledEvaluation<C> {
   readonly entry: QueryEntry<C>;
@@ -273,23 +76,20 @@ export class OrderedReactive<C = unknown> {
   private readonly observer?: ReactiveObserver;
   private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
-  private readonly byReadKey = new Map<string, DependencyOwners<C>>();
+  private readonly dependencies = new DependencyIndex<C>();
   private readonly bySubscriber = new Map<Subscriber, Map<number, Binding<C>>>();
   private readonly eventStates = new Map<string, EventState<C>>();
-  private historyHead?: HistoryRecord<C>;
-  private historyTail?: HistoryRecord<C>;
+  private readonly history: TransitionHistory<C>;
   private queryListeners = 0;
   private eventListeners = 0;
   private resultBytes = 0;
-  private historyBytes = 0;
-  private historyTransitions = 0;
-  private dependencyEdges = 0;
-  private multiOwnerDependencyKeys = 0;
   private dormantEntries = 0;
   private evaluatingEntries = 0;
+
   constructor(options: OrderedReactiveOptions<C>) {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
+    this.history = new TransitionHistory(this.limits.resume);
     this.now = options.now ?? Date.now;
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
     this.observer = options.observer;
@@ -408,7 +208,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   affectedQueryIds(subscriber: Subscriber, writeKeys: ReadonlySet<string>): number[] {
-    const affected = this.affectedEntries(writeKeys);
+    const affected = this.dependencies.affected(writeKeys);
     const ids: number[] = [];
     const bindings = this.bySubscriber.get(subscriber);
     if (!bindings) return ids;
@@ -532,7 +332,7 @@ export class OrderedReactive<C = unknown> {
 
   prune(now = this.readNow()): number {
     if (!Number.isFinite(now)) throw new RangeError("now must be finite");
-    this.pruneHistory(now);
+    this.history.prune(now);
     let removed = 0;
     for (const entry of [...this.entries.values()]) {
       if (
@@ -560,12 +360,12 @@ export class OrderedReactive<C = unknown> {
       queryListeners: this.queryListeners,
       eventListeners: this.eventListeners,
       dormantEntries: this.dormantEntries,
-      dependencyKeys: this.byReadKey.size,
-      dependencyEdges: this.dependencyEdges,
-      multiOwnerDependencyKeys: this.multiOwnerDependencyKeys,
+      dependencyKeys: this.dependencies.keys,
+      dependencyEdges: this.dependencies.edges,
+      multiOwnerDependencyKeys: this.dependencies.multiOwnerKeys,
       resultBytes: this.resultBytes,
-      historyTransitions: this.historyTransitions,
-      historyBytes: this.historyBytes,
+      historyTransitions: this.history.transitions,
+      historyBytes: this.history.bytes,
       evaluatingEntries: this.evaluatingEntries,
       revalidation: this.revalidation.snapshot(),
     });
@@ -854,7 +654,7 @@ export class OrderedReactive<C = unknown> {
       !entry.initialized ||
       entry.encoded !== evaluated.encoded ||
       (entry.applicationError === undefined) !== (evaluated.applicationError === undefined);
-    this.replaceReadSet(entry, evaluated.readSet);
+    this.dependencies.replace(entry, evaluated.readSet);
     this.resultBytes += resultBytes - entry.resultBytes;
     entry.value = evaluated.value;
     entry.applicationError = evaluated.applicationError;
@@ -864,7 +664,7 @@ export class OrderedReactive<C = unknown> {
     entry.initialized = true;
     let forceReset = false;
     if (previousVersion !== undefined && evaluated.commitVersion > previousVersion) {
-      forceReset = !this.retainHistory(entry, {
+      forceReset = !this.history.retain(entry, {
         entry,
         fromVersion: previousVersion,
         toVersion: evaluated.commitVersion,
@@ -927,7 +727,7 @@ export class OrderedReactive<C = unknown> {
       return;
     }
     if (!forceReset && from && this.cursorBelongsTo(from, entry, listener.authEpoch)) {
-      const chain = this.historyChain(entry, from.commitVersion, target.commitVersion);
+      const chain = this.history.chain(entry, from.commitVersion, target.commitVersion);
       if (chain) {
         let cursor = from;
         for (const record of chain) {
@@ -968,29 +768,10 @@ export class OrderedReactive<C = unknown> {
     listener.cursor = transition.to;
   }
 
-  private historyChain(
-    entry: QueryEntry<C>,
-    fromVersion: bigint,
-    toVersion: bigint,
-  ): readonly HistoryRecord<C>[] | undefined {
-    if (fromVersion >= toVersion) return undefined;
-    const chain: HistoryRecord<C>[] = [];
-    let version = fromVersion;
-    for (const record of entry.history) {
-      if (!record.active || record.fromVersion < version) continue;
-      if (record.fromVersion !== version) return undefined;
-      chain.push(record);
-      version = record.toVersion;
-      if (version === toVersion) return chain;
-      if (version > toVersion) return undefined;
-    }
-    return undefined;
-  }
-
   private processPublication(publication: Publication<ReactiveCommit>): PublicationHandoff {
     const commit = publication.value;
     const matchedAt = this.observer ? this.observationNow() : undefined;
-    const affected = this.affectedEntries(commit.writeKeys);
+    const affected = this.dependencies.affected(commit.writeKeys);
     if (this.observer && commit.writeKeys.size > 0 && this.entries.size > 0) {
       this.observe(matchedAt, {
         kind: "query",
@@ -1094,127 +875,6 @@ export class OrderedReactive<C = unknown> {
     return failures;
   }
 
-  private affectedEntries(writeKeys: ReadonlySet<string>): Set<QueryEntry<C>> {
-    const affected = new Set<QueryEntry<C>>();
-    for (const key of writeKeys) {
-      const owners = this.byReadKey.get(key);
-      if (owners instanceof Set) {
-        for (const entry of owners) affected.add(entry);
-      } else if (owners) {
-        affected.add(owners);
-      }
-    }
-    return affected;
-  }
-
-  private replaceReadSet(entry: QueryEntry<C>, next: ReadonlySet<string>): void {
-    for (const key of entry.readSet) {
-      if (next.has(key)) continue;
-      this.removeReadOwner(key, entry);
-    }
-    for (const key of next) {
-      if (entry.readSet.has(key)) continue;
-      this.addReadOwner(key, entry);
-    }
-    entry.readSet = new Set(next);
-  }
-
-  private addReadOwner(key: string, entry: QueryEntry<C>): void {
-    const owners = this.byReadKey.get(key);
-    if (!owners) {
-      this.byReadKey.set(key, entry);
-      this.dependencyEdges++;
-      return;
-    }
-    if (owners === entry) return;
-    if (owners instanceof Set) {
-      if (owners.has(entry)) return;
-      owners.add(entry);
-      this.dependencyEdges++;
-      return;
-    }
-    this.byReadKey.set(key, new Set([owners, entry]));
-    this.dependencyEdges++;
-    this.multiOwnerDependencyKeys++;
-  }
-
-  private removeReadOwner(key: string, entry: QueryEntry<C>): void {
-    const owners = this.byReadKey.get(key);
-    if (owners === entry) {
-      this.byReadKey.delete(key);
-      this.dependencyEdges--;
-      return;
-    }
-    if (!(owners instanceof Set) || !owners.delete(entry)) return;
-    this.dependencyEdges--;
-    if (owners.size !== 1) return;
-    this.byReadKey.set(key, owners.values().next().value!);
-    this.multiOwnerDependencyKeys--;
-  }
-
-  private retainHistory(entry: QueryEntry<C>, record: HistoryRecord<C>): boolean {
-    const now = record.createdAtMs;
-    this.pruneHistory(now);
-    if (
-      record.bytes > this.limits.resume.maxBytesPerStream ||
-      record.bytes > this.limits.resume.maxBytes
-    ) {
-      this.clearHistory(entry);
-      return false;
-    }
-    while (
-      entry.history.length >= this.limits.resume.maxTransitionsPerStream ||
-      record.bytes > this.limits.resume.maxBytesPerStream - entry.historyBytes
-    ) {
-      this.removeHistory(entry.history[0]!);
-    }
-    while (record.bytes > this.limits.resume.maxBytes - this.historyBytes && this.historyHead) {
-      this.removeHistory(this.historyHead);
-    }
-    if (record.bytes > this.limits.resume.maxBytes - this.historyBytes) {
-      this.clearHistory(entry);
-      return false;
-    }
-    entry.history.push(record);
-    entry.historyBytes += record.bytes;
-    this.historyBytes += record.bytes;
-    this.historyTransitions++;
-    if (this.historyTail) {
-      this.historyTail.nextGlobal = record;
-      record.previousGlobal = this.historyTail;
-    } else {
-      this.historyHead = record;
-    }
-    this.historyTail = record;
-    return true;
-  }
-
-  private pruneHistory(now: number): void {
-    while (this.historyHead && now - this.historyHead.createdAtMs >= this.limits.resume.maxAgeMs) {
-      this.removeHistory(this.historyHead);
-    }
-  }
-
-  private removeHistory(record: HistoryRecord<C>): void {
-    if (!record.active) return;
-    record.active = false;
-    const index = record.entry.history.indexOf(record);
-    if (index >= 0) record.entry.history.splice(index, 1);
-    record.entry.historyBytes -= record.bytes;
-    this.historyBytes -= record.bytes;
-    this.historyTransitions--;
-    if (record.previousGlobal) record.previousGlobal.nextGlobal = record.nextGlobal;
-    else this.historyHead = record.nextGlobal;
-    if (record.nextGlobal) record.nextGlobal.previousGlobal = record.previousGlobal;
-    else this.historyTail = record.previousGlobal;
-    record.previousGlobal = undefined;
-    record.nextGlobal = undefined;
-  }
-
-  private clearHistory(entry: QueryEntry<C>): void {
-    for (const record of [...entry.history]) this.removeHistory(record);
-  }
-
   private makeEntryCapacity(): void {
     if (this.entries.size < this.limits.maxSharedSubscriptions) return;
     this.prune();
@@ -1258,8 +918,8 @@ export class OrderedReactive<C = unknown> {
       this.evaluatingEntries--;
     }
     this.resultBytes -= entry.resultBytes;
-    this.clearHistory(entry);
-    for (const key of entry.readSet) this.removeReadOwner(key, entry);
+    this.history.clear(entry);
+    this.dependencies.detach(entry);
     for (const listener of [...entry.listeners]) this.detach(listener);
   }
 
@@ -1539,69 +1199,4 @@ function cursorEquals(left: SubscriptionCursor, right: SubscriptionCursor): bool
 
 function byteLength(value: string): number {
   return utf8.encode(value).byteLength;
-}
-
-function failure<C>(
-  binding: Binding<C>,
-  error: unknown,
-  phase: DeliveryFailure["phase"] = "delivery",
-): DeliveryFailure {
-  return Object.freeze({
-    subscriber: binding.subscriber,
-    subscriptionId: binding.id,
-    kind: binding.kind,
-    phase,
-    error,
-  });
-}
-
-function observationOutcome(error: unknown): Outcome["code"] {
-  return isAckerDBError(error) ? error.code : "internal";
-}
-
-function isAuthFailure(outcome: Outcome): boolean {
-  return outcome.code === "auth_stale" ||
-    outcome.code === "auth_unavailable" ||
-    outcome.code === "unauthenticated" ||
-    outcome.code === "unauthorized";
-}
-
-function authOutcome(code: "auth_stale" | "unauthorized", message: string): Outcome {
-  return Object.freeze({ code, retryable: false, message });
-}
-
-function overloadOutcome(message: string): Outcome {
-  return Object.freeze({
-    code: "overloaded",
-    retryable: true,
-    retryAfterMs: 0,
-    resource: "subscription",
-    message,
-  });
-}
-
-function errorOutcome(error: unknown): Outcome {
-  if (isAckerDBError(error)) {
-    return Object.freeze({
-      code: error.code,
-      retryable: error.retryable,
-      message: error.message.slice(0, 512),
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-      ...(error.resource === undefined ? {} : { resource: error.resource }),
-      ...(error.committed === undefined ? {} : { committed: error.committed }),
-    });
-  }
-  return Object.freeze({ code: "internal", retryable: false, message: "Subscription evaluation failed" });
-}
-
-function overloaded(message: string): AckerDBError {
-  return new AckerDBError("overloaded", message, {
-    retryable: true,
-    retryAfterMs: 0,
-    resource: "subscription",
-  });
-}
-
-function unavailable(message: string): AckerDBError {
-  return new AckerDBError("unavailable", message, { resource: "subscription" });
 }

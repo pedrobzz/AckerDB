@@ -15,7 +15,7 @@ import type {
 import type {
   ReactiveObservation,
   ReactiveObserver,
-} from "../../subscriptions/reactive.ts";
+} from "../../subscriptions/reactive/contract.ts";
 import type { ApplicationLogCallContext } from "../../telemetry/application-signals/types.ts";
 import {
   OPEN_OPERATION_TRACE,

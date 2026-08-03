@@ -44,7 +44,7 @@ import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./li
 import {
   PluginRuntime,
 } from "../plugins/runtime.ts";
-import { OrderedReactive } from "../subscriptions/reactive.ts";
+import { OrderedReactive } from "../subscriptions/reactive/ordered.ts";
 import type { Registry } from "../app/registry.ts";
 import {
   ChannelHub,

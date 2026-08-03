@@ -9,13 +9,13 @@ import { stableEncode } from "@ackerdb/core";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
-  OrderedReactive,
   ReactiveCommit,
   type QueryEvaluation,
   type ReactiveCommitResult,
   type ReactiveObservation,
   type Subscriber,
-} from "../../src/subscriptions/reactive.ts";
+} from "../../src/subscriptions/reactive/contract.ts";
+import { OrderedReactive } from "../../src/subscriptions/reactive/ordered.ts";
 import { deferred } from "ackerdb-test-support/async";
 
 class RecordingSubscriber implements Subscriber {

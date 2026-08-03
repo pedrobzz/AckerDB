@@ -31,10 +31,10 @@ import type {
   SessionRuntimeContext,
 } from "../../subscriptions/session.ts";
 import type {
-  OrderedReactive,
   ReactiveCommit,
   Subscriber,
-} from "../../subscriptions/reactive.ts";
+} from "../../subscriptions/reactive/contract.ts";
+import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import type { CommitResult } from "../coordinator.ts";
 import {

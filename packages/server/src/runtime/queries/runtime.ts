@@ -10,7 +10,7 @@ import { AckerDBError } from "../../shared/errors.ts";
 import type {
   QueryEvaluation,
   QueryEvaluationInput,
-} from "../../subscriptions/reactive.ts";
+} from "../../subscriptions/reactive/contract.ts";
 import {
   FINISH_OPERATION_TRACE,
   type Telemetry,

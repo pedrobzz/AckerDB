@@ -44,9 +44,9 @@ import {
 } from "../../plugins/runtime.ts";
 import {
   ReactiveCommit,
-  type OrderedReactive,
   type Subscriber,
-} from "../../subscriptions/reactive.ts";
+} from "../../subscriptions/reactive/contract.ts";
+import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type { ApplicationSignals } from "../../telemetry/application-signals/application-signals.ts";
 import type {
   AnalyticsEventRecord,

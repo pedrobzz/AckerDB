@@ -26,10 +26,8 @@ import {
   OutboundBudget,
   type OutboundReservation,
 } from "../../subscriptions/delivery/budget.ts";
-import {
-  OrderedReactive,
-  type Subscriber,
-} from "../../subscriptions/reactive.ts";
+import type { Subscriber } from "../../subscriptions/reactive/contract.ts";
+import { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import {
   prepareRuntimePublication,
   claimRuntimeRequestBytes,
