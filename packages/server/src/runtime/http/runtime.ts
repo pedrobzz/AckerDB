@@ -20,13 +20,15 @@ import {
 import type { Registry } from "../../app/registry.ts";
 import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
+import { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
+import type {
+  DeliveryObservation,
+  DeliveryObserver,
+} from "../../subscriptions/delivery/observation.ts";
 import {
   BoundedSseProducer,
-  OutboundBudget,
-  type DeliveryObservation,
-  type DeliveryObserver,
   type SseDeliverySnapshot,
-} from "../../subscriptions/delivery.ts";
+} from "../../subscriptions/delivery/sse.ts";
 import {
   claimHttpTrace,
   finishClaimedHttpTrace,

@@ -2,10 +2,8 @@ import type { Engine } from "../../database/engine.ts";
 import type { PluginRuntime } from "../../plugins/runtime.ts";
 import type { RealtimeRuntime } from "../../realtime/host.ts";
 import { AckerDBError } from "../../shared/errors.ts";
-import type {
-  BoundedSseProducer,
-  OutboundBudget,
-} from "../../subscriptions/delivery.ts";
+import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
+import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive.ts";
 import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
 import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";

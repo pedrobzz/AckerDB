@@ -25,7 +25,7 @@ import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   OutboundBudget,
   type OutboundReservation,
-} from "../../subscriptions/delivery.ts";
+} from "../../subscriptions/delivery/budget.ts";
 import {
   OrderedReactive,
   type Subscriber,

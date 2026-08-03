@@ -7,15 +7,17 @@ import {
   parseSseMessage,
   type SseMessage,
 } from "@ackerdb/core";
+import { OutboundBudget } from "../../src/subscriptions/delivery/budget.ts";
 import {
-  BoundedSseProducer,
   FINALIZE_DELIVERY_OBSERVER,
-  OutboundBudget,
-  WebSocketSessionSink,
   type DeliveryClock,
   type DeliveryObservation,
+} from "../../src/subscriptions/delivery/observation.ts";
+import { BoundedSseProducer } from "../../src/subscriptions/delivery/sse.ts";
+import {
+  WebSocketSessionSink,
   type WebSocketDeliverySocket,
-} from "../../src/subscriptions/delivery.ts";
+} from "../../src/subscriptions/delivery/websocket.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {

@@ -490,10 +490,12 @@ export {
 } from "./validation/standard-schema.ts";
 export { Registry, type ExposedFunction } from "./app/registry.ts";
 export {
-  BoundedSseProducer,
   OutboundBudget,
-  WebSocketSessionSink,
-  type BoundedSseProducerOptions,
+  type OutboundBudgetSnapshot,
+  type OutboundLane,
+  type OutboundReservation,
+} from "./subscriptions/delivery/budget.ts";
+export {
   type DeliveryClock,
   type DeliveryObservation,
   type DeliveryObserver,
@@ -502,14 +504,18 @@ export {
   type DeliverySource,
   type DeliveryStage,
   type DeliveryTransport,
-  type OutboundBudgetSnapshot,
-  type OutboundLane,
-  type OutboundReservation,
-  type SseDeliverySnapshot,
+} from "./subscriptions/delivery/observation.ts";
+export {
+  WebSocketSessionSink,
   type WebSocketDeliverySnapshot,
   type WebSocketDeliverySocket,
   type WebSocketSessionSinkOptions,
-} from "./subscriptions/delivery.ts";
+} from "./subscriptions/delivery/websocket.ts";
+export {
+  BoundedSseProducer,
+  type BoundedSseProducerOptions,
+  type SseDeliverySnapshot,
+} from "./subscriptions/delivery/sse.ts";
 export {
   OrderedReactive,
   ReactiveCommit,

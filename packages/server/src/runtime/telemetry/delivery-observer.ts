@@ -1,10 +1,10 @@
 import { currentInvocationTelemetryContext } from "../../app/invocation.ts";
+import type { OutboundLane } from "../../subscriptions/delivery/budget.ts";
 import {
   FINALIZE_DELIVERY_OBSERVER,
   type DeliveryObservation,
   type DeliveryObserver,
-  type OutboundLane,
-} from "../../subscriptions/delivery.ts";
+} from "../../subscriptions/delivery/observation.ts";
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
   RELEASE_DELIVERY_LEASE,

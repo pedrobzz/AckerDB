@@ -1,7 +1,7 @@
 import type { Principal } from "../../auth/credentials.ts";
 import type { Engine } from "../../database/engine.ts";
 import type { RealtimeRuntimeSnapshot } from "../../realtime/host.ts";
-import type { OutboundBudget } from "../../subscriptions/delivery.ts";
+import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive.ts";
 import type {
   TelemetryExportersSnapshot,

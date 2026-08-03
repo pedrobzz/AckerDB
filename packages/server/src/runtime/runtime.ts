@@ -29,10 +29,10 @@ import { externalAccountFairnessKey } from "./caller.ts";
 import type { Identity } from "../validation/v.ts";
 import {
   OutboundBudget,
-  type DeliveryObserver,
   type OutboundLane,
-  type SseDeliverySnapshot,
-} from "../subscriptions/delivery.ts";
+} from "../subscriptions/delivery/budget.ts";
+import type { DeliveryObserver } from "../subscriptions/delivery/observation.ts";
+import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
 import { telemetryJournalPath } from "../database/artifacts.ts";
 import { AckerDBError } from "../shared/errors.ts";
