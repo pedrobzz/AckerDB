@@ -15,7 +15,7 @@ export interface RuntimeSchedulerOptions {
   readonly batchSize: number;
   readonly operations: RuntimeOperationRunner<RuntimeSession>;
   readonly telemetry: Telemetry;
-  readonly signal: AbortSignal;
+  readonly signal: () => AbortSignal;
   readonly now: () => number;
   readonly isReady: () => boolean;
   readonly assertReady: () => void;
@@ -55,7 +55,7 @@ export class RuntimeScheduler {
         for (let attempts = 0; attempts < this.options.batchSize; attempts++) {
           const candidate = await this.options.candidates.next(now);
           if (candidate === null) break;
-          if (await this.options.executeMutation(candidate, now, this.options.signal)) {
+          if (await this.options.executeMutation(candidate, now, this.options.signal())) {
             handled++;
           }
         }

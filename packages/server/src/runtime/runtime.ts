@@ -150,8 +150,6 @@ import { RuntimeTraceBridge } from "./telemetry/trace-bridge.ts";
 import {
   RuntimeOperationRunner,
   transportError,
-  type OperationAdmission,
-  type SessionOperationOrder,
 } from "./execution/operation-runner.ts";
 import { RuntimeReadExecutor } from "./execution/read.ts";
 import {
@@ -178,6 +176,7 @@ import { RuntimeSampler } from "./telemetry/sampler.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 import { RuntimeScheduledCandidates } from "./scheduler/candidate.ts";
 import { RuntimeScheduler } from "./scheduler/runtime.ts";
+import { RuntimeControl } from "./lifecycle/control.ts";
 
 const utf8 = new TextEncoder();
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
@@ -191,7 +190,6 @@ function applicationError(value: unknown) {
   return value;
 }
 
-const DRAIN_RETRY_AFTER_MS = 1_000;
 /** What every path-addressed entry point derives from its request before it runs. */
 interface ClaimedHttpRequest {
   readonly requestBytes: number;
@@ -279,23 +277,14 @@ export class Runtime implements RuntimePort {
   private readonly authCaptureBudget: OutboundBudget;
   private readonly sseBudget: OutboundBudget;
   private readonly sseProducers = new Map<string, BoundedSseProducer>();
-  private readonly externalOperations = new Map<string, number>();
-  private readonly activeWaiters = new Set<() => void>();
   private readonly tracing: RuntimeTraceBridge;
   private readonly deliveryTelemetry: RuntimeDeliveryTelemetry;
   private readonly operations: RuntimeOperationRunner<RuntimeSession>;
   private readonly httpResponses: RuntimeHttpResponses;
   private readonly sampler: RuntimeSampler;
+  private readonly control: RuntimeControl;
   private readonly systemRoot: ReturnType<typeof AsyncLocalStorage.snapshot>;
-  private readonly ownsTelemetry: boolean;
-  private readonly ownsTelemetryJournal: boolean;
   private readonly applicationSignals: ApplicationSignals;
-  private readonly releaseTelemetryJournalFailure: () => void;
-  private lifecycle: RuntimeLifecycleState = "ready";
-  private activeOperations = 0;
-  private drainPromise: Promise<void> | null = null;
-  private readonly shutdownController = new AbortController();
-  private readonly systemDrainController = new AbortController();
 
   constructor(options: RuntimeOptions) {
     if (options.telemetryExporters !== undefined) {
@@ -364,7 +353,7 @@ export class Runtime implements RuntimePort {
     });
     this.credentialVerifier = this.authInvalidation.verifier;
     const scheduled = options.registry.resolveScheduled(options.engine.schema);
-    this.ownsTelemetry = !(options.telemetry instanceof Telemetry);
+    const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
       : new Telemetry(options.telemetry === false
@@ -386,9 +375,9 @@ export class Runtime implements RuntimePort {
     this.operations = new RuntimeOperationRunner({
       telemetry: this.telemetry,
       tracing: this.tracing,
-      assertRequestBytes: (bytes) => this.assertRequestBytes(bytes),
+      assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
       admit: (session, fairnessKey, sessionOrder) =>
-        this.admitOperation(session, fairnessKey, sessionOrder),
+        this.control.admit(session, fairnessKey, sessionOrder),
     });
     this.httpResponses = new RuntimeHttpResponses(this.limits.maxFrameBytes, {
       enabled: this.telemetry.enabled,
@@ -398,7 +387,7 @@ export class Runtime implements RuntimePort {
     });
     // The system root must capture this trace storage's empty state.
     this.systemRoot = AsyncLocalStorage.snapshot();
-    this.ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
+    const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
     this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
       ? options.telemetryJournal
       : new TelemetryJournal({
@@ -416,19 +405,6 @@ export class Runtime implements RuntimePort {
       () => this.tracing.applicationLogContext(),
     );
     this.log = this.applicationSignals.log;
-    this.releaseTelemetryJournalFailure = this.telemetryJournal.onFailure((error) => {
-      this.telemetry.recordEvent({
-        name: "failure",
-        level: "error",
-        operation: "lifecycle",
-        outcome: "internal",
-        resource: "telemetry",
-        errorClass: error instanceof Error ? error.name : "UnknownError",
-      });
-      if (this.lifecycle === "ready") {
-        void this.drain(Date.now() + this.limits.gracefulShutdownMs).catch(() => {});
-      }
-    });
     this.telemetryExporters = options.telemetryExporters === undefined
       ? undefined
       : new TelemetryJournalExporters({
@@ -498,10 +474,10 @@ export class Runtime implements RuntimePort {
       functions: this.functions,
       operations: this.operations,
       now: this.now,
-      assertReady: () => this.assertReady(),
-      operationSignal: (signal) => this.operationSignal(signal),
+      assertReady: () => this.control.assertReady(),
+      operationSignal: (signal) => this.control.operationSignal(signal),
       admittedRequestBytes: (request, receivedBytes) =>
-        this.admittedRequestBytes(request, receivedBytes),
+        this.control.admittedRequestBytes(request, receivedBytes),
       publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
     });
     this.scheduler = new RuntimeScheduler({
@@ -510,10 +486,10 @@ export class Runtime implements RuntimePort {
       batchSize: this.limits.schedulerBatchSize,
       operations: this.operations,
       telemetry: this.telemetry,
-      signal: this.shutdownController.signal,
+      signal: () => this.control.shutdownSignal,
       now: this.now,
-      isReady: () => this.lifecycle === "ready",
-      assertReady: () => this.assertReady(),
+      isReady: () => this.control.isReady,
+      assertReady: () => this.control.assertReady(),
       executeMutation: (candidate, now, signal) =>
         this.functions.executeScheduledMutation(candidate, now, signal),
     });
@@ -552,13 +528,36 @@ export class Runtime implements RuntimePort {
           unit: "gauge",
         }),
     });
+    this.control = new RuntimeControl({
+      limits: this.limits,
+      engine: this.engine,
+      telemetry: this.telemetry,
+      telemetryJournal: this.telemetryJournal,
+      ...(this.telemetryExporters === undefined
+        ? {}
+        : { telemetryExporters: this.telemetryExporters }),
+      ownsTelemetry,
+      ownsTelemetryJournal,
+      ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
+      ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
+      reads: this.reads,
+      functions: this.functions,
+      reactive: this.reactive,
+      sessions: this.sessionStore,
+      scheduler: this.scheduler,
+      authCaptureBudget: this.authCaptureBudget,
+      sseBudget: this.sseBudget,
+      sseProducers: this.sseProducers,
+      stopSampler: () => this.sampler.stop(),
+      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
+    });
     this.sampler = new RuntimeSampler({
       telemetry: this.telemetry,
-      isReady: () => this.lifecycle === "ready",
+      isReady: () => this.control.isReady,
       state: () => ({
         connections: this.sessionStore.size,
-        activeOperations: this.activeOperations,
-        activeOperationCallers: this.externalOperations.size,
+        activeOperations: this.control.activeOperationCount,
+        activeOperationCallers: this.control.activeCallerCount,
         activeSse: this.sseProducers.size,
         realtime: this.realtime?.snapshot() ?? null,
         reader: this.reads.snapshot(),
@@ -575,18 +574,12 @@ export class Runtime implements RuntimePort {
       },
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
-    this.telemetry.recordEvent({
-      name: "lifecycle",
-      level: "info",
-      operation: "lifecycle",
-      lifecycleState: "ready",
-    });
     this.sampler.start();
     this.scheduler.arm();
   }
 
   get state(): RuntimeLifecycleState {
-    return this.lifecycle;
+    return this.control.state;
   }
 
   get connectionCount(): number {
@@ -602,8 +595,8 @@ export class Runtime implements RuntimePort {
     account: ExternalAccount,
     signal?: AbortSignal,
   ): Promise<Identity> {
-    const requestBytes = this.admittedRequestBytes(account);
-    const operationSignal = this.operationSignal(signal);
+    const requestBytes = this.control.admittedRequestBytes(account);
+    const operationSignal = this.control.operationSignal(signal);
     const fairnessKey = externalAccountFairnessKey(account);
     return this.operations.run(
       null,
@@ -641,12 +634,12 @@ export class Runtime implements RuntimePort {
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
-    this.assertReady();
+    this.control.assertReady();
     this.sessionStore.open(context);
   }
 
   async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
-    this.assertReady();
+    this.control.assertReady();
     return this.sessionStore.transitionAuth(transition);
   }
 
@@ -767,7 +760,7 @@ export class Runtime implements RuntimePort {
     const { message } = request;
     let publication: RuntimePublication | undefined;
     return this.sessionStore.run(context, request, "query", message.ref, async (_state, requestBytes) => {
-      const signal = this.operationSignal(context.signal);
+      const signal = this.control.operationSignal(context.signal);
       const result = await this.executeQuery(
         message.ref,
         message.args,
@@ -818,7 +811,7 @@ export class Runtime implements RuntimePort {
     try {
       return await this.sessionStore.run(context, request, "procedure", message.ref, async (_state, requestBytes) => {
         const fn = this.expect(message.ref, "procedure");
-        const signal = this.operationSignal(request.signal ?? context.signal);
+        const signal = this.control.operationSignal(request.signal ?? context.signal);
         throwIfAborted(signal);
         const procedure = this.functions.createProcedureContext(
           context.principal,
@@ -875,7 +868,7 @@ export class Runtime implements RuntimePort {
     let successPublication: RuntimePublication | undefined;
     return this.sessionStore.run(context, request, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
-      const signal = this.operationSignal(context.signal);
+      const signal = this.control.operationSignal(context.signal);
       let executedPublication: RuntimePublication | undefined;
       const result = await this.functions.commitMutation({
         fairnessKey: context.fairnessKey,
@@ -946,7 +939,7 @@ export class Runtime implements RuntimePort {
     }
     const provenance = claimHttpRequestProvenance(request);
     return {
-      requestBytes: this.admittedRequestBytes(
+      requestBytes: this.control.admittedRequestBytes(
         { ref: request.address, args: request.args },
         provenance?.bytes,
       ),
@@ -972,7 +965,7 @@ export class Runtime implements RuntimePort {
         request.args,
         request.principal,
         fairnessKey,
-        this.operationSignal(request.signal),
+        this.control.operationSignal(request.signal),
         requestBytes,
       ), {
       identifiers: { requestId: String(request.id) },
@@ -994,7 +987,7 @@ export class Runtime implements RuntimePort {
     let committed: CommittedHttpMutation | undefined;
     return this.operations.run(null, "mutation", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "mutation");
-      const signal = this.operationSignal(request.signal);
+      const signal = this.control.operationSignal(request.signal);
       throwIfAborted(signal);
       let encoded: EncodedHttpBody | undefined;
       const result = await this.functions.commitMutation({
@@ -1094,7 +1087,7 @@ export class Runtime implements RuntimePort {
     const invalidations = this.procedureInvalidations(request.principal, invalidationScope);
     return this.operations.run(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
-      const signal = this.operationSignal(request.signal);
+      const signal = this.control.operationSignal(request.signal);
       throwIfAborted(signal);
       const context = this.functions.createProcedureContext(
         request.principal,
@@ -1138,11 +1131,7 @@ export class Runtime implements RuntimePort {
         "system operation name must contain at most 128 letters, digits, dots, colons, hyphens, or underscores, with every segment starting with a letter and no UUID segments",
       ));
     }
-    const signal = AbortSignal.any([
-      this.shutdownController.signal,
-      this.systemDrainController.signal,
-      ...(options?.signal === undefined ? [] : [options.signal]),
-    ]);
+    const signal = this.control.systemSignal(options?.signal);
     const writerOwnedByCaller = inTransaction();
     try {
       throwIfAborted(signal);
@@ -1280,7 +1269,7 @@ export class Runtime implements RuntimePort {
     const admittedAt = observedScope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
-      release = this.admitOperation(null, fairnessKey).release;
+      release = this.control.admit(null, fairnessKey).release;
       if (observedScope !== undefined) {
         this.telemetry[RECORD_OPERATION_SPAN](
           observedScope.trace,
@@ -1331,7 +1320,7 @@ export class Runtime implements RuntimePort {
         if (fn.yields === undefined) {
           throw new AckerDBError("internal", `sse "${request.address}" has no yields validator`);
         }
-        const signal = this.operationSignal(request.signal);
+        const signal = this.control.operationSignal(request.signal);
         throwIfAborted(signal);
         producer = new BoundedSseProducer({
           budget: this.sseBudget,
@@ -1485,27 +1474,7 @@ export class Runtime implements RuntimePort {
   }
 
   status(): RuntimeStatus {
-    return Object.freeze({
-      state: this.lifecycle,
-      connections: this.sessionStore.size,
-      activeOperations: this.activeOperations,
-      activeOperationCallers: this.externalOperations.size,
-      activeSse: this.sseProducers.size,
-      realtime: this.realtime?.snapshot() ?? null,
-      scheduledHandlers: this.scheduler.handlerCount,
-      schedulerArmed: this.scheduler.armed,
-      reader: this.reads.snapshot(),
-      writer: this.functions.snapshot(),
-      reactive: this.reactive.snapshot(),
-      publication: this.reactive.publication.snapshot(),
-      authCaptureBudget: this.authCaptureBudget.snapshot(),
-      sseBudget: this.sseBudget.snapshot(),
-      telemetry: this.telemetry.snapshot(),
-      telemetryAggregates: this.telemetry.aggregateSnapshot(),
-      telemetryJournal: this.telemetryJournal.snapshot(),
-      telemetryExporters: this.telemetryExporters?.snapshot() ?? null,
-      storage: this.engine.status(),
-    });
+    return this.control.status();
   }
 
   realtimeDiagnostic(
@@ -1521,139 +1490,7 @@ export class Runtime implements RuntimePort {
   }
 
   drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
-    if (this.drainPromise !== null) return this.drainPromise;
-    if (this.lifecycle === "stopped") return Promise.resolve();
-    if (!Number.isFinite(deadlineAtMs)) {
-      throw new RangeError("runtime shutdown deadline must be finite");
-    }
-    this.lifecycle = "draining";
-    this.releaseTelemetryJournalFailure();
-    this.scheduler.stop();
-    this.sampler.stop();
-    this.telemetry.recordEvent({
-      name: "lifecycle",
-      level: "info",
-      operation: "lifecycle",
-      lifecycleState: "draining",
-    });
-    const draining = new AckerDBError("draining", "runtime is draining", {
-      retryable: true,
-      retryAfterMs: DRAIN_RETRY_AFTER_MS,
-      resource: "operation",
-    });
-    this.systemDrainController.abort(draining);
-    const sessionDrains = [...this.sessionStore.values()].map((state) => this.sessionStore.startClose(state));
-    const realtimeDrain = this.realtime?.drain() ?? Promise.resolve();
-    for (const producer of this.sseProducers.values()) producer.fail(draining);
-
-    // Close every internal admission boundary before the first await. Existing
-    // handlers get one finite grace period; queued and future work cannot grow.
-    this.functions.close();
-    this.reads.close();
-    if (this.ownsTelemetry) this.telemetry.stop();
-    const reactiveDrain = this.reactive.close();
-    let deadlineReached = false;
-    const coreShutdown = (async () => {
-      const settled = await Promise.allSettled([
-        this.waitForActiveOperations(),
-        this.functions.drain(),
-        reactiveDrain,
-        this.reads.drain(),
-        realtimeDrain,
-        ...sessionDrains,
-      ]);
-      const errors = settled.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : []);
-      try {
-        await this.pluginRuntime?.stop(draining);
-      } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) {
-        throw new AggregateError(errors, "Runtime shutdown failed");
-      }
-    })();
-    const shutdownWork = coreShutdown.then(async () => {
-      // A core that outlives the Runtime deadline must not start a detached
-      // telemetry tail after drain has already failed.
-      if (deadlineReached) return;
-      this.deliveryTelemetry.flush();
-      this.telemetry.recordEvent({
-        name: "lifecycle",
-        level: "info",
-        operation: "lifecycle",
-        lifecycleState: "stopped",
-      });
-      await this.telemetryExporters?.drain();
-      if (this.ownsTelemetryJournal) await this.telemetryJournal.drain();
-      else await this.telemetryJournal.flush();
-      return this.ownsTelemetry ? this.telemetry.drain(deadlineAtMs) : this.telemetry.flush();
-    });
-
-    const deadlineError = new AckerDBError(
-      "deadline_exceeded",
-      "runtime graceful shutdown deadline exceeded",
-      { resource: "operation" },
-    );
-    let timeout!: ReturnType<typeof setTimeout>;
-    const deadline = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        deadlineReached = true;
-        this.shutdownController.abort(deadlineError);
-        void this.pluginRuntime?.stop(deadlineError).catch(() => {});
-        reject(deadlineError);
-      }, Math.max(0, deadlineAtMs - Date.now()));
-    });
-    this.drainPromise = Promise.race([shutdownWork, deadline]).then(
-      () => {
-        clearTimeout(timeout);
-        this.shutdownController.abort(draining);
-        this.lifecycle = "stopped";
-      },
-      async (error) => {
-        clearTimeout(timeout);
-        deadlineReached = true;
-        this.shutdownController.abort(error);
-        this.lifecycle = "failed";
-        this.telemetry.recordEvent({
-          name: "lifecycle",
-          level: "error",
-          operation: "lifecycle",
-          lifecycleState: "failed",
-          outcome: outcomeFromError(error).code,
-          errorClass: error instanceof Error ? error.name : "UnknownError",
-        });
-        // Owned telemetry was stopped before core shutdown. Capture the final
-        // failed event into its bounded drain even though the absolute Runtime
-        // deadline has already elapsed, so no post-failure queue is retained.
-        const cleanupErrors: unknown[] = [];
-        try {
-          await this.telemetryExporters?.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (this.ownsTelemetryJournal) await this.telemetryJournal.drain();
-          else await this.telemetryJournal.flush();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        if (this.ownsTelemetry) {
-          try {
-            await this.telemetry.drain(deadlineAtMs);
-          } catch (cleanupError) {
-            cleanupErrors.push(cleanupError);
-          }
-        }
-        if (cleanupErrors.length === 0) throw error;
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          "Runtime shutdown and telemetry cleanup both failed",
-        );
-      },
-    );
-    return this.drainPromise;
+    return this.control.drain(deadlineAtMs);
   }
 
   /**
@@ -1794,7 +1631,7 @@ export class Runtime implements RuntimePort {
       return this.reads.execute(
         "subscription",
         input.fairnessKey,
-        this.shutdownController.signal,
+        this.control.shutdownSignal,
         byteLength(input.args),
         reads,
         async (execution, commitVersion) => {
@@ -2024,104 +1861,6 @@ export class Runtime implements RuntimePort {
     clientSessionId?: string,
   ): DeliveryObserver | undefined =>
     this.deliveryTelemetry.capture(lane, clientSessionId);
-
-  private admitOperation(
-    session: RuntimeSession | null,
-    fairnessKey?: string,
-    sessionOrder?: SessionOperationOrder,
-  ): OperationAdmission {
-    this.assertReady();
-    const callerOperations = fairnessKey === undefined
-      ? 0
-      : this.externalOperations.get(fairnessKey) ?? 0;
-    if (fairnessKey !== undefined && callerOperations >= this.limits.maxOperationsPerCaller) {
-      throw new AckerDBError("overloaded", "per-caller operation capacity is full", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "operation",
-      });
-    }
-    if (this.activeOperations >= this.limits.maxOperations) {
-      throw new AckerDBError("overloaded", "operation capacity is full", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "operation",
-      });
-    }
-    const sessionAdmission = session === null
-      ? undefined
-      : this.sessionStore.admit(session, sessionOrder);
-    this.activeOperations++;
-    if (fairnessKey !== undefined) this.externalOperations.set(fairnessKey, callerOperations + 1);
-
-    let active = true;
-    return {
-      predecessor: sessionAdmission?.predecessor,
-      release: () => {
-        if (!active) return;
-        active = false;
-        sessionAdmission?.release();
-        this.activeOperations--;
-        if (fairnessKey !== undefined) {
-          const remaining = this.externalOperations.get(fairnessKey)! - 1;
-          if (remaining === 0) this.externalOperations.delete(fairnessKey);
-          else this.externalOperations.set(fairnessKey, remaining);
-        }
-        if (this.activeOperations === 0) {
-          for (const resolve of this.activeWaiters) resolve();
-          this.activeWaiters.clear();
-        }
-      },
-    };
-  }
-
-  private waitForActiveOperations(): Promise<void> {
-    if (this.activeOperations === 0) return Promise.resolve();
-    return new Promise((resolve) => this.activeWaiters.add(resolve));
-  }
-
-  private assertReady(): void {
-    if (this.lifecycle === "ready") return;
-    if (this.lifecycle === "draining") {
-      throw new AckerDBError("draining", "runtime is not accepting operations", {
-        retryable: true,
-        retryAfterMs: DRAIN_RETRY_AFTER_MS,
-        resource: "operation",
-      });
-    }
-    throw new AckerDBError("unavailable", "runtime is not available", { resource: "operation" });
-  }
-
-  /** Trusts only package-owned transport provenance; direct callers are re-encoded canonically. */
-  private admittedRequestBytes(request: unknown, receivedBytes?: number): number {
-    let bytes = receivedBytes;
-    if (bytes === undefined) {
-      try {
-        bytes = byteLength(request);
-      } catch (cause) {
-        throw new AckerDBError("validation", "request is not wire-representable", { cause });
-      }
-    }
-    this.assertRequestBytes(bytes);
-    return bytes;
-  }
-
-  private assertRequestBytes(bytes: number): void {
-    if (!Number.isSafeInteger(bytes) || bytes < 0) {
-      throw new RangeError("request bytes must be a non-negative safe integer");
-    }
-    if (bytes > this.limits.maxRequestBytes) {
-      throw new AckerDBError("overloaded", "request exceeds maxRequestBytes", {
-        resource: "operation",
-      });
-    }
-  }
-
-  private operationSignal(signal?: AbortSignal): AbortSignal {
-    return signal === undefined
-      ? this.shutdownController.signal
-      : AbortSignal.any([signal, this.shutdownController.signal]);
-  }
 
   private readNow(): number {
     const now = this.now();
