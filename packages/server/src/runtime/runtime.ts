@@ -5067,7 +5067,7 @@ export class Runtime implements RuntimePort {
     this.expectedSampleAt = now + this.telemetry.sampleIntervalMs;
     const storage = this.engine.status();
     const checkpoint = storage.lastCheckpoint;
-    const reactive = this.reactive.snapshot();
+    const reactive = this.reactive.metricsSnapshot();
     const reader = this.reader.snapshot();
     const writer = this.coordinator.snapshot();
     const publication = this.reactive.publication.snapshot();

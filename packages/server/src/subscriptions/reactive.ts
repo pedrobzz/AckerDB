@@ -278,6 +278,8 @@ export class OrderedReactive<C = unknown> {
   private historyTransitions = 0;
   private dependencyEdges = 0;
   private multiOwnerDependencyKeys = 0;
+  private dormantEntries = 0;
+  private evaluatingEntries = 0;
   private eventTail: Promise<void> = Promise.resolve();
 
   constructor(options: OrderedReactiveOptions<C>) {
@@ -543,24 +545,23 @@ export class OrderedReactive<C = unknown> {
 
   snapshot(): ReactiveSnapshot {
     this.prune();
-    let dormantEntries = 0;
-    let evaluatingEntries = 0;
-    for (const entry of this.entries.values()) {
-      if (entry.listeners.size === 0) dormantEntries++;
-      if (entry.evaluation) evaluatingEntries++;
-    }
+    return this.metricsSnapshot();
+  }
+
+  /** Constant-cost projection for periodic telemetry; expiry remains demand-driven. */
+  metricsSnapshot(): ReactiveSnapshot {
     return Object.freeze({
       sharedEntries: this.entries.size,
       queryListeners: this.queryListeners,
       eventListeners: this.eventListeners,
-      dormantEntries,
+      dormantEntries: this.dormantEntries,
       dependencyKeys: this.byReadKey.size,
       dependencyEdges: this.dependencyEdges,
       multiOwnerDependencyKeys: this.multiOwnerDependencyKeys,
       resultBytes: this.resultBytes,
       historyTransitions: this.historyTransitions,
       historyBytes: this.historyBytes,
-      evaluatingEntries,
+      evaluatingEntries: this.evaluatingEntries,
       revalidation: this.revalidation.snapshot(),
     });
   }
@@ -664,9 +665,13 @@ export class OrderedReactive<C = unknown> {
     });
     let owned!: Promise<DeliveryFailure[]>;
     const release = () => {
-      if (entry.evaluation === owned) entry.evaluation = undefined;
+      if (entry.evaluation === owned) {
+        entry.evaluation = undefined;
+        this.evaluatingEntries--;
+      }
       if (entry.listeners.size === 0 && entry.initialized && entry.dormantAtMs === undefined) {
         entry.dormantAtMs = this.readNow();
+        this.dormantEntries++;
       }
     };
     owned = execution.then(
@@ -684,6 +689,7 @@ export class OrderedReactive<C = unknown> {
       },
     );
     entry.evaluation = owned;
+    this.evaluatingEntries++;
     return owned;
   }
 
@@ -1251,6 +1257,11 @@ export class OrderedReactive<C = unknown> {
     entry.removed = true;
     entry.evaluationGeneration++;
     this.entries.delete(entry.key);
+    if (entry.dormantAtMs !== undefined) this.dormantEntries--;
+    if (entry.evaluation !== undefined) {
+      entry.evaluation = undefined;
+      this.evaluatingEntries--;
+    }
     this.resultBytes -= entry.resultBytes;
     this.clearHistory(entry);
     for (const key of entry.readSet) this.removeReadOwner(key, entry);
@@ -1266,6 +1277,7 @@ export class OrderedReactive<C = unknown> {
         binding.entry.ownerFairnessKey = binding.fairnessKey;
       }
       binding.entry.listeners.add(binding);
+      if (binding.entry.dormantAtMs !== undefined) this.dormantEntries--;
       binding.entry.dormantAtMs = undefined;
       this.queryListeners++;
     } else {
@@ -1285,7 +1297,10 @@ export class OrderedReactive<C = unknown> {
       const oldest = binding.entry.listeners.values().next().value;
       if (oldest !== undefined) binding.entry.ownerFairnessKey = oldest.fairnessKey;
       if (binding.entry.listeners.size === 0 && !binding.entry.removed) {
-        binding.entry.dormantAtMs = this.readNow();
+        if (binding.entry.dormantAtMs === undefined) {
+          binding.entry.dormantAtMs = this.readNow();
+          this.dormantEntries++;
+        }
       }
     } else {
       binding.state.listeners.delete(binding);
