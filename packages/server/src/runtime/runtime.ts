@@ -54,11 +54,8 @@ import { assertCredentialVerifier } from "../auth/lease.ts";
 import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
-  withFetchObserver,
   type CommitRequest,
   type CommitResult,
-  type CommitTelemetryEvent,
-  type FetchObservation,
   type IdempotencyIdentity,
 } from "./coordinator.ts";
 import { isValidationError, type Identity } from "../validation/v.ts";
@@ -70,10 +67,6 @@ import {
   type ReadRecorder,
   type WriteCollector,
 } from "../database/access.ts";
-import type {
-  DbStatementObservation,
-  DbStatementObserver,
-} from "../database/statement-observation.ts";
 import {
   BoundedSseProducer,
   FINALIZE_DELIVERY_OBSERVER,
@@ -115,14 +108,9 @@ import {
 } from "../app/system.ts";
 import {
   authorizeInvocation,
-  currentInvocationFunctionContext,
   currentInvocationTelemetryContext,
   invokeFunction,
   poisonCurrentInvocation,
-  withInvocationTelemetry,
-  withInvocationContext,
-  type InvocationOutcome,
-  type InvocationTelemetryContext,
 } from "../app/invocation.ts";
 import {
   assertWriterAvailable,
@@ -167,8 +155,6 @@ import {
   ReactiveCommit,
   type QueryEvaluation,
   type QueryEvaluationInput,
-  type ReactiveObservation,
-  type ReactiveObserver,
   type Subscriber,
 } from "../subscriptions/reactive.ts";
 import type { Registry } from "../app/registry.ts";
@@ -181,22 +167,15 @@ import { createRealtimeRuntimeApplication } from "../realtime/runtime-applicatio
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
   FINISH_OPERATION_TRACE,
-  OPEN_OPERATION_TRACE,
-  OPERATION_INVOCATION_NODE,
-  OPERATION_TRACE_CONTEXT,
   prepareTelemetryTraceContext,
-  RECORD_OPERATION_EVENT,
   RECORD_OPERATION_SPAN,
   RELEASE_DELIVERY_LEASE,
   Telemetry,
-  type TelemetryEventInput,
-  type OperationTraceHandle,
   type PreparedTelemetryTraceContext,
   type TelemetryOperation,
   type TelemetryOutcome,
   type TelemetryResource,
   type TelemetryStage,
-  type TelemetryTraceContext,
 } from "../telemetry/telemetry.ts";
 import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
 import {
@@ -204,7 +183,6 @@ import {
 } from "../telemetry/application-signals/journal.ts";
 import type {
   AnalyticsEventRecord,
-  ApplicationLogCallContext,
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
 import {
@@ -243,6 +221,11 @@ import type {
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
 import type { RuntimeStatus } from "./contracts/status.ts";
+import {
+  RuntimeTraceBridge,
+  type RuntimeTraceIdentifiers as TraceIdentifiers,
+  type RuntimeTraceScope,
+} from "./telemetry/trace-bridge.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -364,11 +347,6 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
-type TraceIdentifiers = Partial<Pick<
-  TelemetryTraceContext,
-  "requestId" | "connectionId" | "mutationId" | "commitId" | "subscriptionId"
->>;
-
 type RuntimeOperationOutcome<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: unknown };
@@ -420,13 +398,6 @@ interface SessionOperationOptions<T> {
   readonly identifiers?: TraceIdentifiers;
   readonly synthesizeHandler?: boolean;
   readonly successPublication?: (value: T) => RuntimePublication;
-}
-
-interface RuntimeTraceScope {
-  readonly operation: TelemetryOperation;
-  readonly rootFunction?: string;
-  readonly trace: OperationTraceHandle;
-  invocations: number;
 }
 
 interface DetachedDeliveryTrace {
@@ -547,15 +518,6 @@ function validatedSseSource(
   );
 }
 
-function observationOutcome(
-  outcome: ReactiveObservation["outcome"],
-): TelemetryOutcome {
-  return outcome === "changed" || outcome === "unchanged" ||
-      outcome === "matched" || outcome === "unmatched"
-    ? "ok"
-    : outcome;
-}
-
 /**
  * Owns bounded execution, the only commit coordinator, ordered convergence,
  * authenticated session state, scheduling, SSE production, and runtime drain.
@@ -575,11 +537,11 @@ export class Runtime implements RuntimePort {
   readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
   readonly deliveryObserver: DeliveryObserver = (observation): void => {
-    const ambient = this.trace.getStore();
+    const ambient = this.tracing.currentScope();
     if (ambient !== undefined) {
       this.observeDelivery(
         ambient,
-        this.invocationNode(ambient, currentInvocationTelemetryContext()),
+        this.tracing.invocationNode(ambient, currentInvocationTelemetryContext()),
         observation,
       );
       return;
@@ -665,7 +627,7 @@ export class Runtime implements RuntimePort {
         sizeBytes: observation.bytes,
       } as const;
       if ("trace" in trace) {
-        this.traceSpan(span, fallbackOperation, trace, parentNode);
+        this.tracing.span(span, fallbackOperation, trace, parentNode);
       } else {
         this.telemetry.recordSpan({
           ...span,
@@ -684,7 +646,7 @@ export class Runtime implements RuntimePort {
         resource,
       } as const;
       if ("trace" in trace) {
-        this.traceEvent(event, trace, parentNode);
+        this.tracing.event(event, trace, parentNode);
       } else {
         this.telemetry.recordEvent({ ...event, context: trace.context });
       }
@@ -709,8 +671,8 @@ export class Runtime implements RuntimePort {
   private readonly activeWaiters = new Set<() => void>();
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
-  private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
-  private readonly systemRoot = AsyncLocalStorage.snapshot();
+  private readonly tracing: RuntimeTraceBridge;
+  private readonly systemRoot: ReturnType<typeof AsyncLocalStorage.snapshot>;
   private readonly ownsTelemetry: boolean;
   private readonly ownsTelemetryJournal: boolean;
   private readonly applicationSignals: ApplicationSignals;
@@ -808,6 +770,9 @@ export class Runtime implements RuntimePort {
               ...options.telemetry?.limits,
             },
           });
+    this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
+    // The system root must capture this trace storage's empty state.
+    this.systemRoot = AsyncLocalStorage.snapshot();
     this.ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
     this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
       ? options.telemetryJournal
@@ -823,7 +788,7 @@ export class Runtime implements RuntimePort {
     this.applicationSignals = new ApplicationSignals(
       this.telemetryJournal,
       this.now,
-      () => this.applicationLogContext(),
+      () => this.tracing.applicationLogContext(),
     );
     this.log = this.applicationSignals.log;
     this.releaseTelemetryJournalFailure = this.telemetryJournal.onFailure((error) => {
@@ -859,7 +824,7 @@ export class Runtime implements RuntimePort {
       initialVersion: this.engine.commitVersion(),
       now: this.now,
       evaluate: (input) => this.evaluateSubscription(input),
-      ...(this.telemetry.enabled ? { observer: this.observeReactive } : {}),
+      ...(this.telemetry.enabled ? { observer: this.tracing.observeReactive } : {}),
     });
     this.coordinator = new CommitCoordinator({
       engine: this.engine,
@@ -1869,7 +1834,7 @@ export class Runtime implements RuntimePort {
             ),
           );
           if (this.telemetry.enabled) {
-            this.traceSpan({
+            this.tracing.span({
               stage: "handler",
               outcome: isResult(value) && !value.ok ? "application_error" : "ok",
               durationMs: Math.max(0, performance.now() - startedAt),
@@ -1879,7 +1844,7 @@ export class Runtime implements RuntimePort {
           return value;
         } catch (error) {
           if (this.telemetry.enabled) {
-            this.traceSpan({
+            this.tracing.span({
               stage: "handler",
               outcome: outcomeFromError(error).code,
               durationMs: Math.max(0, performance.now() - startedAt),
@@ -2182,7 +2147,7 @@ export class Runtime implements RuntimePort {
         bytes = encoded.bytes;
       }
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: "ok",
           resource: "operation",
@@ -2196,7 +2161,7 @@ export class Runtime implements RuntimePort {
         ? cause
         : new AckerDBError("validation", `${operation} result is not wire-representable`, { cause });
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: error.code,
           resource: "operation",
@@ -2236,7 +2201,7 @@ export class Runtime implements RuntimePort {
         throw new TypeError("HTTP responder must return a Response");
       }
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "delivery",
           outcome: "ok",
           resource: "operation",
@@ -2248,7 +2213,7 @@ export class Runtime implements RuntimePort {
     } catch (cause) {
       const error = new AckerDBError("internal", "HTTP response handoff failed", { cause });
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "delivery",
           outcome: error.code,
           resource: "operation",
@@ -2267,12 +2232,12 @@ export class Runtime implements RuntimePort {
     stage: "encoding" | "delivery",
   ): void {
     if (!this.telemetry.enabled) return;
-    const scope = this.trace.getStore();
+    const scope = this.tracing.currentScope();
     const invocation = currentInvocationTelemetryContext();
     const functionName = invocation === undefined
       ? scope?.rootFunction
       : this.registry.invocationNameOf(invocation.fn) ?? scope?.rootFunction;
-    this.traceEvent({
+    this.tracing.event({
       name: "failure",
       level: "error",
       operation,
@@ -2286,8 +2251,8 @@ export class Runtime implements RuntimePort {
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
     const { requestBytes, codec, claimedTrace, fairnessKey } = this.claimHttpRequest(request, "sse");
-    const runtimeScope = this.operationTrace(
-      null,
+    const runtimeScope = this.tracing.open(
+      undefined,
       "sse",
       request.address,
       { requestId: String(request.id) },
@@ -2418,7 +2383,7 @@ export class Runtime implements RuntimePort {
         lifecycle = completion.catch((error) => {
           if (observedScope !== undefined) {
             const safeError = transportError(error);
-            this.traceEvent({
+            this.tracing.event({
               name: "failure",
               level: "error",
               operation: "sse",
@@ -2464,7 +2429,7 @@ export class Runtime implements RuntimePort {
         if (observedScope !== undefined) {
           const outcome = outcomeFromError(safeError).code;
           if (observedScope.invocations === 0) {
-            this.traceSpan({
+            this.tracing.span({
               operation: "sse",
               stage: "handler",
               outcome,
@@ -2472,7 +2437,7 @@ export class Runtime implements RuntimePort {
               sizeBytes: requestBytes,
             }, "sse");
           }
-          this.traceEvent({
+          this.tracing.event({
             name: outcome === "overloaded" ? "overload" : "failure",
             level: outcome === "overloaded" ? "warn" : "error",
             operation: "sse",
@@ -2484,7 +2449,7 @@ export class Runtime implements RuntimePort {
         throw safeError;
       }
     };
-    return this.runTraced(runtimeScope, execute);
+    return this.tracing.runOperation(runtimeScope, execute);
   }
 
   /** Receiver credit is capability-authenticated and remains routable during drain. */
@@ -2526,14 +2491,14 @@ export class Runtime implements RuntimePort {
             admissionSignal: this.shutdownController.signal,
             ...(this.telemetry.enabled
               ? {
-                  telemetry: this.observeCommit,
-                  statementTelemetry: this.observeStatement,
+                  telemetry: this.tracing.observeCommit,
+                  statementTelemetry: this.tracing.observeStatement,
                   run: AsyncLocalStorage.snapshot(),
                 }
               : {}),
             work: (db, writes) => this.withStagedAnalytics(writes, async () => {
               const plan = this.engine.plan(candidate.table);
-              const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
+              const raw = this.tracing.measureStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
                   `SELECT ${plan.readProjection} FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
                 )
@@ -2575,7 +2540,7 @@ export class Runtime implements RuntimePort {
                 throw new Error("scheduled row disappeared during its writer turn");
               }
               const plan = this.engine.plan(candidate.table);
-              this.measuredStatement("write", candidate.table, "scheduledDelete", () =>
+              this.tracing.measureStatement("write", candidate.table, "scheduledDelete", () =>
                 this.engine.writer
                   .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
                   .run(scheduledRow[plan.pk] as never),
@@ -3171,7 +3136,7 @@ export class Runtime implements RuntimePort {
       message,
       "application frame",
       message.t === "transition" || message.t === "event" ||
-          this.trace.getStore()?.operation === "subscription"
+          this.tracing.currentScope()?.operation === "subscription"
         ? "subscription"
         : "operation",
     );
@@ -3319,7 +3284,7 @@ export class Runtime implements RuntimePort {
           args,
         );
         if (this.telemetry.enabled) {
-          this.traceSpan({
+          this.tracing.span({
             stage: "policy",
             outcome: "ok",
             functionName: address,
@@ -3329,7 +3294,7 @@ export class Runtime implements RuntimePort {
         }
       } catch (error) {
         if (this.telemetry.enabled) {
-          this.traceSpan({
+          this.tracing.span({
             stage: "policy",
             outcome: outcomeFromError(transportError(error)).code,
             functionName: address,
@@ -3426,7 +3391,7 @@ export class Runtime implements RuntimePort {
         connection.exec("BEGIN DEFERRED");
         transactionOpen = true;
         if (this.telemetry.enabled) {
-          this.traceSpan({
+          this.tracing.span({
             stage: "storage",
             outcome: "ok",
             resource: "reader",
@@ -3438,7 +3403,7 @@ export class Runtime implements RuntimePort {
         const value = await work(Object.freeze({
           connection,
           reads,
-          ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+          ...(this.telemetry.enabled ? { statementObserver: this.tracing.observeStatement } : {}),
         }), commitVersion);
         throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
@@ -3446,7 +3411,7 @@ export class Runtime implements RuntimePort {
           connection.exec("COMMIT");
           transactionOpen = false;
           if (this.telemetry.enabled) {
-            this.traceSpan({
+            this.tracing.span({
               stage: "commit",
               outcome: "ok",
               resource: "reader",
@@ -3455,7 +3420,7 @@ export class Runtime implements RuntimePort {
           }
         } catch (error) {
           if (this.telemetry.enabled) {
-            this.traceSpan({
+            this.tracing.span({
               stage: "commit",
               outcome: outcomeFromError(transportError(error)).code,
               resource: "reader",
@@ -3471,7 +3436,7 @@ export class Runtime implements RuntimePort {
           try {
             connection.exec("ROLLBACK");
             if (this.telemetry.enabled) {
-              this.traceSpan({
+              this.tracing.span({
                 stage: "rollback",
                 outcome: "ok",
                 resource: "reader",
@@ -3480,7 +3445,7 @@ export class Runtime implements RuntimePort {
             }
           } catch (rollbackError) {
             if (this.telemetry.enabled) {
-              this.traceSpan({
+              this.tracing.span({
                 stage: "rollback",
                 outcome: "unavailable",
                 resource: "reader",
@@ -3493,7 +3458,7 @@ export class Runtime implements RuntimePort {
             });
           }
         } else if (this.telemetry.enabled && beginAt > 0) {
-          this.traceSpan({
+          this.tracing.span({
             stage: "storage",
             outcome: outcomeFromError(transportError(error)).code,
             resource: "reader",
@@ -3525,13 +3490,13 @@ export class Runtime implements RuntimePort {
     };
     const restore = AsyncLocalStorage.snapshot();
     if (!observed) return this.reader.submit(() => restore(run), options);
-    const scope = this.trace.getStore();
+    const scope = this.tracing.currentScope();
     const queuedAt = performance.now();
     let started = false;
     return this.reader.submit(() => restore(() => {
       started = true;
       const admitted = () => {
-        this.traceSpan({
+        this.tracing.span({
           operation: options.operation,
           stage: "queue",
           outcome: "ok",
@@ -3541,10 +3506,10 @@ export class Runtime implements RuntimePort {
         }, options.operation);
         return run();
       };
-      return scope === undefined ? admitted() : this.trace.run(scope, admitted);
+      return scope === undefined ? admitted() : this.tracing.runScope(scope, admitted);
     }), options).catch((error) => {
       if (!started) {
-        const rejected = () => this.traceSpan({
+        const rejected = () => this.tracing.span({
           operation: options.operation,
           stage: "queue",
           outcome: outcomeFromError(transportError(error)).code,
@@ -3553,7 +3518,7 @@ export class Runtime implements RuntimePort {
           sizeBytes: options.bytes,
         }, options.operation);
         if (scope === undefined) rejected();
-        else this.trace.run(scope, rejected);
+        else this.tracing.runScope(scope, rejected);
       }
       throw error;
     });
@@ -3581,15 +3546,20 @@ export class Runtime implements RuntimePort {
         },
       ).then((execution) => this.encodeQueryEvaluation(execution));
     };
-    const scope = this.trace.getStore();
+    const scope = this.tracing.currentScope();
     if (scope === undefined) {
-      const evaluationScope = this.operationTrace(null, "subscription", input.address, {});
-      const evaluation = this.runTraced(evaluationScope, execute);
+      const evaluationScope = this.tracing.open(
+        undefined,
+        "subscription",
+        input.address,
+        {},
+      );
+      const evaluation = this.tracing.runOperation(evaluationScope, execute);
       return evaluation.finally(() => {
         this.telemetry[FINISH_OPERATION_TRACE](evaluationScope.trace);
       });
     }
-    return this.trace.run({
+    return this.tracing.runScope({
       ...scope,
       operation: "subscription",
       rootFunction: input.address,
@@ -3607,7 +3577,7 @@ export class Runtime implements RuntimePort {
         : execution.value.error;
       const encoded = encode(wireValue);
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: "ok",
           resource: "operation",
@@ -3630,7 +3600,7 @@ export class Runtime implements RuntimePort {
       });
     } catch (error) {
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: outcomeFromError(transportError(error)).code,
           resource: "operation",
@@ -3670,7 +3640,7 @@ export class Runtime implements RuntimePort {
       timestamp,
       logFor: (functionAddress, functionKind) =>
         this.applicationSignals.forFunction(functionAddress, functionKind),
-      ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+      ...(this.telemetry.enabled ? { statementObserver: this.tracing.observeStatement } : {}),
     }) ?? {};
     return Object.freeze({
       db,
@@ -3728,8 +3698,8 @@ export class Runtime implements RuntimePort {
       validate: request.validate,
       ...(this.telemetry.enabled
         ? {
-            telemetry: this.observeCommit,
-            statementTelemetry: this.observeStatement,
+            telemetry: this.tracing.observeCommit,
+            statementTelemetry: this.tracing.observeStatement,
           }
         : {}),
       run: AsyncLocalStorage.snapshot(),
@@ -3786,10 +3756,10 @@ export class Runtime implements RuntimePort {
   }
 
   private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {
-    const scope = this.trace.getStore();
+    const scope = this.tracing.currentScope();
     return scope === undefined
       ? work()
-      : this.trace.run({ ...scope, operation: "transaction" }, work);
+      : this.tracing.runScope({ ...scope, operation: "transaction" }, work);
   }
 
   /** MCP gets the ordinary transaction capability, never mounted Plugins. */
@@ -3857,7 +3827,7 @@ export class Runtime implements RuntimePort {
       requestBytes,
       (_db, writes) => work(Object.freeze({
         writes,
-        ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+        ...(this.telemetry.enabled ? { statementObserver: this.tracing.observeStatement } : {}),
       })),
     );
     return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
@@ -4179,7 +4149,7 @@ export class Runtime implements RuntimePort {
         cause: error,
       });
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: failure.code,
           resource: "outbound",
@@ -4191,7 +4161,7 @@ export class Runtime implements RuntimePort {
     if (publication.bytes > this.limits.maxFrameBytes) {
       const failure = new AckerDBError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
       if (this.telemetry.enabled) {
-        this.traceSpan({
+        this.tracing.span({
           stage: "encoding",
           outcome: failure.code,
           resource: "outbound",
@@ -4202,7 +4172,7 @@ export class Runtime implements RuntimePort {
       throw failure;
     }
     if (this.telemetry.enabled) {
-      this.traceSpan({
+      this.tracing.span({
         stage: "encoding",
         outcome: "ok",
         resource: "outbound",
@@ -4247,7 +4217,7 @@ export class Runtime implements RuntimePort {
       let candidate: (ScheduledCandidate & { readonly at: number }) | null = null;
       for (const [table, address] of this.scheduled) {
         const plan = this.engine.plan(table);
-        const raw = this.measuredStatement("read", table, "scheduledCandidate", () =>
+        const raw = this.tracing.measureStatement("read", table, "scheduledCandidate", () =>
           connection.query(
             `SELECT ${quoted(plan.pk)} AS primaryKey, ${quoted(plan.scheduleAt!)} AS at FROM ${quoted(table)} WHERE ${quoted(plan.scheduleAt!)} <= ? ORDER BY ${quoted(plan.scheduleAt!)}, ${quoted(plan.pk)} LIMIT 1`,
           )
@@ -4270,343 +4240,12 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private readonly observeInvocation = (
-    invocation: InvocationTelemetryContext,
-    durationMs: number,
-    outcome: InvocationOutcome,
-  ): void => {
-    const scope = this.trace.getStore();
-    if (scope === undefined) return;
-    scope.invocations++;
-    const parent = this.invocationNode(scope, invocation.parent, "handler");
-    const node = this.telemetry[OPERATION_INVOCATION_NODE](
-      scope.trace,
-      invocation.invocationId,
-      invocation.phase,
-      parent,
-    );
-    this.telemetry[RECORD_OPERATION_SPAN](
-      scope.trace,
-      node,
-      parent,
-      {
-        operation: scope.operation,
-        stage: invocation.phase,
-        outcome,
-        functionName: this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction,
-        durationMs,
-      },
-    );
-  };
-
-  private readonly observeFetch = (observation: Readonly<FetchObservation>): void => {
-    this.traceSpan({
-      stage: "fetch",
-      outcome: observation.outcome,
-      resource: "outbound",
-      durationMs: observation.durationMs,
-    }, "procedure");
-  };
-
-  private readonly observeStatement: DbStatementObserver = (
-    observation: Readonly<DbStatementObservation>,
-  ): void => {
-    this.traceSpan({
-      stage: "statement",
-      outcome: observation.outcome === "ok" ? "ok" : "internal",
-      statement: `${observation.table}.${observation.statement}`,
-      resource: observation.kind === "read" ? "reader" : "writer",
-      durationMs: observation.durationMs,
-      ...(observation.rowCount === undefined ? {} : { rowCount: observation.rowCount }),
-    }, observation.kind === "read" ? "query" : "transaction");
-  };
-
-  private measuredStatement<T>(
-    kind: DbStatementObservation["kind"],
-    table: string,
-    statement: string,
-    work: () => T,
-    rowCount: (value: T) => number,
-  ): T {
-    if (!this.telemetry.enabled) return work();
-    const startedAt = performance.now();
-    try {
-      const value = work();
-      this.observeStatement({
-        kind,
-        table,
-        statement,
-        outcome: "ok",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        rowCount: rowCount(value),
-      });
-      return value;
-    } catch (error) {
-      this.observeStatement({
-        kind,
-        table,
-        statement,
-        outcome: "failed",
-        durationMs: Math.max(0, performance.now() - startedAt),
-      });
-      throw error;
-    }
-  }
-
-  private readonly observeCommit = (event: Readonly<CommitTelemetryEvent>): void => {
-    const resource: TelemetryResource = event.stage === "publication"
-      ? "publication"
-      : event.replayed === true || event.stage === "encoding"
-        ? "idempotency"
-        : "writer";
-    this.traceSpan({
-      operation: event.operation,
-      stage: event.stage,
-      outcome: event.outcome,
-      resource,
-      durationMs: event.durationMs,
-      ...(event.sizeBytes === undefined ? {} : { sizeBytes: event.sizeBytes }),
-      ...(event.resultCount === undefined ? {} : { resultCount: event.resultCount }),
-      ...(event.dependencyCount === undefined ? {} : { dependencyCount: event.dependencyCount }),
-      ...(event.replayed === undefined ? {} : { replayed: event.replayed }),
-      ...(event.postCommit === undefined ? {} : { postCommit: event.postCommit }),
-      ...(event.commitVersion === undefined
-        ? {}
-        : { commitId: String(event.commitVersion) }),
-    }, event.operation);
-  };
-
-  private readonly observeReactive: ReactiveObserver = (
-    observation: ReactiveObservation,
-  ): void => {
-    if (observation.phase === "failure") {
-      this.traceEvent({
-        name: "failure",
-        level: "error",
-        operation: "subscription",
-        outcome: observationOutcome(observation.outcome),
-        ...(observation.address === undefined ? {} : { functionName: observation.address }),
-        resource: "subscription",
-        ...(observation.subscriptionId === undefined
-          ? {}
-          : { subscriptionId: String(observation.subscriptionId) }),
-        ...(observation.commitVersion === undefined
-          ? {}
-          : { commitId: String(observation.commitVersion) }),
-      });
-      return;
-    }
-    const stage: TelemetryStage = observation.phase === "initial_evaluation" ||
-        observation.phase === "evaluation"
-      ? "evaluation"
-      : observation.phase === "invalidation_match" || observation.phase === "event_match"
-        ? "match"
-        : observation.phase === "revalidation_queue" || observation.phase === "listener_queue"
-          ? "queue"
-          : observation.phase;
-    const resource: TelemetryResource = observation.phase === "revalidation_queue" ||
-        observation.phase === "evaluation" || observation.phase === "initial_evaluation" ||
-        observation.phase === "changed" || observation.phase === "unchanged"
-      ? "revalidation"
-      : observation.phase === "delivery" || observation.phase === "listener_queue" ||
-          observation.phase === "fanout"
-        ? "outbound"
-        : "subscription";
-    const scope = this.trace.getStore();
-    const subscriptionId = observation.subscriptionId === undefined
-      ? undefined
-      : String(observation.subscriptionId);
-    const commitId = observation.commitVersion === undefined
-      ? undefined
-      : String(observation.commitVersion);
-    if (scope === undefined) {
-      this.telemetry.recordSpan({
-        operation: "subscription",
-        stage,
-        outcome: observationOutcome(observation.outcome),
-        resource,
-        durationMs: observation.durationMs,
-        functionName: observation.address,
-        resultCount: observation.resultCount,
-        dependencyCount: observation.dependencyCount,
-        sizeBytes: observation.byteCount,
-        context: prepareTelemetryTraceContext({ subscriptionId, commitId }),
-      });
-      return;
-    }
-    this.telemetry[RECORD_OPERATION_SPAN](
-      scope.trace,
-      -1,
-      this.invocationNode(scope, currentInvocationTelemetryContext()),
-      {
-        operation: "subscription",
-        stage,
-        outcome: observationOutcome(observation.outcome),
-        functionName: observation.address,
-        resource,
-        durationMs: observation.durationMs,
-        sizeBytes: observation.byteCount,
-        resultCount: observation.resultCount,
-        dependencyCount: observation.dependencyCount,
-        commitId,
-        subscriptionId,
-      },
-    );
-  };
-
-  private operationTrace(
-    session: RuntimeSession | null,
-    operation: TelemetryOperation,
-    functionName: string | undefined,
-    identifiers: TraceIdentifiers,
-    inheritedContext?: PreparedTelemetryTraceContext,
-  ): RuntimeTraceScope {
-    return {
-      operation,
-      ...(functionName === undefined ? {} : { rootFunction: functionName }),
-      trace: this.telemetry[OPEN_OPERATION_TRACE]({
-        operation,
-        ...(functionName === undefined ? {} : { functionName }),
-        ...(session?.telemetryConnectionId === undefined
-          ? {}
-          : { connectionId: session.telemetryConnectionId }),
-        ...identifiers,
-        ...(inheritedContext === undefined ? {} : { inheritedContext }),
-      }),
-      invocations: 0,
-    };
-  }
-
-  private applicationLogContext(): ApplicationLogCallContext {
-    const scope = this.trace.getStore();
-    if (scope === undefined) {
-      return Object.freeze({ functionAddress: "unknown", functionKind: "unknown" });
-    }
-    const invocation = currentInvocationFunctionContext();
-    const telemetryInvocation = currentInvocationTelemetryContext();
-    const functionAddress = invocation === undefined
-      ? scope.rootFunction ?? "unknown"
-      : this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction ?? "unknown";
-    const functionKind = invocation?.fn.kind ?? this.registry.kindOf(functionAddress) ?? scope.operation;
-    const node = telemetryInvocation === undefined
-      ? 0
-      : this.invocationNode(scope, telemetryInvocation);
-    const correlation = this.telemetry[OPERATION_TRACE_CONTEXT](scope.trace, node);
-    return Object.freeze({
-      functionAddress,
-      functionKind,
-      ...(correlation?.traceId === undefined ? {} : { traceId: correlation.traceId }),
-      ...(correlation?.spanId === undefined ? {} : { spanId: correlation.spanId }),
-      ...(correlation?.requestId === undefined ? {} : { requestId: correlation.requestId }),
-    });
-  }
-
-  private invocationNode(
-    scope: RuntimeTraceScope,
-    invocation: InvocationTelemetryContext | undefined,
-    phase: "auth" | "policy" | "handler" = invocation?.phase ?? "handler",
-  ): number {
-    if (invocation === undefined) return 0;
-    const parent = this.invocationNode(scope, invocation.parent, "handler");
-    return this.telemetry[OPERATION_INVOCATION_NODE](
-      scope.trace,
-      invocation.invocationId,
-      phase,
-      parent,
-    );
-  }
-
-  private traceSpan(
-    input: {
-      readonly operation?: TelemetryOperation;
-      readonly stage: TelemetryStage;
-      readonly outcome: TelemetryOutcome;
-      readonly functionName?: string;
-      readonly statement?: string;
-      readonly resource?: TelemetryResource;
-      readonly durationMs: number;
-      readonly sizeBytes?: number;
-      readonly rowCount?: number;
-      readonly resultCount?: number;
-      readonly replayed?: boolean;
-      readonly dependencyCount?: number;
-      readonly postCommit?: boolean;
-      readonly requestId?: string;
-      readonly connectionId?: string;
-      readonly mutationId?: string;
-      readonly commitId?: string;
-      readonly subscriptionId?: string;
-    },
-    fallbackOperation: TelemetryOperation,
-    capturedScope?: RuntimeTraceScope,
-    capturedParent?: number,
-  ): void {
-    if (!this.telemetry.enabled) return;
-    const scope = capturedScope ?? this.trace.getStore();
-    if (scope === undefined) return;
-    const invocation = currentInvocationTelemetryContext();
-    const parent = capturedParent ?? this.invocationNode(scope, invocation);
-    const currentFunction = invocation === undefined
-      ? undefined
-      : this.registry.invocationNameOf(invocation.fn);
-    this.telemetry[RECORD_OPERATION_SPAN](
-      scope.trace,
-      -1,
-      parent,
-      {
-        ...input,
-        operation: input.operation ?? scope.operation ?? fallbackOperation,
-        functionName: input.functionName ?? currentFunction ?? scope.rootFunction,
-      },
-    );
-  }
-
-  private traceEvent(
-    input: Omit<TelemetryEventInput, "context"> & TraceIdentifiers,
-    capturedScope?: RuntimeTraceScope,
-    capturedParent?: number,
-  ): void {
-    const scope = capturedScope ?? this.trace.getStore();
-    if (scope === undefined) return;
-    const parent = capturedParent ?? this.invocationNode(
-      scope,
-      currentInvocationTelemetryContext(),
-    );
-    const {
-      requestId,
-      connectionId,
-      mutationId,
-      commitId,
-      subscriptionId,
-      ...event
-    } = input;
-    this.telemetry[RECORD_OPERATION_EVENT](
-      scope.trace,
-      parent,
-      event,
-      requestId,
-      connectionId,
-      mutationId,
-      commitId,
-      subscriptionId,
-    );
-  }
-
-  private runTraced<T>(scope: RuntimeTraceScope, work: () => T): T {
-    return this.trace.run(scope, () => this.telemetry.enabled
-      ? withFetchObserver(
-          this.observeFetch,
-          () => withInvocationTelemetry(this.observeInvocation, work),
-        )
-      : withInvocationContext(work));
-  }
-
   readonly [CAPTURE_DELIVERY_OBSERVER] = (
     lane: OutboundLane = "application",
     clientSessionId?: string,
   ): DeliveryObserver | undefined => {
     if (!this.telemetry.enabled) return undefined;
-    const scope = this.trace.getStore();
+    const scope = this.tracing.currentScope();
     if (scope === undefined) {
       const detached: DetachedDeliveryTrace = {
         operation: lane === "control" ? "lifecycle" : "subscription",
@@ -4616,7 +4255,7 @@ export class Runtime implements RuntimePort {
       };
       return (observation) => this.observeDelivery(detached, 0, observation);
     }
-    const parent = this.invocationNode(scope, currentInvocationTelemetryContext());
+    const parent = this.tracing.invocationNode(scope, currentInvocationTelemetryContext());
     const lease = scope.operation === "sse"
       ? undefined
       : this.telemetry[CLAIM_OPERATION_DELIVERY_LEASE](scope.trace);
@@ -4649,8 +4288,8 @@ export class Runtime implements RuntimePort {
     const synthesizeHandler = options.synthesizeHandler ?? true;
     const finalize = options.finalize;
     const claimedTrace = options.claimedTrace;
-    const runtimeScope = this.operationTrace(
-      session,
+    const runtimeScope = this.tracing.open(
+      session?.telemetryConnectionId,
       operation,
       functionName,
       identifiers,
@@ -4709,7 +4348,7 @@ export class Runtime implements RuntimePort {
             sizeBytes,
           },
         );
-        this.traceEvent({
+        this.tracing.event({
           name: outcome === "overloaded" ? "overload" : "failure",
           level: outcome === "overloaded" ? "warn" : "error",
           operation,
@@ -4722,7 +4361,7 @@ export class Runtime implements RuntimePort {
       }
       const rejected = () => settle({ ok: false, error: safeError });
       return finishOperationTrace(
-        this.runTraced(runtimeScope, rejected),
+        this.tracing.runOperation(runtimeScope, rejected),
       );
     }
     const startedAt = observedScope === undefined ? 0 : performance.now();
@@ -4747,7 +4386,7 @@ export class Runtime implements RuntimePort {
             synthesizeHandler &&
             observedScope.invocations === 0
           ) {
-            this.traceSpan({
+            this.tracing.span({
               stage: "handler",
               outcome: "ok",
               durationMs: Math.max(0, performance.now() - startedAt),
@@ -4761,14 +4400,14 @@ export class Runtime implements RuntimePort {
           if (observedScope !== undefined) {
             const outcome = outcomeFromError(safeError).code;
             if (synthesizeHandler && observedScope.invocations === 0) {
-              this.traceSpan({
+              this.tracing.span({
                 stage: "handler",
                 outcome,
                 durationMs: Math.max(0, performance.now() - startedAt),
                 sizeBytes,
               }, operation);
             }
-            this.traceEvent({
+            this.tracing.event({
               name: outcome === "overloaded" ? "overload" : "failure",
               level: outcome === "overloaded" ? "warn" : "error",
               operation,
@@ -4782,7 +4421,7 @@ export class Runtime implements RuntimePort {
       )
       .then(settle)
       .finally(admission.release);
-    return finishOperationTrace(this.runTraced(runtimeScope, execute));
+    return finishOperationTrace(this.tracing.runOperation(runtimeScope, execute));
   }
 
   private admitOperation(
