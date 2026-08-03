@@ -4,22 +4,15 @@ import {
   PROTOCOL_VERSION,
   Failure,
   Ok,
-  decode,
   encode,
   isApplicationError,
   isResult,
   stableEncode,
   uuidV7Timestamp,
   type ApplicationErrorMessage,
-  type ChannelEventMessage,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
-  type ChannelReadyMessage,
-  type ChannelRejectedMessage,
   type ChannelSendMessage,
-  type ErrorMessage,
-  type EventMessage,
-  type LiveEvent,
   type MutationMessage,
   type MutationOkMessage,
   type Outcome,
@@ -31,8 +24,6 @@ import {
   type ResetRequestMessage,
   type SseAckRequest,
   type SubscribeMessage,
-  type SubscriptionTransition,
-  type TransitionMessage,
   type UnsubscribeMessage,
 } from "@ackerdb/core";
 import {
@@ -88,10 +79,8 @@ import {
   type SystemRunOptions,
 } from "../app/system.ts";
 import {
-  authorizeInvocation,
   currentInvocationTelemetryContext,
   invokeFunction,
-  poisonCurrentInvocation,
 } from "../app/invocation.ts";
 import {
   runInInvocationRoot,
@@ -132,7 +121,6 @@ import {
 import type { Registry } from "../app/registry.ts";
 import {
   ChannelHub,
-  type ChannelSessionAdapter,
 } from "../channels/hub.ts";
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
@@ -152,22 +140,19 @@ import {
   validateTelemetryJournalExportersOptions,
 } from "../telemetry/application-signals/exporters.ts";
 import {
-  claimRuntimeRequestBytes,
-  prepareRuntimePublication,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
   type RuntimePublication,
   type RuntimePublicationBatch,
   type RuntimeRequest,
-  type SessionApplicationMessage,
   type SessionRuntimeContext,
 } from "../subscriptions/session.ts";
 import {
   canceledHandlerOutcome,
   invokeSideEffectingHandler,
 } from "./side-effecting-handler.ts";
-import type { RuntimeHooks, RuntimeLifecycleState } from "./contracts/lifecycle.ts";
+import type { RuntimeLifecycleState } from "./contracts/lifecycle.ts";
 import type { RuntimeOptions } from "./contracts/options.ts";
 import type {
   McpCredentialLease,
@@ -179,15 +164,11 @@ import type {
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
 import type { RuntimeStatus } from "./contracts/status.ts";
-import {
-  RuntimeTraceBridge,
-  type RuntimeTraceIdentifiers as TraceIdentifiers,
-} from "./telemetry/trace-bridge.ts";
+import { RuntimeTraceBridge } from "./telemetry/trace-bridge.ts";
 import {
   RuntimeOperationRunner,
   transportError,
   type OperationAdmission,
-  type RuntimeOperationOutcome,
   type SessionOperationOrder,
 } from "./execution/operation-runner.ts";
 import { RuntimeReadExecutor } from "./execution/read.ts";
@@ -207,7 +188,7 @@ import {
 } from "./http/response.ts";
 import {
   RuntimeSessionStore,
-  type AuthTransitionCapture,
+  type RuntimeReactiveContext,
   type RuntimeSession,
 } from "./sessions/store.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
@@ -258,10 +239,6 @@ interface ProcedureInvalidations {
   finish(): void;
 }
 
-interface ReactiveContext {
-  readonly principal: Principal;
-}
-
 interface QueryExecution<T = unknown> {
   readonly value: T;
   readonly readSet: ReadonlySet<string>;
@@ -279,12 +256,6 @@ interface FinishedRuntimeMutation {
 }
 
 /** What varies between two commits; everything invariant lives in `commitWrite`. */
-interface SessionOperationOptions<T> {
-  readonly identifiers?: TraceIdentifiers;
-  readonly synthesizeHandler?: boolean;
-  readonly successPublication?: (value: T) => RuntimePublication;
-}
-
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => {
@@ -295,10 +266,6 @@ function deferred<T>(): Deferred<T> {
 
 function byteLength(value: unknown): number {
   return utf8.encode(encode(value)).byteLength;
-}
-
-function snapshotValue(value: unknown): unknown {
-  return decode(encode(value));
 }
 
 function digest(value: unknown): string {
@@ -323,7 +290,7 @@ export class Runtime implements RuntimePort {
   readonly telemetryJournal: TelemetryJournal;
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
   readonly log: ApplicationLogger;
-  readonly reactive: OrderedReactive<ReactiveContext>;
+  readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
@@ -335,7 +302,7 @@ export class Runtime implements RuntimePort {
   private readonly immediateProcedureInvalidations: ProcedureInvalidations;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reads: RuntimeReadExecutor;
-  private readonly functions: RuntimeFunctionExecutor<ReactiveContext>;
+  private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   private readonly schedulerCandidates: RuntimeScheduledCandidates;
   private readonly scheduled: Map<string, string>;
   private readonly sessionStore: RuntimeSessionStore;
@@ -515,7 +482,7 @@ export class Runtime implements RuntimePort {
       reads: this.reads,
       tracing: this.tracing,
     });
-    this.reactive = new OrderedReactive<ReactiveContext>({
+    this.reactive = new OrderedReactive<RuntimeReactiveContext>({
       limits: this.limits,
       initialVersion: this.engine.commitVersion(),
       now: this.now,
@@ -564,16 +531,19 @@ export class Runtime implements RuntimePort {
     );
     this.sessionStore = new RuntimeSessionStore({
       limits: this.limits,
+      engine: this.engine,
+      registry: this.registry,
+      channels: this.channels,
+      reactive: this.reactive,
+      operations: this.operations,
+      authCaptureBudget: this.authCaptureBudget,
+      telemetry: this.telemetry,
+      tracing: this.tracing,
       ...(this.telemetry.enabled
         ? { telemetryConnectionId: (clientSessionId) => digest(clientSessionId) }
         : {}),
-      createSubscriber: (state, authEpoch) =>
-        this.makeSubscriber(state, authEpoch),
-      createChannelAdapter: (state) => this.makeChannelAdapter(state),
-      disconnectChannels: (adapter) =>
-        this.channels.disconnect(adapter, "disconnect"),
-      disconnectSubscriber: (subscriber) => this.reactive.disconnect(subscriber),
-      releaseCapture: (capture) => this.releaseCapture(capture),
+      createChannelContext: (state, signal, requestBytes) =>
+        this.channelProcedureContext(state, signal, requestBytes),
       observeConnectionCount: (connections) =>
         this.telemetry.recordMetric({
           name: "runtime.connections",
@@ -750,137 +720,34 @@ export class Runtime implements RuntimePort {
 
   async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
     this.assertReady();
-    const state = this.sessionStore.current(transition.from, true);
-    return this.operations.run(state, "subscription", undefined, 1, async () => {
-      if (
-        transition.to.clientSessionId !== transition.from.clientSessionId ||
-        transition.to.authEpoch !== transition.from.authEpoch + 1
-      ) {
-        throw new AckerDBError("validation", "authentication transition is not monotonic");
-      }
-      throwIfAborted(transition.to.signal);
-      const captured: AuthTransitionCapture = {
-        phase: "revoking",
-        authEpoch: transition.from.authEpoch,
-        frames: [],
-        reservations: [],
-        bytes: 0,
-        active: true,
-      };
-      state.capture = captured;
-      try {
-        const channels = this.channels.descriptions(state.channelAdapter);
-        await this.channels.disconnect(
-          state.channelAdapter,
-          "authentication-change",
-        );
-        const rotation = await this.reactive.rotateAuth(state.subscriber, transition.to.authEpoch);
-        if (rotation.deliveryFailures.length > 0) {
-          throw new AckerDBError("unavailable", "subscription revocation could not be delivered", {
-            resource: "subscription",
-            cause: rotation.deliveryFailures[0]?.error,
-          });
-        }
-        if (
-          state.capture !== captured ||
-          this.sessionStore.get(transition.from.clientSessionId) !== state
-        ) {
-          throw new AckerDBError("auth_stale", "authentication state changed");
-        }
-        state.contexts.add(transition.to);
-        state.context = transition.to;
-        state.subscriber = this.makeSubscriber(() => state, transition.to.authEpoch);
-        captured.phase = "reattaching";
-        captured.authEpoch = transition.to.authEpoch;
-        for (const definition of rotation.subscriptions) {
-          try {
-            await this.attachSubscription(
-              state,
-              definition.id,
-              definition.address,
-              definition.args,
-            );
-          } catch (error) {
-            this.captureFrame(captured, this.prepareFrame({
-              v: PROTOCOL_VERSION,
-              t: "err",
-              id: definition.id,
-              outcome: outcomeFromError(transportError(error)),
-            }, "subscription frame", "subscription"));
-          }
-        }
-        for (const definition of channels) {
-          try {
-            const publication = await this.attachChannel(
-              state,
-              definition.id,
-              definition.address,
-              definition.args,
-              definition.hasRoom,
-              definition.room,
-              byteLength(definition),
-            );
-            this.captureFrame(captured, publication);
-          } catch (error) {
-            this.sessionStore.releaseSubscription(state, definition.id, "channel");
-            this.captureFrame(captured, this.prepareFrame({
-              v: PROTOCOL_VERSION,
-              t: "err",
-              id: definition.id,
-              outcome: outcomeFromError(transportError(error)),
-            }, "channel frame", "subscription"));
-          }
-        }
-        return this.finishCapture(captured);
-      } catch (error) {
-        // A failed transition is terminal, but ownership stays attached until
-        // this and every other already-admitted operation have finalized.
-        void this.sessionStore.startClose(state);
-        throw error;
-      } finally {
-        if (state.capture === captured) state.capture = null;
-        this.releaseCapture(captured);
-      }
-    }, {
-      fairnessKey: transition.from.fairnessKey,
-      sessionOrder: { kind: "subscription-frontier" },
-    });
+    return this.sessionStore.transitionAuth(transition);
   }
 
   async subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(context, request, "subscription", message.ref, async (state) => {
-      this.sessionStore.claimSubscription(state, message.id, "reactive");
-      try {
-        await this.attachSubscription(
-          state,
-          message.id,
-          message.ref,
-          snapshotValue(message.args),
-          message.cursor === undefined ? undefined : Object.freeze({ ...message.cursor }),
-        );
-      } catch (error) {
-        this.sessionStore.releaseSubscription(state, message.id, "reactive");
-        throw error;
-      }
+    await this.sessionStore.run(context, request, "subscription", message.ref, (state) => {
+      return this.sessionStore.subscribe(
+        state,
+        message.id,
+        message.ref,
+        message.args,
+        message.cursor === undefined ? undefined : Object.freeze({ ...message.cursor }),
+      );
     }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
   async unsubscribe(context: SessionRuntimeContext, request: RuntimeRequest<UnsubscribeMessage>): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(context, request, "subscription", undefined, (state) => {
-      this.sessionStore.expectSubscription(state, message.id, "reactive");
-      this.reactive.unsubscribe(state.subscriber, message.id);
-      this.sessionStore.releaseSubscription(state, message.id, "reactive");
-    }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
+    await this.sessionStore.run(context, request, "subscription", undefined, (state) =>
+      this.sessionStore.unsubscribe(state, message.id), {
+      identifiers: { requestId: String(message.id), subscriptionId: String(message.id) },
+    });
   }
 
   async reset(context: SessionRuntimeContext, request: RuntimeRequest<ResetRequestMessage>): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(context, request, "subscription", undefined, (state) => {
-      this.sessionStore.expectSubscription(state, message.id, "reactive");
-      return this.reactive.reset(state.subscriber, message.id, message.cursor);
-    }, {
+    await this.sessionStore.run(context, request, "subscription", undefined, (state) =>
+      this.sessionStore.reset(state, message.id, message.cursor), {
         identifiers: {
           requestId: String(message.id),
           subscriptionId: String(message.id),
@@ -893,27 +760,21 @@ export class Runtime implements RuntimePort {
     request: RuntimeRequest<ChannelJoinMessage>,
   ): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(
+    await this.sessionStore.run(
       context,
       request,
       "subscription",
       message.ref,
       async (state, requestBytes) => {
-        this.sessionStore.claimSubscription(state, message.id, "channel");
-        try {
-          return await this.attachChannel(
-            state,
-            message.id,
-            message.ref,
-            snapshotValue(message.args),
-            Object.hasOwn(message, "room"),
-            message.room,
-            requestBytes,
-          );
-        } catch (error) {
-          this.sessionStore.releaseSubscription(state, message.id, "channel");
-          throw error;
-        }
+        return this.sessionStore.joinChannel(
+          state,
+          message.id,
+          message.ref,
+          message.args,
+          Object.hasOwn(message, "room"),
+          message.room,
+          requestBytes,
+        );
       },
       {
         identifiers: {
@@ -930,20 +791,13 @@ export class Runtime implements RuntimePort {
     request: RuntimeRequest<ChannelLeaveMessage>,
   ): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(
+    await this.sessionStore.run(
       context,
       request,
       "subscription",
       undefined,
       async (state, requestBytes) => {
-        this.sessionStore.expectSubscription(state, message.id, "channel");
-        await this.channels.leave(
-          state.channelAdapter,
-          message.id,
-          "leave",
-          requestBytes,
-        );
-        this.sessionStore.releaseSubscription(state, message.id, "channel");
+        await this.sessionStore.leaveChannel(state, message.id, requestBytes);
       },
       {
         identifiers: {
@@ -959,15 +813,14 @@ export class Runtime implements RuntimePort {
     request: RuntimeRequest<ChannelSendMessage>,
   ): Promise<void> {
     const { message } = request;
-    await this.runSessionOperation(
+    await this.sessionStore.run(
       context,
       request,
       "subscription",
       undefined,
       (state, requestBytes) => {
-        this.sessionStore.expectSubscription(state, message.id, "channel");
-        return this.channels.handle(
-          state.channelAdapter,
+        return this.sessionStore.sendChannel(
+          state,
           message.id,
           message.event,
           message.payload,
@@ -986,7 +839,7 @@ export class Runtime implements RuntimePort {
   async query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown> {
     const { message } = request;
     let publication: RuntimePublication | undefined;
-    return this.runSessionOperation(context, request, "query", message.ref, async (_state, requestBytes) => {
+    return this.sessionStore.run(context, request, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
       const result = await this.executeQuery(
         message.ref,
@@ -997,7 +850,7 @@ export class Runtime implements RuntimePort {
         requestBytes,
       );
       if (!isResult(result)) throw new AckerDBError("internal", "query boundary returned no Result");
-      publication = this.prepareFrame(
+      publication = this.sessionStore.prepare(
         result.ok
           ? {
               v: PROTOCOL_VERSION,
@@ -1036,7 +889,7 @@ export class Runtime implements RuntimePort {
       context.invalidationScope,
     );
     try {
-      return await this.runSessionOperation(context, request, "procedure", message.ref, async (_state, requestBytes) => {
+      return await this.sessionStore.run(context, request, "procedure", message.ref, async (_state, requestBytes) => {
         const fn = this.expect(message.ref, "procedure");
         const signal = this.operationSignal(request.signal ?? context.signal);
         throwIfAborted(signal);
@@ -1056,7 +909,7 @@ export class Runtime implements RuntimePort {
               invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
           );
           if (!isResult(result)) throw new AckerDBError("internal", "procedure boundary returned no Result");
-          publication = this.prepareFrame(
+          publication = this.sessionStore.prepare(
             result.ok
               ? {
                   v: PROTOCOL_VERSION,
@@ -1093,7 +946,7 @@ export class Runtime implements RuntimePort {
   async mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult> {
     const { message } = request;
     let successPublication: RuntimePublication | undefined;
-    return this.runSessionOperation(context, request, "mutation", message.ref, async (state, requestBytes) => {
+    return this.sessionStore.run(context, request, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
       const signal = this.operationSignal(context.signal);
       let executedPublication: RuntimePublication | undefined;
@@ -1114,7 +967,7 @@ export class Runtime implements RuntimePort {
         principal: context.principal,
         args: message.args,
         validate: (value, version, _writes, publication) => {
-          executedPublication = this.prepareFrame(
+          executedPublication = this.sessionStore.prepare(
             this.mutationFrame(
               message,
               value,
@@ -2158,116 +2011,6 @@ export class Runtime implements RuntimePort {
     return fn;
   }
 
-  private runSessionOperation<T>(
-    context: SessionRuntimeContext,
-    request: RuntimeRequest<
-      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | ProcedureMessage | MutationMessage
-      | ChannelJoinMessage | ChannelLeaveMessage | ChannelSendMessage
-    >,
-    operation: "query" | "mutation" | "procedure" | "subscription",
-    functionName: string | undefined,
-    work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
-    options: SessionOperationOptions<T> = {},
-  ): Promise<T> {
-    const { message } = request;
-    const requestBytes = this.admittedRequestBytes(
-      message,
-      claimRuntimeRequestBytes(request),
-    );
-    const state = this.sessionStore.matching(context);
-    const execute = () => {
-      if (state === null) throw new AckerDBError("auth_stale", "authentication state changed");
-      throwIfAborted(context.signal);
-      return work(state, requestBytes);
-    };
-    const sessionOrder: SessionOperationOrder | undefined = operation === "subscription"
-      ? { kind: "subscription-control", id: message.id }
-      : operation === "mutation"
-        ? { kind: "subscription-frontier" }
-        : undefined;
-    return this.operations.run(
-      state,
-      operation,
-      functionName,
-      requestBytes,
-      execute,
-      {
-        identifiers: options.identifiers ?? {},
-        synthesizeHandler: options.synthesizeHandler ?? true,
-        finalize: (outcome) =>
-          this.publishOperationOutcome(context, state, message.id, operation, outcome, options),
-        fairnessKey: context.fairnessKey,
-        ...(sessionOrder === undefined ? {} : { sessionOrder }),
-      },
-    );
-  }
-
-  private async publishOperationOutcome<T>(
-    context: SessionRuntimeContext,
-    state: RuntimeSession | null,
-    id: number,
-    operation: "query" | "mutation" | "procedure" | "subscription",
-    outcome: RuntimeOperationOutcome<T>,
-    options: SessionOperationOptions<T>,
-  ): Promise<T> {
-    if (!context.signal.aborted) {
-      const successPublication = outcome.ok
-        ? options.successPublication?.(outcome.value)
-        : undefined;
-      const message = outcome.ok
-        ? successPublication?.message
-        : {
-            v: PROTOCOL_VERSION,
-            t: "err",
-            id,
-            outcome: outcomeFromError(outcome.error),
-          } satisfies ErrorMessage;
-      if (message !== undefined) {
-        if (state !== null) {
-          await this.publishSession(
-            state,
-            context.authEpoch,
-            message,
-            successPublication,
-          );
-        } else {
-          await context.publish(successPublication ?? this.prepareFrame(
-            message,
-            "application frame",
-            operation === "subscription" ? "subscription" : "operation",
-          ));
-        }
-      }
-    }
-    if (outcome.ok) return outcome.value;
-    throw outcome.error;
-  }
-
-  private makeSubscriber(state: () => RuntimeSession, authEpoch: number): Subscriber {
-    const publish = (message: SessionApplicationMessage): Promise<void> =>
-      this.publishSession(state(), authEpoch, message);
-    return Object.freeze({
-      sendTransition: (id: number, transition: SubscriptionTransition) => publish({
-        v: PROTOCOL_VERSION,
-        t: "transition",
-        id,
-        transition,
-      } satisfies TransitionMessage),
-      sendEvent: (id: number, event: LiveEvent) => publish({
-        v: PROTOCOL_VERSION,
-        t: "event",
-        id,
-        event,
-      } satisfies EventMessage),
-      sendError: (id: number, outcome: Outcome) => publish({
-        v: PROTOCOL_VERSION,
-        t: "err",
-        id,
-        outcome,
-      } satisfies ErrorMessage),
-    });
-  }
-
   private realtimeApplication() {
     return createRealtimeRuntimeApplication({
       addressOf: (definition) => this.registry.addressOf(definition),
@@ -2323,34 +2066,6 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private makeChannelAdapter(state: () => RuntimeSession): ChannelSessionAdapter {
-    return Object.freeze({
-      get principal(): Principal {
-        return state().context.principal;
-      },
-      createContext: (
-        signal: AbortSignal,
-        requestBytes: number,
-      ): OwnedProcedureContext =>
-        this.channelProcedureContext(state(), signal, requestBytes),
-      send: async (id: number, event: string, payload: unknown): Promise<boolean> => {
-        const current = state();
-        try {
-          await this.publishSession(current, current.context.authEpoch, {
-            v: PROTOCOL_VERSION,
-            t: "channel_event",
-            id,
-            event,
-            payload,
-          } satisfies ChannelEventMessage);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-    });
-  }
-
   private channelProcedureContext(
     state: RuntimeSession,
     signal: AbortSignal,
@@ -2383,223 +2098,6 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private async publishSession(
-    state: RuntimeSession,
-    sourceAuthEpoch: number,
-    message: SessionApplicationMessage,
-    prepared?: RuntimePublication,
-  ): Promise<void> {
-    if (prepared !== undefined && prepared.message !== message) {
-      throw new TypeError("prepared publication does not own the supplied message");
-    }
-    const capture = state.capture;
-    if (capture !== null) {
-      if (!this.captureAccepts(capture, sourceAuthEpoch, message)) return;
-      this.captureFrame(
-        capture,
-        prepared ?? this.prepareFrame(message, "subscription frame", "subscription"),
-      );
-      return;
-    }
-    if (sourceAuthEpoch !== state.context.authEpoch) return;
-    const publication = prepared ?? this.prepareFrame(
-      message,
-      "application frame",
-      message.t === "transition" || message.t === "event" ||
-          this.tracing.currentScope()?.operation === "subscription"
-        ? "subscription"
-        : "operation",
-    );
-    if (!await state.context.publish(publication)) {
-      throw new AckerDBError("auth_stale", "authentication state changed");
-    }
-  }
-
-  private captureAccepts(
-    capture: AuthTransitionCapture,
-    sourceAuthEpoch: number,
-    message: SessionApplicationMessage,
-  ): boolean {
-    if (sourceAuthEpoch !== capture.authEpoch) return false;
-    if (capture.phase === "revoking") {
-      return (
-        message.t === "transition" &&
-        message.transition.kind === "revoked" &&
-        message.transition.outcome.code === "auth_stale"
-      ) || (message.t === "err" && message.outcome.code === "auth_stale");
-    }
-    return (
-      (message.t === "transition" && message.transition.kind === "reset") ||
-      (message.t === "event" && message.event.kind === "reset") ||
-      message.t === "channel_ready" ||
-      message.t === "channel_event" ||
-      message.t === "channel_rejected" ||
-      message.t === "err"
-    );
-  }
-
-  private async attachChannel(
-    state: RuntimeSession,
-    id: number,
-    address: string,
-    args: unknown,
-    hasRoom: boolean,
-    room: unknown,
-    requestBytes: number,
-  ): Promise<RuntimePublication> {
-    const result = await this.channels.join({
-      session: state.channelAdapter,
-      id,
-      address,
-      args,
-      hasRoom,
-      ...(hasRoom ? { room: snapshotValue(room) } : {}),
-      requestBytes,
-    });
-    const message = result.ok
-      ? {
-          v: PROTOCOL_VERSION,
-          t: "channel_ready",
-          id,
-          authEpoch: state.context.authEpoch,
-        } satisfies ChannelReadyMessage
-      : {
-          v: PROTOCOL_VERSION,
-          t: "channel_rejected",
-          id,
-          authEpoch: state.context.authEpoch,
-          error: result.error,
-        } satisfies ChannelRejectedMessage;
-    if (!result.ok) this.sessionStore.releaseSubscription(state, id, "channel");
-    return this.prepareFrame(message, "channel frame", "subscription");
-  }
-
-  private captureFrame(
-    capture: AuthTransitionCapture,
-    publication: RuntimePublication,
-  ): void {
-    if (!capture.active) throw new AckerDBError("auth_stale", "authentication state changed");
-    const maxItems = Math.min(Number.MAX_SAFE_INTEGER, this.limits.maxSubscriptionsPerConnection * 2);
-    const maxBytes = this.limits.webSocket.maxBytesPerConnection - this.limits.maxFrameBytes;
-    if (capture.frames.length >= maxItems || publication.bytes > maxBytes - capture.bytes) {
-      throw new AckerDBError("overloaded", "authentication transition exceeds capture capacity", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "subscription",
-      });
-    }
-    const reservation = this.authCaptureBudget.reserve(publication.bytes, "application");
-    if (reservation === null) {
-      throw new AckerDBError("overloaded", "authentication transition exceeds global capture capacity", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "subscription",
-      });
-    }
-    capture.frames.push(publication);
-    capture.reservations.push(reservation);
-    capture.bytes += publication.bytes;
-  }
-
-  private finishCapture(capture: AuthTransitionCapture): RuntimePublicationBatch {
-    if (!capture.active) throw new AckerDBError("auth_stale", "authentication state changed");
-    capture.active = false;
-    const frames = capture.frames.splice(0);
-    const reservations = capture.reservations.splice(0);
-    const bytes = capture.bytes;
-    capture.bytes = 0;
-    let released = false;
-    return Object.freeze({
-      frames,
-      bytes,
-      release: () => {
-        if (released) return;
-        released = true;
-        frames.length = 0;
-        for (const reservation of reservations) reservation.release();
-        reservations.length = 0;
-      },
-    });
-  }
-
-  private releaseCapture(capture: AuthTransitionCapture): void {
-    if (!capture.active && capture.reservations.length === 0) return;
-    capture.active = false;
-    capture.frames.length = 0;
-    capture.bytes = 0;
-    for (const reservation of capture.reservations) reservation.release();
-    capture.reservations.length = 0;
-  }
-
-  private async attachSubscription(
-    state: RuntimeSession,
-    id: number,
-    address: string,
-    args: unknown,
-    cursor?: SubscribeMessage["cursor"],
-  ): Promise<void> {
-    if (address.startsWith("events.")) {
-      const table = address.slice("events.".length);
-      const tableDefinition = this.engine.schema.tables[table];
-      if (tableDefinition?.kind !== "event") {
-        throw new AckerDBError("not_found", `unknown event table "${table}"`);
-      }
-      const subscription = tableDefinition.eventSubscription!;
-      const policyAt = this.telemetry.enabled ? performance.now() : 0;
-      let authorized: Awaited<ReturnType<typeof authorizeInvocation>>;
-      try {
-        authorized = await authorizeInvocation(
-          subscription,
-          { auth: state.context.principal },
-          args,
-        );
-        if (this.telemetry.enabled) {
-          this.tracing.span({
-            stage: "policy",
-            outcome: "ok",
-            functionName: address,
-            resource: "subscription",
-            durationMs: Math.max(0, performance.now() - policyAt),
-          }, "subscription");
-        }
-      } catch (error) {
-        if (this.telemetry.enabled) {
-          this.tracing.span({
-            stage: "policy",
-            outcome: outcomeFromError(transportError(error)).code,
-            functionName: address,
-            resource: "subscription",
-            durationMs: Math.max(0, performance.now() - policyAt),
-          }, "subscription");
-        }
-        throw error;
-      }
-      await this.reactive.subscribeEvent({
-        subscriber: state.subscriber,
-        id,
-        table,
-        authEpoch: state.context.authEpoch,
-        args: authorized.args,
-        matches: subscription.matches as (row: unknown, args: unknown) => boolean,
-      });
-    } else {
-      this.expect(address, "query");
-      await this.reactive.subscribeQuery({
-        subscriber: state.subscriber,
-        id,
-        address,
-        args,
-        policyScopeFingerprint: digest(state.context.principal),
-        fairnessKey: state.context.fairnessKey,
-        context: {
-          principal: state.context.principal,
-        },
-        authEpoch: state.context.authEpoch,
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-    }
-  }
-
   private executeQuery(
     address: string,
     args: unknown,
@@ -2619,7 +2117,9 @@ export class Runtime implements RuntimePort {
     );
   }
 
-  private evaluateSubscription(input: QueryEvaluationInput<ReactiveContext>): Promise<QueryEvaluation> {
+  private evaluateSubscription(
+    input: QueryEvaluationInput<RuntimeReactiveContext>,
+  ): Promise<QueryEvaluation> {
     const execute = () => {
       const fn = this.expect(input.address, "query");
       const readSet = new Set<string>();
@@ -2792,7 +2292,7 @@ export class Runtime implements RuntimePort {
     }
     let publication = executedPublication;
     if (!value.ok && result.publication === undefined) {
-      publication = this.prepareFrame(this.mutationFrame(
+      publication = this.sessionStore.prepare(this.mutationFrame(
         message,
         value,
         result.commitVersion,
@@ -2802,7 +2302,7 @@ export class Runtime implements RuntimePort {
       ), "mutation result");
     } else if (result.replay === "replayed") {
       try {
-        publication = this.prepareFrame(this.mutationFrame(
+        publication = this.sessionStore.prepare(this.mutationFrame(
           message,
           value,
           result.commitVersion,
@@ -2885,63 +2385,6 @@ export class Runtime implements RuntimePort {
     }
   }
 
-  private prepareFrame(
-    frame: SessionApplicationMessage,
-    label: string,
-    resource: "operation" | "subscription" = "operation",
-  ): RuntimePublication {
-    const startedAt = this.telemetry.enabled ? performance.now() : 0;
-    let publication: RuntimePublication;
-    try {
-      publication = prepareRuntimePublication(frame);
-    } catch (error) {
-      const failure = new AckerDBError("validation", `${label} is not wire-representable`, {
-        cause: error,
-      });
-      if (this.telemetry.enabled) {
-        this.tracing.span({
-          stage: "encoding",
-          outcome: failure.code,
-          resource: "outbound",
-          durationMs: Math.max(0, performance.now() - startedAt),
-        }, resource === "subscription" ? "subscription" : "query");
-      }
-      throw failure;
-    }
-    if (publication.bytes > this.limits.maxFrameBytes) {
-      const failure = new AckerDBError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
-      if (this.telemetry.enabled) {
-        this.tracing.span({
-          stage: "encoding",
-          outcome: failure.code,
-          resource: "outbound",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: publication.bytes,
-        }, resource === "subscription" ? "subscription" : "query");
-      }
-      throw failure;
-    }
-    if (this.telemetry.enabled) {
-      this.tracing.span({
-        stage: "encoding",
-        outcome: "ok",
-        resource: "outbound",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        sizeBytes: publication.bytes,
-        ...(frame.t === "ok" && frame.kind === "query"
-          ? {
-              resultCount: Array.isArray(frame.value)
-                ? frame.value.length
-                : frame.value === null
-                  ? 0
-                  : 1,
-            }
-          : {}),
-      }, resource === "subscription" ? "subscription" : "query");
-    }
-    return publication;
-  }
-
   readonly [CAPTURE_DELIVERY_OBSERVER] = (
     lane: OutboundLane = "application",
     clientSessionId?: string,
@@ -2964,16 +2407,6 @@ export class Runtime implements RuntimePort {
         resource: "operation",
       });
     }
-    if (session !== null && session.phase !== "open") {
-      throw new AckerDBError("auth_stale", "session is closing");
-    }
-    if (session !== null && session.activeOperations >= this.limits.maxOperationsPerConnection) {
-      throw new AckerDBError("overloaded", "per-connection operation capacity is full", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "operation",
-      });
-    }
     if (this.activeOperations >= this.limits.maxOperations) {
       throw new AckerDBError("overloaded", "operation capacity is full", {
         retryable: true,
@@ -2981,58 +2414,20 @@ export class Runtime implements RuntimePort {
         resource: "operation",
       });
     }
+    const sessionAdmission = session === null
+      ? undefined
+      : this.sessionStore.admit(session, sessionOrder);
     this.activeOperations++;
-    if (session !== null) session.activeOperations++;
     if (fairnessKey !== undefined) this.externalOperations.set(fairnessKey, callerOperations + 1);
-
-    let predecessor: Promise<void> | undefined;
-    let control: {
-      readonly state: RuntimeSession;
-      readonly id: number;
-      readonly completion: Deferred<void>;
-    } | undefined;
-    if (session !== null && sessionOrder?.kind === "subscription-control") {
-      predecessor = session.subscriptionControlTails.get(sessionOrder.id);
-      const completion = deferred<void>();
-      control = { state: session, id: sessionOrder.id, completion };
-      session.pendingSubscriptionControls++;
-      session.subscriptionControlTails.set(sessionOrder.id, completion.promise);
-      session.subscriptionControlFrontier = Promise.all([
-        session.subscriptionControlFrontier,
-        completion.promise,
-      ]).then(() => {});
-    } else if (
-      session !== null &&
-      sessionOrder?.kind === "subscription-frontier" &&
-      session.pendingSubscriptionControls > 0
-    ) {
-      predecessor = session.subscriptionControlFrontier;
-    }
 
     let active = true;
     return {
-      predecessor,
+      predecessor: sessionAdmission?.predecessor,
       release: () => {
         if (!active) return;
         active = false;
-        if (control !== undefined) {
-          const { state, id, completion } = control;
-          state.pendingSubscriptionControls--;
-          if (state.subscriptionControlTails.get(id) === completion.promise) {
-            state.subscriptionControlTails.delete(id);
-          }
-          completion.resolve(undefined);
-          if (state.pendingSubscriptionControls === 0) {
-            state.subscriptionControlFrontier = Promise.resolve();
-          }
-        }
+        sessionAdmission?.release();
         this.activeOperations--;
-        if (session !== null) {
-          session.activeOperations--;
-          if (session.activeOperations === 0 && session.phase === "closing") {
-            this.sessionStore.tryRemove(session);
-          }
-        }
         if (fairnessKey !== undefined) {
           const remaining = this.externalOperations.get(fairnessKey)! - 1;
           if (remaining === 0) this.externalOperations.delete(fairnessKey);

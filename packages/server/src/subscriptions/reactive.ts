@@ -304,7 +304,7 @@ export class OrderedReactive<C = unknown> {
 
   async subscribeQuery(options: QuerySubscriptionOptions<C>): Promise<void> {
     this.assertAuthEpoch(options.authEpoch);
-    this.assertSubscriptionAdmission(options.subscriber, options.id);
+    this.assertSubscriptionIdentity(options.subscriber, options.id);
     let entry = this.entryFor(options);
     entry.context = options.context;
     if (entry.listeners.size === 0) entry.ownerFairnessKey = options.fairnessKey;
@@ -315,7 +315,7 @@ export class OrderedReactive<C = unknown> {
         let listener: QueryListener<C> | undefined;
         const installed = this.publication.compareAndInstall(entry.commitVersion, () => {
           if (entry.removed) return;
-          this.assertSubscriptionAdmission(options.subscriber, options.id);
+          this.assertSubscriptionIdentity(options.subscriber, options.id);
           listener = {
             kind: "query",
             subscriber: options.subscriber,
@@ -347,7 +347,7 @@ export class OrderedReactive<C = unknown> {
 
   async subscribeEvent(options: EventSubscriptionOptions): Promise<void> {
     this.assertAuthEpoch(options.authEpoch);
-    this.assertSubscriptionAdmission(options.subscriber, options.id);
+    this.assertSubscriptionIdentity(options.subscriber, options.id);
     let state = this.eventStates.get(options.table);
     if (!state) {
       state = { table: options.table, listeners: new Set() };
@@ -1294,16 +1294,10 @@ export class OrderedReactive<C = unknown> {
     }
   }
 
-  private assertSubscriptionAdmission(subscriber: Subscriber, id: number): void {
+  private assertSubscriptionIdentity(subscriber: Subscriber, id: number): void {
     if (!Number.isSafeInteger(id) || id <= 0) throw new RangeError("subscription id must be positive");
     const mine = this.bySubscriber.get(subscriber);
     if (mine?.has(id)) throw new AckerDBError("conflict", "Subscription id is already active");
-    if ((mine?.size ?? 0) >= this.limits.maxSubscriptionsPerConnection) {
-      throw overloaded("Per-connection subscription capacity is full");
-    }
-    if (this.queryListeners + this.eventListeners >= this.limits.maxSubscriptions) {
-      throw overloaded("Global subscription capacity is full");
-    }
   }
 
   private validateEvaluation(evaluation: QueryEvaluation): void {

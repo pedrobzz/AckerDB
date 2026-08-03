@@ -3173,6 +3173,69 @@ describe("configured capacity", () => {
     expect(runtime.status().reactive).toMatchObject({ queryListeners: 0 });
   });
 
+  test("applies one subscription budget to reactive listeners and channels", async () => {
+    await restart(limits({
+      maxConnections: 2,
+      maxSubscriptionsPerConnection: 2,
+      maxSubscriptions: 2,
+    }));
+    const second = new SessionHarness(runtime, "session-b");
+    await Promise.all([session.open(), second.open()]);
+
+    await runtime.joinChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_join",
+      id: 1,
+      ref: "chat.room",
+      args: { threadId: 7n },
+      room: "support",
+    }));
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 2,
+      ref: "messages.list",
+      args: { channelId: 7n },
+    }));
+
+    await expect(runtime.joinChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_join",
+      id: 3,
+      ref: "chat.room",
+      args: { threadId: 8n },
+      room: "sales",
+    }))).rejects.toMatchObject({
+      code: "overloaded",
+      message: "Per-connection subscription capacity is full",
+      resource: "subscription",
+    });
+    await expect(runtime.subscribe(second.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 1,
+      ref: "messages.list",
+      args: { channelId: 8n },
+    }))).rejects.toMatchObject({
+      code: "overloaded",
+      message: "Global subscription capacity is full",
+      resource: "subscription",
+    });
+
+    await runtime.leaveChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_leave",
+      id: 1,
+    }));
+    await expect(runtime.subscribe(second.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 1,
+      ref: "messages.list",
+      args: { channelId: 8n },
+    }))).resolves.toBeUndefined();
+  });
+
   test("rejects an oversized mutation response before its write commits", async () => {
     await session.open();
     await expect(session.mutation(1, "messages.largeResult", {
