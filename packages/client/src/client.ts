@@ -765,6 +765,12 @@ export class AckerDBClient {
       suspend: () => this.suspendTransport(),
       resume: () => this.resumeTransport(),
     });
+    // Construction is the one public startup operation. A synchronously
+    // notifying lifecycle source may have suspended the fully initialized
+    // client above; ensureConnected() observes that state and will defer the
+    // physical dial until resume without losing standing demand.
+    this.connectRequested = true;
+    this.ensureConnected();
   }
 
   get currentAuthentication(): AckerDBAuthentication | undefined {
@@ -795,18 +801,6 @@ export class AckerDBClient {
     return () => {
       this.authenticationStateListeners.delete(listener);
     };
-  }
-
-  /**
-   * Establishes standing connection demand: the client dials now and keeps
-   * reconnecting after drops until close(), even with no operations in flight.
-   * No-op when closed, failed, blocked, or connected. While suspended the
-   * demand is remembered and the dial happens on resume — suspension never
-   * clears standing demand, it only refuses to dial.
-   */
-  connect(): void {
-    this.connectRequested = true;
-    this.ensureConnected();
   }
 
   /**
@@ -1335,7 +1329,7 @@ export class AckerDBClient {
    * process suspended. Logical demand survives untouched: subscriptions and
    * their cursors, pending requests and their mutation identities, the
    * in-flight credential presentation, the current credential, and standing
-   * connect() demand. Pending-request expiry timers stay armed — their
+   * connection demand. Pending-request expiry timers stay armed — their
    * absolute deadlines remain correct however late the platform fires them.
    * Non-resumable transports (procedures, SSE) are aborted so their callers
    * settle promptly with suspension-marked typed outcomes instead of hanging
@@ -1417,7 +1411,7 @@ export class AckerDBClient {
    * admission control that a lifecycle transition must not bypass; the
    * ordinary bounded reconnect policy holds the remainder. Demand is exactly
    * {@link hasReconnectWork} — live subscriptions, pending requests, an
-   * in-flight credential presentation, or standing connect() demand;
+   * in-flight credential presentation, or constructor-owned standing demand;
    * suspension cleared none of it. With no demand the client stays idle
    * rather than opening a socket because the application became active. If
    * the immediate attempt fails, the ordinary reconnect policy takes over —
@@ -1632,7 +1626,7 @@ export class AckerDBClient {
       return;
     }
     // Server admission control is enforced at the one physical dial boundary:
-    // no demand path — new work, connect(), a credential refresh, or a
+    // no demand path — new work, a credential refresh, or a
     // lifecycle activation — may open a socket before the server's
     // Retry-After deadline. The bounded reconnect policy holds the remainder
     // (an already-scheduled timer is preserved; scheduling clears `resuming`).

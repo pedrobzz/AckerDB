@@ -698,7 +698,6 @@ describe("useQuery state transitions", () => {
   test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
     const harness = createHarness();
     const client = new AckerDBClient(harness.config);
-    client.connect();
     const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const first = harness.live();
@@ -763,7 +762,6 @@ describe("useQuery state transitions", () => {
   test("binary row payloads stay genuine platform typed arrays inside frozen rows", async () => {
     const harness = createHarness();
     const client = new AckerDBClient(harness.config);
-    client.connect();
     type BlobRow = { readonly name: string; readonly blob: Uint8Array };
     const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
     const stopListening = entry.listen(() => {});

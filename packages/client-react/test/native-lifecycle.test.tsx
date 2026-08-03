@@ -528,7 +528,7 @@ describe("native AppState lifecycle through the provider", () => {
         <ConnectionOnly />
       </AckerDBProvider>,
     );
-    // The provider establishes standing connect() demand, so this client
+    // The provider establishes standing connection demand, so this client
     // always redials on activation; the no-demand case is a base-client
     // behavior (see packages/client/test/suspension.test.ts). Here the
     // React-visible fact is the suspended -> resuming -> ready progression.
