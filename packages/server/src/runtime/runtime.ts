@@ -830,6 +830,8 @@ export class Runtime implements RuntimePort {
   private activeOperations = 0;
   private schedulerGeneration = 0;
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly scheduledAt = new Map<string, number | null>();
+  private schedulerInitialized = false;
   private scheduledRun: Promise<number> | null = null;
   private sampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
@@ -2622,6 +2624,7 @@ export class Runtime implements RuntimePort {
   runScheduled(now = this.readNow()): Promise<number> {
     if (this.scheduledRun !== null) return this.scheduledRun;
     this.assertReady();
+    const refreshedTables = new Set<string>();
     const execution = this.runOperation(null, "scheduled", undefined, 1, async () => {
       let handled = 0;
       for (let attempts = 0; attempts < this.limits.schedulerBatchSize; attempts++) {
@@ -2692,9 +2695,12 @@ export class Runtime implements RuntimePort {
                 () => 1,
               );
               emitWriteKeys(plan, scheduledRow, writes.keys);
-              writes.scheduledTouched = true;
+              writes.scheduledTables.add(candidate.table);
             },
-            publication: (_version, writes) => this.publicationFor(writes),
+            publication: (_version, writes) => {
+              for (const table of writes.scheduledTables) refreshedTables.add(table);
+              return this.publicationFor(writes);
+            },
           });
           handled++;
         } catch (error) {
@@ -2706,7 +2712,7 @@ export class Runtime implements RuntimePort {
     let run!: Promise<number>;
     run = execution.then(
       (handled) => {
-        if (this.lifecycle === "ready") this.armScheduler();
+        if (this.lifecycle === "ready") this.armScheduler(refreshedTables);
         return handled;
       },
       (error) => {
@@ -2720,14 +2726,24 @@ export class Runtime implements RuntimePort {
     return run;
   }
 
-  armScheduler(): void {
+  armScheduler(touchedTables?: ReadonlySet<string>): void {
     const generation = ++this.schedulerGeneration;
     if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
     this.schedulerTimer = null;
     if (this.lifecycle !== "ready" || this.scheduled.size === 0) return;
-    void this.nextScheduledAt().then(
-      (at) => {
-        if (this.lifecycle !== "ready" || generation !== this.schedulerGeneration || at === null) return;
+    const fullRefresh = touchedTables === undefined || !this.schedulerInitialized;
+    const tables = fullRefresh ? this.scheduled.keys() : touchedTables;
+    void this.nextScheduledAt(tables).then(
+      (refreshed) => {
+        if (this.lifecycle !== "ready" || generation !== this.schedulerGeneration) return;
+        if (fullRefresh) this.scheduledAt.clear();
+        for (const [table, at] of refreshed) this.scheduledAt.set(table, at);
+        if (fullRefresh) this.schedulerInitialized = true;
+        let at: number | null = null;
+        for (const candidate of this.scheduledAt.values()) {
+          if (candidate !== null && (at === null || candidate < at)) at = candidate;
+        }
+        if (at === null) return;
         const delay = Math.min(Math.max(0, at - this.readNow()), 0x7fff_ffff);
         this.schedulerTimer = setTimeout(() => {
           this.schedulerTimer = null;
@@ -3827,7 +3843,7 @@ export class Runtime implements RuntimePort {
   private async commitWrite<T>(
     request: RuntimeCommitRequest<T>,
   ): Promise<CommitResult<T, ReactiveCommit>> {
-    let scheduledTouched = false;
+    let scheduledTables: ReadonlySet<string> = new Set();
     const result = await this.coordinator.execute({
       operation: request.operation,
       fairnessKey: request.fairnessKey,
@@ -3849,11 +3865,11 @@ export class Runtime implements RuntimePort {
       ),
       rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
-        scheduledTouched = writes.scheduledTouched;
+        scheduledTables = new Set(writes.scheduledTables);
         return this.publicationFor(writes, request.subscriber);
       },
     });
-    if (scheduledTouched) this.armScheduler();
+    if (scheduledTables.size > 0) this.armScheduler(scheduledTables);
     return result;
   }
 
@@ -4332,19 +4348,17 @@ export class Runtime implements RuntimePort {
     return publication;
   }
 
-  private nextScheduledAt(): Promise<number | null> {
+  private nextScheduledAt(tables: Iterable<string>): Promise<ReadonlyMap<string, number | null>> {
     return this.submitRead((connection) => {
-      let earliest: number | null = null;
-      for (const table of this.scheduled.keys()) {
+      const refreshed = new Map<string, number | null>();
+      for (const table of tables) {
         const plan = this.engine.plan(table);
         const row = connection
           .query(`SELECT MIN(${quoted(plan.scheduleAt!)}) AS at FROM ${quoted(table)}`)
           .get() as { at: number | bigint | null };
-        if (row.at === null) continue;
-        const value = Number(row.at);
-        if (earliest === null || value < earliest) earliest = value;
+        refreshed.set(table, row.at === null ? null : Number(row.at));
       }
-      return earliest;
+      return refreshed;
     }, {
       operation: "scheduled",
       bytes: 1,

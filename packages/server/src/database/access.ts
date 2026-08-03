@@ -45,22 +45,22 @@ export interface EventEmit {
 export interface WriteCollector {
   keys: Set<string>;
   events: EventEmit[];
-  /** True when a scheduled table was written — the scheduler re-arms. */
-  scheduledTouched: boolean;
+  /** Exact scheduled tables written by this transaction — the scheduler refreshes only these. */
+  scheduledTables: Set<string>;
 }
 
 export interface WriteCollectorCheckpoint {
   readonly keys: number;
   readonly events: number;
-  readonly scheduledTouched: boolean;
+  readonly scheduledTables: number;
 }
 
-class JournaledWriteKeys extends Set<string> {
-  readonly #insertions: string[] = [];
+class JournaledSet<T> extends Set<T> {
+  readonly #insertions: T[] = [];
 
-  override add(key: string): this {
-    if (!this.has(key)) this.#insertions.push(key);
-    return super.add(key);
+  override add(value: T): this {
+    if (!this.has(value)) this.#insertions.push(value);
+    return super.add(value);
   }
 
   checkpoint(): number {
@@ -79,13 +79,14 @@ export function checkpointWriteCollector(
   writes: WriteCollector,
 ): WriteCollectorCheckpoint {
   const keys = writes.keys;
-  if (!(keys instanceof JournaledWriteKeys)) {
+  const scheduledTables = writes.scheduledTables;
+  if (!(keys instanceof JournaledSet) || !(scheduledTables instanceof JournaledSet)) {
     throw new TypeError("write collector was not created by newWriteCollector()");
   }
   return {
     keys: keys.checkpoint(),
     events: writes.events.length,
-    scheduledTouched: writes.scheduledTouched,
+    scheduledTables: scheduledTables.checkpoint(),
   };
 }
 
@@ -94,12 +95,13 @@ export function rollbackWriteCollector(
   checkpoint: WriteCollectorCheckpoint,
 ): void {
   const keys = writes.keys;
-  if (!(keys instanceof JournaledWriteKeys)) {
+  const scheduledTables = writes.scheduledTables;
+  if (!(keys instanceof JournaledSet) || !(scheduledTables instanceof JournaledSet)) {
     throw new TypeError("write collector was not created by newWriteCollector()");
   }
   keys.rollback(checkpoint.keys);
   writes.events.length = checkpoint.events;
-  writes.scheduledTouched = checkpoint.scheduledTouched;
+  scheduledTables.rollback(checkpoint.scheduledTables);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +254,7 @@ function writeMethods(
   const conn = engine.writer;
   const table = plan.table;
   const touch = () => {
-    if (plan.scheduleAt !== null) writes.scheduledTouched = true;
+    if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
   };
 
   const getRow = (id: bigint): Record<string, unknown> | null => {
@@ -604,5 +606,5 @@ export function makeDbWriter(
 }
 
 export function newWriteCollector(): WriteCollector {
-  return { keys: new JournaledWriteKeys(), events: [], scheduledTouched: false };
+  return { keys: new JournaledSet(), events: [], scheduledTables: new JournaledSet() };
 }

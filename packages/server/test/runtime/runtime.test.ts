@@ -2654,6 +2654,33 @@ describe("scheduler and lifecycle", () => {
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:http" }]);
   });
 
+  test("refreshes only the scheduled tables touched by a commit", async () => {
+    const scheduler = runtime as unknown as {
+      schedulerInitialized: boolean;
+      nextScheduledAt(tables: Iterable<string>): Promise<ReadonlyMap<string, number | null>>;
+    };
+    await eventually(() => scheduler.schedulerInitialized);
+    const refreshes: string[][] = [];
+    const nextScheduledAt = scheduler.nextScheduledAt.bind(runtime);
+    scheduler.nextScheduledAt = (tables) => {
+      const touched = [...tables];
+      refreshes.push(touched);
+      return nextScheduledAt(touched);
+    };
+
+    const response = await runtime.runMutation({
+      id: 97,
+      address: "reminders.schedule",
+      args: { message: "later", attempt: 1, at: Date.now() + 100_000 },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
+    });
+
+    expect(response.status).toBe(200);
+    await eventually(() => refreshes.length === 1);
+    expect(refreshes).toEqual([["reminders"]]);
+  });
+
   test("backs a failing due job off instead of retrying in a hot loop", async () => {
     await session.open();
     await session.mutation(1, "reminders.schedule", {
