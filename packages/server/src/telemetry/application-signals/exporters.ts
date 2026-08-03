@@ -279,11 +279,14 @@ export class TelemetryJournalExporters {
       timeout = setTimeout(() => resolve({ kind: "timeout" }), this.limits.timeoutMs);
       timeout.unref?.();
     });
-    const outcome = await Promise.race([settled, timedOut]);
-    if (this.stopped || worker.stopped) {
+    const settle = (): void => {
       clearTimeout(timeout);
       worker.inFlight = false;
       worker.controller = undefined;
+    };
+    const outcome = await Promise.race([settled, timedOut]);
+    if (this.stopped || worker.stopped) {
+      settle();
       return "stop";
     }
     if (outcome.kind === "timeout") {
@@ -291,9 +294,7 @@ export class TelemetryJournalExporters {
       worker.consumer = this.journal.recordConsumerFailure(worker.exporter.name, true);
       this.warnFailure(worker, "timed out");
       void settled.then((late) => {
-        clearTimeout(timeout);
-        worker.inFlight = false;
-        worker.controller = undefined;
+        settle();
         if (this.stopped || worker.stopped) return;
         if (late.kind === "ok") {
           worker.consumer = this.journal.advanceConsumer(worker.exporter.name, cursor, advance);
@@ -305,9 +306,7 @@ export class TelemetryJournalExporters {
       }).catch((error) => this.containWorkerFailure(worker, error));
       return "stop";
     }
-    clearTimeout(timeout);
-    worker.inFlight = false;
-    worker.controller = undefined;
+    settle();
     if (outcome.kind === "failed") {
       worker.consumer = this.journal.recordConsumerFailure(worker.exporter.name, false);
       this.warnFailure(

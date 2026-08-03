@@ -44,6 +44,10 @@ export function canonicalDatabasePaths(path: string): readonly string[] {
 }
 
 /** Framework-owned application-signal storage, intentionally outside backups. */
+export function telemetryJournalPath(path: string): string {
+  return `${path}.telemetry`;
+}
+
 export function telemetryJournalPaths(path: string): readonly string[] {
-  return canonicalDatabasePaths(`${path}.telemetry`);
+  return canonicalDatabasePaths(telemetryJournalPath(path));
 }

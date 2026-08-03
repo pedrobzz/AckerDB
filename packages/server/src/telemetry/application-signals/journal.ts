@@ -462,13 +462,14 @@ export class TelemetryJournal {
   }
 
   private markFailed(error: unknown, lostRecords = 0): void {
+    this.droppedRecords += lostRecords;
     if (this.state === "failed" || this.state === "stopped") return;
     this.failure = error;
     this.state = "failed";
     if (this.pumpHandle !== undefined) clearImmediate(this.pumpHandle);
     this.pumpHandle = undefined;
     this.pumpScheduled = false;
-    this.droppedRecords += lostRecords + this.queue.length;
+    this.droppedRecords += this.queue.length;
     this.queue.length = 0;
     this.queuedBytes = 0;
     for (const listener of this.failureListeners) {

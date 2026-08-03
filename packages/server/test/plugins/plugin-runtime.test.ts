@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { noopLogger } from "ackerdb-test-support/telemetry";
 import { Engine } from "../../src/database/engine.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {
@@ -11,12 +12,6 @@ import { defineSchema } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 
 const engines: Engine[] = [];
-const NOOP_LOG = Object.freeze({
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-});
 
 function makePluginRuntime(
   assembly: ReturnType<typeof assemblePlugins>,
@@ -236,13 +231,13 @@ describe("PluginRuntime invocation core", () => {
     const mutationOnlyEngine = engines.at(-1)!;
     const firstEmpty = mutationOnly.bindQuery({
       timestamp: 1,
-      logFor: () => NOOP_LOG,
+      logFor: () => noopLogger,
       connection: mutationOnlyEngine.reader,
       reads: null,
     });
     const secondEmpty = mutationOnly.bindQuery({
       timestamp: 2,
-      logFor: () => NOOP_LOG,
+      logFor: () => noopLogger,
       connection: mutationOnlyEngine.reader,
       reads: null,
     });
@@ -275,7 +270,7 @@ describe("PluginRuntime invocation core", () => {
     const mixedEngine = engines.at(-1)!;
     const capabilities = mixed.bindQuery({
       timestamp: 3,
-      logFor: () => NOOP_LOG,
+      logFor: () => noopLogger,
       connection: mixedEngine.reader,
       reads: null,
     }) as AnyContext;
@@ -342,7 +337,7 @@ describe("PluginRuntime invocation core", () => {
     await runtime.start();
     const capabilities = runtime.bindQuery({
       timestamp: 1,
-      logFor: () => NOOP_LOG,
+      logFor: () => noopLogger,
       connection: engine.reader,
       reads: null,
     }) as AnyContext;
@@ -413,7 +408,7 @@ describe("PluginRuntime invocation core", () => {
     const engine = engines.at(-1)!;
     const capabilities = runtime.bindQuery({
       timestamp: 1,
-      logFor: () => NOOP_LOG,
+      logFor: () => noopLogger,
       connection: engine.reader,
       reads: null,
     }) as AnyContext;

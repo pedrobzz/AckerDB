@@ -89,6 +89,7 @@ import {
   type SseDeliverySnapshot,
 } from "../subscriptions/delivery.ts";
 import type { Engine } from "../database/engine.ts";
+import { telemetryJournalPath } from "../database/artifacts.ts";
 import { AckerDBError, isAckerDBError, throwIfAborted } from "../shared/errors.ts";
 import {
   claimHttpTrace,
@@ -557,10 +558,6 @@ function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-function defaultTelemetryJournalPath(databasePath: string): string {
-  return databasePath === ":memory:" ? ":memory:" : `${databasePath}.telemetry`;
-}
-
 function byteLength(value: unknown): number {
   return utf8.encode(encode(value)).byteLength;
 }
@@ -844,6 +841,7 @@ export class Runtime implements RuntimePort {
 
   constructor(options: RuntimeOptions) {
     if (options.telemetryExporters !== undefined) {
+      // Fail before opening the journal; the exporter owns the same validation at direct construction.
       validateTelemetryJournalExportersOptions(options.telemetryExporters);
     }
     this.engine = options.engine;
@@ -924,7 +922,9 @@ export class Runtime implements RuntimePort {
     this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
       ? options.telemetryJournal
       : new TelemetryJournal({
-          path: defaultTelemetryJournalPath(this.engine.path),
+          path: this.engine.path === ":memory:"
+            ? ":memory:"
+            : telemetryJournalPath(this.engine.path),
           ...options.telemetryJournal,
         });
     if (this.telemetryJournal.snapshot().state !== "ready") {
@@ -2403,7 +2403,7 @@ export class Runtime implements RuntimePort {
       { requestId: String(request.id) },
       claimedTrace?.context,
     );
-    const scope = this.telemetry.enabled ? runtimeScope : undefined;
+    const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     let traceFinished = false;
     const finishOperationTrace = (): void => {
       if (traceFinished) return;
@@ -2412,15 +2412,17 @@ export class Runtime implements RuntimePort {
         finishClaimedHttpTrace(claimedTrace);
         return;
       }
-      if (scope !== undefined) this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
+      if (observedScope !== undefined) {
+        this.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
+      }
     };
-    const admittedAt = scope === undefined ? 0 : performance.now();
+    const admittedAt = observedScope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
       release = this.admitOperation(null, fairnessKey).release;
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -2436,10 +2438,10 @@ export class Runtime implements RuntimePort {
       }
     } catch (error) {
       const safeError = transportError(error);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -2456,7 +2458,7 @@ export class Runtime implements RuntimePort {
       finishOperationTrace();
       throw safeError;
     }
-    const startedAt = scope === undefined ? 0 : performance.now();
+    const startedAt = observedScope === undefined ? 0 : performance.now();
     const execute = async (): Promise<RuntimeSseResponse> => {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
@@ -2524,7 +2526,7 @@ export class Runtime implements RuntimePort {
             throw error;
           });
         lifecycle = completion.catch((error) => {
-          if (scope !== undefined) {
+          if (observedScope !== undefined) {
             const safeError = transportError(error);
             this.traceEvent({
               name: "failure",
@@ -2533,7 +2535,7 @@ export class Runtime implements RuntimePort {
               outcome: outcomeFromError(safeError).code,
               functionName: request.address,
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            }, scope);
+            }, observedScope);
           }
           throw error;
         }).finally(() => {
@@ -2569,9 +2571,9 @@ export class Runtime implements RuntimePort {
           finishOperationTrace();
         }
         const safeError = transportError(error);
-        if (scope !== undefined) {
+        if (observedScope !== undefined) {
           const outcome = outcomeFromError(safeError).code;
-          if (scope.invocations === 0) {
+          if (observedScope.invocations === 0) {
             this.traceSpan({
               operation: "sse",
               stage: "handler",
@@ -2587,7 +2589,7 @@ export class Runtime implements RuntimePort {
             outcome,
             functionName: request.address,
             errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-          }, scope);
+          }, observedScope);
         }
         throw safeError;
       }
@@ -4764,16 +4766,16 @@ export class Runtime implements RuntimePort {
       identifiers,
       claimedTrace?.context,
     );
-    const scope = this.telemetry.enabled ? runtimeScope : undefined;
+    const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
       claimedTrace !== undefined
         ? result.finally(() => finishClaimedHttpTrace(claimedTrace))
-        : scope !== undefined
+        : observedScope !== undefined
           ? result.finally(() => {
-              this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
+              this.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
             })
           : result;
-    const admittedAt = scope === undefined ? 0 : performance.now();
+    const admittedAt = observedScope === undefined ? 0 : performance.now();
     const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
       if (finalize !== undefined) return finalize(outcome);
       if (outcome.ok) return outcome.value as unknown as R;
@@ -4783,9 +4785,9 @@ export class Runtime implements RuntimePort {
     try {
       this.assertRequestBytes(sizeBytes);
       admission = this.admitOperation(session, options.fairnessKey, options.sessionOrder);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -4801,10 +4803,10 @@ export class Runtime implements RuntimePort {
       }
     } catch (error) {
       const safeError = transportError(error);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -4826,14 +4828,14 @@ export class Runtime implements RuntimePort {
           ...(functionName === undefined ? {} : { functionName }),
           resource: "operation",
           errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-        }, scope, 0);
+        }, observedScope, 0);
       }
       const rejected = () => settle({ ok: false, error: safeError });
       return finishOperationTrace(
         this.runTraced(runtimeScope, rejected),
       );
     }
-    const startedAt = scope === undefined ? 0 : performance.now();
+    const startedAt = observedScope === undefined ? 0 : performance.now();
     const start = () => {
       if (options.abortSignal?.aborted) {
         return Promise.reject(options.abortSignal.reason);
@@ -4850,7 +4852,11 @@ export class Runtime implements RuntimePort {
     )
       .then(
         (value): RuntimeOperationOutcome<T> => {
-          if (scope !== undefined && synthesizeHandler && scope.invocations === 0) {
+          if (
+            observedScope !== undefined &&
+            synthesizeHandler &&
+            observedScope.invocations === 0
+          ) {
             this.traceSpan({
               stage: "handler",
               outcome: "ok",
@@ -4862,9 +4868,9 @@ export class Runtime implements RuntimePort {
         },
         (error): RuntimeOperationOutcome<T> => {
           const safeError = transportError(error);
-          if (scope !== undefined) {
+          if (observedScope !== undefined) {
             const outcome = outcomeFromError(safeError).code;
-            if (synthesizeHandler && scope.invocations === 0) {
+            if (synthesizeHandler && observedScope.invocations === 0) {
               this.traceSpan({
                 stage: "handler",
                 outcome,
@@ -4879,7 +4885,7 @@ export class Runtime implements RuntimePort {
               outcome,
               ...(functionName === undefined ? {} : { functionName }),
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            }, scope);
+            }, observedScope);
           }
           return { ok: false, error: safeError };
         },

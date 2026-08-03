@@ -66,7 +66,7 @@ function normalizeValue(
     if (length < value.byteLength) state.truncated = true;
     return new Uint8Array(value.subarray(0, length));
   }
-  if (typeof value !== "object" || value === null) {
+  if (typeof value !== "object") {
     state.malformed = true;
     return INVALID_VALUE;
   }

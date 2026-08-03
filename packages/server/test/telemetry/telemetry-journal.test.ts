@@ -102,4 +102,24 @@ describe("TelemetryJournal", () => {
     expect(observed).toHaveLength(1);
     expect(journal.append(record(2n))).toBe(false);
   });
+
+  test("counts every in-flight batch lost across concurrent flush failures", async () => {
+    const journal = new TelemetryJournal({
+      path: journalPath(),
+      limits: { maxBatchRecords: 1 },
+    });
+    expect(journal.append(record(1n))).toBe(true);
+    await journal.flush();
+
+    expect(journal.append(record(1n, "first duplicate"))).toBe(true);
+    expect(journal.append(record(1n, "second duplicate"))).toBe(true);
+    const flushes = await Promise.allSettled([journal.flush(), journal.flush()]);
+    expect(flushes.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+
+    expect(journal.snapshot()).toMatchObject({
+      state: "failed",
+      droppedRecords: 2,
+      storedRecords: 1,
+    });
+  });
 });
