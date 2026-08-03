@@ -18,6 +18,7 @@
     "typecheck:bench": "bun packages/cli/src/commands/main.ts codegen bench/ackerdb-app && bunx tsc -p bench/tsconfig.json --noEmit",
     "typecheck:tooling": "bunx tsc -p scripts/tsconfig.json --noEmit",
     "prototype:telemetry-fast": "bun bench/hot-path-microbenchmark.ts procedure enabled",
+    "prototype:telemetry-idle": "bun bench/telemetry-idle-prototype.ts",
     "diagnostic:validator": "bun scripts/validator-diagnostic.ts",
     "build:webrtc": "bun packages/realtime/native/webrtc/build.ts",
     "assemble:webrtc": "bun packages/realtime/native/webrtc/package.ts",
