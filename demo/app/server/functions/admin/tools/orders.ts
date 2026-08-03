@@ -1,5 +1,6 @@
 import { v } from "@ackerdb/server";
-import { mcpTool } from "@demo/ackerdb-codegen/server";
+import { query } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import { orderStatus } from "../../../app.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 
@@ -9,14 +10,13 @@ import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
  * guest, or within an opened-at time window; each row carries the ids and
  * timestamps needed to drill into `get_order_items`.
  */
-export const getOrders = mcpTool({
+export const getOrders = query({
   title: "Get orders",
   description:
     "List orders newest first, optionally filtered by status, table, guest, or " +
     "an opened-at time window (millisecond epochs). Use it to find open orders, " +
     "a table's or a guest's orders, or orders in a period; totals are in cents.",
-  access: { anyOf: ["read"] },
-  annotations: { readOnlyHint: true },
+  access: adminToolAccess,
   args: {
     status: orderStatus
       .optional()
@@ -42,7 +42,7 @@ export const getOrders = mcpTool({
       .optional()
       .describe(`Maximum orders to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: v.object({
+  returns: v.object({
     orders: v.array(
       v.object({
         id: v.bigint(),
@@ -55,43 +55,42 @@ export const getOrders = mcpTool({
       }),
     ),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const limit = clampLimit(args.limit);
-      let query = tx.db.orders.query();
-      if (args.status !== undefined) {
-        const status = args.status;
-        query = query.where((order) => order.status.eq(status));
-      }
-      if (args.tableId !== undefined) {
-        const tableId = args.tableId;
-        query = query.where((order) => order.tableId.eq(tableId));
-      }
-      if (args.userId !== undefined) {
-        const userId = args.userId;
-        query = query.where((order) => order.userId.eq(userId));
-      }
-      if (args.openedAfter !== undefined) {
-        const openedAfter = args.openedAfter;
-        query = query.where((order) => order.openedAt.gte(openedAfter));
-      }
-      if (args.openedBefore !== undefined) {
-        const openedBefore = args.openedBefore;
-        query = query.where((order) => order.openedAt.lte(openedBefore));
-      }
-      const rows = await query
-        .orderBy((order) => order.openedAt.desc())
-        .take(limit);
-      const orders = rows
-        .map((order) => ({
-          id: order.id,
-          userId: order.userId,
-          tableId: order.tableId,
-          status: order.status,
-          totalCents: order.totalCents,
-          openedAt: order.openedAt,
-          closedAt: order.closedAt,
-        }));
-      return { orders };
-    }),
+  handler: async (ctx, args) => {
+    const limit = clampLimit(args.limit);
+    let query = ctx.db.orders.query();
+    if (args.status !== undefined) {
+      const status = args.status;
+      query = query.where((order) => order.status.eq(status));
+    }
+    if (args.tableId !== undefined) {
+      const tableId = args.tableId;
+      query = query.where((order) => order.tableId.eq(tableId));
+    }
+    if (args.userId !== undefined) {
+      const userId = args.userId;
+      query = query.where((order) => order.userId.eq(userId));
+    }
+    if (args.openedAfter !== undefined) {
+      const openedAfter = args.openedAfter;
+      query = query.where((order) => order.openedAt.gte(openedAfter));
+    }
+    if (args.openedBefore !== undefined) {
+      const openedBefore = args.openedBefore;
+      query = query.where((order) => order.openedAt.lte(openedBefore));
+    }
+    const rows = await query
+      .orderBy((order) => order.openedAt.desc())
+      .take(limit);
+    const orders = rows
+      .map((order) => ({
+        id: order.id,
+        userId: order.userId,
+        tableId: order.tableId,
+        status: order.status,
+        totalCents: order.totalCents,
+        openedAt: order.openedAt,
+        closedAt: order.closedAt,
+      }));
+    return { orders };
+  },
 });

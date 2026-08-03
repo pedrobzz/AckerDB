@@ -20,11 +20,11 @@
     "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/ackerdb-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/mobile typecheck && bun run --cwd app/design typecheck"
   },
   "dependencies": {
-    "@ackerdb/cli": "0.10.0",
-    "@ackerdb/client": "0.10.0",
-    "@ackerdb/client-react": "0.10.0",
-    "@ackerdb/core": "0.10.0",
-    "@ackerdb/server": "0.10.0"
+    "@ackerdb/cli": "0.14.2-canary.4",
+    "@ackerdb/client": "0.14.2-canary.4",
+    "@ackerdb/client-react": "0.14.2-canary.4",
+    "@ackerdb/core": "0.14.2-canary.4",
+    "@ackerdb/server": "0.14.2-canary.4"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
