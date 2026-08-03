@@ -58,7 +58,7 @@ import {
   type CommitResult,
   type IdempotencyIdentity,
 } from "./coordinator.ts";
-import { isValidationError, type Identity } from "../validation/v.ts";
+import type { Identity } from "../validation/v.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
 import type { ExposedHttpCodec } from "../transport/http-codec.ts";
 import type { ExposedHttpKind } from "../transport/http-surface.ts";
@@ -201,7 +201,6 @@ import {
   type SessionApplicationMessage,
   type SessionRuntimeContext,
 } from "../subscriptions/session.ts";
-import { settleOnAbort } from "./abort.ts";
 import {
   canceledHandlerOutcome,
   invokeSideEffectingHandler,
@@ -226,6 +225,13 @@ import {
   type RuntimeTraceIdentifiers as TraceIdentifiers,
   type RuntimeTraceScope,
 } from "./telemetry/trace-bridge.ts";
+import {
+  RuntimeOperationRunner,
+  transportError,
+  type OperationAdmission,
+  type RuntimeOperationOutcome,
+  type SessionOperationOrder,
+} from "./execution/operation-runner.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -347,32 +353,6 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
-type RuntimeOperationOutcome<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: unknown };
-
-type RuntimeOperationFinalizer<T, R> = (outcome: RuntimeOperationOutcome<T>) => R | Promise<R>;
-
-type SessionOperationOrder =
-  | { readonly kind: "subscription-control"; readonly id: number }
-  | { readonly kind: "subscription-frontier" };
-
-interface OperationAdmission {
-  readonly predecessor: Promise<void> | undefined;
-  release(): void;
-}
-
-interface RunOperationOptions<T, R> {
-  readonly identifiers?: TraceIdentifiers;
-  readonly synthesizeHandler?: boolean;
-  readonly finalize?: RuntimeOperationFinalizer<T, R>;
-  readonly claimedTrace?: ClaimedHttpTrace;
-  readonly fairnessKey?: string;
-  readonly sessionOrder?: SessionOperationOrder;
-  /** Releases admission when the owning operation is cancelled. */
-  readonly abortSignal?: AbortSignal;
-}
-
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
   readonly publication: RuntimePublication;
@@ -433,12 +413,6 @@ function digest(value: unknown): string {
 
 function convergenceError(message: string): AckerDBError {
   return new AckerDBError("convergence_unavailable", message, { committed: true });
-}
-
-function transportError(error: unknown): unknown {
-  return isValidationError(error)
-    ? new AckerDBError("validation", error.message, { cause: error })
-    : error;
 }
 
 interface SseChunkIterator {
@@ -672,6 +646,7 @@ export class Runtime implements RuntimePort {
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
   private readonly tracing: RuntimeTraceBridge;
+  private readonly operations: RuntimeOperationRunner<RuntimeSession>;
   private readonly systemRoot: ReturnType<typeof AsyncLocalStorage.snapshot>;
   private readonly ownsTelemetry: boolean;
   private readonly ownsTelemetryJournal: boolean;
@@ -771,6 +746,13 @@ export class Runtime implements RuntimePort {
             },
           });
     this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
+    this.operations = new RuntimeOperationRunner({
+      telemetry: this.telemetry,
+      tracing: this.tracing,
+      assertRequestBytes: (bytes) => this.assertRequestBytes(bytes),
+      admit: (session, fairnessKey, sessionOrder) =>
+        this.admitOperation(session, fairnessKey, sessionOrder),
+    });
     // The system root must capture this trace storage's empty state.
     this.systemRoot = AsyncLocalStorage.snapshot();
     this.ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
@@ -888,7 +870,7 @@ export class Runtime implements RuntimePort {
     const requestBytes = this.admittedRequestBytes(account);
     const operationSignal = this.operationSignal(signal);
     const fairnessKey = externalAccountFairnessKey(account);
-    return this.runOperation(
+    return this.operations.run(
       null,
       "transaction",
       undefined,
@@ -1144,7 +1126,7 @@ export class Runtime implements RuntimePort {
 
   async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
     const state = this.currentSession(transition.from, true);
-    return this.runOperation(state, "subscription", undefined, 1, async () => {
+    return this.operations.run(state, "subscription", undefined, 1, async () => {
       if (
         transition.to.clientSessionId !== transition.from.clientSessionId ||
         transition.to.authEpoch !== transition.from.authEpoch + 1
@@ -1618,7 +1600,7 @@ export class Runtime implements RuntimePort {
   async runQuery(request: RuntimeHttpRequest): Promise<Response> {
     const { requestBytes, codec, claimedTrace, fairnessKey } =
       this.claimHttpRequest(request, "query");
-    return this.runOperation(null, "query", request.address, requestBytes, () =>
+    return this.operations.run(null, "query", request.address, requestBytes, () =>
       this.executeQuery(
         request.address,
         request.args,
@@ -1644,7 +1626,7 @@ export class Runtime implements RuntimePort {
     const { requestBytes, codec, claimedTrace, fairnessKey } =
       this.claimHttpRequest(request, "mutation");
     let committed: CommittedHttpMutation | undefined;
-    return this.runOperation(null, "mutation", request.address, requestBytes, async () => {
+    return this.operations.run(null, "mutation", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "mutation");
       const signal = this.operationSignal(request.signal);
       throwIfAborted(signal);
@@ -1737,7 +1719,7 @@ export class Runtime implements RuntimePort {
     const { requestBytes, codec, claimedTrace, fairnessKey, invalidationScope } =
       this.claimHttpRequest(request, "procedure");
     const invalidations = this.procedureInvalidations(request.principal, invalidationScope);
-    return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
+    return this.operations.run(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
       throwIfAborted(signal);
@@ -1805,7 +1787,7 @@ export class Runtime implements RuntimePort {
       }
       return Promise.reject(error);
     }
-    return this.systemRoot(() => this.runOperation(
+    return this.systemRoot(() => this.operations.run(
       null,
       "system",
       name,
@@ -1886,7 +1868,7 @@ export class Runtime implements RuntimePort {
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
-    return this.runOperation(null, "procedure", functionName, requestBytes, async () => {
+    return this.operations.run(null, "procedure", functionName, requestBytes, async () => {
       const signal = this.operationSignal(request.signal);
       return this.dispatchMcpTool(
         request.mcp,
@@ -2477,7 +2459,7 @@ export class Runtime implements RuntimePort {
   runScheduled(now = this.readNow()): Promise<number> {
     if (this.scheduledRun !== null) return this.scheduledRun;
     this.assertReady();
-    const execution = this.runOperation(null, "scheduled", undefined, 1, async () => {
+    const execution = this.operations.run(null, "scheduled", undefined, 1, async () => {
       let handled = 0;
       for (let attempts = 0; attempts < this.limits.schedulerBatchSize; attempts++) {
         const candidate = await this.nextScheduledCandidate(now);
@@ -2915,7 +2897,7 @@ export class Runtime implements RuntimePort {
       : operation === "mutation"
         ? { kind: "subscription-frontier" }
         : undefined;
-    return this.runOperation(
+    return this.operations.run(
       state,
       operation,
       functionName,
@@ -3038,7 +3020,7 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
         work,
-      ) => this.runOperation(
+      ) => this.operations.run(
         null,
         "realtime",
         address,
@@ -4275,154 +4257,6 @@ export class Runtime implements RuntimePort {
       },
     );
   };
-
-  private runOperation<T, R = T>(
-    session: RuntimeSession | null,
-    operation: TelemetryOperation,
-    functionName: string | undefined,
-    sizeBytes: number,
-    work: () => T | Promise<T>,
-    options: RunOperationOptions<T, R> = {},
-  ): Promise<R> {
-    const identifiers = options.identifiers ?? {};
-    const synthesizeHandler = options.synthesizeHandler ?? true;
-    const finalize = options.finalize;
-    const claimedTrace = options.claimedTrace;
-    const runtimeScope = this.tracing.open(
-      session?.telemetryConnectionId,
-      operation,
-      functionName,
-      identifiers,
-      claimedTrace?.context,
-    );
-    const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
-    const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
-      claimedTrace !== undefined
-        ? result.finally(() => finishClaimedHttpTrace(claimedTrace))
-        : observedScope !== undefined
-          ? result.finally(() => {
-              this.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
-            })
-          : result;
-    const admittedAt = observedScope === undefined ? 0 : performance.now();
-    const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
-      if (finalize !== undefined) return finalize(outcome);
-      if (outcome.ok) return outcome.value as unknown as R;
-      throw outcome.error;
-    };
-    let admission: OperationAdmission;
-    try {
-      this.assertRequestBytes(sizeBytes);
-      admission = this.admitOperation(session, options.fairnessKey, options.sessionOrder);
-      if (observedScope !== undefined) {
-        this.telemetry[RECORD_OPERATION_SPAN](
-          observedScope.trace,
-          0,
-          0,
-          {
-            operation,
-            stage: "admission",
-            outcome: "ok",
-            functionName,
-            resource: "operation",
-            durationMs: Math.max(0, performance.now() - admittedAt),
-            sizeBytes,
-          },
-        );
-      }
-    } catch (error) {
-      const safeError = transportError(error);
-      if (observedScope !== undefined) {
-        const outcome = outcomeFromError(safeError).code;
-        this.telemetry[RECORD_OPERATION_SPAN](
-          observedScope.trace,
-          0,
-          0,
-          {
-            operation,
-            stage: "admission",
-            outcome,
-            functionName,
-            resource: "operation",
-            durationMs: Math.max(0, performance.now() - admittedAt),
-            sizeBytes,
-          },
-        );
-        this.tracing.event({
-          name: outcome === "overloaded" ? "overload" : "failure",
-          level: outcome === "overloaded" ? "warn" : "error",
-          operation,
-          stage: "admission",
-          outcome,
-          ...(functionName === undefined ? {} : { functionName }),
-          resource: "operation",
-          errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-        }, observedScope, 0);
-      }
-      const rejected = () => settle({ ok: false, error: safeError });
-      return finishOperationTrace(
-        this.tracing.runOperation(runtimeScope, rejected),
-      );
-    }
-    const startedAt = observedScope === undefined ? 0 : performance.now();
-    const start = () => {
-      if (options.abortSignal?.aborted) {
-        return Promise.reject(options.abortSignal.reason);
-      }
-      return Promise.resolve().then(work);
-    };
-    const scheduled = () => (admission.predecessor === undefined
-      ? start()
-      : admission.predecessor.then(start));
-    const execute = () => (
-      options.abortSignal === undefined
-        ? scheduled()
-        : settleOnAbort(scheduled(), options.abortSignal)
-    )
-      .then(
-        (value): RuntimeOperationOutcome<T> => {
-          if (
-            observedScope !== undefined &&
-            synthesizeHandler &&
-            observedScope.invocations === 0
-          ) {
-            this.tracing.span({
-              stage: "handler",
-              outcome: "ok",
-              durationMs: Math.max(0, performance.now() - startedAt),
-              sizeBytes,
-            }, operation);
-          }
-          return { ok: true, value };
-        },
-        (error): RuntimeOperationOutcome<T> => {
-          const safeError = transportError(error);
-          if (observedScope !== undefined) {
-            const outcome = outcomeFromError(safeError).code;
-            if (synthesizeHandler && observedScope.invocations === 0) {
-              this.tracing.span({
-                stage: "handler",
-                outcome,
-                durationMs: Math.max(0, performance.now() - startedAt),
-                sizeBytes,
-              }, operation);
-            }
-            this.tracing.event({
-              name: outcome === "overloaded" ? "overload" : "failure",
-              level: outcome === "overloaded" ? "warn" : "error",
-              operation,
-              outcome,
-              ...(functionName === undefined ? {} : { functionName }),
-              errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            }, observedScope);
-          }
-          return { ok: false, error: safeError };
-        },
-      )
-      .then(settle)
-      .finally(admission.release);
-    return finishOperationTrace(this.tracing.runOperation(runtimeScope, execute));
-  }
 
   private admitOperation(
     session: RuntimeSession | null,
