@@ -1069,7 +1069,7 @@ describe("Runtime telemetry acceptance", () => {
     expectRetainedParentage(retained, procedureAdmission);
   });
 
-  test("closes whole-operation tail decisions after final response work", async () => {
+  test("retains only focused failure detail and a boundary for an unsampled failure", async () => {
     const exported: TelemetryRecord[] = [];
     const exportedAggregates: TelemetryAggregateSnapshot[] = [];
     const app = harness({
@@ -1103,17 +1103,19 @@ describe("Runtime telemetry acceptance", () => {
     expect(app.runtime.telemetry.snapshot()).toMatchObject({
       traceRetention: {
         activeTraces: 0,
-        completedDecisions: 1,
-        promotedTraces: 1,
+        completedDecisions: 0,
+        promotedTraces: 0,
       },
     });
     await app.runtime.telemetry.flush();
     expect(exportedAggregates).toEqual([app.runtime.status().telemetryAggregates]);
     const retained = spans(exported);
-    expect(retained.some((span) => span.requestId === "740000001")).toBe(false);
+    expect(retained.filter((span) => span.requestId === "740000001").map((span) => span.stage))
+      .toEqual(["boundary"]);
     const failed = retained.filter((span) => span.requestId === "740000002");
-    expect(failed.some((span) => span.stage === "admission")).toBe(true);
+    expect(failed.some((span) => span.stage === "admission")).toBe(false);
     expect(failed.some((span) => span.stage === "handler" && span.outcome !== "ok")).toBe(true);
+    expect(failed.some((span) => span.stage === "boundary" && span.outcome !== "ok")).toBe(true);
     expect(app.runtime.telemetry.aggregateSnapshot().series).toContainEqual(
       expect.objectContaining({ operation: "query", outcome: "ok" }),
     );

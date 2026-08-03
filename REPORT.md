@@ -126,3 +126,69 @@ No owner-level policy question remains, so no `BLOCKED.md` was created.
 2. Delivery observation can outlive operation completion. Trace selection must therefore remain claimable by a delivery lease until terminal send/failure observation; selecting only at handler return loses delayed transport failures.
 3. Retrospective phase detail and a genuinely cheap normal path are in tension under exact byte and resource accounting. A better next experiment is prospective full sampling plus direct aggregate/boundary recording for unsampled operations, accepting that unsampled errors carry focused terminal/error detail rather than replaying every successful phase.
 4. The original microbenchmark was Linux-specific, so audit evidence could not be reproduced on the coordinator's macOS machine until process sampling was made portable.
+
+## 7. T2b follow-up — prospective operation sampling
+
+### Experiment and outcome
+
+The prospective design is behaviorally valid but **refuted by the required performance bar**.
+
+- Selection happens once, when the operation opens. The deterministic interval and one-shot latches raised by the preceding slow or failed operation select a full trace.
+- Selected operations record every phase directly with the same correlation, exact byte accounting, queue bounds, drop accounting, delayed-delivery lease, and fail-open behavior as a retained trace.
+- Unselected successful phases update aggregates only. Completion retains one boundary record; an unexpected failure additionally retains only its focused failing span/event and a correlated failed boundary.
+- No operation phase input, encoded size, or successful span is buffered for later replay. An unselected slow or failed operation raises the corresponding latch for the next operation instead of changing its own already-made decision.
+- Record encoding remains byte-exact without an encoded-copy allocation because every free-form string admitted to a telemetry record is constrained by the existing ASCII-only identifier/name/error-class contracts.
+
+The 1×1 enabled profile improved throughput and p50 latency against `origin/main`, but the 32×4 enabled profile regressed in throughput, p50/p95/p99 latency, and CPU per completion. The acceptance bar required improvement at the enabled profiles, so the saturation miss refutes the experiment. The disabled saturation control also moved down, but control drift cannot turn an absolute baseline miss into a pass.
+
+### Measurements
+
+Portable macOS procedure benchmark, 500 ms warmup, 2 s steady state, three trials per profile. Values are medians. The head measurement is the prospective working tree before the behavior-preserving decomposition; the base is `origin/main` (`57c64cd`) with the same benchmark harness.
+
+| Telemetry | Load | Metric | `origin/main` | T2b prospective | Change |
+| --- | --- | --- | ---: | ---: | ---: |
+| enabled | 1 connection × 1 in flight | throughput ops/s | 8,191.5 | 8,343 | +1.8% |
+| enabled | 1 connection × 1 in flight | p50 ms | 0.1077 | 0.1052 | -2.3% |
+| enabled | 1 connection × 1 in flight | p95 ms | 0.1268 | 0.1350 | +6.4% |
+| enabled | 1 connection × 1 in flight | p99 ms | 0.3735 | 0.3945 | +5.6% |
+| enabled | 1 connection × 1 in flight | core µs/completion | 86.68 | 86.90 | +0.3% |
+| enabled | 1 connection × 1 in flight | peak RSS MiB | 132.4 | 130.8 | -1.2% |
+| enabled | 32 connections × 4 in flight | throughput ops/s | 13,608 | 13,208 | -2.9% |
+| enabled | 32 connections × 4 in flight | p50 ms | 9.065 | 9.439 | +4.1% |
+| enabled | 32 connections × 4 in flight | p95 ms | 10.778 | 10.846 | +0.6% |
+| enabled | 32 connections × 4 in flight | p99 ms | 18.113 | 18.703 | +3.3% |
+| enabled | 32 connections × 4 in flight | core µs/completion | 74.90 | 77.99 | +4.1% |
+| enabled | 32 connections × 4 in flight | peak RSS MiB | 138.9 | 137.3 | -1.1% |
+| disabled control | 1 connection × 1 in flight | throughput ops/s | 8,485.5 | 8,601.5 | +1.4% |
+| disabled control | 1 connection × 1 in flight | p50 ms | 0.1036 | 0.1033 | -0.3% |
+| disabled control | 1 connection × 1 in flight | core µs/completion | 82.49 | 81.57 | -1.1% |
+| disabled control | 32 connections × 4 in flight | throughput ops/s | 14,239.5 | 13,682 | -3.9% |
+| disabled control | 32 connections × 4 in flight | p50 ms | 8.659 | 8.800 | +1.6% |
+| disabled control | 32 connections × 4 in flight | core µs/completion | 71.13 | 73.09 | +2.8% |
+
+### Post-experiment decomposition
+
+Only after recording the refutation, one further pass moved two behavioral owners out of composition:
+
+- `records/codec.ts` (205 lines) owns record sanitization, materialization, exact staged sizing, and encoding.
+- `tracing/retention.ts` (338 lines) owns bounded active/completed trace lists, the shared journal, promotion/discard, decision expiry/eviction, and delayed-delivery leases.
+- `composition/telemetry.ts` fell from 2,244 to 1,631 lines (-613, -27.3%). It still owns orchestration, aggregation, public status, and output pumps; the pass stopped there rather than create delegation-only modules.
+- `tracing/operation-trace.ts` fell from 236 to 195 lines after all retrospective operation buffers were deleted.
+- Total telemetry source fell from 5,226 to 5,117 lines (-109) across the experiment and decomposition.
+
+Final diff relative to `origin/main`, excluding this report from source/test categories:
+
+- Server source: `+3,604 / -3,170`, net `+434` lines.
+- Server tests: `+155 / -58`, net `+97` lines.
+- Benchmark code: `+152 / -30`, net `+122` lines.
+- Overall diff: 30 files, `+4,107 / -3,258`, net `+849` lines.
+
+### Final verification
+
+- `bunx tsc --noEmit`: pass.
+- `bunx tsc -p bench/tsconfig.json --noEmit`: pass.
+- Benchmark suite: 39 pass, 0 fail.
+- Focused telemetry runtime/delivery/auth/core/export/journal suite: 91 pass, 0 fail.
+- Full server suite: 972 pass, 0 fail.
+
+No owner-level question remains, so `BLOCKED.md` was not created.

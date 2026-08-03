@@ -63,7 +63,6 @@ export class OperationTrace implements OperationTraceHandle {
   private nodeParents?: number[];
   private nodeIds?: string[];
   private invocationNodes?: Map<number, number>;
-  private bufferedSpans?: unknown[];
   private nextNode = 1;
 
   constructor(input: OperationTraceInput, startedAtMs?: number, sampled = false) {
@@ -92,47 +91,6 @@ export class OperationTrace implements OperationTraceHandle {
     if (outcome !== "ok") this.outcome = outcome;
   }
 
-  bufferSpan(
-    node: number,
-    parentNode: number,
-    timestampMs: number,
-    input: OperationTelemetrySpanInput,
-    bytes: number,
-  ): void {
-    (this.bufferedSpans ??= []).push(node, parentNode, timestampMs, input, bytes);
-  }
-
-  bufferedSpanCount(): number {
-    return (this.bufferedSpans?.length ?? 0) / 5;
-  }
-
-  drainBufferedSpans(
-    visit?: (
-      node: number,
-      parentNode: number,
-      timestampMs: number,
-      input: OperationTelemetrySpanInput,
-      bytes: number,
-    ) => void,
-  ): { readonly records: number; readonly bytes: number } {
-    const spans = this.bufferedSpans;
-    if (spans === undefined) return { records: 0, bytes: 0 };
-    this.bufferedSpans = undefined;
-    let bytes = 0;
-    for (let index = 0; index < spans.length; index += 5) {
-      bytes += spans[index + 4] as number;
-      if (visit === undefined) continue;
-      visit(
-        spans[index] as number,
-        spans[index + 1] as number,
-        spans[index + 2] as number,
-        spans[index + 3] as OperationTelemetrySpanInput,
-        spans[index + 4] as number,
-      );
-    }
-    return { records: spans.length / 5, bytes };
-  }
-
   childNode(parent: number): number {
     const node = this.nextNode++;
     (this.nodeParents ??= [NO_SLOT])[node] = parent;
@@ -144,6 +102,7 @@ export class OperationTrace implements OperationTraceHandle {
     phase: "auth" | "policy" | "handler",
     parent: number,
   ): number {
+    if (!this.sampled) return 0;
     const key = invocationId * 4 + INVOCATION_PHASE_CODES[phase];
     const existing = this.invocationNodes?.get(key);
     if (existing !== undefined) return existing;

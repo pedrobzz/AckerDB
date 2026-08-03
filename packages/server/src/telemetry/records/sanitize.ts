@@ -12,6 +12,10 @@ export function safeCount(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+export function boundedCount(value: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + 1);
+}
+
 export function isMember<const T extends readonly string[]>(
   values: T,
   value: unknown,

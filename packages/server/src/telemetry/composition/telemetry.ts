@@ -6,20 +6,23 @@ import {
 import { TraceJournal } from "../journal.ts";
 import type {
   MutableTraceRetention,
-  MutableTraceList,
   TelemetryState,
 } from "../state/types.ts";
 import type {
   BufferedRecord,
   BufferedLocalLine,
-  EncodedRecord,
-  JsonSpanPrimitive,
   SanitizedTelemetrySpan,
 } from "../records/types.ts";
-import { isMember, safeCount, safeId, safeName } from "../records/sanitize.ts";
+import { boundedCount, isMember, safeCount, safeId, safeName } from "../records/sanitize.ts";
+import {
+  encodeRecord,
+  materializeSpan,
+  sanitizeContext,
+  sanitizeLinks,
+  sanitizeSpan,
+} from "../records/codec.ts";
 import { TelemetryAggregation } from "../aggregation/series.ts";
 import {
-  MAX_LINKS,
   SAFE_ERROR_CLASS,
   OVERFLOW_METRIC_NAME,
   OVERFLOW_SERIES,
@@ -28,7 +31,6 @@ import {
   TASK_TIMED_OUT,
   TASK_DEADLINE,
   EMPTY_RECORDS,
-  UUID_LENGTH,
   NO_SLOT,
 } from "../state/constants.ts";
 import {
@@ -65,6 +67,7 @@ import type {
 } from "../contracts/types.ts";
 
 import { AuthenticTelemetryTraceContext } from "../tracing/context.ts";
+import { TraceRetention } from "../tracing/retention.ts";
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
   FINISH_OPERATION_TRACE,
@@ -73,7 +76,6 @@ import {
   OPERATION_INVOCATION_NODE,
   OPERATION_TRACE_CONTEXT,
   OperationTrace,
-  OperationTraceContext,
   RECORD_OPERATION_EVENT,
   RECORD_OPERATION_SPAN,
   type OperationTelemetrySpanInput,
@@ -160,91 +162,6 @@ export function identifyTelemetryTraceRequest(
   return AuthenticTelemetryTraceContext.identify(context, safeId(requestId));
 }
 
-function sanitizeContext(context: Partial<TelemetryTraceContext> | undefined): TelemetryRecordContext {
-  return {
-    traceId: safeId(context?.traceId),
-    spanId: safeId(context?.spanId),
-    parentSpanId: safeId(context?.parentSpanId),
-    requestId: safeId(context?.requestId),
-    connectionId: safeId(context?.connectionId),
-    mutationId: safeId(context?.mutationId),
-    commitId: safeId(context?.commitId),
-    subscriptionId: safeId(context?.subscriptionId),
-  };
-}
-
-function sanitizeLinks(links: readonly TelemetryLink[] | undefined): readonly TelemetryLink[] | undefined {
-  if (!links?.length) return undefined;
-  const safe: TelemetryLink[] = [];
-  for (let index = 0; index < links.length && safe.length < MAX_LINKS; index++) {
-    const traceId = safeId(links[index]?.traceId);
-    const spanId = safeId(links[index]?.spanId);
-    if (traceId && spanId) safe.push(Object.freeze({ traceId, spanId }));
-  }
-  return safe.length ? Object.freeze(safe) : undefined;
-}
-
-function sanitizeSpan(
-  input: TelemetrySpanInput,
-  timestampMs: number,
-): SanitizedTelemetrySpan {
-  return {
-    timestampMs,
-    context: sanitizeContext(input.context),
-    links: sanitizeLinks(input.links),
-    operation: input.operation,
-    stage: input.stage,
-    outcome: input.outcome,
-    function: safeName(input.functionName),
-    statement: safeName(input.statement),
-    resource: isMember(TELEMETRY_RESOURCES, input.resource) ? input.resource : undefined,
-    durationMs: input.durationMs,
-    sizeBytes: safeCount(input.sizeBytes),
-    rowCount: safeCount(input.rowCount),
-    resultCount: safeCount(input.resultCount),
-    replayed: typeof input.replayed === "boolean" ? input.replayed : undefined,
-    dependencyCount: safeCount(input.dependencyCount),
-    postCommit: typeof input.postCommit === "boolean" ? input.postCommit : undefined,
-  };
-}
-
-function materializeSpan(span: SanitizedTelemetrySpan): TelemetrySpanRecord {
-  const context = span.context;
-  const materializedContext = AuthenticTelemetryTraceContext.owns(context) ||
-      context instanceof OperationTraceContext
-    ? {
-        traceId: context.traceId,
-        spanId: context.spanId,
-        parentSpanId: context.parentSpanId,
-        requestId: context.requestId,
-        connectionId: context.connectionId,
-        mutationId: context.mutationId,
-        commitId: context.commitId,
-        subscriptionId: context.subscriptionId,
-      }
-    : context;
-  return Object.freeze({
-    schemaVersion: TELEMETRY_SCHEMA_VERSION,
-    kind: "span",
-    timestampMs: span.timestampMs,
-    ...materializedContext,
-    links: span.links,
-    operation: span.operation,
-    stage: span.stage,
-    outcome: span.outcome,
-    function: span.function,
-    statement: span.statement,
-    resource: span.resource,
-    durationMs: span.durationMs,
-    sizeBytes: span.sizeBytes,
-    rowCount: span.rowCount,
-    resultCount: span.resultCount,
-    replayed: span.replayed,
-    dependencyCount: span.dependencyCount,
-    postCommit: span.postCommit,
-  });
-}
-
 function readTimestamp(state: TelemetryState, timestampMs: number | undefined): number | undefined {
   if (timestampMs !== undefined) return Number.isFinite(timestampMs) ? timestampMs : undefined;
   return readClock(state);
@@ -266,133 +183,6 @@ function fallbackNow(state: TelemetryState): number {
     state.localLines[state.localHead]?.retainedAtMs ?? 0;
 }
 
-function boundedCount(value: number): number {
-  return Math.min(Number.MAX_SAFE_INTEGER, value + 1);
-}
-
-function jsonPrimitiveBytes(value: JsonSpanPrimitive): number {
-  if (typeof value === "string") return value.length + 2;
-  if (typeof value === "boolean") return value ? 4 : 5;
-  return String(value).length;
-}
-
-function jsonPropertyPrefixBytes(name: string, leadingComma = true): number {
-  return (leadingComma ? 1 : 0) + name.length + 3;
-}
-
-function jsonPropertyBytes(
-  name: string,
-  value: JsonSpanPrimitive | undefined,
-  leadingComma = true,
-): number {
-  return value === undefined
-    ? 0
-    : jsonPropertyPrefixBytes(name, leadingComma) + jsonPrimitiveBytes(value);
-}
-
-function jsonStringPropertyBytes(
-  name: string,
-  valueLength: number | undefined,
-  leadingComma = true,
-): number {
-  return valueLength === undefined
-    ? 0
-    : jsonPropertyPrefixBytes(name, leadingComma) + valueLength + 2;
-}
-
-/** Exact JSON/UTF-8 size of the public record represented by one sanitized span. */
-function stagedSpanBytes(span: SanitizedTelemetrySpan): number {
-  let bytes = 2 + jsonPropertyBytes("schemaVersion", TELEMETRY_SCHEMA_VERSION, false);
-  bytes += jsonPropertyBytes("kind", "span");
-  bytes += jsonPropertyBytes("timestampMs", span.timestampMs);
-  if (span.context instanceof OperationTraceContext) {
-    bytes += jsonStringPropertyBytes("traceId", span.context.trace.traceIdLength());
-    bytes += jsonStringPropertyBytes("spanId", span.context.trace.spanIdLength(span.context.node));
-    bytes += jsonStringPropertyBytes(
-      "parentSpanId",
-      span.context.trace.parentSpanIdLength(span.context.node),
-    );
-  } else if (AuthenticTelemetryTraceContext.owns(span.context)) {
-    bytes += jsonStringPropertyBytes("traceId", span.context.traceId.length);
-    bytes += jsonStringPropertyBytes(
-      "spanId",
-      AuthenticTelemetryTraceContext.idLength(span.context, "spanId"),
-    );
-    bytes += jsonStringPropertyBytes(
-      "parentSpanId",
-      AuthenticTelemetryTraceContext.idLength(span.context, "parentSpanId"),
-    );
-  } else {
-    bytes += jsonPropertyBytes("traceId", span.context.traceId);
-    bytes += jsonPropertyBytes("spanId", span.context.spanId);
-    bytes += jsonPropertyBytes("parentSpanId", span.context.parentSpanId);
-  }
-  bytes += jsonPropertyBytes("requestId", span.context.requestId);
-  bytes += jsonPropertyBytes("connectionId", span.context.connectionId);
-  bytes += jsonPropertyBytes("mutationId", span.context.mutationId);
-  bytes += jsonPropertyBytes("commitId", span.context.commitId);
-  bytes += jsonPropertyBytes("subscriptionId", span.context.subscriptionId);
-  if (span.links !== undefined) {
-    let linkBytes = 2;
-    for (let index = 0; index < span.links.length; index++) {
-      const link = span.links[index]!;
-      linkBytes += (index === 0 ? 0 : 1) + 2;
-      linkBytes += jsonPropertyBytes("traceId", link.traceId, false);
-      linkBytes += jsonPropertyBytes("spanId", link.spanId);
-    }
-    // The property prefix is followed by the already-counted raw JSON array.
-    bytes += jsonPropertyPrefixBytes("links") + linkBytes;
-  }
-  bytes += jsonPropertyBytes("operation", span.operation);
-  bytes += jsonPropertyBytes("stage", span.stage);
-  bytes += jsonPropertyBytes("outcome", span.outcome);
-  bytes += jsonPropertyBytes("function", span.function);
-  bytes += jsonPropertyBytes("statement", span.statement);
-  bytes += jsonPropertyBytes("resource", span.resource);
-  bytes += jsonPropertyBytes("durationMs", span.durationMs);
-  bytes += jsonPropertyBytes("sizeBytes", span.sizeBytes);
-  bytes += jsonPropertyBytes("rowCount", span.rowCount);
-  bytes += jsonPropertyBytes("resultCount", span.resultCount);
-  bytes += jsonPropertyBytes("replayed", span.replayed);
-  bytes += jsonPropertyBytes("dependencyCount", span.dependencyCount);
-  bytes += jsonPropertyBytes("postCommit", span.postCommit);
-  return bytes;
-}
-
-/** Exact JSON/UTF-8 size of one deferred package-owned operation span. */
-function bufferedOperationSpanBytes(
-  trace: OperationTrace,
-  node: number,
-  timestampMs: number,
-  input: OperationTelemetrySpanInput,
-): number {
-  let bytes = 2 + jsonPropertyBytes("schemaVersion", TELEMETRY_SCHEMA_VERSION, false);
-  bytes += jsonPropertyBytes("kind", "span");
-  bytes += jsonPropertyBytes("timestampMs", timestampMs);
-  bytes += jsonStringPropertyBytes("traceId", trace.traceIdLength());
-  bytes += jsonStringPropertyBytes("spanId", trace.spanIdLength(node));
-  bytes += jsonStringPropertyBytes("parentSpanId", trace.parentSpanIdLength(node));
-  bytes += jsonPropertyBytes("requestId", safeId(input.requestId) ?? trace.requestId);
-  bytes += jsonPropertyBytes("connectionId", safeId(input.connectionId) ?? trace.connectionId);
-  bytes += jsonPropertyBytes("mutationId", safeId(input.mutationId) ?? trace.mutationId);
-  bytes += jsonPropertyBytes("commitId", safeId(input.commitId) ?? trace.commitId);
-  bytes += jsonPropertyBytes("subscriptionId", safeId(input.subscriptionId) ?? trace.subscriptionId);
-  bytes += jsonPropertyBytes("operation", input.operation);
-  bytes += jsonPropertyBytes("stage", input.stage);
-  bytes += jsonPropertyBytes("outcome", input.outcome);
-  bytes += jsonPropertyBytes("function", safeName(input.functionName));
-  bytes += jsonPropertyBytes("statement", safeName(input.statement));
-  bytes += jsonPropertyBytes("resource", input.resource);
-  bytes += jsonPropertyBytes("durationMs", input.durationMs);
-  bytes += jsonPropertyBytes("sizeBytes", safeCount(input.sizeBytes));
-  bytes += jsonPropertyBytes("rowCount", safeCount(input.rowCount));
-  bytes += jsonPropertyBytes("resultCount", safeCount(input.resultCount));
-  bytes += jsonPropertyBytes("replayed", input.replayed);
-  bytes += jsonPropertyBytes("dependencyCount", safeCount(input.dependencyCount));
-  bytes += jsonPropertyBytes("postCommit", input.postCommit);
-  return bytes;
-}
-
 export function captureTelemetryLink(context: Pick<TelemetryTraceContext, "traceId" | "spanId">): TelemetryLink {
   const traceId = safeId(context.traceId);
   const spanId = safeId(context.spanId);
@@ -404,6 +194,7 @@ export class Telemetry {
   readonly enabled: boolean;
   readonly sampleIntervalMs: number;
   private readonly state?: TelemetryState;
+  private readonly retention?: TraceRetention;
 
   constructor(options: TelemetryOptions = {}) {
     this.enabled = options.enabled !== false;
@@ -431,12 +222,10 @@ export class Telemetry {
       scheduler,
       exporter: options.exporter,
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
-      encoder: new TextEncoder(),
       operationTraceSampleInterval,
       operationTraceSequence: 0,
-      bufferedOperationSpans: 0,
-      bufferedOperationBytes: 0,
-      bufferedOperations: new Set(),
+      sampleNextSlowOperation: false,
+      sampleNextFailedOperation: false,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
       publicTraceIndex: new Map(),
@@ -496,6 +285,10 @@ export class Telemetry {
       },
     };
     this.state = state;
+    this.retention = new TraceRetention(
+      state,
+      (record, retainedAtMs) => void this.retainAt(state, record, true, retainedAtMs),
+    );
     if (state.exporter) {
       try {
         state.intervalHandle = scheduler.setInterval(() => {
@@ -521,13 +314,17 @@ export class Telemetry {
       return new OperationTrace(input);
     }
     state.operationTraceSequence = boundedCount(state.operationTraceSequence);
-    const sampled = state.operationTraceSampleInterval > 0 &&
-      state.operationTraceSequence % state.operationTraceSampleInterval === 0;
+    const sampled = state.sampleNextSlowOperation ||
+      state.sampleNextFailedOperation ||
+      (state.operationTraceSampleInterval > 0 &&
+        state.operationTraceSequence % state.operationTraceSampleInterval === 0);
+    state.sampleNextSlowOperation = false;
+    state.sampleNextFailedOperation = false;
     const operation = new OperationTrace(input, startedAtMs, sampled);
     if (state.limits.slowOperationMs === 0) return operation;
-    this.pruneCompletedTraces(state, startedAtMs);
+    this.retention!.pruneCompleted(startedAtMs);
     if (operation.inheritedContext !== undefined) {
-      const inherited = this.traceForContext(state, operation.inheritedContext);
+      const inherited = this.retention!.forContext(operation.inheritedContext);
       if (inherited?.phase === "active") {
         operation.retention = inherited;
         inherited.operationTrace = operation;
@@ -535,10 +332,11 @@ export class Telemetry {
       return operation;
     }
     if (!sampled) return operation;
-    const trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, operation);
+    const trace = this.retention!.create(startedAtMs, undefined, undefined, operation);
     if (trace === undefined) return operation;
     operation.retention = trace;
-    this.linkActiveTrace(state, trace);
+    this.retention!.activate(trace);
+    this.retention!.promote(trace, startedAtMs);
     return operation;
   }
 
@@ -556,10 +354,7 @@ export class Telemetry {
     const completedAtMs = readClock(state);
     if (completedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
-      const trace = handle.retention;
-      if (trace?.owner !== state || trace.phase !== "active") return;
-      this.removeTrace(state, trace);
-      this.discardTrace(state, trace);
+      this.retention!.abortActive(handle.retention);
       return;
     }
     this[RECORD_OPERATION_SPAN](handle, 0, 0, {
@@ -572,12 +367,10 @@ export class Telemetry {
     });
     const trace = handle.retention;
     if (trace?.owner !== state || trace.phase !== "active") {
-      this.discardBufferedOperationSpans(state, handle);
       return;
     }
-    this.pruneCompletedTraces(state, completedAtMs);
-    if (handle.sampled && !trace.retained) this.promoteTrace(state, trace, completedAtMs);
-    this.completeTrace(state, trace, completedAtMs);
+    this.retention!.pruneCompleted(completedAtMs);
+    this.retention!.complete(trace, completedAtMs);
   }
 
   [OPERATION_INVOCATION_NODE](
@@ -603,20 +396,7 @@ export class Telemetry {
   ): TelemetryDeliveryLease | undefined {
     const state = this.state;
     if (!state || !(handle instanceof OperationTrace)) return undefined;
-    let trace = handle.retention;
-    if (
-      state.limits.slowOperationMs > 0 &&
-      (trace?.owner !== state || trace.phase !== "active")
-    ) {
-      const startedAtMs = handle.startedAtMs ?? readClock(state);
-      if (startedAtMs === undefined) return undefined;
-      trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, handle);
-      if (trace === undefined) return undefined;
-      handle.retention = trace;
-      this.linkActiveTrace(state, trace);
-      this.replayBufferedOperationSpans(state, handle, trace);
-    }
-    return this.claimTraceDelivery(state, trace);
+    return this.retention!.claimDelivery(handle.retention) as TelemetryDeliveryLease | undefined;
   }
 
   /**
@@ -638,10 +418,10 @@ export class Telemetry {
       return false;
     }
     if (state.limits.slowOperationMs === 0) return true;
-    this.pruneCompletedTraces(state, startedAtMs);
+    this.retention!.pruneCompleted(startedAtMs);
     // Package-authentic roots are the ownership identity; their UUID is correlation-only.
     const existing = prepared === undefined
-      ? this.traceForContext(state, context)
+      ? this.retention!.forContext(context)
       : AuthenticTelemetryTraceContext.retention(prepared);
     if (existing !== undefined) {
       this.observeInvalidTraceLifecycle(state);
@@ -650,14 +430,14 @@ export class Telemetry {
     const rootContext = prepared === undefined
       ? undefined
       : AuthenticTelemetryTraceContext.root(prepared);
-    const trace = this.createTraceRetention(state, startedAtMs, traceId, rootContext);
+    const trace = this.retention!.create(startedAtMs, traceId, rootContext);
     if (trace === undefined) return false;
     if (prepared === undefined) state.publicTraceIndex.set(traceId, trace);
     else if (!AuthenticTelemetryTraceContext.bind(prepared, trace)) {
       this.observeInvalidTraceLifecycle(state);
       return false;
     }
-    this.linkActiveTrace(state, trace);
+    this.retention!.activate(trace);
     return true;
   }
 
@@ -670,23 +450,15 @@ export class Telemetry {
       state.limits.slowOperationMs === 0 ||
       !AuthenticTelemetryTraceContext.owns(context)
     ) return undefined;
-    return this.claimTraceDelivery(state, this.traceForContext(state, context));
+    return this.retention!.claimDelivery(this.retention!.forContext(context)) as
+      | TelemetryDeliveryLease
+      | undefined;
   }
 
   [RELEASE_DELIVERY_LEASE](lease: TelemetryDeliveryLease): void {
     const state = this.state;
     if (!state) return;
-    const trace = lease as unknown as MutableTraceRetention;
-    if (
-      trace.owner !== state ||
-      trace.phase === "settled" ||
-      trace.pendingDeliveries === undefined ||
-      trace.pendingDeliveries === 0
-    ) return;
-    trace.pendingDeliveries--;
-    if (trace.phase === "completed" && trace.pendingDeliveries === 0) {
-      this.settleDeliveredTrace(state, trace);
-    }
+    this.retention!.releaseDelivery(lease as unknown as MutableTraceRetention);
   }
 
   /** Finish a trace and preserve its bounded decision for delayed delivery spans. */
@@ -706,29 +478,25 @@ export class Telemetry {
     const completedAtMs = readTimestamp(state, timestampMs);
     if (completedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
-      const trace = this.traceForContext(state, context);
-      if (trace?.phase === "active") {
-        this.removeTrace(state, trace);
-        this.discardTrace(state, trace);
-      }
+      this.retention!.abortActive(this.retention!.forContext(context));
       return false;
     }
     if (state.limits.slowOperationMs === 0) return true;
-    this.pruneCompletedTraces(state, completedAtMs);
-    const trace = this.traceForContext(state, context);
+    this.retention!.pruneCompleted(completedAtMs);
+    const trace = this.retention!.forContext(context);
     if (trace?.phase !== "active") {
       if (trace?.phase === "completed") return true;
       this.observeInvalidTraceLifecycle(state);
       return false;
     }
-    this.completeTrace(state, trace, completedAtMs);
+    this.retention!.complete(trace, completedAtMs);
     return true;
   }
 
   recordSpan(input: TelemetrySpanInput): boolean {
     const state = this.state;
     if (!state) return false;
-    const trace = this.traceForContext(state, input.context);
+    const trace = this.retention!.forContext(input.context);
     const timestampMs = readTimestamp(state, input.timestampMs);
     if (
       timestampMs === undefined ||
@@ -758,7 +526,7 @@ export class Telemetry {
       state.drops.invalid++;
       return false;
     }
-    const trace = this.traceForContext(state, input.context);
+    const trace = this.retention!.forContext(input.context);
     return this.recordSanitizedSpan(state, {
       timestampMs,
       context: input.context,
@@ -822,23 +590,16 @@ export class Telemetry {
     const safeMutationId = safeId(mutationId);
     const safeCommitId = safeId(commitId);
     const safeSubscriptionId = safeId(subscriptionId);
-    const retain = durationMs >= state.limits.slowOperationMs || outcome !== "ok";
+    const slow = durationMs >= state.limits.slowOperationMs;
+    const failed = outcome !== "ok";
+    if (state.limits.slowOperationMs > 0) {
+      if (slow) state.sampleNextSlowOperation = true;
+      if (failed) state.sampleNextFailedOperation = true;
+    }
     handle.observeOutcome(outcome);
     let trace = handle.retention;
     if (trace?.owner !== state || trace.phase === "settled") trace = undefined;
-    if (trace === undefined && retain && state.limits.slowOperationMs > 0) {
-      const startedAtMs = handle.startedAtMs ?? timestampMs;
-      trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, handle);
-      if (trace !== undefined) {
-        handle.retention = trace;
-        this.linkActiveTrace(state, trace);
-        this.promoteTrace(state, trace, timestampMs);
-        this.replayBufferedOperationSpans(state, handle, trace);
-      } else {
-        this.discardBufferedOperationSpans(state, handle);
-      }
-    }
-    if (state.limits.slowOperationMs > 0 && trace === undefined && !retain) {
+    if (state.limits.slowOperationMs > 0 && trace === undefined) {
       this.aggregateSpanValues(
         state,
         operation,
@@ -852,27 +613,32 @@ export class Telemetry {
         safeResults,
         safeDependencies,
       );
-      if (stage !== "boundary") this.bufferOperationSpan(
-        state,
-        handle,
-        node,
-        parentNode,
-        timestampMs,
-        input,
-      );
-      return true;
+      if (stage !== "boundary" && !failed) return true;
     }
-    const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
+    const resolvedNode = node === NO_SLOT ||
+        (trace === undefined && failed && stage !== "boundary" && node === 0)
+      ? handle.childNode(parentNode)
+      : node;
+    const context: TelemetryRecordContext = state.limits.slowOperationMs > 0 &&
+        trace === undefined && !failed
+      ? {
+          requestId: safeRequestId ?? handle.requestId,
+          connectionId: safeConnectionId ?? handle.connectionId,
+          mutationId: safeMutationId ?? handle.mutationId,
+          commitId: safeCommitId ?? handle.commitId,
+          subscriptionId: safeSubscriptionId ?? handle.subscriptionId,
+        }
+      : handle.context(
+          resolvedNode,
+          safeRequestId,
+          safeConnectionId,
+          safeMutationId,
+          safeCommitId,
+          safeSubscriptionId,
+        );
     const span: SanitizedTelemetrySpan = {
       timestampMs,
-      context: handle.context(
-        resolvedNode,
-        safeRequestId,
-        safeConnectionId,
-        safeMutationId,
-        safeCommitId,
-        safeSubscriptionId,
-      ),
+      context,
       operation,
       stage,
       outcome,
@@ -887,70 +653,12 @@ export class Telemetry {
       dependencyCount: safeDependencies,
       postCommit,
     };
+    if (trace === undefined) {
+      if (state.limits.slowOperationMs === 0) this.aggregateSpan(state, span);
+      return this.retainAt(state, materializeSpan(span), true, timestampMs);
+    }
     this.aggregateSpan(state, span);
     return this.recordAggregatedSpan(state, span, trace);
-  }
-
-  private bufferOperationSpan(
-    state: TelemetryState,
-    handle: OperationTrace,
-    node: number,
-    parentNode: number,
-    timestampMs: number,
-    input: OperationTelemetrySpanInput,
-  ): void {
-    const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
-    const bytes = bufferedOperationSpanBytes(handle, resolvedNode, timestampMs, input);
-    if (
-      bytes > state.limits.maxBytes ||
-      state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
-      bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes ||
-      handle.bufferedSpanCount() >= state.limits.maxBatchRecords
-    ) {
-      state.traceHealth.dropped.stagedOverflow = boundedCount(
-        state.traceHealth.dropped.stagedOverflow,
-      );
-      return;
-    }
-    handle.bufferSpan(resolvedNode, parentNode, timestampMs, input, bytes);
-    state.bufferedOperations.add(handle);
-    state.bufferedOperationSpans++;
-    state.bufferedOperationBytes += bytes;
-  }
-
-  private replayBufferedOperationSpans(
-    state: TelemetryState,
-    handle: OperationTrace,
-    trace: MutableTraceRetention,
-  ): void {
-    const replayed = handle.drainBufferedSpans((node, _parentNode, timestampMs, input) => {
-      const span = sanitizeSpan({
-        ...input,
-        timestampMs,
-        context: handle.context(
-          node,
-          safeId(input.requestId),
-          safeId(input.connectionId),
-          safeId(input.mutationId),
-          safeId(input.commitId),
-          safeId(input.subscriptionId),
-        ),
-      }, timestampMs);
-      this.recordAggregatedSpan(state, span, trace);
-    });
-    state.bufferedOperationSpans -= replayed.records;
-    state.bufferedOperationBytes -= replayed.bytes;
-    state.bufferedOperations.delete(handle);
-  }
-
-  private discardBufferedOperationSpans(
-    state: TelemetryState,
-    handle: OperationTrace,
-  ): void {
-    const discarded = handle.drainBufferedSpans();
-    state.bufferedOperationSpans -= discarded.records;
-    state.bufferedOperationBytes -= discarded.bytes;
-    state.bufferedOperations.delete(handle);
   }
 
   [RECORD_OPERATION_EVENT](
@@ -971,6 +679,13 @@ export class Telemetry {
       return false;
     }
     const trace = handle.retention;
+    const failed = input.name === "failure" ||
+      input.level === "error" ||
+      (input.outcome !== undefined && input.outcome !== "ok") ||
+      input.lifecycleState === "failed";
+    if (state.limits.slowOperationMs > 0 && failed) {
+      state.sampleNextFailedOperation = true;
+    }
     if (
       state.limits.slowOperationMs > 0 &&
       trace?.owner === state &&
@@ -981,7 +696,7 @@ export class Telemetry {
         input.lifecycleState === "failed") &&
       !trace.retained
     ) {
-      this.promoteTrace(state, trace, timestampMs);
+      this.retention!.promote(trace, timestampMs);
     }
     return this.recordEvent({
       ...input,
@@ -1018,21 +733,21 @@ export class Telemetry {
       ? associatedTrace
       : undefined;
     if (trace !== undefined) {
-      this.pruneCompletedTraces(state, span.timestampMs);
+      this.retention!.pruneCompleted(span.timestampMs);
     } else {
       const traceId = span.context.traceId;
       if (traceId !== undefined) {
-        this.pruneCompletedTraces(state, span.timestampMs);
-        trace = this.traceForContext(state, span.context);
+        this.retention!.pruneCompleted(span.timestampMs);
+        trace = this.retention!.forContext(span.context);
       }
     }
     if (trace !== undefined) {
       if (trace.retained) return this.retain(materializeSpan(span), true);
       if (retain) {
-        this.promoteTrace(state, trace, span.timestampMs);
+        this.retention!.promote(trace, span.timestampMs);
         return this.retain(materializeSpan(span), true);
       }
-      this.stageTraceSpan(state, trace, span);
+      this.retention!.stageSpan(trace, span);
       return true;
     }
     return retain ? this.retain(materializeSpan(span), true) : true;
@@ -1041,7 +756,7 @@ export class Telemetry {
   recordEvent(input: TelemetryEventInput): boolean {
     const state = this.state;
     if (!state) return false;
-    const associatedTrace = this.traceForContext(state, input.context);
+    const associatedTrace = this.retention!.forContext(input.context);
     const timestampMs = readTimestamp(state, input.timestampMs);
     if (
       timestampMs === undefined ||
@@ -1085,11 +800,11 @@ export class Telemetry {
         (record.outcome !== undefined && record.outcome !== "ok") ||
         record.lifecycleState === "failed")
     ) {
-      this.pruneCompletedTraces(state, timestampMs);
+      this.retention!.pruneCompleted(timestampMs);
       const trace = associatedTrace?.owner === state && associatedTrace.phase !== "settled"
         ? associatedTrace
         : undefined;
-      if (trace && !trace.retained) this.promoteTrace(state, trace, timestampMs);
+      if (trace && !trace.retained) this.retention!.promote(trace, timestampMs);
     }
     return this.retain(record, true);
   }
@@ -1184,7 +899,7 @@ export class Telemetry {
     if (!state) return Promise.resolve();
     if (state.draining) return state.draining;
     this.stop();
-    this.discardAllTraceState(state);
+    this.retention!.discardAll();
     const records = this.takeRecords(state, state.records.length - state.head);
     const localLines = this.takeLocalLines(state, state.localLines.length - state.localHead);
     let draining!: Promise<void>;
@@ -1211,7 +926,7 @@ export class Telemetry {
     else {
       this.pruneExpired(state, observedNow);
       this.pruneLocalExpired(state, observedNow);
-      this.pruneCompletedTraces(state, observedNow);
+      this.retention!.pruneCompleted(observedNow);
     }
     const now = observedNow ?? fallbackNow(state);
     const oldest = state.records[state.head];
@@ -1229,8 +944,8 @@ export class Telemetry {
         decisionRetentionMs: state.limits.retentionMs,
         activeTraces: state.activeTraces.size,
         completedDecisions: state.completedTraces.size,
-        stagedRecords: state.stagedTraceRecords + state.bufferedOperationSpans,
-        stagedBytes: state.stagedTraceBytes + state.bufferedOperationBytes,
+        stagedRecords: state.stagedTraceRecords,
+        stagedBytes: state.stagedTraceBytes,
         promotedTraces: state.traceHealth.promotedTraces,
         discardedTraces: state.traceHealth.discardedTraces,
         discardedRecords: state.traceHealth.discardedRecords,
@@ -1288,349 +1003,12 @@ export class Telemetry {
     state.traceHealth.dropped.invalid = boundedCount(state.traceHealth.dropped.invalid);
   }
 
-  private createTraceRetention(
-    state: TelemetryState,
-    startedAtMs: number,
-    traceId?: string,
-    rootContext?: AuthenticTelemetryTraceContext,
-    operationTrace?: OperationTrace,
-  ): MutableTraceRetention | undefined {
-    while (
-      state.activeTraces.size + state.completedTraces.size >= state.limits.maxRecords &&
-      state.completedTraces.size > 0
-    ) {
-      this.evictOldestCompletedTrace(state);
-    }
-    if (state.activeTraces.size + state.completedTraces.size >= state.limits.maxRecords) {
-      state.traceHealth.dropped.activeOverflow = boundedCount(
-        state.traceHealth.dropped.activeOverflow,
-      );
-      return undefined;
-    }
-    return {
-      traceId,
-      startedAtMs,
-      owner: state,
-      rootContext,
-      operationTrace,
-      phase: "active",
-      retained: false,
-      stagedHead: NO_SLOT,
-      stagedTail: NO_SLOT,
-      stagedRecords: 0,
-      stagedBytes: 0,
-    };
-  }
-
-  private completeTrace(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    completedAtMs: number,
-  ): void {
-    if (
-      !trace.retained &&
-      completedAtMs - trace.startedAtMs >= state.limits.slowOperationMs
-    ) {
-      this.promoteTrace(state, trace, completedAtMs);
-    }
-    trace.completedAtMs = completedAtMs;
-    this.linkCompletedTrace(state, trace);
-    if (trace.pendingDeliveries === 0) this.settleDeliveredTrace(state, trace);
-  }
-
-  private claimTraceDelivery(
-    state: TelemetryState,
-    trace: MutableTraceRetention | undefined,
-  ): TelemetryDeliveryLease | undefined {
-    if (
-      trace?.owner !== state ||
-      trace.phase !== "active" ||
-      trace.pendingDeliveries === Number.MAX_SAFE_INTEGER
-    ) return undefined;
-    trace.pendingDeliveries = (trace.pendingDeliveries ?? 0) + 1;
-    return trace as unknown as TelemetryDeliveryLease;
-  }
-
-  private stageTraceSpan(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    span: SanitizedTelemetrySpan,
-  ): void {
-    // A promoted trace materializes its whole staged tail synchronously into
-    // the bounded export queue, so one trace may stage at most one export
-    // batch: a high-fanout operation could otherwise accumulate the entire
-    // queue's worth of delivery spans and evict every other retained record
-    // the moment it turns slow. The bound is per trace; the global caps below
-    // still govern the staging pool as a whole.
-    if (!this.canStageTraceSpan(state, trace)) return;
-    const bytes = stagedSpanBytes(span);
-    this.stageJournalSpan(state, trace, span, bytes);
-  }
-
-  private canStageTraceSpan(state: TelemetryState, trace: MutableTraceRetention): boolean {
-    const excludedCompletedTrace = trace.phase === "completed" && trace.stagedRecords > 0
-      ? 1
-      : 0;
-    const available = trace.stagedRecords < state.limits.maxBatchRecords &&
-      (state.completedTracesWithStaging > excludedCompletedTrace ||
-        (state.stagedTraceRecords + state.bufferedOperationSpans < state.limits.maxRecords &&
-          state.stagedTraceBytes + state.bufferedOperationBytes < state.limits.maxBytes));
-    if (!available) {
-      state.traceHealth.dropped.stagedOverflow = boundedCount(
-        state.traceHealth.dropped.stagedOverflow,
-      );
-    }
-    return available;
-  }
-
-  private stageJournalSpan(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    span: SanitizedTelemetrySpan,
-    bytes: number,
-  ): void {
-    while (
-      (state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
-        bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes) &&
-      this.evictOldestCompletedTrace(state, trace, true)
-    ) {
-      // Prefer a current active trace over an older completed tail decision.
-    }
-    if (
-      bytes > state.limits.maxBytes ||
-      state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
-      bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes
-    ) {
-      state.traceHealth.dropped.stagedOverflow = boundedCount(
-        state.traceHealth.dropped.stagedOverflow,
-      );
-      return;
-    }
-    const wasEmpty = trace.stagedRecords === 0;
-    if (!state.traceJournal.append(trace, span, bytes)) {
-      state.traceHealth.dropped.stagedOverflow = boundedCount(
-        state.traceHealth.dropped.stagedOverflow,
-      );
-      return;
-    }
-    if (trace.phase === "completed" && wasEmpty) {
-      state.completedTracesWithStaging++;
-    }
-    state.stagedTraceRecords++;
-    state.stagedTraceBytes += bytes;
-  }
-
-  private promoteTrace(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    retainedAtMs: number,
-  ): void {
-    if (trace.retained) return;
-    trace.retained = true;
-    state.traceHealth.promotedTraces = boundedCount(state.traceHealth.promotedTraces);
-    this.drainTraceSpans(state, trace, retainedAtMs);
-  }
-
-  private drainTraceSpans(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    retainedAtMs?: number,
-  ): number {
-    if (trace.phase === "completed" && trace.stagedRecords > 0) {
-      state.completedTracesWithStaging--;
-    }
-    const released = state.traceJournal.drain(
-      trace,
-      retainedAtMs === undefined
-        ? undefined
-        : (span) => {
-          const record = materializeSpan(span);
-          const encoded = this.encodeRecord(state, record);
-          if (encoded) {
-            this.retainEncoded(state, record, encoded.line, encoded.bytes, true, retainedAtMs);
-          }
-        },
-    );
-    state.stagedTraceRecords -= released.records;
-    state.stagedTraceBytes -= released.bytes;
-    return released.records;
-  }
-
-  private discardTrace(state: TelemetryState, trace: MutableTraceRetention): void {
-    const discardedRecords = this.drainTraceSpans(state, trace);
-    if (trace.retained) return;
-    state.traceHealth.discardedTraces = boundedCount(state.traceHealth.discardedTraces);
-    state.traceHealth.discardedRecords = Math.min(
-      Number.MAX_SAFE_INTEGER,
-      state.traceHealth.discardedRecords + discardedRecords,
-    );
-  }
-
-  private traceForContext(
-    state: TelemetryState,
-    context: Pick<TelemetryRecordContext, "traceId"> | undefined,
-  ): MutableTraceRetention | undefined {
-    if (AuthenticTelemetryTraceContext.owns(context)) {
-      const trace = AuthenticTelemetryTraceContext.retention(context);
-      return trace?.owner === state && trace.phase !== "settled" ? trace : undefined;
-    }
-    const traceId = context === undefined ? undefined : safeId(context.traceId);
-    if (traceId === undefined) return undefined;
-    const publicTrace = state.publicTraceIndex.get(traceId);
-    if (publicTrace !== undefined) return publicTrace;
-    for (let trace = state.activeTraces.head; trace !== undefined; trace = trace.next) {
-      if (trace.traceId === traceId) return trace;
-    }
-    for (let trace = state.completedTraces.head; trace !== undefined; trace = trace.next) {
-      if (trace.traceId === traceId) return trace;
-    }
-    return undefined;
-  }
-
-  private linkActiveTrace(state: TelemetryState, trace: MutableTraceRetention): void {
-    trace.phase = "active";
-    this.appendTrace(state.activeTraces, trace);
-  }
-
-  private linkCompletedTrace(state: TelemetryState, trace: MutableTraceRetention): void {
-    this.unlinkTrace(state.activeTraces, trace);
-    trace.phase = "completed";
-    if (trace.stagedRecords > 0) state.completedTracesWithStaging++;
-    this.appendTrace(state.completedTraces, trace);
-  }
-
-  private appendTrace(list: MutableTraceList, trace: MutableTraceRetention): void {
-    trace.previous = list.tail;
-    trace.next = undefined;
-    if (list.tail === undefined) list.head = trace;
-    else list.tail.next = trace;
-    list.tail = trace;
-    list.size++;
-  }
-
-  private unlinkTrace(list: MutableTraceList, trace: MutableTraceRetention): void {
-    const { previous, next } = trace;
-    if (previous === undefined) list.head = next;
-    else previous.next = next;
-    if (next === undefined) list.tail = previous;
-    else next.previous = previous;
-    trace.previous = undefined;
-    trace.next = undefined;
-    list.size--;
-  }
-
-  private removeTrace(state: TelemetryState, trace: MutableTraceRetention): void {
-    if (trace.owner !== state || trace.phase === "settled") return;
-    if (trace.phase === "completed" && trace.stagedRecords > 0) {
-      state.completedTracesWithStaging--;
-    }
-    this.unlinkTrace(trace.phase === "active" ? state.activeTraces : state.completedTraces, trace);
-    trace.phase = "settled";
-    AuthenticTelemetryTraceContext.release(trace);
-    if (trace.operationTrace?.retention === trace) trace.operationTrace.retention = undefined;
-    if (
-      trace.rootContext === undefined &&
-      trace.traceId !== undefined &&
-      state.publicTraceIndex.get(trace.traceId) === trace
-    ) {
-      state.publicTraceIndex.delete(trace.traceId);
-      state.publicTraceDeletions++;
-      if (state.publicTraceDeletions >= state.limits.maxRecords) {
-        // Lists own live traces, so replace the disposable lookup index with an empty map.
-        state.publicTraceIndex = new Map();
-        state.publicTraceDeletions = 0;
-      }
-    }
-    trace.rootContext = undefined;
-    trace.operationTrace = undefined;
-    trace.owner = undefined;
-  }
-
-  private discardAllTraceState(state: TelemetryState): void {
-    const bufferedOperations = state.bufferedOperations.size;
-    for (const operation of [...state.bufferedOperations]) {
-      this.discardBufferedOperationSpans(state, operation);
-    }
-    const traces = state.activeTraces.size + state.completedTraces.size + bufferedOperations;
-    for (let trace = state.activeTraces.head; trace !== undefined;) {
-      const next = trace.next;
-      this.removeTrace(state, trace);
-      this.discardTrace(state, trace);
-      trace = next;
-    }
-    for (let trace = state.completedTraces.head; trace !== undefined;) {
-      const next = trace.next;
-      this.removeTrace(state, trace);
-      this.discardTrace(state, trace);
-      trace = next;
-    }
-    state.publicTraceIndex = new Map();
-    state.publicTraceDeletions = 0;
-    state.traceHealth.dropped.drain = Math.min(
-      Number.MAX_SAFE_INTEGER,
-      state.traceHealth.dropped.drain + traces,
-    );
-  }
-
-  private pruneCompletedTraces(state: TelemetryState, now: number): void {
-    while (state.completedTraces.head !== undefined) {
-      const oldest = state.completedTraces.head;
-      if (
-        oldest.completedAtMs === undefined ||
-        now - oldest.completedAtMs < state.limits.retentionMs
-      ) return;
-      this.removeCompletedTrace(state, oldest, "expiredDecisions");
-    }
-  }
-
-  private evictOldestCompletedTrace(
-    state: TelemetryState,
-    excludedTrace?: MutableTraceRetention,
-    requireStaged = false,
-  ): boolean {
-    if (
-      requireStaged &&
-      state.completedTracesWithStaging <=
-        (excludedTrace?.phase === "completed" && excludedTrace.stagedRecords > 0 ? 1 : 0)
-    ) return false;
-    for (let trace = state.completedTraces.head; trace !== undefined; trace = trace.next) {
-      if (
-        trace === excludedTrace ||
-        (requireStaged && trace.stagedRecords === 0)
-      ) continue;
-      this.removeCompletedTrace(state, trace, "decisionOverflow");
-      return true;
-    }
-    return false;
-  }
-
-  private removeCompletedTrace(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-    reason: "decisionOverflow" | "expiredDecisions",
-  ): void {
-    if (trace.owner !== state || trace.phase !== "completed") return;
-    this.removeTrace(state, trace);
-    state.traceHealth.dropped[reason] = boundedCount(state.traceHealth.dropped[reason]);
-    this.discardTrace(state, trace);
-  }
-
-  private settleDeliveredTrace(
-    state: TelemetryState,
-    trace: MutableTraceRetention,
-  ): void {
-    if (trace.owner !== state || trace.phase !== "completed") return;
-    this.removeTrace(state, trace);
-    this.discardTrace(state, trace);
-  }
-
-  private encodeRecord(
+  private tryEncodeRecord(
     state: TelemetryState,
     record: TelemetryRecord,
-  ): EncodedRecord | undefined {
+  ): ReturnType<typeof encodeRecord> | undefined {
     try {
-      const line = JSON.stringify(record);
-      return { line, bytes: state.encoder.encode(line).byteLength };
+      return encodeRecord(record);
     } catch {
       state.drops.invalid = boundedCount(state.drops.invalid);
       return undefined;
@@ -1644,7 +1022,16 @@ export class Telemetry {
       state.drops.invalid++;
       return false;
     }
-    const encoded = this.encodeRecord(state, record);
+    return this.retainAt(state, record, emitLocally, now);
+  }
+
+  private retainAt(
+    state: TelemetryState,
+    record: TelemetryRecord,
+    emitLocally: boolean,
+    now: number,
+  ): boolean {
+    const encoded = this.tryEncodeRecord(state, record);
     if (!encoded) return false;
     return this.retainEncoded(state, record, encoded.line, encoded.bytes, emitLocally, now);
   }

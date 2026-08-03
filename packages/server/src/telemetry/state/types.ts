@@ -49,12 +49,10 @@ export interface TelemetryState {
   readonly scheduler: TelemetryScheduler;
   readonly exporter?: TelemetryExporter;
   readonly localSink?: (safeJsonLine: string) => void;
-  readonly encoder: TextEncoder;
   readonly operationTraceSampleInterval: number;
   operationTraceSequence: number;
-  bufferedOperationSpans: number;
-  bufferedOperationBytes: number;
-  readonly bufferedOperations: Set<OperationTrace>;
+  sampleNextSlowOperation: boolean;
+  sampleNextFailedOperation: boolean;
   readonly metricSeries: Set<string>;
   readonly aggregation: TelemetryAggregation;
   publicTraceIndex: Map<string, MutableTraceRetention>;
