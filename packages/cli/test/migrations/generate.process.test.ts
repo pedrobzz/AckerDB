@@ -15,9 +15,12 @@ import {
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
+import { CLI_ENV, runCli, steps } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
 const STEP_TIMEOUT_MS = 15_000;
+const { withTimeout, eventually } = steps(STEP_TIMEOUT_MS);
 
 const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
@@ -127,71 +130,7 @@ afterEach(async () => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-type UnwrappedResult<T> =
-  T extends { readonly ok: true; readonly data: infer Data }
-    ? Data
-    : T extends { readonly ok: false }
-      ? never
-      : T;
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  label: string,
-  timeoutMs = STEP_TIMEOUT_MS,
-): Promise<UnwrappedResult<T>> {
-  let handle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    handle = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
-  });
-  const value = await Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    "ok" in value
-  ) {
-    if (value.ok === true && "data" in value) return value.data as UnwrappedResult<T>;
-    if (value.ok === false && "error" in value) throw value.error;
-  }
-  return value as UnwrappedResult<T>;
-}
-
-async function eventually(assertion: () => void | Promise<void>, label: string): Promise<void> {
-  const deadline = Date.now() + STEP_TIMEOUT_MS;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await Bun.sleep(25);
-    }
-  }
-  throw new Error(`timed out waiting for ${label}`, { cause: lastError });
-}
-
-interface RanCli {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
 /** Run one CLI command to completion with stdin ignored (a non-TTY invocation). */
-async function runCli(args: string[]): Promise<RanCli> {
-  const child = Bun.spawn([process.execPath, CLI, ...args], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { code, stdout, stderr };
-}
-
 function spawnServer(dir: string): { child: CliProcess; waitReady(): Promise<void>; drained: Promise<void> } {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
@@ -273,7 +212,7 @@ describe("acker generate", () => {
     writeFileSync(join(dir, "app.ts"), APP_V2);
 
     // Non-TTY generate: no renames, just the scaffold for the count type change.
-    const generated = await withTimeout(runCli(["generate", "", dir]), "acker generate");
+    const generated = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate");
     expect(generated.code).toBe(0);
 
     const scaffold = join(dir, "migrations", "0001_items_count_retype.ts");
@@ -319,7 +258,7 @@ describe("acker generate", () => {
 
     // With the chain fully applied, a second change generates 0002 (numbering increments).
     writeFileSync(join(dir, "app.ts"), APP_V3);
-    const second = await withTimeout(runCli(["generate", "", dir]), "acker generate (second)");
+    const second = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate (second)");
     expect(second.code).toBe(0);
     expect(existsSync(join(dir, "migrations", "0002_items_count_retype.ts"))).toBe(true);
   }, TEST_TIMEOUT_MS);
@@ -349,7 +288,7 @@ describe("acker generate", () => {
     // Add the unique index; the optimistic change refuses because stored rows collide.
     writeFileSync(join(dir, "app.ts"), APP_UNIQUE);
 
-    const generated = await withTimeout(runCli(["generate", "", dir]), "acker generate (dedupe)");
+    const generated = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate (dedupe)");
     expect(generated.code).toBe(0);
     // Before the fix computePlan discarded the optimistic bucket and reported clean.
     expect(generated.stdout).not.toContain("nothing to generate");
@@ -427,7 +366,7 @@ describe("acker generate", () => {
       JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
     );
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "acker generate (pending)");
+    const result = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate (pending)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("pending migration");
   }, TEST_TIMEOUT_MS);
@@ -444,7 +383,7 @@ describe("acker generate", () => {
 
     // The ledger the developer consents to: count float -> string.
     writeFileSync(join(dir, "app.ts"), APP_V2);
-    const planned = await withTimeout(runCli(["__plan", dir]), "__plan (v2)");
+    const planned = await withTimeout(runCli(["__plan", dir], CLI_ENV), "__plan (v2)");
     expect(planned.code).toBe(0);
     const wire = JSON.parse(planned.stdout.trim().split("\n").at(-1)!) as {
       clean: boolean;
@@ -459,7 +398,7 @@ describe("acker generate", () => {
     // The schema moves after the yes: the consented fingerprint is now stale.
     writeFileSync(join(dir, "app.ts"), APP_V2_MOVED);
     const staleRun = await withTimeout(
-      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: wire.fingerprint })]),
+      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: wire.fingerprint })], CLI_ENV),
       "__generate (stale)",
     );
     expect(staleRun.code).toBe(0);
@@ -467,11 +406,11 @@ describe("acker generate", () => {
     expect(existsSync(join(dir, "migrations"))).toBe(false);
 
     // Re-planned over the moved schema, the fresh consent writes.
-    const replanned = await withTimeout(runCli(["__plan", dir]), "__plan (moved)");
+    const replanned = await withTimeout(runCli(["__plan", dir], CLI_ENV), "__plan (moved)");
     const fresh = JSON.parse(replanned.stdout.trim().split("\n").at(-1)!) as { fingerprint: string };
     expect(fresh.fingerprint).not.toBe(wire.fingerprint);
     const written = await withTimeout(
-      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: fresh.fingerprint })]),
+      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: fresh.fingerprint })], CLI_ENV),
       "__generate (fresh)",
     );
     expect(written.code).toBe(0);
@@ -489,7 +428,7 @@ describe("acker generate", () => {
     await seedV1(dir, port);
 
     writeFileSync(join(dir, "app.ts"), APP_V2);
-    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "acker generate (scaffold)");
+    const first = await withTimeout(runCli(["generate", "count_to_string", dir], CLI_ENV), "acker generate (scaffold)");
     expect(first.code).toBe(0);
     // Invocation is the consent, but the ledger is still the record of what it answers.
     expect(first.stdout).toContain("the change ledger");
@@ -497,7 +436,7 @@ describe("acker generate", () => {
 
     // The schema moves on with the scaffold still unapplied.
     writeFileSync(join(dir, "app.ts"), APP_V2_MOVED);
-    const second = await withTimeout(runCli(["generate", "", dir]), "acker generate (stale pending)");
+    const second = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate (stale pending)");
     expect(second.code).not.toBe(0);
     expect(second.stderr).toContain("pending migration");
     expect(second.stderr).toContain("delete its files to re-derive");
@@ -526,7 +465,7 @@ describe("acker generate", () => {
       JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
     );
 
-    const held = await withTimeout(runCli(["__serve", dir, "--hold-pending"]), "__serve --hold-pending");
+    const held = await withTimeout(runCli(["__serve", dir, "--hold-pending"], CLI_ENV), "__serve --hold-pending");
     expect(held.code).not.toBe(0);
     expect(held.stderr).toContain("held for confirmation");
 
@@ -548,7 +487,7 @@ describe("acker generate", () => {
     });
     dirs.push(dir);
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "acker generate (no db)");
+    const result = await withTimeout(runCli(["generate", "", dir], CLI_ENV), "acker generate (no db)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("no database");
   }, TEST_TIMEOUT_MS);

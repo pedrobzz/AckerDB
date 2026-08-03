@@ -16,9 +16,12 @@ import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
+import { steps } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 10_000;
+const { withTimeout, eventually } = steps(STEP_TIMEOUT_MS);
 
 const CRASH_BEFORE_COMMIT_MESSAGES = `
 import { existsSync, writeFileSync } from "node:fs";
@@ -145,49 +148,6 @@ afterEach(async () => {
   children.clear();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-
-type UnwrappedResult<T> =
-  T extends { readonly ok: true; readonly data: infer Data }
-    ? Data
-    : T extends { readonly ok: false }
-      ? never
-      : T;
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  label: string,
-  timeoutMs = STEP_TIMEOUT_MS,
-): Promise<UnwrappedResult<T>> {
-  let handle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    handle = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
-  });
-  const value = await Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    "ok" in value
-  ) {
-    if (value.ok === true && "data" in value) return value.data as UnwrappedResult<T>;
-    if (value.ok === false && "error" in value) throw value.error;
-  }
-  return value as UnwrappedResult<T>;
-}
-
-async function eventually(assertion: () => void | Promise<void>, label: string): Promise<void> {
-  const deadline = Date.now() + STEP_TIMEOUT_MS;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await Bun.sleep(25);
-    }
-  }
-  throw new Error(`timed out waiting for ${label}`, { cause: lastError });
-}
 
 async function portResponds(port: number): Promise<boolean> {
   try {
