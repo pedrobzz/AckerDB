@@ -8,6 +8,7 @@ import {
 import { AckerDBError } from "../shared/errors.ts";
 import {
   enterNestedMutationScope,
+  currentTransactionAnalytics,
   leaveNestedMutationScope,
   type MutationAccess,
   type MutationAccessFrame,
@@ -25,7 +26,10 @@ export function createMutationInvocationScope(
   connection: Database,
   writes: WriteCollector,
 ): MutationInvocationScope {
-  const root: MutationAccessFrame = { tail: Promise.resolve() };
+  const root: MutationAccessFrame = {
+    tail: Promise.resolve(),
+    analytics: currentTransactionAnalytics() ?? [],
+  };
   const state: MutationAccessState = { current: null };
   let nextSavepoint = 0;
   let scope!: MutationInvocationScope;
@@ -42,7 +46,7 @@ export function createMutationInvocationScope(
     const name = `ackerdb_result_${++nextSavepoint}`;
     const before = checkpointWriteCollector(writes);
     connection.exec(`SAVEPOINT ${name}`);
-    const frame: MutationAccessFrame = { tail: Promise.resolve() };
+    const frame: MutationAccessFrame = { tail: Promise.resolve(), analytics: [] };
     state.current = frame;
     enterNestedMutationScope();
     try {
@@ -51,6 +55,8 @@ export function createMutationInvocationScope(
       if (isResult(value) && !value.ok) {
         connection.exec(`ROLLBACK TO ${name}`);
         rollbackWriteCollector(writes, before);
+      } else {
+        parent.analytics.push(...frame.analytics);
       }
       connection.exec(`RELEASE ${name}`);
       state.current = parent;
@@ -84,9 +90,11 @@ export function createMutationInvocationScope(
       try {
         const value = await work(access(root));
         await root.tail;
+        if (isResult(value) && !value.ok) root.analytics.length = 0;
         return value;
       } catch (error) {
         await root.tail;
+        root.analytics.length = 0;
         throw error;
       } finally {
         state.current = null;

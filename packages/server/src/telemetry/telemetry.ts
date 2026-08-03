@@ -720,6 +720,7 @@ export interface OperationTelemetrySpanInput extends Omit<
 export const OPEN_OPERATION_TRACE = Symbol("ackerdb.openOperationTrace");
 export const FINISH_OPERATION_TRACE = Symbol("ackerdb.finishOperationTrace");
 export const OPERATION_INVOCATION_NODE = Symbol("ackerdb.operationInvocationNode");
+export const OPERATION_TRACE_CONTEXT = Symbol("ackerdb.operationTraceContext");
 export const RECORD_OPERATION_SPAN = Symbol("ackerdb.recordOperationSpan");
 export const RECORD_OPERATION_EVENT = Symbol("ackerdb.recordOperationEvent");
 export const CLAIM_OPERATION_DELIVERY_LEASE = Symbol("ackerdb.claimOperationDeliveryLease");
@@ -1400,6 +1401,13 @@ export class Telemetry {
     return handle instanceof OperationTrace
       ? handle.invocationNode(invocationId, phase, parent)
       : 0;
+  }
+
+  [OPERATION_TRACE_CONTEXT](
+    handle: OperationTraceHandle,
+    node: number,
+  ): TelemetryTraceContext | undefined {
+    return handle instanceof OperationTrace ? handle.context(node) : undefined;
   }
 
   [CLAIM_OPERATION_DELIVERY_LEASE](

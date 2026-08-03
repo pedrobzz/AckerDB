@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  Err,
   PROTOCOL_VERSION,
+  Status,
   encode,
   parseSseMessage,
   type MutationMessage,
@@ -35,6 +37,8 @@ import {
   type TelemetryRecord,
   type TelemetryScheduler,
   type TelemetrySpanRecord,
+  type Identity,
+  type Principal,
 } from "@ackerdb/server";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 
@@ -103,6 +107,44 @@ const addItem = mutation({
   },
 });
 
+const rejectedAnalytics = mutation({
+  access: "public",
+  args: {},
+  errors: {
+    rejected: { body: v.object({}), status: Status.BadRequest },
+  },
+  handler: (ctx: Ctx) => {
+    ctx.analytics.track("child rejected");
+    return Err("rejected", {}, Status.BadRequest);
+  },
+});
+
+const policyRejectedAnalytics = mutation({
+  access: (ctx: Ctx) => {
+    ctx.analytics.track("child policy rejected");
+    return true;
+  },
+  args: {},
+  errors: {
+    rejected: { body: v.object({}), status: Status.BadRequest },
+  },
+  handler: () => Err("rejected", {}, Status.BadRequest),
+});
+
+const committedAnalytics = mutation({
+  access: "public",
+  args: {},
+  handler: (ctx: Ctx) => {
+    ctx.analytics.track("child committed", { child: true });
+  },
+});
+
+const identityAnalytics = mutation({
+  access: "public",
+  args: {},
+  handler: (ctx: Ctx) => ctx.analytics.track("identity tracked"),
+});
+
 const functions = {
   items: {
     list: query({
@@ -110,6 +152,14 @@ const functions = {
       args: { room: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.items.query().where((row: Ctx) => row.room.eq(args.room)).collect(),
+    }),
+    loggedList: query({
+      access: "public",
+      args: { room: v.bigint() },
+      handler: (ctx: Ctx, args: Ctx) => {
+        ctx.log.debug("listed room", { room: args.room });
+        return ctx.db.items.query().where((row: Ctx) => row.room.eq(args.room)).collect();
+      },
     }),
     hold: query({
       access: "public",
@@ -148,10 +198,67 @@ const functions = {
       access: "public",
       args: { room: v.bigint(), body: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
+        ctx.log.error("item insertion failed", { room: args.room });
+        ctx.analytics.track("failed mutation");
         await ctx.db.items.insert(args);
         throw new Error(`${PRIVATE_FAILURE}:${args.body}`);
       },
     }),
+    logSequence: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) => {
+        for (let index = 0; index < 10; index++) {
+          ctx.log.info(`step-${index}`, { index });
+        }
+        return "logged";
+      },
+    }),
+    unsafeLog: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) => {
+        const cyclic: Record<string, unknown> = {};
+        cyclic.self = cyclic;
+        const throwing = Object.defineProperty({}, "value", {
+          enumerable: true,
+          get: () => {
+            throw new Error("getter must not escape logging");
+          },
+        });
+        ctx.log.warn("x".repeat(20_000), {
+          cyclic,
+          date: new Date(0) as never,
+          throwing,
+          values: Array.from({ length: 1_000 }, () => "y".repeat(1_000)),
+        });
+        return "safe";
+      },
+    }),
+    policyLog: query({
+      args: {},
+      access: (ctx: Ctx) => {
+        ctx.log.debug("policy checked");
+        return true;
+      },
+      handler: () => "authorized",
+    }),
+    track: mutation({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx) => {
+        ctx.analytics.track("parent before", { order: 1 });
+        await committedAnalytics(ctx, {});
+        const rejected = await rejectedAnalytics(ctx, {});
+        expect(rejected.ok).toBe(false);
+        const policyRejected = await policyRejectedAnalytics(ctx, {});
+        expect(policyRejected.ok).toBe(false);
+        ctx.analytics.track("parent after", { order: 3 });
+        return true;
+      },
+    }),
+    identityTrack: identityAnalytics,
+    rejectTrack: rejectedAnalytics,
   },
   audit: {
     list: query({
@@ -169,7 +276,10 @@ const functions = {
     run: mutation({
       access: "system",
       args: { id: v.bigint(), label: v.string(), at: v.float() },
-      handler: (ctx: Ctx, args: Ctx) => ctx.db.audit.insert({ line: `scheduled:${args.label}` }),
+      handler: (ctx: Ctx, args: Ctx) => {
+        ctx.analytics.track("scheduled job ran", { label: args.label });
+        return ctx.db.audit.insert({ line: `scheduled:${args.label}` });
+      },
     }),
   },
   ops: {
@@ -178,10 +288,12 @@ const functions = {
       http: true,
       args: { room: v.bigint(), payload: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
+        ctx.log.info("procedure started");
         const external = await (await fetch(
           `data:text/plain,${encodeURIComponent(args.payload)}`,
         )).text();
         return ctx.tx(async (tx: Ctx) => {
+          tx.log.info("transaction started");
           const id = (await addItem(tx, {
             room: args.room,
             body: external,
@@ -197,6 +309,7 @@ const functions = {
       args: { payload: v.string() },
       yields: v.object({ payload: v.string() }),
       handler: async function* (ctx: Ctx, args: Ctx) {
+        ctx.log.info("stream started");
         if (operatorSseGate !== null) {
           operatorSseEntered?.();
           await operatorSseGate;
@@ -221,25 +334,30 @@ class RuntimeHarness {
   private readonly sessions: TestSession[] = [];
   private closed = false;
 
-  constructor(telemetry: RuntimeOptions["telemetry"]) {
+  constructor(
+    telemetry: RuntimeOptions["telemetry"],
+    options: Pick<RuntimeOptions, "now" | "telemetryExporters"> = {},
+  ) {
     reconcile(this.engine);
     this.runtime = new Runtime({
       engine: this.engine,
       registry: new Registry(functions),
       telemetry,
+      ...options,
     });
   }
 
   async openSession(
     clientSessionId: string,
     publish?: (frame: RuntimePublication) => Promise<boolean> | boolean,
+    principal: Principal = ANONYMOUS_PRINCIPAL,
   ): Promise<TestSession> {
     const controller = new AbortController();
     const publications: SessionApplicationMessage[] = [];
     const context: SessionRuntimeContext = Object.freeze({
       clientSessionId,
-      principal: ANONYMOUS_PRINCIPAL,
-      fairnessKey: callerFairnessKey(ANONYMOUS_PRINCIPAL, TEST_SOURCE),
+      principal,
+      fairnessKey: callerFairnessKey(principal, TEST_SOURCE),
       authEpoch: 0,
       signal: controller.signal,
       publish: async (frame: RuntimePublication) => {
@@ -289,8 +407,11 @@ class RuntimeHarness {
 
 const harnesses = new Set<RuntimeHarness>();
 
-function harness(telemetry: RuntimeOptions["telemetry"]): RuntimeHarness {
-  const created = new RuntimeHarness(telemetry);
+function harness(
+  telemetry: RuntimeOptions["telemetry"],
+  options?: Pick<RuntimeOptions, "now" | "telemetryExporters">,
+): RuntimeHarness {
+  const created = new RuntimeHarness(telemetry, options);
   harnesses.add(created);
   return created;
 }
@@ -452,6 +573,412 @@ const operatorMetricUnits = Object.freeze({
 } as const);
 
 describe("Runtime telemetry acceptance", () => {
+  test("persists ordered call-time application logs outside application transactions", async () => {
+    const timestamp = Date.now();
+    const app = harness(false, { now: () => timestamp });
+    const session = await app.openSession("application-log-order");
+
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_001,
+      ref: "items.logSequence",
+      args: {},
+    }))).toBe("logged");
+
+    await expect(app.mutation(
+      session.context,
+      720_000_002,
+      "items.fail",
+      { room: 9n, body: "rollback" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+    await app.runtime.telemetryJournal.flush();
+    const records = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+      .filter((record) => record.kind === "log");
+
+    expect(records.map((record) => record.message)).toEqual([
+      "step-0",
+      "step-1",
+      "step-2",
+      "step-3",
+      "step-4",
+      "step-5",
+      "step-6",
+      "step-7",
+      "step-8",
+      "step-9",
+      "item insertion failed",
+    ]);
+    expect(records.map((record) => record.sequence)).toEqual(
+      records.map((_, index) => BigInt(index + 1)),
+    );
+    expect(records.every((record) => record.timestamp === timestamp)).toBe(true);
+    expect(records[0]).toMatchObject({
+      kind: "log",
+      level: "info",
+      metadata: { index: 0 },
+      functionAddress: "items.logSequence",
+      functionKind: "query",
+      requestId: "720000001",
+    });
+    expect(records[10]).toMatchObject({
+      kind: "log",
+      level: "error",
+      metadata: { room: 9n },
+      functionAddress: "items.fail",
+      functionKind: "mutation",
+      requestId: "720000002",
+    });
+    expect(records.every((record) => record.traceId !== undefined)).toBe(true);
+    expect(records.every((record) => record.spanId !== undefined)).toBe(true);
+  });
+
+  test("assigns one total sequence across concurrent log registrations", async () => {
+    const app = harness(false);
+    const session = await app.openSession("application-log-concurrent-order");
+
+    await Promise.all(Array.from({ length: 4 }, (_, index) => app.runtime.query(
+      session.context,
+      request({
+        v: PROTOCOL_VERSION,
+        t: "q",
+        id: 720_000_030 + index,
+        ref: "items.logSequence",
+        args: {},
+      }),
+    )));
+    await app.runtime.telemetryJournal.flush();
+
+    const records = (await app.runtime.telemetryJournal.readBatch(0n, 64))
+      .filter((record) => record.kind === "log");
+    expect(records).toHaveLength(40);
+    expect(records.map((record) => record.sequence)).toEqual(
+      records.map((_, index) => BigInt(index + 1)),
+    );
+  });
+
+  test("logs once for each shared reactive query execution", async () => {
+    const app = harness(false);
+    const first = await app.openSession("application-log-shared-query-first");
+    const second = await app.openSession("application-log-shared-query-second");
+    const subscription = {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 720_000_011,
+      ref: "items.loggedList",
+      args: { room: 11n },
+    } as const;
+
+    await app.runtime.subscribe(first.context, request(subscription));
+    await app.runtime.subscribe(second.context, request(subscription));
+    const added = await app.mutation(
+      first.context,
+      720_000_012,
+      "items.add",
+      { room: 11n, body: "invalidate" },
+    );
+    await app.mutation(
+      first.context,
+      720_000_013,
+      "items.touch",
+      { id: added.value as bigint },
+    );
+
+    await app.runtime.telemetryJournal.flush();
+    const logs = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+      .filter((record) => record.kind === "log" && record.message === "listed room");
+    expect(logs).toHaveLength(3);
+    expect(logs.map((record) => record.functionAddress)).toEqual([
+      "items.loggedList",
+      "items.loggedList",
+      "items.loggedList",
+    ]);
+  });
+
+  test("bounds and marks malformed application log values without throwing", async () => {
+    const app = harness(false);
+    const session = await app.openSession("application-log-malformed");
+
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_015,
+      ref: "items.unsafeLog",
+      args: {},
+    }))).toBe("safe");
+    await app.runtime.telemetryJournal.flush();
+    const record = (await app.runtime.telemetryJournal.readBatch(0n, 4))[0];
+    expect(record?.kind).toBe("log");
+    if (record?.kind !== "log") throw new Error("expected application log");
+    expect(record.truncated).toBe(true);
+    expect(record.malformed).toBe(true);
+    expect(record.message).toContain("[Truncated]");
+    expect(record.metadata).toMatchObject({
+      cyclic: { self: "[Truncated]" },
+      date: "[Unsupported telemetry value]",
+      throwing: { value: "[Unsupported telemetry value]" },
+    });
+    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({
+      truncatedRecords: 1,
+      malformedRecords: 1,
+      oversizedRecords: 0,
+    });
+  });
+
+  test("makes local journal failure unhealthy without escaping through ctx.log", async () => {
+    const app = harness(false);
+    const duplicate = Object.freeze({
+      kind: "log" as const,
+      processGeneration: "forced-journal-failure",
+      sequence: 1n,
+      timestamp: Date.now(),
+      level: "error" as const,
+      message: "duplicate",
+      truncated: false,
+      malformed: false,
+      functionAddress: "tests.failure",
+      functionKind: "query",
+    });
+
+    expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
+    expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
+    await expect(app.runtime.telemetryJournal.flush()).rejects.toBeDefined();
+
+    expect(app.runtime.state).not.toBe("ready");
+    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({ state: "failed" });
+  });
+
+  test("attributes policy, procedure, transaction, SSE, and system logs", async () => {
+    const app = harness(false);
+    const session = await app.openSession("application-log-contexts");
+
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_016,
+      ref: "items.policyLog",
+      args: {},
+    }))).toBe("authorized");
+    const response = await app.runtime.runProcedure({
+      id: 720_000_017,
+      address: "ops.pipeline",
+      args: { room: 13n, payload: "contexts" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(response.status).toBe(200);
+    const stream = await app.runtime.runSse({
+      id: 720_000_018,
+      address: "ops.stream",
+      args: { payload: "contexts" },
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+    await collectSse(app.runtime, stream);
+    await app.runtime.system.run("coverage.system", (ctx) => {
+      ctx.log.warn("system ran");
+    });
+
+    await app.runtime.telemetryJournal.flush();
+    const records = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+      .filter((record) => record.kind === "log");
+    expect(records.map((record) => [
+      record.message,
+      record.functionAddress,
+      record.functionKind,
+    ])).toEqual([
+      ["policy checked", "items.policyLog", "query"],
+      ["procedure started", "ops.pipeline", "procedure"],
+      ["transaction started", "ops.pipeline", "procedure"],
+      ["stream started", "ops.stream", "sse"],
+      ["system ran", "coverage.system", "system"],
+    ]);
+  });
+
+  test("publishes analytics only after commit with durable identity", async () => {
+    const app = harness(false);
+    const principal = Object.freeze({
+      kind: "user",
+      identity: 42n as Identity,
+      issuer: "https://identity.test",
+      subject: "private-subject",
+      claims: Object.freeze({ role: "private-claim" }),
+      expiresAt: Date.now() + 60_000,
+      tokenId: "private-token",
+    }) satisfies Principal;
+    const session = await app.openSession("analytics-commit", undefined, principal);
+    const issuedAt = Date.now();
+    const mutationRequestId = uuidV7(issuedAt, 721);
+
+    await app.mutation(
+      session.context,
+      720_000_021,
+      "items.track",
+      {},
+      mutationRequestId,
+      issuedAt,
+    );
+    await app.mutation(
+      session.context,
+      720_000_022,
+      "items.track",
+      {},
+      mutationRequestId,
+      issuedAt,
+    );
+    await expect(app.mutation(
+      session.context,
+      720_000_023,
+      "items.fail",
+      { room: 12n, body: "analytics rollback" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+    const rejected = await app.mutation(
+      session.context,
+      720_000_024,
+      "items.rejectTrack",
+      {},
+    );
+    expect(rejected.value).toMatchObject({ ok: false });
+
+    await app.runtime.telemetryJournal.flush();
+    const events = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+      .filter((record) => record.kind === "analytics");
+    expect(events.map((event) => event.event)).toEqual([
+      "parent before",
+      "child committed",
+      "parent after",
+    ]);
+    expect(events.map((event) => event.identity)).toEqual([
+      principal.identity,
+      principal.identity,
+      principal.identity,
+    ]);
+    expect(events.map((event) => event.properties)).toEqual([
+      { order: 1 },
+      { child: true },
+      { order: 3 },
+    ]);
+    expect(events.every((event) => event.commitId !== undefined)).toBe(true);
+    const serialized = JSON.stringify(
+      events,
+      (_key, value) => typeof value === "bigint" ? value.toString() : value,
+    );
+    expect(serialized).not.toContain("private-subject");
+    expect(serialized).not.toContain("private-claim");
+    expect(serialized).not.toContain("private-token");
+  });
+
+  test("keeps anonymous, workload, and system analytics identity-less", async () => {
+    const app = harness(false);
+    const workload = Object.freeze({
+      kind: "workload",
+      issuer: "https://workload.test",
+      subject: "private-workload-subject",
+      claims: Object.freeze({ service: "private-workload-claim" }),
+      expiresAt: Date.now() + 60_000,
+      tokenId: "private-workload-token",
+    }) satisfies Principal;
+    const anonymousSession = await app.openSession("analytics-anonymous");
+    const workloadSession = await app.openSession("analytics-workload", undefined, workload);
+
+    await app.mutation(anonymousSession.context, 720_000_026, "items.identityTrack", {});
+    await app.mutation(workloadSession.context, 720_000_027, "items.identityTrack", {});
+    await app.runtime.system.run("analytics.system", (ctx) => ctx.tx((tx) => {
+      tx.analytics.track("identity tracked");
+    }));
+
+    await app.runtime.telemetryJournal.flush();
+    const events = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+      .filter((record) => record.kind === "analytics");
+    expect(events.map((event) => event.identity)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(events.map((event) => event.functionAddress)).toEqual([
+      "items.identityTrack",
+      "items.identityTrack",
+      "analytics.system",
+    ]);
+    const serialized = JSON.stringify(events, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value);
+    expect(serialized).not.toContain("private-workload-subject");
+    expect(serialized).not.toContain("private-workload-claim");
+    expect(serialized).not.toContain("private-workload-token");
+  });
+
+  test("publishes scheduled mutation analytics after commit", async () => {
+    const app = harness(false);
+    const session = await app.openSession("analytics-scheduled");
+    const dueAt = Date.now() + 60_000;
+
+    await app.mutation(session.context, 720_000_028, "jobs.schedule", {
+      label: "analytics",
+      at: dueAt,
+    });
+    expect(await app.runtime.runScheduled(dueAt)).toBe(1);
+
+    await app.runtime.telemetryJournal.flush();
+    const events = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+      .filter((record) => record.kind === "analytics");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: "scheduled job ran",
+      functionAddress: "jobs.run",
+      functionKind: "mutation",
+      properties: { label: "analytics" },
+    });
+    expect(events[0]?.identity).toBeUndefined();
+    expect(events[0]?.commitId).toBeDefined();
+  });
+
+  test("exports application signals without coupling provider failure to work", async () => {
+    const exported: string[] = [];
+    const warnings: string[] = [];
+    const app = harness(false, {
+      telemetryExporters: {
+        exporters: [
+          {
+            name: "failing-provider",
+            signals: ["log"],
+            export: () => {
+              throw new Error("provider unavailable");
+            },
+          },
+          {
+            name: "healthy-provider",
+            signals: ["log"],
+            export: (records) => {
+              exported.push(...records.map((record) =>
+                record.kind === "log" ? record.message : "wrong"));
+            },
+          },
+        ],
+        warn: (message) => warnings.push(message),
+        limits: { retryMinMs: 10_000, retryMaxMs: 10_000 },
+      },
+    });
+    const session = await app.openSession("application-signal-export");
+
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_031,
+      ref: "items.logSequence",
+      args: {},
+    }))).toBe("logged");
+    await app.runtime.telemetryJournal.flush();
+    await app.runtime.telemetryExporters!.flush();
+
+    expect(exported).toEqual(Array.from({ length: 10 }, (_, index) => `step-${index}`));
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings.length).toBeLessThanOrEqual(2);
+    expect(app.runtime.state).toBe("ready");
+    expect(app.runtime.status().telemetryExporters).toMatchObject({
+      "failing-provider": { failures: warnings.length },
+      "healthy-provider": { exportedRecords: 10 },
+    });
+  });
+
   test("restores each queued writer's trace, invocation, and statement owner", async () => {
     const exported: TelemetryRecord[] = [];
     const app = harness({

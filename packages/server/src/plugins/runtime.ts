@@ -8,6 +8,10 @@ import {
 import type { DbStatementObserver } from "../database/statement-observation.ts";
 import type { Engine, StorageScope } from "../database/engine.ts";
 import { deepFreeze } from "../shared/immutable.ts";
+import type {
+  AnalyticsTracker,
+  ApplicationLogger,
+} from "../telemetry/application-signals/types.ts";
 import {
   isPluginOperationImplementation,
   isPluginOperationSpec,
@@ -49,15 +53,26 @@ export interface PluginWriteExecution {
 
 export interface PluginQueryBinding extends PluginReadExecution {
   readonly timestamp: number;
+  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
 }
 
 export interface PluginMutationBinding extends PluginWriteExecution {
+  readonly analyticsFor: (
+    functionAddress: string,
+    functionKind: PluginOperationKind,
+  ) => AnalyticsTracker;
   readonly timestamp: number;
+  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
 }
 
 export interface PluginProcedureBinding {
+  readonly analyticsFor: (
+    functionAddress: string,
+    functionKind: PluginOperationKind,
+  ) => AnalyticsTracker;
   readonly timestamp: number;
   readonly abortSignal: AbortSignal;
+  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
   runQuery<T>(
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T>;
@@ -167,6 +182,7 @@ export class PluginRuntime {
   private readonly assembly: PluginAssembly;
   private readonly scopes: ReadonlyMap<string, StorageScope>;
   private readonly mountOf = new Map<AnyPluginInstance, string>();
+  private readonly operationPathOf = new Map<AnyPluginOperationImplementation, string>();
   private readonly mountPlan: PlannedNamespace | undefined;
   private readonly dependencyPlans: ReadonlyMap<
     AnyPluginInstance,
@@ -353,6 +369,7 @@ export class PluginRuntime {
     for (const [name, node] of Object.entries(exports)) {
       const operationPath = `${path}.${name}`;
       if (isPluginOperationImplementation(node)) {
+        this.operationPathOf.set(node, operationPath);
         entries.push(Object.freeze({
           name,
           node: Object.freeze({
@@ -486,7 +503,14 @@ export class PluginRuntime {
       return binding.value.runQuery((execution) => this.invokeValidated(
         instance,
         implementation,
-        { kind: "query", value: { ...execution, timestamp: binding.value.timestamp } },
+        {
+          kind: "query",
+          value: {
+            ...execution,
+            timestamp: binding.value.timestamp,
+            logFor: binding.value.logFor,
+          },
+        },
         rawArgs,
       ));
     }
@@ -494,7 +518,15 @@ export class PluginRuntime {
       return binding.value.runMutation((execution) => this.invokeValidated(
         instance,
         implementation,
-        { kind: "mutation", value: { ...execution, timestamp: binding.value.timestamp } },
+        {
+          kind: "mutation",
+          value: {
+            ...execution,
+            analyticsFor: binding.value.analyticsFor,
+            timestamp: binding.value.timestamp,
+            logFor: binding.value.logFor,
+          },
+        },
         rawArgs,
       ));
     }
@@ -511,7 +543,17 @@ export class PluginRuntime {
       const args = deepFreeze(
         implementation.spec.args.check(rawArgs === undefined ? {} : rawArgs, "args"),
       );
-      const context = this.operationContext(instance, implementation.spec.kind, binding);
+      const functionAddress = this.operationPathOf.get(implementation);
+      if (functionAddress === undefined) {
+        throw new TypeError("Plugin invocation targets an unregistered operation");
+      }
+      const context = this.operationContext(
+        instance,
+        implementation.spec.kind,
+        binding,
+        functionAddress,
+        implementation.spec.kind,
+      );
       return Promise.resolve(implementation.handler(context, args));
     } catch (error) {
       return Promise.reject(error);
@@ -522,6 +564,8 @@ export class PluginRuntime {
     instance: AnyPluginInstance,
     kind: PluginOperationKind,
     binding: InvocationBinding,
+    functionAddress: string,
+    functionKind: PluginOperationKind,
   ): Readonly<Record<string, unknown>> {
     const mount = this.mountOf.get(instance);
     if (mount === undefined) throw new TypeError("Plugin invocation targets an unmounted instance");
@@ -538,6 +582,7 @@ export class PluginRuntime {
             connection: this.engine.writer,
             reads: null,
             timestamp: binding.value.timestamp,
+            logFor: binding.value.logFor,
             ...(binding.value.statementObserver === undefined
               ? {}
               : { statementObserver: binding.value.statementObserver }),
@@ -552,6 +597,7 @@ export class PluginRuntime {
       return Object.freeze({
         timestamp: read.timestamp,
         mount,
+        log: read.logFor(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -573,6 +619,8 @@ export class PluginRuntime {
       return Object.freeze({
         timestamp: binding.value.timestamp,
         mount,
+        analytics: binding.value.analyticsFor(functionAddress, functionKind),
+        log: binding.value.logFor(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -584,6 +632,7 @@ export class PluginRuntime {
     return Object.freeze({
       timestamp: binding.value.timestamp,
       mount,
+      log: binding.value.logFor(functionAddress, functionKind),
       abortSignal: binding.value.abortSignal,
       ...dependencies,
       tx: <T>(work: (context: Readonly<Record<string, unknown>>) => T | Promise<T>) =>
@@ -592,8 +641,15 @@ export class PluginRuntime {
           "mutation",
           {
             kind: "mutation",
-            value: { ...execution, timestamp: binding.value.timestamp },
+            value: {
+              ...execution,
+              analyticsFor: binding.value.analyticsFor,
+              timestamp: binding.value.timestamp,
+              logFor: binding.value.logFor,
+            },
           },
+          functionAddress,
+          functionKind,
         ))),
     });
   }

@@ -15,6 +15,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
+  type RuntimeOptions,
   assertCredentialVerifier,
   assemblePlugins,
   createOidcVerifier,
@@ -78,6 +79,10 @@ export interface StartAppOptions<A extends App = App> {
   holdPendingMigrations?: boolean;
   /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
   realtime?: RealtimeRuntimeModule;
+  /** Optional local-journal bounds for application logs and analytics. */
+  telemetryJournal?: RuntimeOptions["telemetryJournal"];
+  /** Provider adapters consuming the local telemetry journal independently. */
+  telemetryExporters?: RuntimeOptions["telemetryExporters"];
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
@@ -345,6 +350,12 @@ export async function startApp<const A extends App = App>(
       ...(verifier === undefined ? {} : { verifier }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
+      ...(options.telemetryJournal === undefined
+        ? {}
+        : { telemetryJournal: options.telemetryJournal }),
+      ...(options.telemetryExporters === undefined
+        ? {}
+        : { telemetryExporters: options.telemetryExporters }),
     });
 
     // Services own trusted background work, so they start only once the Runtime

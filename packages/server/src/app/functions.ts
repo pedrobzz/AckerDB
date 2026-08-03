@@ -30,6 +30,10 @@ import {
   type InvocationContext,
 } from "./invocation.ts";
 import type { Schema } from "../schema/definition.ts";
+import type {
+  AnalyticsTracker,
+  ApplicationLogger,
+} from "../telemetry/application-signals/types.ts";
 
 export type AuthCtx = Principal;
 
@@ -41,6 +45,7 @@ export type QueryCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
+  readonly log: ApplicationLogger;
   readonly timestamp: number;
 };
 
@@ -50,6 +55,8 @@ export type MutationCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
+  readonly analytics: AnalyticsTracker;
+  readonly log: ApplicationLogger;
   readonly timestamp: number;
 };
 
@@ -65,6 +72,7 @@ export type ProcedureCtx<
   TransactionCapabilities extends object = EmptyContextCapabilities,
 > = InvocationContext & Capabilities & {
   readonly auth: AuthCtx;
+  readonly log: ApplicationLogger;
   readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;

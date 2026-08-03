@@ -189,6 +189,8 @@ async function makeHarness(
     create: ({ query: pluginQueryBuilder, mutation: pluginMutationBuilder, procedure: pluginProcedureBuilder }) => ({
       exports: {
         set: pluginMutationBuilder(providerSet, async (ctx, args) => {
+          ctx.log.info("plugin set", { key: args.key });
+          ctx.analytics.track("plugin set tracked", { key: args.key });
           await ctx.db.entries.upsert({ key: args.key }, { value: args.value });
           return {
             timestamp: ctx.timestamp,
@@ -196,24 +198,30 @@ async function makeHarness(
             hasAuth: "auth" in ctx,
           };
         }),
-        read: pluginQueryBuilder(providerRead, async (ctx, args) => ({
-          value: (await ctx.db.entries
-            .query()
-            .where((row) => row.key.eq(args.key))
-            .unique())?.value,
-          timestamp: ctx.timestamp,
-          mount: ctx.mount,
-          hasAuth: "auth" in ctx,
-        })),
+        read: pluginQueryBuilder(providerRead, async (ctx, args) => {
+          ctx.log.debug("plugin read", { key: args.key });
+          return {
+            value: (await ctx.db.entries
+              .query()
+              .where((row) => row.key.eq(args.key))
+              .unique())?.value,
+            timestamp: ctx.timestamp,
+            mount: ctx.mount,
+            hasAuth: "auth" in ctx,
+          };
+        }),
         fail: pluginMutationBuilder(providerFail, async (ctx, args) => {
           await ctx.db.entries.insert(args);
           throw new Error(`store failure:${args.key}`);
         }),
-        external: pluginProcedureBuilder(providerProcedure, (ctx) => ({
-          timestamp: ctx.timestamp,
-          mount: ctx.mount,
-          hasAuth: "auth" in ctx,
-        })),
+        external: pluginProcedureBuilder(providerProcedure, (ctx) => {
+          ctx.log.warn("plugin procedure");
+          return {
+            timestamp: ctx.timestamp,
+            mount: ctx.mount,
+            hasAuth: "auth" in ctx,
+          };
+        }),
       },
       ...(storeLifecycle === undefined ? {} : { lifecycle: storeLifecycle }),
     }),
@@ -252,6 +260,7 @@ async function makeHarness(
             dependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx, args) => {
+            ctx.log.debug("facade read", { key: args.key });
             const result = await ctx.store.read(args.key);
             return {
               value: result.value,
@@ -272,6 +281,7 @@ async function makeHarness(
             dependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx, args) => {
+            ctx.log.info("facade put", { key: args.key });
             const result = await ctx.store.set(args.key, args.value);
             return {
               consumerTimestamp: ctx.timestamp,
@@ -293,8 +303,14 @@ async function makeHarness(
             transactionDependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx) => {
+            if (false) {
+              // @ts-expect-error Plugin procedures track only inside transaction-owned work.
+              ctx.analytics.track("invalid outer procedure event");
+            }
+            ctx.log.warn("facade flow");
             const direct = await ctx.store.set("flow-direct", "flow-direct");
             const transaction = await ctx.tx(async (tx) => {
+              tx.analytics.track("plugin transaction tracked");
               const result = await tx.store.set("flow-tx", "flow-tx");
               expect("external" in tx.store).toBe(false);
               return {
@@ -480,6 +496,54 @@ async function makeHarness(
 }
 
 describe("Plugin invocation boundaries", () => {
+  test("logs from query, mutation, procedure, and nested Plugin contexts", async () => {
+    const harness = await makeHarness();
+
+    await callQuery(harness, "plugins.inspect", { key: "logged" });
+    await callMutation(harness, "plugins.sameTransaction", {
+      key: "logged",
+      value: "value",
+    });
+    await callProcedure(harness, "plugins.pluginFlow", {});
+    await harness.runtime.telemetryJournal.flush();
+
+    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
+      .filter((record) => record.kind === "log");
+    expect(records.map((record) => [record.message, record.functionAddress])).toEqual([
+      ["facade read", "facade.read"],
+      ["plugin read", "store.read"],
+      ["facade put", "facade.put"],
+      ["plugin set", "store.set"],
+      ["plugin read", "store.read"],
+      ["facade flow", "facade.flow"],
+      ["plugin set", "store.set"],
+      ["plugin set", "store.set"],
+      ["plugin procedure", "store.external"],
+    ]);
+  });
+
+  test("publishes Plugin mutation and transaction analytics only after commit", async () => {
+    const harness = await makeHarness();
+
+    await callMutation(harness, "plugins.sameTransaction", {
+      key: "tracked",
+      value: "value",
+    });
+    await callProcedure(harness, "plugins.pluginFlow", {});
+    await harness.runtime.telemetryJournal.flush();
+
+    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
+      .filter((record) => record.kind === "analytics");
+    expect(records.map((record) => [record.event, record.functionAddress])).toEqual([
+      ["plugin set tracked", "store.set"],
+      ["plugin set tracked", "store.set"],
+      ["plugin transaction tracked", "facade.flow"],
+      ["plugin set tracked", "store.set"],
+    ]);
+    expect(records.every((record) => record.identity === undefined)).toBe(true);
+    expect(records.every((record) => record.commitId !== undefined)).toBe(true);
+  });
+
   test("binds procedure and transaction capabilities to a system execution root", async () => {
     const harness = await makeHarness();
 
@@ -678,6 +742,7 @@ describe("Plugin invocation boundaries", () => {
     expect((failure as AggregateError).errors).toEqual([coreError, cleanupError]);
     expect(cleanups).toBe(1);
     expect(harness.plugins.state).toBe("failed");
+    expect(harness.runtime.telemetryJournal.snapshot().state).toBe("stopped");
     expect(await harness.runtime.drain().catch((error: unknown) => error)).toBe(failure);
     expect(cleanups).toBe(1);
   });

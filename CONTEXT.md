@@ -181,6 +181,37 @@ top-level function begins execution. Nested application functions, plugin
 functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
+**Application log record** — A developer-authored diagnostic message with
+structured metadata, registered at its call site independently of the function
+result and any application transaction. Its occurrence time and order describe
+application execution, not later persistence.
+_Avoid_: Transactional log, telemetry event
+
+**Application log order** — The total call-site registration order of
+application log records within one process generation. Persistence batching
+preserves this order across concurrent function executions.
+_Avoid_: Persistence order, timestamp order
+
+**Analytics event** — A named occurrence of product behavior with structured
+properties and the caller's durable Identity when one exists. It describes what
+a user or application did rather than the diagnostic severity of application
+execution.
+_Avoid_: Application log record, log event
+
+**Telemetry value** — A portable value shared by application-log metadata and
+analytics-event properties: null, text, numbers, booleans, big integers, bytes,
+arrays, and objects composed recursively from the same values.
+_Avoid_: Arbitrary JavaScript value, provider-native value
+
+**Telemetry journal** — The bounded local durable record of application logs
+and committed analytics events. It is independent of application state and is
+the common source consumed by telemetry exporters.
+_Avoid_: Application table, exporter queue
+
+**Telemetry exporter** — An isolated adapter that delivers the signal kinds a
+provider represents without changing application execution or other exporters.
+_Avoid_: Telemetry provider, application integration
+
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
 capability. Each run begins with only the canonical system principal, may use
