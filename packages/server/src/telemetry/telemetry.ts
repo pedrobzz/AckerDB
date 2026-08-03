@@ -24,6 +24,7 @@ export const TELEMETRY_OPERATIONS = [
 export type TelemetryOperation = (typeof TELEMETRY_OPERATIONS)[number];
 
 export const TELEMETRY_STAGES = [
+  "boundary",
   "admission",
   "auth",
   "policy",
@@ -290,6 +291,8 @@ export interface TelemetryOptions {
   readonly localSink?: ((safeJsonLine: string) => void) | false;
   readonly now?: () => number;
   readonly scheduler?: TelemetryScheduler;
+  /** Deterministically retain one full operation trace per interval; 0 disables sampling. */
+  readonly operationTraceSampleInterval?: number;
 }
 
 export interface TelemetryDropSnapshot {
@@ -484,6 +487,11 @@ interface TelemetryState {
   readonly exporter?: TelemetryExporter;
   readonly localSink?: (safeJsonLine: string) => void;
   readonly encoder: TextEncoder;
+  readonly operationTraceSampleInterval: number;
+  operationTraceSequence: number;
+  bufferedOperationSpans: number;
+  bufferedOperationBytes: number;
+  readonly bufferedOperations: Set<OperationTrace>;
   readonly metricSeries: Set<string>;
   readonly aggregateSeries: Map<number, Map<string | undefined, MutableAggregate>>;
   readonly aggregateOrder: MutableAggregate[];
@@ -718,6 +726,7 @@ export interface OperationTelemetrySpanInput extends Omit<
 }
 
 export const OPEN_OPERATION_TRACE = Symbol("ackerdb.openOperationTrace");
+export const IDENTIFY_OPERATION_TRACE = Symbol("ackerdb.identifyOperationTrace");
 export const FINISH_OPERATION_TRACE = Symbol("ackerdb.finishOperationTrace");
 export const OPERATION_INVOCATION_NODE = Symbol("ackerdb.operationInvocationNode");
 export const OPERATION_TRACE_CONTEXT = Symbol("ackerdb.operationTraceContext");
@@ -730,21 +739,25 @@ const INVOCATION_PHASE_CODES = Object.freeze({ auth: 0, policy: 1, handler: 2 } 
 class OperationTrace implements OperationTraceHandle {
   readonly [OPERATION_TRACE_HANDLE] = true;
   readonly operation: TelemetryOperation;
-  readonly rootFunction?: string;
-  readonly requestId?: string;
+  rootFunction?: string;
+  requestId?: string;
   readonly connectionId?: string;
   readonly mutationId?: string;
   readonly commitId?: string;
   readonly subscriptionId?: string;
   readonly inheritedContext?: AuthenticTelemetryTraceContext;
+  readonly startedAtMs?: number;
+  readonly sampled: boolean;
   retention?: MutableTraceRetention;
+  outcome: TelemetryOutcome = "ok";
   private traceId?: string;
   private nodeParents?: number[];
   private nodeIds?: string[];
   private invocationNodes?: Map<number, number>;
+  private bufferedSpans?: unknown[];
   private nextNode = 1;
 
-  constructor(input: OperationTraceInput) {
+  constructor(input: OperationTraceInput, startedAtMs?: number, sampled = false) {
     this.operation = input.operation;
     this.rootFunction = safeName(input.functionName);
     this.requestId = safeId(input.requestId ?? input.inheritedContext?.requestId);
@@ -757,6 +770,58 @@ class OperationTrace implements OperationTraceHandle {
     this.inheritedContext = AuthenticTelemetryTraceContext.owns(input.inheritedContext)
       ? input.inheritedContext
       : undefined;
+    this.startedAtMs = startedAtMs;
+    this.sampled = sampled;
+  }
+
+  identify(functionName: string, requestId: string): void {
+    this.rootFunction = safeName(functionName) ?? this.rootFunction;
+    this.requestId = safeId(requestId) ?? this.requestId;
+  }
+
+  observeOutcome(outcome: TelemetryOutcome): void {
+    if (outcome !== "ok") this.outcome = outcome;
+  }
+
+  bufferSpan(
+    node: number,
+    parentNode: number,
+    timestampMs: number,
+    input: OperationTelemetrySpanInput,
+    bytes: number,
+  ): void {
+    (this.bufferedSpans ??= []).push(node, parentNode, timestampMs, input, bytes);
+  }
+
+  bufferedSpanCount(): number {
+    return (this.bufferedSpans?.length ?? 0) / 5;
+  }
+
+  drainBufferedSpans(
+    visit?: (
+      node: number,
+      parentNode: number,
+      timestampMs: number,
+      input: OperationTelemetrySpanInput,
+      bytes: number,
+    ) => void,
+  ): { readonly records: number; readonly bytes: number } {
+    const spans = this.bufferedSpans;
+    if (spans === undefined) return { records: 0, bytes: 0 };
+    this.bufferedSpans = undefined;
+    let bytes = 0;
+    for (let index = 0; index < spans.length; index += 5) {
+      bytes += spans[index + 4] as number;
+      if (visit === undefined) continue;
+      visit(
+        spans[index] as number,
+        spans[index + 1] as number,
+        spans[index + 2] as number,
+        spans[index + 3] as OperationTelemetrySpanInput,
+        spans[index + 4] as number,
+      );
+    }
+    return { records: spans.length / 5, bytes };
   }
 
   childNode(parent: number): number {
@@ -1229,6 +1294,40 @@ function stagedSpanBytes(span: SanitizedTelemetrySpan): number {
   return bytes;
 }
 
+/** Exact JSON/UTF-8 size of one deferred package-owned operation span. */
+function bufferedOperationSpanBytes(
+  trace: OperationTrace,
+  node: number,
+  timestampMs: number,
+  input: OperationTelemetrySpanInput,
+): number {
+  let bytes = 2 + jsonPropertyBytes("schemaVersion", TELEMETRY_SCHEMA_VERSION, false);
+  bytes += jsonPropertyBytes("kind", "span");
+  bytes += jsonPropertyBytes("timestampMs", timestampMs);
+  bytes += jsonStringPropertyBytes("traceId", trace.traceIdLength());
+  bytes += jsonStringPropertyBytes("spanId", trace.spanIdLength(node));
+  bytes += jsonStringPropertyBytes("parentSpanId", trace.parentSpanIdLength(node));
+  bytes += jsonPropertyBytes("requestId", safeId(input.requestId) ?? trace.requestId);
+  bytes += jsonPropertyBytes("connectionId", safeId(input.connectionId) ?? trace.connectionId);
+  bytes += jsonPropertyBytes("mutationId", safeId(input.mutationId) ?? trace.mutationId);
+  bytes += jsonPropertyBytes("commitId", safeId(input.commitId) ?? trace.commitId);
+  bytes += jsonPropertyBytes("subscriptionId", safeId(input.subscriptionId) ?? trace.subscriptionId);
+  bytes += jsonPropertyBytes("operation", input.operation);
+  bytes += jsonPropertyBytes("stage", input.stage);
+  bytes += jsonPropertyBytes("outcome", input.outcome);
+  bytes += jsonPropertyBytes("function", safeName(input.functionName));
+  bytes += jsonPropertyBytes("statement", safeName(input.statement));
+  bytes += jsonPropertyBytes("resource", input.resource);
+  bytes += jsonPropertyBytes("durationMs", input.durationMs);
+  bytes += jsonPropertyBytes("sizeBytes", safeCount(input.sizeBytes));
+  bytes += jsonPropertyBytes("rowCount", safeCount(input.rowCount));
+  bytes += jsonPropertyBytes("resultCount", safeCount(input.resultCount));
+  bytes += jsonPropertyBytes("replayed", input.replayed);
+  bytes += jsonPropertyBytes("dependencyCount", safeCount(input.dependencyCount));
+  bytes += jsonPropertyBytes("postCommit", input.postCommit);
+  return bytes;
+}
+
 interface AbsoluteDeadline {
   readonly reached: Promise<void>;
   readonly expired: () => boolean;
@@ -1258,6 +1357,13 @@ export class Telemetry {
       ...PRODUCTION_LIMITS.telemetry,
       ...options.limits,
     });
+    const operationTraceSampleInterval = options.operationTraceSampleInterval ?? 1_024;
+    if (
+      !Number.isSafeInteger(operationTraceSampleInterval) ||
+      operationTraceSampleInterval < 0
+    ) {
+      throw new RangeError("operationTraceSampleInterval must be a non-negative safe integer");
+    }
     this.sampleIntervalMs = limits.sampleIntervalMs;
     const scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
     const state: TelemetryState = {
@@ -1267,6 +1373,11 @@ export class Telemetry {
       exporter: options.exporter,
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
       encoder: new TextEncoder(),
+      operationTraceSampleInterval,
+      operationTraceSequence: 0,
+      bufferedOperationSpans: 0,
+      bufferedOperationBytes: 0,
+      bufferedOperations: new Set(),
       metricSeries: new Set(),
       aggregateSeries: new Map(),
       aggregateOrder: [],
@@ -1352,14 +1463,18 @@ export class Telemetry {
   }
 
   [OPEN_OPERATION_TRACE](input: OperationTraceInput): OperationTraceHandle {
-    const operation = new OperationTrace(input);
     const state = this.state;
-    if (!state || state.limits.slowOperationMs === 0) return operation;
+    if (!state) return new OperationTrace(input);
     const startedAtMs = readClock(state);
     if (startedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
-      return operation;
+      return new OperationTrace(input);
     }
+    state.operationTraceSequence = boundedCount(state.operationTraceSequence);
+    const sampled = state.operationTraceSampleInterval > 0 &&
+      state.operationTraceSequence % state.operationTraceSampleInterval === 0;
+    const operation = new OperationTrace(input, startedAtMs, sampled);
+    if (state.limits.slowOperationMs === 0) return operation;
     this.pruneCompletedTraces(state, startedAtMs);
     if (operation.inheritedContext !== undefined) {
       const inherited = this.traceForContext(state, operation.inheritedContext);
@@ -1369,6 +1484,7 @@ export class Telemetry {
       }
       return operation;
     }
+    if (!sampled) return operation;
     const trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, operation);
     if (trace === undefined) return operation;
     operation.retention = trace;
@@ -1376,19 +1492,41 @@ export class Telemetry {
     return operation;
   }
 
+  [IDENTIFY_OPERATION_TRACE](
+    handle: OperationTraceHandle,
+    functionName: string,
+    requestId: string,
+  ): void {
+    if (handle instanceof OperationTrace) handle.identify(functionName, requestId);
+  }
+
   [FINISH_OPERATION_TRACE](handle: OperationTraceHandle): void {
     const state = this.state;
     if (!state || !(handle instanceof OperationTrace)) return;
-    const trace = handle.retention;
-    if (trace?.owner !== state || trace.phase !== "active") return;
     const completedAtMs = readClock(state);
     if (completedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
+      const trace = handle.retention;
+      if (trace?.owner !== state || trace.phase !== "active") return;
       this.removeTrace(state, trace);
       this.discardTrace(state, trace);
       return;
     }
+    this[RECORD_OPERATION_SPAN](handle, 0, 0, {
+      operation: handle.operation,
+      stage: "boundary",
+      outcome: handle.outcome,
+      functionName: handle.rootFunction,
+      resource: "operation",
+      durationMs: Math.max(0, completedAtMs - (handle.startedAtMs ?? completedAtMs)),
+    });
+    const trace = handle.retention;
+    if (trace?.owner !== state || trace.phase !== "active") {
+      this.discardBufferedOperationSpans(state, handle);
+      return;
+    }
     this.pruneCompletedTraces(state, completedAtMs);
+    if (handle.sampled && !trace.retained) this.promoteTrace(state, trace, completedAtMs);
     this.completeTrace(state, trace, completedAtMs);
   }
 
@@ -1415,7 +1553,20 @@ export class Telemetry {
   ): TelemetryDeliveryLease | undefined {
     const state = this.state;
     if (!state || !(handle instanceof OperationTrace)) return undefined;
-    return this.claimTraceDelivery(state, handle.retention);
+    let trace = handle.retention;
+    if (
+      state.limits.slowOperationMs > 0 &&
+      (trace?.owner !== state || trace.phase !== "active")
+    ) {
+      const startedAtMs = handle.startedAtMs ?? readClock(state);
+      if (startedAtMs === undefined) return undefined;
+      trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, handle);
+      if (trace === undefined) return undefined;
+      handle.retention = trace;
+      this.linkActiveTrace(state, trace);
+      this.replayBufferedOperationSpans(state, handle, trace);
+    }
+    return this.claimTraceDelivery(state, trace);
   }
 
   /**
@@ -1622,8 +1773,21 @@ export class Telemetry {
     const safeCommitId = safeId(commitId);
     const safeSubscriptionId = safeId(subscriptionId);
     const retain = durationMs >= state.limits.slowOperationMs || outcome !== "ok";
+    handle.observeOutcome(outcome);
     let trace = handle.retention;
     if (trace?.owner !== state || trace.phase === "settled") trace = undefined;
+    if (trace === undefined && retain && state.limits.slowOperationMs > 0) {
+      const startedAtMs = handle.startedAtMs ?? timestampMs;
+      trace = this.createTraceRetention(state, startedAtMs, undefined, undefined, handle);
+      if (trace !== undefined) {
+        handle.retention = trace;
+        this.linkActiveTrace(state, trace);
+        this.promoteTrace(state, trace, timestampMs);
+        this.replayBufferedOperationSpans(state, handle, trace);
+      } else {
+        this.discardBufferedOperationSpans(state, handle);
+      }
+    }
     if (state.limits.slowOperationMs > 0 && trace === undefined && !retain) {
       this.aggregateSpanValues(
         state,
@@ -1637,6 +1801,14 @@ export class Telemetry {
         safeRows,
         safeResults,
         safeDependencies,
+      );
+      if (stage !== "boundary") this.bufferOperationSpan(
+        state,
+        handle,
+        node,
+        parentNode,
+        timestampMs,
+        input,
       );
       return true;
     }
@@ -1667,6 +1839,68 @@ export class Telemetry {
     };
     this.aggregateSpan(state, span);
     return this.recordAggregatedSpan(state, span, trace);
+  }
+
+  private bufferOperationSpan(
+    state: TelemetryState,
+    handle: OperationTrace,
+    node: number,
+    parentNode: number,
+    timestampMs: number,
+    input: OperationTelemetrySpanInput,
+  ): void {
+    const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
+    const bytes = bufferedOperationSpanBytes(handle, resolvedNode, timestampMs, input);
+    if (
+      bytes > state.limits.maxBytes ||
+      state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
+      bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes ||
+      handle.bufferedSpanCount() >= state.limits.maxBatchRecords
+    ) {
+      state.traceHealth.dropped.stagedOverflow = boundedCount(
+        state.traceHealth.dropped.stagedOverflow,
+      );
+      return;
+    }
+    handle.bufferSpan(resolvedNode, parentNode, timestampMs, input, bytes);
+    state.bufferedOperations.add(handle);
+    state.bufferedOperationSpans++;
+    state.bufferedOperationBytes += bytes;
+  }
+
+  private replayBufferedOperationSpans(
+    state: TelemetryState,
+    handle: OperationTrace,
+    trace: MutableTraceRetention,
+  ): void {
+    const replayed = handle.drainBufferedSpans((node, _parentNode, timestampMs, input) => {
+      const span = sanitizeSpan({
+        ...input,
+        timestampMs,
+        context: handle.context(
+          node,
+          safeId(input.requestId),
+          safeId(input.connectionId),
+          safeId(input.mutationId),
+          safeId(input.commitId),
+          safeId(input.subscriptionId),
+        ),
+      }, timestampMs);
+      this.recordAggregatedSpan(state, span, trace);
+    });
+    state.bufferedOperationSpans -= replayed.records;
+    state.bufferedOperationBytes -= replayed.bytes;
+    state.bufferedOperations.delete(handle);
+  }
+
+  private discardBufferedOperationSpans(
+    state: TelemetryState,
+    handle: OperationTrace,
+  ): void {
+    const discarded = handle.drainBufferedSpans();
+    state.bufferedOperationSpans -= discarded.records;
+    state.bufferedOperationBytes -= discarded.bytes;
+    state.bufferedOperations.delete(handle);
   }
 
   [RECORD_OPERATION_EVENT](
@@ -1957,8 +2191,8 @@ export class Telemetry {
         decisionRetentionMs: state.limits.retentionMs,
         activeTraces: state.activeTraces.size,
         completedDecisions: state.completedTraces.size,
-        stagedRecords: state.stagedTraceRecords,
-        stagedBytes: state.stagedTraceBytes,
+        stagedRecords: state.stagedTraceRecords + state.bufferedOperationSpans,
+        stagedBytes: state.stagedTraceBytes + state.bufferedOperationBytes,
         promotedTraces: state.traceHealth.promotedTraces,
         discardedTraces: state.traceHealth.discardedTraces,
         discardedRecords: state.traceHealth.discardedRecords,
@@ -2101,8 +2335,8 @@ export class Telemetry {
       : 0;
     const available = trace.stagedRecords < state.limits.maxBatchRecords &&
       (state.completedTracesWithStaging > excludedCompletedTrace ||
-        (state.stagedTraceRecords < state.limits.maxRecords &&
-          state.stagedTraceBytes < state.limits.maxBytes));
+        (state.stagedTraceRecords + state.bufferedOperationSpans < state.limits.maxRecords &&
+          state.stagedTraceBytes + state.bufferedOperationBytes < state.limits.maxBytes));
     if (!available) {
       state.traceHealth.dropped.stagedOverflow = boundedCount(
         state.traceHealth.dropped.stagedOverflow,
@@ -2118,16 +2352,16 @@ export class Telemetry {
     bytes: number,
   ): void {
     while (
-      (state.stagedTraceRecords >= state.limits.maxRecords ||
-        bytes > state.limits.maxBytes - state.stagedTraceBytes) &&
+      (state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
+        bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes) &&
       this.evictOldestCompletedTrace(state, trace, true)
     ) {
       // Prefer a current active trace over an older completed tail decision.
     }
     if (
       bytes > state.limits.maxBytes ||
-      state.stagedTraceRecords >= state.limits.maxRecords ||
-      bytes > state.limits.maxBytes - state.stagedTraceBytes
+      state.stagedTraceRecords + state.bufferedOperationSpans >= state.limits.maxRecords ||
+      bytes > state.limits.maxBytes - state.stagedTraceBytes - state.bufferedOperationBytes
     ) {
       state.traceHealth.dropped.stagedOverflow = boundedCount(
         state.traceHealth.dropped.stagedOverflow,
@@ -2275,7 +2509,11 @@ export class Telemetry {
   }
 
   private discardAllTraceState(state: TelemetryState): void {
-    const traces = state.activeTraces.size + state.completedTraces.size;
+    const bufferedOperations = state.bufferedOperations.size;
+    for (const operation of [...state.bufferedOperations]) {
+      this.discardBufferedOperationSpans(state, operation);
+    }
+    const traces = state.activeTraces.size + state.completedTraces.size + bufferedOperations;
     for (let trace = state.activeTraces.head; trace !== undefined;) {
       const next = trace.next;
       this.removeTrace(state, trace);

@@ -34,6 +34,7 @@ import {
   type TelemetryEventRecord,
   type TelemetryExporter,
   type TelemetryMetricRecord,
+  type TelemetryOptions,
   type TelemetryRecord,
   type TelemetryScheduler,
   type TelemetrySpanRecord,
@@ -342,7 +343,12 @@ class RuntimeHarness {
     this.runtime = new Runtime({
       engine: this.engine,
       registry: new Registry(functions),
-      telemetry,
+      telemetry: telemetry === false
+        ? false
+        : {
+            operationTraceSampleInterval: 1,
+            ...(telemetry as TelemetryOptions),
+          },
       ...options,
     });
   }
@@ -1075,6 +1081,7 @@ describe("Runtime telemetry acceptance", () => {
         },
       },
       localSink: false,
+      operationTraceSampleInterval: 0,
       limits: { ...telemetryLimits, slowOperationMs: 10_000 },
     });
     const session = await app.openSession("telemetry-tail-runtime");
@@ -1096,7 +1103,7 @@ describe("Runtime telemetry acceptance", () => {
     expect(app.runtime.telemetry.snapshot()).toMatchObject({
       traceRetention: {
         activeTraces: 0,
-        completedDecisions: 2,
+        completedDecisions: 1,
         promotedTraces: 1,
       },
     });

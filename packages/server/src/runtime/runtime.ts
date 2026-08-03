@@ -2401,7 +2401,7 @@ export class Runtime implements RuntimePort {
       "sse",
       request.address,
       { requestId: String(request.id) },
-      claimedTrace?.context,
+      claimedTrace?.trace,
     );
     const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     let traceFinished = false;
@@ -4570,19 +4570,18 @@ export class Runtime implements RuntimePort {
     operation: TelemetryOperation,
     functionName: string | undefined,
     identifiers: TraceIdentifiers,
-    inheritedContext?: PreparedTelemetryTraceContext,
+    inheritedTrace?: OperationTraceHandle,
   ): RuntimeTraceScope {
     return {
       operation,
       ...(functionName === undefined ? {} : { rootFunction: functionName }),
-      trace: this.telemetry[OPEN_OPERATION_TRACE]({
+      trace: inheritedTrace ?? this.telemetry[OPEN_OPERATION_TRACE]({
         operation,
         ...(functionName === undefined ? {} : { functionName }),
         ...(session?.telemetryConnectionId === undefined
           ? {}
           : { connectionId: session.telemetryConnectionId }),
         ...identifiers,
-        ...(inheritedContext === undefined ? {} : { inheritedContext }),
       }),
       invocations: 0,
     };
@@ -4765,7 +4764,7 @@ export class Runtime implements RuntimePort {
       operation,
       functionName,
       identifiers,
-      claimedTrace?.context,
+      claimedTrace?.trace,
     );
     const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
