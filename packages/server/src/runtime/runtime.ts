@@ -146,6 +146,7 @@ import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./li
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import {
   PluginRuntime,
+  type PluginInvocationCapabilities,
   type PluginReadExecution,
   type PluginWriteExecution,
 } from "../plugins/runtime.ts";
@@ -3608,9 +3609,7 @@ export class Runtime implements RuntimePort {
   ): QueryCtx {
     const plugins = this.pluginRuntime?.bindQuery({
       ...execution,
-      timestamp,
-      logFor: (functionAddress, functionKind) =>
-        this.applicationSignals.forFunction(functionAddress, functionKind),
+      invocation: this.pluginInvocationCapabilities(principal, timestamp),
     }) ?? {};
     return Object.freeze({ db, auth: principal, log: this.log, timestamp, ...plugins }) as QueryCtx;
   }
@@ -3624,11 +3623,7 @@ export class Runtime implements RuntimePort {
     const analytics = this.applicationSignals.analyticsFor(principal);
     const plugins = this.pluginRuntime?.bindMutation({
       writes,
-      analyticsFor: (functionAddress, functionKind) =>
-        this.applicationSignals.analyticsFor(principal, { functionAddress, functionKind }),
-      timestamp,
-      logFor: (functionAddress, functionKind) =>
-        this.applicationSignals.forFunction(functionAddress, functionKind),
+      invocation: this.pluginInvocationCapabilities(principal, timestamp),
       ...(this.telemetry.enabled ? { statementObserver: this.tracing.observeStatement } : {}),
     }) ?? {};
     return Object.freeze({
@@ -3864,12 +3859,8 @@ export class Runtime implements RuntimePort {
       : () => timestamp;
     const initialTimestamp = currentTimestamp();
     const plugins = this.pluginRuntime?.bindProcedure({
-      analyticsFor: (functionAddress, functionKind) =>
-        this.applicationSignals.analyticsFor(principal, { functionAddress, functionKind }),
-      timestamp: initialTimestamp,
+      invocation: this.pluginInvocationCapabilities(principal, initialTimestamp),
       abortSignal: signal,
-      logFor: (functionAddress, functionKind) =>
-        this.applicationSignals.forFunction(functionAddress, functionKind),
       runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
       runMutation: (work) => this.executePluginWrite(
         "mutation",
@@ -3948,6 +3939,19 @@ export class Runtime implements RuntimePort {
       )
       : releaseNothing;
     return Object.freeze({ value, release });
+  }
+
+  private pluginInvocationCapabilities(
+    principal: Principal,
+    timestamp: number,
+  ): Readonly<PluginInvocationCapabilities> {
+    return Object.freeze({
+      timestamp,
+      log: (functionAddress, functionKind) =>
+        this.applicationSignals.forFunction(functionAddress, functionKind),
+      analytics: (functionAddress, functionKind) =>
+        this.applicationSignals.analyticsFor(principal, { functionAddress, functionKind }),
+    } satisfies PluginInvocationCapabilities);
   }
 
   private mcpAiCapability(

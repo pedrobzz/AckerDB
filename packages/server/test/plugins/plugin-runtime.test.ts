@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { noopLogger } from "ackerdb-test-support/telemetry";
+import { noopAnalytics, noopLogger } from "ackerdb-test-support/telemetry";
 import { Engine } from "../../src/database/engine.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {
@@ -12,6 +12,12 @@ import { defineSchema } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 
 const engines: Engine[] = [];
+
+const pluginInvocation = (timestamp: number) => Object.freeze({
+  timestamp,
+  log: () => noopLogger,
+  analytics: () => noopAnalytics,
+});
 
 function makePluginRuntime(
   assembly: ReturnType<typeof assemblePlugins>,
@@ -230,14 +236,12 @@ describe("PluginRuntime invocation core", () => {
     await mutationOnly.start();
     const mutationOnlyEngine = engines.at(-1)!;
     const firstEmpty = mutationOnly.bindQuery({
-      timestamp: 1,
-      logFor: () => noopLogger,
+      invocation: pluginInvocation(1),
       connection: mutationOnlyEngine.reader,
       reads: null,
     });
     const secondEmpty = mutationOnly.bindQuery({
-      timestamp: 2,
-      logFor: () => noopLogger,
+      invocation: pluginInvocation(2),
       connection: mutationOnlyEngine.reader,
       reads: null,
     });
@@ -269,8 +273,7 @@ describe("PluginRuntime invocation core", () => {
     await mixed.start();
     const mixedEngine = engines.at(-1)!;
     const capabilities = mixed.bindQuery({
-      timestamp: 3,
-      logFor: () => noopLogger,
+      invocation: pluginInvocation(3),
       connection: mixedEngine.reader,
       reads: null,
     }) as AnyContext;
@@ -336,8 +339,7 @@ describe("PluginRuntime invocation core", () => {
     });
     await runtime.start();
     const capabilities = runtime.bindQuery({
-      timestamp: 1,
-      logFor: () => noopLogger,
+      invocation: pluginInvocation(1),
       connection: engine.reader,
       reads: null,
     }) as AnyContext;
@@ -407,8 +409,7 @@ describe("PluginRuntime invocation core", () => {
     await runtime.start();
     const engine = engines.at(-1)!;
     const capabilities = runtime.bindQuery({
-      timestamp: 1,
-      logFor: () => noopLogger,
+      invocation: pluginInvocation(1),
       connection: engine.reader,
       reads: null,
     }) as AnyContext;
