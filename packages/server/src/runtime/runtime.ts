@@ -2403,7 +2403,7 @@ export class Runtime implements RuntimePort {
       "sse",
       request.address,
       { requestId: String(request.id) },
-      claimedTrace?.context,
+      claimedTrace?.trace,
     );
     const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     let traceFinished = false;
@@ -4396,6 +4396,7 @@ export class Runtime implements RuntimePort {
 
   private readonly observeInvocation = (
     invocation: InvocationTelemetryContext,
+    phase: "auth" | "policy" | "handler",
     durationMs: number,
     outcome: InvocationOutcome,
   ): void => {
@@ -4406,7 +4407,7 @@ export class Runtime implements RuntimePort {
     const node = this.telemetry[OPERATION_INVOCATION_NODE](
       scope.trace,
       invocation.invocationId,
-      invocation.phase,
+      phase,
       parent,
     );
     this.telemetry[RECORD_OPERATION_SPAN](
@@ -4415,7 +4416,7 @@ export class Runtime implements RuntimePort {
       parent,
       {
         operation: scope.operation,
-        stage: invocation.phase,
+        stage: phase,
         outcome,
         functionName: this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction,
         durationMs,
@@ -4583,19 +4584,18 @@ export class Runtime implements RuntimePort {
     operation: TelemetryOperation,
     functionName: string | undefined,
     identifiers: TraceIdentifiers,
-    inheritedContext?: PreparedTelemetryTraceContext,
+    inheritedTrace?: OperationTraceHandle,
   ): RuntimeTraceScope {
     return {
       operation,
       ...(functionName === undefined ? {} : { rootFunction: functionName }),
-      trace: this.telemetry[OPEN_OPERATION_TRACE]({
+      trace: inheritedTrace ?? this.telemetry[OPEN_OPERATION_TRACE]({
         operation,
         ...(functionName === undefined ? {} : { functionName }),
         ...(session?.telemetryConnectionId === undefined
           ? {}
           : { connectionId: session.telemetryConnectionId }),
         ...identifiers,
-        ...(inheritedContext === undefined ? {} : { inheritedContext }),
       }),
       invocations: 0,
     };
@@ -4628,7 +4628,7 @@ export class Runtime implements RuntimePort {
   private invocationNode(
     scope: RuntimeTraceScope,
     invocation: InvocationTelemetryContext | undefined,
-    phase: "auth" | "policy" | "handler" = invocation?.phase ?? "handler",
+    phase: "auth" | "policy" | "handler" = "handler",
   ): number {
     if (invocation === undefined) return 0;
     const parent = this.invocationNode(scope, invocation.parent, "handler");
@@ -4778,7 +4778,7 @@ export class Runtime implements RuntimePort {
       operation,
       functionName,
       identifiers,
-      claimedTrace?.context,
+      claimedTrace?.trace,
     );
     const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
@@ -5081,7 +5081,7 @@ export class Runtime implements RuntimePort {
     this.expectedSampleAt = now + this.telemetry.sampleIntervalMs;
     const storage = this.engine.status();
     const checkpoint = storage.lastCheckpoint;
-    const reactive = this.reactive.snapshot();
+    const reactive = this.reactive.metricsSnapshot();
     const reader = this.reader.snapshot();
     const writer = this.coordinator.snapshot();
     const publication = this.reactive.publication.snapshot();

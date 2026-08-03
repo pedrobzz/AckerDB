@@ -464,7 +464,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
   }
 });
 
-test("Runtime releases fast WebSocket tails after final physical delivery", async () => {
+test("Runtime keeps unsampled delivery success aggregate-only and delayed failure focused", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-delivery-lease-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -524,10 +524,10 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
     await settle();
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       activeTraces: 0,
-      completedDecisions: 1,
+      completedDecisions: 0,
       discardedTraces: 0,
     });
-    expect(runtime.telemetry.snapshot().traceRetention.stagedRecords).toBeGreaterThan(0);
+    expect(runtime.telemetry.snapshot().traceRetention.stagedRecords).toBe(0);
 
     socket.bufferedAmount = 0;
     sink.onDrain();
@@ -535,10 +535,11 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       completedDecisions: 0,
       stagedRecords: 0,
-      discardedTraces: 1,
+      discardedTraces: 0,
     });
     await runtime.telemetry.flush();
-    expect(spans(exported).filter((span) => span.requestId === "51")).toEqual([]);
+    expect(spans(exported).filter((span) => span.requestId === "51").map((span) => span.stage))
+      .toEqual(["boundary"]);
 
     socket.bufferNext();
     await handle(session, {
@@ -549,7 +550,7 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
       args: {},
     });
     await settle();
-    expect(runtime.telemetry.snapshot().traceRetention.completedDecisions).toBe(1);
+    expect(runtime.telemetry.snapshot().traceRetention.completedDecisions).toBe(0);
     await sink.close({
       code: "draining",
       retryable: true,
@@ -560,12 +561,12 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       completedDecisions: 0,
       stagedRecords: 0,
-      promotedTraces: 1,
-      discardedTraces: 1,
+      promotedTraces: 0,
+      discardedTraces: 0,
     });
     await runtime.telemetry.flush();
     const failedDelivery = spans(exported).filter((span) => span.requestId === "52");
-    expect(failedDelivery.some((span) => span.stage === "admission")).toBe(true);
+    expect(failedDelivery.some((span) => span.stage === "admission")).toBe(false);
     expect(failedDelivery).toContainEqual(expect.objectContaining({
       stage: "delivery",
       outcome: "draining",

@@ -146,6 +146,7 @@ function fixture(
             },
           },
           localSink: false,
+          operationTraceSampleInterval: 1,
           limits: {
             maxRecords: 512,
             maxBytes: 1_024 * 1_024,
@@ -650,7 +651,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
       completedDecisions: 1,
       dropped: { invalid: 0 },
     });
-    expect(app.runtime.status().telemetry.traceRetention.stagedRecords).toBeGreaterThan(0);
+    expect(app.runtime.status().telemetry.queuedRecords).toBeGreaterThan(0);
 
     const denied = await fetch(`${app.base}/api/ops/echo`, {
       method: "POST",
@@ -662,7 +663,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
     expect(app.runtime.status().telemetry.traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 2,
-      promotedTraces: 1,
+      promotedTraces: 2,
       dropped: { invalid: 0 },
     });
 
@@ -675,7 +676,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
     expect(app.runtime.status().telemetry.traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 3,
-      promotedTraces: 2,
+      promotedTraces: 3,
       dropped: { invalid: 0 },
     });
 
@@ -702,7 +703,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
     expect(app.runtime.status().telemetry.traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 4,
-      promotedTraces: 3,
+      promotedTraces: 4,
       dropped: { invalid: 0 },
     });
 

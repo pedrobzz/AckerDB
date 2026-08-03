@@ -60,6 +60,11 @@ import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import type { Identity } from "../validation/v.ts";
+import type {
+  AuthenticationAttemptInput,
+  AuthenticationAttemptObservation,
+  AuthenticationAttemptObserver,
+} from "../auth/attempt-observation.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
@@ -138,31 +143,15 @@ export interface SessionClock {
   clearTimeout(handle: unknown): void;
 }
 
-export type SessionAuthAttemptKind = "hello" | "refresh" | "sign-out";
-
-export interface SessionAuthAttemptInput {
-  readonly kind: SessionAuthAttemptKind;
-  readonly clientSessionId: string;
-  readonly attemptId?: number;
-}
-
-export interface SessionAuthAttemptObservation {
-  finish(error?: unknown): void;
-}
-
-export type SessionAuthObserver = (
-  input: SessionAuthAttemptInput,
-) => SessionAuthAttemptObservation | undefined;
-
 const SESSION_AUTH_OBSERVER: unique symbol = Symbol("ackerdb.sessionAuthObserver");
 
 interface InternalSessionOptions {
-  readonly [SESSION_AUTH_OBSERVER]?: SessionAuthObserver;
+  readonly [SESSION_AUTH_OBSERVER]?: AuthenticationAttemptObserver;
 }
 
 interface PendingAuthObservation {
   readonly owner: object;
-  readonly observation: SessionAuthAttemptObservation;
+  readonly observation: AuthenticationAttemptObservation;
 }
 
 export interface SessionRuntimeContext {
@@ -274,7 +263,7 @@ export interface SessionOptions {
 /** Attach package-internal auth observation without expanding Session's public options. */
 export function withSessionAuthObserver<T extends SessionOptions>(
   options: T,
-  observer: SessionAuthObserver | undefined,
+  observer: AuthenticationAttemptObserver | undefined,
 ): T {
   if (observer !== undefined) Object.assign(options, { [SESSION_AUTH_OBSERVER]: observer });
   return options;
@@ -325,7 +314,7 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly observeAuth: SessionAuthObserver | undefined;
+  private readonly observeAuth: AuthenticationAttemptObserver | undefined;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
@@ -869,8 +858,8 @@ export class Session {
   }
 
   private beginAuthObservation(
-    input: SessionAuthAttemptInput,
-  ): SessionAuthAttemptObservation | undefined {
+    input: AuthenticationAttemptInput,
+  ): AuthenticationAttemptObservation | undefined {
     try {
       return this.observeAuth?.(input);
     } catch {
@@ -879,7 +868,7 @@ export class Session {
   }
 
   private finishAuthObservation(
-    observation: SessionAuthAttemptObservation | undefined,
+    observation: AuthenticationAttemptObservation | undefined,
     error?: unknown,
   ): void {
     try {
@@ -891,7 +880,7 @@ export class Session {
 
   private setPendingAuthObservation(
     owner: object,
-    observation: SessionAuthAttemptObservation | undefined,
+    observation: AuthenticationAttemptObservation | undefined,
   ): void {
     this.pendingAuthObservation = observation === undefined ? null : { owner, observation };
   }
