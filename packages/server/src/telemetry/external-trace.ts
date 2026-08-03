@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import type {
-  SessionAuthAttemptInput,
-  SessionAuthAttemptObservation,
-} from "../subscriptions/session.ts";
+  AuthenticationAttemptInput,
+  AuthenticationAttemptObservation,
+} from "../auth/attempt-observation.ts";
 import {
   FINISH_OPERATION_TRACE,
   IDENTIFY_OPERATION_TRACE,
@@ -231,8 +231,8 @@ export function finishClaimedHttpTrace(trace: ClaimedHttpTrace | undefined): voi
 
 export function beginSessionAuthTrace(
   telemetry: Telemetry,
-  input: SessionAuthAttemptInput,
-): SessionAuthAttemptObservation | undefined {
+  input: AuthenticationAttemptInput,
+): AuthenticationAttemptObservation | undefined {
   if (!telemetry.enabled) return undefined;
   try {
     const context = prepareTelemetryTraceContext({
