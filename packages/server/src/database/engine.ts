@@ -163,6 +163,13 @@ export interface StorageScope {
   readonly mount: string | null;
   readonly schema: Schema;
   readonly plans: ReadonlyMap<string, TablePlan>;
+  /**
+   * This scope's tag plan, keyed by storage identity. A planned scope owns it
+   * privately; activation publishes it to the Engine, and `persistTags` writes
+   * it to `_ackerdb_tags`. The root scope's map IS the Engine's, so
+   * `reinternTags` can rebuild it underneath the root's live plans.
+   */
+  readonly tags: ReadonlyMap<string, TagMap>;
   tagIdentity(typeName: string): string;
   plan(logicalName: string): TablePlan;
 }
@@ -1301,7 +1308,9 @@ export class Engine {
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
       this[mcpTokenVaultOwner] = new McpTokenVault(writer);
-      this.rootScope = this.buildStorageScope(null, schema);
+      // The root scope plans straight into the Engine's own tag store: it is
+      // the application's own schema, so there is no consent step to wait for.
+      this.rootScope = this.buildStorageScope(null, schema, this.tags);
       this.plans = this.rootScope.plans;
       if ([...this.plans.values()].some((plan) => plan.fullText.length > 0)) {
         this.enableFullTextSupport();
@@ -1648,8 +1657,17 @@ export class Engine {
     return persistedLayoutFingerprint(this.writer);
   }
 
-  /** Assign stable tags to every named enum/union variant in one storage scope. */
-  private internTags(schema: Schema, tagIdentity: StorageScope["tagIdentity"]): void {
+  /**
+   * Assign stable tags to every named enum/union variant in one storage scope,
+   * into `tags`. Reads `_ackerdb_tags` but never writes it — the assignment is a
+   * plan until `persistTags` commits it, so planning a scope the caller may yet
+   * refuse costs nothing durable.
+   */
+  private internTags(
+    schema: Schema,
+    tagIdentity: StorageScope["tagIdentity"],
+    tags: Map<string, TagMap>,
+  ): void {
     const select = this.writer.query("SELECT variant, tag FROM _ackerdb_tags WHERE type = ?");
     for (const [typeName, validator] of schema.namedTypes) {
       const identity = tagIdentity(typeName);
@@ -1672,7 +1690,7 @@ export class Engine {
           map.toName.set(tag, variant);
         }
       }
-      this.tags.set(identity, map);
+      tags.set(identity, map);
     }
   }
 
@@ -1687,18 +1705,17 @@ export class Engine {
     for (const typeName of scope.schema.namedTypes.keys()) {
       this.tags.delete(scope.tagIdentity(typeName));
     }
-    this.internTags(scope.schema, scope.tagIdentity);
+    this.internTags(scope.schema, scope.tagIdentity, this.tags);
   }
 
-  /** Persist the in-memory tag plan. The caller owns the schema transaction. */
+  /** Persist one scope's tag plan. The caller owns the schema transaction. */
   persistTags(scope: StorageScope = this.rootScope): void {
     const insert = this.writer.query(
       "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
     );
     for (const typeName of scope.schema.namedTypes.keys()) {
       const identity = scope.tagIdentity(typeName);
-      const map = this.tags.get(identity)!;
-      for (const [variant, tag] of map.toTag) insert.run(identity, variant, tag);
+      for (const [variant, tag] of scope.tags.get(identity)!.toTag) insert.run(identity, variant, tag);
     }
   }
 
@@ -1746,14 +1763,35 @@ export class Engine {
     return prepareLiteralFullTextQuery(this.fullTextTokenizer!, input, path);
   }
 
-  /** Bind one mounted Plugin schema to deterministic private SQLite storage. */
-  createPluginScope(mount: string, schema: Schema): StorageScope {
+  /**
+   * Plan one mounted Plugin schema's private SQLite storage. Pure with respect
+   * to the Engine: it reads `_ackerdb_tags` and builds plans, but publishes no
+   * tags and initializes no capabilities, so a mount that reconciliation ends up
+   * refusing for want of consent leaves nothing behind. `activateScope` is the
+   * commit-time other half.
+   */
+  planPluginScope(mount: string, schema: Schema): StorageScope {
     if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
-    loadVectorRuntimeForSchema(schema);
-    const scope = this.buildStorageScope(mount, schema);
+    return this.buildStorageScope(mount, schema, new Map());
+  }
+
+  /**
+   * Publish a planned scope's tags to the Engine and initialize the capabilities
+   * its tables need. Call once the scope is accepted — after consent and inside
+   * (or immediately before) the transaction that commits it.
+   */
+  activateScope(scope: StorageScope): void {
+    loadVectorRuntimeForSchema(scope.schema);
+    for (const [identity, map] of scope.tags) this.tags.set(identity, map);
     this.enableFullTextForScope(scope);
+  }
+
+  /** Plan and immediately activate one mounted Plugin schema. */
+  createPluginScope(mount: string, schema: Schema): StorageScope {
+    const scope = this.planPluginScope(mount, schema);
+    this.activateScope(scope);
     return scope;
   }
 
@@ -1762,7 +1800,11 @@ export class Engine {
     return this.tags.get(plan.tagIdentity(typeName))!;
   }
 
-  private buildStorageScope(mount: string | null, schema: Schema): StorageScope {
+  private buildStorageScope(
+    mount: string | null,
+    schema: Schema,
+    tags: Map<string, TagMap>,
+  ): StorageScope {
     const tagIdentity: StorageScope["tagIdentity"] = mount === null
       ? (typeName) => typeName
       : (typeName) => pluginTagIdentity(mount, typeName);
@@ -1777,10 +1819,12 @@ export class Engine {
         }
       }
     }
-    this.internTags(schema, tagIdentity);
-    // Lazy by construction: a migration relabels variants and `reinternTags`
-    // then replaces the map this scope's plans encode through.
-    const tagsOf: TagsOf = (typeName) => this.tags.get(tagIdentity(typeName))!;
+    this.internTags(schema, tagIdentity, tags);
+    // Lazy by construction: the root scope's store IS `this.tags`, so when a
+    // migration relabels variants `reinternTags` replaces the map these plans
+    // encode through. A planned Plugin scope reads its own store, which
+    // activation then publishes.
+    const tagsOf: TagsOf = (typeName) => tags.get(tagIdentity(typeName))!;
     const plans = new Map<string, TablePlan>();
     for (const [logicalName, table] of Object.entries(schema.tables)) {
       if (table.kind === "event") continue;
@@ -1797,6 +1841,7 @@ export class Engine {
       mount,
       schema,
       plans,
+      tags,
       tagIdentity,
       plan(logicalName) {
         const plan = plans.get(logicalName);
