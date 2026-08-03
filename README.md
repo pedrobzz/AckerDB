@@ -146,10 +146,11 @@ client.close();
   `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
   reviewer-gated public npm delivery, trusted publishing, and local
   Verdaccio betas.
-- [Production-readiness report](docs/production-readiness-report.md) records the
-  full issue #1 implementation and decision history, verification and benchmark
-  evidence, remaining release blockers, and the operational gap versus Convex
-  Cloud and SpacetimeDB/Maincloud.
+- [Historical documents](docs/history/) keep superseded reports and completed
+  implementation plans — among them the production-readiness report's issue #1
+  implementation and decision history, its verification and benchmark evidence,
+  and the operational gap versus Convex Cloud and SpacetimeDB/Maincloud. They
+  are records of how AckerDB got here, not current procedure.
 
 The remaining single-node and product limitations are listed explicitly in
 [Operations: remaining limitations](docs/operations.md#remaining-limitations).
