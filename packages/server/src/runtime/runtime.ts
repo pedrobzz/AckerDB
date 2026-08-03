@@ -67,7 +67,6 @@ import {
 } from "../database/access.ts";
 import {
   BoundedSseProducer,
-  FINALIZE_DELIVERY_OBSERVER,
   OutboundBudget,
   type DeliveryObservation,
   type DeliveryObserver,
@@ -159,17 +158,10 @@ import {
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
 import {
-  CLAIM_OPERATION_DELIVERY_LEASE,
   FINISH_OPERATION_TRACE,
-  prepareTelemetryTraceContext,
   RECORD_OPERATION_SPAN,
-  RELEASE_DELIVERY_LEASE,
   Telemetry,
-  type PreparedTelemetryTraceContext,
   type TelemetryOperation,
-  type TelemetryOutcome,
-  type TelemetryResource,
-  type TelemetryStage,
 } from "../telemetry/telemetry.ts";
 import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
 import {
@@ -214,7 +206,6 @@ import type { RuntimeStatus } from "./contracts/status.ts";
 import {
   RuntimeTraceBridge,
   type RuntimeTraceIdentifiers as TraceIdentifiers,
-  type RuntimeTraceScope,
 } from "./telemetry/trace-bridge.ts";
 import {
   RuntimeOperationRunner,
@@ -243,6 +234,7 @@ import {
   type RuntimeSession,
 } from "./sessions/store.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
+import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -271,20 +263,6 @@ function restoreMutationResult(value: unknown): Result<unknown, unknown> {
 }
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
-/** Individually retained non-ok delivery observations per summary key per sampler interval. */
-const DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL = 8;
-/** Early flush bound so an unsampled storm cannot defer its summary indefinitely. */
-const DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD = 4_096;
-
-interface DeliveryFailureSummary {
-  readonly operation: TelemetryOperation;
-  readonly stage: TelemetryStage;
-  readonly outcome: TelemetryOutcome;
-  readonly resource: TelemetryResource;
-  exemplars: number;
-  summarized: number;
-}
-
 /** What every path-addressed entry point derives from its request before it runs. */
 interface ClaimedHttpRequest {
   readonly requestBytes: number;
@@ -351,11 +329,6 @@ interface SessionOperationOptions<T> {
   readonly successPublication?: (value: T) => RuntimePublication;
 }
 
-interface DetachedDeliveryTrace {
-  readonly operation: TelemetryOperation;
-  readonly context: PreparedTelemetryTraceContext;
-}
-
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => {
@@ -404,122 +377,7 @@ export class Runtime implements RuntimePort {
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
-  readonly deliveryObserver: DeliveryObserver = (observation): void => {
-    const ambient = this.tracing.currentScope();
-    if (ambient !== undefined) {
-      this.observeDelivery(
-        ambient,
-        this.tracing.invocationNode(ambient, currentInvocationTelemetryContext()),
-        observation,
-      );
-      return;
-    }
-    this.observeDelivery({
-      operation: observation.transport === "sse" ? "sse" : "subscription",
-      context: prepareTelemetryTraceContext(),
-    }, 0, observation);
-  };
-
-  private observeDelivery(
-    trace: RuntimeTraceScope | DetachedDeliveryTrace,
-    parentNode: number,
-    observation: DeliveryObservation,
-  ): void {
-    const outcome: TelemetryOutcome = observation.outcome === "dropped"
-      ? "unavailable"
-      : observation.outcome;
-    const fallbackOperation: TelemetryOperation = observation.transport === "sse"
-      ? "sse"
-      : "subscription";
-    const resource: TelemetryResource = observation.transport === "sse" ? "sse" : "outbound";
-    if (observation.droppedObservations !== undefined) {
-      this.telemetry.recordMetric({
-        name: "delivery.observations_dropped",
-        value: observation.droppedObservations,
-        unit: "count",
-        labels: { operation: fallbackOperation, resource },
-      });
-    }
-    // Mass disconnect and fanout backpressure can fail thousands of queued
-    // frames inside one event-loop turn. Per-frame failure records at that
-    // rate carry no more signal than a count and can outrun any bounded
-    // asynchronous exporter, so beyond a per-interval exemplar budget the
-    // remainder is summarized into delivery.failures_coalesced instead of
-    // being individually retained. A successfully encoded terminal error
-    // frame reports outcome "ok" while carrying the actual failure in
-    // terminalOutcome, so that shape budgets by the terminal outcome.
-    const terminalFailure = observation.source === "terminal" &&
-      observation.stage === "encoding" &&
-      observation.terminalOutcome !== undefined;
-    const failureOutcome: TelemetryOutcome | undefined = outcome !== "ok"
-      ? outcome
-      : terminalFailure
-        ? observation.terminalOutcome
-        : undefined;
-    let summarizedFailure = false;
-    if (failureOutcome !== undefined && this.telemetry.enabled) {
-      const operation = trace.operation;
-      const key = `${operation}|${observation.stage}|${failureOutcome}|${resource}`;
-      let summary = this.deliveryFailureSummaries.get(key);
-      if (summary === undefined) {
-        summary = {
-          operation,
-          stage: observation.stage,
-          outcome: failureOutcome,
-          resource,
-          exemplars: 0,
-          summarized: 0,
-        };
-        this.deliveryFailureSummaries.set(key, summary);
-      }
-      if (summary.exemplars >= DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL) {
-        summarizedFailure = true;
-        summary.summarized++;
-        if (summary.summarized >= DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD) {
-          this.flushDeliveryFailureSummary(summary);
-        }
-      } else {
-        summary.exemplars++;
-      }
-    }
-    // A summarized observation emits no span at all: even its ok-outcome
-    // encoding span would be individually retained under slowOperationMs 0
-    // or once an exemplar failure event has promoted the ambient trace,
-    // which would reopen the storm this budget exists to bound.
-    if (!summarizedFailure) {
-      const span = {
-        stage: observation.stage,
-        outcome,
-        resource,
-        durationMs: observation.durationMs,
-        sizeBytes: observation.bytes,
-      } as const;
-      if ("trace" in trace) {
-        this.tracing.span(span, fallbackOperation, trace, parentNode);
-      } else {
-        this.telemetry.recordSpan({
-          ...span,
-          operation: trace.operation,
-          context: trace.context,
-        });
-      }
-    }
-    if (terminalFailure && !summarizedFailure) {
-      const event = {
-        name: "failure",
-        level: "error",
-        operation: trace.operation,
-        stage: "delivery",
-        outcome: observation.terminalOutcome,
-        resource,
-      } as const;
-      if ("trace" in trace) {
-        this.tracing.event(event, trace, parentNode);
-      } else {
-        this.telemetry.recordEvent({ ...event, context: trace.context });
-      }
-    }
-  }
+  readonly deliveryObserver: DeliveryObserver;
 
   private readonly now: () => number;
   private readonly pluginRuntime: PluginRuntime | undefined;
@@ -535,9 +393,9 @@ export class Runtime implements RuntimePort {
   private readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
-  private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
   private readonly tracing: RuntimeTraceBridge;
+  private readonly deliveryTelemetry: RuntimeDeliveryTelemetry;
   private readonly operations: RuntimeOperationRunner<RuntimeSession>;
   private readonly httpResponses: RuntimeHttpResponses;
   private readonly sampler: RuntimeSampler;
@@ -636,6 +494,12 @@ export class Runtime implements RuntimePort {
             },
           });
     this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
+    this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
+      this.telemetry,
+      this.tracing,
+      (clientSessionId) => digest(clientSessionId),
+    );
+    this.deliveryObserver = this.deliveryTelemetry.observer;
     this.operations = new RuntimeOperationRunner({
       telemetry: this.telemetry,
       tracing: this.tracing,
@@ -774,7 +638,7 @@ export class Runtime implements RuntimePort {
       sampleRealtime: () => {
         void this.realtime?.sampleHealth(8);
       },
-      flushDeliveryFailures: () => this.flushDeliveryFailureSummaries(),
+      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.telemetry.recordEvent({
       name: "lifecycle",
@@ -2395,7 +2259,7 @@ export class Runtime implements RuntimePort {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.
       if (deadlineReached) return;
-      this.flushDeliveryFailureSummaries();
+      this.deliveryTelemetry.flush();
       this.telemetry.recordEvent({
         name: "lifecycle",
         level: "info",
@@ -3703,38 +3567,8 @@ export class Runtime implements RuntimePort {
   readonly [CAPTURE_DELIVERY_OBSERVER] = (
     lane: OutboundLane = "application",
     clientSessionId?: string,
-  ): DeliveryObserver | undefined => {
-    if (!this.telemetry.enabled) return undefined;
-    const scope = this.tracing.currentScope();
-    if (scope === undefined) {
-      const detached: DetachedDeliveryTrace = {
-        operation: lane === "control" ? "lifecycle" : "subscription",
-        context: prepareTelemetryTraceContext(
-          clientSessionId === undefined ? {} : { connectionId: digest(clientSessionId) },
-        ),
-      };
-      return (observation) => this.observeDelivery(detached, 0, observation);
-    }
-    const parent = this.tracing.invocationNode(scope, currentInvocationTelemetryContext());
-    const lease = scope.operation === "sse"
-      ? undefined
-      : this.telemetry[CLAIM_OPERATION_DELIVERY_LEASE](scope.trace);
-    if (lease === undefined) {
-      return (observation) => this.observeDelivery(scope, parent, observation);
-    }
-    let released = false;
-    return Object.assign(
-      (observation: DeliveryObservation) =>
-        this.observeDelivery(scope, parent, observation),
-      {
-        [FINALIZE_DELIVERY_OBSERVER]: () => {
-          if (released) return;
-          released = true;
-          this.telemetry[RELEASE_DELIVERY_LEASE](lease);
-        },
-      },
-    );
-  };
+  ): DeliveryObserver | undefined =>
+    this.deliveryTelemetry.capture(lane, clientSessionId);
 
   private admitOperation(
     session: RuntimeSession | null,
@@ -3880,35 +3714,6 @@ export class Runtime implements RuntimePort {
     return signal === undefined
       ? this.shutdownController.signal
       : AbortSignal.any([signal, this.shutdownController.signal]);
-  }
-
-  /** Emit and reset one coalesced non-ok delivery observation summary. */
-  private flushDeliveryFailureSummary(summary: DeliveryFailureSummary): void {
-    if (summary.summarized > 0) {
-      this.telemetry.recordMetric({
-        name: "delivery.failures_coalesced",
-        value: summary.summarized,
-        unit: "count",
-        labels: {
-          operation: summary.operation,
-          stage: summary.stage,
-          outcome: summary.outcome,
-          resource: summary.resource,
-        },
-        // The count must stay observable on the default local-console
-        // profile, where the summarized per-frame records no longer appear.
-        local: true,
-      });
-    }
-    summary.summarized = 0;
-  }
-
-  /** Flush every summary and reset exemplar budgets for the next interval. */
-  private flushDeliveryFailureSummaries(): void {
-    for (const summary of this.deliveryFailureSummaries.values()) {
-      this.flushDeliveryFailureSummary(summary);
-    }
-    this.deliveryFailureSummaries.clear();
   }
 
   private readNow(): number {
