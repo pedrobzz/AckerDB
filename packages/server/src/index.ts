@@ -307,7 +307,8 @@ export type {
   TelemetryMetadata,
   TelemetryValue,
 } from "./telemetry/application-signals/value.ts";
-export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
+export { invokeFunction } from "./app/invocation.ts";
+export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {
   AppSystemCtx,
   SystemCtx,
@@ -321,7 +322,6 @@ export {
   procedure,
   sseProcedure,
   isRegisteredFunction,
-  type AccessPolicy,
   type AnyRegistered,
   type AnyInvocable,
   type ArgsInput,

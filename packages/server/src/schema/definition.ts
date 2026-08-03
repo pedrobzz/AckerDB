@@ -17,11 +17,11 @@ import {
 } from "../validation/v.ts";
 import {
   isAccessPolicy,
-  validateArgsShape,
   type AccessPolicy,
-} from "../app/functions.ts";
+  type InvocationContext,
+} from "../app/access.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
-import type { InvocationContext } from "../app/invocation.ts";
+import { validateArgsShape } from "../validation/declarations.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 const SCHEMA_IDENTITY = Symbol.for("@ackerdb/server/Schema/v1");

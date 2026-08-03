@@ -7,8 +7,23 @@ import type {
   Expand,
   InferValidator,
   InferValidatorInput,
+  ObjectShape,
   Validator,
 } from "./v.ts";
+
+export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
+  for (const [name, validator] of Object.entries(args)) {
+    if (
+      validator.kind === "pk" ||
+      validator.kind === "scheduleAt" ||
+      validator.kind === "tag"
+    ) {
+      throw new Error(
+        `${prefix}.${name}: v.${validator.kind}() is not a valid argument validator`,
+      );
+    }
+  }
+}
 
 export type DeclarationInputs<
   Declarations extends Readonly<Record<string, Validator<unknown, string>>>,

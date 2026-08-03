@@ -8,17 +8,16 @@ import {
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
-  isAccessPolicy,
-  validateArgsShape,
-  type AccessPolicy,
   type ArgsInput,
   type Invocable,
   type ProcedureCtx,
 } from "../app/functions.ts";
+import { compileInvocation } from "../app/invocation.ts";
 import {
-  compileInvocation,
+  isAccessPolicy,
+  type AccessPolicy,
   type InvocationContext,
-} from "../app/invocation.ts";
+} from "../app/access.ts";
 import {
   type Expand,
   type InferShape,
@@ -35,6 +34,7 @@ import {
   authorizationResult as realtimeAuthorizationResult,
   validateDeclaration,
   validateEventDeclarations,
+  validateArgsShape,
 } from "../validation/declarations.ts";
 import type { RealtimeMedia } from "./media.ts";
 

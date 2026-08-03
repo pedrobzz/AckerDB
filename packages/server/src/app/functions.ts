@@ -27,9 +27,14 @@ import type { DbReader, DbWriter } from "../database/query/types.ts";
 import {
   compileInvocation,
   invokeFunction,
-  type InvocationContext,
 } from "./invocation.ts";
+import {
+  isAccessPolicy,
+  type AccessPolicy,
+  type InvocationContext,
+} from "./access.ts";
 import type { Schema } from "../schema/definition.ts";
+import { validateArgsShape } from "../validation/declarations.ts";
 import type {
   AnalyticsTracker,
   ApplicationLogger,
@@ -109,8 +114,6 @@ export type SseCtx<
 /** Args as the caller provides them: only optional/nullish keys may be omitted. */
 export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
 
-export type BuiltinAccessPolicy = "public" | "authenticated" | "system";
-
 /**
  * Per-function opt-in to the plain-HTTP surface. Absent or `false` means the
  * function is not reachable over HTTP and absent from OpenAPI; `true` is
@@ -140,14 +143,6 @@ export function httpExposure(
   }
   return { openapi: (value as { openapi: boolean }).openapi };
 }
-
-/**
- * Every registered function has exactly one policy. A callback must explicitly
- * return `true`; false, exceptions, and every other result fail closed.
- */
-export type AccessPolicy<Ctx, Args> =
-  | BuiltinAccessPolicy
-  | ((ctx: Ctx, args: Args) => boolean | Promise<boolean>);
 
 export interface ErrorDeclaration {
   readonly body: Validator<unknown, string>;
@@ -408,23 +403,6 @@ export interface RegisteredSse<A extends ObjectShape, Chunk, S extends Schema = 
   extends Registered<"sse", A, SseCtx<S>, Chunk, SseSource<Chunk>> {
   /** Validates every yielded chunk at the server boundary. */
   readonly yields: Validator<Chunk, string>;
-}
-
-export function isAccessPolicy(value: unknown): value is AccessPolicy<InvocationContext, unknown> {
-  return (
-    value === "public" ||
-    value === "authenticated" ||
-    value === "system" ||
-    typeof value === "function"
-  );
-}
-
-export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
-  for (const [name, validator] of Object.entries(args)) {
-    if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
-      throw new Error(`${prefix}.${name}: v.${validator.kind}() is not a valid argument validator`);
-    }
-  }
 }
 
 function isValidator(value: unknown): value is Validator<unknown, string> {
