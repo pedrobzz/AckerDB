@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ProtocolError, decode, encode, parseOutcome } from "@ackerdb/core";
 import { AdmissionRejected } from "../../src/runtime/admission.ts";
-import { ValidationError } from "../../src/validation/v.ts";
+import { ValidationError } from "../../src/validation/error.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import {
   fitOutcome,

@@ -3,7 +3,7 @@
  * write sets for reactivity. Planner-independent reads live in `query/`.
  */
 import type { Database } from "bun:sqlite";
-import { ValidationError } from "../validation/v.ts";
+import { ValidationError } from "../validation/error.ts";
 import type { ColumnPlan, Engine, StorageScope, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { TableDef } from "../schema/definition.ts";

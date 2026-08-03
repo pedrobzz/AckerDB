@@ -8,13 +8,12 @@ import {
   type Outcome,
 } from "@ackerdb/core";
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
+import type { Expand, Validator } from "../validation/validator.ts";
 import {
   compileShape,
-  type Expand,
   type InferShape,
   type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+} from "../validation/composites.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type {
   AnyInvocable,

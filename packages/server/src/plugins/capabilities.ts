@@ -4,7 +4,8 @@ import type {
   AnalyticsTracker,
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
-import type { Expand, InferShape, InferValidator, ObjectShape } from "../validation/v.ts";
+import type { Expand, InferValidator } from "../validation/validator.ts";
+import type { InferShape, ObjectShape } from "../validation/composites.ts";
 import type {
   AnyPluginOperationSpec,
   PluginContractTree,

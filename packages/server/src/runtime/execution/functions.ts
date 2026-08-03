@@ -6,6 +6,7 @@ import {
   isApplicationError,
   isResult,
   type Result,
+  type Identity,
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
@@ -14,7 +15,6 @@ import {
   type ExternalAccount,
   type Principal,
 } from "../../auth/credentials.ts";
-import type { Identity } from "../../validation/v.ts";
 import {
   makeDbReader,
   type ReadRecorder,

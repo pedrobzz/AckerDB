@@ -1,6 +1,6 @@
 import { canonicalSchemaSnapshot } from "../schema/snapshot.ts";
 import { isSchema } from "../schema/definition.ts";
-import type { Descriptor } from "../validation/v.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import { assertIdentifier, BUILTIN_CONTEXT_FIELDS, isPluginDefinitionId } from "./identifiers.ts";
 import {
   isPlainObject,

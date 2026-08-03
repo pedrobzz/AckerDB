@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage, type QueryMessage } from "@ackerdb/core";
+import { PROTOCOL_VERSION, encode, type MutationMessage, type QueryMessage, type Identity } from "@ackerdb/core";
 import {
   verifyClientCredential,
   type CredentialVerifier,
@@ -11,7 +11,7 @@ import {
   type VerifiedUserCredential,
 } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";

@@ -3,7 +3,7 @@ import {
   type InferValidator,
   type InferValidatorInput,
   type StandardValidator,
-} from "../validation/v.ts";
+} from "../validation/validator.ts";
 
 export function isStandardValidator(
   value: unknown,

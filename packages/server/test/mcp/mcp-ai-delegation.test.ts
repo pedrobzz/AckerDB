@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@ackerdb/core";
+import { decode, type Identity } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import {
@@ -13,7 +13,7 @@ import {
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../../src/auth/credentials.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {

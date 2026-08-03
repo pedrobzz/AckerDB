@@ -15,14 +15,16 @@ import {
   type OkResult,
   type Result,
 } from "@ackerdb/core";
-import {
-  type Expand,
-  type InferInputShape,
-  type InferShape,
-  type InferValidator,
-  type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+import type {
+  Expand,
+  InferValidator,
+  Validator,
+} from "../validation/validator.ts";
+import type {
+  InferInputShape,
+  InferShape,
+  ObjectShape,
+} from "../validation/composites.ts";
 import type { DbReader, DbWriter } from "../database/query/types.ts";
 import {
   compileInvocation,

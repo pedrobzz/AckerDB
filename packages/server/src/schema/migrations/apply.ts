@@ -31,7 +31,8 @@
  */
 import type { Database } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
-import { ValidationError, type Descriptor } from "../../validation/v.ts";
+import { ValidationError } from "../../validation/error.ts";
+import type { Descriptor } from "../../validation/validator.ts";
 import { compareCodeUnits } from "../../shared/ordering.ts";
 import { checkDescriptor } from "../descriptor-kinds.ts";
 import {

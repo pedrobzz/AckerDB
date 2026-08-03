@@ -12,6 +12,7 @@ import {
   type SseAckRequest,
   type SubscribeMessage,
   type UnsubscribeMessage,
+  type Identity,
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
@@ -26,7 +27,6 @@ import {
 } from "../auth/invalidation.ts";
 import { assertCredentialVerifier } from "../auth/lease.ts";
 import { externalAccountFairnessKey } from "./caller.ts";
-import type { Identity } from "../validation/v.ts";
 import {
   OutboundBudget,
   type OutboundLane,

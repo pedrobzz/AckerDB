@@ -6,7 +6,7 @@ import {
   type Telemetry,
   type TelemetryOperation,
 } from "../../telemetry/telemetry.ts";
-import { isValidationError } from "../../validation/v.ts";
+import { isValidationError } from "../../validation/error.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import { settleOnAbort } from "../abort.ts";
 import { outcomeFromError } from "../outcome.ts";

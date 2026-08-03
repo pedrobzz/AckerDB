@@ -1,10 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { CorruptDatabaseError } from "../../shared/errors.ts";
-import {
-  baseValidator,
-  ValidationError,
-  type VectorValidator,
-} from "../../validation/v.ts";
+import { ValidationError } from "../../validation/error.ts";
+import { baseValidator } from "../../validation/validator.ts";
+import type { VectorValidator } from "../../validation/primitives.ts";
 import {
   assertFiniteVector,
   isZeroFiniteVector,

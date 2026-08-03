@@ -3,17 +3,19 @@ import { brand, hasBrand } from "../shared/identity.ts";
 import { compareCodeUnits } from "../shared/ordering.ts";
 import { assertIdentifier } from "./identifiers.ts";
 import { isStandardValidator } from "./validator.ts";
-import {
-  v,
-  type Descriptor,
-  type Expand,
-  type InferInputShape,
-  type InferShape,
-  type InferValidator,
-  type ObjectShape,
-  type ObjectValidator,
-  type StandardValidator,
-} from "../validation/v.ts";
+import type {
+  Descriptor,
+  Expand,
+  InferValidator,
+  StandardValidator,
+} from "../validation/validator.ts";
+import type {
+  InferInputShape,
+  InferShape,
+  ObjectShape,
+  ObjectValidator,
+} from "../validation/composites.ts";
+import { v } from "../validation/v.ts";
 
 const PLUGIN_OPERATION_IDENTITY = Symbol.for("@ackerdb/server/PluginOperation/v1");
 const PLUGIN_CONTRACT_IDENTITY = Symbol.for("@ackerdb/server/PluginContract/v1");

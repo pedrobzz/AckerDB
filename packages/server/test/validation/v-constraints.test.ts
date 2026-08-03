@@ -9,7 +9,8 @@ import {
 } from "@ackerdb/server";
 import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { checkDescriptor } from "../../src/schema/descriptor-kinds.ts";
-import { checkShape, validatorBaseChecksForTest } from "../../src/validation/v.ts";
+import { validatorBaseChecksForTest } from "../../src/validation/primitives.ts";
+import { checkShape } from "../../src/validation/composites.ts";
 
 const check = <T>(validator: { check(value: unknown, path: string): T }, value: unknown) =>
   validator.check(value, "value");

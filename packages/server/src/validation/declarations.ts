@@ -7,9 +7,9 @@ import type {
   Expand,
   InferValidator,
   InferValidatorInput,
-  ObjectShape,
   Validator,
-} from "./v.ts";
+} from "./validator.ts";
+import type { ObjectShape } from "./composites.ts";
 
 export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
   for (const [name, validator] of Object.entries(args)) {

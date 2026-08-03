@@ -1,6 +1,7 @@
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { Schema } from "../schema/definition.ts";
-import type { ObjectShape, StandardValidator } from "../validation/v.ts";
+import type { StandardValidator } from "../validation/validator.ts";
+import type { ObjectShape } from "../validation/composites.ts";
 import {
   isPlainObject,
   isPluginOperationSpec,

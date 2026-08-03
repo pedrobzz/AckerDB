@@ -28,37 +28,40 @@ export {
 } from "./plugins/definition.ts";
 export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
+export { type Identity } from "@ackerdb/core";
 export {
-  v,
-  ValidationError,
-  isValidationError,
-  checkShape,
   type Descriptor,
   type Expand,
-  type Identity,
-  type InferInputShape,
   type InferValidator,
   type InferValidatorInput,
+  type StandardValidator,
+  type ChainableValidator,
+  type BoundedValidator,
+  type Validator,
+  type NullableValidator,
+  type OptionalValidator,
+  type NullishValidator,
+} from "./validation/validator.ts";
+export {
+  type StringValidator,
+  type VectorValidator,
+} from "./validation/primitives.ts";
+export {
+  checkShape,
+  type InferInputShape,
   type LiteralValidator,
   type ObjectShape,
   type ObjectValidator,
   type InferShape,
-  type StandardValidator,
-  type ChainableValidator,
-  type BoundedValidator,
-  type StringValidator,
-  type VectorValidator,
   type ArrayValidator,
-  type Validator,
   type EnumValidator,
   type UnionValidator,
-  type NullableValidator,
-  type OptionalValidator,
-  type NullishValidator,
   type UnionMembers,
   type UnionValue,
   type UnionNamespace,
-} from "./validation/v.ts";
+} from "./validation/composites.ts";
+export { v } from "./validation/v.ts";
+export { ValidationError, isValidationError } from "./validation/error.ts";
 export {
   CorruptDatabaseError,
   Engine,

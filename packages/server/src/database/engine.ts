@@ -48,8 +48,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
-import { decode, encode, type DurabilityPolicy } from "@ackerdb/core";
-import { type Descriptor, type Identity } from "../validation/v.ts";
+import { decode, encode, type DurabilityPolicy, type Identity } from "@ackerdb/core";
+import type { Descriptor } from "../validation/validator.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "../schema/descriptor-kinds.ts";
 import { validateStoredDescriptor } from "../schema/stored-descriptor.ts";
 import {

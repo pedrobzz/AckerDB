@@ -6,11 +6,12 @@ import {
   PROTOCOL_VERSION,
   parseSseMessage,
   type SseMessage,
+  type Identity,
 } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
   procedure,

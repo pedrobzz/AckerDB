@@ -19,11 +19,8 @@ import { deepFreeze } from "../shared/immutable.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import { positiveSafeInteger } from "../shared/numbers.ts";
 import { settleOnAbort } from "../runtime/abort.ts";
-import {
-  compileShape,
-  type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+import type { Validator } from "../validation/validator.ts";
+import { compileShape, type ObjectShape } from "../validation/composites.ts";
 import {
   channelAuthorizationResult,
   type AnyRegisteredChannel,

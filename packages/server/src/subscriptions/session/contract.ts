@@ -23,6 +23,7 @@ import type {
   TransitionMessage,
   UnsubscribeMessage,
   WelcomeMessage,
+  Identity,
 } from "@ackerdb/core";
 import { encode } from "@ackerdb/core";
 import type {
@@ -33,7 +34,6 @@ import type {
 import type { AuthInvalidationScope } from "../../auth/invalidation.ts";
 import type { TransportSource } from "../../runtime/caller.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
-import type { Identity } from "../../validation/v.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =

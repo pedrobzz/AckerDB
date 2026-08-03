@@ -26,7 +26,7 @@ import {
   type VerifiedUserCredential,
 } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
-import type { Identity } from "../../src/validation/v.ts";
+import type { Identity } from "@ackerdb/core";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { outcomeFromError } from "../../src/runtime/outcome.ts";
 import {

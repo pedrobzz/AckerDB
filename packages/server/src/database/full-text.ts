@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { IncompatibleDatabaseError } from "../shared/errors.ts";
-import { ValidationError } from "../validation/v.ts";
+import { ValidationError } from "../validation/error.ts";
 
 const FULL_TEXT_PREFIX = "_ackerdb_fts_";
 const TOKENIZER_TABLE = "__ackerdb_fts_literal_tokens";

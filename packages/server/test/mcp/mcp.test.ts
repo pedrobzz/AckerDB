@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import type { Identity } from "@ackerdb/core";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import {

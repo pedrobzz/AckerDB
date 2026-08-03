@@ -4,17 +4,19 @@
  * time with a message naming the table/column/index at fault.
  */
 import type { FunctionReference, RegisteredFunction } from "@ackerdb/core";
+import { ValidationError } from "../validation/error.ts";
 import {
   baseValidator,
-  ValidationError,
   type Descriptor,
   type Expand,
-  type InferInputShape,
-  type InferShape,
   type InferValidator,
-  type ObjectShape,
   type Validator,
-} from "../validation/v.ts";
+} from "../validation/validator.ts";
+import type {
+  InferInputShape,
+  InferShape,
+  ObjectShape,
+} from "../validation/composites.ts";
 import {
   isAccessPolicy,
   type AccessPolicy,

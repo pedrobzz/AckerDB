@@ -1,5 +1,5 @@
 import { ProtocolError, type Outcome } from "@ackerdb/core";
-import { isValidationError } from "../validation/v.ts";
+import { isValidationError } from "../validation/error.ts";
 import { isAckerDBError } from "../shared/errors.ts";
 
 export const PUBLIC_ERROR_FALLBACK = "err";

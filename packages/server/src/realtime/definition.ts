@@ -17,14 +17,13 @@ import {
   type AccessPolicy,
   type InvocationContext,
 } from "../app/access.ts";
-import {
-  type Expand,
-  type InferShape,
-  type InferValidator,
-  type InferValidatorInput,
-  type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+import type {
+  Expand,
+  InferValidator,
+  InferValidatorInput,
+  Validator,
+} from "../validation/validator.ts";
+import type { InferShape, ObjectShape } from "../validation/composites.ts";
 import {
   type AuthorizationError,
   type AuthorizationState,

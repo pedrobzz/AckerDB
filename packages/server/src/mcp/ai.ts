@@ -24,7 +24,7 @@ import type {
   StandardJsonOutput,
   StandardJsonProtocolSchema,
 } from "../validation/standard-schema.ts";
-import type { ObjectShape, ObjectValidator } from "../validation/v.ts";
+import type { ObjectShape, ObjectValidator } from "../validation/composites.ts";
 
 /**
  * Every tool declares `returns`, so every local result is structured JSON.
