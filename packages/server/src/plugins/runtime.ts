@@ -13,17 +13,18 @@ import type {
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
 import {
-  isPluginOperationImplementation,
   isPluginOperationSpec,
-  type AnyPluginInstance,
-  type AnyPluginOperationImplementation,
   type AnyPluginOperationSpec,
-  type PluginAssembly,
   type PluginContractTree,
-  type PluginDependencyContracts,
-  type PluginExportTree,
   type PluginOperationKind,
-} from "./definition.ts";
+} from "./contract.ts";
+import type { PluginDependencyContracts } from "./capabilities.ts";
+import {
+  isPluginOperationImplementation,
+  type AnyPluginOperationImplementation,
+} from "./builders.ts";
+import type { PluginExportTree } from "./definition.ts";
+import type { AnyPluginInstance, PluginAssembly } from "./assembly.ts";
 
 export type PluginRuntimeState =
   | "created"

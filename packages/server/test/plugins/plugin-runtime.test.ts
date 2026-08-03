@@ -3,11 +3,11 @@ import { noopAnalytics, noopLogger } from "ackerdb-test-support/telemetry";
 import { Engine } from "../../src/database/engine.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginQuery,
-} from "../../src/plugins/definition.ts";
+} from "../../src/plugins/contract.ts";
+import { definePlugin } from "../../src/plugins/definition.ts";
+import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 

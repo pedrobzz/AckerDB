@@ -1,14 +1,16 @@
 import {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
+} from "../../src/plugins/contract.ts";
+import {
   type PluginMutationCapabilities,
   type PluginProcedureCapabilities,
   type PluginQueryCapabilities,
-} from "../../src/plugins/definition.ts";
+} from "../../src/plugins/capabilities.ts";
+import { definePlugin } from "../../src/plugins/definition.ts";
+import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v, type StandardValidator } from "../../src/validation/v.ts";
 

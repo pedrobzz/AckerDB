@@ -10,13 +10,13 @@ import { Engine, type StorageScope } from "../../src/database/engine.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
-} from "../../src/plugins/definition.ts";
+} from "../../src/plugins/contract.ts";
+import { definePlugin } from "../../src/plugins/definition.ts";
+import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";

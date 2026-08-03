@@ -6,23 +6,27 @@ export {
   type AppSchema,
 } from "./app/definition.ts";
 export {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
-  type PluginBuilders,
+  type PluginOperationSpec,
+} from "./plugins/contract.ts";
+export {
+  type PluginMutationCtx,
+  type PluginProcedureCtx,
+  type PluginQueryCtx,
+} from "./plugins/capabilities.ts";
+export { type PluginBuilders } from "./plugins/builders.ts";
+export {
+  definePlugin,
   type PluginCleanup,
   type PluginExportTree,
   type PluginInstance,
   type PluginLifecycle,
   type PluginLifecycleContext,
-  type PluginMutationCtx,
-  type PluginOperationSpec,
-  type PluginProcedureCtx,
-  type PluginQueryCtx,
 } from "./plugins/definition.ts";
+export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
 export {
   v,

@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  assemblePlugins,
   definePluginContract,
-  definePlugin,
-  isPluginInstance,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
+} from "../../src/plugins/contract.ts";
+import {
+  definePlugin,
+  isPluginInstance,
 } from "../../src/plugins/definition.ts";
+import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 
@@ -395,10 +397,13 @@ describe("definePlugin", () => {
 
   test("recognizes descriptors from another compatible package copy", async () => {
     const copySpecifier = "../../src/plugins/definition.ts?compatible-package-copy";
+    const contractCopySpecifier = "../../src/plugins/contract.ts?compatible-package-copy";
     const copy = await import(copySpecifier) as typeof import("../../src/plugins/definition.ts");
+    const contractCopy =
+      await import(contractCopySpecifier) as typeof import("../../src/plugins/contract.ts");
     const schema = defineSchema({});
-    const contract = copy.definePluginContract({
-      ping: copy.pluginQuery({ args: {}, returns: v.boolean() }),
+    const contract = contractCopy.definePluginContract({
+      ping: contractCopy.pluginQuery({ args: {}, returns: v.boolean() }),
     });
     const instance = copy.definePlugin({
       id: "@acme/copied",
