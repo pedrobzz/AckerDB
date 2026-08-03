@@ -245,6 +245,59 @@ function observedWriteResult<T>(
   ));
 }
 
+function updateRow(
+  engine: Engine,
+  writes: WriteCollector,
+  plan: TablePlan,
+  input: {
+    readonly id: bigint;
+    readonly oldRow: Record<string, unknown>;
+    readonly partial: unknown;
+  },
+): WriteOutcome<void> {
+  if (input.partial === null || typeof input.partial !== "object" || Array.isArray(input.partial)) {
+    throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
+  }
+  const partial = input.partial as Record<string, unknown>;
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const updated: Record<string, unknown> = { ...input.oldRow };
+  for (const key of Object.keys(partial)) {
+    if (partial[key] === undefined) continue;
+    if (key === plan.pk) {
+      throw new ValidationError(`${plan.displayName}.patch: the primary key cannot be changed`);
+    }
+    if (!Object.hasOwn(plan.table.columns, key)) {
+      throw new ValidationError(`${plan.displayName}.patch: unknown field "${key}"`);
+    }
+    const validator = plan.table.columns[key]!;
+    const value = validator.check(partial[key], `${plan.displayName}.patch.${key}`);
+    updated[key] = value;
+    const columnPlan = plan.columns.get(key)!;
+    const sqlValues = columnPlan.toSql(value);
+    columnPlan.phys.forEach((phys, index) => {
+      sets.push(`${quote(phys.name)} = ?`);
+      params.push(sqlValues[index]);
+    });
+  }
+  if (sets.length === 0) return { value: undefined, row: input.oldRow };
+  try {
+    engine
+      .statement(
+        engine.writer,
+        `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`,
+      )
+      .run(...(params as never[]), input.id as never);
+  } catch (error) {
+    wrapUnique(plan.displayName, error);
+  }
+  emitWriteKeys(plan, input.oldRow, writes.keys);
+  emitWriteKeys(plan, updated, writes.keys);
+  emitFullTextWriteKeys(plan, input.oldRow, updated, writes.keys);
+  if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
+  return { value: undefined, row: updated };
+}
+
 function writeMethods(
   engine: Engine,
   writes: WriteCollector,
@@ -252,7 +305,6 @@ function writeMethods(
   observer?: DbStatementObserver,
 ) {
   const conn = engine.writer;
-  const table = plan.table;
   const touch = () => {
     if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
   };
@@ -291,46 +343,9 @@ function writeMethods(
     patch(id: bigint, partial: unknown): AnyWriteResult<void> {
       assertMutationAccess();
       return observedWriteResult(observer, plan.displayName, "patch", () => {
-        if (partial === null || typeof partial !== "object" || Array.isArray(partial)) {
-          throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
-        }
         const old = getRow(id);
         if (old === null) throw new Error(`${plan.displayName}.patch: row ${id} not found`);
-        const input = partial as Record<string, unknown>;
-        const sets: string[] = [];
-        const params: unknown[] = [];
-        const updated: Record<string, unknown> = { ...old };
-        for (const key of Object.keys(input)) {
-          if (input[key] === undefined) continue; // undefined = untouched
-          if (key === plan.pk) {
-            throw new ValidationError(`${plan.displayName}.patch: the primary key cannot be changed`);
-          }
-          if (!Object.hasOwn(table.columns, key)) {
-            throw new ValidationError(`${plan.displayName}.patch: unknown field "${key}"`);
-          }
-          const validator = table.columns[key]!;
-          const value = validator.check(input[key], `${plan.displayName}.patch.${key}`);
-          updated[key] = value;
-          const columnPlan = plan.columns.get(key)!;
-          const sqlValues = columnPlan.toSql(value);
-          columnPlan.phys.forEach((phys, i) => {
-            sets.push(`${quote(phys.name)} = ?`);
-            params.push(sqlValues[i]);
-          });
-        }
-        if (sets.length === 0) return { value: undefined, row: old };
-        try {
-          engine
-            .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
-            .run(...(params as never[]), id as never);
-        } catch (error) {
-          wrapUnique(plan.displayName, error);
-        }
-        emitWriteKeys(plan, old, writes.keys);
-        emitWriteKeys(plan, updated, writes.keys);
-        emitFullTextWriteKeys(plan, old, updated, writes.keys);
-        touch();
-        return { value: undefined, row: updated };
+        return updateRow(engine, writes, plan, { id, oldRow: old, partial });
       });
     },
 
@@ -429,6 +444,7 @@ function writeMethods(
 
 function attachUpsert(
   engine: Engine,
+  writes: WriteCollector,
   plan: TablePlan,
   accessor: Record<string, unknown>,
   childWriter: ReturnType<typeof writeMethods>,
@@ -439,8 +455,9 @@ function attachUpsert(
       index.unique && index.columns.every((column) => !plan.columns.get(column)!.nullable),
   );
   if (candidates.length === 0) return;
-  accessor["upsert"] = (key: unknown, values: unknown): AnyWriteResult<bigint> =>
-    observedWriteResult(observer, plan.displayName, "upsert", async () => {
+  accessor["upsert"] = (key: unknown, values: unknown): AnyWriteResult<bigint> => {
+    assertMutationAccess();
+    return observedWriteResult(observer, plan.displayName, "upsert", async () => {
       if (key === null || typeof key !== "object" || Array.isArray(key)) {
         throw new ValidationError(`${plan.displayName}.upsert: expected a key object`);
       }
@@ -513,12 +530,18 @@ function attachUpsert(
           );
         }
       }
-      const write = existing === null
-        ? childWriter.insert({ ...checkedKey, ...(resolved as Record<string, unknown>) })
-        : childWriter.patch(existing[plan.pk] as bigint, resolved);
-      const row = (await write.returning())!;
+      const row = existing === null
+        ? (await childWriter
+          .insert({ ...checkedKey, ...(resolved as Record<string, unknown>) })
+          .returning())!
+        : updateRow(engine, writes, plan, {
+          id: existing[plan.pk] as bigint,
+          oldRow: existing,
+          partial: resolved,
+        }).row!;
       return { value: row[plan.pk] as bigint, row };
     });
+  };
 }
 
 function eventWriteMethods(
@@ -599,7 +622,7 @@ export function makeDbWriter(
     const upsertWriter = observer === undefined
       ? writer
       : writeMethods(engine, writes, plan);
-    attachUpsert(engine, plan, accessor, upsertWriter, observer);
+    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
     db[name] = accessor;
   }
   return db;

@@ -9,6 +9,7 @@
  *   bun bench/t1-hotpath-prototype.ts query-revalidation
  *   bun bench/t1-hotpath-prototype.ts http-auth-reject
  *   bun bench/t1-hotpath-prototype.ts scheduler-rearm
+ *   bun bench/t1-hotpath-prototype.ts upsert-existing
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import type { CredentialVerifier } from "../packages/server/src/auth/credentials
 import { mutation, procedure } from "../packages/server/src/app/functions.ts";
 import { Registry } from "../packages/server/src/app/registry.ts";
 import { Engine } from "../packages/server/src/database/engine.ts";
+import { makeDbWriter, newWriteCollector } from "../packages/server/src/database/access.ts";
 import { Runtime } from "../packages/server/src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../packages/server/src/schema/definition.ts";
 import { reconcile } from "../packages/server/src/schema/reconcile.ts";
@@ -43,6 +45,7 @@ const HTTP_REJECTION_CONCURRENCY = 10;
 const HTTP_BODY_BYTES = 64 * 1024;
 const SCHEDULED_TABLES = 100;
 const SCHEDULER_REARMS_PER_TRIAL = 100;
+const UPSERTS_PER_TRIAL = 1_000;
 
 function evaluation(): QueryEvaluation {
   return {
@@ -342,6 +345,62 @@ async function schedulerRearm(): Promise<void> {
   }
 }
 
+async function upsertExisting(): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-t1-upsert-"));
+  const schema = defineSchema({
+    users: defineTable({
+      id: v.primaryKey(),
+      email: v.string(),
+      name: v.string(),
+    }).index(["email"], { unique: true }),
+  });
+  const engine = new Engine(schema, join(directory, "data.db"));
+  engine.createAll();
+  const db = makeDbWriter(
+    engine,
+    newWriteCollector(),
+    () => 0n,
+  ) as { users: { insert(row: unknown): Promise<bigint>; upsert(key: unknown, values: unknown): Promise<bigint> } };
+  await db.users.insert({ email: "bench@example.com", name: "initial" });
+  const originalStatement = engine.statement.bind(engine);
+  let selects = 0;
+  engine.statement = ((connection, sql) => {
+    if (sql.startsWith("SELECT ")) selects++;
+    return originalStatement(connection, sql);
+  }) as typeof engine.statement;
+  const trial = async (): Promise<number> => {
+    selects = 0;
+    const startedAt = performance.now();
+    for (let index = 0; index < UPSERTS_PER_TRIAL; index++) {
+      await db.users.upsert(
+        { email: "bench@example.com" },
+        { name: `name-${index}` },
+      );
+    }
+    return performance.now() - startedAt;
+  };
+  try {
+    const stats = await measure(trial);
+    console.log(JSON.stringify({
+      commit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe" })
+        .stdout.toString().trim(),
+      operation: "upsert-existing",
+      load: {
+        rows: 1,
+        upsertsPerTrial: UPSERTS_PER_TRIAL,
+        concurrency: 1,
+        measuredTrials: MEASURED_TRIALS,
+      },
+      selectsPerTrial: selects,
+      trialLatencyMs: stats,
+      p50UpsertsPerSec: UPSERTS_PER_TRIAL / (stats.p50Ms / 1_000),
+    }, null, 2));
+  } finally {
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 switch (process.argv[2]) {
   case "event-fanout":
     await eventFanout();
@@ -355,8 +414,11 @@ switch (process.argv[2]) {
   case "scheduler-rearm":
     await schedulerRearm();
     break;
+  case "upsert-existing":
+    await upsertExisting();
+    break;
   default:
     throw new Error(
-      "usage: bun bench/t1-hotpath-prototype.ts <event-fanout|query-revalidation|http-auth-reject|scheduler-rearm>",
+      "usage: bun bench/t1-hotpath-prototype.ts <event-fanout|query-revalidation|http-auth-reject|scheduler-rearm|upsert-existing>",
     );
 }
