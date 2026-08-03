@@ -5,8 +5,9 @@
  * the branch's real client/server implementation sustain without the release
  * benchmark's unrelated workloads?
  *
- * Run on the idle Hetzner host:
- *   bun bench/hot-path-microbenchmark.ts procedure
+ * Run on an otherwise idle host:
+ *   bun bench/hot-path-microbenchmark.ts procedure enabled
+ *   bun bench/hot-path-microbenchmark.ts procedure disabled
  */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -181,7 +182,9 @@ async function runClient(serverPid: number) {
   }
 }
 
-async function server(dbDir: string): Promise<never> {
+type TelemetryMode = "enabled" | "disabled";
+
+async function server(dbDir: string, telemetryMode: TelemetryMode): Promise<never> {
   const config = loadConfig(APP);
   const schema = (await importApp(config)).schema;
   const modules = await importFunctionModules(config);
@@ -195,7 +198,7 @@ async function server(dbDir: string): Promise<never> {
     runtime = new Runtime({
       engine,
       registry: new Registry(modules),
-      telemetry: false,
+      telemetry: telemetryMode === "enabled" ? { localSink: false } : false,
     });
     listener = serve({ runtime, port: PORT });
     console.log("@@ready");
@@ -241,16 +244,26 @@ async function main(): Promise<void> {
   if (process.argv[2] === "--server") {
     const dbDir = process.argv[3];
     if (dbDir === undefined) throw new Error("server mode requires a database directory");
-    await server(dbDir);
+    const telemetryMode = process.argv[4];
+    if (telemetryMode !== "enabled" && telemetryMode !== "disabled") {
+      throw new Error("server mode requires enabled or disabled telemetry");
+    }
+    await server(dbDir, telemetryMode);
   }
-  if (process.argv[2] !== "procedure") {
-    throw new Error("usage: bun bench/hot-path-microbenchmark.ts procedure");
+  const telemetryMode = process.argv[3];
+  if (
+    process.argv[2] !== "procedure" ||
+    (telemetryMode !== "enabled" && telemetryMode !== "disabled")
+  ) {
+    throw new Error(
+      "usage: bun bench/hot-path-microbenchmark.ts procedure <enabled|disabled>",
+    );
   }
 
   await runCodegen(loadConfig(APP));
   const scratch = mkdtempSync(join(tmpdir(), "ackerdb-hot-path-"));
   const child = Bun.spawn(
-    [process.execPath, import.meta.path, "--server", scratch],
+    [process.execPath, import.meta.path, "--server", scratch, telemetryMode],
     { stdout: "pipe", stderr: "pipe" },
   );
   const stderr = collect(child.stderr);
@@ -260,6 +273,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({
       commit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe" }).stdout.toString().trim(),
       operation: "procedure",
+      telemetry: telemetryMode,
       host: Bun.spawnSync(["hostname"], { stdout: "pipe" }).stdout.toString().trim(),
       warmupMs: WARMUP_MS,
       steadyMs: STEADY_MS,
