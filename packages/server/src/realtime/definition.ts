@@ -3,7 +3,6 @@ import {
   type PortableRTCConfiguration,
   type PortableRTCPeerConnection,
   type RegisteredRealtimeContract,
-  type RealtimeRef,
   type RealtimeStreamMap,
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
@@ -416,27 +415,3 @@ export function realtimeAuthorization(
 }
 
 export { realtimeAuthorizationResult };
-
-/** Server-only helper for targeting a generated realtime reference in tests/tools. */
-export type RealtimeReferenceOf<Definition extends AnyRegisteredRealtime> =
-  Definition extends RegisteredRealtime<
-    infer A,
-    infer ClientEvents,
-    infer ServerEvents,
-    infer ClientStreams,
-    infer ServerStreams,
-    infer AuthorizationReturn,
-    unknown,
-    Schema,
-    any,
-    any
-  >
-    ? RealtimeRef<
-      ArgsInput<A>,
-      EventInputs<ClientEvents>,
-      EventOutputs<ServerEvents>,
-      StreamInputs<ClientStreams>,
-      StreamOutputs<ServerStreams>,
-      AuthorizationError<AuthorizationReturn>
-    >
-    : never;
