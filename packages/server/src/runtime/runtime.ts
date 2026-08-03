@@ -24,7 +24,6 @@ import {
   type LiveEvent,
   type MutationMessage,
   type MutationOkMessage,
-  type MutationReceipt,
   type Outcome,
   type ProcedureMessage,
   type ProcedureOkMessage,
@@ -56,12 +55,9 @@ import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "
 import {
   CommitCoordinator,
   withFetchObserver,
-  type CommitHookContext,
-  type CommitHookStage,
   type CommitRequest,
   type CommitResult,
   type CommitTelemetryEvent,
-  type CommitWaitHook,
   type FetchObservation,
   type IdempotencyIdentity,
 } from "./coordinator.ts";
@@ -98,7 +94,6 @@ import {
 } from "../telemetry/external-trace.ts";
 import {
   BoundedExecutor,
-  type ExecutorSnapshot,
   type ExecutorTaskOptions,
 } from "./executor.ts";
 import type {
@@ -181,12 +176,7 @@ import {
   ChannelHub,
   type ChannelSessionAdapter,
 } from "../channels/hub.ts";
-import {
-  type RealtimePeerDiagnostic,
-  type RealtimeRuntime,
-  type RealtimeRuntimeModule,
-  type RealtimeRuntimeSnapshot,
-} from "../realtime/host.ts";
+import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
@@ -199,23 +189,18 @@ import {
   RECORD_OPERATION_SPAN,
   RELEASE_DELIVERY_LEASE,
   Telemetry,
-  type TelemetryAggregateSnapshot,
   type TelemetryEventInput,
   type OperationTraceHandle,
   type PreparedTelemetryTraceContext,
   type TelemetryOperation,
-  type TelemetryOptions,
   type TelemetryOutcome,
   type TelemetryResource,
-  type TelemetrySnapshot,
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "../telemetry/telemetry.ts";
 import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
 import {
   TelemetryJournal,
-  type TelemetryJournalOptions,
-  type TelemetryJournalSnapshot,
 } from "../telemetry/application-signals/journal.ts";
 import type {
   AnalyticsEventRecord,
@@ -225,8 +210,6 @@ import type {
 import {
   TelemetryJournalExporters,
   validateTelemetryJournalExportersOptions,
-  type TelemetryExportersSnapshot,
-  type TelemetryJournalExportersOptions,
 } from "../telemetry/application-signals/exporters.ts";
 import {
   claimRuntimeRequestBytes,
@@ -245,6 +228,21 @@ import {
   canceledHandlerOutcome,
   invokeSideEffectingHandler,
 } from "./side-effecting-handler.ts";
+import type { RuntimeHooks, RuntimeLifecycleState } from "./contracts/lifecycle.ts";
+import type { RuntimeOptions } from "./contracts/options.ts";
+import type {
+  HttpMutationReceipt,
+  McpCredentialLease,
+  RuntimeExternalRequest,
+  RuntimeHttpMutationRequest,
+  RuntimeHttpRequest,
+  RuntimeHttpResponder,
+  RuntimeHttpResponse,
+  RuntimeMcpToolRequest,
+  RuntimeSseRequest,
+  RuntimeSseResponse,
+} from "./contracts/requests.ts";
+import type { RuntimeStatus } from "./contracts/status.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -277,17 +275,6 @@ function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   throw new AckerDBError("internal", "stored mutation Result is invalid");
 }
 
-export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
-
-export type RuntimeHookStage = CommitHookStage;
-export type RuntimeHookContext = CommitHookContext;
-
-/** Optional semantic gates for deterministic fault tests; failures are fail-open. */
-export interface RuntimeHooks {
-  /** Runs after the named stage completes while its owning state machine is still paused. */
-  readonly wait?: CommitWaitHook;
-}
-
 const DRAIN_RETRY_AFTER_MS = 1_000;
 /** Individually retained non-ok delivery observations per summary key per sampler interval. */
 const DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL = 8;
@@ -301,74 +288,6 @@ interface DeliveryFailureSummary {
   readonly resource: TelemetryResource;
   exemplars: number;
   summarized: number;
-}
-
-export interface RuntimeOptions {
-  readonly engine: Engine;
-  readonly registry: Registry;
-  /** A started Plugin graph bound to this Engine's reconciled private scopes. */
-  readonly pluginRuntime?: PluginRuntime;
-  readonly verifier?: CredentialVerifier;
-  readonly limits?: ServiceLimits;
-  readonly telemetry?: Telemetry | TelemetryOptions | false;
-  readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
-  readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;
-  readonly hooks?: RuntimeHooks;
-  readonly now?: () => number;
-  readonly realtime?: RealtimeRuntimeModule;
-}
-
-interface RuntimeExternalRequest {
-  readonly id: number;
-  readonly address: string;
-  readonly args: unknown;
-  readonly principal: Principal;
-  readonly signal?: AbortSignal;
-  readonly fairnessKey?: string;
-}
-
-export interface RuntimeMcpToolRequest {
-  readonly id: string | number;
-  readonly mcp: string;
-  readonly tool: string;
-  readonly args: unknown;
-  readonly principal: Principal;
-  readonly signal?: AbortSignal;
-  readonly fairnessKey?: string;
-}
-
-export interface McpCredentialLease {
-  readonly principal: McpPrincipal;
-  readonly signal: AbortSignal;
-  release(): void;
-}
-
-/**
- * The commit receipt an HTTP mutation answers with. It carries no
- * `mutationRequestId`: over HTTP the caller's own `Idempotency-Key` is that id,
- * and a mutation without one has no replay identity at all.
- */
-export type HttpMutationReceipt = Omit<MutationReceipt, "mutationRequestId">;
-
-export interface RuntimeHttpResponse {
-  readonly body: string;
-  readonly bytes: number;
-  readonly status: number;
-  /** Present for mutations; the transport spells it as response headers. */
-  readonly receipt?: HttpMutationReceipt;
-}
-
-/** Constructs the HTTP response; return is the measured application handoff, not network delivery. */
-export type RuntimeHttpResponder = (response: RuntimeHttpResponse) => Response;
-
-/** One path-addressed HTTP call; every kind answers through the same responder. */
-export interface RuntimeHttpRequest extends RuntimeExternalRequest {
-  readonly respond: RuntimeHttpResponder;
-}
-
-/** A mutation call; the optional `Idempotency-Key` is its replay identity. */
-export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
-  readonly idempotencyKey?: string;
 }
 
 /** A kind that answers one HTTP request with a plain value; also its telemetry operation. */
@@ -394,38 +313,9 @@ interface CommittedHttpMutation {
 /** An HTTP caller holds no subscriptions, so it owes no convergence obligation. */
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
 
-export interface RuntimeSseRequest extends RuntimeExternalRequest {}
-
-export interface RuntimeSseResponse {
-  readonly stream: ReadableStream<Uint8Array>;
-  readonly streamId: string;
-}
-
 interface ProcedureInvalidations {
   publish(account: ExternalAccount): void;
   finish(): void;
-}
-
-export interface RuntimeStatus {
-  readonly state: RuntimeLifecycleState;
-  readonly connections: number;
-  readonly activeOperations: number;
-  readonly activeOperationCallers: number;
-  readonly activeSse: number;
-  readonly realtime: RealtimeRuntimeSnapshot | null;
-  readonly scheduledHandlers: number;
-  readonly schedulerArmed: boolean;
-  readonly reader: ExecutorSnapshot;
-  readonly writer: ExecutorSnapshot;
-  readonly reactive: ReturnType<OrderedReactive<ReactiveContext>["snapshot"]>;
-  readonly publication: ReturnType<OrderedReactive<ReactiveContext>["publication"]["snapshot"]>;
-  readonly authCaptureBudget: ReturnType<OutboundBudget["snapshot"]>;
-  readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
-  readonly telemetry: TelemetrySnapshot;
-  readonly telemetryAggregates: TelemetryAggregateSnapshot;
-  readonly telemetryJournal: TelemetryJournalSnapshot;
-  readonly telemetryExporters: TelemetryExportersSnapshot | null;
-  readonly storage: ReturnType<Engine["status"]>;
 }
 
 interface ReactiveContext {

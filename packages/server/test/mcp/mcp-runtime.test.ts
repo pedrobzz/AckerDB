@@ -5,7 +5,8 @@ import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { serve } from "../../src/transport/server.ts";
-import type { Runtime, RuntimeOptions } from "../../src/runtime/runtime.ts";
+import type { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 import {
   cleanupMcpTokenFixtures,

@@ -27,12 +27,12 @@ import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
-import {
-  Runtime,
-  type RuntimeHttpResponse,
-  type RuntimeOptions,
-  type RuntimeSseResponse,
-} from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
+import type {
+  RuntimeHttpResponse,
+  RuntimeSseResponse,
+} from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type {
   RuntimePublication,
