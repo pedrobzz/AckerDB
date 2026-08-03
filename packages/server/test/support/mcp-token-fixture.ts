@@ -30,7 +30,8 @@ import {
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeOptions } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type {
   RuntimePublication,

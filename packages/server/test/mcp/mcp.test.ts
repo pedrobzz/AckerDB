@@ -875,8 +875,11 @@ describe("public stateless MCP endpoint", () => {
     controller.abort(new Error("caller canceled"));
     await expect(harness.runtime.runMcpTool(carryHttpRequestProvenance({
       id: 1,
-      mcp: "agent",
-      tool: "write_note",
+      authorization: harness.runtime.authorizeMcpTool(
+        "agent",
+        "write_note",
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: { body: "never" },
       principal: ANONYMOUS_PRINCIPAL,
       signal: controller.signal,

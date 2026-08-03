@@ -31,6 +31,12 @@ import { encodeCacheKey } from "../../src/storage/key.ts";
 type TestPlugin = PluginInstance;
 type TestPluginOperation = Exclude<PluginExportTree[string], PluginExportTree>;
 
+const pluginInvocation = (timestamp: number) => Object.freeze({
+  timestamp,
+  log: () => noopLogger,
+  analytics: () => noopAnalytics,
+});
+
 interface TestEntryRow {
   readonly id: bigint;
   readonly key: string;
@@ -269,9 +275,7 @@ describe("built-in cache operations", () => {
       engine.writer.exec("BEGIN IMMEDIATE");
       try {
         const capabilities = runtime.bindMutation({
-          timestamp: 10,
-          analyticsFor: () => noopAnalytics,
-          logFor: () => noopLogger,
+          invocation: pluginInvocation(10),
           writes: newWriteCollector(),
         }) as unknown as {
           readonly consumer: {
@@ -330,9 +334,7 @@ describe("built-in cache operations", () => {
       engine.writer.exec("BEGIN IMMEDIATE");
       try {
         const capabilities = runtime.bindMutation({
-          timestamp: 10,
-          analyticsFor: () => noopAnalytics,
-          logFor: () => noopLogger,
+          invocation: pluginInvocation(10),
           writes: newWriteCollector(),
         }) as unknown as {
           readonly cache: {
@@ -663,9 +665,7 @@ describe("external cache store contract", () => {
       await runtime.start();
       const unavailable = () => Promise.reject(new Error("unused DB boundary"));
       const capabilities = runtime.bindProcedure({
-        timestamp: 10,
-        analyticsFor: () => noopAnalytics,
-        logFor: () => noopLogger,
+        invocation: pluginInvocation(10),
         abortSignal: new AbortController().signal,
         runQuery: unavailable,
         runMutation: unavailable,

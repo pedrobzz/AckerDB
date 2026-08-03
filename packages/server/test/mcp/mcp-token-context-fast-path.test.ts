@@ -21,7 +21,8 @@ import {
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session.ts";
 import { mutationMessage, queryMessage, request } from "../support/mcp-token-fixture.ts";

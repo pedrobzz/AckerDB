@@ -21,7 +21,8 @@ import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
-import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import {
   Session,

@@ -307,7 +307,8 @@ export type {
   TelemetryMetadata,
   TelemetryValue,
 } from "./telemetry/application-signals/value.ts";
-export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
+export { invokeFunction } from "./app/invocation.ts";
+export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {
   AppSystemCtx,
   SystemCtx,
@@ -321,7 +322,6 @@ export {
   procedure,
   sseProcedure,
   isRegisteredFunction,
-  type AccessPolicy,
   type AnyRegistered,
   type AnyInvocable,
   type ArgsInput,
@@ -551,21 +551,29 @@ export {
 } from "./subscriptions/session.ts";
 export {
   Runtime,
-  type HttpMutationReceipt,
+} from "./runtime/runtime.ts";
+export {
   type RuntimeHookContext,
   type RuntimeHooks,
   type RuntimeHookStage,
+  type RuntimeLifecycleState,
+} from "./runtime/contracts/lifecycle.ts";
+export {
+  type RuntimeOptions,
+} from "./runtime/contracts/options.ts";
+export {
+  type HttpMutationReceipt,
   type RuntimeHttpMutationRequest,
   type RuntimeHttpRequest,
   type RuntimeHttpResponder,
   type RuntimeHttpResponse,
-  type RuntimeLifecycleState,
   type RuntimeMcpToolRequest,
-  type RuntimeOptions,
   type RuntimeSseRequest,
   type RuntimeSseResponse,
+} from "./runtime/contracts/requests.ts";
+export {
   type RuntimeStatus,
-} from "./runtime/runtime.ts";
+} from "./runtime/contracts/status.ts";
 export {
   openApiBytes,
   openApiDocument,

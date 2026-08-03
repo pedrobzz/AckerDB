@@ -17,11 +17,11 @@ import {
 } from "../validation/v.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type {
-  AccessPolicy,
   AnyInvocable,
   FunctionResult,
   Invocable,
 } from "./functions.ts";
+import type { AccessPolicy, InvocationContext } from "./access.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import {
@@ -30,10 +30,6 @@ import {
   type InvocationState,
   type MutationAccess,
 } from "../runtime/invocation-state.ts";
-
-export interface InvocationContext {
-  readonly auth: Principal;
-}
 
 type AccessEnforcer<Ctx, Args> = (ctx: Ctx, args: Args) => void | Promise<void>;
 

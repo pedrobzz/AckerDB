@@ -68,12 +68,14 @@ import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
-  type HttpMutationReceipt,
-  type McpCredentialLease,
   type Runtime,
-  type RuntimeHttpResponder,
-  type RuntimeStatus,
 } from "../runtime/runtime.ts";
+import type {
+  HttpMutationReceipt,
+  McpCredentialLease,
+  RuntimeHttpResponder,
+} from "../runtime/contracts/requests.ts";
+import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { Session, withSessionAuthObserver } from "../subscriptions/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 
