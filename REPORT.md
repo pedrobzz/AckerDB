@@ -114,3 +114,50 @@ Losses/tradeoffs:
 3. Extract MCP authentication, token lease, and AI/token capability construction as one MCP runtime owner.
 4. Move scheduler execution only after it can receive one scheduled-mutation callback; then extract admission/status/drain.
 5. Reduce `Runtime` to composition and public lifecycle ownership last, and remeasure source LoC rather than accepting the current +613-line cost as the final shape.
+
+## T3b continuation: completed runtime ownership split
+
+### Verdict
+
+The recommended continuation is complete and is a net architectural win with an explicit source-size cost. `runtime/runtime.ts` is now the composition root and public `RuntimePort`/lifecycle surface: it fell from 5,227 lines on `origin/main` to 747 lines (−4,480, −85.7%). The continuation did not turn that entrypoint reduction into a total-source reduction. Production source is +6,574/−4,962 against `origin/main`, net **+1,612 lines**; this continuation added 999 of those lines beyond T3's previously reported +613.
+
+The new size is not hidden complexity elimination. The largest extracted owners are `RuntimeSessionStore` (1,077 lines), `RuntimeFunctionExecutor` (784), `RuntimeHttp` (542), `RuntimeSessionApplication` (489), `RuntimeMcp` (474), and `RuntimeControl` (392). Their interfaces now correspond to state and invariants that were previously interleaved in Runtime, but the total code cost remains the principal downside.
+
+### Per-step verdicts
+
+| Continuation step | Result and evidence | Verdict |
+| --- | --- | --- |
+| 1. Write/transaction/procedure execution plus commit publication | `c8ec7fa` added `RuntimeFunctionExecutor`, which owns coordinator access, writer admission, write contexts, nested transactions, mutation/procedure/plugin execution, and committed reactive publication. `WriteCollector` remains inside that coordinator invariant. Runtime: 3,677 → 3,102 lines; source net +216. | Clear win. One write owner replaced cross-Runtime transaction choreography; the added capability contract is a real boundary, not a compatibility facade. |
+| 2. Session ordering, adapters, auth transition, publication, and admission | `3400116` made `RuntimeSessionStore` the owner of connected identity, operation ordering, auth rotation/capture, reactive/channel adapters, publication lifetime, and the single logical-subscription namespace. `462fbdf` moved client protocol framing/convergence into the same `runtime/sessions/` module. Runtime after the primary slice: 3,102 → 2,497 lines; source net +175. | Clear correctness and ownership win. The store is large, but its state transitions now have one owner and mixed subscription capacity no longer depends on two drifting counters. |
+| 3. MCP runtime owner | `4d91daa` added `RuntimeMcp` for provider lookup, token verification and leases, revocation, typed tool authorization, dispatch, AI binding, and token-context capability construction. Runtime: 2,497 → 2,194 lines; source net +165. | Clear win. Authentication and execution consume the same provider/capability model, while Runtime retains only public delegation. |
+| 3a. MCP AI authorization predicate | `4d91daa` changed AI endpoint filtering from endpoint name to the authoritative provider name (`mcp.auth.name`), matching `authorizeMcpTool`; an alias-endpoint test proves the shared-provider case. | Clear correctness win. Provider identity is what the MCP principal authenticates, so endpoint display/registration aliases must not become a second authorization predicate. |
+| 4. Scheduler, admission, status, and drain | `32dfb31` made scheduler execution depend on one scheduled-mutation callback and own timer/single-flight/retry state. `2d15fe9` added `RuntimeControl` for operation admission, request-size admission, lifecycle state, status projection, and finite drain. Runtime: 2,194 → 1,870 lines across both slices; source net +196. | Clear win. Scheduling no longer reaches through Runtime's writer topology, and all lifecycle admission/drain state changes together. No polling, queue, or per-connection machinery was added. |
+| 5. Composition and public lifecycle last | `462fbdf` added cohesive query, HTTP/SSE, session-application, and system owners, centralized scoped auth-invalidation publication, and reduced Runtime from 1,870 to 747 lines; source net +247. A focused test caught and fixed an initial synchronous-throw regression at the moved async public boundary before commit. | Net win with a material code-size cost. Runtime is now navigable as composition, but the +247-line slice and the branch-wide +1,612 source delta prevent a stronger code-quality verdict. |
+
+### One subscription admission owner
+
+`RuntimeSessionStore` is now the only capacity-policy owner. It has one global `activeLogicalSubscriptions` count and uses each session's single `subscriptionKinds` map for the per-connection count; the map contains both `"reactive"` and `"channel"` IDs. It emits the sole per-connection and global capacity messages. `OrderedReactive` still validates its own listener identity and internal consistency, but no longer owns either configured capacity limit or a second global counter.
+
+Counting reactive listeners and channel memberships together is the correct semantics because the client protocol exposes one subscription-ID namespace, both forms retain per-session state and delivery obligations, and both are admitted through the same `maxSubscriptions` / `maxSubscriptionsPerConnection` policy. Counting only reactive listeners would let channel memberships bypass the advertised subscription budget. `runtime.test.ts` now fills a mixed reactive/channel budget, proves the next admission is rejected, releases one channel ID, and proves that capacity is reusable.
+
+### Final measurements and net-effect judgment
+
+- `packages/server/src/runtime/runtime.ts`: 5,227 → **747** lines; −4,480 (−85.7%).
+- Production source against `origin/main`, excluding this report: 38 files, +6,574 / −4,962; net **+1,612** lines.
+- Tests against `origin/main`: +253 / −91; net **+162** lines.
+- Continuation-only production source: net **+999** lines across the six implementation commits.
+- No performance benchmark was run because the continuation makes no latency or throughput claim. Bounds, timer cadence, queue ownership, durability points, and delivery budgets are unchanged; the duplicate reactive capacity check/counter was removed.
+
+| Dimension | Score | Judgment |
+| --- | ---: | --- |
+| Code quality | 7/10 | Runtime is an 85.7% smaller composition surface with named state owners and fewer cross-domain imports. The +1,612 total source delta and several still-large owners are significant costs. |
+| Correctness | 7/10 | Write publication, session admission, MCP identity, scheduling, and drain now each have one owner; mixed subscription admission and MCP provider aliases have boundary tests. The broader code surface prevents an exceptional score. |
+| Performance | 5/10 | Neutral and unbenchmarked. The split adds a fixed number of per-Runtime owner objects, removes one duplicate subscription admission counter/check, and adds no proportional per-user or per-request machinery. |
+
+### Final verification
+
+- `bunx tsc --noEmit`: passed.
+- `bun test packages/server/test`: **973 passed, 0 failed**, 10,080 expectations across 79 files.
+- `bun run test:mcp:conformance`: official MCP conformance 0.1.16, **11 checks passed across 10 supported scenarios, 0 warnings**.
+- No final vector-runtime failure occurred, so no pre-existing failure was dismissed or required reproduction on `origin/main`.
+- No owner-level question blocked the continuation; `BLOCKED.md` was not created.
