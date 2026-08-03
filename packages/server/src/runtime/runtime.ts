@@ -235,6 +235,10 @@ import {
 } from "./sessions/store.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
+import {
+  RuntimeScheduledCandidates,
+  quoteSqlIdentifier,
+} from "./scheduler/candidate.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -291,12 +295,6 @@ interface QueryExecution<T = unknown> {
   readonly commitVersion: bigint;
 }
 
-interface ScheduledCandidate {
-  readonly table: string;
-  readonly address: string;
-  readonly primaryKey: unknown;
-}
-
 interface Deferred<T> {
   readonly promise: Promise<T>;
   resolve(value: T): void;
@@ -338,10 +336,6 @@ function deferred<T>(): Deferred<T> {
 }
 
 const releaseNothing = (): void => {};
-
-function quoted(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 function byteLength(value: unknown): number {
   return utf8.encode(encode(value)).byteLength;
@@ -385,6 +379,7 @@ export class Runtime implements RuntimePort {
   private readonly immediateProcedureInvalidations: ProcedureInvalidations;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reads: RuntimeReadExecutor;
+  private readonly schedulerCandidates: RuntimeScheduledCandidates;
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly scheduled: Map<string, string>;
   private readonly sessionStore: RuntimeSessionStore;
@@ -557,6 +552,12 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       now: this.now,
       telemetryEnabled: this.telemetry.enabled,
+      tracing: this.tracing,
+    });
+    this.schedulerCandidates = new RuntimeScheduledCandidates({
+      scheduled: this.scheduled,
+      engine: this.engine,
+      reads: this.reads,
       tracing: this.tracing,
     });
     this.reactive = new OrderedReactive<ReactiveContext>({
@@ -2027,7 +2028,7 @@ export class Runtime implements RuntimePort {
     const execution = this.operations.run(null, "scheduled", undefined, 1, async () => {
       let handled = 0;
       for (let attempts = 0; attempts < this.limits.schedulerBatchSize; attempts++) {
-        const candidate = await this.nextScheduledCandidate(now);
+        const candidate = await this.schedulerCandidates.next(now);
         if (candidate === null) break;
         let row: Record<string, unknown> | null = null;
         try {
@@ -2047,7 +2048,7 @@ export class Runtime implements RuntimePort {
               const plan = this.engine.plan(candidate.table);
               const raw = this.tracing.measureStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
-                  `SELECT ${plan.readProjection} FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
+                  `SELECT ${plan.readProjection} FROM ${quoteSqlIdentifier(candidate.table)} WHERE ${quoteSqlIdentifier(plan.pk)} = ? AND ${quoteSqlIdentifier(plan.scheduleAt!)} <= ?`,
                 )
                   .get(candidate.primaryKey as never, now) as Record<string, unknown> | null,
                 (value) => value === null ? 0 : 1,
@@ -2089,7 +2090,7 @@ export class Runtime implements RuntimePort {
               const plan = this.engine.plan(candidate.table);
               this.tracing.measureStatement("write", candidate.table, "scheduledDelete", () =>
                 this.engine.writer
-                  .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
+                  .query(`DELETE FROM ${quoteSqlIdentifier(candidate.table)} WHERE ${quoteSqlIdentifier(plan.pk)} = ?`)
                   .run(scheduledRow[plan.pk] as never),
                 () => 1,
               );
@@ -2127,7 +2128,7 @@ export class Runtime implements RuntimePort {
     if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
     this.schedulerTimer = null;
     if (this.lifecycle !== "ready" || this.scheduled.size === 0) return;
-    void this.nextScheduledAt().then(
+    void this.schedulerCandidates.nextAt().then(
       (at) => {
         if (this.lifecycle !== "ready" || generation !== this.schedulerGeneration || at === null) return;
         const delay = Math.min(Math.max(0, at - this.readNow()), 0x7fff_ffff);
@@ -3514,54 +3515,6 @@ export class Runtime implements RuntimePort {
       }, resource === "subscription" ? "subscription" : "query");
     }
     return publication;
-  }
-
-  private nextScheduledAt(): Promise<number | null> {
-    return this.reads.submit((connection) => {
-      let earliest: number | null = null;
-      for (const table of this.scheduled.keys()) {
-        const plan = this.engine.plan(table);
-        const row = connection
-          .query(`SELECT MIN(${quoted(plan.scheduleAt!)}) AS at FROM ${quoted(table)}`)
-          .get() as { at: number | bigint | null };
-        if (row.at === null) continue;
-        const value = Number(row.at);
-        if (earliest === null || value < earliest) earliest = value;
-      }
-      return earliest;
-    }, {
-      operation: "scheduled",
-      bytes: 1,
-      fairnessKey: "system:scheduler",
-    }, false);
-  }
-
-  private nextScheduledCandidate(now: number): Promise<ScheduledCandidate | null> {
-    return this.reads.submit((connection) => {
-      let candidate: (ScheduledCandidate & { readonly at: number }) | null = null;
-      for (const [table, address] of this.scheduled) {
-        const plan = this.engine.plan(table);
-        const raw = this.tracing.measureStatement("read", table, "scheduledCandidate", () =>
-          connection.query(
-            `SELECT ${quoted(plan.pk)} AS primaryKey, ${quoted(plan.scheduleAt!)} AS at FROM ${quoted(table)} WHERE ${quoted(plan.scheduleAt!)} <= ? ORDER BY ${quoted(plan.scheduleAt!)}, ${quoted(plan.pk)} LIMIT 1`,
-          )
-            .get(now) as { primaryKey: unknown; at: number | bigint } | null,
-          (value) => value === null ? 0 : 1,
-        );
-        if (raw === null) continue;
-        const at = Number(raw.at);
-        if (candidate === null || at < candidate.at) {
-          candidate = { table, address, primaryKey: raw.primaryKey, at };
-        }
-      }
-      return candidate === null
-        ? null
-        : { table: candidate.table, address: candidate.address, primaryKey: candidate.primaryKey };
-    }, {
-      operation: "scheduled",
-      bytes: 1,
-      fairnessKey: "system:scheduler",
-    });
   }
 
   readonly [CAPTURE_DELIVERY_OBSERVER] = (

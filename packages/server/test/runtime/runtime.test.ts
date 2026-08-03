@@ -2670,14 +2670,16 @@ describe("scheduler and lifecycle", () => {
   test("bounds stale scheduler attempts and rolls each no-op back before version allocation", async () => {
     await restart(limits({ schedulerBatchSize: 3 }));
     const scheduler = runtime as unknown as {
-      nextScheduledCandidate(now: number): Promise<{
-        table: string;
-        address: string;
-        primaryKey: unknown;
-      } | null>;
+      schedulerCandidates: {
+        next(now: number): Promise<{
+          table: string;
+          address: string;
+          primaryKey: unknown;
+        } | null>;
+      };
     };
     let attempts = 0;
-    scheduler.nextScheduledCandidate = async () => {
+    scheduler.schedulerCandidates.next = async () => {
       attempts++;
       return { table: "reminders", address: "reminders.fire", primaryKey: 999n };
     };
