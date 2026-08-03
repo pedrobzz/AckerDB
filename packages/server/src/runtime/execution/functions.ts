@@ -1,8 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import {
+  Failure,
   Ok,
+  isApplicationError,
   isResult,
+  type Result,
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
@@ -33,13 +36,6 @@ import type {
 } from "../../app/functions.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { McpAiContext } from "../../mcp/ai.ts";
-import {
-  withMcpTokenContext,
-} from "../../mcp/token-context.ts";
-import {
-  McpTokenInvalidationBoundary,
-  takeMcpTokenInvalidations,
-} from "../../mcp/token-invalidation.ts";
 import {
   PluginRuntime,
   type PluginInvocationCapabilities,
@@ -82,6 +78,18 @@ import { RuntimeReadExecutor } from "./read.ts";
 const releaseNothing = (): void => {};
 const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 
+export function restoreMutationResult(value: unknown): Result<unknown, unknown> {
+  if (isResult(value)) return value;
+  if (typeof value !== "object" || value === null || !("ok" in value)) {
+    throw new AckerDBError("internal", "stored mutation result has no Result shape");
+  }
+  if (value.ok === true && "data" in value) return Ok(value.data);
+  if (value.ok === false && "error" in value && isApplicationError(value.error)) {
+    return Failure(value.error);
+  }
+  throw new AckerDBError("internal", "stored mutation Result is invalid");
+}
+
 export interface RuntimeMutationCommitRequest {
   readonly fairnessKey: string;
   readonly requestBytes: number;
@@ -93,6 +101,23 @@ export interface RuntimeMutationCommitRequest {
   readonly principal: Principal;
   readonly args: unknown;
   readonly validate?: CommitRequest<unknown, ReactiveCommit>["validate"];
+}
+
+export interface RuntimeFunctionMcpCapabilities {
+  bindTokenContext<T extends object, R>(
+    context: T,
+    principal: Principal,
+    connection: Database,
+    reads: ReadRecorder | null,
+    writes: WriteCollector | null,
+    work: (ctx: T) => R | Promise<R>,
+  ): Promise<Awaited<R>>;
+  bindAiContext(
+    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
+    fairnessKey: string,
+    requestBytes: number,
+  ): () => void;
+  publishCommittedInvalidations(writes: WriteCollector): void;
 }
 
 interface RuntimeCommitRequest<T> {
@@ -119,13 +144,7 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly log: ApplicationLogger;
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
-  readonly hasMcpCapabilities: boolean;
-  readonly mcpTokenInvalidation: McpTokenInvalidationBoundary;
-  readonly bindMcpAiContext?: (
-    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
-    fairnessKey: string,
-    requestBytes: number,
-  ) => () => void;
+  readonly mcp?: RuntimeFunctionMcpCapabilities;
   readonly armScheduler: () => void;
   readonly now: () => number;
   readonly hooks?: Pick<RuntimeHooks, "wait">;
@@ -146,11 +165,7 @@ export class RuntimeFunctionExecutor<C> {
       limits: options.limits,
       reservePublication: (bytes) => options.reactive.publication.reserve(bytes),
       afterCommit: (writes, commitVersion) => {
-        if (options.hasMcpCapabilities) {
-          for (const invalidation of takeMcpTokenInvalidations(writes)) {
-            options.mcpTokenInvalidation.publish(invalidation);
-          }
-        }
+        options.mcp?.publishCommittedInvalidations(writes);
         const analytics = this.analyticsByWrites.get(writes);
         if (analytics !== undefined) {
           this.analyticsByWrites.delete(writes);
@@ -218,10 +233,13 @@ export class RuntimeFunctionExecutor<C> {
     );
     const timestamp = this.readNow();
     const context = this.hostQueryContext(db, principal, timestamp, execution);
-    return this.options.hasMcpCapabilities
-      ? withMcpTokenContext(
+    return this.options.mcp !== undefined
+      ? this.options.mcp.bindTokenContext(
           context,
-          this.mcpTokenCapability(principal, execution.connection, execution.reads, null),
+          principal,
+          execution.connection,
+          execution.reads,
+          null,
           (ctx) => invokeFunction(fn, ctx, args),
         )
       : invokeFunction(fn, context, args);
@@ -284,17 +302,15 @@ export class RuntimeFunctionExecutor<C> {
           );
           const scope = createMutationInvocationScope(this.options.engine.writer, writes);
           const result = await scope.runRoot((mutationAccess) =>
-            this.options.hasMcpCapabilities
-              ? withMcpTokenContext(
-                  invocation,
-                  this.mcpTokenCapability(
-                    SYSTEM_PRINCIPAL,
-                    this.options.engine.writer,
-                    null,
-                    writes,
-                  ),
-                  (ctx) => invokeFunction(fn, ctx, row, { mutationAccess }),
-                )
+          this.options.mcp !== undefined
+            ? this.options.mcp.bindTokenContext(
+                invocation,
+                SYSTEM_PRINCIPAL,
+                this.options.engine.writer,
+                null,
+                writes,
+                (ctx) => invokeFunction(fn, ctx, row, { mutationAccess }),
+              )
               : invokeFunction(fn, invocation, row, { mutationAccess }));
           if (!result.ok) {
             throw new AckerDBError(
@@ -354,15 +370,13 @@ export class RuntimeFunctionExecutor<C> {
               timestamp,
             }) as TxCtx;
             try {
-              return await (this.options.hasMcpCapabilities
-                ? withMcpTokenContext(
+              return await (this.options.mcp !== undefined
+                ? this.options.mcp.bindTokenContext(
                     context,
-                    this.mcpTokenCapability(
-                      principal,
-                      this.options.engine.writer,
-                      null,
-                      writes,
-                    ),
+                    principal,
+                    this.options.engine.writer,
+                    null,
+                    writes,
                     work,
                   )
                 : work(context));
@@ -430,15 +444,13 @@ export class RuntimeFunctionExecutor<C> {
             return scope.runRoot((mutationAccess) =>
               withMutationAccess(mutationAccess, async () => {
                 try {
-                  const value = await (this.options.hasMcpCapabilities
-                    ? withMcpTokenContext(
+                  const value = await (this.options.mcp !== undefined
+                    ? this.options.mcp.bindTokenContext(
                         context,
-                        this.mcpTokenCapability(
-                          principal,
-                          this.options.engine.writer,
-                          null,
-                          writes,
-                        ),
+                        principal,
+                        this.options.engine.writer,
+                        null,
+                        writes,
                         work,
                       )
                     : work(context));
@@ -465,7 +477,7 @@ export class RuntimeFunctionExecutor<C> {
         accountUnlinked,
       ),
     }) as ProcedureCtx;
-    const release = this.options.bindMcpAiContext?.(value, fairnessKey, requestBytes)
+    const release = this.options.mcp?.bindAiContext(value, fairnessKey, requestBytes)
       ?? releaseNothing;
     return Object.freeze({ value, release });
   }
@@ -522,15 +534,13 @@ export class RuntimeFunctionExecutor<C> {
       const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
-        this.options.hasMcpCapabilities
-          ? withMcpTokenContext(
+        this.options.mcp !== undefined
+          ? this.options.mcp.bindTokenContext(
               invocation,
-              this.mcpTokenCapability(
-                principal,
-                this.options.engine.writer,
-                null,
-                writes,
-              ),
+              principal,
+              this.options.engine.writer,
+              null,
+              writes,
               (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
             )
           : invokeFunction(fn, invocation, args, { mutationAccess }));
@@ -742,23 +752,6 @@ export class RuntimeFunctionExecutor<C> {
           functionKind,
         }),
     } satisfies PluginInvocationCapabilities);
-  }
-
-  private mcpTokenCapability(
-    principal: Principal,
-    connection: Database,
-    reads: ReadRecorder | null,
-    writes: WriteCollector | null,
-  ) {
-    return {
-      engine: this.options.engine,
-      connection,
-      principal,
-      reads,
-      writes,
-      limits: this.options.limits.mcp,
-      now: this.options.now,
-    };
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

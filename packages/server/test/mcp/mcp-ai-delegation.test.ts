@@ -360,6 +360,13 @@ async function handleDelegate(
         events: await runModel(tools, [{ id: "other", name: "other_public" }]),
       };
     }
+    case "shared_provider": {
+      const tools = aliasMcp.aiTools(ctx);
+      return {
+        names: Object.keys(tools),
+        events: await runModel(tools, [{ id: "alias", name: "alias_status" }]),
+      };
+    }
     default:
       throw new Error(`unknown MCP delegation mode ${args.mode}`);
   }
@@ -389,6 +396,14 @@ const scopedMcp = typedMcp({
     read_reports: { fn: readReports, access: { allOf: ["orders.get", "reports.all"] } },
   },
 });
+const aliasMcp = typedMcp({
+  name: "delegated-alias",
+  auth: delegatedAuth,
+  path: "/delegated-alias/mcp",
+  tools: {
+    alias_status: { fn: publicStatus, access: "public" },
+  },
+});
 const otherMcp = typedMcp({
   name: "other",
   auth: otherAuth,
@@ -410,7 +425,7 @@ const scopeFreeMcp = typedMcp({
 
 const modules = {
   app: { runLocal },
-  mcp: { otherMcp, scopeFreeMcp, scopedMcp },
+  mcp: { aliasMcp, otherMcp, scopeFreeMcp, scopedMcp },
   tools: {
     adminOrders,
     authenticatedStatus,
@@ -751,6 +766,29 @@ describe("MCP identity-preserving local delegation", () => {
       fetch.mockRestore();
       authenticate.mockRestore();
     }
+  });
+
+  test("uses the shared auth provider when an MCP endpoint has a different name", async () => {
+    const principal = mcpPrincipal(delegatedAuth.name);
+    const result = await runtime.runMcpTool({
+      id: "mcp-shared-provider",
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
+      args: { mode: "shared_provider" },
+      principal,
+    });
+
+    expect(result.structuredContent).toEqual({
+      names: ["alias_status"],
+      events: [{
+        type: "tool-result",
+        name: "alias_status",
+        output: { tool: "public_status", kind: "mcp", identity: "73" },
+      }],
+    });
   });
 
   test("binds local authority to the exact endpoint and denies cross-endpoint execution", async () => {

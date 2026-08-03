@@ -326,7 +326,8 @@ export function createMcpAiTools(
   }
   const normalized = normalizeOptions(mcp, options);
   const scopes = effectiveGrant(context.auth, normalized.scopes);
-  const endpointAvailable = context.auth.kind !== "mcp" || context.auth.mcp === mcp.name;
+  const endpointAvailable = context.auth.kind !== "mcp" ||
+    context.auth.mcp === mcp.auth.name;
 
   const runInParent = AsyncLocalStorage.snapshot();
   const tools: Record<string, McpAiTool> = Object.create(null) as Record<string, McpAiTool>;
