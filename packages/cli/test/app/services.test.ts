@@ -12,6 +12,7 @@ import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
+import { TelemetryJournal } from "@ackerdb/server";
 
 const dirs: string[] = [];
 
@@ -81,8 +82,10 @@ import { service } from "@ackerdb/server";
 import { record } from "../lib/record.ts";
 
 async function persist(system, source) {
-  await system.run("devices.event", (ctx) =>
-    ctx.tx((tx) => tx.db.deviceEvents.insert({ source })));
+  await system.run("devices.event", (ctx) => {
+    ctx.log.info("service event", { source });
+    return ctx.tx((tx) => tx.db.deviceEvents.insert({ source }));
+  });
 }
 
 export const tuya = service({
@@ -123,6 +126,27 @@ export const tcl = service({
       "cleanup:tuya",
       "cleanup:tcl",
     ]);
+    const journal = new TelemetryJournal({ path: join(dir, ".ackerdb", "data.db.telemetry") });
+    expect(journal.readBatch(0n, 10).filter((entry) => entry.kind === "log").map((entry) => ({
+      message: entry.message,
+      metadata: entry.metadata,
+      functionAddress: entry.functionAddress,
+      functionKind: entry.functionKind,
+    }))).toEqual([
+      {
+        message: "service event",
+        metadata: { source: "tcl" },
+        functionAddress: "devices.event",
+        functionKind: "system",
+      },
+      {
+        message: "service event",
+        metadata: { source: "tuya" },
+        functionAddress: "devices.event",
+        functionKind: "system",
+      },
+    ]);
+    await journal.drain();
   }, 20_000);
 
   test("a callback firing after setup persists through system.run", async () => {

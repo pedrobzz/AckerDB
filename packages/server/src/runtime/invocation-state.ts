@@ -2,9 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "../auth/credentials.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import { poisonTransaction } from "./transaction-context.ts";
+import type { AnalyticsEventRecord } from "../telemetry/application-signals/types.ts";
 
 export interface MutationAccessFrame {
   tail: Promise<void>;
+  readonly analytics: AnalyticsEventRecord[];
 }
 
 export interface MutationAccessState {
@@ -38,6 +40,7 @@ export interface InvocationState {
 }
 
 const invocation = new AsyncLocalStorage<InvocationState>();
+const transactionAnalytics = new AsyncLocalStorage<AnalyticsEventRecord[]>();
 let activeNestedMutationScopes = 0;
 
 export function currentInvocationState(): InvocationState | undefined {
@@ -49,6 +52,23 @@ export function withInvocationState<T>(
   work: () => T,
 ): T {
   return invocation.run(state, work);
+}
+
+export function withTransactionAnalytics<T>(
+  analytics: AnalyticsEventRecord[],
+  work: () => T,
+): T {
+  return transactionAnalytics.run(analytics, work);
+}
+
+export function currentTransactionAnalytics(): AnalyticsEventRecord[] | undefined {
+  return transactionAnalytics.getStore();
+}
+
+export function stageAnalyticsEvent(event: AnalyticsEventRecord): void {
+  const analytics = invocation.getStore()?.mutationAccess?.frame.analytics ??
+    transactionAnalytics.getStore();
+  analytics?.push(event);
 }
 
 /** Own one top-level application invocation without requiring a registered function. */

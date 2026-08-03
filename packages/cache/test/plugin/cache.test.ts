@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decode, encode } from "@ackerdb/core";
+import { noopAnalytics, noopLogger } from "ackerdb-test-support/telemetry";
 import {
   assemblePlugins,
   definePlugin,
@@ -269,6 +270,8 @@ describe("built-in cache operations", () => {
       try {
         const capabilities = runtime.bindMutation({
           timestamp: 10,
+          analyticsFor: () => noopAnalytics,
+          logFor: () => noopLogger,
           writes: newWriteCollector(),
         }) as unknown as {
           readonly consumer: {
@@ -328,6 +331,8 @@ describe("built-in cache operations", () => {
       try {
         const capabilities = runtime.bindMutation({
           timestamp: 10,
+          analyticsFor: () => noopAnalytics,
+          logFor: () => noopLogger,
           writes: newWriteCollector(),
         }) as unknown as {
           readonly cache: {
@@ -659,6 +664,8 @@ describe("external cache store contract", () => {
       const unavailable = () => Promise.reject(new Error("unused DB boundary"));
       const capabilities = runtime.bindProcedure({
         timestamp: 10,
+        analyticsFor: () => noopAnalytics,
+        logFor: () => noopLogger,
         abortSignal: new AbortController().signal,
         runQuery: unavailable,
         runMutation: unavailable,

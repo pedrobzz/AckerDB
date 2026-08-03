@@ -278,6 +278,35 @@ export {
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "./telemetry/telemetry.ts";
+export {
+  TelemetryJournal,
+  type TelemetryJournalLimits,
+  type TelemetryJournalOptions,
+  type TelemetryJournalSnapshot,
+} from "./telemetry/application-signals/journal.ts";
+export {
+  TelemetryJournalExporters,
+  type TelemetryExporterSnapshot,
+  type TelemetryExportersSnapshot,
+  type TelemetryJournalExporterLimits,
+  type TelemetryJournalExportersOptions,
+  type TelemetrySignalExportContext,
+  type TelemetrySignalExporter,
+  type TelemetrySignalKind,
+} from "./telemetry/application-signals/exporters.ts";
+export type {
+  ApplicationLogger,
+  AnalyticsTracker,
+  AnalyticsEventRecord,
+  ApplicationLogLevel,
+  ApplicationLogRecord,
+  TelemetryJournalEntry,
+  TelemetryJournalRecord,
+} from "./telemetry/application-signals/types.ts";
+export type {
+  TelemetryMetadata,
+  TelemetryValue,
+} from "./telemetry/application-signals/value.ts";
 export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
 export type {
   AppSystemCtx,

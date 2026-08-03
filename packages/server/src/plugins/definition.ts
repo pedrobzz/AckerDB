@@ -6,6 +6,10 @@ import { isPluginDefinitionId, isPluginIdentifier } from "./identifiers.ts";
 import { isStandardValidator } from "./validator.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 import { canonicalSchemaSnapshot } from "../schema/snapshot.ts";
+import type {
+  AnalyticsTracker,
+  ApplicationLogger,
+} from "../telemetry/application-signals/types.ts";
 import {
   v,
   type Descriptor,
@@ -24,9 +28,11 @@ const PLUGIN_IMPLEMENTATION_IDENTITY = Symbol.for("@ackerdb/server/PluginImpleme
 const PLUGIN_INSTANCE_IDENTITY = Symbol.for("@ackerdb/server/PluginInstance/v1");
 const BUILTIN_CONTEXT_FIELDS = new Set([
   "abortSignal",
+  "analytics",
   "auth",
   "db",
   "linkAccount",
+  "log",
   "mount",
   "timestamp",
   "tx",
@@ -384,6 +390,7 @@ type DependencyCapabilities<
 export interface PluginInvocationCtx {
   readonly timestamp: number;
   readonly mount: string;
+  readonly log: ApplicationLogger;
 }
 
 export type PluginQueryCtx<
@@ -397,7 +404,7 @@ export type PluginMutationCtx<
   S extends Schema,
   Dependencies extends PluginDependencyContracts = Readonly<Record<never, never>>,
 > = PluginInvocationCtx &
-  { readonly db: DbWriter<S> } &
+  { readonly analytics: AnalyticsTracker; readonly db: DbWriter<S> } &
   DependencyCapabilities<Dependencies, "mutation">;
 
 export type PluginProcedureCtx<

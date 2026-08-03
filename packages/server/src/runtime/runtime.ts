@@ -89,6 +89,7 @@ import {
   type SseDeliverySnapshot,
 } from "../subscriptions/delivery.ts";
 import type { Engine } from "../database/engine.ts";
+import { telemetryJournalPath } from "../database/artifacts.ts";
 import { AckerDBError, isAckerDBError, throwIfAborted } from "../shared/errors.ts";
 import {
   claimHttpTrace,
@@ -119,16 +120,19 @@ import {
 } from "../app/system.ts";
 import {
   authorizeInvocation,
+  currentInvocationFunctionContext,
   currentInvocationTelemetryContext,
   invokeFunction,
   poisonCurrentInvocation,
   withInvocationTelemetry,
+  withInvocationContext,
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "../app/invocation.ts";
 import {
   assertWriterAvailable,
   runInInvocationRoot,
+  withTransactionAnalytics,
   withMutationAccess,
 } from "./invocation-state.ts";
 import { createMutationInvocationScope } from "./mutation-scope.ts";
@@ -189,6 +193,7 @@ import {
   FINISH_OPERATION_TRACE,
   OPEN_OPERATION_TRACE,
   OPERATION_INVOCATION_NODE,
+  OPERATION_TRACE_CONTEXT,
   prepareTelemetryTraceContext,
   RECORD_OPERATION_EVENT,
   RECORD_OPERATION_SPAN,
@@ -206,6 +211,23 @@ import {
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "../telemetry/telemetry.ts";
+import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
+import {
+  TelemetryJournal,
+  type TelemetryJournalOptions,
+  type TelemetryJournalSnapshot,
+} from "../telemetry/application-signals/journal.ts";
+import type {
+  AnalyticsEventRecord,
+  ApplicationLogCallContext,
+  ApplicationLogger,
+} from "../telemetry/application-signals/types.ts";
+import {
+  TelemetryJournalExporters,
+  validateTelemetryJournalExportersOptions,
+  type TelemetryExportersSnapshot,
+  type TelemetryJournalExportersOptions,
+} from "../telemetry/application-signals/exporters.ts";
 import {
   claimRuntimeRequestBytes,
   prepareRuntimePublication,
@@ -289,6 +311,8 @@ export interface RuntimeOptions {
   readonly verifier?: CredentialVerifier;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
+  readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
+  readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;
   readonly hooks?: RuntimeHooks;
   readonly now?: () => number;
   readonly realtime?: RealtimeRuntimeModule;
@@ -399,6 +423,8 @@ export interface RuntimeStatus {
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly telemetry: TelemetrySnapshot;
   readonly telemetryAggregates: TelemetryAggregateSnapshot;
+  readonly telemetryJournal: TelemetryJournalSnapshot;
+  readonly telemetryExporters: TelemetryExportersSnapshot | null;
   readonly storage: ReturnType<Engine["status"]>;
 }
 
@@ -651,6 +677,9 @@ export class Runtime implements RuntimePort {
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
+  readonly telemetryJournal: TelemetryJournal;
+  readonly telemetryExporters: TelemetryJournalExporters | undefined;
+  readonly log: ApplicationLogger;
   readonly reactive: OrderedReactive<ReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
@@ -789,9 +818,13 @@ export class Runtime implements RuntimePort {
   private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
+  private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly systemRoot = AsyncLocalStorage.snapshot();
   private readonly ownsTelemetry: boolean;
+  private readonly ownsTelemetryJournal: boolean;
+  private readonly applicationSignals: ApplicationSignals;
+  private readonly releaseTelemetryJournalFailure: () => void;
   private readonly hasMcpCapabilities: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
@@ -807,6 +840,10 @@ export class Runtime implements RuntimePort {
   private expectedSampleAt = performance.now();
 
   constructor(options: RuntimeOptions) {
+    if (options.telemetryExporters !== undefined) {
+      // Fail before opening the journal; the exporter owns the same validation at direct construction.
+      validateTelemetryJournalExportersOptions(options.telemetryExporters);
+    }
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
@@ -881,6 +918,43 @@ export class Runtime implements RuntimePort {
               ...options.telemetry?.limits,
             },
           });
+    this.ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
+    this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
+      ? options.telemetryJournal
+      : new TelemetryJournal({
+          path: this.engine.path === ":memory:"
+            ? ":memory:"
+            : telemetryJournalPath(this.engine.path),
+          ...options.telemetryJournal,
+        });
+    if (this.telemetryJournal.snapshot().state !== "ready") {
+      throw new TypeError("Runtime requires a ready telemetry journal");
+    }
+    this.applicationSignals = new ApplicationSignals(
+      this.telemetryJournal,
+      this.now,
+      () => this.applicationLogContext(),
+    );
+    this.log = this.applicationSignals.log;
+    this.releaseTelemetryJournalFailure = this.telemetryJournal.onFailure((error) => {
+      this.telemetry.recordEvent({
+        name: "failure",
+        level: "error",
+        operation: "lifecycle",
+        outcome: "internal",
+        resource: "telemetry",
+        errorClass: error instanceof Error ? error.name : "UnknownError",
+      });
+      if (this.lifecycle === "ready") {
+        void this.drain(Date.now() + this.limits.gracefulShutdownMs).catch(() => {});
+      }
+    });
+    this.telemetryExporters = options.telemetryExporters === undefined
+      ? undefined
+      : new TelemetryJournalExporters({
+          journal: this.telemetryJournal,
+          ...options.telemetryExporters,
+        });
     this.availableReaders = [this.engine.reader];
     this.reader = new BoundedExecutor({
       concurrency: this.limits.revalidationConcurrency,
@@ -901,15 +975,18 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
-      ...(this.hasMcpCapabilities
-        ? {
-            afterCommit: (writes: WriteCollector) => {
-              for (const invalidation of takeMcpTokenInvalidations(writes)) {
-                this.mcpTokenInvalidation.publish(invalidation);
-              }
-            },
+      afterCommit: (writes: WriteCollector, commitVersion: bigint) => {
+        if (this.hasMcpCapabilities) {
+          for (const invalidation of takeMcpTokenInvalidations(writes)) {
+            this.mcpTokenInvalidation.publish(invalidation);
           }
-        : {}),
+        }
+        const analytics = this.analyticsByWrites.get(writes);
+        if (analytics !== undefined) {
+          this.analyticsByWrites.delete(writes);
+          this.applicationSignals.commitAnalytics(analytics, commitVersion);
+        }
+      },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
@@ -2319,15 +2396,14 @@ export class Runtime implements RuntimePort {
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
     const { requestBytes, codec, claimedTrace, fairnessKey } = this.claimHttpRequest(request, "sse");
-    const scope = this.telemetry.enabled
-      ? this.operationTrace(
-          null,
-          "sse",
-          request.address,
-          { requestId: String(request.id) },
-          claimedTrace?.context,
-        )
-      : undefined;
+    const runtimeScope = this.operationTrace(
+      null,
+      "sse",
+      request.address,
+      { requestId: String(request.id) },
+      claimedTrace?.context,
+    );
+    const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     let traceFinished = false;
     const finishOperationTrace = (): void => {
       if (traceFinished) return;
@@ -2336,15 +2412,17 @@ export class Runtime implements RuntimePort {
         finishClaimedHttpTrace(claimedTrace);
         return;
       }
-      if (scope !== undefined) this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
+      if (observedScope !== undefined) {
+        this.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
+      }
     };
-    const admittedAt = scope === undefined ? 0 : performance.now();
+    const admittedAt = observedScope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
       release = this.admitOperation(null, fairnessKey).release;
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -2360,10 +2438,10 @@ export class Runtime implements RuntimePort {
       }
     } catch (error) {
       const safeError = transportError(error);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -2380,7 +2458,7 @@ export class Runtime implements RuntimePort {
       finishOperationTrace();
       throw safeError;
     }
-    const startedAt = scope === undefined ? 0 : performance.now();
+    const startedAt = observedScope === undefined ? 0 : performance.now();
     const execute = async (): Promise<RuntimeSseResponse> => {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
@@ -2448,7 +2526,7 @@ export class Runtime implements RuntimePort {
             throw error;
           });
         lifecycle = completion.catch((error) => {
-          if (scope !== undefined) {
+          if (observedScope !== undefined) {
             const safeError = transportError(error);
             this.traceEvent({
               name: "failure",
@@ -2457,7 +2535,7 @@ export class Runtime implements RuntimePort {
               outcome: outcomeFromError(safeError).code,
               functionName: request.address,
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            }, scope);
+            }, observedScope);
           }
           throw error;
         }).finally(() => {
@@ -2493,9 +2571,9 @@ export class Runtime implements RuntimePort {
           finishOperationTrace();
         }
         const safeError = transportError(error);
-        if (scope !== undefined) {
+        if (observedScope !== undefined) {
           const outcome = outcomeFromError(safeError).code;
-          if (scope.invocations === 0) {
+          if (observedScope.invocations === 0) {
             this.traceSpan({
               operation: "sse",
               stage: "handler",
@@ -2511,12 +2589,12 @@ export class Runtime implements RuntimePort {
             outcome,
             functionName: request.address,
             errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-          }, scope);
+          }, observedScope);
         }
         throw safeError;
       }
     };
-    return scope === undefined ? execute() : this.runTraced(scope, execute);
+    return this.runTraced(runtimeScope, execute);
   }
 
   /** Receiver credit is capability-authenticated and remains routable during drain. */
@@ -2563,7 +2641,7 @@ export class Runtime implements RuntimePort {
                   run: AsyncLocalStorage.snapshot(),
                 }
               : {}),
-            work: async (db, writes) => {
+            work: (db, writes) => this.withStagedAnalytics(writes, async () => {
               const plan = this.engine.plan(candidate.table);
               const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
@@ -2600,7 +2678,7 @@ export class Runtime implements RuntimePort {
                   `scheduled mutation returned application error ${result.error.code}`,
                 );
               }
-            },
+            }),
             finalize: (writes) => {
               const scheduledRow = row;
               if (scheduledRow === null) {
@@ -2701,6 +2779,8 @@ export class Runtime implements RuntimePort {
       sseBudget: this.sseBudget.snapshot(),
       telemetry: this.telemetry.snapshot(),
       telemetryAggregates: this.telemetry.aggregateSnapshot(),
+      telemetryJournal: this.telemetryJournal.snapshot(),
+      telemetryExporters: this.telemetryExporters?.snapshot() ?? null,
       storage: this.engine.status(),
     });
   }
@@ -2724,6 +2804,7 @@ export class Runtime implements RuntimePort {
       throw new RangeError("runtime shutdown deadline must be finite");
     }
     this.lifecycle = "draining";
+    this.releaseTelemetryJournalFailure();
     this.schedulerGeneration++;
     if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
     this.schedulerTimer = null;
@@ -2772,7 +2853,7 @@ export class Runtime implements RuntimePort {
         throw new AggregateError(errors, "Runtime shutdown failed");
       }
     })();
-    const shutdownWork = coreShutdown.then(() => {
+    const shutdownWork = coreShutdown.then(async () => {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.
       if (deadlineReached) return;
@@ -2783,6 +2864,9 @@ export class Runtime implements RuntimePort {
         operation: "lifecycle",
         lifecycleState: "stopped",
       });
+      await this.telemetryExporters?.drain();
+      if (this.ownsTelemetryJournal) await this.telemetryJournal.drain();
+      else await this.telemetryJournal.flush();
       return this.ownsTelemetry ? this.telemetry.drain(deadlineAtMs) : this.telemetry.flush();
     });
 
@@ -2822,8 +2906,30 @@ export class Runtime implements RuntimePort {
         // Owned telemetry was stopped before core shutdown. Capture the final
         // failed event into its bounded drain even though the absolute Runtime
         // deadline has already elapsed, so no post-failure queue is retained.
-        if (this.ownsTelemetry) await this.telemetry.drain(deadlineAtMs);
-        throw error;
+        const cleanupErrors: unknown[] = [];
+        try {
+          await this.telemetryExporters?.drain();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        try {
+          if (this.ownsTelemetryJournal) await this.telemetryJournal.drain();
+          else await this.telemetryJournal.flush();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        if (this.ownsTelemetry) {
+          try {
+            await this.telemetry.drain(deadlineAtMs);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
+        if (cleanupErrors.length === 0) throw error;
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          "Runtime shutdown and telemetry cleanup both failed",
+        );
       },
     );
     return this.drainPromise;
@@ -3527,11 +3633,12 @@ export class Runtime implements RuntimePort {
         this.availableReaders.push(connection);
       }
     };
-    if (!observed) return this.reader.submit(run, options);
+    const restore = AsyncLocalStorage.snapshot();
+    if (!observed) return this.reader.submit(() => restore(run), options);
     const scope = this.trace.getStore();
     const queuedAt = performance.now();
     let started = false;
-    return this.reader.submit(() => {
+    return this.reader.submit(() => restore(() => {
       started = true;
       const admitted = () => {
         this.traceSpan({
@@ -3545,7 +3652,7 @@ export class Runtime implements RuntimePort {
         return run();
       };
       return scope === undefined ? admitted() : this.trace.run(scope, admitted);
-    }, options).catch((error) => {
+    }), options).catch((error) => {
       if (!started) {
         const rejected = () => this.traceSpan({
           operation: options.operation,
@@ -3584,7 +3691,6 @@ export class Runtime implements RuntimePort {
         },
       ).then((execution) => this.encodeQueryEvaluation(execution));
     };
-    if (!this.telemetry.enabled) return execute();
     const scope = this.trace.getStore();
     if (scope === undefined) {
       const evaluationScope = this.operationTrace(null, "subscription", input.address, {});
@@ -3651,8 +3757,13 @@ export class Runtime implements RuntimePort {
     timestamp: number,
     execution: Readonly<PluginReadExecution>,
   ): QueryCtx {
-    const plugins = this.pluginRuntime?.bindQuery({ ...execution, timestamp }) ?? {};
-    return Object.freeze({ db, auth: principal, timestamp, ...plugins }) as QueryCtx;
+    const plugins = this.pluginRuntime?.bindQuery({
+      ...execution,
+      timestamp,
+      logFor: (functionAddress, functionKind) =>
+        this.applicationSignals.forFunction(functionAddress, functionKind),
+    }) ?? {};
+    return Object.freeze({ db, auth: principal, log: this.log, timestamp, ...plugins }) as QueryCtx;
   }
 
   private hostMutationContext(
@@ -3661,12 +3772,24 @@ export class Runtime implements RuntimePort {
     timestamp: number,
     writes: WriteCollector,
   ): MutationCtx {
+    const analytics = this.applicationSignals.analyticsFor(principal);
     const plugins = this.pluginRuntime?.bindMutation({
       writes,
+      analyticsFor: (functionAddress, functionKind) =>
+        this.applicationSignals.analyticsFor(principal, { functionAddress, functionKind }),
       timestamp,
+      logFor: (functionAddress, functionKind) =>
+        this.applicationSignals.forFunction(functionAddress, functionKind),
       ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
     }) ?? {};
-    return Object.freeze({ db, auth: principal, timestamp, ...plugins }) as MutationCtx;
+    return Object.freeze({
+      db,
+      auth: principal,
+      analytics,
+      log: this.log,
+      timestamp,
+      ...plugins,
+    }) as MutationCtx;
   }
 
   /**
@@ -3717,10 +3840,13 @@ export class Runtime implements RuntimePort {
         ? {
             telemetry: this.observeCommit,
             statementTelemetry: this.observeStatement,
-            run: AsyncLocalStorage.snapshot(),
           }
         : {}),
-      work: request.work,
+      run: AsyncLocalStorage.snapshot(),
+      work: (db, writes) => this.withStagedAnalytics(
+        writes,
+        () => request.work(db, writes),
+      ),
       rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
         scheduledTouched = writes.scheduledTouched;
@@ -3729,6 +3855,24 @@ export class Runtime implements RuntimePort {
     });
     if (scheduledTouched) this.armScheduler();
     return result;
+  }
+
+  private withStagedAnalytics<T>(
+    writes: WriteCollector,
+    work: () => T | Promise<T>,
+  ): Promise<T> {
+    const analytics: AnalyticsEventRecord[] = [];
+    this.analyticsByWrites.set(writes, analytics);
+    return withTransactionAnalytics(analytics, async () => {
+      try {
+        const value = await work();
+        if (isResult(value) && !value.ok) analytics.length = 0;
+        return value;
+      } catch (error) {
+        analytics.length = 0;
+        throw error;
+      }
+    });
   }
 
   private async executeWrite<T>(
@@ -3777,7 +3921,13 @@ export class Runtime implements RuntimePort {
           signal,
           requestBytes,
           async (db, writes) => {
-            const context = Object.freeze({ db, auth: principal, timestamp }) as TxCtx;
+            const context = Object.freeze({
+              db,
+              auth: principal,
+              analytics: this.applicationSignals.analyticsFor(principal),
+              log: this.log,
+              timestamp,
+            }) as TxCtx;
             try {
               return await (this.hasMcpCapabilities
                 ? withMcpTokenCapability(
@@ -3865,8 +4015,12 @@ export class Runtime implements RuntimePort {
       : () => timestamp;
     const initialTimestamp = currentTimestamp();
     const plugins = this.pluginRuntime?.bindProcedure({
+      analyticsFor: (functionAddress, functionKind) =>
+        this.applicationSignals.analyticsFor(principal, { functionAddress, functionKind }),
       timestamp: initialTimestamp,
       abortSignal: signal,
+      logFor: (functionAddress, functionKind) =>
+        this.applicationSignals.forFunction(functionAddress, functionKind),
       runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
       runMutation: (work) => this.executePluginWrite(
         "mutation",
@@ -3886,6 +4040,7 @@ export class Runtime implements RuntimePort {
     const value = Object.freeze({
       auth: principal,
       abortSignal: signal,
+      log: this.log,
       get timestamp(): number {
         return currentTimestamp();
       },
@@ -4432,6 +4587,30 @@ export class Runtime implements RuntimePort {
     };
   }
 
+  private applicationLogContext(): ApplicationLogCallContext {
+    const scope = this.trace.getStore();
+    if (scope === undefined) {
+      return Object.freeze({ functionAddress: "unknown", functionKind: "unknown" });
+    }
+    const invocation = currentInvocationFunctionContext();
+    const telemetryInvocation = currentInvocationTelemetryContext();
+    const functionAddress = invocation === undefined
+      ? scope.rootFunction ?? "unknown"
+      : this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction ?? "unknown";
+    const functionKind = invocation?.fn.kind ?? this.registry.kindOf(functionAddress) ?? scope.operation;
+    const node = telemetryInvocation === undefined
+      ? 0
+      : this.invocationNode(scope, telemetryInvocation);
+    const correlation = this.telemetry[OPERATION_TRACE_CONTEXT](scope.trace, node);
+    return Object.freeze({
+      functionAddress,
+      functionKind,
+      ...(correlation?.traceId === undefined ? {} : { traceId: correlation.traceId }),
+      ...(correlation?.spanId === undefined ? {} : { spanId: correlation.spanId }),
+      ...(correlation?.requestId === undefined ? {} : { requestId: correlation.requestId }),
+    });
+  }
+
   private invocationNode(
     scope: RuntimeTraceScope,
     invocation: InvocationTelemetryContext | undefined,
@@ -4524,10 +4703,12 @@ export class Runtime implements RuntimePort {
   }
 
   private runTraced<T>(scope: RuntimeTraceScope, work: () => T): T {
-    return this.trace.run(scope, () => withFetchObserver(
-      this.observeFetch,
-      () => withInvocationTelemetry(this.observeInvocation, work),
-    ));
+    return this.trace.run(scope, () => this.telemetry.enabled
+      ? withFetchObserver(
+          this.observeFetch,
+          () => withInvocationTelemetry(this.observeInvocation, work),
+        )
+      : withInvocationContext(work));
   }
 
   readonly [CAPTURE_DELIVERY_OBSERVER] = (
@@ -4578,18 +4759,23 @@ export class Runtime implements RuntimePort {
     const synthesizeHandler = options.synthesizeHandler ?? true;
     const finalize = options.finalize;
     const claimedTrace = options.claimedTrace;
-    const scope = this.telemetry.enabled
-      ? this.operationTrace(session, operation, functionName, identifiers, claimedTrace?.context)
-      : undefined;
+    const runtimeScope = this.operationTrace(
+      session,
+      operation,
+      functionName,
+      identifiers,
+      claimedTrace?.context,
+    );
+    const observedScope = this.telemetry.enabled ? runtimeScope : undefined;
     const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
       claimedTrace !== undefined
         ? result.finally(() => finishClaimedHttpTrace(claimedTrace))
-        : scope !== undefined
+        : observedScope !== undefined
           ? result.finally(() => {
-              this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
+              this.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
             })
           : result;
-    const admittedAt = scope === undefined ? 0 : performance.now();
+    const admittedAt = observedScope === undefined ? 0 : performance.now();
     const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
       if (finalize !== undefined) return finalize(outcome);
       if (outcome.ok) return outcome.value as unknown as R;
@@ -4599,9 +4785,9 @@ export class Runtime implements RuntimePort {
     try {
       this.assertRequestBytes(sizeBytes);
       admission = this.admitOperation(session, options.fairnessKey, options.sessionOrder);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -4617,10 +4803,10 @@ export class Runtime implements RuntimePort {
       }
     } catch (error) {
       const safeError = transportError(error);
-      if (scope !== undefined) {
+      if (observedScope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
         this.telemetry[RECORD_OPERATION_SPAN](
-          scope.trace,
+          observedScope.trace,
           0,
           0,
           {
@@ -4642,14 +4828,14 @@ export class Runtime implements RuntimePort {
           ...(functionName === undefined ? {} : { functionName }),
           resource: "operation",
           errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-        }, scope, 0);
+        }, observedScope, 0);
       }
       const rejected = () => settle({ ok: false, error: safeError });
       return finishOperationTrace(
-        scope === undefined ? rejected() : this.runTraced(scope, rejected),
+        this.runTraced(runtimeScope, rejected),
       );
     }
-    const startedAt = scope === undefined ? 0 : performance.now();
+    const startedAt = observedScope === undefined ? 0 : performance.now();
     const start = () => {
       if (options.abortSignal?.aborted) {
         return Promise.reject(options.abortSignal.reason);
@@ -4666,7 +4852,11 @@ export class Runtime implements RuntimePort {
     )
       .then(
         (value): RuntimeOperationOutcome<T> => {
-          if (scope !== undefined && synthesizeHandler && scope.invocations === 0) {
+          if (
+            observedScope !== undefined &&
+            synthesizeHandler &&
+            observedScope.invocations === 0
+          ) {
             this.traceSpan({
               stage: "handler",
               outcome: "ok",
@@ -4678,9 +4868,9 @@ export class Runtime implements RuntimePort {
         },
         (error): RuntimeOperationOutcome<T> => {
           const safeError = transportError(error);
-          if (scope !== undefined) {
+          if (observedScope !== undefined) {
             const outcome = outcomeFromError(safeError).code;
-            if (synthesizeHandler && scope.invocations === 0) {
+            if (synthesizeHandler && observedScope.invocations === 0) {
               this.traceSpan({
                 stage: "handler",
                 outcome,
@@ -4695,14 +4885,14 @@ export class Runtime implements RuntimePort {
               outcome,
               ...(functionName === undefined ? {} : { functionName }),
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            }, scope);
+            }, observedScope);
           }
           return { ok: false, error: safeError };
         },
       )
       .then(settle)
       .finally(admission.release);
-    return finishOperationTrace(scope === undefined ? execute() : this.runTraced(scope, execute));
+    return finishOperationTrace(this.runTraced(runtimeScope, execute));
   }
 
   private admitOperation(

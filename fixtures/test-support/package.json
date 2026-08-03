@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    "./async": "./src/async.ts"
+    "./async": "./src/async.ts",
+    "./telemetry": "./src/telemetry.ts"
   }
 }
