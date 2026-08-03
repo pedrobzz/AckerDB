@@ -1467,6 +1467,11 @@ export class Engine {
     if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
     this.verifyInternalState(connection);
     const mutationReplay = scanMutationReplay(connection);
+    // Called for its verification, not its value: the stored snapshot must parse
+    // and must agree with `sqlite_master`, the Plugin inventory and the interned
+    // tags before this database is opened for writing. The value is deliberately
+    // NOT handed onward to reconciliation — `reconcile` repeats the pass because
+    // physical drift can appear after the Engine is open (see its comment).
     this.loadSnapshot(connection);
     return mutationReplay;
   }
