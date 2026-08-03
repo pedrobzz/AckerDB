@@ -60,13 +60,18 @@ import {
   type AckerDBChannel,
   type AckerDBChannelOptions,
 } from "./channels/channel.ts";
+import { retryDelay } from "./connection/retry-policy.ts";
 import {
   RealtimeManager,
   type AckerDBPeerConnectionFactory,
   type AckerDBRealtime,
-  type AckerDBRealtimeOptions,
 } from "./realtime/session.ts";
 import { SseEventDecoder } from "./sse/event-decoder.ts";
+import {
+  SubscriptionRetryScheduler,
+  createSubscriptionRetryState,
+  type SubscriptionRetryState,
+} from "./subscriptions/retry.ts";
 
 export interface AckerDBClientLimits {
   readonly maxPendingItems: number;
@@ -95,6 +100,12 @@ export interface AckerDBClientClock {
   clearInterval(handle: unknown): void;
 }
 
+export interface AckerDBClientScheduler {
+  now(): number;
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
 export interface AckerDBWebSocket {
   onopen: (() => void) | null;
   onmessage: ((event: { readonly data: unknown }) => void) | null;
@@ -112,7 +123,8 @@ export type AckerDBFetch = (url: string, init?: RequestInit) => Promise<Response
  * observer: the client owns what suspension means, the adapter owns when it
  * happens. `suspend` (the application entered background) retires the
  * physical connection while keeping all logical demand; `resume` (the
- * application returned to active) recovers immediately when demand exists.
+ * application returned to active) recovers the constructor-owned connection
+ * immediately.
  * Both coalesce duplicates, so the adapter may forward platform events
  * verbatim.
  */
@@ -158,7 +170,7 @@ export type AckerDBAuthentication = AuthenticationDescriptor & { readonly authEp
  * Public connection lifecycle. `suspended` and `resuming` are produced by the
  * injected lifecycle notifications (the native adapter's AppState observer):
  * backgrounding retires the transport and publishes `suspended`; activation
- * with demand publishes `resuming` until the fresh handshake completes.
+ * publishes `resuming` until the fresh handshake completes.
  */
 export type AckerDBConnectionState =
   | { readonly phase: "connecting" }
@@ -318,6 +330,7 @@ interface QuerySubscription {
   frame: string;
   bytes: number;
   sentGeneration?: number;
+  retry: SubscriptionRetryState;
 }
 
 interface EventSubscription {
@@ -330,6 +343,7 @@ interface EventSubscription {
   frame: string;
   bytes: number;
   sentGeneration?: number;
+  retry: SubscriptionRetryState;
 }
 
 type Subscription = QuerySubscription | EventSubscription;
@@ -633,6 +647,7 @@ const SYSTEM_RANDOM = (): number => {
 
 export class AckerDBClient {
   readonly clientSessionId: string;
+  readonly scheduler: AckerDBClientScheduler;
 
   private readonly httpUrl: string;
   private readonly wsUrl: string;
@@ -648,6 +663,7 @@ export class AckerDBClient {
   private readonly activeFetches = new Set<AbortController>();
   private readonly channels: ChannelManager;
   private readonly realtimeSessions: RealtimeManager;
+  private readonly subscriptionRetries: SubscriptionRetryScheduler;
 
   private credential: Credential;
   /** The credential the current connection's hello presented. */
@@ -693,7 +709,6 @@ export class AckerDBClient {
   private readonly connectionStateListeners = new Set<(state: AckerDBConnectionState) => void>();
   private authenticationState: AckerDBAuthenticationState;
   private readonly authenticationStateListeners = new Set<(state: AckerDBAuthenticationState) => void>();
-  private connectRequested = false;
   private everReady = false;
   private blockingError?: AckerDBClientError;
   private terminalError?: AckerDBClientError;
@@ -703,6 +718,12 @@ export class AckerDBClient {
     if (!/^https?:\/\//.test(this.httpUrl)) throw new TypeError("url must use http or https");
     this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/ws`;
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.scheduler = Object.freeze({
+      now: () => this.clock.now(),
+      setTimeout: (callback: () => void, delayMs: number) =>
+        this.clock.setTimeout(callback, delayMs),
+      clearTimeout: (handle: unknown) => this.clock.clearTimeout(handle),
+    });
     this.random = options.random ?? SYSTEM_RANDOM;
     this.createWebSocket = options.createWebSocket ?? SYSTEM_SOCKET_FACTORY;
     this.fetcher = options.fetch ?? SYSTEM_FETCH;
@@ -716,6 +737,12 @@ export class AckerDBClient {
     if (this.reconnect.baseDelayMs > this.reconnect.maxDelayMs) {
       throw new RangeError("baseDelayMs cannot exceed maxDelayMs");
     }
+    this.subscriptionRetries = new SubscriptionRetryScheduler(
+      this.clock,
+      this.reconnect,
+      this.random,
+      MAX_RETRY_AFTER_MS,
+    );
     this.uuid = new UuidV7Factory(this.random);
     this.clientSessionId = options.clientSessionId ?? this.uuid.create(this.now());
     this.channels = new ChannelManager({
@@ -769,7 +796,6 @@ export class AckerDBClient {
     // notifying lifecycle source may have suspended the fully initialized
     // client above; ensureConnected() observes that state and will defer the
     // physical dial until resume without losing standing demand.
-    this.connectRequested = true;
     this.ensureConnected();
   }
 
@@ -892,6 +918,7 @@ export class AckerDBClient {
       resetRequested: false,
       frame,
       bytes,
+      retry: createSubscriptionRetryState(),
     };
     this.subscriptions.set(id, subscription);
     this.ensureConnected();
@@ -918,6 +945,7 @@ export class AckerDBClient {
       onError,
       frame,
       bytes,
+      retry: createSubscriptionRetryState(),
     };
     this.subscriptions.set(id, subscription);
     this.ensureConnected();
@@ -956,18 +984,15 @@ export class AckerDBClient {
   realtime<Ref extends AnyRealtimeRef>(
     ref: Ref,
     args: NoInfer<RealtimeArgs<Ref>>,
-    options: AckerDBRealtimeOptions<
-      RealtimeServerEvents<Ref>,
-      RealtimeServerStreams<Ref>,
-      RealtimeError<Ref>
-    > = {},
   ): AckerDBRealtime<
     RealtimeClientEvents<Ref>,
     RealtimeClientStreams<Ref>,
+    RealtimeServerEvents<Ref>,
+    RealtimeServerStreams<Ref>,
     RealtimeError<Ref>
   > {
     this.assertUsable();
-    return this.realtimeSessions.observe(ref, args, options);
+    return this.realtimeSessions.retain(ref, args);
   }
 
   query<A, Data = unknown, Error extends ApplicationError = never>(
@@ -1303,6 +1328,7 @@ export class AckerDBClient {
       );
     }
     for (const subscription of this.subscriptions.values()) {
+      this.subscriptionRetries.clear(subscription.retry);
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
@@ -1348,6 +1374,9 @@ export class AckerDBClient {
     this.realtimeSessions.suspend();
     this.resuming = false;
     this.clearReconnectTimer();
+    for (const subscription of this.subscriptions.values()) {
+      this.subscriptionRetries.pause(subscription.retry);
+    }
     if (this.authAttempt !== undefined) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
@@ -1404,23 +1433,24 @@ export class AckerDBClient {
    * The application returned to active. Paused deadlines are re-evaluated
    * against the current clock — an absolute deadline that elapsed while
    * suspended expires now, never by waiting for a stale pre-suspension timer.
-   * When logical demand exists the fresh authenticated connection begins in
-   * this same event turn: the reconnect timer was cleared at suspension, so
+   * The fresh authenticated connection begins in this same event turn: the
+   * reconnect timer was cleared at suspension, so
    * no stale client backoff can delay the first attempt. The one thing that
    * can is a server-directed Retry-After deadline that has not elapsed —
    * admission control that a lifecycle transition must not bypass; the
-   * ordinary bounded reconnect policy holds the remainder. Demand is exactly
-   * {@link hasReconnectWork} — live subscriptions, pending requests, an
-   * in-flight credential presentation, or constructor-owned standing demand;
-   * suspension cleared none of it. With no demand the client stays idle
-   * rather than opening a socket because the application became active. If
-   * the immediate attempt fails, the ordinary reconnect policy takes over —
-   * there is no special retry behavior. Duplicate notifications coalesce.
+   * ordinary bounded reconnect policy holds the remainder. Constructor-owned
+   * standing demand survives suspension, so activation always restores the
+   * connection. If the immediate attempt fails, the ordinary reconnect policy
+   * takes over — there is no special retry behavior. Duplicate notifications
+   * coalesce.
    */
   private resumeTransport(): void {
     if (this.closed || !this.suspended) return;
     this.suspended = false;
     this.realtimeSessions.resume();
+    for (const subscription of this.subscriptions.values()) {
+      this.armSubscriptionRetry(subscription);
+    }
     const attempt = this.authAttempt;
     if (attempt !== undefined) {
       const remainingMs = attempt.expiresAtMs - this.now();
@@ -1432,7 +1462,7 @@ export class AckerDBClient {
         );
       }
     }
-    if (!this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
+    if (!this.permanentFailure && !this.authBlocked) {
       // ensureConnected is the single enforcement point for the server's
       // Retry-After deadline: an unelapsed one defers this dial to the
       // ordinary reconnect policy (which clears `resuming` again), everything
@@ -1573,7 +1603,7 @@ export class AckerDBClient {
       // Authentication-blocked outranks suspended: both mean "no transport,
       // no dialing", but blocked is the actionable fact — a credential is
       // required, and backgrounding cannot repair that. Consumers key on it
-      // (the React query store defers retries while blocked), so it stays
+      // (subscription demand survives while blocked), so it stays
       // visible across suspension.
       return current.phase === "authentication-blocked" && current.error === this.blockingError
         ? current
@@ -1692,7 +1722,7 @@ export class AckerDBClient {
         );
       }
     }
-    if (!this.closed && !this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
+    if (!this.closed && !this.permanentFailure && !this.authBlocked) {
       this.scheduleReconnect();
     }
     this.publishConnectionState();
@@ -1805,6 +1835,7 @@ export class AckerDBClient {
       this.failPermanently(localError("malformed", "event subscription received a query transition", "subscription"));
       return;
     }
+    this.subscriptionRetries.settle(subscription.retry);
     if (sameCursor(subscription.cursor, transition.to)) {
       if (transition.kind === "reset") subscription.resetRequested = false;
       this.advanceConvergence(id, transition.to.commitVersion);
@@ -1856,6 +1887,7 @@ export class AckerDBClient {
       this.failPermanently(localError("malformed", "query subscription received a live event", "subscription"));
       return;
     }
+    this.subscriptionRetries.settle(subscription.retry);
     if (sameEventCursor(subscription.cursor, event.cursor)) return;
     if (
       event.kind === "row" &&
@@ -1967,7 +1999,9 @@ export class AckerDBClient {
     const subscription = this.subscriptions.get(id);
     if (subscription) {
       subscription.onError?.(error);
-      this.removeSubscription(id, false);
+      if (this.subscriptions.get(id) !== subscription) return;
+      if (error.retryable) this.scheduleSubscriptionRetry(subscription, error);
+      else this.removeSubscription(id, false);
       return;
     }
     this.channels.failed(id, error);
@@ -2042,6 +2076,7 @@ export class AckerDBClient {
   private removeSubscription(id: number, sendUnsubscribe: boolean): void {
     const subscription = this.subscriptions.get(id);
     if (!subscription) return;
+    this.subscriptionRetries.clear(subscription.retry);
     this.subscriptions.delete(id);
     this.releasePersistent(subscription.bytes);
     if (sendUnsubscribe && this.canSendOperations()) {
@@ -2123,7 +2158,12 @@ export class AckerDBClient {
     this.channels.flush();
     const now = this.now();
     for (const subscription of this.subscriptions.values()) {
-      if (subscription.sentGeneration !== this.connectionGeneration) this.sendSubscription(subscription);
+      if (
+        !this.subscriptionRetries.waiting(subscription.retry) &&
+        subscription.sentGeneration !== this.connectionGeneration
+      ) {
+        this.sendSubscription(subscription);
+      }
     }
     for (const request of [...this.pending.values()]) {
       if (request.expiresAtMs <= now) this.expireRequest(request);
@@ -2144,6 +2184,33 @@ export class AckerDBClient {
   private sendSubscription(subscription: Subscription): void {
     this.sendText(subscription.frame);
     subscription.sentGeneration = this.connectionGeneration;
+  }
+
+  private scheduleSubscriptionRetry(
+    subscription: Subscription,
+    error: AckerDBClientError,
+  ): void {
+    if (this.subscriptionRetries.waiting(subscription.retry)) return;
+    subscription.sentGeneration = undefined;
+    try {
+      this.subscriptionRetries.schedule(
+        subscription.retry,
+        error.retryAfterMs ?? 0,
+      );
+    } catch {
+      this.failPermanently(localError("internal", "client random source is invalid", "connection"));
+      return;
+    }
+    this.armSubscriptionRetry(subscription);
+  }
+
+  private armSubscriptionRetry(subscription: Subscription): void {
+    if (this.suspended) return;
+    this.subscriptionRetries.arm(subscription.retry, () => {
+      if (this.subscriptions.get(subscription.id) !== subscription) return;
+      if (this.canSendOperations()) this.sendSubscription(subscription);
+      else this.ensureConnected();
+    });
   }
 
   private sendAuth(attempt: AuthAttempt): void {
@@ -2203,6 +2270,7 @@ export class AckerDBClient {
     this.channels.failAll(error);
     this.realtimeSessions.failAll(error);
     for (const subscription of this.subscriptions.values()) {
+      this.subscriptionRetries.clear(subscription.retry);
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
@@ -2211,34 +2279,32 @@ export class AckerDBClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectHandle !== undefined || this.socket || this.suspended || !this.hasReconnectWork()) {
+    if (this.reconnectHandle !== undefined || this.socket || this.suspended) {
       return;
     }
     // Scheduling is the entry to the ordinary reconnect policy: a foreground
     // recovery attempt that reaches it (its dial failed outright) publishes
     // ordinary reconnect phases from here on.
     this.resuming = false;
-    const windowMs = Math.min(
-      this.reconnect.maxDelayMs,
-      this.reconnect.baseDelayMs * 2 ** Math.min(this.reconnectAttempt + 1, 30),
-    );
-    const random = this.random();
-    if (!Number.isFinite(random) || random < 0 || random >= 1) {
-      this.failPermanently(localError("internal", "client random source is invalid", "connection"));
-      return;
-    }
     // The server's admission deadline floors the delay by whatever of it
     // remains; once elapsed it is naturally inert, so it is never cleared.
     const floor = Math.min(
       Math.max(0, this.serverRetryNotBeforeMs - this.now()),
       MAX_RETRY_AFTER_MS,
     );
-    const minimum = Math.max(this.reconnect.baseDelayMs, floor);
-    const ceiling = Math.max(minimum, windowMs);
-    const delay = Math.min(
-      MAX_RETRY_AFTER_MS,
-      minimum + Math.floor(random * (ceiling - minimum + 1)),
-    );
+    let delay: number;
+    try {
+      delay = retryDelay(
+        this.reconnect,
+        this.reconnectAttempt,
+        floor,
+        this.random,
+        MAX_RETRY_AFTER_MS,
+      );
+    } catch {
+      this.failPermanently(localError("internal", "client random source is invalid", "connection"));
+      return;
+    }
     this.reconnectAttempt++;
     this.reconnectHandle = this.clock.setTimeout(() => {
       this.reconnectHandle = undefined;
@@ -2269,16 +2335,6 @@ export class AckerDBClient {
   private clearReconnectTimer(): void {
     if (this.reconnectHandle !== undefined) this.clock.clearTimeout(this.reconnectHandle);
     this.reconnectHandle = undefined;
-  }
-
-  private hasReconnectWork(): boolean {
-    return (
-      this.connectRequested ||
-      this.subscriptions.size > 0 ||
-      this.channels.hasDemand ||
-      this.pending.size > 0 ||
-      this.authAttempt !== undefined
-    );
   }
 
   private canSendOperations(): boolean {

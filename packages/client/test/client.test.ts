@@ -800,6 +800,56 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(await result).toBeInstanceOf(AckerDBClientError);
   });
 
+  test("owns retryable subscription demand, cursor, backoff, and cancellation", () => {
+    const { client, clock, sockets } = harness();
+    const values: unknown[] = [];
+    const stop = client.subscribe("todos.list", {}, (value) => values.push(value));
+    welcome(client, sockets[0]!);
+    const subscription = lastFrame(sockets[0]!, "sub");
+    const held = cursor(4n);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: held, value: ["held"] },
+    });
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: subscription.id,
+      outcome: { code: "overloaded", retryable: true, retryAfterMs: 50, message: "retry" },
+    });
+    expect(clock.nextDueIn()).toBe(100);
+    clock.advance(99);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(1);
+    clock.advance(1);
+    const attempts = sockets[0]!.frames().filter((frame) => frame.t === "sub");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toMatchObject({ id: subscription.id, cursor: held });
+    stop();
+    expect(clock.taskCount).toBe(2); // stable-open + heartbeat only
+    client.close();
+    expect(values).toEqual([["held"]]);
+  });
+
+  test("an onError release cannot leave a retry timer behind", () => {
+    const { client, clock, sockets } = harness();
+    let stop = (): void => {};
+    stop = client.subscribe("todos.list", {}, () => {}, () => stop());
+    welcome(client, sockets[0]!);
+    const id = lastFrame(sockets[0]!, "sub").id;
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "overloaded", retryable: true, message: "retry" },
+    });
+    expect(clock.taskCount).toBe(2); // stable-open + heartbeat only
+    clock.advance(1_000);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(1);
+    client.close();
+  });
+
   test("keeps event subscriptions live-only and reports sequence gaps", () => {
     const { client, clock, sockets } = harness();
     const events: AckerDBLiveEvent<{ x: number }>[] = [];

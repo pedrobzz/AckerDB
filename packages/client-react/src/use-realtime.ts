@@ -4,7 +4,6 @@ import {
   stableEncode,
   type AckerDBRealtime,
   type AckerDBRealtimeOn,
-  type AckerDBRealtimeOptions,
   type AckerDBRealtimeState,
   type AckerDBClient,
   type AnyRealtimeRef,
@@ -31,11 +30,6 @@ export type RealtimeOn<Ref extends AnyRealtimeRef> = AckerDBRealtimeOn<
 >;
 
 export interface UseRealtimeOptions<Ref extends AnyRealtimeRef> {
-  /**
-   * Makes repeated calls inside one custom hook retain one native peer and
-   * one complete handler bundle.
-   */
-  readonly handlerKey?: string;
   readonly on?: RealtimeOn<Ref>;
 }
 
@@ -75,15 +69,17 @@ class RealtimeObservation<Ref extends AnyRealtimeRef>
   private handle: AckerDBRealtime<
     RealtimeClientEvents<Ref>,
     RealtimeClientStreams<Ref>,
+    RealtimeServerEvents<Ref>,
+    RealtimeServerStreams<Ref>,
     RealtimeError<Ref>
   > | null = null;
   private unsubscribe: (() => void) | null = null;
+  private unobserve: (() => void) | null = null;
 
   constructor(
     private readonly client: AckerDBClient,
     private readonly ref: Ref,
     private readonly args: RealtimeArgs<Ref>,
-    private readonly options: UseRealtimeOptions<Ref>,
     private readonly on: RealtimeOn<Ref>,
   ) {
     super(CONNECTING);
@@ -119,19 +115,9 @@ class RealtimeObservation<Ref extends AnyRealtimeRef>
   protected startObservation(): void {
     if (this.snapshot().phase === "failed") return;
     try {
-      const session = this.client.realtime(
-        this.ref,
-        this.args,
-        {
-          ...this.options,
-          on: this.on,
-        } as AckerDBRealtimeOptions<
-          RealtimeServerEvents<Ref>,
-          RealtimeServerStreams<Ref>,
-          RealtimeError<Ref>
-        >,
-      );
+      const session = this.client.realtime(this.ref, this.args);
       this.handle = session;
+      this.unobserve = session.observe(this.on);
       this.replace(session.currentState);
       this.unsubscribe = session.subscribe(() => {
         this.replace(session.currentState);
@@ -145,6 +131,8 @@ class RealtimeObservation<Ref extends AnyRealtimeRef>
   protected stopObservation(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unobserve?.();
+    this.unobserve = null;
     this.handle?.release();
     this.handle = null;
   }
@@ -152,8 +140,8 @@ class RealtimeObservation<Ref extends AnyRealtimeRef>
 
 /**
  * Retains one typed WebRTC session after commit. Equal client, reference, and
- * canonical arguments are shareable only through the same non-empty
- * `handlerKey`; those calls retain one peer and one complete `on` bundle.
+ * canonical arguments share one native peer; each hook observes it with its
+ * own current handler bundle.
  */
 export function useRealtime<Ref extends AnyRealtimeRef>(
   ref: Ref,
@@ -164,7 +152,7 @@ export function useRealtime<Ref extends AnyRealtimeRef>(
   const address = getRef(ref);
   const identity = args === skip
     ? null
-    : stableEncode([args, options.handlerKey ?? null]);
+    : stableEncode(args);
   const fallback = args === skip
     ? DISABLED as UseRealtimeState<Ref>
     : CONNECTING;
@@ -203,7 +191,7 @@ export function useRealtime<Ref extends AnyRealtimeRef>(
             : handler[input.type]?.(input);
         },
       };
-      return new RealtimeObservation(client, ref, args, options, on);
+      return new RealtimeObservation(client, ref, args, on);
     },
     [client, address, identity],
     options.on,

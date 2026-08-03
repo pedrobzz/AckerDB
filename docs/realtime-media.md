@@ -467,7 +467,6 @@ export function useAssistant(
   options: UseAssistantOptions = {},
 ) {
   return useRealtime(api.assistant.live, { assistantId }, {
-    handlerKey: "useAssistant",
     on: options.on,
   });
 }
@@ -479,7 +478,6 @@ every component:
 ```tsx
 export function useVoiceAssistant(assistantId: string) {
   return useRealtime(api.assistant.live, { assistantId }, {
-    handlerKey: "useVoiceAssistant",
     on: {
       async peerConnection(peer) {
         const media = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -546,6 +544,10 @@ const on: RealtimeOn<typeof api.assistant.live> = {
     return () => media.getTracks().forEach((track) => track.stop());
   },
 };
+
+const session = client.realtime(api.assistant.live, { assistantId });
+const stopObserving = session.observe(on);
+// Later: stopObserving(); session.release();
 ```
 
 `react-native-webrtc` is the default documented integration. AckerDB also
@@ -560,16 +562,15 @@ Expo Go is not supported.
 ## Sharing and handlers
 
 One client, realtime reference, and canonical argument set may have at most
-one active peer. A call without `handlerKey` is exclusive. Repeated calls share
-only when every call supplies the same non-empty key; a missing or different
-key raises `RealtimeHandlerKeyConflictError` instead of opening another peer.
-
-Equal keys retain one complete `on` bundle. This is intended for a custom hook
-mounted by both a message list and composer: React still runs each custom-hook
-instance and preserves its component-local state, while AckerDB runs transport
-setup and incoming handlers once. Meaningfully different `on` options under
-one key are application misuse. Shared transcript/application state belongs in
-the application's store or context and is never replayed by AckerDB.
+one active peer. Repeated calls retain that peer without an application-chosen
+collision key. Each retained base-client handle registers callbacks separately
+with `session.observe(on)`; `useRealtime` performs that observation for its own
+committed lifetime, so callback changes neither recreate the peer nor overwrite
+another component's handlers. Events and peer lifecycle notifications fan out
+to every active observation. An incoming byte stream is offered to the first
+matching observation only, preserving one bounded consumer instead of creating
+hidden `ReadableStream.tee()` buffers. Shared transcript/application state
+belongs in the application's store or context and is never replayed by AckerDB.
 
 `RealtimeOn<typeof api.assistant.live>` derives the complete handler type from
 the generated reference without separate handler code generation.
