@@ -15,6 +15,7 @@ import {
   packageDirectory,
   pkgJsonPath,
 } from "../../../../scripts/lib.ts";
+import { withPackageLicense } from "../../../../scripts/release/package-license.ts";
 import {
   CANDIDATE_MANIFEST_SCHEMA_VERSION,
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
@@ -348,6 +349,7 @@ function assertPackedDependencyRewrite(
 function expectedTargetFiles(target: WebRtcTarget): readonly string[] {
   return [
     "package/package.json",
+    "package/LICENSE.md",
     `package/${targetBinaryName(target)}`,
     "package/manifest.json",
     "package/sbom.cdx.json",
@@ -854,7 +856,11 @@ export async function packCandidate(
   await rm(directory, { force: true, recursive: true });
   await mkdir(directory, { recursive: true });
   for (const pkg of PACKAGES) {
-    packPackage(join(repositoryRoot, packageDirectory(pkg)), directory);
+    // Candidate tarballs must carry the same materialized license as every
+    // other packing path; a raw pack ships the package without LICENSE.md.
+    await withPackageLicense(pkg, (packageRoot) => {
+      packPackage(packageRoot, directory);
+    });
   }
   const candidate = await createCandidateManifest({ directory, source, repositoryRoot });
   const candidatePathname = join(directory, CANDIDATE_MANIFEST_FILE);

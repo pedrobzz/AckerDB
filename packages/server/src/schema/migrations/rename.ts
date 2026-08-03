@@ -11,7 +11,7 @@
  * renamed-stored snapshot against the target without ever opening a database.
  */
 import type { Database } from "bun:sqlite";
-import type { Descriptor } from "../../validation/v.ts";
+import type { Descriptor } from "../../validation/validator.ts";
 import { compareCodeUnits } from "../../shared/ordering.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { namedOf } from "../diff.ts";

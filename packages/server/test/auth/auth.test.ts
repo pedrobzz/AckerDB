@@ -11,7 +11,8 @@ import {
   type OidcVerifierOptions,
   type UserPrincipal,
 } from "../../src/auth/credentials.ts";
-import { v, ValidationError } from "../../src/validation/v.ts";
+import { ValidationError } from "../../src/validation/error.ts";
+import { v } from "../../src/validation/v.ts";
 import { AckerDBError, type AckerDBErrorCode } from "../../src/shared/errors.ts";
 import { query } from "../../src/app/functions.ts";
 import { invokeFunction } from "../../src/app/invocation.ts";

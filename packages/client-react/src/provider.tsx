@@ -78,7 +78,6 @@ export function AckerDBProvider({ config, children }: AckerDBProviderProps): Rea
 
   useEffect(() => {
     const instance = new AckerDBClient(config);
-    instance.connect();
     setLifetime({ key, client: instance });
     return () => {
       setLifetime((current) => (current !== null && current.client === instance ? null : current));

@@ -19,13 +19,13 @@ import {
   AckerDBClientError,
   type AckerDBAuthenticationState,
   type ClientResult,
-  type AckerDBClientClock,
   type AckerDBClientOptions,
   type AckerDBLiveEvent,
   type AckerDBConnectionState,
-  type AckerDBWebSocket,
 } from "@ackerdb/client";
 import { deferred } from "ackerdb-test-support/async";
+import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+import { createHarness, cursor, mustErr, mustOk } from "./support/harness.ts";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -37,190 +37,6 @@ const REFRESHED_USER_AUTHENTICATION = {
   identity: USER_AUTHENTICATION.identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
 } satisfies AuthenticationDescriptor;
-
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-
-  constructor(private time = 0) {}
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  nextDueIn(): number | undefined {
-    let due: number | undefined;
-    for (const task of this.tasks.values()) {
-      const delay = task.at - this.time;
-      if (due === undefined || delay < due) due = delay;
-    }
-    return due;
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  readonly closes: Array<{ code?: number; reason?: string }> = [];
-  private closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    if (
-      code !== undefined &&
-      code !== 1000 &&
-      (code < 3000 || code > 4999)
-    ) {
-      throw new DOMException("Invalid WebSocket close code", "InvalidAccessError");
-    }
-    if (this.closed) return;
-    this.closed = true;
-    this.closes.push({ code, reason });
-    this.onclose?.();
-  }
-
-  open(): void {
-    this.onopen?.();
-  }
-
-  receive(frame: ServerMessage): void {
-    this.receiveRaw(encode(frame));
-  }
-
-  receiveRaw(data: string): void {
-    this.onmessage?.({ data });
-  }
-
-  drop(): void {
-    this.close();
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-}
-
-function harness(
-  overrides: Partial<AckerDBClientOptions> = {},
-): { client: AckerDBClient; clock: ManualClock; sockets: FakeSocket[] } {
-  const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
-  const sockets: FakeSocket[] = [];
-  const client = new AckerDBClient({
-    url: "http://ackerdb.test",
-    credential: { kind: "anonymous" },
-    clientSessionId: "test-session",
-    clock,
-    random: () => 0,
-    createWebSocket: () => {
-      const socket = new FakeSocket();
-      sockets.push(socket);
-      return socket;
-    },
-    ...overrides,
-  });
-  return { client, clock, sockets };
-}
-
-function mustOk<T>(result: { readonly ok: true; readonly data: T } | {
-  readonly ok: false;
-  readonly error: unknown;
-}): T {
-  if (!result.ok) throw result.error;
-  return result.data;
-}
-
-function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
-  readonly ok: false;
-  readonly error: E;
-}): E {
-  if (result.ok) throw new Error("expected a failed Result");
-  return result.error;
-}
-
-function welcome(client: AckerDBClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
-  socket.open();
-  const descriptor: AuthenticationDescriptor =
-    principal === "user" ? USER_AUTHENTICATION : { principal: "anonymous" };
-  socket.receive({
-    v: PROTOCOL_VERSION,
-    t: "welcome",
-    clientSessionId: client.clientSessionId,
-    authEpoch: 0,
-    ...descriptor,
-  });
-}
-
-function cursor(
-  commitVersion: bigint,
-  generation = "generation-1",
-  authEpoch = 0,
-): SubscriptionCursor {
-  return { generation, commitVersion, authEpoch, identity: "todos.list:{list:1}" };
-}
-
-function lastFrame<T extends ClientMessage["t"]>(
-  socket: FakeSocket,
-  type: T,
-): Extract<ClientMessage, { t: T }> {
-  const frame = socket.frames().findLast((candidate) => candidate.t === type);
-  if (!frame) throw new Error(`No ${type} frame`);
-  return frame as Extract<ClientMessage, { t: T }>;
-}
 
 function dispatchProcedure<Args extends object, Value>(
   client: AckerDBClient,
@@ -236,8 +52,8 @@ function dispatchProcedure<Args extends object, Value>(
   const completion = client.procedure<Args, Value>(ref, args, options);
   const socket = sockets.at(-1);
   if (!socket) throw new Error("procedure demand did not create a socket");
-  if (!socket.frames().some((frame) => frame.t === "p")) welcome(client, socket);
-  return { completion, request: lastFrame(socket, "p"), socket };
+  if (!socket.frames().some((frame) => frame.t === "p")) socket.welcome(client.clientSessionId);
+  return { completion, request: socket.lastFrame("p"), socket };
 }
 
 async function completeProcedure<Value>(
@@ -352,7 +168,7 @@ function openResponse(
 
 describe("AckerDBClient protocol 2 ownership", () => {
   test("sends explicit hello, pauses for refresh, and keeps one session across reconnect", async () => {
-    const { client, clock, sockets } = harness({
+    const { client, clock, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
       clientSessionId: "stable-session",
     });
@@ -381,7 +197,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       refreshResolved = true;
       return authentication;
     });
-    const auth = lastFrame(first, "auth");
+    const auth = first.lastFrame("auth");
     const secondResult = client.query("todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
@@ -409,14 +225,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
       sentQueriesBeforeConfirmation + 1,
     );
 
-    first.drop();
+    first.close();
     expect(sockets).toHaveLength(1);
     clock.advance(99);
     expect(sockets).toHaveLength(1);
     clock.advance(1);
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello")).toEqual({
+    expect(second.lastFrame("hello")).toEqual({
       v: 5,
       t: "hello",
       clientSessionId: "stable-session",
@@ -429,7 +245,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   });
 
   test("replays a credential refresh that starts before the welcome handshake", async () => {
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     const query = client.query("todos.list", {}).then(mustErr);
@@ -445,7 +261,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       authEpoch: 1,
       ...USER_AUTHENTICATION,
     });
-    const auth = lastFrame(socket, "auth");
+    const auth = socket.lastFrame("auth");
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
@@ -463,12 +279,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
   });
 
   test("applies only a matching cursor predecessor, ignores duplicates, and resumes from applied state", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     const updates: unknown[] = [];
     client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     const c3 = cursor(3n);
@@ -489,7 +305,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
       v: 5,
       t: "transition",
@@ -506,21 +322,21 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
 
-    first.drop();
+    first.close();
     clock.advance(100);
     const second = sockets[1]!;
-    welcome(client, second);
-    expect(lastFrame(second, "sub").cursor).toEqual(c3);
+    second.welcome(client.clientSessionId);
+    expect(second.lastFrame("sub").cursor).toEqual(c3);
     client.close();
   });
 
   test("holds mutation results for convergence, discharges unsubscribe, and replays one UUIDv7", async () => {
     const clock = new ManualClock(1_700_000_000_000);
-    const { client, sockets } = harness({ clock });
+    const { client, sockets } = createHarness({ clock });
     const unsubscribe = client.subscribe("todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
@@ -535,7 +351,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       resolved = true;
       return value;
     });
-    const firstMutation = lastFrame(first, "m");
+    const firstMutation = first.lastFrame("m");
     expect(firstMutation.issuedAt).toBe(1_700_000_000_000);
     expect(firstMutation.mutationRequestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -565,7 +381,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(mustOk(await mutation)).toBe(41n);
 
     const discharged = client.mutation("todos.add", { text: "bread" });
-    const secondMutation = lastFrame(first, "m");
+    const secondMutation = first.lastFrame("m");
     first.receive({
       v: 5,
       t: "ok",
@@ -584,12 +400,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(mustOk(await discharged)).toBe(42n);
 
     const replayed = client.mutation("todos.add", { text: "lost-ack" });
-    const lostFrame = lastFrame(first, "m");
-    first.drop();
+    const lostFrame = first.lastFrame("m");
+    first.close();
     clock.advance(100);
     const second = sockets[1]!;
-    welcome(client, second);
-    const resent = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const resent = second.lastFrame("m");
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
@@ -611,11 +427,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
   });
 
   test("surfaces exact outcomes and terminates on a malformed server frame", async () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const rejected = client.query("todos.private", {});
     const socket = sockets[0]!;
-    welcome(client, socket);
-    const query = lastFrame(socket, "q");
+    socket.welcome(client.clientSessionId);
+    const query = socket.lastFrame("q");
     socket.receive({
       v: 5,
       t: "err",
@@ -639,7 +455,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(Object.isFrozen(exact.outcome)).toBe(true);
 
     const malformed = client.query("todos.list", {});
-    const malformedFrame = lastFrame(socket, "q");
+    const malformedFrame = socket.lastFrame("q");
     socket.receiveRaw(
       encode({
         v: 5,
@@ -664,14 +480,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
       { readonly id: bigint },
       404
     >;
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const queryResult = client.query<Record<never, never>, { id: bigint }, Missing>(
       "todos.find",
       {},
     );
     const socket = sockets[0]!;
-    welcome(client, socket);
-    const query = lastFrame(socket, "q");
+    socket.welcome(client.clientSessionId);
+    const query = socket.lastFrame("q");
     socket.receive({
       v: PROTOCOL_VERSION,
       t: "app_err",
@@ -697,7 +513,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       "todos.remove",
       {},
     );
-    const mutation = lastFrame(socket, "m");
+    const mutation = socket.lastFrame("m");
     socket.receive({
       v: PROTOCOL_VERSION,
       t: "app_err",
@@ -727,7 +543,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   });
 
   test("enforces pending item, byte, age, and inbound frame limits", async () => {
-    const { client, clock } = harness({
+    const { client, clock } = createHarness({
       limits: { maxPendingItems: 1, maxQueryAgeMs: 10 },
     });
     const aging = client.query("todos.list", {}).then(mustErr);
@@ -739,20 +555,20 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(await aging).toMatchObject({ code: "deadline_exceeded" });
     client.close();
 
-    const sentMutation = harness({ limits: { maxMutationAgeMs: 10 } });
+    const sentMutation = createHarness({ limits: { maxMutationAgeMs: 10 } });
     const unknown = sentMutation.client.mutation("todos.add", {}).then(mustErr);
-    welcome(sentMutation.client, sentMutation.sockets[0]!);
+    sentMutation.sockets[0]!.welcome(sentMutation.client.clientSessionId);
     sentMutation.clock.advance(10);
     expect(await unknown).toMatchObject({ code: "indeterminate", resource: "idempotency" });
     sentMutation.client.close();
 
-    const byteBound = harness({ limits: { maxPendingBytes: 1 } }).client;
+    const byteBound = createHarness({ limits: { maxPendingBytes: 1 } }).client;
     expect(() => byteBound.subscribe("todos.list", {}, () => {})).toThrow(AckerDBClientError);
     byteBound.close();
 
-    const inbound = harness({ limits: { maxFrameBytes: 256 } });
+    const inbound = createHarness({ limits: { maxFrameBytes: 256 } });
     const inboundResult = inbound.client.query("todos.list", {}).then(mustErr);
-    welcome(inbound.client, inbound.sockets[0]!);
+    inbound.sockets[0]!.welcome(inbound.client.clientSessionId);
     inbound.sockets[0]!.receiveRaw("x".repeat(257));
     expect(await inboundResult).toMatchObject({ code: "malformed" });
     inbound.client.close();
@@ -760,17 +576,17 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("uses deterministic exponential jitter, retry floors, stable reset, and cancels timers", async () => {
     const randomValues = [0.5, 0.25, 0];
-    const { client, clock, sockets } = harness({ random: () => randomValues.shift() ?? 0 });
+    const { client, clock, sockets } = createHarness({ random: () => randomValues.shift() ?? 0 });
     const result = client.query("todos.list", {}).then(mustErr);
-    welcome(client, sockets[0]!);
-    sockets[0]!.drop();
+    sockets[0]!.welcome(client.clientSessionId);
+    sockets[0]!.close();
     expect(clock.nextDueIn()).toBe(150);
     clock.advance(149);
     expect(sockets).toHaveLength(1);
     clock.advance(1);
     expect(sockets).toHaveLength(2);
 
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     sockets[1]!.receive({
       v: 5,
       t: "err",
@@ -791,25 +607,75 @@ describe("AckerDBClient protocol 2 ownership", () => {
     clock.advance(1_000);
     expect(sockets).toHaveLength(3);
 
-    welcome(client, sockets[2]!);
+    sockets[2]!.welcome(client.clientSessionId);
     clock.advance(10_000);
-    sockets[2]!.drop();
+    sockets[2]!.close();
     expect(clock.nextDueIn()).toBe(100);
     client.close();
     expect(clock.taskCount).toBe(0);
     expect(await result).toBeInstanceOf(AckerDBClientError);
   });
 
+  test("owns retryable subscription demand, cursor, backoff, and cancellation", () => {
+    const { client, clock, sockets } = createHarness();
+    const values: unknown[] = [];
+    const stop = client.subscribe("todos.list", {}, (value) => values.push(value));
+    sockets[0]!.welcome(client.clientSessionId);
+    const subscription = sockets[0]!.lastFrame("sub");
+    const held = cursor(4n);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: held, value: ["held"] },
+    });
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: subscription.id,
+      outcome: { code: "overloaded", retryable: true, retryAfterMs: 50, message: "retry" },
+    });
+    expect(clock.nextDueIn()).toBe(100);
+    clock.advance(99);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(1);
+    clock.advance(1);
+    const attempts = sockets[0]!.frames().filter((frame) => frame.t === "sub");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toMatchObject({ id: subscription.id, cursor: held });
+    stop();
+    expect(clock.taskCount).toBe(2); // stable-open + heartbeat only
+    client.close();
+    expect(values).toEqual([["held"]]);
+  });
+
+  test("an onError release cannot leave a retry timer behind", () => {
+    const { client, clock, sockets } = createHarness();
+    let stop = (): void => {};
+    stop = client.subscribe("todos.list", {}, () => {}, () => stop());
+    sockets[0]!.welcome(client.clientSessionId);
+    const id = sockets[0]!.lastFrame("sub").id;
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "overloaded", retryable: true, message: "retry" },
+    });
+    expect(clock.taskCount).toBe(2); // stable-open + heartbeat only
+    clock.advance(1_000);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(1);
+    client.close();
+  });
+
   test("keeps event subscriptions live-only and reports sequence gaps", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     const events: AckerDBLiveEvent<{ x: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { x: number }>(
       "events.cursor",
       {},
       (event) => events.push(event),
     );
-    welcome(client, sockets[0]!);
-    const subscription = lastFrame(sockets[0]!, "sub");
+    sockets[0]!.welcome(client.clientSessionId);
+    const subscription = sockets[0]!.lastFrame("sub");
     expect(subscription.args).toEqual({});
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
@@ -846,23 +712,23 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
     expect(events.map((event) => event.kind)).toEqual(["row", "gap", "reset"]);
 
-    sockets[0]!.drop();
+    sockets[0]!.close();
     clock.advance(100);
-    welcome(client, sockets[1]!);
-    expect(lastFrame(sockets[1]!, "sub").cursor).toBeUndefined();
+    sockets[1]!.welcome(client.clientSessionId);
+    expect(sockets[1]!.lastFrame("sub").cursor).toBeUndefined();
     client.close();
   });
 
   test("releases an event subscription exactly once across repeated unsubscribe and close", () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const events: AckerDBLiveEvent<{ x: number }>[] = [];
     const unsubscribe = client.subscribeEvent<Record<never, never>, { x: number }>(
       "events.cursor",
       {},
       (event) => events.push(event),
     );
-    welcome(client, sockets[0]!);
-    const id = lastFrame(sockets[0]!, "sub").id;
+    sockets[0]!.welcome(client.clientSessionId);
+    const id = sockets[0]!.lastFrame("sub").id;
     unsubscribe();
     unsubscribe();
     expect(
@@ -878,9 +744,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     // close() releases surviving subscriptions itself; a hook cleanup running
     // afterwards must find nothing left to release and send nothing.
-    const second = harness();
+    const second = createHarness();
     const release = second.client.subscribeEvent("events.cursor", {}, () => {});
-    welcome(second.client, second.sockets[0]!);
+    second.sockets[0]!.welcome(second.client.clientSessionId);
     second.client.close();
     expect(() => release()).not.toThrow();
     expect(
@@ -890,7 +756,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("uses the authenticated session for strict procedure envelopes", async () => {
     let fetches = 0;
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "session-token" } satisfies Credential,
       fetch: async () => {
         fetches++;
@@ -899,7 +765,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
 
     const stats = dispatchProcedure<{}, { count: number }>(client, sockets, "todos.stats", {});
-    expect(lastFrame(stats.socket, "hello").credential).toEqual({
+    expect(stats.socket.lastFrame("hello").credential).toEqual({
       kind: "bearer",
       token: "session-token",
     });
@@ -959,7 +825,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("cancels an in-flight procedure on caller abort or deadline without replaying it", async () => {
     for (const mode of ["abort", "timeout"] as const) {
       const abort = new AbortController();
-      const { client, clock, sockets } = harness({
+      const { client, clock, sockets } = createHarness({
         limits: { maxPendingItems: 1, maxQueryAgeMs: 50 },
       });
       const dispatched = dispatchProcedure(
@@ -975,7 +841,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       else clock.advance(50);
       await settlesPromptly(completion, `${mode} procedure response interruption`);
       expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
-      expect(lastFrame(dispatched.socket, "cancel")).toEqual({
+      expect(dispatched.socket.lastFrame("cancel")).toEqual({
         v: PROTOCOL_VERSION,
         t: "cancel",
         id: dispatched.request.id,
@@ -997,8 +863,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("never dispatches an unsent canceled procedure after reconnect", async () => {
     const abort = new AbortController();
-    const { client, clock, sockets } = harness();
-    client.connect();
+    const { client, clock, sockets } = createHarness();
     const completion = client.procedure(
       "procedure.before-welcome",
       {},
@@ -1008,7 +873,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     first.open();
     expect(first.frames().some((frame) => frame.t === "p")).toBe(false);
 
-    first.drop();
+    first.close();
     abort.abort();
     expect(await completion).toMatchObject({
       code: "unavailable",
@@ -1017,7 +882,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     clock.advance(100);
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     expect(second.frames().some((frame) => frame.t === "p")).toBe(false);
     client.close();
   });
@@ -1047,7 +912,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
       return acknowledgmentGate.promise;
     };
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "receiver-token" },
       fetch: fetcher,
     });
@@ -1084,7 +949,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(await second).toEqual({ value: { delta: "b" }, done: false });
     await iterator.return(undefined);
     expect(acknowledgments).toHaveLength(1);
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
     client.close();
   });
 
@@ -1131,7 +996,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       }
       return new Response(null, { status: 204 });
     };
-    const { client, clock, sockets } = harness({
+    const { client, clock, sockets } = createHarness({
       credential: { kind: "bearer", token: "old-token" },
       fetch: fetcher,
       random: () => randomValues.shift() ?? 0,
@@ -1148,7 +1013,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const refresh = client.refreshCredential({ kind: "bearer", token: "current-token" });
     // The dialed hello presents the refreshed credential, so the welcome
     // resolves the attempt without a separate auth round-trip.
-    welcome(client, sockets[0]!, "user");
+    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     await refresh;
     expect(clock.nextDueIn()).toBe(50);
     clock.advance(49);
@@ -1204,7 +1069,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     for (const terminal of cases) {
       const acknowledgmentGate = deferred<Response>();
       const acknowledgments: SseAckRequest[] = [];
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         fetch: async (url, init) => {
           if (isSseCall(url)) return sseResponse([terminal.frame]);
           acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
@@ -1313,7 +1178,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     for (const malformedCase of malformedCases) {
       let cancellations = 0;
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         fetch: async () => malformedCase.response(() => cancellations++),
       });
       const iterator = client.sse(`stream.${malformedCase.name}`, {})[Symbol.asyncIterator]();
@@ -1333,7 +1198,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       message: "authentication required",
       resource: "sse",
     } as const;
-    const refused = harness({
+    const refused = createHarness({
       fetch: async () => new Response(encode(outcome), { status: 401 }),
     });
     expect(
@@ -1343,7 +1208,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     refused.client.close();
 
     // The exposed surface never answers a frame, so one is not an outcome.
-    const framed = harness({
+    const framed = createHarness({
       fetch: async () => new Response(
         encode({ v: 4, t: "err", id: null, outcome }),
         { status: 401 },
@@ -1358,7 +1223,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("requires an exact 204 acknowledgment response", async () => {
     let cancellations = 0;
-    const { client } = harness({
+    const { client } = createHarness({
       fetch: async (url) =>
         isSseCall(url)
           ? sseResponse(
@@ -1395,7 +1260,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         }),
         headers: new Headers(),
       } as unknown as Response;
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         limits: { maxPendingItems: 1 },
         fetch: async (url, init) => {
           if (isSseCall(url)) {
@@ -1425,7 +1290,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("bounds the SSE parser before decoding a frame", async () => {
     let cancellations = 0;
-    const { client } = harness({
+    const { client } = createHarness({
       fetch: async () => sseResponse("x".repeat(257), {
         close: false,
         onCancel: () => cancellations++,
@@ -1466,7 +1331,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         },
       },
     );
-    const { client } = harness({
+    const { client } = createHarness({
       limits: { maxSseBufferBytes: maxBufferBytes },
       fetch: async () => response,
     });
@@ -1514,7 +1379,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           },
         },
       );
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         fetch: async (url) => {
           if (isSseCall(url)) return response;
           acknowledgments++;
@@ -1556,7 +1421,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         ),
         { status: 503 },
       );
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         limits: { maxPendingItems: 1 },
         fetch: async (url, init) => {
           if (isSseCall(url)) return response;
@@ -1581,7 +1446,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const abort = new AbortController();
     abort.abort();
     let streamFetches = 0;
-    const { client, clock, sockets } = harness({
+    const { client, clock, sockets } = createHarness({
       limits: { maxPendingItems: 1, maxQueryAgeMs: 1 },
       fetch: async (url, init) => {
         if (isSseCall(url)) {
@@ -1611,7 +1476,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const neverSettles = new Promise<void>(() => {});
     let streamFetches = 0;
     let lateCancellations = 0;
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       limits: { maxPendingItems: 1 },
       fetch: async (url, init) => {
         if (isSseCall(url)) {
@@ -1650,7 +1515,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       unhandled.push(reason);
     };
     let streamFetches = 0;
-    const { client } = harness({
+    const { client } = createHarness({
       limits: { maxPendingItems: 1 },
       fetch: async (url) => {
         if (isSseCall(url)) {
@@ -1685,7 +1550,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         let acknowledgments = 0;
         let cancellations = 0;
         const abort = new AbortController();
-        const { client, sockets } = harness({
+        const { client, sockets } = createHarness({
           limits: { maxPendingItems: 1 },
           fetch: async (url, init) => {
             if (isSseCall(url)) {
@@ -1731,7 +1596,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     let acknowledgments = 0;
     let cancellations = 0;
     const abort = new AbortController();
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       limits: { maxPendingItems: 1 },
       fetch: async (url, init) => {
         if (isSseCall(url)) {
@@ -1761,7 +1626,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   });
 
   test("rejects an oversized procedure before transport ownership", async () => {
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       limits: { maxFrameBytes: 256, maxPendingItems: 1 },
     });
     const oversized = client
@@ -1770,7 +1635,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     await settlesPromptly(oversized, "oversized procedure rejection");
     expect(await oversized).toMatchObject({ code: "overloaded", resource: "operation" });
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
     expect(await completeProcedure(client, sockets, "procedure.after-oversized", "available")).toBe("available");
     client.close();
   });
@@ -1779,7 +1644,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     for (const behavior of ["pending", "reject"] as const) {
       let acknowledgmentCancellations = 0;
       let streamCancellations = 0;
-      const { client, sockets } = harness({
+      const { client, sockets } = createHarness({
         limits: { maxFrameBytes: 256, maxPendingItems: 1 },
         fetch: async (url, init) => {
           if (isSseCall(url)) {
@@ -1837,7 +1702,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           ),
           { status: 503 },
         );
-        const { client, clock, sockets } = harness({
+        const { client, clock, sockets } = createHarness({
           limits: { maxPendingItems: 1, maxSseAckAgeMs: 50 },
           fetch: async (url, init) => {
             if (isSseCall(url)) {
@@ -1887,7 +1752,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         const late = deferred<Response>();
         let acknowledgmentAttempts = 0;
         let lateCancellations = 0;
-        const { client, clock, sockets } = harness({
+        const { client, clock, sockets } = createHarness({
           limits: { maxPendingItems: 1, maxSseAckAgeMs: 50 },
           fetch: async (url, init) => {
             if (isSseCall(url)) {
@@ -1950,7 +1815,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     let attempts = 0;
     let acknowledgmentSignal: AbortSignal | undefined;
     const hanging = new Promise<Response>(() => {});
-    const { client, clock } = harness({
+    const { client, clock } = createHarness({
       fetch: async (url, init) => {
         if (isSseCall(url)) {
           return sseResponse(
@@ -1993,7 +1858,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("bounds zero-delay network acknowledgment retries", async () => {
     let attempts = 0;
-    const { client } = harness({
+    const { client } = createHarness({
       fetch: async (url) => {
         if (isSseCall(url)) {
           return sseResponse(
@@ -2019,14 +1884,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("skips procedure transport ownership when its signal is already aborted", async () => {
     const abort = new AbortController();
     abort.abort();
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const completion = client
       .procedure("procedure.pre-aborted", {}, { signal: abort.signal })
       .then(mustErr);
 
     await settlesPromptly(completion, "pre-aborted procedure completion");
     expect(await completion).toMatchObject({ code: "unavailable", resource: "operation" });
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
     expect(await completeProcedure(client, sockets, "procedure.after-pre-abort", "available")).toBe("available");
     client.close();
   });
@@ -2034,7 +1899,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("settles an unanswered session procedure on abort and close", async () => {
     for (const shutdown of ["abort", "close"] as const) {
       const abort = new AbortController();
-      const { client, sockets } = harness();
+      const { client, sockets } = createHarness();
       const dispatched = dispatchProcedure(
         client,
         sockets,
@@ -2049,7 +1914,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${shutdown} of an unanswered session procedure`);
       expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
       if (shutdown === "abort") {
-        expect(lastFrame(dispatched.socket, "cancel").id).toBe(dispatched.request.id);
+        expect(dispatched.socket.lastFrame("cancel").id).toBe(dispatched.request.id);
       }
       client.close();
     }
@@ -2057,8 +1922,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
 });
 
 describe("AckerDBClient connection state", () => {
-  test("publishes connecting, ready, reconnecting, and closed with stable snapshots", () => {
-    const { client, sockets } = harness();
+  test("starts atomically and publishes connecting, ready, reconnecting, and closed with stable snapshots", () => {
+    const { client, clock, sockets } = createHarness();
     const phases: string[] = [];
     const unsubscribe = client.subscribeConnectionState((state) => phases.push(state.phase));
 
@@ -2066,13 +1931,11 @@ describe("AckerDBClient connection state", () => {
     expect(initial).toEqual({ phase: "connecting" });
     expect(client.currentConnectionState).toBe(initial);
 
-    client.connect();
     expect(sockets).toHaveLength(1);
     expect(client.currentConnectionState).toBe(initial);
-    client.connect();
     expect(sockets).toHaveLength(1);
 
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const ready = client.currentConnectionState;
     expect(ready).toEqual({
       phase: "ready",
@@ -2080,46 +1943,43 @@ describe("AckerDBClient connection state", () => {
     });
     expect(client.currentConnectionState).toBe(ready);
 
-    sockets[0]!.drop();
+    sockets[0]!.close();
     expect(client.currentConnectionState).toEqual({ phase: "reconnecting" });
     expect(sockets).toHaveLength(1);
 
-    client.connect();
+    clock.advance(100);
     expect(sockets).toHaveLength(2);
     expect(client.currentConnectionState.phase).toBe("reconnecting");
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState.phase).toBe("ready");
 
     client.close();
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
-    client.connect();
     expect(sockets).toHaveLength(2);
     expect(phases).toEqual(["ready", "reconnecting", "ready", "closed"]);
     unsubscribe();
   });
 
-  test("connect establishes standing demand that survives drops without operations", () => {
-    const { client, clock, sockets } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
-    sockets[0]!.drop();
+  test("construction establishes standing demand that survives drops without operations", () => {
+    const { client, clock, sockets } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
+    sockets[0]!.close();
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     expect(sockets).toHaveLength(1);
     clock.advance(100);
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState.phase).toBe("ready");
     client.close();
     expect(clock.taskCount).toBe(0);
   });
 
   test("keeps the connecting snapshot when the first attempt drops before welcome", () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const phases: string[] = [];
     client.subscribeConnectionState((state) => phases.push(state.phase));
     const initial = client.currentConnectionState;
-    client.connect();
-    sockets[0]!.drop();
+    sockets[0]!.close();
     expect(client.currentConnectionState).toBe(initial);
     expect(phases).toEqual([]);
     client.close();
@@ -2127,11 +1987,10 @@ describe("AckerDBClient connection state", () => {
   });
 
   test("reports authentication-blocked with the exact error and recovers through refreshCredential", async () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const states: AckerDBConnectionState[] = [];
     client.subscribeConnectionState((state) => states.push(state));
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
 
     const blocking = new AckerDBClientError({
       code: "unauthenticated",
@@ -2154,7 +2013,7 @@ describe("AckerDBClient connection state", () => {
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
       v: 5,
       t: "welcome",
@@ -2179,9 +2038,8 @@ describe("AckerDBClient connection state", () => {
   });
 
   test("reports terminal-error with the failure that stopped the client", () => {
-    const { client, sockets } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, sockets } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receiveRaw("not json");
     const terminal = client.currentConnectionState;
     if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
@@ -2193,21 +2051,19 @@ describe("AckerDBClient connection state", () => {
   });
 
   test("a ready listener that reenters close releases every timer", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     client.subscribeConnectionState((state) => {
       if (state.phase === "ready") client.close();
     });
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
     expect(clock.taskCount).toBe(0);
     expect(sockets[0]!.closes).toHaveLength(1);
   });
 
   test("a recovery listener that reenters close releases the authentication attempt", async () => {
-    const { client, clock, sockets } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, clock, sockets } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
       v: 5,
       t: "err",
@@ -2225,21 +2081,20 @@ describe("AckerDBClient connection state", () => {
   });
 
   test("a nested close during notification never delivers stale state", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     const observed: string[] = [];
     client.subscribeConnectionState((state) => {
       if (state.phase === "ready") client.close();
     });
     client.subscribeConnectionState((state) => observed.push(state.phase));
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     expect(observed).toEqual(["closed"]);
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
     expect(clock.taskCount).toBe(0);
   });
 
   test("close notifies once and later subscriptions stay silent", () => {
-    const { client } = harness();
+    const { client } = createHarness();
     let notified = 0;
     client.subscribeConnectionState(() => notified++);
     client.close();
@@ -2255,7 +2110,7 @@ describe("AckerDBClient connection state", () => {
 
 describe("subscription cursor confirmations", () => {
   test("confirms applied resume and checkpoint transitions but never value deliveries", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     const updates: unknown[] = [];
     let confirmations = 0;
     client.subscribe(
@@ -2266,8 +2121,8 @@ describe("subscription cursor confirmations", () => {
       { onCursorConfirmed: () => confirmations++ },
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     const c2 = cursor(2n);
 
@@ -2293,11 +2148,11 @@ describe("subscription cursor confirmations", () => {
 
     // Reconnect resumes from the retained cursor; the server's positive
     // resume lands exactly on the held cursor and confirms it.
-    first.drop();
+    first.close();
     clock.advance(100);
     const second = sockets[1]!;
-    welcome(client, second);
-    expect(lastFrame(second, "sub").cursor).toEqual(c2);
+    second.welcome(client.clientSessionId);
+    expect(second.lastFrame("sub").cursor).toEqual(c2);
     second.receive({
       v: 5,
       t: "transition",
@@ -2310,7 +2165,7 @@ describe("subscription cursor confirmations", () => {
   });
 
   test("withholds held-cursor confirmation while a reset is demanded", () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const updates: unknown[] = [];
     let confirmations = 0;
     client.subscribe(
@@ -2321,8 +2176,8 @@ describe("subscription cursor confirmations", () => {
       { onCursorConfirmed: () => confirmations++ },
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c0 = cursor(0n);
     const c1 = cursor(1n);
     const c2 = cursor(2n);
@@ -2343,7 +2198,7 @@ describe("subscription cursor confirmations", () => {
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
       v: 5,
       t: "transition",
@@ -2376,7 +2231,7 @@ describe("subscription cursor confirmations", () => {
 
 describe("subscription argument encoding", () => {
   test("rejects unencodable arguments with the exact validation error", () => {
-    const { client } = harness();
+    const { client } = createHarness();
     try {
       client.subscribe("todos.byScore", { score: Number.NaN }, () => {});
       throw new Error("subscribe must reject NaN arguments");
@@ -2395,13 +2250,13 @@ describe("subscription argument encoding", () => {
 
 describe("AckerDBClient close-time mutation settlement", () => {
   test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const sent = client.mutation("todos.add", { text: "sent" }).then(mustErr);
-    welcome(client, sockets[0]!);
-    expect(lastFrame(sockets[0]!, "m").args).toEqual({ text: "sent" });
+    sockets[0]!.welcome(client.clientSessionId);
+    expect(sockets[0]!.lastFrame("m").args).toEqual({ text: "sent" });
 
     // Written to a connection that dropped: the server may have committed.
-    sockets[0]!.drop();
+    sockets[0]!.close();
     // Created while disconnected: provably never reached the server.
     const unsent = client.mutation("todos.add", { text: "unsent" }).then(mustErr);
 
@@ -2421,7 +2276,7 @@ describe("AckerDBClient close-time mutation settlement", () => {
 
 describe("AckerDBClient authentication state", () => {
   test("publishes authenticating, unauthenticated, and closed with stable snapshots", () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     const phases: string[] = [];
     const unsubscribe = client.subscribeAuthenticationState((state) => phases.push(state.phase));
 
@@ -2429,10 +2284,9 @@ describe("AckerDBClient authentication state", () => {
     expect(initial).toEqual({ phase: "authenticating", credential: "anonymous" });
     expect(client.currentAuthenticationState).toBe(initial);
 
-    client.connect();
     expect(client.currentAuthenticationState).toBe(initial);
 
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const confirmed = client.currentAuthenticationState;
     expect(confirmed).toEqual({
       phase: "unauthenticated",
@@ -2451,7 +2305,7 @@ describe("AckerDBClient authentication state", () => {
     expect(confirmed.authentication).toBe(ready.authentication);
 
     // A reconnect re-presents the stored credential before any confirmation.
-    sockets[0]!.drop();
+    sockets[0]!.close();
     expect(client.currentAuthenticationState).toBe(initial);
 
     client.close();
@@ -2461,12 +2315,11 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("confirms a bearer connection as authenticated with the welcome principal", () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticating",
       credential: "bearer",
     });
-    client.connect();
     sockets[0]!.open();
     sockets[0]!.receive({
       v: 5,
@@ -2483,14 +2336,13 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("replaces provenance atomically while preserving durable Identity", async () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    client.connect();
-    welcome(client, sockets[0]!, "user");
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
+    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     const before = client.currentAuthentication;
     expect(before).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
 
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-refreshed" });
-    const attempt = lastFrame(sockets[0]!, "auth");
+    const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
       t: "auth",
@@ -2516,11 +2368,10 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("tracks refresh and sign-out through the pending credential kind", async () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     const states: AckerDBAuthenticationState[] = [];
     client.subscribeAuthenticationState((state) => states.push(state));
-    client.connect();
-    welcome(client, sockets[0]!, "user");
+    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
 
     // An anonymous presentation on a live session is the protocol's sign-out.
     const signOut = client.refreshCredential({ kind: "anonymous" });
@@ -2531,7 +2382,7 @@ describe("AckerDBClient authentication state", () => {
     // The transport session stays ready while the credential is re-verified;
     // only the authentication surface reports the in-flight presentation.
     expect(client.currentConnectionState.phase).toBe("ready");
-    const signOutFrame = lastFrame(sockets[0]!, "auth");
+    const signOutFrame = sockets[0]!.lastFrame("auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
       v: 5,
@@ -2555,7 +2406,7 @@ describe("AckerDBClient authentication state", () => {
       phase: "authenticating",
       credential: "bearer",
     });
-    const refreshFrame = lastFrame(sockets[0]!, "auth");
+    const refreshFrame = sockets[0]!.lastFrame("auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
       v: 5,
@@ -2580,14 +2431,13 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("coalesces an identical in-flight credential into a single attempt", async () => {
-    const { client, sockets } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, sockets } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
     const first = client.refreshCredential({ kind: "bearer", token: "token-b" });
     const second = client.refreshCredential({ kind: "bearer", token: "token-b" });
     expect(second).toBe(first);
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
-    const attempt = lastFrame(sockets[0]!, "auth");
+    const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
       v: 5,
       t: "auth",
@@ -2603,7 +2453,7 @@ describe("AckerDBClient authentication state", () => {
     const signOutSecond = client.refreshCredential({ kind: "anonymous" });
     expect(signOutSecond).toBe(signOutFirst);
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
-    const signOutAttempt = lastFrame(sockets[0]!, "auth");
+    const signOutAttempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
       v: 5,
       t: "auth",
@@ -2616,8 +2466,7 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("a same-value refresh between hello and welcome resolves without a second verification", async () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    client.connect();
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     const socket = sockets[0]!;
     socket.open();
     // The refresh presents the value the in-flight hello already carries; the
@@ -2636,8 +2485,7 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("an A-B-A refresh interleaving matches the hello by value and supersedes the detour", async () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    client.connect();
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     const socket = sockets[0]!;
     socket.open();
     const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
@@ -2658,9 +2506,8 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("a refresh whose auth frame exceeds the client limit rejects without installing an attempt", () => {
-    const { client, clock, sockets } = harness({ limits: { maxFrameBytes: 256 } });
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, clock, sockets } = createHarness({ limits: { maxFrameBytes: 256 } });
+    sockets[0]!.welcome(client.clientSessionId);
     const confirmed = client.currentAuthenticationState;
     const timers = clock.taskCount;
 
@@ -2685,11 +2532,10 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("a refresh in flight across a reconnect resolves from the replayed hello's welcome", async () => {
-    const { client, clock, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    client.connect();
-    welcome(client, sockets[0]!, "user");
+    const { client, clock, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
+    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
-    sockets[0]!.drop();
+    sockets[0]!.close();
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticating",
       credential: "bearer",
@@ -2697,7 +2543,7 @@ describe("AckerDBClient authentication state", () => {
     clock.advance(100);
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
       v: 5,
       t: "welcome",
@@ -2717,9 +2563,8 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("reports refresh-required with the exact error shared with the connection state", async () => {
-    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    client.connect();
-    welcome(client, sockets[0]!, "user");
+    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
+    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     sockets[0]!.receive({
       v: 5,
       t: "err",
@@ -2762,9 +2607,8 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("a refresh timeout blocks with auth_unavailable and rejects the attempt", async () => {
-    const { client, clock, sockets } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, clock, sockets } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticating",
@@ -2780,11 +2624,10 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("failed mirrors the terminal connection error and close notifies once", () => {
-    const { client, sockets } = harness();
+    const { client, sockets } = createHarness();
     let notified = 0;
     client.subscribeAuthenticationState(() => notified++);
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receiveRaw("not json");
     const failed = client.currentAuthenticationState;
     if (failed.phase !== "failed") throw new Error(`unexpected ${failed.phase}`);
@@ -2804,15 +2647,14 @@ describe("AckerDBClient authentication state", () => {
   });
 
   test("an authentication listener that reenters close never observes stale state", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     const observed: string[] = [];
     client.subscribeAuthenticationState((state) => {
       if (state.phase === "unauthenticated") client.close();
     });
     client.subscribeAuthenticationState((state) => observed.push(state.phase));
     client.subscribeConnectionState((state) => observed.push(`connection:${state.phase}`));
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     expect(observed).toEqual(["closed", "connection:closed"]);
     expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
     expect(client.currentConnectionState).toEqual({ phase: "closed" });

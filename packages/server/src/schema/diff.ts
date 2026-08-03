@@ -9,7 +9,7 @@
  * deltas, per-index add/drop/change with the uniqueness that governs the
  * change's safety class, and full-text target additions/drops.
  */
-import type { Descriptor } from "../validation/v.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import type { SchemaSnapshot, TableSnapshot } from "./snapshot.ts";
 
 export interface VariantChange {

@@ -42,7 +42,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 
 const action = v.enum("SystemMcpTokenAction", [
   "create_agent",
@@ -409,8 +409,11 @@ describe("system-managed MCP integration tokens", () => {
     }
     await expect(runtime.runMcpTool({
       id: "attacker-mcp",
-      mcp: "agent",
-      tool: "attempt_system_administration",
+      authorization: runtime.authorizeMcpTool(
+        "agent",
+        "attempt_system_administration",
+        delegated,
+      ),
       args: {},
       principal: delegated,
     })).rejects.toMatchObject({ code: "unauthorized" });

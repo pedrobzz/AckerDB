@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { AckerDBError } from "../../shared/errors.ts";
 import type { Schema } from "../../schema/definition.ts";
-import { baseValidator } from "../../validation/v.ts";
+import { baseValidator } from "../../validation/validator.ts";
 
 type DistanceKernel = (left: Float32Array, right: Float32Array) => number;
 

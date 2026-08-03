@@ -399,13 +399,11 @@ declarations, room rules, publishing, state, and deduplication.
 `useRealtime(ref, args, options)` retains one AckerDB-relayed WebRTC session.
 Audio and video remain native tracks on the exposed `RTCPeerConnection`; one
 reliable internal data channel carries typed events and finite typed byte
-streams. Equal calls share a peer only when all calls provide the same
-non-empty `handlerKey`; a missing or different key throws instead of opening a
-surprise second peer.
+streams. Equal client, reference, and canonical arguments always share one
+peer; every committed hook observes that peer with its own current handlers.
 
 ```tsx
 const assistant = useRealtime(api.assistant.live, { assistantId }, {
-  handlerKey: "useAssistant",
   on: {
     async peerConnection(peer) {
       const media = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -549,8 +547,8 @@ native modules, and the browser entry contains no Expo or React Native code.
 While the OS keeps the JavaScript process alive, entering `background`
 publishes `suspended`, retires the physical socket and connection timers, and
 keeps logical query, mutation, and event demand. `inactive` alone does not
-suspend. Returning to `active` starts one fresh authenticated connection when
-demand exists; failed attempts enter ordinary reconnect behavior.
+suspend. Returning to `active` restores the constructor-owned authenticated
+connection; failed attempts enter ordinary reconnect behavior.
 
 Recovery guarantees are operation-specific:
 

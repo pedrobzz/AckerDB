@@ -29,7 +29,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import { until } from "ackerdb-test-support/async";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
@@ -204,8 +204,7 @@ test("a subscription recomputes cleanly after another principal's MCP tool commi
   const bob = await user(runtime, "bob");
   const result = await runtime.runMcpTool({
     id: 1,
-    mcp: "actions",
-    tool: "add_record",
+    authorization: runtime.authorizeMcpTool("actions", "add_record", bob),
     args: { value: "burger" },
     principal: bob,
   });
@@ -275,8 +274,7 @@ test("an event subscription delivers cleanly after another principal's MCP tool 
   const bob = await user(runtime, "bob");
   const result = await runtime.runMcpTool({
     id: 1,
-    mcp: "actions",
-    tool: "emit_signal",
+    authorization: runtime.authorizeMcpTool("actions", "emit_signal", bob),
     args: { label: "ping" },
     principal: bob,
   });

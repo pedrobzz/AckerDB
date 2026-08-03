@@ -3,241 +3,51 @@ import { createHash } from "node:crypto";
 import {
   decode,
   stableEncode,
-  type ApplicationError,
   type LiveEvent,
-  type LiveEventCursor,
   type Outcome,
   type SubscriptionCursor,
   type SubscriptionTransition,
 } from "@ackerdb/core";
-import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
-import { BoundedExecutor, type ExecutorSnapshot } from "../runtime/executor.ts";
-import { deepFreeze } from "../shared/immutable.ts";
-import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
-import { OrderedPublication, PublicationHandoff, type Publication } from "./publication.ts";
-
-export interface Subscriber {
-  sendTransition(subscriptionId: number, transition: SubscriptionTransition): Promise<void>;
-  sendEvent(subscriptionId: number, event: LiveEvent): Promise<void>;
-  sendError(subscriptionId: number, outcome: Outcome): Promise<void>;
-}
-
-export interface QueryEvaluation {
-  readonly value: unknown;
-  readonly applicationError?: ApplicationError;
-  readonly encoded: string;
-  readonly readSet: ReadonlySet<string>;
-  readonly commitVersion: bigint;
-}
-
-export interface QueryEvaluationInput<C> {
-  readonly address: string;
-  readonly args: unknown;
-  readonly policyScopeFingerprint: string;
-  readonly fairnessKey: string;
-  readonly context: C;
-}
-
-export type QueryEvaluator<C> = (input: QueryEvaluationInput<C>) => Promise<QueryEvaluation>;
-
-export interface QuerySubscriptionOptions<C> extends QueryEvaluationInput<C> {
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly authEpoch: number;
-  readonly cursor?: SubscriptionCursor;
-}
-
-export interface EventSubscriptionOptions {
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly table: string;
-  readonly authEpoch: number;
-  readonly args: unknown;
-  readonly matches: (row: unknown, args: unknown) => boolean;
-}
-
-export interface ReactiveEvent {
-  readonly table: string;
-  readonly row: unknown;
-}
-
-export interface DeliveryFailure {
-  readonly subscriber: Subscriber;
-  readonly subscriptionId: number;
-  readonly kind: "query" | "event";
-  readonly phase: "convergence" | "delivery";
-  readonly error: unknown;
-}
-
-export interface ReactiveCommitResult {
-  readonly affectedCallerIds: readonly number[];
-  readonly deliveryFailures: readonly DeliveryFailure[];
-}
-
-export class ReactiveCommit {
-  readonly writeKeys: ReadonlySet<string>;
-  readonly events: readonly ReactiveEvent[];
-  readonly affectedCallerIds: readonly number[];
-  result?: ReactiveCommitResult;
-
-  constructor(
-    writeKeys: ReadonlySet<string>,
-    events: readonly ReactiveEvent[] = [],
-    affectedCallerIds: readonly number[] = [],
-  ) {
-    this.writeKeys = new Set(writeKeys);
-    this.affectedCallerIds = Object.freeze([...affectedCallerIds]);
-    this.events = Object.freeze(events.map((event) => Object.freeze({
-      table: event.table,
-      row: deepFreeze(structuredClone(event.row)),
-    })));
-  }
-}
-
-export type ReactiveObservationPhase =
-  | "initial_evaluation"
-  | "invalidation_match"
-  | "revalidation_queue"
-  | "evaluation"
-  | "changed"
-  | "unchanged"
-  | "fanout"
-  | "listener_queue"
-  | "delivery"
-  | "event_match"
-  | "failure";
-
-export type ReactiveObservationOutcome =
-  | "ok"
-  | "changed"
-  | "unchanged"
-  | "matched"
-  | "unmatched"
-  | Outcome["code"];
-
-/** Privacy-safe metadata emitted at the realtime boundary that owns each stage. */
-export interface ReactiveObservation {
-  readonly kind: "query" | "event";
-  readonly phase: ReactiveObservationPhase;
-  readonly outcome: ReactiveObservationOutcome;
-  readonly durationMs: number;
-  readonly address?: string;
-  readonly subscriptionId?: number;
-  readonly commitVersion?: bigint;
-  readonly dependencyCount?: number;
-  readonly resultCount?: number;
-  readonly byteCount?: number;
-}
-
-export type ReactiveObserver = (observation: ReactiveObservation) => unknown;
-
-export interface OrderedReactiveOptions<C> {
-  readonly evaluate: QueryEvaluator<C>;
-  readonly limits?: ServiceLimits;
-  readonly initialVersion?: bigint;
-  readonly now?: () => number;
-  readonly generation?: () => string;
-  readonly observer?: ReactiveObserver;
-}
-
-export interface ReactiveSnapshot {
-  readonly sharedEntries: number;
-  readonly queryListeners: number;
-  readonly eventListeners: number;
-  readonly dormantEntries: number;
-  readonly dependencyKeys: number;
-  readonly dependencyEdges: number;
-  readonly multiOwnerDependencyKeys: number;
-  readonly resultBytes: number;
-  readonly historyTransitions: number;
-  readonly historyBytes: number;
-  readonly evaluatingEntries: number;
-  readonly revalidation: ExecutorSnapshot;
-}
-
-export interface AuthRotationResult {
-  readonly subscriptions: readonly {
-    readonly id: number;
-    readonly address: string;
-    readonly args: unknown;
-  }[];
-  readonly deliveryFailures: readonly DeliveryFailure[];
-}
-
-interface QueryListener<C> {
-  readonly kind: "query";
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly entry: QueryEntry<C>;
-  readonly fairnessKey: string;
-  authEpoch: number;
-  cursor?: SubscriptionCursor;
-  delivery?: Promise<void>;
-}
-
-interface EventListener<C> {
-  readonly kind: "event";
-  readonly subscriber: Subscriber;
-  readonly id: number;
-  readonly state: EventState<C>;
-  readonly args: unknown;
-  readonly matches: (row: unknown, args: unknown) => boolean;
-  authEpoch: number;
-  cursor: LiveEventCursor;
-  gapped: boolean;
-  delivery?: Promise<void>;
-}
-
-type Binding<C> = QueryListener<C> | EventListener<C>;
-
-interface QueryEntry<C> {
-  readonly key: string;
-  readonly identity: string;
-  readonly address: string;
-  readonly encodedArgs: string;
-  readonly policyScopeFingerprint: string;
-  readonly revalidationBytes: number;
-  /** Oldest active listener owns shared work; an admitted evaluation snapshots this key. */
-  ownerFairnessKey: string;
-  context: C;
-  generation: string;
-  readSet: Set<string>;
-  listeners: Set<QueryListener<C>>;
-  history: HistoryRecord<C>[];
-  historyBytes: number;
-  initialized: boolean;
-  value: unknown;
-  applicationError?: ApplicationError;
-  encoded: string;
-  resultBytes: number;
-  commitVersion: bigint;
-  dirtyVersion: bigint;
-  evaluationGeneration: number;
-  evaluation?: Promise<DeliveryFailure[]>;
-  dormantAtMs?: number;
-  removed: boolean;
-}
-
-type DependencyOwners<C> = QueryEntry<C> | Set<QueryEntry<C>>;
-
-interface HistoryRecord<C> {
-  readonly entry: QueryEntry<C>;
-  readonly fromVersion: bigint;
-  readonly toVersion: bigint;
-  readonly kind: "update" | "checkpoint";
-  readonly value?: unknown;
-  readonly applicationError?: ApplicationError;
-  readonly bytes: number;
-  readonly createdAtMs: number;
-  previousGlobal?: HistoryRecord<C>;
-  nextGlobal?: HistoryRecord<C>;
-  active: boolean;
-}
-
-interface EventState<C> {
-  readonly table: string;
-  readonly listeners: Set<EventListener<C>>;
-}
+import { AckerDBError } from "../../shared/errors.ts";
+import { deepFreeze } from "../../shared/immutable.ts";
+import { BoundedExecutor } from "../../runtime/executor.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "../../runtime/limits.ts";
+import { OrderedPublication, PublicationHandoff, type Publication } from "../publication.ts";
+import type {
+  AuthRotationResult,
+  DeliveryFailure,
+  EventSubscriptionOptions,
+  OrderedReactiveOptions,
+  QueryEvaluation,
+  QueryEvaluator,
+  QuerySubscriptionOptions,
+  ReactiveCommit,
+  ReactiveCommitResult,
+  ReactiveEvent,
+  ReactiveObservation,
+  ReactiveObserver,
+  ReactiveSnapshot,
+  Subscriber,
+} from "./contract.ts";
+import { DependencyIndex } from "./dependencies.ts";
+import {
+  failure,
+  type Binding,
+  type EventListener,
+  type EventState,
+  type QueryEntry,
+  type QueryListener,
+} from "./entry.ts";
+import { TransitionHistory } from "./history.ts";
+import {
+  authOutcome,
+  errorOutcome,
+  isAuthFailure,
+  observationOutcome,
+  overloadOutcome,
+  overloaded,
+  unavailable,
+} from "./outcome.ts";
 
 interface InstalledEvaluation<C> {
   readonly entry: QueryEntry<C>;
@@ -266,23 +76,20 @@ export class OrderedReactive<C = unknown> {
   private readonly observer?: ReactiveObserver;
   private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
-  private readonly byReadKey = new Map<string, DependencyOwners<C>>();
+  private readonly dependencies = new DependencyIndex<C>();
   private readonly bySubscriber = new Map<Subscriber, Map<number, Binding<C>>>();
   private readonly eventStates = new Map<string, EventState<C>>();
-  private historyHead?: HistoryRecord<C>;
-  private historyTail?: HistoryRecord<C>;
+  private readonly history: TransitionHistory<C>;
   private queryListeners = 0;
   private eventListeners = 0;
   private resultBytes = 0;
-  private historyBytes = 0;
-  private historyTransitions = 0;
-  private dependencyEdges = 0;
-  private multiOwnerDependencyKeys = 0;
-  private eventTail: Promise<void> = Promise.resolve();
+  private dormantEntries = 0;
+  private evaluatingEntries = 0;
 
   constructor(options: OrderedReactiveOptions<C>) {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
+    this.history = new TransitionHistory(this.limits.resume);
     this.now = options.now ?? Date.now;
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
     this.observer = options.observer;
@@ -304,7 +111,7 @@ export class OrderedReactive<C = unknown> {
 
   async subscribeQuery(options: QuerySubscriptionOptions<C>): Promise<void> {
     this.assertAuthEpoch(options.authEpoch);
-    this.assertSubscriptionAdmission(options.subscriber, options.id);
+    this.assertSubscriptionIdentity(options.subscriber, options.id);
     let entry = this.entryFor(options);
     entry.context = options.context;
     if (entry.listeners.size === 0) entry.ownerFairnessKey = options.fairnessKey;
@@ -315,7 +122,7 @@ export class OrderedReactive<C = unknown> {
         let listener: QueryListener<C> | undefined;
         const installed = this.publication.compareAndInstall(entry.commitVersion, () => {
           if (entry.removed) return;
-          this.assertSubscriptionAdmission(options.subscriber, options.id);
+          this.assertSubscriptionIdentity(options.subscriber, options.id);
           listener = {
             kind: "query",
             subscriber: options.subscriber,
@@ -347,7 +154,7 @@ export class OrderedReactive<C = unknown> {
 
   async subscribeEvent(options: EventSubscriptionOptions): Promise<void> {
     this.assertAuthEpoch(options.authEpoch);
-    this.assertSubscriptionAdmission(options.subscriber, options.id);
+    this.assertSubscriptionIdentity(options.subscriber, options.id);
     let state = this.eventStates.get(options.table);
     if (!state) {
       state = { table: options.table, listeners: new Set() };
@@ -401,7 +208,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   affectedQueryIds(subscriber: Subscriber, writeKeys: ReadonlySet<string>): number[] {
-    const affected = this.affectedEntries(writeKeys);
+    const affected = this.dependencies.affected(writeKeys);
     const ids: number[] = [];
     const bindings = this.bySubscriber.get(subscriber);
     if (!bindings) return ids;
@@ -472,7 +279,7 @@ export class OrderedReactive<C = unknown> {
     const subscriptions = bindings.map((binding) => Object.freeze({
       id: binding.id,
       address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
-      args: binding.kind === "query" ? decode(binding.entry.encodedArgs) : binding.args,
+      args: binding.kind === "query" ? binding.entry.args.decoded : binding.args,
     })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];
     for (const binding of bindings) {
@@ -525,7 +332,7 @@ export class OrderedReactive<C = unknown> {
 
   prune(now = this.readNow()): number {
     if (!Number.isFinite(now)) throw new RangeError("now must be finite");
-    this.pruneHistory(now);
+    this.history.prune(now);
     let removed = 0;
     for (const entry of [...this.entries.values()]) {
       if (
@@ -543,24 +350,23 @@ export class OrderedReactive<C = unknown> {
 
   snapshot(): ReactiveSnapshot {
     this.prune();
-    let dormantEntries = 0;
-    let evaluatingEntries = 0;
-    for (const entry of this.entries.values()) {
-      if (entry.listeners.size === 0) dormantEntries++;
-      if (entry.evaluation) evaluatingEntries++;
-    }
+    return this.metricsSnapshot();
+  }
+
+  /** Constant-cost projection for periodic telemetry; expiry remains demand-driven. */
+  metricsSnapshot(): ReactiveSnapshot {
     return Object.freeze({
       sharedEntries: this.entries.size,
       queryListeners: this.queryListeners,
       eventListeners: this.eventListeners,
-      dormantEntries,
-      dependencyKeys: this.byReadKey.size,
-      dependencyEdges: this.dependencyEdges,
-      multiOwnerDependencyKeys: this.multiOwnerDependencyKeys,
+      dormantEntries: this.dormantEntries,
+      dependencyKeys: this.dependencies.keys,
+      dependencyEdges: this.dependencies.edges,
+      multiOwnerDependencyKeys: this.dependencies.multiOwnerKeys,
       resultBytes: this.resultBytes,
-      historyTransitions: this.historyTransitions,
-      historyBytes: this.historyBytes,
-      evaluatingEntries,
+      historyTransitions: this.history.transitions,
+      historyBytes: this.history.bytes,
+      evaluatingEntries: this.evaluatingEntries,
       revalidation: this.revalidation.snapshot(),
     });
   }
@@ -568,10 +374,10 @@ export class OrderedReactive<C = unknown> {
   async close(): Promise<void> {
     await this.publication.close();
     this.revalidation.close();
-    await Promise.all([this.revalidation.drain(), this.eventTail]);
+    await this.revalidation.drain();
   }
 
-  private entryFor(input: QueryEvaluationInput<C>): QueryEntry<C> {
+  private entryFor(input: QuerySubscriptionOptions<C>): QueryEntry<C> {
     const encodedArgs = stableEncode(input.args);
     const key = stableEncode([input.address, encodedArgs, input.policyScopeFingerprint]);
     const existing = this.entries.get(key);
@@ -581,7 +387,11 @@ export class OrderedReactive<C = unknown> {
       key,
       identity: createHash("sha256").update(key).digest("base64url"),
       address: input.address,
-      encodedArgs,
+      args: Object.freeze({
+        decoded: deepFreeze(decode(encodedArgs)),
+        encoded: encodedArgs,
+        bytes: byteLength(encodedArgs),
+      }),
       policyScopeFingerprint: input.policyScopeFingerprint,
       revalidationBytes: byteLength(key),
       ownerFairnessKey: input.fairnessKey,
@@ -664,9 +474,13 @@ export class OrderedReactive<C = unknown> {
     });
     let owned!: Promise<DeliveryFailure[]>;
     const release = () => {
-      if (entry.evaluation === owned) entry.evaluation = undefined;
+      if (entry.evaluation === owned) {
+        entry.evaluation = undefined;
+        this.evaluatingEntries--;
+      }
       if (entry.listeners.size === 0 && entry.initialized && entry.dormantAtMs === undefined) {
         entry.dormantAtMs = this.readNow();
+        this.dormantEntries++;
       }
     };
     owned = execution.then(
@@ -684,6 +498,7 @@ export class OrderedReactive<C = unknown> {
       },
     );
     entry.evaluation = owned;
+    this.evaluatingEntries++;
     return owned;
   }
 
@@ -701,7 +516,8 @@ export class OrderedReactive<C = unknown> {
       try {
         evaluated = await this.root(() => this.evaluateQuery({
           address: entry.address,
-          args: decode(entry.encodedArgs),
+          args: entry.args.decoded,
+          requestBytes: entry.args.bytes,
           policyScopeFingerprint: entry.policyScopeFingerprint,
           fairnessKey,
           context,
@@ -838,7 +654,7 @@ export class OrderedReactive<C = unknown> {
       !entry.initialized ||
       entry.encoded !== evaluated.encoded ||
       (entry.applicationError === undefined) !== (evaluated.applicationError === undefined);
-    this.replaceReadSet(entry, evaluated.readSet);
+    this.dependencies.replace(entry, evaluated.readSet);
     this.resultBytes += resultBytes - entry.resultBytes;
     entry.value = evaluated.value;
     entry.applicationError = evaluated.applicationError;
@@ -848,7 +664,7 @@ export class OrderedReactive<C = unknown> {
     entry.initialized = true;
     let forceReset = false;
     if (previousVersion !== undefined && evaluated.commitVersion > previousVersion) {
-      forceReset = !this.retainHistory(entry, {
+      forceReset = !this.history.retain(entry, {
         entry,
         fromVersion: previousVersion,
         toVersion: evaluated.commitVersion,
@@ -911,7 +727,7 @@ export class OrderedReactive<C = unknown> {
       return;
     }
     if (!forceReset && from && this.cursorBelongsTo(from, entry, listener.authEpoch)) {
-      const chain = this.historyChain(entry, from.commitVersion, target.commitVersion);
+      const chain = this.history.chain(entry, from.commitVersion, target.commitVersion);
       if (chain) {
         let cursor = from;
         for (const record of chain) {
@@ -952,29 +768,10 @@ export class OrderedReactive<C = unknown> {
     listener.cursor = transition.to;
   }
 
-  private historyChain(
-    entry: QueryEntry<C>,
-    fromVersion: bigint,
-    toVersion: bigint,
-  ): readonly HistoryRecord<C>[] | undefined {
-    if (fromVersion >= toVersion) return undefined;
-    const chain: HistoryRecord<C>[] = [];
-    let version = fromVersion;
-    for (const record of entry.history) {
-      if (!record.active || record.fromVersion < version) continue;
-      if (record.fromVersion !== version) return undefined;
-      chain.push(record);
-      version = record.toVersion;
-      if (version === toVersion) return chain;
-      if (version > toVersion) return undefined;
-    }
-    return undefined;
-  }
-
   private processPublication(publication: Publication<ReactiveCommit>): PublicationHandoff {
     const commit = publication.value;
     const matchedAt = this.observer ? this.observationNow() : undefined;
-    const affected = this.affectedEntries(commit.writeKeys);
+    const affected = this.dependencies.affected(commit.writeKeys);
     if (this.observer && commit.writeKeys.size > 0 && this.entries.size > 0) {
       this.observe(matchedAt, {
         kind: "query",
@@ -1006,19 +803,14 @@ export class OrderedReactive<C = unknown> {
     commitVersion: bigint,
     events: readonly ReactiveEvent[],
   ): Promise<DeliveryFailure[]> {
-    const delivery = this.eventTail.then(async () => {
-      const failures: DeliveryFailure[] = [];
-      for (const event of events) failures.push(...await this.publishEvent(commitVersion, event));
-      return failures;
-    });
-    this.eventTail = delivery.then(() => undefined, () => undefined);
-    return delivery;
+    return Promise.all(events.map((event) => this.publishEvent(commitVersion, event)))
+      .then((failures) => failures.flat());
   }
 
-  private async publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {
+  private publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {
     const state = this.eventStates.get(event.table);
-    if (!state) return [];
-    const failures: DeliveryFailure[] = [];
+    if (!state) return Promise.resolve([]);
+    const deliveries: Promise<DeliveryFailure | undefined>[] = [];
     for (const listener of [...state.listeners]) {
       const matchedAt = this.observer ? this.observationNow() : undefined;
       try {
@@ -1048,28 +840,18 @@ export class OrderedReactive<C = unknown> {
           this.observe(matchedAt, { ...metadata, phase: "event_match", outcome });
           this.observe(matchedAt, { ...metadata, phase: "failure", outcome });
         }
-        listener.gapped = true;
-        failures.push(failure(listener, error));
+        deliveries.push(this.sequence(listener, () => {
+          listener.gapped = true;
+        }).then(() => failure(listener, error)));
         continue;
       }
-      const cursor = {
-        ...listener.cursor,
-        commitVersion,
-        sequence: listener.cursor.sequence + 1n,
-      };
-      try {
-        if (listener.gapped) {
-          await this.sendEvent(listener, { kind: "gap", cursor });
-          listener.gapped = false;
-        } else {
-          await this.sendEvent(listener, { kind: "row", cursor, row: event.row });
-        }
-      } catch (error) {
-        listener.gapped = true;
-        failures.push(failure(listener, error));
-      }
+      deliveries.push(this.sendPublishedEvent(listener, commitVersion, event.row).then(
+        () => undefined,
+        (error) => failure(listener, error),
+      ));
     }
-    return failures;
+    return Promise.all(deliveries).then((failures) =>
+      failures.filter((item): item is DeliveryFailure => item !== undefined));
   }
 
   private async failEntry(entry: QueryEntry<C>, error: unknown): Promise<DeliveryFailure[]> {
@@ -1091,127 +873,6 @@ export class OrderedReactive<C = unknown> {
       }
     }
     return failures;
-  }
-
-  private affectedEntries(writeKeys: ReadonlySet<string>): Set<QueryEntry<C>> {
-    const affected = new Set<QueryEntry<C>>();
-    for (const key of writeKeys) {
-      const owners = this.byReadKey.get(key);
-      if (owners instanceof Set) {
-        for (const entry of owners) affected.add(entry);
-      } else if (owners) {
-        affected.add(owners);
-      }
-    }
-    return affected;
-  }
-
-  private replaceReadSet(entry: QueryEntry<C>, next: ReadonlySet<string>): void {
-    for (const key of entry.readSet) {
-      if (next.has(key)) continue;
-      this.removeReadOwner(key, entry);
-    }
-    for (const key of next) {
-      if (entry.readSet.has(key)) continue;
-      this.addReadOwner(key, entry);
-    }
-    entry.readSet = new Set(next);
-  }
-
-  private addReadOwner(key: string, entry: QueryEntry<C>): void {
-    const owners = this.byReadKey.get(key);
-    if (!owners) {
-      this.byReadKey.set(key, entry);
-      this.dependencyEdges++;
-      return;
-    }
-    if (owners === entry) return;
-    if (owners instanceof Set) {
-      if (owners.has(entry)) return;
-      owners.add(entry);
-      this.dependencyEdges++;
-      return;
-    }
-    this.byReadKey.set(key, new Set([owners, entry]));
-    this.dependencyEdges++;
-    this.multiOwnerDependencyKeys++;
-  }
-
-  private removeReadOwner(key: string, entry: QueryEntry<C>): void {
-    const owners = this.byReadKey.get(key);
-    if (owners === entry) {
-      this.byReadKey.delete(key);
-      this.dependencyEdges--;
-      return;
-    }
-    if (!(owners instanceof Set) || !owners.delete(entry)) return;
-    this.dependencyEdges--;
-    if (owners.size !== 1) return;
-    this.byReadKey.set(key, owners.values().next().value!);
-    this.multiOwnerDependencyKeys--;
-  }
-
-  private retainHistory(entry: QueryEntry<C>, record: HistoryRecord<C>): boolean {
-    const now = record.createdAtMs;
-    this.pruneHistory(now);
-    if (
-      record.bytes > this.limits.resume.maxBytesPerStream ||
-      record.bytes > this.limits.resume.maxBytes
-    ) {
-      this.clearHistory(entry);
-      return false;
-    }
-    while (
-      entry.history.length >= this.limits.resume.maxTransitionsPerStream ||
-      record.bytes > this.limits.resume.maxBytesPerStream - entry.historyBytes
-    ) {
-      this.removeHistory(entry.history[0]!);
-    }
-    while (record.bytes > this.limits.resume.maxBytes - this.historyBytes && this.historyHead) {
-      this.removeHistory(this.historyHead);
-    }
-    if (record.bytes > this.limits.resume.maxBytes - this.historyBytes) {
-      this.clearHistory(entry);
-      return false;
-    }
-    entry.history.push(record);
-    entry.historyBytes += record.bytes;
-    this.historyBytes += record.bytes;
-    this.historyTransitions++;
-    if (this.historyTail) {
-      this.historyTail.nextGlobal = record;
-      record.previousGlobal = this.historyTail;
-    } else {
-      this.historyHead = record;
-    }
-    this.historyTail = record;
-    return true;
-  }
-
-  private pruneHistory(now: number): void {
-    while (this.historyHead && now - this.historyHead.createdAtMs >= this.limits.resume.maxAgeMs) {
-      this.removeHistory(this.historyHead);
-    }
-  }
-
-  private removeHistory(record: HistoryRecord<C>): void {
-    if (!record.active) return;
-    record.active = false;
-    const index = record.entry.history.indexOf(record);
-    if (index >= 0) record.entry.history.splice(index, 1);
-    record.entry.historyBytes -= record.bytes;
-    this.historyBytes -= record.bytes;
-    this.historyTransitions--;
-    if (record.previousGlobal) record.previousGlobal.nextGlobal = record.nextGlobal;
-    else this.historyHead = record.nextGlobal;
-    if (record.nextGlobal) record.nextGlobal.previousGlobal = record.previousGlobal;
-    else this.historyTail = record.previousGlobal;
-    record.previousGlobal = undefined;
-    record.nextGlobal = undefined;
-  }
-
-  private clearHistory(entry: QueryEntry<C>): void {
-    for (const record of [...entry.history]) this.removeHistory(record);
   }
 
   private makeEntryCapacity(): void {
@@ -1251,9 +912,14 @@ export class OrderedReactive<C = unknown> {
     entry.removed = true;
     entry.evaluationGeneration++;
     this.entries.delete(entry.key);
+    if (entry.dormantAtMs !== undefined) this.dormantEntries--;
+    if (entry.evaluation !== undefined) {
+      entry.evaluation = undefined;
+      this.evaluatingEntries--;
+    }
     this.resultBytes -= entry.resultBytes;
-    this.clearHistory(entry);
-    for (const key of entry.readSet) this.removeReadOwner(key, entry);
+    this.history.clear(entry);
+    this.dependencies.detach(entry);
     for (const listener of [...entry.listeners]) this.detach(listener);
   }
 
@@ -1266,6 +932,7 @@ export class OrderedReactive<C = unknown> {
         binding.entry.ownerFairnessKey = binding.fairnessKey;
       }
       binding.entry.listeners.add(binding);
+      if (binding.entry.dormantAtMs !== undefined) this.dormantEntries--;
       binding.entry.dormantAtMs = undefined;
       this.queryListeners++;
     } else {
@@ -1285,7 +952,10 @@ export class OrderedReactive<C = unknown> {
       const oldest = binding.entry.listeners.values().next().value;
       if (oldest !== undefined) binding.entry.ownerFairnessKey = oldest.fairnessKey;
       if (binding.entry.listeners.size === 0 && !binding.entry.removed) {
-        binding.entry.dormantAtMs = this.readNow();
+        if (binding.entry.dormantAtMs === undefined) {
+          binding.entry.dormantAtMs = this.readNow();
+          this.dormantEntries++;
+        }
       }
     } else {
       binding.state.listeners.delete(binding);
@@ -1294,16 +964,10 @@ export class OrderedReactive<C = unknown> {
     }
   }
 
-  private assertSubscriptionAdmission(subscriber: Subscriber, id: number): void {
+  private assertSubscriptionIdentity(subscriber: Subscriber, id: number): void {
     if (!Number.isSafeInteger(id) || id <= 0) throw new RangeError("subscription id must be positive");
     const mine = this.bySubscriber.get(subscriber);
     if (mine?.has(id)) throw new AckerDBError("conflict", "Subscription id is already active");
-    if ((mine?.size ?? 0) >= this.limits.maxSubscriptionsPerConnection) {
-      throw overloaded("Per-connection subscription capacity is full");
-    }
-    if (this.queryListeners + this.eventListeners >= this.limits.maxSubscriptions) {
-      throw overloaded("Global subscription capacity is full");
-    }
   }
 
   private validateEvaluation(evaluation: QueryEvaluation): void {
@@ -1388,15 +1052,19 @@ export class OrderedReactive<C = unknown> {
       };
     }
 
+    return this.sequence(binding, deliver);
+  }
+
+  private sequence(binding: Binding<C>, work: () => void | Promise<void>): Promise<void> {
     const previous = binding.delivery;
     const reserved = Promise.withResolvers<void>();
     binding.delivery = reserved.promise;
     let delivery: Promise<void>;
     if (previous) {
-      delivery = previous.then(deliver);
+      delivery = previous.then(work);
     } else {
       try {
-        delivery = deliver();
+        delivery = Promise.resolve(work());
       } catch (error) {
         delivery = Promise.reject(error);
       }
@@ -1407,6 +1075,31 @@ export class OrderedReactive<C = unknown> {
     };
     void delivery.then(release, release);
     return delivery;
+  }
+
+  private sendPublishedEvent(
+    listener: EventListener<C>,
+    commitVersion: bigint,
+    row: unknown,
+  ): Promise<void> {
+    return this.queue(listener, async () => {
+      const cursor = {
+        ...listener.cursor,
+        commitVersion,
+        sequence: listener.cursor.sequence + 1n,
+      };
+      const event: LiveEvent = listener.gapped
+        ? { kind: "gap", cursor }
+        : { kind: "row", cursor, row };
+      try {
+        await listener.subscriber.sendEvent(listener.id, event);
+      } catch (error) {
+        listener.gapped = true;
+        throw error;
+      }
+      listener.cursor = cursor;
+      listener.gapped = false;
+    }, commitVersion);
   }
 
   private async sendEvent(listener: EventListener<C>, event: LiveEvent): Promise<void> {
@@ -1506,69 +1199,4 @@ function cursorEquals(left: SubscriptionCursor, right: SubscriptionCursor): bool
 
 function byteLength(value: string): number {
   return utf8.encode(value).byteLength;
-}
-
-function failure<C>(
-  binding: Binding<C>,
-  error: unknown,
-  phase: DeliveryFailure["phase"] = "delivery",
-): DeliveryFailure {
-  return Object.freeze({
-    subscriber: binding.subscriber,
-    subscriptionId: binding.id,
-    kind: binding.kind,
-    phase,
-    error,
-  });
-}
-
-function observationOutcome(error: unknown): Outcome["code"] {
-  return isAckerDBError(error) ? error.code : "internal";
-}
-
-function isAuthFailure(outcome: Outcome): boolean {
-  return outcome.code === "auth_stale" ||
-    outcome.code === "auth_unavailable" ||
-    outcome.code === "unauthenticated" ||
-    outcome.code === "unauthorized";
-}
-
-function authOutcome(code: "auth_stale" | "unauthorized", message: string): Outcome {
-  return Object.freeze({ code, retryable: false, message });
-}
-
-function overloadOutcome(message: string): Outcome {
-  return Object.freeze({
-    code: "overloaded",
-    retryable: true,
-    retryAfterMs: 0,
-    resource: "subscription",
-    message,
-  });
-}
-
-function errorOutcome(error: unknown): Outcome {
-  if (isAckerDBError(error)) {
-    return Object.freeze({
-      code: error.code,
-      retryable: error.retryable,
-      message: error.message.slice(0, 512),
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-      ...(error.resource === undefined ? {} : { resource: error.resource }),
-      ...(error.committed === undefined ? {} : { committed: error.committed }),
-    });
-  }
-  return Object.freeze({ code: "internal", retryable: false, message: "Subscription evaluation failed" });
-}
-
-function overloaded(message: string): AckerDBError {
-  return new AckerDBError("overloaded", message, {
-    retryable: true,
-    retryAfterMs: 0,
-    resource: "subscription",
-  });
-}
-
-function unavailable(message: string): AckerDBError {
-  return new AckerDBError("unavailable", message, { resource: "subscription" });
 }

@@ -8,25 +8,23 @@ import {
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
-  isAccessPolicy,
-  validateArgsShape,
-  type AccessPolicy,
   type ArgsInput,
   type Invocable,
   type ProcedureCtx,
 } from "../app/functions.ts";
+import { compileInvocation } from "../app/invocation.ts";
 import {
-  compileInvocation,
+  isAccessPolicy,
+  type AccessPolicy,
   type InvocationContext,
-} from "../app/invocation.ts";
-import {
-  type Expand,
-  type InferShape,
-  type InferValidator,
-  type InferValidatorInput,
-  type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+} from "../app/access.ts";
+import type {
+  Expand,
+  InferValidator,
+  InferValidatorInput,
+  Validator,
+} from "../validation/validator.ts";
+import type { InferShape, ObjectShape } from "../validation/composites.ts";
 import {
   type AuthorizationError,
   type AuthorizationState,
@@ -35,6 +33,7 @@ import {
   authorizationResult as channelAuthorizationResult,
   validateDeclaration,
   validateEventDeclarations,
+  validateArgsShape,
 } from "../validation/declarations.ts";
 
 export type ChannelEventDeclarations = Readonly<

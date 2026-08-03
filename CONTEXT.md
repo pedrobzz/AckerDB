@@ -467,25 +467,22 @@ guaranteed in the connected phase.
 _Avoid_: Boolean connected flag, raw peer connection state
 
 **Realtime observer** — One local consumer of a shared realtime session, with
-ordinary component-local React state. Multiple components may retain the same
-session only through the same non-null handler key, sharing one complete keyed
-handler bundle without installing or executing it again. AckerDB does not merge
+ordinary component-local React state. Multiple consumers retain the canonical
+session keyed by client, realtime reference, and arguments while owning their
+state listeners and handler observations independently. AckerDB does not merge
 or replay transcript history, message aggregation, or other application state;
 applications use their own store or context when that state must be shared.
 _Avoid_: Provider session, realtime connection
 
-**Realtime keyed handler claim** — The one optional keyed `on` handler bundle
-owned by a shared realtime session. Equal `handlerKey` values retain the same
-claim without rerunning setup or replaying prior events. A missing or different
-key for the same active client, realtime reference, and canonical arguments
-raises `RealtimeHandlerKeyConflictError` rather than creating another peer.
-Supplying meaningfully different options under one key is application misuse.
-An initial call without a key is exclusive and rejects every additional hook
-call while its session remains active.
-_Avoid_: Connection key, multiple keyed bundles, function-identity deduplication
+**Realtime handler observation** — One `on` callback bundle registered against
+a retained shared session. Each observation runs setup once per peer generation
+and owns its matching cleanup; releasing it cannot remove another consumer's
+handlers or peer ownership. Future events and peer lifecycle notifications fan
+out to every active matching observation, without replay.
+_Avoid_: Handler key, handler claim, function-identity deduplication
 
-**Realtime observer callback namespace** — The single React `on` object for one
-realtime observer. `on.peerConnection` runs for each native peer generation
+**Realtime observer callback namespace** — The `on` object for one realtime
+handler observation. `on.peerConnection` runs for each native peer generation
 before its initial negotiation, may await native media setup, and may return
 generation cleanup;
 `on.connected` reports that generation's actual connected state;
@@ -494,11 +491,11 @@ creating another media subscription; `on.stateChange` receives each future
 transition of the exhaustive AckerDB session-phase union without replaying
 earlier transitions; `on.event` is either the typed event-handler map or the
 discriminated-union event handler; and `on.stream` applies those same two forms
-to incoming typed byte streams. Because the complete namespace already belongs
-to one keyed handler claim, each stream reaches one handler once without a
-second deduplication mechanism. Explicit `ReadableStream.tee()` is the
-application's opt-in to multiple consumers. The hook snapshot, rather than a
-lifecycle callback, is the source of current state.
+to incoming typed byte streams. Each incoming stream is offered to the first
+matching active observation so the transport retains one bounded consumer.
+Explicit `ReadableStream.tee()` is the application's opt-in to multiple
+consumers. The hook snapshot, rather than a lifecycle callback, is the source
+of current state.
 `RealtimeOn<typeof realtimeRef>` derives the entire namespace from the
 generated reference's existing type metadata without additional handler
 code generation.

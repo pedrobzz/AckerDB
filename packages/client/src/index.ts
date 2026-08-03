@@ -6,13 +6,11 @@ export type {
   AckerDBChannelState,
 } from "./channels/channel.ts";
 export {
-  RealtimeHandlerKeyConflictError,
   type AckerDBPeerConnectionFactory,
   type AckerDBRealtime,
   type AckerDBRealtimeEventOn,
   type AckerDBRealtimeIncomingStream,
   type AckerDBRealtimeOn,
-  type AckerDBRealtimeOptions,
   type AckerDBRealtimeState,
   type AckerDBRealtimeStreamOn,
   type AckerDBRealtimeStreamUnion,

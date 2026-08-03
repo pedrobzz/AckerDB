@@ -26,9 +26,6 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
 /** The reserved prefix for every AckerDB-owned route under `/api/`. */
 export const ACKERDB_RESERVED_API_PREFIX = "/api/_";
 
-/** One live peer session: `/api/_realtime/<sessionId>`. */
-export const REALTIME_SESSION_PREFIX = `${ACKERDB_HTTP_ROUTES.realtime}/`;
-
 const builtinPaths = new Set<string>(Object.values(ACKERDB_HTTP_ROUTES));
 
 export function isAckerDBHttpRoute(path: string): boolean {

@@ -11,7 +11,8 @@
  * `auth.ts` for why that extraction is structural.
  */
 import type { ApplicationError, RegisteredServerOnly, Result } from "@ackerdb/core";
-import type { ObjectShape, Validator } from "../validation/v.ts";
+import type { Validator } from "../validation/validator.ts";
+import type { ObjectShape } from "../validation/composites.ts";
 import { isRegisteredFunction } from "../app/functions.ts";
 import type { AnyRegistered, ErrorDeclarations } from "../app/functions.ts";
 import { brand, hasBrand } from "../shared/identity.ts";

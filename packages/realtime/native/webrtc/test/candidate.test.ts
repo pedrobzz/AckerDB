@@ -200,6 +200,7 @@ async function fixture(): Promise<Fixture> {
           }],
         },
       }),
+      "LICENSE.md": `fixture license for ${target.host}\n`,
       "THIRD_PARTY_NOTICES.txt": `notices for ${target.host}\n`,
       "PROVENANCE.md": `at immutable commit \`${ACKERDB_LIBWEBRTC_REVISION}\`.\n`,
       "licenses/Google-WebRTC-LICENSE.md": license,

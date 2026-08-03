@@ -17,9 +17,9 @@ import {
 } from "@ackerdb/core";
 import {
   AckerDBClient,
-  RealtimeHandlerKeyConflictError,
   type AckerDBClientClock,
 } from "../src/index.ts";
+import { ManualClock } from "ackerdb-test-support/client-transport";
 
 class FakeDataChannel extends EventTarget {
   binaryType: BinaryType = "blob";
@@ -157,64 +157,6 @@ class FakePeerConnection extends EventTarget {
     this.closed = true;
     this.connectionState = "closed";
     this.dispatchEvent(new Event("connectionstatechange"));
-  }
-}
-
-interface ClockTask {
-  readonly at: number;
-  readonly callback: () => void;
-  readonly intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private readonly tasks = new Map<number, ClockTask>();
-  private nextId = 0;
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(milliseconds: number): void {
-    const deadline = this.time + milliseconds;
-    for (;;) {
-      const due = [...this.tasks.entries()]
-        .filter(([, task]) => task.at <= deadline)
-        .sort(([, left], [, right]) => left.at - right.at)[0];
-      if (due === undefined) break;
-      const [id, task] = due;
-      this.tasks.delete(id);
-      this.time = task.at;
-      if (task.intervalMs !== undefined) {
-        this.tasks.set(id, {
-          at: task.at + task.intervalMs,
-          callback: task.callback,
-          intervalMs: task.intervalMs,
-        });
-      }
-      task.callback();
-    }
-    this.time = deadline;
   }
 }
 
@@ -425,11 +367,7 @@ describe("AckerDB realtime client sessions", () => {
           );
         }),
     });
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "bounded-setup" },
-    );
+    const session = client.realtime(assistant, { assistantId: 1n });
 
     await eventually(() => session.currentState.phase === "reconnecting");
     expect(session.currentState).toMatchObject({
@@ -440,86 +378,70 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
-  test("equal keys retain one peer and one handler bundle across owners", async () => {
+  test("equal canonical sessions retain one peer while observation ownership stays separate", async () => {
     const { client, peers, preparations, offers, closes } = fixture();
     const transcripts: string[] = [];
     let setups = 0;
-    const options = {
-      handlerKey: "use-xai-realtime",
-      on: {
-        peerConnection: () => {
-          setups++;
-        },
-        event: {
-          transcript: ({ text }: { readonly text: string }) => {
-            transcripts.push(text);
-          },
+    let cleanups = 0;
+    const observation = (owner: string) => ({
+      peerConnection: () => {
+        setups++;
+        return () => {
+          cleanups++;
+        };
+      },
+      event: {
+        transcript: ({ text }: { readonly text: string }) => {
+          transcripts.push(`${owner}:${text}`);
         },
       },
-    };
-    const chat = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      options,
-    );
-    const composer = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      options,
-    );
+    });
+    const chat = client.realtime(assistant, { assistantId: 1n });
+    const composer = client.realtime(assistant, { assistantId: 1n });
+    const stopChatObservation = chat.observe(observation("chat"));
+    composer.observe(observation("composer"));
 
     await eventually(() => chat.currentState.phase === "connected");
     expect(composer.currentState.phase).toBe("connected");
     expect(peers).toHaveLength(1);
     expect(preparations()).toBe(1);
     expect(offers()).toBe(1);
-    expect(setups).toBe(1);
+    expect(setups).toBe(2);
     expect(chat.peerConnection).toBe(composer.peerConnection);
 
     peers[0]!.channel.receive(encodeRealtimeEvent("transcript", {
       text: "first",
     }));
-    await eventually(() => transcripts.length === 1);
-    expect(transcripts).toEqual(["first"]);
+    await eventually(() => transcripts.length === 2);
+    expect(transcripts).toEqual(["chat:first", "composer:first"]);
 
+    stopChatObservation();
+    expect(cleanups).toBe(1);
     chat.release();
     peers[0]!.channel.receive(encodeRealtimeEvent("transcript", {
       text: "second",
     }));
-    await eventually(() => transcripts.length === 2);
-    expect(transcripts).toEqual(["first", "second"]);
+    await eventually(() => transcripts.length === 3);
+    expect(transcripts).toEqual([
+      "chat:first",
+      "composer:first",
+      "composer:second",
+    ]);
     expect(peers[0]!.closed).toBe(false);
 
     composer.release();
     await eventually(() => closes() === 1);
+    expect(cleanups).toBe(2);
     expect(peers[0]!.closed).toBe(true);
     client.close();
   });
 
-  test("missing or different handler keys conflict instead of opening another peer", () => {
+  test("equal canonical keys retain independently without caller collision keys", () => {
     const { client } = fixture();
-    const first = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "one" },
-    );
-    expect(() => client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "two" },
-    )).toThrow(RealtimeHandlerKeyConflictError);
-    expect(() => client.realtime(
-      assistant,
-      { assistantId: 1n },
-    )).toThrow(RealtimeHandlerKeyConflictError);
+    const first = client.realtime(assistant, { assistantId: 1n });
+    const second = client.realtime(assistant, { assistantId: 1n });
     first.release();
-
-    const exclusive = client.realtime(assistant, { assistantId: 1n });
-    expect(() => client.realtime(
-      assistant,
-      { assistantId: 1n },
-    )).toThrow(RealtimeHandlerKeyConflictError);
-    exclusive.release();
+    second.release();
     client.close();
   });
 
@@ -753,20 +675,15 @@ describe("AckerDB realtime client sessions", () => {
     const { client, peers } = fixture();
     const phases: string[] = [];
     let connected = 0;
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      {
-        on: {
-          connected: () => {
-            connected++;
-          },
-          stateChange: (state) => {
-            phases.push(state.phase);
-          },
-        },
+    const session = client.realtime(assistant, { assistantId: 1n });
+    session.observe({
+      connected: () => {
+        connected++;
       },
-    );
+      stateChange: (state) => {
+        phases.push(state.phase);
+      },
+    });
     await eventually(() => session.currentState.phase === "connected");
 
     peers[0]!.connectionState = "disconnected";
@@ -839,20 +756,15 @@ describe("AckerDB realtime client sessions", () => {
     });
     const transcripts: string[] = [];
     let tracks = 0;
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      {
-        on: {
-          event: {
-            transcript: ({ text }) => transcripts.push(text),
-          },
-          track: () => {
-            tracks++;
-          },
-        },
+    const session = client.realtime(assistant, { assistantId: 1n });
+    session.observe({
+      event: {
+        transcript: ({ text }) => transcripts.push(text),
       },
-    );
+      track: () => {
+        tracks++;
+      },
+    });
     await eventually(() => session.currentState.phase === "connected");
     peers[0]!.channel.receive(encodeRealtimeEvent("transcript", {
       text: "before recovery",
@@ -979,17 +891,12 @@ describe("AckerDB realtime client sessions", () => {
     const setup = new Promise<void>((resolve) => {
       finishSetup = resolve;
     });
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      {
-        on: {
-          async peerConnection() {
-            await setup;
-          },
-        },
+    const session = client.realtime(assistant, { assistantId: 1n });
+    session.observe({
+      async peerConnection() {
+        await setup;
       },
-    );
+    });
 
     await eventually(() => peers.length === 1);
     expect(offers()).toBe(0);
@@ -1010,15 +917,10 @@ describe("AckerDB realtime client sessions", () => {
       baseDelayMs: 1,
       maxDelayMs: 1,
     });
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      {
-        on: {
-          peerConnection: () => new Promise(() => {}),
-        },
-      },
-    );
+    const session = client.realtime(assistant, { assistantId: 1n });
+    session.observe({
+      peerConnection: () => new Promise(() => {}),
+    });
 
     await eventually(() => session.currentState.phase === "failed");
     expect(session.currentState).toMatchObject({
@@ -1140,20 +1042,14 @@ describe("AckerDB realtime client sessions", () => {
 
   test("keeps handler failures terminal instead of replacing the generation", async () => {
     const { client, peers } = fixture({ baseDelayMs: 1, maxDelayMs: 1 });
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      {
-        handlerKey: "terminal-handler",
-        on: {
-          event: {
-            transcript: () => {
-              throw new Error("application handler failed");
-            },
-          },
+    const session = client.realtime(assistant, { assistantId: 1n });
+    session.observe({
+      event: {
+        transcript: () => {
+          throw new Error("application handler failed");
         },
       },
-    );
+    });
     await eventually(() => session.currentState.phase === "connected");
 
     peers[0]!.channel.receive(encodeRealtimeEvent("transcript", { text: "one" }));
@@ -1166,11 +1062,7 @@ describe("AckerDB realtime client sessions", () => {
         retryable: false,
       },
     });
-    const observer = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "terminal-handler" },
-    );
+    const observer = client.realtime(assistant, { assistantId: 1n });
     await Bun.sleep(10);
     expect(peers).toHaveLength(1);
 
@@ -1181,18 +1073,10 @@ describe("AckerDB realtime client sessions", () => {
 
   test("keeps rejected setup terminal until explicit reconnect", async () => {
     const { client, peers, preparations } = fixture({ rejectPrepare: true });
-    const session = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "rejected" },
-    );
+    const session = client.realtime(assistant, { assistantId: 1n });
     await eventually(() => session.currentState.phase === "rejected");
 
-    const observer = client.realtime(
-      assistant,
-      { assistantId: 1n },
-      { handlerKey: "rejected" },
-    );
+    const observer = client.realtime(assistant, { assistantId: 1n });
     await Bun.sleep(10);
     expect(preparations()).toBe(1);
     expect(peers).toHaveLength(0);

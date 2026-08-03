@@ -1,5 +1,6 @@
 import { v } from "@ackerdb/server";
-import { mcpTool } from "@demo/ackerdb-codegen/server";
+import { query } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import { openOrderForTable } from "../../../lib/domain/orders.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 
@@ -8,13 +9,12 @@ import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
  * with their occupancy state derived from the open-order index, so an agent can
  * answer "which tables are free?" without composing a pipeline.
  */
-export const getTables = mcpTool({
+export const getTables = query({
   title: "Get tables",
   description:
     "List the restaurant's tables and whether each is occupied by an open " +
     "order. Optionally restrict to active tables and cap the number returned.",
-  access: { anyOf: ["read"] },
-  annotations: { readOnlyHint: true },
+  access: adminToolAccess,
   args: {
     activeOnly: v
       .boolean()
@@ -25,7 +25,7 @@ export const getTables = mcpTool({
       .optional()
       .describe(`Maximum tables to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: v.object({
+  returns: v.object({
     tables: v.array(
       v.object({
         id: v.bigint(),
@@ -37,30 +37,29 @@ export const getTables = mcpTool({
       }),
     ),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const limit = clampLimit(args.limit);
-      const activeOnly = args.activeOnly ?? false;
-      const query = tx.db.restaurantTables.query();
-      const selectedQuery = activeOnly
-        ? query.where((table) => table.active.eq(true))
-        : query;
-      const selected = await selectedQuery
-        .orderBy((table) => table.number.asc())
-        .take(limit);
-      const tables = await Promise.all(
-        selected.map(async (table) => {
-          const order = await openOrderForTable(tx.db, table.id);
-          return {
-            id: table.id,
-            number: table.number,
-            seats: table.seats,
-            active: table.active,
-            occupied: order !== null,
-            orderId: order?.id ?? null,
-          };
-        }),
-      );
-      return { tables };
-    }),
+  handler: async (ctx, args) => {
+    const limit = clampLimit(args.limit);
+    const activeOnly = args.activeOnly ?? false;
+    const query = ctx.db.restaurantTables.query();
+    const selectedQuery = activeOnly
+      ? query.where((table) => table.active.eq(true))
+      : query;
+    const selected = await selectedQuery
+      .orderBy((table) => table.number.asc())
+      .take(limit);
+    const tables = await Promise.all(
+      selected.map(async (table) => {
+        const order = await openOrderForTable(ctx.db, table.id);
+        return {
+          id: table.id,
+          number: table.number,
+          seats: table.seats,
+          active: table.active,
+          occupied: order !== null,
+          orderId: order?.id ?? null,
+        };
+      }),
+    );
+    return { tables };
+  },
 });

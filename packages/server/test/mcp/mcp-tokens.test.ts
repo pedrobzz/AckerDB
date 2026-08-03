@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { encode } from "@ackerdb/core";
 import {
@@ -12,7 +12,7 @@ import { mcp as mcpDeclaration, mcpAuth } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { v } from "../../src/validation/v.ts";
 import { serve } from "../../src/transport/server.ts";
-import type { SessionApplicationMessage } from "../../src/subscriptions/session.ts";
+import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
   agentAuth,
   agentMcp,
@@ -225,8 +225,7 @@ describe("Identity-bound MCP owner tokens", () => {
       .toMatchObject({ identity: alice.identity, tokenId: created.id });
     const activeResult = await runtime.runMcpTool({
       id: "active-through-descriptor-edit",
-      mcp: "agent",
-      tool: "write_owned_record",
+      authorization: runtime.authorizeMcpTool("agent", "write_owned_record", active),
       args: { value: "still-active" },
       principal: active,
     });
@@ -385,29 +384,37 @@ describe("Identity-bound MCP owner tokens", () => {
 
     const invoke = (tool: string, current = principal) => runtime.runMcpTool({
       id: `scope-${tool}`,
-      mcp: "scoped",
-      tool,
+      authorization: runtime.authorizeMcpTool("scoped", tool, current),
       args: {},
       principal: current,
     });
     expect(await runtime.runMcpTool({
       id: "scope-public",
-      mcp: "scoped",
-      tool: "public_status",
+      authorization: runtime.authorizeMcpTool(
+        "scoped",
+        "public_status",
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).toMatchObject({ structuredContent: { status: "public" } });
     await expect(runtime.runMcpTool({
       id: "scope-authenticated-anonymous",
-      mcp: "scoped",
-      tool: "authenticated_status",
+      authorization: runtime.authorizeMcpTool(
+        "scoped",
+        "authenticated_status",
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).rejects.toMatchObject({ code: "unauthenticated" });
     await expect(runtime.runMcpTool({
       id: "scope-unknown-anonymous",
-      mcp: "scoped",
-      tool: "private_or_unknown",
+      authorization: runtime.authorizeMcpTool(
+        "scoped",
+        "private_or_unknown",
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).rejects.toMatchObject({
@@ -510,6 +517,7 @@ describe("Identity-bound MCP owner tokens", () => {
     const server = serve({ runtime, port: 0 });
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
+    const authorizeMcpTool = spyOn(runtime, "authorizeMcpTool");
 
     expect(await listedToolNames(await rpc(base, scopedMcp.path, "tools/list", {}))).toEqual([
       "public_status",
@@ -519,6 +527,7 @@ describe("Identity-bound MCP owner tokens", () => {
       arguments: {},
     });
     expect(publicCall.status).toBe(200);
+    expect(authorizeMcpTool).toHaveBeenCalledTimes(1);
 
     const protectedCall = await rpc(base, scopedMcp.path, "tools/call", {
       name: "read_reports",
@@ -766,8 +775,11 @@ describe("Identity-bound MCP owner tokens", () => {
     });
     await expect(second.runtime.runMcpTool({
       id: "wrong-endpoint",
-      mcp: "operations",
-      tool: "write_owned_record",
+      authorization: second.runtime.authorizeMcpTool(
+        "operations",
+        "write_owned_record",
+        principal,
+      ),
       args: { value: "forbidden" },
       principal,
     })).rejects.toMatchObject({ code: "unauthorized" });

@@ -1,5 +1,6 @@
 import type { Principal } from "../auth/credentials.ts";
-import { v, type EnumValidator } from "../validation/v.ts";
+import type { EnumValidator } from "../validation/composites.ts";
+import { v } from "../validation/v.ts";
 import { AckerDBError } from "../shared/errors.ts";
 
 export const MAX_MCP_SCOPES = 128;

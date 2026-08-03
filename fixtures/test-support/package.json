@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./async": "./src/async.ts",
+    "./client-transport": "./src/client-transport.ts",
     "./telemetry": "./src/telemetry.ts"
   }
 }

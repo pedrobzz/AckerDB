@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@ackerdb/core": "0.10.0",
-    "@ackerdb/server": "0.10.0"
+    "@ackerdb/core": "0.14.2-canary.4",
+    "@ackerdb/server": "0.14.2-canary.4"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

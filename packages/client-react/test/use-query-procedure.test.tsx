@@ -1,15 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type ApplicationError,
   type ClientMessage,
   type ServerMessage,
 } from "@ackerdb/core";
-import type { AckerDBWebSocket, ProcedureRef } from "@ackerdb/client";
+import type { ProcedureRef } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
@@ -21,83 +19,13 @@ import {
   type AckerDBQueryProcedureState,
 } from "@ackerdb/client-react";
 
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  procedures(): Extract<ClientMessage, { t: "p" }>[] {
-    return this.frames().filter((frame) => frame.t === "p") as Extract<
-      ClientMessage,
-      { t: "p" }
-    >[];
-  }
-}
-
 const SESSION = "use-query-procedure-session";
-
-interface Harness {
-  readonly config: AckerDBProviderConfig;
-  readonly sockets: FakeSocket[];
-  live(): FakeSocket;
-}
-
-function createHarness(url = "http://use-query-procedure.test"): Harness {
-  const sockets: FakeSocket[] = [];
-  return {
-    sockets,
-    config: {
-      url,
-      credential: { kind: "anonymous" },
-      clientSessionId: SESSION,
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (!socket) throw new Error("no live socket");
-      return socket;
-    },
-  };
-}
+// No injected clock: this suite proves procedure lifetimes against real timers.
+const APP = {
+  url: "http://use-query-procedure.test",
+  clientSessionId: SESSION,
+  clock: undefined,
+};
 
 type UppercaseError = ApplicationError<
   "tools.unavailable",
@@ -163,12 +91,12 @@ async function render(root: Root, element: ReactNode): Promise<void> {
 }
 
 async function untilProcedureCount(
-  harness: Harness,
+  harness: ProviderHarness,
   count: number,
 ): Promise<Extract<ClientMessage, { t: "p" }>[]> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
-    const procedures = harness.live().procedures();
+    const procedures = harness.live().framesOf("p");
     if (procedures.length >= count) return procedures;
     await Bun.sleep(5);
   }
@@ -181,11 +109,11 @@ afterAll(() => actEnvironment(false));
 describe("useQueryProcedure", () => {
   test("canonical arguments continue one observation while changed arguments start fresh demand", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const page = (value: string) => (
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="changing" value={value} />
       </AckerDBProvider>
     );
@@ -194,7 +122,7 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -210,20 +138,20 @@ describe("useQueryProcedure", () => {
     // Report constructs a fresh argument object on every render. Canonical
     // equality keeps the existing observation and does not execute again.
     await render(root, page("one"));
-    expect(harness.live().procedures()).toHaveLength(1);
+    expect(harness.live().framesOf("p")).toHaveLength(1);
     expect(observed.get("changing")).toBe(firstSnapshot);
 
     await render(root, page("two"));
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
     expect(observed.get("changing")!.status).toBe("pending");
     expect(observed.get("changing")!.refresh).not.toBe(firstRefresh);
 
     // Refresh belongs to its observation lifetime and becomes inert after
     // that keyed demand has been released.
     firstRefresh();
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
 
-    const second = harness.live().procedures()[1]!;
+    const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -238,13 +166,13 @@ describe("useQueryProcedure", () => {
   });
 
   test("different addresses and refresh configurations remain independent", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report value="one" />
         <Report value="one" refreshIntervalMs={10_000} />
         <Report procedure={reverse} value="one" />
@@ -254,7 +182,7 @@ describe("useQueryProcedure", () => {
       harness.live().welcome(SESSION);
     });
 
-    expect(harness.live().procedures().map(({ ref }) => ref).sort()).toEqual([
+    expect(harness.live().framesOf("p").map(({ ref }) => ref).sort()).toEqual([
       "tools.reverse",
       "tools.uppercase",
       "tools.uppercase",
@@ -264,14 +192,14 @@ describe("useQueryProcedure", () => {
 
   test("changed address and configuration replace state and refresh identities", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const page = (
       procedure: typeof uppercase,
       refreshIntervalMs?: number,
     ) => (
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report
           id="identity"
           procedure={procedure}
@@ -285,7 +213,7 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const firstRequest = harness.live().procedures()[0]!;
+    const firstRequest = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -298,12 +226,12 @@ describe("useQueryProcedure", () => {
     const first = observed.get("identity")!;
 
     await render(root, page(reverse));
-    const secondRequest = harness.live().procedures()[1]!;
+    const secondRequest = harness.live().framesOf("p")[1]!;
     expect(secondRequest.ref).toBe("tools.reverse");
     expect(observed.get("identity")).not.toBe(first);
     expect(observed.get("identity")!.refresh).not.toBe(first.refresh);
     first.refresh();
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -316,23 +244,23 @@ describe("useQueryProcedure", () => {
     const second = observed.get("identity")!;
 
     await render(root, page(reverse, 10_000));
-    expect(harness.live().procedures()).toHaveLength(3);
+    expect(harness.live().framesOf("p")).toHaveLength(3);
     expect(observed.get("identity")).not.toBe(second);
     expect(observed.get("identity")!.refresh).not.toBe(second.refresh);
     second.refresh();
-    expect(harness.live().procedures()).toHaveLength(3);
+    expect(harness.live().framesOf("p")).toHaveLength(3);
     await act(async () => root.unmount());
   });
 
   test("unencodable consumers keep separate validation-error lifetimes", async () => {
     unencodableObserved.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <UnencodableReport id="a" />
         <UnencodableReport id="b" />
       </AckerDBProvider>,
@@ -349,24 +277,24 @@ describe("useQueryProcedure", () => {
     });
     expect(firstA).not.toBe(firstB);
     expect(firstA.refresh).not.toBe(firstB.refresh);
-    expect(harness.live().procedures()).toHaveLength(0);
+    expect(harness.live().framesOf("p")).toHaveLength(0);
 
     await act(async () => {
       firstA.refresh();
     });
     expect(unencodableObserved.get("a")).not.toBe(firstA);
     expect(unencodableObserved.get("b")).toBe(firstB);
-    expect(harness.live().procedures()).toHaveLength(0);
+    expect(harness.live().framesOf("p")).toHaveLength(0);
     await act(async () => root.unmount());
   });
 
   test("a later equal consumer adopts the live snapshot without another execution", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const page = (withSecond: boolean) => (
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="first" value="one" />
         {withSecond ? <Report id="second" value="one" /> : null}
       </AckerDBProvider>
@@ -376,7 +304,7 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const request = harness.live().procedures()[0]!;
+    const request = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -388,15 +316,15 @@ describe("useQueryProcedure", () => {
     });
 
     await render(root, page(true));
-    expect(harness.live().procedures()).toHaveLength(1);
+    expect(harness.live().framesOf("p")).toHaveLength(1);
     expect(observed.get("second")).toBe(observed.get("first"));
     await act(async () => root.unmount());
   });
 
   test("provider reconfiguration starts a separate client-scoped observation", async () => {
     observed.clear();
-    const firstHarness = createHarness();
-    const secondHarness = createHarness("http://use-query-procedure-second.test");
+    const firstHarness = createHarness(APP);
+    const secondHarness = createHarness({ ...APP, url: "http://use-query-procedure-second.test" });
     const container = mountPoint();
     const root = createRoot(container);
     const page = (config: AckerDBProviderConfig) => (
@@ -405,11 +333,11 @@ describe("useQueryProcedure", () => {
       </AckerDBProvider>
     );
 
-    await render(root, page(firstHarness.config));
+    await render(root, page(firstHarness.config()));
     await act(async () => {
       firstHarness.live().welcome(SESSION);
     });
-    const firstRequest = firstHarness.live().procedures()[0]!;
+    const firstRequest = firstHarness.live().framesOf("p")[0]!;
     await act(async () => {
       firstHarness.live().receive({
         v: PROTOCOL_VERSION,
@@ -421,33 +349,33 @@ describe("useQueryProcedure", () => {
     });
     const firstSnapshot = observed.get("provider")!;
 
-    await render(root, page(secondHarness.config));
+    await render(root, page(secondHarness.config()));
     await act(async () => {
       secondHarness.live().welcome(SESSION);
     });
-    expect(secondHarness.live().procedures()).toHaveLength(1);
+    expect(secondHarness.live().framesOf("p")).toHaveLength(1);
     expect(observed.get("provider")).not.toBe(firstSnapshot);
     firstSnapshot.refresh();
-    expect(firstHarness.sockets.flatMap((socket) => socket.procedures())).toHaveLength(1);
+    expect(firstHarness.sockets.flatMap((socket) => socket.framesOf("p"))).toHaveLength(1);
     await act(async () => root.unmount());
   });
 
   test("application and framework errors clear prior data while success containers are frozen", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="errors" value="one" />
       </AckerDBProvider>,
     );
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -462,7 +390,7 @@ describe("useQueryProcedure", () => {
     expect(Object.isFrozen(success.data)).toBe(true);
 
     success.refresh();
-    const second = harness.live().procedures()[1]!;
+    const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -485,7 +413,7 @@ describe("useQueryProcedure", () => {
     expect(applicationFailure.error.body.source).toBe("upstream");
 
     applicationFailure.refresh();
-    const third = harness.live().procedures()[2]!;
+    const third = harness.live().framesOf("p")[2]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -508,14 +436,14 @@ describe("useQueryProcedure", () => {
 
   test("Strict Mode leaves one observation and final release cancels work and retires refresh", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <Report id="strict" value="one" refreshIntervalMs={10_000} />
         </AckerDBProvider>
       </StrictMode>,
@@ -524,21 +452,21 @@ describe("useQueryProcedure", () => {
       harness.live().welcome(SESSION);
     });
     const socket = harness.live();
-    expect(socket.procedures()).toHaveLength(1);
+    expect(socket.framesOf("p")).toHaveLength(1);
     const refresh = observed.get("strict")!.refresh;
     refresh();
-    expect(socket.procedures()).toHaveLength(1);
+    expect(socket.framesOf("p")).toHaveLength(1);
 
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config} />
+        <AckerDBProvider config={harness.config()} />
       </StrictMode>,
     );
     expect(socket.frames().filter(({ t }) => t === "cancel")).toHaveLength(1);
     refresh();
     await Bun.sleep(20);
-    expect(socket.procedures()).toHaveLength(1);
+    expect(socket.framesOf("p")).toHaveLength(1);
     await act(async () => root.unmount());
   });
 
@@ -553,7 +481,7 @@ describe("useQueryProcedure", () => {
     ]) {
       expect(() =>
         renderToString(
-          <AckerDBProvider config={createHarness().config}>
+          <AckerDBProvider config={createHarness(APP).config()}>
             <Report value="one" refreshIntervalMs={refreshIntervalMs} />
           </AckerDBProvider>,
         ),
@@ -562,20 +490,20 @@ describe("useQueryProcedure", () => {
   });
 
   test("the largest valid interval does not overflow into a hot polling loop", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report value="one" refreshIntervalMs={Number.MAX_SAFE_INTEGER} />
       </AckerDBProvider>,
     );
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -587,26 +515,26 @@ describe("useQueryProcedure", () => {
     });
 
     await Bun.sleep(20);
-    expect(harness.live().procedures()).toHaveLength(1);
+    expect(harness.live().framesOf("p")).toHaveLength(1);
     await act(async () => root.unmount());
   });
 
   test("a client failure retains stale data without retrying and manual refresh stays immediate", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="failure" value="one" />
       </AckerDBProvider>,
     );
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -617,7 +545,7 @@ describe("useQueryProcedure", () => {
       });
       observed.get("failure")!.refresh();
     });
-    const second = harness.live().procedures()[1]!;
+    const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -639,29 +567,29 @@ describe("useQueryProcedure", () => {
       data: { value: "ONE" },
     });
     await Bun.sleep(50);
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
 
     failed.refresh();
-    expect(harness.live().procedures()).toHaveLength(3);
+    expect(harness.live().framesOf("p")).toHaveLength(3);
     await act(async () => root.unmount());
   });
 
   test("retryAfterMs floors configured automatic polling", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="backpressure" value="one" refreshIntervalMs={20} />
       </AckerDBProvider>,
     );
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
         v: PROTOCOL_VERSION,
@@ -687,7 +615,7 @@ describe("useQueryProcedure", () => {
     });
 
     await Bun.sleep(40);
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
     expect(await untilProcedureCount(harness, 3)).toHaveLength(3);
 
     await act(async () => root.unmount());
@@ -695,24 +623,24 @@ describe("useQueryProcedure", () => {
 
   test("polling waits for completion and refresh demand coalesces behind in-flight work", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="poll" value="one" refreshIntervalMs={20} />
       </AckerDBProvider>,
     );
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
+    const first = harness.live().framesOf("p")[0]!;
 
     // A fixed-rate timer would overlap this deliberately unfinished call.
     await Bun.sleep(50);
-    expect(harness.live().procedures()).toHaveLength(1);
+    expect(harness.live().framesOf("p")).toHaveLength(1);
 
     await act(async () => {
       harness.live().receive({
@@ -731,7 +659,7 @@ describe("useQueryProcedure", () => {
     state.refresh();
     state.refresh();
     state.refresh();
-    expect(harness.live().procedures()).toHaveLength(2);
+    expect(harness.live().framesOf("p")).toHaveLength(2);
 
     await act(async () => {
       harness.live().receive({
@@ -759,13 +687,13 @@ describe("useQueryProcedure", () => {
 
   test("equal consumers share one execution, snapshot, and manual refresh", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report id="a" value="one" />
         <Report id="b" value="one" />
       </AckerDBProvider>,
@@ -773,8 +701,8 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const first = harness.live().procedures()[0]!;
-    expect(harness.live().procedures()).toHaveLength(1);
+    const first = harness.live().framesOf("p")[0]!;
+    expect(harness.live().framesOf("p")).toHaveLength(1);
 
     await act(async () => {
       harness.live().receive({
@@ -794,7 +722,7 @@ describe("useQueryProcedure", () => {
       firstA.refresh();
     });
     expect(container.textContent).toBe("success:ONEsuccess:ONE");
-    const procedures = harness.live().procedures();
+    const procedures = harness.live().framesOf("p");
     expect(procedures).toHaveLength(2);
     await act(async () => {
       harness.live().receive({
@@ -813,11 +741,11 @@ describe("useQueryProcedure", () => {
 
   test("one shared consumer can leave in flight; final release cancels and remount starts clean", async () => {
     observed.clear();
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const page = (ids: string[]) => (
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         {ids.map((id) => <Report key={id} id={id} value="one" />)}
       </AckerDBProvider>
     );
@@ -827,8 +755,8 @@ describe("useQueryProcedure", () => {
       harness.live().welcome(SESSION);
     });
     const socket = harness.live();
-    const initial = socket.procedures()[0]!;
-    expect(socket.procedures()).toHaveLength(1);
+    const initial = socket.framesOf("p")[0]!;
+    expect(socket.framesOf("p")).toHaveLength(1);
 
     await render(root, page(["a"]));
     expect(socket.frames().filter(({ t }) => t === "cancel")).toHaveLength(0);
@@ -845,7 +773,7 @@ describe("useQueryProcedure", () => {
     const liveSnapshot = observed.get("a")!;
 
     liveSnapshot.refresh();
-    const abandoned = socket.procedures()[1]!;
+    const abandoned = socket.framesOf("p")[1]!;
     await render(root, page([]));
     expect(socket.frames().filter(({ t }) => t === "cancel")).toEqual([
       { v: PROTOCOL_VERSION, t: "cancel", id: abandoned.id },
@@ -864,20 +792,20 @@ describe("useQueryProcedure", () => {
     });
     await render(root, page(["c"]));
     expect(container.textContent).toBe("pending");
-    expect(socket.procedures()).toHaveLength(3);
+    expect(socket.framesOf("p")).toHaveLength(3);
     expect(observed.get("c")).not.toBe(liveSnapshot);
     expect(observed.get("c")!.refresh).not.toBe(liveSnapshot.refresh);
     await act(async () => root.unmount());
   });
 
   test("skip renders disabled and starts no procedure", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report value={skip} />
       </AckerDBProvider>,
     );
@@ -886,19 +814,19 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    expect(harness.live().procedures()).toHaveLength(0);
+    expect(harness.live().framesOf("p")).toHaveLength(0);
 
     await act(async () => root.unmount());
   });
 
   test("committed demand executes its procedure and renders query-shaped success", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Report value="one" />
       </AckerDBProvider>,
     );
@@ -907,7 +835,7 @@ describe("useQueryProcedure", () => {
     await act(async () => {
       harness.live().welcome(SESSION);
     });
-    const request = harness.live().procedures()[0]!;
+    const request = harness.live().framesOf("p")[0]!;
     expect(request).toMatchObject({
       ref: "tools.uppercase",
       args: { value: "one" },

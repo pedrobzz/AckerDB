@@ -1,6 +1,7 @@
 import type { ColumnPlan } from "../engine.ts";
 import type { TableDef } from "../../schema/definition.ts";
-import { baseValidator, ValidationError } from "../../validation/v.ts";
+import { ValidationError } from "../../validation/error.ts";
+import { baseValidator } from "../../validation/validator.ts";
 
 const quote = (name: string): string => `"${name}"`;
 

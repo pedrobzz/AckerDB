@@ -15,22 +15,19 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseClientMessage,
   parseSseAckRequest,
-  type ClientMessage,
   type ServerMessage,
   type SseAckRequest,
-  type SubscriptionCursor,
 } from "@ackerdb/core";
 import {
   AckerDBClient,
   AckerDBClientError,
-  type AckerDBClientClock,
   type AckerDBClientOptions,
   type AckerDBFetch,
   type AckerDBLifecyclePort,
-  type AckerDBWebSocket,
 } from "@ackerdb/client";
+import { ManualClock } from "ackerdb-test-support/client-transport";
+import { createHarness, cursor, mustErr, type ClientHarness } from "./support/harness.ts";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -46,93 +43,6 @@ import {
 } from "@ackerdb/server";
 import { deferred, until, waitForAbort, within } from "ackerdb-test-support/async";
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-
-  constructor(private time = 0) {}
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  private closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-}
-
 const encoder = new TextEncoder();
 
 /** A scripted SSE exchange journal shared by every fake-fetch harness. */
@@ -145,21 +55,20 @@ interface HttpJournal {
 
 type Route = (init: RequestInit | undefined) => Promise<Response> | Response;
 
-interface Harness {
-  readonly client: AckerDBClient;
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly port: AckerDBLifecyclePort;
+interface Harness extends ClientHarness {
+  /** Every SSE dispatch and acknowledgment the client made, in order. */
   readonly journal: HttpJournal;
 }
 
+/**
+ * The shared client harness plus the HTTP side this suite owns: non-resumable
+ * work settles over SSE, so the routes are scripted and every dispatch and
+ * acknowledgment is journalled.
+ */
 function harness(
   routes: { readonly sse?: Route },
   overrides: Partial<AckerDBClientOptions> = {},
 ): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  let port: AckerDBLifecyclePort | undefined;
   const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
   const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
@@ -172,32 +81,24 @@ function harness(
     if (!route) throw new Error(`no scripted route for ${path}`);
     return Promise.resolve(route(init));
   };
-  const client = new AckerDBClient({
-    url: "http://ackerdb.test",
-    credential: { kind: "anonymous" },
+  const base = createHarness({
     clientSessionId: "settlement-session",
-    clock,
-    random: () => 0,
     fetch: fetcher,
-    createWebSocket: () => {
-      const socket = new FakeSocket();
-      sockets.push(socket);
-      return socket;
-    },
-    lifecycle: (livePort) => {
-      port = livePort;
-      return () => {};
-    },
     ...overrides,
   });
   return {
-    client,
-    clock,
-    sockets,
+    client: base.client,
+    clock: base.clock,
+    sockets: base.sockets,
+    // Forwarded lazily: the port only exists once the client registers, and
+    // reading it eagerly here would fail a suite that overrides `lifecycle`.
     get port(): AckerDBLifecyclePort {
-      if (!port) throw new Error("the lifecycle source was overridden");
-      return port;
+      return base.port;
     },
+    phases: base.phases,
+    stops: base.stops,
+    failNextDial: base.failNextDial,
+    live: base.live,
     journal,
   };
 }
@@ -277,45 +178,6 @@ function expectSuspensionOutcome(
   expect(settled.interruption).toBe("suspension");
 }
 
-function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
-  readonly ok: false;
-  readonly error: E;
-}): E {
-  if (result.ok) throw new Error("expected a failed Result");
-  return result.error;
-}
-
-function welcome(client: AckerDBClient, socket: FakeSocket): void {
-  socket.onopen?.();
-  socket.onmessage?.({
-    data: encode({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId: client.clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    } satisfies ServerMessage),
-  });
-}
-
-function lastFrame<T extends ClientMessage["t"]>(
-  socket: FakeSocket,
-  type: T,
-): Extract<ClientMessage, { t: T }> {
-  const frame = socket.frames().findLast((candidate) => candidate.t === type);
-  if (!frame) throw new Error(`No ${type} frame`);
-  return frame as Extract<ClientMessage, { t: T }>;
-}
-
-function cursor(commitVersion: bigint): SubscriptionCursor {
-  return {
-    generation: "generation-1",
-    commitVersion,
-    authEpoch: 0,
-    identity: "todos.list:{list:1}",
-  };
-}
-
 describe("non-resumable work started while suspended", () => {
   test("a procedure settles determinately with the marked refusal and never dispatches", async () => {
     const { client, clock, sockets, port, journal } = harness({});
@@ -335,14 +197,14 @@ describe("non-resumable work started while suspended", () => {
     port.resume();
     clock.advance(60_000);
     expect(journal.dispatches).toEqual([]);
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(2);
 
     // The client itself is fully usable again after activation.
     const resumed = client.procedure<Record<never, never>, string>("tools.echo", {});
-    expect(sockets).toHaveLength(1);
-    welcome(client, sockets[0]!);
-    const request = lastFrame(sockets[0]!, "p");
-    sockets[0]!.receive({
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.welcome(client.clientSessionId);
+    const request = sockets[1]!.lastFrame("p");
+    sockets[1]!.receive({
       v: PROTOCOL_VERSION,
       t: "ok",
       id: request.id,
@@ -467,24 +329,24 @@ describe("suspension settles in-flight procedures", () => {
     const canceled = client
       .procedure("tools.echo", {}, { signal: abortable.signal })
       .then(mustErr);
-    welcome(client, sockets[0]!);
-    const canceledRequest = lastFrame(sockets[0]!, "p");
+    sockets[0]!.welcome(client.clientSessionId);
+    const canceledRequest = sockets[0]!.lastFrame("p");
     abortable.abort();
     const callerOutcome = (await canceled) as AckerDBClientError;
     expect(callerOutcome.code).toBe("indeterminate");
     expect(callerOutcome.message).toBe("procedure completion is unknown");
     expect(callerOutcome.interruption).toBeUndefined();
-    expect(lastFrame(sockets[0]!, "cancel").id).toBe(canceledRequest.id);
+    expect(sockets[0]!.lastFrame("cancel").id).toBe(canceledRequest.id);
 
     const suspended = client.procedure("tools.echo", {}).then(mustErr);
-    const suspendedRequest = lastFrame(sockets[0]!, "p");
+    const suspendedRequest = sockets[0]!.lastFrame("p");
     port.suspend();
     expectSuspensionOutcome(await suspended, {
       code: "indeterminate",
       message: "procedure completion is unknown",
       resource: "operation",
     });
-    expect(lastFrame(sockets[0]!, "cancel").id).toBe(suspendedRequest.id);
+    expect(sockets[0]!.lastFrame("cancel").id).toBe(suspendedRequest.id);
     // Settlement released the request's own deadline timer with it.
     expect(clock.taskCount).toBe(0);
     client.close();
@@ -492,7 +354,7 @@ describe("suspension settles in-flight procedures", () => {
     // close() on a fresh client settles the same boundary without the marker.
     const closing = harness({});
     const closed = closing.client.procedure("tools.echo", {}).then(mustErr);
-    welcome(closing.client, closing.sockets[0]!);
+    closing.sockets[0]!.welcome(closing.client.clientSessionId);
     closing.client.close();
     const closedOutcome = (await closed) as AckerDBClientError;
     expect(closedOutcome.code).toBe("indeterminate");
@@ -502,15 +364,15 @@ describe("suspension settles in-flight procedures", () => {
   test("suspension sends a best-effort cancel and a late result is inert", async () => {
     const { client, clock, sockets, port } = harness({});
     const call = client.procedure("tools.echo", {}).then(mustErr);
-    welcome(client, sockets[0]!);
-    const request = lastFrame(sockets[0]!, "p");
+    sockets[0]!.welcome(client.clientSessionId);
+    const request = sockets[0]!.lastFrame("p");
     port.suspend();
     expectSuspensionOutcome(await call, {
       code: "indeterminate",
       message: "procedure completion is unknown",
       resource: "operation",
     });
-    expect(lastFrame(sockets[0]!, "cancel").id).toBe(request.id);
+    expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
       t: "ok",
@@ -526,8 +388,8 @@ describe("suspension settles in-flight procedures", () => {
     const { client, sockets, port, journal } = harness({});
 
     const interrupted = client.procedure("tools.echo", {});
-    welcome(client, sockets[0]!);
-    const staleRequest = lastFrame(sockets[0]!, "p");
+    sockets[0]!.welcome(client.clientSessionId);
+    const staleRequest = sockets[0]!.lastFrame("p");
     port.suspend();
     const interruptedResult = await interrupted;
     if (interruptedResult.ok) throw new Error("expected the interrupted procedure to fail");
@@ -540,8 +402,8 @@ describe("suspension settles in-flight procedures", () => {
     port.resume();
     const replacement = client.procedure("tools.echo", {});
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
-    const replacementRequest = lastFrame(sockets[1]!, "p");
+    sockets[1]!.welcome(client.clientSessionId);
+    const replacementRequest = sockets[1]!.lastFrame("p");
 
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
@@ -818,7 +680,7 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     const { client, sockets, port, journal } = harness({ sse: () => scripted.response });
     const updates: unknown[] = [];
     client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
     sockets[0]!.onmessage?.({
       data: encode({
@@ -849,7 +711,7 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     // ...while the query recovers on activation from its exact held cursor.
     port.resume();
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     const resumed = sockets[1]!.frames().find((frame) => frame.t === "sub")!;
     expect(resumed.id).toBe(subscription.id);
     expect(resumed.cursor).toEqual(cursor(5n));

@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ackerdb/client": "0.10.0",
-    "@ackerdb/client-react": "0.10.0",
+    "@ackerdb/client": "0.14.2-canary.4",
+    "@ackerdb/client-react": "0.14.2-canary.4",
     "@demo/ackerdb-codegen": "workspace:*",
     "@expo/ui": "57.0.6",
     "expo": "57.0.6",

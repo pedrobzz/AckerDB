@@ -11,7 +11,8 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@ackerdb/core";
-import { ValidationError, type Descriptor } from "../validation/v.ts";
+import { ValidationError } from "../validation/error.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import {
   checkArrayConstraints,
   checkBigintConstraints,

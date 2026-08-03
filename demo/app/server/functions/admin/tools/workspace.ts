@@ -1,6 +1,7 @@
 import { Bash, type InitialFiles } from "just-bash";
-import { v } from "@ackerdb/server";
-import { mcpTool, type DatabaseReader } from "@demo/ackerdb-codegen/server";
+import { AckerDBError, v } from "@ackerdb/server";
+import { procedure, type DatabaseReader } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import { isFinal } from "../../../lib/domain/order-status.ts";
 
 /**
@@ -212,7 +213,7 @@ async function buildFiles(db: DatabaseReader, now: number): Promise<InitialFiles
  * pipelines. This is where a capable model answers questions the typed entity
  * tools never anticipated; small models should prefer the typed tools.
  */
-export const bashWorkspace = mcpTool({
+export const bashWorkspace = procedure({
   title: "Bash workspace",
   description:
     "Run a bash script against a sandboxed, read-only workspace of the " +
@@ -224,8 +225,7 @@ export const bashWorkspace = mcpTool({
     "`cat /data/README.md` first — it documents every field and shows example " +
     "pipelines. Returns the script's exitCode, stdout, stderr, and a truncated " +
     "flag (each stream is capped at 32 KiB).",
-  access: { anyOf: ["read"] },
-  annotations: { readOnlyHint: true },
+  access: adminToolAccess,
   args: {
     script: v
       .string()
@@ -235,29 +235,37 @@ export const bashWorkspace = mcpTool({
           "`cat /data/README.md` if you are unsure what is available.",
       ),
   },
-  output: v.object({
+  returns: v.object({
     exitCode: v.int(),
     stdout: v.string(),
     stderr: v.string(),
     truncated: v.boolean(),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const now = Date.now();
-      const shell = new Bash({
-        files: await buildFiles(tx.db, now),
-        executionLimits: EXECUTION_LIMITS,
-      });
-      const result = await shell.exec(args.script, {
-        signal: ctx.abortSignal,
-      });
-      const stdout = boundOutput(result.stdout);
-      const stderr = boundOutput(result.stderr);
-      return {
-        exitCode: result.exitCode,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        truncated: stdout.truncated || stderr.truncated,
-      };
-    }),
+  // The transaction covers materialization and nothing else. Files are already
+  // rendered eagerly from one snapshot (see `buildFiles`), so the shell needs
+  // no database at all — and holding a read connection open for the duration
+  // of an arbitrary script would put a caller's `sleep` in charge of a shared
+  // resource. The script still sees exactly the snapshot it was given.
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const materialized = await ctx.tx((tx) => buildFiles(tx.db, now));
+    if (!materialized.ok) {
+      throw new AckerDBError("internal", "Failed to materialize the workspace");
+    }
+    const shell = new Bash({
+      files: materialized.data,
+      executionLimits: EXECUTION_LIMITS,
+    });
+    const result = await shell.exec(args.script, {
+      signal: ctx.abortSignal,
+    });
+    const stdout = boundOutput(result.stdout);
+    const stderr = boundOutput(result.stderr);
+    return {
+      exitCode: result.exitCode,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      truncated: stdout.truncated || stderr.truncated,
+    };
+  },
 });

@@ -1,0 +1,544 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  isResult,
+  stableEncode,
+  uuidV7Timestamp,
+  type SseAckRequest,
+} from "@ackerdb/core";
+import {
+  type AnyRegistered,
+  type AnyRegisteredSse,
+  type OwnedProcedureContext,
+  type SseCtx,
+  type SseSource,
+} from "../../app/functions.ts";
+import {
+  currentInvocationTelemetryContext,
+  invokeFunction,
+} from "../../app/invocation.ts";
+import type { Registry } from "../../app/registry.ts";
+import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
+import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
+import { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
+import type {
+  DeliveryObservation,
+  DeliveryObserver,
+} from "../../subscriptions/delivery/observation.ts";
+import {
+  BoundedSseProducer,
+  type SseDeliverySnapshot,
+} from "../../subscriptions/delivery/sse.ts";
+import {
+  claimHttpTrace,
+  finishClaimedHttpTrace,
+  type ClaimedHttpTrace,
+} from "../../telemetry/external-trace.ts";
+import {
+  FINISH_OPERATION_TRACE,
+  RECORD_OPERATION_SPAN,
+  type Telemetry,
+} from "../../telemetry/telemetry.ts";
+import type { ExposedHttpCodec } from "../../transport/http-codec.ts";
+import type { ExposedHttpKind } from "../../transport/http-surface.ts";
+import { callerFairnessKey, transportSource } from "../caller.ts";
+import type {
+  RuntimeExternalRequest,
+  RuntimeHttpMutationRequest,
+  RuntimeHttpRequest,
+  RuntimeSseRequest,
+  RuntimeSseResponse,
+} from "../contracts/requests.ts";
+import type { IdempotencyIdentity } from "../coordinator.ts";
+import {
+  restoreMutationResult,
+  type RuntimeFunctionExecutor,
+} from "../execution/functions.ts";
+import {
+  transportError,
+  type RuntimeOperationRunner,
+} from "../execution/operation-runner.ts";
+import {
+  RuntimeHttpResponses,
+  type CommittedHttpMutation,
+  type EncodedHttpBody,
+  type HttpValueOperation,
+} from "./response.ts";
+import type { ServiceLimits } from "../limits.ts";
+import { outcomeFromError } from "../outcome.ts";
+import type { RuntimeQueries } from "../queries/runtime.ts";
+import { claimHttpRequestProvenance } from "../request-provenance.ts";
+import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
+import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
+import { validatedSseSource } from "../sse/source.ts";
+import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
+
+const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
+const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
+
+interface ClaimedHttpRequest {
+  readonly requestBytes: number;
+  readonly codec: ExposedHttpCodec;
+  readonly claimedTrace?: ClaimedHttpTrace;
+  readonly fairnessKey: string;
+  readonly invalidationScope?: Parameters<AuthInvalidationBoundary["publisher"]>[1];
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+export interface RuntimeHttpOptions {
+  readonly registry: Registry;
+  readonly limits: ServiceLimits;
+  readonly operations: RuntimeOperationRunner<RuntimeSession>;
+  readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
+  readonly queries: RuntimeQueries;
+  readonly authInvalidation: AuthInvalidationBoundary;
+  readonly telemetry: Telemetry;
+  readonly tracing: RuntimeTraceBridge;
+  readonly admittedRequestBytes: (request: unknown, receivedBytes?: number) => number;
+  readonly operationSignal: (signal?: AbortSignal) => AbortSignal;
+  readonly admit: (fairnessKey: string) => { readonly release: () => void };
+  readonly captureDeliveryObserver: () => DeliveryObserver | undefined;
+  readonly now: () => number;
+}
+
+/** Owns exposed HTTP calls and the full lifecycle of HTTP SSE streams. */
+export class RuntimeHttp {
+  readonly sseBudget: OutboundBudget;
+  readonly sseProducers = new Map<string, BoundedSseProducer>();
+  private readonly responses: RuntimeHttpResponses;
+
+  constructor(private readonly options: RuntimeHttpOptions) {
+    this.responses = new RuntimeHttpResponses(options.limits.maxFrameBytes, {
+      enabled: options.telemetry.enabled,
+      span: (input, operation) => options.tracing.span(input, operation),
+      failure: (error, operation, stage) => this.recordResponseFailure(error, operation, stage),
+    });
+    const controlReserve = Math.min(
+      options.limits.maxFrameBytes,
+      options.limits.sse.maxBytes - 1,
+    );
+    this.sseBudget = new OutboundBudget(options.limits.sse.maxBytes, controlReserve);
+  }
+
+  runQuery(request: RuntimeHttpRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claim(request, "query");
+    return this.options.operations.run(null, "query", request.address, requestBytes, () =>
+      this.options.queries.execute(
+        request.address,
+        request.args,
+        request.principal,
+        fairnessKey,
+        this.options.operationSignal(request.signal),
+        requestBytes,
+      ), {
+      identifiers: { requestId: String(request.id) },
+      finalize: (outcome) => this.responses.respond(request, codec, "query", outcome),
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  runMutation(request: RuntimeHttpMutationRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claim(request, "mutation");
+    let committed: CommittedHttpMutation | undefined;
+    return this.options.operations.run(null, "mutation", request.address, requestBytes, async () => {
+      const fn = this.expect(request.address, "mutation");
+      const signal = this.options.operationSignal(request.signal);
+      throwIfAborted(signal);
+      let encoded: EncodedHttpBody | undefined;
+      const result = await this.options.functions.commitMutation({
+        fairnessKey,
+        requestBytes,
+        admissionSignal: signal,
+        ...(request.idempotencyKey === undefined
+          ? {}
+          : { idempotency: this.idempotency(request, fairnessKey) }),
+        fn,
+        principal: request.principal,
+        args: request.args,
+        // The response body is the mutation's last fallible step. Validate and
+        // bound it inside the transaction so an unshippable value never commits.
+        validate: (value) => {
+          if (!isResult(value)) {
+            throw new AckerDBError("internal", "mutation boundary returned no Result");
+          }
+          encoded = this.responses.encodeBody(value.data, codec.encodeValue, "mutation", null);
+        },
+      });
+      committed = Object.freeze({
+        receipt: Object.freeze({
+          commitVersion: result.commitVersion,
+          durability: result.durability,
+          replay: result.replay,
+          obligations: NO_OBLIGATIONS,
+        }),
+        ...(encoded === undefined ? {} : { encoded }),
+      });
+      return restoreMutationResult(result.value);
+    }, {
+      identifiers: {
+        requestId: String(request.id),
+        ...(request.idempotencyKey === undefined ? {} : { mutationId: request.idempotencyKey }),
+      },
+      synthesizeHandler: false,
+      finalize: (outcome) =>
+        this.responses.respond(request, codec, "mutation", outcome, committed),
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  runProcedure(request: RuntimeHttpRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey, invalidationScope } =
+      this.claim(request, "procedure");
+    const invalidations = this.options.authInvalidation.publisher(
+      request.principal,
+      invalidationScope,
+    );
+    return this.options.operations.run(null, "procedure", request.address, requestBytes, async () => {
+      const fn = this.expect(request.address, "procedure");
+      const signal = this.options.operationSignal(request.signal);
+      throwIfAborted(signal);
+      const context = this.options.functions.createProcedureContext(
+        request.principal,
+        fairnessKey,
+        signal,
+        requestBytes,
+        this.readNow(),
+        invalidations.publish,
+      );
+      try {
+        return await invokeSideEffectingHandler(
+          signal,
+          "procedure",
+          (onAuthorized) => invokeFunction(fn, context.value, request.args, { onAuthorized }),
+        );
+      } finally {
+        context.release();
+      }
+    }, {
+      identifiers: { requestId: String(request.id) },
+      finalize: (outcome) => {
+        try {
+          return this.responses.respond(request, codec, "procedure", outcome);
+        } finally {
+          invalidations.finish();
+        }
+      },
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
+    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claim(request, "sse");
+    const runtimeScope = this.options.tracing.open(
+      undefined,
+      "sse",
+      request.address,
+      { requestId: String(request.id) },
+      claimedTrace?.context,
+    );
+    const observedScope = this.options.telemetry.enabled ? runtimeScope : undefined;
+    let traceFinished = false;
+    const finishOperationTrace = (): void => {
+      if (traceFinished) return;
+      traceFinished = true;
+      if (claimedTrace !== undefined) {
+        finishClaimedHttpTrace(claimedTrace);
+      } else if (observedScope !== undefined) {
+        this.options.telemetry[FINISH_OPERATION_TRACE](observedScope.trace);
+      }
+    };
+    const admittedAt = observedScope === undefined ? 0 : performance.now();
+    let release: () => void;
+    try {
+      release = this.options.admit(fairnessKey).release;
+      if (observedScope !== undefined) {
+        this.options.telemetry[RECORD_OPERATION_SPAN](observedScope.trace, 0, 0, {
+          operation: "sse",
+          stage: "admission",
+          outcome: "ok",
+          functionName: request.address,
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes: requestBytes,
+        });
+      }
+    } catch (error) {
+      const safeError = transportError(error);
+      if (observedScope !== undefined) {
+        this.options.telemetry[RECORD_OPERATION_SPAN](observedScope.trace, 0, 0, {
+          operation: "sse",
+          stage: "admission",
+          outcome: outcomeFromError(safeError).code,
+          functionName: request.address,
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes: requestBytes,
+        });
+      }
+      finishOperationTrace();
+      throw safeError;
+    }
+    const startedAt = observedScope === undefined ? 0 : performance.now();
+    const execute = async (): Promise<RuntimeSseResponse> => {
+      let producer: BoundedSseProducer | null = null;
+      let streamId: string | null = null;
+      let lifecycle: Promise<void> | null = null;
+      let procedure: OwnedProcedureContext | null = null;
+      let deliveryObserver: DeliveryObserver | undefined;
+      try {
+        const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
+        if (fn.yields === undefined) {
+          throw new AckerDBError("internal", `sse "${request.address}" has no yields validator`);
+        }
+        const signal = this.options.operationSignal(request.signal);
+        throwIfAborted(signal);
+        producer = new BoundedSseProducer({
+          budget: this.sseBudget,
+          limits: this.options.limits,
+          signal,
+          ...(this.options.telemetry.enabled
+            ? { observer: (observation: DeliveryObservation) => deliveryObserver?.(observation) }
+            : {}),
+        });
+        streamId = this.register(producer);
+        void producer.finished.then(() => this.remove(streamId!, producer!));
+        const authorized = deferred<void>();
+        let handlerContext: <T>(work: () => T) => T = (work) => work();
+        procedure = this.options.functions.createProcedureContext(
+          request.principal,
+          fairnessKey,
+          producer.signal,
+          requestBytes,
+          this.readNow(),
+          (account) => this.options.authInvalidation.publishAccount(account),
+        );
+        const handler = invokeFunction(fn, procedure.value as SseCtx, request.args, {
+          onAuthorized: () => {
+            deliveryObserver = this.options.captureDeliveryObserver();
+            handlerContext = AsyncLocalStorage.snapshot();
+            authorized.resolve();
+          },
+        });
+        const completion = handler.then(async (result: SseSource<unknown>) => {
+          const source = validatedSseSource(codec, result, handlerContext);
+          try {
+            await producer!.merge(source);
+          } catch (error) {
+            void source.cancel(error).catch(() => {});
+            throw error;
+          }
+          return producer!.complete();
+        }).catch(async (error) => {
+          producer!.fail(error);
+          try {
+            await producer!.complete();
+          } catch {
+            // Preserve the handler failure after terminal ACK/cancel owns cleanup.
+          }
+          throw error;
+        });
+        lifecycle = completion.catch((error) => {
+          if (observedScope !== undefined) {
+            const safeError = transportError(error);
+            this.options.tracing.event({
+              name: "failure",
+              level: "error",
+              operation: "sse",
+              outcome: outcomeFromError(safeError).code,
+              functionName: request.address,
+              errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+            }, observedScope);
+          }
+          throw error;
+        }).finally(() => {
+          procedure!.release();
+          procedure = null;
+          release();
+          finishOperationTrace();
+        });
+        void lifecycle.catch(() => {});
+        await Promise.race([
+          authorized.promise,
+          handler.then(
+            () => undefined,
+            (error) => { throw error; },
+          ),
+        ]);
+        return Object.freeze({ stream: producer.stream, streamId });
+      } catch (error) {
+        if (producer !== null) {
+          try {
+            await producer.stream.cancel(error);
+          } catch {
+            // No stream escaped this boundary; cancellation is capacity cleanup.
+          }
+        }
+        if (lifecycle !== null) await lifecycle.catch(() => {});
+        else {
+          procedure?.release();
+          release();
+          finishOperationTrace();
+        }
+        const safeError = transportError(error);
+        if (observedScope !== undefined) {
+          const outcome = outcomeFromError(safeError).code;
+          if (observedScope.invocations === 0) {
+            this.options.tracing.span({
+              operation: "sse",
+              stage: "handler",
+              outcome,
+              durationMs: Math.max(0, performance.now() - startedAt),
+              sizeBytes: requestBytes,
+            }, "sse");
+          }
+          this.options.tracing.event({
+            name: outcome === "overloaded" ? "overload" : "failure",
+            level: outcome === "overloaded" ? "warn" : "error",
+            operation: "sse",
+            outcome,
+            functionName: request.address,
+            errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+          }, observedScope);
+        }
+        throw safeError;
+      }
+    };
+    return this.options.tracing.runOperation(runtimeScope, execute);
+  }
+
+  ackSse(request: SseAckRequest): boolean {
+    return this.sseProducers.get(request.stream)?.ack(request.seq, request.proof) ?? false;
+  }
+
+  sseSnapshot(streamId: string): SseDeliverySnapshot | null {
+    return this.sseProducers.get(streamId)?.snapshot() ?? null;
+  }
+
+  private claim(request: RuntimeExternalRequest, kind: ExposedHttpKind): ClaimedHttpRequest {
+    if (request.principal.kind === "mcp") {
+      throw new AckerDBError(
+        "unauthorized",
+        "MCP credentials cannot call AckerDB application functions",
+      );
+    }
+    const provenance = claimHttpRequestProvenance(request);
+    return {
+      requestBytes: this.options.admittedRequestBytes(
+        { ref: request.address, args: request.args },
+        provenance?.bytes,
+      ),
+      codec: this.codec(request.address),
+      claimedTrace: claimHttpTrace(
+        provenance?.trace,
+        kind,
+        request.address,
+        String(request.id),
+      ),
+      fairnessKey: request.fairnessKey
+        ?? callerFairnessKey(request.principal, DIRECT_RUNTIME_SOURCE),
+      invalidationScope: provenance?.invalidationScope,
+    };
+  }
+
+  private idempotency(
+    request: RuntimeHttpMutationRequest,
+    fairnessKey: string,
+  ): IdempotencyIdentity {
+    const requestId = request.idempotencyKey!;
+    let issuedAt: number;
+    try {
+      issuedAt = uuidV7Timestamp(requestId);
+    } catch (cause) {
+      throw new AckerDBError("validation", "Idempotency-Key must be a UUIDv7", {
+        cause,
+        resource: "idempotency",
+      });
+    }
+    return {
+      sessionId: fairnessKey,
+      requestId,
+      issuedAt,
+      principalFingerprint: fairnessKey,
+      functionRef: request.address,
+      argsFingerprint: digest(request.args),
+    };
+  }
+
+  private codec(address: string): ExposedHttpCodec {
+    const exposed = this.options.registry.exposedFunction(address);
+    if (exposed === undefined) {
+      throw new AckerDBError("not_found", `"${address}" is not exposed over HTTP`);
+    }
+    return exposed.codec;
+  }
+
+  private expect(
+    address: string,
+    kind: "mutation" | "procedure" | "sse",
+  ): AnyRegistered {
+    const fn = this.options.registry.get(address);
+    if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);
+    if (fn.kind !== kind) {
+      throw new AckerDBError("validation", `"${address}" is a ${fn.kind}, expected a ${kind}`);
+    }
+    return fn;
+  }
+
+  private register(producer: BoundedSseProducer): string {
+    let streamId: string;
+    do streamId = randomBytes(16).toString("base64url");
+    while (this.sseProducers.has(streamId));
+    this.sseProducers.set(streamId, producer);
+    return streamId;
+  }
+
+  private remove(streamId: string, producer: BoundedSseProducer): void {
+    if (this.sseProducers.get(streamId) === producer) this.sseProducers.delete(streamId);
+  }
+
+  private recordResponseFailure(
+    error: unknown,
+    operation: HttpValueOperation,
+    stage: "encoding" | "delivery",
+  ): void {
+    if (!this.options.telemetry.enabled) return;
+    const scope = this.options.tracing.currentScope();
+    const invocation = currentInvocationTelemetryContext();
+    const functionName = invocation === undefined
+      ? scope?.rootFunction
+      : this.options.registry.invocationNameOf(invocation.fn) ?? scope?.rootFunction;
+    this.options.tracing.event({
+      name: "failure",
+      level: "error",
+      operation,
+      stage,
+      outcome: outcomeFromError(error).code,
+      ...(functionName === undefined ? {} : { functionName }),
+      resource: "operation",
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+    });
+  }
+
+  private readNow(): number {
+    const now = this.options.now();
+    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
+    return now;
+  }
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => { resolve = accept; });
+  return { promise, resolve };
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(stableEncode(value)).digest("base64url");
+}

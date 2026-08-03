@@ -33,13 +33,13 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import {
-  Session,
   type RuntimePublication,
   type SessionApplicationMessage,
   type SessionClock,
   type SessionControlMessage,
   type SessionSink,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
+import { Session } from "../../src/subscriptions/session/session.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 

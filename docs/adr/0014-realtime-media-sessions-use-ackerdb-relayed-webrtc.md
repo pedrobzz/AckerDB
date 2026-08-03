@@ -71,11 +71,12 @@ completion, or durability.
 ## Client ownership
 
 The framework-neutral client and `useRealtime` share one session by client,
-realtime reference, and canonical arguments. Repeated React calls may retain
-that session only with the same non-empty `handlerKey`; a missing or different
-key raises `RealtimeHandlerKeyConflictError` rather than opening another peer.
-The key coalesces the complete `on` handler bundle, not function identities or
-React state.
+realtime reference, and canonical arguments. Session retention and handler
+observation are separate: repeated calls unconditionally retain the same peer,
+while each committed caller registers and releases its own `on` observation.
+Events and peer lifecycle notifications fan out to active observations; each
+incoming byte stream has one deterministic matching observer so it never gains
+unbounded buffering through stream fan-out.
 
 `on.peerConnection` runs before initial negotiation for each generation and may
 await native media setup or return generation cleanup. `on.connected`,
@@ -83,7 +84,8 @@ await native media setup or return generation cleanup. `on.connected`,
 only; lifecycle history and application state are never replayed. The hook
 snapshot is the source of current connection state.
 
-Committed demand owns the shared session. `release` removes one owner,
+Committed demand owns the shared session. `release` removes one owner and the
+handler observations registered through that retained handle.
 `disconnect` closes the session for every owner and suppresses recovery, and
 `reconnect` starts a fresh generation. Closing the native peer is also an
 explicit disconnect. The React `skip` sentinel creates no demand.

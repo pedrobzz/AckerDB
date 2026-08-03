@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Err, Status } from "@ackerdb/core";
-import { v, ValidationError, type Validator } from "../../src/validation/v.ts";
+import { ValidationError } from "../../src/validation/error.ts";
+import type { Validator } from "../../src/validation/validator.ts";
+import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
 import { mcp, mcpAuth } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";

@@ -1,14 +1,16 @@
 /** Public, planner-independent `ctx.db` query and table types. */
 import type {
-  EnumValidator,
   Expand,
   InferValidator,
   NullableValidator,
+  Validator,
+} from "../../validation/validator.ts";
+import type {
+  EnumValidator,
   ObjectShape,
   UnionMembers,
   UnionValidator,
-  Validator,
-} from "../../validation/v.ts";
+} from "../../validation/composites.ts";
 import type {
   IndexMeta,
   InsertShape,

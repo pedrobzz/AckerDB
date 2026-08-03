@@ -27,12 +27,12 @@ import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
-import {
-  Runtime,
-  type RuntimeHttpResponse,
-  type RuntimeOptions,
-  type RuntimeSseResponse,
-} from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
+import type {
+  RuntimeHttpResponse,
+  RuntimeSseResponse,
+} from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type {
   RuntimePublication,
@@ -40,7 +40,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import {
   Telemetry,
   type TelemetryRecord,
@@ -2654,6 +2654,40 @@ describe("scheduler and lifecycle", () => {
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:http" }]);
   });
 
+  test("refreshes only the scheduled tables touched by a commit", async () => {
+    const scheduler = (runtime as unknown as {
+      scheduler: {
+        initialized: boolean;
+        options: {
+          candidates: {
+            nextAt(tables: Iterable<string>): Promise<ReadonlyMap<string, number | null>>;
+          };
+        };
+      };
+    }).scheduler;
+    await eventually(() => scheduler.initialized);
+    const refreshes: string[][] = [];
+    const candidates = scheduler.options.candidates;
+    const nextScheduledAt = candidates.nextAt.bind(candidates);
+    candidates.nextAt = (tables) => {
+      const touched = [...tables];
+      refreshes.push(touched);
+      return nextScheduledAt(touched);
+    };
+
+    const response = await runtime.runMutation({
+      id: 97,
+      address: "reminders.schedule",
+      args: { message: "later", attempt: 1, at: Date.now() + 100_000 },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
+    });
+
+    expect(response.status).toBe(200);
+    await eventually(() => refreshes.length === 1);
+    expect(refreshes).toEqual([["reminders"]]);
+  });
+
   test("backs a failing due job off instead of retrying in a hot loop", async () => {
     await session.open();
     await session.mutation(1, "reminders.schedule", {
@@ -2670,14 +2704,20 @@ describe("scheduler and lifecycle", () => {
   test("bounds stale scheduler attempts and rolls each no-op back before version allocation", async () => {
     await restart(limits({ schedulerBatchSize: 3 }));
     const scheduler = runtime as unknown as {
-      nextScheduledCandidate(now: number): Promise<{
-        table: string;
-        address: string;
-        primaryKey: unknown;
-      } | null>;
+      scheduler: {
+        options: {
+          candidates: {
+            next(now: number): Promise<{
+              table: string;
+              address: string;
+              primaryKey: unknown;
+            } | null>;
+          };
+        };
+      };
     };
     let attempts = 0;
-    scheduler.nextScheduledCandidate = async () => {
+    scheduler.scheduler.options.candidates.next = async () => {
       attempts++;
       return { table: "reminders", address: "reminders.fire", primaryKey: 999n };
     };
@@ -3169,6 +3209,69 @@ describe("configured capacity", () => {
 
     await Promise.all([unsubscribe(second, 1), unsubscribe(third, 1)]);
     expect(runtime.status().reactive).toMatchObject({ queryListeners: 0 });
+  });
+
+  test("applies one subscription budget to reactive listeners and channels", async () => {
+    await restart(limits({
+      maxConnections: 2,
+      maxSubscriptionsPerConnection: 2,
+      maxSubscriptions: 2,
+    }));
+    const second = new SessionHarness(runtime, "session-b");
+    await Promise.all([session.open(), second.open()]);
+
+    await runtime.joinChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_join",
+      id: 1,
+      ref: "chat.room",
+      args: { threadId: 7n },
+      room: "support",
+    }));
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 2,
+      ref: "messages.list",
+      args: { channelId: 7n },
+    }));
+
+    await expect(runtime.joinChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_join",
+      id: 3,
+      ref: "chat.room",
+      args: { threadId: 8n },
+      room: "sales",
+    }))).rejects.toMatchObject({
+      code: "overloaded",
+      message: "Per-connection subscription capacity is full",
+      resource: "subscription",
+    });
+    await expect(runtime.subscribe(second.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 1,
+      ref: "messages.list",
+      args: { channelId: 8n },
+    }))).rejects.toMatchObject({
+      code: "overloaded",
+      message: "Global subscription capacity is full",
+      resource: "subscription",
+    });
+
+    await runtime.leaveChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_leave",
+      id: 1,
+    }));
+    await expect(runtime.subscribe(second.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 1,
+      ref: "messages.list",
+      args: { channelId: 8n },
+    }))).resolves.toBeUndefined();
   });
 
   test("rejects an oversized mutation response before its write commits", async () => {

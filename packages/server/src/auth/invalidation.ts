@@ -1,6 +1,7 @@
 import type {
   CredentialVerifier,
   ExternalAccount,
+  Principal,
   PrincipalInvalidation,
 } from "./credentials.ts";
 
@@ -15,6 +16,11 @@ export interface AuthInvalidationScope {
 export interface AuthInvalidationSubscription {
   readonly scope?: AuthInvalidationScope;
   unsubscribe(): void;
+}
+
+export interface AuthInvalidationPublisher {
+  publish(account: ExternalAccount): void;
+  finish(): void;
 }
 
 type InvalidationListener = (invalidation: PrincipalInvalidation) => void;
@@ -80,6 +86,39 @@ export class AuthInvalidationBoundary {
     if (listener === undefined) return false;
     this.deliver(listener, Object.freeze({ issuer: account.issuer, subject: account.subject }));
     return true;
+  }
+
+  /** Defer the originating credential's self-invalidation until response handoff. */
+  publisher(
+    principal: Principal,
+    originScope?: AuthInvalidationScope,
+  ): AuthInvalidationPublisher {
+    if (originScope === undefined) {
+      return Object.freeze({
+        publish: (account: ExternalAccount): void => {
+          this.publishAccount(account);
+        },
+        finish: (): void => {},
+      });
+    }
+    const pending = new Map<string, Map<string, ExternalAccount>>();
+    return Object.freeze({
+      publish: (account: ExternalAccount): void => {
+        const isSelf = principal.kind === "user" &&
+          principal.issuer === account.issuer &&
+          principal.subject === account.subject;
+        if (!this.publishAccount(account, isSelf ? originScope : undefined) || !isSelf) return;
+        let subjects = pending.get(account.issuer);
+        if (subjects === undefined) pending.set(account.issuer, (subjects = new Map()));
+        subjects.set(account.subject, account);
+      },
+      finish: (): void => {
+        for (const subjects of pending.values()) {
+          for (const account of subjects.values()) this.publishAccountTo(account, originScope);
+        }
+        pending.clear();
+      },
+    });
   }
 
   private subscribe(

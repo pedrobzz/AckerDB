@@ -26,6 +26,8 @@ import {
 import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
 import { desiredPluginMounts } from "@ackerdb/server";
 
+import { runCli } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
 const replayResult = encode({ messageId: 1n, body: "preserved" });
@@ -114,22 +116,6 @@ export default defineApp({ schema, plugins: { ${mount}: plugin } });`,
     );
 }
 
-async function runCli(
-  args: string[],
-  env: Readonly<Record<string, string>> = {},
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = Bun.spawn([process.execPath, CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, ...env },
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { exitCode, stdout, stderr };
-}
 
 function outputJson<T>(stdout: string): T {
   const lines = stdout.trim().split("\n");
@@ -150,13 +136,13 @@ describe("acker backup, restore, and status", () => {
     const source = fixture();
     const databaseDir = join(source, ".ackerdb");
     const status = await runCli(["status", source]);
-    expect(status.exitCode).toBe(1);
+    expect(status.code).toBe(1);
     expect(status.stderr).toContain("AckerDB database not found");
     expect(existsSync(databaseDir)).toBe(false);
 
     const artifact = join(source, "backup.db");
     const backup = await runCli(["backup", artifact, source]);
-    expect(backup.exitCode).toBe(1);
+    expect(backup.code).toBe(1);
     expect(backup.stderr).toContain("AckerDB database not found");
     expect(existsSync(databaseDir)).toBe(false);
     expect(existsSync(artifact)).toBe(false);
@@ -168,7 +154,7 @@ describe("acker backup, restore, and status", () => {
     await seed(source);
 
     const statusResult = await runCli(["status", source]);
-    expect(statusResult.exitCode).toBe(0);
+    expect(statusResult.code).toBe(0);
     expect(statusResult.stderr).toBe("");
     const status = outputJson<StatusReport>(statusResult.stdout);
     expect(status).toMatchObject({ format: 1, operation: "status" });
@@ -177,7 +163,7 @@ describe("acker backup, restore, and status", () => {
 
     const artifact = join(source, "backup.db");
     const backupResult = await runCli(["backup", artifact, source]);
-    expect(backupResult.exitCode).toBe(0);
+    expect(backupResult.code).toBe(0);
     expect(backupResult.stderr).toBe("");
     const backup = outputJson<BackupReport>(backupResult.stdout);
     expect(backup).toMatchObject({
@@ -205,7 +191,7 @@ describe("acker backup, restore, and status", () => {
 
     const target = fixture();
     const restoreResult = await runCli(["restore", artifact, target]);
-    expect(restoreResult.exitCode).toBe(0);
+    expect(restoreResult.code).toBe(0);
     expect(restoreResult.stderr).toBe("");
     const restore = outputJson<RestoreReport>(restoreResult.stdout);
     expect(restore).toMatchObject({
@@ -265,11 +251,11 @@ describe("acker backup, restore, and status", () => {
     const source = fixture();
     await seed(source);
     const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
 
     const vacant = fixture();
     mkdirSync(join(vacant, ".ackerdb"));
-    expect((await runCli(["restore", artifact, vacant])).exitCode).toBe(0);
+    expect((await runCli(["restore", artifact, vacant])).code).toBe(0);
     expect(existsSync(join(vacant, ".ackerdb", "data.db"))).toBe(true);
 
     const occupied = fixture();
@@ -277,7 +263,7 @@ describe("acker backup, restore, and status", () => {
     const sentinel = join(occupied, ".ackerdb", "operator-note");
     writeFileSync(sentinel, "preserve me");
     const refused = await runCli(["restore", artifact, occupied]);
-    expect(refused.exitCode).toBe(1);
+    expect(refused.code).toBe(1);
     expect(refused.stderr).toContain("unrelated entry");
     expect(readFileSync(sentinel, "utf8")).toBe("preserve me");
     expect(existsSync(join(occupied, ".ackerdb", "data.db"))).toBe(false);
@@ -289,12 +275,12 @@ describe("acker backup, restore, and status", () => {
     const env = { ACKERDB_DURABILITY: "balanced" };
 
     const statusResult = await runCli(["status", source], env);
-    expect(statusResult.exitCode).toBe(0);
+    expect(statusResult.code).toBe(0);
     expect(outputJson<StatusReport>(statusResult.stdout).status.durability).toBe("balanced");
 
     const artifact = join(source, "balanced-backup.db");
     const backupResult = await runCli(["backup", artifact, source], env);
-    expect(backupResult.exitCode).toBe(0);
+    expect(backupResult.code).toBe(0);
     expect(outputJson<BackupReport>(backupResult.stdout).manifest.durability).toBe("balanced");
   }, 30_000);
 
@@ -306,7 +292,7 @@ describe("acker backup, restore, and status", () => {
     writeFileSync(occupied, secret);
 
     const failed = await runCli(["backup", occupied, source]);
-    expect(failed.exitCode).toBe(1);
+    expect(failed.code).toBe(1);
     const failedRecords = failed.stdout.trim().split("\n").map(
       (line) => JSON.parse(line) as TelemetryRecord,
     );
@@ -331,7 +317,7 @@ describe("acker backup, restore, and status", () => {
 
     const artifact = join(source, "disabled-backup.db");
     const disabled = await runCli(["backup", artifact, source], { ACKERDB_TELEMETRY: "disabled" });
-    expect(disabled.exitCode).toBe(0);
+    expect(disabled.code).toBe(0);
     expect(disabled.stderr).toBe("");
     expect(disabled.stdout.trim().split("\n")).toHaveLength(1);
     expect(outputJson<BackupReport>(disabled.stdout)).toMatchObject({
@@ -344,7 +330,7 @@ describe("acker backup, restore, and status", () => {
     const source = fixture();
     await seed(source);
     const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
 
     const corruptArtifact = join(source, "corrupt.db");
     copyFileSync(artifact, corruptArtifact);
@@ -352,7 +338,7 @@ describe("acker backup, restore, and status", () => {
     appendFileSync(corruptArtifact, "corrupt");
     const corruptTarget = fixture();
     const corrupt = await runCli(["restore", corruptArtifact, corruptTarget]);
-    expect(corrupt.exitCode).toBe(1);
+    expect(corrupt.code).toBe(1);
     expect(corrupt.stderr).toContain("artifact does not match its manifest");
     expect(existsSync(join(corruptTarget, ".ackerdb"))).toBe(false);
 
@@ -365,7 +351,7 @@ describe("acker backup, restore, and status", () => {
     writeFileSync(backupManifestPath(malformedArtifact), JSON.stringify(malformed));
     const malformedTarget = fixture();
     const malformedResult = await runCli(["restore", malformedArtifact, malformedTarget]);
-    expect(malformedResult.exitCode).toBe(1);
+    expect(malformedResult.code).toBe(1);
     expect(malformedResult.stderr).toContain("unsupported shape");
     expect(existsSync(join(malformedTarget, ".ackerdb"))).toBe(false);
 
@@ -376,7 +362,7 @@ describe("acker backup, restore, and status", () => {
       ),
     );
     const mismatchedResult = await runCli(["restore", artifact, mismatchedTarget]);
-    expect(mismatchedResult.exitCode).toBe(1);
+    expect(mismatchedResult.code).toBe(1);
     expect(mismatchedResult.stderr).toContain("schema fingerprint");
     expect(existsSync(join(mismatchedTarget, ".ackerdb"))).toBe(false);
   }, 30_000);
@@ -385,7 +371,7 @@ describe("acker backup, restore, and status", () => {
     const source = fixture(appWithPlugin("cache", "@test/cache"));
     await seed(source);
     const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
 
     const targets = [
       fixture(appWithPlugin("store", "@test/cache")),
@@ -394,7 +380,7 @@ describe("acker backup, restore, and status", () => {
     ];
     for (const target of targets) {
       const result = await runCli(["restore", artifact, target]);
-      expect(result.exitCode).toBe(1);
+      expect(result.code).toBe(1);
       expect(result.stderr).toContain("storage layout");
       expect(existsSync(join(target, ".ackerdb"))).toBe(false);
     }
@@ -404,7 +390,7 @@ describe("acker backup, restore, and status", () => {
     const source = fixture();
     await seed(source);
     const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
 
     const target = fixture();
     const config = loadConfig(target);
@@ -424,7 +410,7 @@ describe("acker backup, restore, and status", () => {
     const source = fixture();
     await seed(source);
     const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
 
     const target = fixture();
     await seed(target);
@@ -434,7 +420,7 @@ describe("acker backup, restore, and status", () => {
     writeFileSync(sentinel, "start winner");
     try {
       const result = await runCli(["restore", artifact, target]);
-      expect(result.exitCode).toBe(1);
+      expect(result.code).toBe(1);
       expect(result.stderr).toContain("database is already open");
       expect(live.commitVersion()).toBe(1n);
       expect(live.writer.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1n });

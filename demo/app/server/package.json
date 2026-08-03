@@ -6,21 +6,20 @@
     "dev": "acker dev .",
     "start": "acker start .",
     "codegen": "acker codegen .",
-    "test": "bun test ../../scripts/backend.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@ackerdb/cache": "0.10.0",
-    "@ackerdb/core": "0.10.0",
-    "@ackerdb/server": "0.10.0",
+    "@ackerdb/cache": "0.14.2-canary.4",
+    "@ackerdb/core": "0.14.2-canary.4",
+    "@ackerdb/server": "0.14.2-canary.4",
     "@demo/ackerdb-codegen": "workspace:*",
     "ai": "7.0.31",
     "jose": "^6.1.3",
     "just-bash": "3.1.0"
   },
   "devDependencies": {
-    "@ackerdb/cli": "0.10.0",
+    "@ackerdb/cli": "0.14.2-canary.4",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }

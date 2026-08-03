@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@ackerdb/core";
+import { decode, type Identity } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import {
@@ -13,7 +13,7 @@ import {
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../../src/auth/credentials.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
@@ -29,7 +29,8 @@ import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
@@ -359,6 +360,13 @@ async function handleDelegate(
         events: await runModel(tools, [{ id: "other", name: "other_public" }]),
       };
     }
+    case "shared_provider": {
+      const tools = aliasMcp.aiTools(ctx);
+      return {
+        names: Object.keys(tools),
+        events: await runModel(tools, [{ id: "alias", name: "alias_status" }]),
+      };
+    }
     default:
       throw new Error(`unknown MCP delegation mode ${args.mode}`);
   }
@@ -388,6 +396,14 @@ const scopedMcp = typedMcp({
     read_reports: { fn: readReports, access: { allOf: ["orders.get", "reports.all"] } },
   },
 });
+const aliasMcp = typedMcp({
+  name: "delegated-alias",
+  auth: delegatedAuth,
+  path: "/delegated-alias/mcp",
+  tools: {
+    alias_status: { fn: publicStatus, access: "public" },
+  },
+});
 const otherMcp = typedMcp({
   name: "other",
   auth: otherAuth,
@@ -409,7 +425,7 @@ const scopeFreeMcp = typedMcp({
 
 const modules = {
   app: { runLocal },
-  mcp: { otherMcp, scopeFreeMcp, scopedMcp },
+  mcp: { aliasMcp, otherMcp, scopeFreeMcp, scopedMcp },
   tools: {
     adminOrders,
     authenticatedStatus,
@@ -630,8 +646,11 @@ describe("MCP identity-preserving local delegation", () => {
     expect(observations).toEqual([]);
     await expect(runtime.runMcpTool({
       id: "anonymous-http-equivalent",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.admin_orders.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.admin_orders.name,
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).rejects.toMatchObject({ code: "unauthenticated" });
@@ -681,8 +700,11 @@ describe("MCP identity-preserving local delegation", () => {
     try {
       const intersection = await runtime.runMcpTool({
         id: "mcp-local-intersection",
-        mcp: scopedMcp.name,
-        tool: scopedMcp.tools.delegate.name,
+        authorization: runtime.authorizeMcpTool(
+          scopedMcp.name,
+          scopedMcp.tools.delegate.name,
+          principal,
+        ),
         args: { mode: "intersection" },
         principal,
       });
@@ -699,8 +721,11 @@ describe("MCP identity-preserving local delegation", () => {
 
       const unavailable = await runtime.runMcpTool({
         id: "mcp-local-unavailable",
-        mcp: scopedMcp.name,
-        tool: scopedMcp.tools.delegate.name,
+        authorization: runtime.authorizeMcpTool(
+          scopedMcp.name,
+          scopedMcp.tools.delegate.name,
+          principal,
+        ),
         args: { mode: "include" },
         principal,
       });
@@ -743,12 +768,38 @@ describe("MCP identity-preserving local delegation", () => {
     }
   });
 
+  test("uses the shared auth provider when an MCP endpoint has a different name", async () => {
+    const principal = mcpPrincipal(delegatedAuth.name);
+    const result = await runtime.runMcpTool({
+      id: "mcp-shared-provider",
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
+      args: { mode: "shared_provider" },
+      principal,
+    });
+
+    expect(result.structuredContent).toEqual({
+      names: ["alias_status"],
+      events: [{
+        type: "tool-result",
+        name: "alias_status",
+        output: { tool: "public_status", kind: "mcp", identity: "73" },
+      }],
+    });
+  });
+
   test("binds local authority to the exact endpoint and denies cross-endpoint execution", async () => {
     const principal = mcpPrincipal();
     const hidden = await runtime.runMcpTool({
       id: "mcp-cross-default",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.delegate.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
       args: { mode: "cross_default" },
       principal,
     });
@@ -756,8 +807,11 @@ describe("MCP identity-preserving local delegation", () => {
 
     const shown = await runtime.runMcpTool({
       id: "mcp-cross-include",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.delegate.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
       args: { mode: "cross_include" },
       principal,
     });
@@ -787,8 +841,11 @@ describe("MCP identity-preserving local delegation", () => {
     );
     await expect(runtime.runMcpTool({
       id: "post-local-authority",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.read_orders.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.read_orders.name,
+        principal,
+      ),
       args: {},
       principal,
     })).rejects.toMatchObject({ code: "unauthorized" });

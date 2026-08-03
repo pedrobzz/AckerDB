@@ -1,165 +1,20 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type ApplicationError,
-  type ClientMessage,
   type ServerMessage,
   type SubscriptionCursor,
 } from "@ackerdb/core";
-import { AckerDBClient, type AckerDBClientClock, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
+import { AckerDBClient, type QueryRef } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  AckerDBProvider,
-  skip,
-  useQuery,
-  type AckerDBProviderConfig,
-  type AckerDBQueryState,
-} from "@ackerdb/client-react";
+import { AckerDBProvider, skip, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 import { QueryStoreEntry } from "../src/query-store.ts";
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {
-    return this.frames().filter((frame) => frame.t === type) as Extract<
-      ClientMessage,
-      { t: T }
-    >[];
-  }
-}
-
 const SESSION = "use-query-session";
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly config: AckerDBProviderConfig;
-  live(): FakeSocket;
-  subFrames<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[];
-}
-
-function createHarness(): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config: {
-      url: "http://use-query.test",
-      credential: { kind: "anonymous" },
-      clientSessionId: SESSION,
-      clock,
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (!socket) throw new Error("no live socket");
-      return socket;
-    },
-    subFrames(type) {
-      return sockets.flatMap((socket) => socket.framesOf(type));
-    },
-  };
-}
+const APP = { url: "http://use-query.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly list: bigint };
 type TodoNotFound = ApplicationError<
@@ -211,32 +66,32 @@ async function render(root: Root, element: ReactNode): Promise<void> {
   });
 }
 
-function app(harness: Harness, args: TodoArgs | typeof skip, strict = false): ReactNode {
+function app(harness: ProviderHarness, args: TodoArgs | typeof skip, strict = false): ReactNode {
   const tree = (
-    <AckerDBProvider config={harness.config}>
+    <AckerDBProvider config={harness.config()}>
       <TodoReport args={args} />
     </AckerDBProvider>
   );
   return strict ? <StrictMode>{tree}</StrictMode> : tree;
 }
 
-async function receive(harness: Harness, frame: ServerMessage): Promise<void> {
+async function receive(harness: ProviderHarness, frame: ServerMessage): Promise<void> {
   await act(async () => {
     harness.live().receive(frame);
   });
 }
 
-async function ready(harness: Harness): Promise<void> {
+async function ready(harness: ProviderHarness): Promise<void> {
   await act(async () => {
     harness.live().welcome(SESSION);
   });
 }
 
 /** Boots to a fresh success showing ["one"] and returns the subscription id. */
-async function bootToSuccess(harness: Harness, root: Root, container: HTMLElement): Promise<number> {
+async function bootToSuccess(harness: ProviderHarness, root: Root, container: HTMLElement): Promise<number> {
   await render(root, app(harness, { list: 1n }));
   await ready(harness);
-  const id = harness.subFrames("sub")[0]!.id;
+  const id = harness.frames("sub")[0]!.id;
   await receive(harness, {
     v: PROTOCOL_VERSION,
     t: "transition",
@@ -252,19 +107,19 @@ afterAll(() => actEnvironment(false));
 
 describe("useQuery state transitions", () => {
   test("skip renders disabled and never starts a subscription; real args start one", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(root, app(harness, skip));
     expect(container.textContent).toBe("disabled");
     await ready(harness);
-    expect(harness.subFrames("sub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(0);
 
     // Replacing the sentinel with real arguments starts exactly one query.
     await render(root, app(harness, { list: 1n }));
     expect(container.textContent).toBe("pending");
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(1);
     expect(subs[0]!.args).toEqual({ list: 1n });
 
@@ -279,12 +134,12 @@ describe("useQuery state transitions", () => {
     // Back to skip: disabled again and the subscription is released.
     await render(root, app(harness, skip));
     expect(container.textContent).toBe("disabled");
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([subs[0]!.id]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([subs[0]!.id]);
     await render(root, <></>);
   });
 
   test("disconnect keeps data stale; a resume delivery restores fresh with the same rows", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -321,7 +176,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("a checkpoint-only resume chain confirms freshness without redelivery", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -348,7 +203,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("a reset delivery after reconnect replaces rows and restores fresh", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -373,7 +228,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("a framework rejection clears prior rows and preserves the exact error", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -393,7 +248,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("an application error clears prior data, narrows its body, and can recover", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -433,7 +288,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("disconnect hides an application error until cursor confirmation restores it", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -486,13 +341,13 @@ describe("useQuery state transitions", () => {
   });
 
   test("a retryable rejection resubscribes on its own and recovers without remounting", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
 
     // The server rejects the subscription with an explicitly retryable error;
-    // the base client removes it, but the mounted consumer's demand stands.
+    // the base client retains and reschedules the mounted demand.
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "err",
@@ -506,13 +361,8 @@ describe("useQuery state transitions", () => {
     });
     expect(container.textContent).toBe("stale:one");
 
-    const deadline = Date.now() + 2_000;
-    while (harness.subFrames("sub").length < 2 && Date.now() < deadline) {
-      await act(async () => {
-        await Bun.sleep(20);
-      });
-    }
-    const subs = harness.subFrames("sub");
+    await act(async () => harness.clock.advance(100));
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]!.args).toEqual({ list: 1n });
 
@@ -527,7 +377,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("unmounting cancels a scheduled retryable resubscribe", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -539,17 +389,17 @@ describe("useQuery state transitions", () => {
       outcome: { code: "overloaded", retryable: true, message: "subscription rejected" },
     });
     await render(root, <></>);
-    await Bun.sleep(300);
-    expect(harness.subFrames("sub")).toHaveLength(1);
+    harness.clock.advance(300);
+    expect(harness.frames("sub")).toHaveLength(1);
   });
 
   test("an error before any delivery retains nothing", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(root, app(harness, { list: 1n }));
     await ready(harness);
-    const id = harness.subFrames("sub")[0]!.id;
+    const id = harness.frames("sub")[0]!.id;
 
     await receive(harness, {
       v: PROTOCOL_VERSION,
@@ -562,7 +412,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("a revoked transition clears prior rows, and a later reset recovers", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -600,7 +450,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("changed arguments start a new subscription; equal-valued literals continue the current one", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -609,15 +459,15 @@ describe("useQuery state transitions", () => {
     // A new object with equal values is the same query: no resubscribe, and
     // the committed snapshot is the identical object.
     await render(root, app(harness, { list: 1n }));
-    expect(harness.subFrames("sub")).toHaveLength(1);
+    expect(harness.frames("sub")).toHaveLength(1);
     expect(observed!).toBe(settled);
 
     await render(root, app(harness, { list: 2n }));
     expect(container.textContent).toBe("pending");
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]!.args).toEqual({ list: 2n });
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
 
     await receive(harness, {
       v: PROTOCOL_VERSION,
@@ -630,7 +480,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("duplicate deliveries leave the committed snapshot referentially unchanged", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
@@ -649,20 +499,20 @@ describe("useQuery state transitions", () => {
   });
 
   test("unmounting the consumer releases the single-consumer subscription", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const id = await bootToSuccess(harness, root, container);
 
     // The provider (and its client) stay mounted; only the query consumer
     // leaves, so the release must reach the server as an unsubscribe.
-    await render(root, <AckerDBProvider config={harness.config} />);
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
+    await render(root, <AckerDBProvider config={harness.config()} />);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
     await render(root, <></>);
   });
 
   test("Strict Mode leaves exactly one live subscription and updates flow", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(root, app(harness, { list: 1n }, true));
@@ -686,7 +536,7 @@ describe("useQuery state transitions", () => {
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config} />
+        <AckerDBProvider config={harness.config()} />
       </StrictMode>,
     );
     expect(live.framesOf("unsub").map((frame) => frame.id)).toEqual([subs[0]!.id]);
@@ -696,9 +546,8 @@ describe("useQuery state transitions", () => {
   // Driven through the store entry directly: authentication recovery has no
   // hook until ISSUE-08, and refreshCredential() lives on the private client.
   test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
-    const harness = createHarness();
-    const client = new AckerDBClient(harness.config);
-    client.connect();
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
     const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const first = harness.live();
@@ -727,9 +576,9 @@ describe("useQuery state transitions", () => {
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
     });
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
-    await Bun.sleep(300);
+    harness.clock.advance(300);
     // The retry deferred against the blocked client instead of dying.
-    expect(harness.subFrames("sub")).toHaveLength(1);
+    expect(harness.frames("sub")).toHaveLength(1);
 
     // New credentials recover the client; the held demand resubscribes and
     // the query returns to fresh authoritative data.
@@ -761,9 +610,8 @@ describe("useQuery state transitions", () => {
   });
 
   test("binary row payloads stay genuine platform typed arrays inside frozen rows", async () => {
-    const harness = createHarness();
-    const client = new AckerDBClient(harness.config);
-    client.connect();
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
     type BlobRow = { readonly name: string; readonly blob: Uint8Array };
     const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
     const stopListening = entry.listen(() => {});
@@ -800,7 +648,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("delivered rows are immutable through the snapshot", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await bootToSuccess(harness, root, container);
@@ -814,7 +662,7 @@ describe("useQuery state transitions", () => {
   });
 
   test("unencodable argument values become the exact validation error state", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const numbers = { $ref: "todos.byScore" } as QueryRef<{ score: number }, string[]>;
@@ -828,7 +676,7 @@ describe("useQuery state transitions", () => {
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <BadArgs />
       </AckerDBProvider>,
     );
@@ -836,7 +684,7 @@ describe("useQuery state transitions", () => {
     if (captured?.status !== "rejected") throw new Error("expected a rejected state");
     expect(captured.error.message).toBe("cannot encode non-finite number NaN");
     expect(captured.error.outcome).toMatchObject({ retryable: false, resource: "subscription" });
-    expect(harness.subFrames("sub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(0);
     await render(root, <></>);
   });
 });

@@ -110,7 +110,6 @@ interface UseAssistantInput {
 
 function useAssistant(input: UseAssistantInput = {}) {
   return useRealtime(assistant, { assistantId: 1n }, {
-    handlerKey: "useAssistant",
     on: input.on,
   });
 }
@@ -134,7 +133,6 @@ function Consumer() {
 }
 
 const options: UseRealtimeOptions<typeof assistant> = {
-  handlerKey: "useAssistant",
   on: mapped,
 };
 void options;

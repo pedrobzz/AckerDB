@@ -113,7 +113,6 @@ interface ProbeProps {
 
 function Probe({ id, onTranscript }: ProbeProps): ReactNode {
   const result = useRealtime(assistant, { assistantId: 1n }, {
-    handlerKey: "useAssistant",
     on: {
       event: {
         transcript: ({ text }) => onTranscript(text),
@@ -157,7 +156,7 @@ beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
 describe("useRealtime", () => {
-  test("retains one peer and one keyed handler bundle across hook owners", async () => {
+  test("retains one peer and broadcasts through independently owned hook observations", async () => {
     const peers: FakePeerConnection[] = [];
     let offers = 0;
     let releases = 0;
@@ -236,8 +235,8 @@ describe("useRealtime", () => {
         text: "one",
       }));
     });
-    await eventually(() => calls.length === 1);
-    expect(calls).toEqual(["messages:one"]);
+    await eventually(() => calls.length === 2);
+    expect(calls).toEqual(["messages:one", "composer:one"]);
 
     await render(root, app(config, [
       { id: "composer", onTranscript: updatedComposer },
@@ -250,8 +249,8 @@ describe("useRealtime", () => {
         text: "two",
       }));
     });
-    await eventually(() => calls.length === 2);
-    expect(calls).toEqual(["messages:one", "updated:two"]);
+    await eventually(() => calls.length === 3);
+    expect(calls).toEqual(["messages:one", "composer:one", "updated:two"]);
 
     await act(async () => root.unmount());
     expect(peers[0]!.connectionState).toBe("closed");

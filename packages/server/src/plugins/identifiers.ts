@@ -8,3 +8,23 @@ export function isPluginIdentifier(value: string): boolean {
 export function isPluginDefinitionId(value: string): boolean {
   return DEFINITION_ID.test(value);
 }
+
+/** Context field names a plugin mount or dependency slot may not shadow. */
+export const BUILTIN_CONTEXT_FIELDS: ReadonlySet<string> = new Set([
+  "abortSignal",
+  "analytics",
+  "auth",
+  "db",
+  "linkAccount",
+  "log",
+  "mount",
+  "timestamp",
+  "tx",
+  "unlinkAccount",
+]);
+
+export function assertIdentifier(name: string, path: string): void {
+  if (!isPluginIdentifier(name)) {
+    throw new TypeError(`${path} "${name}" must be an identifier`);
+  }
+}

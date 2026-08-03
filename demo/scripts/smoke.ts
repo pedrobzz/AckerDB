@@ -89,12 +89,18 @@ try {
   );
   secondGuest = client(secondLogin.token);
   expectOk(await secondGuest.mutation(api.users.ensureCurrent, {}));
+  // A second guest satisfies `guestAccess` and is then refused by the order's
+  // own ownership rule, so the result is the declared application error
+  // `order.not-owned` (403) that `ownedOpenOrder` returns, not a generic
+  // policy denial. The old `unauthorized` expectation predates typed
+  // application results and only survived because the demo pinned a runtime
+  // four minor versions behind the source.
   await expectErrorCode(
     secondGuest.mutation(api.orders.addItems, {
       orderId,
       items: [{ menuItemId: menuItem.id, quantity: 1, note: null }],
     }),
-    "unauthorized",
+    "order.not-owned",
   );
 
   const reset = deferred<void>();

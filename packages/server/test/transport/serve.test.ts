@@ -967,6 +967,18 @@ describe("exposed HTTP procedures", () => {
     expect(JSON.parse(await basic.text())).toMatchObject({ code: "unauthenticated" });
   });
 
+  test("rejects invalid credentials without reading a stalled request body", async () => {
+    const response = await fetch(`${base}${apiPath("notes.identity")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer invalid" },
+      body: stalledBody(),
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(await response.text())).toMatchObject({ code: "unauthenticated" });
+    expect(verifier.verified.at(-1)).toBe("invalid");
+  });
+
   test("bounds declared and streaming HTTP bodies before parsing them", async () => {
     const declared = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
@@ -1001,6 +1013,25 @@ describe("exposed HTTP procedures", () => {
     });
     expect([400, 413]).toContain(transportRejected.status);
     expect(await transportRejected.text()).toBe("");
+  });
+
+  test("decodes UTF-8 split across request chunks without retaining a byte copy", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":"'));
+        controller.enqueue(new Uint8Array([0xc3]));
+        controller.enqueue(new Uint8Array([0xa9]));
+        controller.enqueue(new TextEncoder().encode('"}'));
+        controller.close();
+      },
+    });
+    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+      method: "POST",
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(await response.text())).toBe("é");
   });
 
   test("globally bounds pre-body HTTP admission and rejects node saturation as 503", async () => {
