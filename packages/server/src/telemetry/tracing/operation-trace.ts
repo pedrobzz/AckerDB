@@ -1,5 +1,9 @@
-import type { PreparedTelemetryTraceContext, TelemetryEventInput, TelemetryRecordContext, TelemetrySpanInput } from "../contracts/types.ts";
-import type { TelemetryOperation, TelemetryOutcome } from "../contracts/schema.ts";
+import type {
+  PreparedTelemetryTraceContext,
+  TelemetryRecordContext,
+  TelemetrySpanInput,
+} from "../contracts/types.ts";
+import type { TelemetryOperation } from "../contracts/schema.ts";
 import type { MutableTraceRetention } from "../state/types.ts";
 import { NO_SLOT, UUID_LENGTH } from "../state/constants.ts";
 import { safeId, safeName } from "../records/sanitize.ts";
@@ -35,7 +39,6 @@ export interface OperationTelemetrySpanInput extends Omit<
 }
 
 export const OPEN_OPERATION_TRACE = Symbol("ackerdb.openOperationTrace");
-export const IDENTIFY_OPERATION_TRACE = Symbol("ackerdb.identifyOperationTrace");
 export const FINISH_OPERATION_TRACE = Symbol("ackerdb.finishOperationTrace");
 export const OPERATION_INVOCATION_NODE = Symbol("ackerdb.operationInvocationNode");
 export const OPERATION_TRACE_CONTEXT = Symbol("ackerdb.operationTraceContext");
@@ -48,24 +51,21 @@ const INVOCATION_PHASE_CODES = Object.freeze({ auth: 0, policy: 1, handler: 2 } 
 export class OperationTrace implements OperationTraceHandle {
   readonly [OPERATION_TRACE_HANDLE] = true;
   readonly operation: TelemetryOperation;
-  rootFunction?: string;
-  requestId?: string;
+  readonly rootFunction?: string;
+  readonly requestId?: string;
   readonly connectionId?: string;
   readonly mutationId?: string;
   readonly commitId?: string;
   readonly subscriptionId?: string;
   readonly inheritedContext?: AuthenticTelemetryTraceContext;
-  readonly startedAtMs?: number;
-  readonly sampled: boolean;
   retention?: MutableTraceRetention;
-  outcome: TelemetryOutcome = "ok";
   private traceId?: string;
   private nodeParents?: number[];
   private nodeIds?: string[];
   private invocationNodes?: Map<number, number>;
   private nextNode = 1;
 
-  constructor(input: OperationTraceInput, startedAtMs?: number, sampled = false) {
+  constructor(input: OperationTraceInput) {
     this.operation = input.operation;
     this.rootFunction = safeName(input.functionName);
     this.requestId = safeId(input.requestId ?? input.inheritedContext?.requestId);
@@ -78,17 +78,6 @@ export class OperationTrace implements OperationTraceHandle {
     this.inheritedContext = AuthenticTelemetryTraceContext.owns(input.inheritedContext)
       ? input.inheritedContext
       : undefined;
-    this.startedAtMs = startedAtMs;
-    this.sampled = sampled;
-  }
-
-  identify(functionName: string, requestId: string): void {
-    this.rootFunction = safeName(functionName) ?? this.rootFunction;
-    this.requestId = safeId(requestId) ?? this.requestId;
-  }
-
-  observeOutcome(outcome: TelemetryOutcome): void {
-    if (outcome !== "ok") this.outcome = outcome;
   }
 
   childNode(parent: number): number {
@@ -102,7 +91,6 @@ export class OperationTrace implements OperationTraceHandle {
     phase: "auth" | "policy" | "handler",
     parent: number,
   ): number {
-    if (!this.sampled) return 0;
     const key = invocationId * 4 + INVOCATION_PHASE_CODES[phase];
     const existing = this.invocationNodes?.get(key);
     if (existing !== undefined) return existing;

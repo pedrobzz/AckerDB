@@ -5,15 +5,10 @@ import type {
   AuthenticationAttemptObservation,
 } from "../auth/attempt-observation.ts";
 import {
-  FINISH_OPERATION_TRACE,
-  IDENTIFY_OPERATION_TRACE,
-  OPEN_OPERATION_TRACE,
-  RECORD_OPERATION_EVENT,
-  RECORD_OPERATION_SPAN,
   deriveTelemetryTraceContext,
+  identifyTelemetryTraceRequest,
   prepareTelemetryTraceContext,
   RECORD_PREPARED_SPAN,
-  type OperationTraceHandle,
   type PreparedTelemetryTraceContext,
   type Telemetry,
   type TelemetryOperation,
@@ -28,7 +23,8 @@ interface HttpTraceState {
   readonly telemetry: Telemetry;
   readonly operation: HttpOperation;
   readonly startedAt: number;
-  readonly trace: OperationTraceHandle;
+  readonly opened: boolean;
+  context: PreparedTelemetryTraceContext;
   functionName: string;
   phase: HttpTracePhase;
   failureRecorded: boolean;
@@ -43,7 +39,7 @@ export interface ExternalHttpTrace {
 }
 
 export interface ClaimedHttpTrace {
-  readonly trace: OperationTraceHandle;
+  readonly context: PreparedTelemetryTraceContext;
   readonly [CLAIMED_TRACE_STATE]: HttpTraceState;
 }
 
@@ -54,30 +50,12 @@ function durationSince(startedAt: number): number {
 function finishState(state: HttpTraceState): void {
   if (state.phase === "finished") return;
   state.phase = "finished";
+  if (!state.opened) return;
   try {
-    state.telemetry[FINISH_OPERATION_TRACE](state.trace);
+    state.telemetry.finishTrace(state.context);
   } catch {
     // Trace retention is fail-open and ownership is already terminal.
   }
-}
-
-function recordOperationFailureEvent(
-  state: HttpTraceState,
-  stage: "admission" | "auth",
-  outcome: TelemetryOutcome,
-  resource: TelemetryResource,
-  error: unknown,
-): void {
-  state.telemetry[RECORD_OPERATION_EVENT](state.trace, 0, {
-    name: "failure",
-    level: "error",
-    operation: state.operation,
-    stage,
-    outcome,
-    functionName: state.functionName,
-    resource,
-    errorClass: error instanceof Error ? error.name : "UnknownError",
-  });
 }
 
 function recordFailureEvent(
@@ -108,14 +86,13 @@ export function beginHttpTrace(
 ): ExternalHttpTrace | undefined {
   if (!telemetry.enabled) return undefined;
   try {
+    const context = prepareTelemetryTraceContext();
     const state: HttpTraceState = {
       telemetry,
       operation,
       startedAt: performance.now(),
-      trace: telemetry[OPEN_OPERATION_TRACE]({
-        operation,
-        functionName: `http.${operation}`,
-      }),
+      opened: telemetry.beginTrace(context),
+      context,
       functionName: `http.${operation}`,
       phase: "external",
       failureRecorded: false,
@@ -134,7 +111,7 @@ export function identifyHttpTrace(
   const state = trace?.[HTTP_TRACE_STATE];
   if (state?.phase !== "external") return;
   state.functionName = functionName;
-  state.telemetry[IDENTIFY_OPERATION_TRACE](state.trace, functionName, requestId);
+  state.context = identifyTelemetryTraceRequest(state.context, requestId);
 }
 
 export async function observeHttpAuth<T>(
@@ -147,12 +124,13 @@ export async function observeHttpAuth<T>(
   try {
     const value = await work();
     try {
-      state.telemetry[RECORD_OPERATION_SPAN](state.trace, -1, 0, {
+      state.telemetry[RECORD_PREPARED_SPAN]({
         operation: state.operation,
         stage: "auth",
         outcome: "ok",
         functionName: state.functionName,
         resource: "operation",
+        context: deriveTelemetryTraceContext(state.context),
         durationMs: durationSince(startedAt),
       });
     } catch {
@@ -163,15 +141,25 @@ export async function observeHttpAuth<T>(
     state.failureRecorded = true;
     try {
       const outcome = outcomeFromError(error).code;
-      state.telemetry[RECORD_OPERATION_SPAN](state.trace, -1, 0, {
+      const context = deriveTelemetryTraceContext(state.context);
+      state.telemetry[RECORD_PREPARED_SPAN]({
         operation: state.operation,
         stage: "auth",
         outcome,
         functionName: state.functionName,
         resource: "operation",
+        context,
         durationMs: durationSince(startedAt),
       });
-      recordOperationFailureEvent(state, "auth", outcome, "operation", error);
+      recordFailureEvent(
+        state.telemetry,
+        state.operation,
+        state.functionName,
+        context,
+        outcome,
+        "operation",
+        error,
+      );
     } catch {
       // Telemetry cannot replace the owning authentication failure.
     }
@@ -188,16 +176,28 @@ export function recordHttpTraceFailure(
   state.failureRecorded = true;
   try {
     const safe = outcomeFromError(error);
+    const context = deriveTelemetryTraceContext(state.context);
     const resource = safe.resource ?? "operation";
-    state.telemetry[RECORD_OPERATION_SPAN](state.trace, -1, 0, {
+    state.telemetry[RECORD_PREPARED_SPAN]({
       operation: state.operation,
       stage: "admission",
       outcome: safe.code,
       functionName: state.functionName,
       resource,
+      context,
       durationMs: durationSince(state.startedAt),
     });
-    recordOperationFailureEvent(state, "admission", safe.code, resource, error);
+    state.telemetry.recordEvent({
+      name: "failure",
+      level: "error",
+      operation: state.operation,
+      stage: "admission",
+      outcome: safe.code,
+      functionName: state.functionName,
+      resource,
+      context,
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+    });
   } catch {
     // Transport failure ownership remains with Serve.
   }
@@ -219,7 +219,7 @@ export function claimHttpTrace(
   identifyHttpTrace(trace, functionName, requestId);
   state.phase = "runtime";
   return Object.freeze({
-    trace: state.trace,
+    context: state.context,
     [CLAIMED_TRACE_STATE]: state,
   });
 }

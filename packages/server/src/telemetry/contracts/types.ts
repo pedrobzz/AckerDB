@@ -186,8 +186,6 @@ export interface TelemetryOptions {
   readonly localSink?: ((safeJsonLine: string) => void) | false;
   readonly now?: () => number;
   readonly scheduler?: TelemetryScheduler;
-  /** Deterministically retain one full operation trace per interval; 0 disables sampling. */
-  readonly operationTraceSampleInterval?: number;
 }
 
 export interface TelemetryDropSnapshot {
@@ -297,4 +295,3 @@ export interface TelemetryAggregateSnapshot {
   readonly overflowedRecords: number;
   readonly series: readonly TelemetryAggregateSeries[];
 }
-

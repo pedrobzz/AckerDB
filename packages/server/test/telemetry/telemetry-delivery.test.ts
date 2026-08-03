@@ -464,7 +464,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
   }
 });
 
-test("Runtime keeps unsampled delivery success aggregate-only and delayed failure focused", async () => {
+test("Runtime releases fast WebSocket tails after final physical delivery", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-delivery-lease-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -524,10 +524,10 @@ test("Runtime keeps unsampled delivery success aggregate-only and delayed failur
     await settle();
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       activeTraces: 0,
-      completedDecisions: 0,
+      completedDecisions: 1,
       discardedTraces: 0,
     });
-    expect(runtime.telemetry.snapshot().traceRetention.stagedRecords).toBe(0);
+    expect(runtime.telemetry.snapshot().traceRetention.stagedRecords).toBeGreaterThan(0);
 
     socket.bufferedAmount = 0;
     sink.onDrain();
@@ -535,11 +535,10 @@ test("Runtime keeps unsampled delivery success aggregate-only and delayed failur
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       completedDecisions: 0,
       stagedRecords: 0,
-      discardedTraces: 0,
+      discardedTraces: 1,
     });
     await runtime.telemetry.flush();
-    expect(spans(exported).filter((span) => span.requestId === "51").map((span) => span.stage))
-      .toEqual(["boundary"]);
+    expect(spans(exported).filter((span) => span.requestId === "51")).toEqual([]);
 
     socket.bufferNext();
     await handle(session, {
@@ -550,7 +549,7 @@ test("Runtime keeps unsampled delivery success aggregate-only and delayed failur
       args: {},
     });
     await settle();
-    expect(runtime.telemetry.snapshot().traceRetention.completedDecisions).toBe(0);
+    expect(runtime.telemetry.snapshot().traceRetention.completedDecisions).toBe(1);
     await sink.close({
       code: "draining",
       retryable: true,
@@ -561,12 +560,12 @@ test("Runtime keeps unsampled delivery success aggregate-only and delayed failur
     expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
       completedDecisions: 0,
       stagedRecords: 0,
-      promotedTraces: 0,
-      discardedTraces: 0,
+      promotedTraces: 1,
+      discardedTraces: 1,
     });
     await runtime.telemetry.flush();
     const failedDelivery = spans(exported).filter((span) => span.requestId === "52");
-    expect(failedDelivery.some((span) => span.stage === "admission")).toBe(false);
+    expect(failedDelivery.some((span) => span.stage === "admission")).toBe(true);
     expect(failedDelivery).toContainEqual(expect.objectContaining({
       stage: "delivery",
       outcome: "draining",

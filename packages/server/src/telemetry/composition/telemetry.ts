@@ -56,7 +56,6 @@ import type {
   TelemetryEventRecord,
   TelemetryMetricInput,
   TelemetryMetricRecord,
-  TelemetryRecordContext,
   TelemetrySpanRecord,
   TelemetryRecord,
   TelemetryScheduler,
@@ -71,7 +70,6 @@ import { TraceRetention } from "../tracing/retention.ts";
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
   FINISH_OPERATION_TRACE,
-  IDENTIFY_OPERATION_TRACE,
   OPEN_OPERATION_TRACE,
   OPERATION_INVOCATION_NODE,
   OPERATION_TRACE_CONTEXT,
@@ -207,13 +205,6 @@ export class Telemetry {
       ...PRODUCTION_LIMITS.telemetry,
       ...options.limits,
     });
-    const operationTraceSampleInterval = options.operationTraceSampleInterval ?? 1_024;
-    if (
-      !Number.isSafeInteger(operationTraceSampleInterval) ||
-      operationTraceSampleInterval < 0
-    ) {
-      throw new RangeError("operationTraceSampleInterval must be a non-negative safe integer");
-    }
     this.sampleIntervalMs = limits.sampleIntervalMs;
     const scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
     const state: TelemetryState = {
@@ -222,10 +213,6 @@ export class Telemetry {
       scheduler,
       exporter: options.exporter,
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
-      operationTraceSampleInterval,
-      operationTraceSequence: 0,
-      sampleNextSlowOperation: false,
-      sampleNextFailedOperation: false,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
       publicTraceIndex: new Map(),
@@ -306,22 +293,14 @@ export class Telemetry {
   }
 
   [OPEN_OPERATION_TRACE](input: OperationTraceInput): OperationTraceHandle {
+    const operation = new OperationTrace(input);
     const state = this.state;
-    if (!state) return new OperationTrace(input);
+    if (!state || state.limits.slowOperationMs === 0) return operation;
     const startedAtMs = readClock(state);
     if (startedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
-      return new OperationTrace(input);
+      return operation;
     }
-    state.operationTraceSequence = boundedCount(state.operationTraceSequence);
-    const sampled = state.sampleNextSlowOperation ||
-      state.sampleNextFailedOperation ||
-      (state.operationTraceSampleInterval > 0 &&
-        state.operationTraceSequence % state.operationTraceSampleInterval === 0);
-    state.sampleNextSlowOperation = false;
-    state.sampleNextFailedOperation = false;
-    const operation = new OperationTrace(input, startedAtMs, sampled);
-    if (state.limits.slowOperationMs === 0) return operation;
     this.retention!.pruneCompleted(startedAtMs);
     if (operation.inheritedContext !== undefined) {
       const inherited = this.retention!.forContext(operation.inheritedContext);
@@ -331,42 +310,22 @@ export class Telemetry {
       }
       return operation;
     }
-    if (!sampled) return operation;
     const trace = this.retention!.create(startedAtMs, undefined, undefined, operation);
     if (trace === undefined) return operation;
     operation.retention = trace;
     this.retention!.activate(trace);
-    this.retention!.promote(trace, startedAtMs);
     return operation;
-  }
-
-  [IDENTIFY_OPERATION_TRACE](
-    handle: OperationTraceHandle,
-    functionName: string,
-    requestId: string,
-  ): void {
-    if (handle instanceof OperationTrace) handle.identify(functionName, requestId);
   }
 
   [FINISH_OPERATION_TRACE](handle: OperationTraceHandle): void {
     const state = this.state;
     if (!state || !(handle instanceof OperationTrace)) return;
+    const trace = handle.retention;
+    if (trace?.owner !== state || trace.phase !== "active") return;
     const completedAtMs = readClock(state);
     if (completedAtMs === undefined) {
       this.observeInvalidTraceLifecycle(state);
-      this.retention!.abortActive(handle.retention);
-      return;
-    }
-    this[RECORD_OPERATION_SPAN](handle, 0, 0, {
-      operation: handle.operation,
-      stage: "boundary",
-      outcome: handle.outcome,
-      functionName: handle.rootFunction,
-      resource: "operation",
-      durationMs: Math.max(0, completedAtMs - (handle.startedAtMs ?? completedAtMs)),
-    });
-    const trace = handle.retention;
-    if (trace?.owner !== state || trace.phase !== "active") {
+      this.retention!.abortActive(trace);
       return;
     }
     this.retention!.pruneCompleted(completedAtMs);
@@ -590,16 +549,10 @@ export class Telemetry {
     const safeMutationId = safeId(mutationId);
     const safeCommitId = safeId(commitId);
     const safeSubscriptionId = safeId(subscriptionId);
-    const slow = durationMs >= state.limits.slowOperationMs;
-    const failed = outcome !== "ok";
-    if (state.limits.slowOperationMs > 0) {
-      if (slow) state.sampleNextSlowOperation = true;
-      if (failed) state.sampleNextFailedOperation = true;
-    }
-    handle.observeOutcome(outcome);
+    const retain = durationMs >= state.limits.slowOperationMs || outcome !== "ok";
     let trace = handle.retention;
     if (trace?.owner !== state || trace.phase === "settled") trace = undefined;
-    if (state.limits.slowOperationMs > 0 && trace === undefined) {
+    if (state.limits.slowOperationMs > 0 && trace === undefined && !retain) {
       this.aggregateSpanValues(
         state,
         operation,
@@ -613,32 +566,19 @@ export class Telemetry {
         safeResults,
         safeDependencies,
       );
-      if (stage !== "boundary" && !failed) return true;
+      return true;
     }
-    const resolvedNode = node === NO_SLOT ||
-        (trace === undefined && failed && stage !== "boundary" && node === 0)
-      ? handle.childNode(parentNode)
-      : node;
-    const context: TelemetryRecordContext = state.limits.slowOperationMs > 0 &&
-        trace === undefined && !failed
-      ? {
-          requestId: safeRequestId ?? handle.requestId,
-          connectionId: safeConnectionId ?? handle.connectionId,
-          mutationId: safeMutationId ?? handle.mutationId,
-          commitId: safeCommitId ?? handle.commitId,
-          subscriptionId: safeSubscriptionId ?? handle.subscriptionId,
-        }
-      : handle.context(
-          resolvedNode,
-          safeRequestId,
-          safeConnectionId,
-          safeMutationId,
-          safeCommitId,
-          safeSubscriptionId,
-        );
+    const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
     const span: SanitizedTelemetrySpan = {
       timestampMs,
-      context,
+      context: handle.context(
+        resolvedNode,
+        safeRequestId,
+        safeConnectionId,
+        safeMutationId,
+        safeCommitId,
+        safeSubscriptionId,
+      ),
       operation,
       stage,
       outcome,
@@ -653,10 +593,6 @@ export class Telemetry {
       dependencyCount: safeDependencies,
       postCommit,
     };
-    if (trace === undefined) {
-      if (state.limits.slowOperationMs === 0) this.aggregateSpan(state, span);
-      return this.retainAt(state, materializeSpan(span), true, timestampMs);
-    }
     this.aggregateSpan(state, span);
     return this.recordAggregatedSpan(state, span, trace);
   }
@@ -679,13 +615,6 @@ export class Telemetry {
       return false;
     }
     const trace = handle.retention;
-    const failed = input.name === "failure" ||
-      input.level === "error" ||
-      (input.outcome !== undefined && input.outcome !== "ok") ||
-      input.lifecycleState === "failed";
-    if (state.limits.slowOperationMs > 0 && failed) {
-      state.sampleNextFailedOperation = true;
-    }
     if (
       state.limits.slowOperationMs > 0 &&
       trace?.owner === state &&
