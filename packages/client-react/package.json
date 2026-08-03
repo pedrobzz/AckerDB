@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client-react",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "license": "FSL-1.1-ALv2",
   "repository": {
     "type": "git",
@@ -23,8 +23,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@ackerdb/client": "workspace:0.14.2",
-    "@ackerdb/core": "workspace:0.14.2"
+    "@ackerdb/client": "workspace:0.14.3",
+    "@ackerdb/core": "workspace:0.14.3"
   },
   "peerDependencies": {
     "ai": "^7.0.0",
