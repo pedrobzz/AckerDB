@@ -504,6 +504,24 @@ describe("writes", () => {
     expect(db.payments.upsert).toBeUndefined();
   });
 
+  test("existing-row upsert reuses its selected row for the update", async () => {
+    await db.users.insert({
+      email: "single-read@x.com",
+      name: "Before",
+      payload: { tag: "nothing", value: null },
+    });
+    const statement = engine.statement.bind(engine);
+    let selects = 0;
+    engine.statement = ((connection, sql) => {
+      if (sql.startsWith("SELECT ")) selects++;
+      return statement(connection, sql);
+    }) as typeof engine.statement;
+
+    await db.users.upsert({ email: "single-read@x.com" }, { name: "After" });
+
+    expect(selects).toBe(1);
+  });
+
   test(".returning() resolves to the full written row on every write", async () => {
     // insert: same row a get would produce, no extra read needed
     const inserted = await db.payments

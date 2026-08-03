@@ -149,7 +149,6 @@ interface WsData {
 
 const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
-const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 const utf8 = new TextEncoder();
 
 const CORS = Object.freeze({
@@ -491,7 +490,8 @@ async function readBoundedBody(
   if (request.body === null) throw new AckerDBError("malformed", "request body is required");
 
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks: string[] = [];
   let bytes = 0;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -508,7 +508,16 @@ async function readBoundedBody(
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes) throw requestTooLarge();
-      chunks.push(value);
+      try {
+        chunks.push(decoder.decode(value, { stream: true }));
+      } catch (cause) {
+        throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
+      }
+    }
+    try {
+      chunks.push(decoder.decode());
+    } catch (cause) {
+      throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
     }
   } catch (error) {
     cancel(reader, error);
@@ -517,17 +526,7 @@ async function readBoundedBody(
     if (timeout !== undefined) clearTimeout(timeout);
   }
 
-  const body = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return { text: strictUtf8.decode(body), bytes };
-  } catch (cause) {
-    throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
-  }
+  return { text: chunks.join(""), bytes };
 }
 
 function decodeHttpBody(text: string): unknown {
@@ -1040,6 +1039,11 @@ export class AckerDBServer {
       const id = ++this.httpRequests;
       const address = exposed.address;
       identifyHttpTrace(externalTrace, address, String(id));
+      lease = externalTrace === undefined
+        ? await this.authenticate(request)
+        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      const fairnessKey = callerFairnessKey(lease.principal, source);
+      admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
         ? parseArgsSearchParameter(url, exposed.codec, runtime.limits.maxRequestBytes)
         : await parseArgsHttpBody(
@@ -1048,11 +1052,6 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
-      lease = externalTrace === undefined
-        ? await this.authenticate(request)
-        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
-      const fairnessKey = callerFairnessKey(lease.principal, source);
-      admission.transfer(fairnessKey);
       const input = carryHttpRequestProvenance({
         id,
         address,

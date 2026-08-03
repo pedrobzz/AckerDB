@@ -409,8 +409,10 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       )).toBe(false);
     }
 
-    // The path names the function before its body is read, so a malformed body
-    // still reports the operation it targeted.
+    // Authentication and the path-owned function identity are established
+    // before body parsing, so malformed input stays on the same sanitized trace.
+    const malformedAuth = oneSpan(retainedSpans, "procedure", "auth", "7", "operation");
+    expect(malformedAuth).toMatchObject({ function: "ops.echo", outcome: "ok" });
     const malformedSpans = retainedSpans.filter((record) =>
       record.operation === "procedure" &&
       record.stage === "admission" &&
@@ -419,6 +421,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       record.requestId === "7"
     );
     expect(malformedSpans).toHaveLength(1);
+    expect(malformedSpans[0]!.traceId).toBe(malformedAuth.traceId);
     expect(retainedEvents.filter((record) =>
       record.name === "failure" &&
       record.stage === "admission" &&
@@ -431,6 +434,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       INVALID_PROCEDURE_TOKEN,
       VALID_SSE_TOKEN,
       INVALID_SSE_TOKEN,
+      VALID_PROCEDURE_TOKEN,
     ]);
     const serialized = JSON.stringify(app.exported);
     for (const secret of [

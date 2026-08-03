@@ -6,6 +6,7 @@ import { createMutationInvocationScope } from "../../src/runtime/mutation-scope.
 
 function fixture() {
   const statements: string[] = [];
+  const writes = newWriteCollector();
   const connection = {
     exec(statement: string) {
       statements.push(statement);
@@ -13,7 +14,8 @@ function fixture() {
   } as unknown as Database;
   return {
     statements,
-    scope: createMutationInvocationScope(connection, newWriteCollector()),
+    writes,
+    scope: createMutationInvocationScope(connection, writes),
   };
 }
 
@@ -49,4 +51,16 @@ test("a nested Err rolls back only its savepoint", async () => {
     "ROLLBACK TO ackerdb_result_1",
     "RELEASE ackerdb_result_1",
   ]);
+});
+
+test("a nested Err removes only the scheduled-table refreshes it added", async () => {
+  const { scope, writes } = fixture();
+  writes.scheduledTables.add("outer_jobs");
+
+  await scope.runRoot((root) => scope.run(root, () => {
+    writes.scheduledTables.add("nested_jobs");
+    return Err("job.rejected", {}, Status.Conflict);
+  }));
+
+  expect([...writes.scheduledTables]).toEqual(["outer_jobs"]);
 });
