@@ -14,13 +14,17 @@
  * writer lock and refused cleanly with exact counts if they cannot hold.
  *
  * This module owns only policy: the fresh-DB path (create every table), the
- * no-op short-circuit, and the dispatch to the append-only migration chain. All
+ * no-op short-circuit, and the dispatch to the append-only migration chain. The
+ * short-circuit compares canonical snapshots, the same order-independent
+ * identity the physical layer uses — declaration order is not physical truth, so
+ * reordering columns is not a schema change and must not cost a startup write.
+ * All
  * mechanical planning lives in the planner it consumes; a chain applies through
  * its own module and folds its trailing safe drift back through that same planner
  * core, so no cycle crosses between reconcile and the migration engine.
  */
 import type { Engine } from "../database/engine.ts";
-import { snapshotOf } from "./snapshot.ts";
+import { canonicalSnapshotJson, snapshotOf } from "./snapshot.ts";
 import { applyChain } from "./migrations/chain.ts";
 import type { MigrationStep } from "./migrations/types.ts";
 import { planAndReconcile } from "./planner.ts";
@@ -39,6 +43,6 @@ export function reconcile(
     engine.createAll();
     return { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
   }
-  if (JSON.stringify(current) === JSON.stringify(target)) return { applied: [] };
+  if (canonicalSnapshotJson(current) === canonicalSnapshotJson(target)) return { applied: [] };
   return { applied: planAndReconcile(engine, current, target) };
 }

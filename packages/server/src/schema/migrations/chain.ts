@@ -19,7 +19,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { Engine } from "../../database/engine.ts";
-import { snapshotOf } from "../snapshot.ts";
+import { canonicalSnapshotJson, snapshotOf } from "../snapshot.ts";
 import { planAndReconcile } from "../planner.ts";
 import { applyStep } from "./apply.ts";
 import { migrationIdentity, MigrationError, stepLabel, type MigrationStep } from "./types.ts";
@@ -140,6 +140,8 @@ export async function applyChain(engine: Engine, steps: MigrationStep[]): Promis
   // cycle. `current` is the last snapshot each step committed, so it is physical
   // truth without a reload.
   const target = snapshotOf(engine.schema);
-  if (JSON.stringify(current) !== JSON.stringify(target)) applied.push(...planAndReconcile(engine, current, target));
+  if (canonicalSnapshotJson(current) !== canonicalSnapshotJson(target)) {
+    applied.push(...planAndReconcile(engine, current, target));
+  }
   return { applied };
 }
