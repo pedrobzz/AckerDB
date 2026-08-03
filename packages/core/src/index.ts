@@ -49,6 +49,7 @@ export {
   type ApiFromModules,
 } from "./refs.ts";
 export * from "./protocol.ts";
+export * from "./sse.ts";
 export * from "./realtime/protocol.ts";
 export * from "./realtime/data-plane.ts";
 export * from "./realtime/negotiation.ts";

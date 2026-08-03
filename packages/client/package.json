@@ -19,6 +19,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.14.2"
+    "@ackerdb/core": "workspace:0.14.2",
+    "eventsource-parser": "3.1.0"
   }
 }

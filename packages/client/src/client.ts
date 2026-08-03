@@ -14,7 +14,6 @@ import {
   parseCredential,
   parseOutcome,
   parseServerMessage,
-  parseSseMessage,
   toStandardJson,
   type AuthenticatedMessage,
   type ApplicationError,
@@ -67,6 +66,7 @@ import {
   type AckerDBRealtime,
   type AckerDBRealtimeOptions,
 } from "./realtime/session.ts";
+import { SseEventDecoder } from "./sse/event-decoder.ts";
 
 export interface AckerDBClientLimits {
   readonly maxPendingItems: number;
@@ -1203,59 +1203,11 @@ export class AckerDBClient {
       const streamReader = response.body.getReader();
       responseBody = undefined;
       reader = streamReader;
-      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-      let buffer = "";
-      let pendingBytes = 0;
-      let strippedPrefixBytes = 0;
-      let scanFrom = 0;
-      let decoderAtStart = true;
-      const appendDecoded = (text: string): void => {
-        if (decoderAtStart && text.length !== 0) {
-          decoderAtStart = false;
-          if (text.startsWith("\uFEFF")) {
-            strippedPrefixBytes = 3;
-            text = text.slice(1);
-          }
-        }
-        buffer += text;
-      };
+      const events = new SseEventDecoder(this.limits.maxSseBufferBytes);
+      const frames: (SseChunkMessage | SseDoneMessage | SseErrorMessage)[] = [];
       let expectedSequence = 1;
       for (;;) {
-        let payload: string | null = null;
-        for (;;) {
-          const lfBoundary = buffer.indexOf("\n\n", scanFrom);
-          const crlfBoundary = buffer.indexOf("\r\n\r\n", scanFrom);
-          const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
-          const boundary = useCrlf ? crlfBoundary : lfBoundary;
-          if (boundary === -1) {
-            scanFrom = Math.max(0, buffer.length - 3);
-            break;
-          }
-          const consumedEnd = boundary + (useCrlf ? 4 : 2);
-          const block = buffer.slice(0, boundary).replaceAll("\r\n", "\n");
-          pendingBytes -=
-            encoder.encode(buffer.slice(0, consumedEnd)).byteLength + strippedPrefixBytes;
-          strippedPrefixBytes = 0;
-          buffer = buffer.slice(consumedEnd);
-          scanFrom = 0;
-          let eventName = "message";
-          const data: string[] = [];
-          for (const line of block.split("\n")) {
-            if (line.startsWith(":")) continue;
-            const separator = line.indexOf(":");
-            const field = separator === -1 ? line : line.slice(0, separator);
-            const value = separator === -1 ? "" : line.slice(separator + 1).replace(/^ /, "");
-            if (field === "event") eventName = value;
-            else if (field === "data") data.push(value);
-          }
-          if (data.length === 0) continue;
-          if (eventName !== "message") {
-            throw localError("malformed", "unknown SSE event type", "sse");
-          }
-          payload = data.join("\n");
-          break;
-        }
-        if (payload === null) {
+        if (frames.length === 0) {
           let part: Awaited<ReturnType<SseResponseReader["read"]>>;
           try {
             part = await waitForOwnership((async () => streamReader.read())());
@@ -1270,36 +1222,28 @@ export class AckerDBClient {
           }
           if (part.done) {
             try {
-              appendDecoded(decoder.decode());
+              frames.push(...events.finish());
             } catch (error) {
               throw this.protocolError(error, "sse");
             }
-            if (buffer.length !== 0) {
+            if (events.hasPendingEvent) {
               throw localError("malformed", "SSE stream ended mid-event", "sse");
             }
+            if (frames.length !== 0) continue;
             throw localError("indeterminate", "SSE stream ended before completion", "sse");
           }
-          pendingBytes += part.value.byteLength;
-          if (pendingBytes > this.limits.maxSseBufferBytes) {
-            throw localError("overloaded", "SSE input exceeds the client buffer limit", "sse");
-          }
           try {
-            appendDecoded(decoder.decode(part.value, { stream: true }));
+            frames.push(...events.push(part.value));
           } catch (error) {
+            if (error instanceof RangeError) {
+              throw localError("overloaded", error.message, "sse");
+            }
             throw this.protocolError(error, "sse");
           }
           continue;
         }
 
-        let frame: SseChunkMessage | SseDoneMessage | SseErrorMessage;
-        try {
-          // The envelope is Protocol-2's, but its `value` is the exposed
-          // surface's plain JSON: parsing it as a wire string would reinterpret
-          // an ordinary `"$"` key as an escape.
-          frame = parseSseMessage(JSON.parse(payload));
-        } catch (error) {
-          throw this.protocolError(error, "sse");
-        }
+        const frame = frames.shift()!;
         if (frame.seq !== expectedSequence) {
           throw localError(
             "malformed",
