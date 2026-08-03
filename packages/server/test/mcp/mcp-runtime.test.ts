@@ -371,8 +371,11 @@ describe("MCP Runtime ownership", () => {
     const directGate = gate("direct-alice");
     const direct = value.runtime.runMcpTool({
       id: "direct-held",
-      mcp: ownershipMcp.name,
-      tool: "hold_ownership",
+      authorization: value.runtime.authorizeMcpTool(
+        ownershipMcp.name,
+        "hold_ownership",
+        alicePrincipalOne,
+      ),
       args: { gate: "direct-alice" },
       principal: alicePrincipalOne,
       fairnessKey: aliceKeyOne,
@@ -380,16 +383,22 @@ describe("MCP Runtime ownership", () => {
     await directGate.started;
     await expect(value.runtime.runMcpTool({
       id: "direct-hot",
-      mcp: ownershipMcp.name,
-      tool: "ping_ownership",
+      authorization: value.runtime.authorizeMcpTool(
+        ownershipMcp.name,
+        "ping_ownership",
+        alicePrincipalTwo,
+      ),
       args: {},
       principal: alicePrincipalTwo,
       fairnessKey: aliceKeyTwo,
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     await expect(value.runtime.runMcpTool({
       id: "direct-cold",
-      mcp: ownershipMcp.name,
-      tool: "ping_ownership",
+      authorization: value.runtime.authorizeMcpTool(
+        ownershipMcp.name,
+        "ping_ownership",
+        bobPrincipal,
+      ),
       args: {},
       principal: bobPrincipal,
       fairnessKey: callerFairnessKey(bobPrincipal, { family: "test", address: "bob" }),
@@ -521,12 +530,16 @@ describe("MCP Runtime ownership", () => {
     const value = startHarness(4, 2);
     const directController = new AbortController();
     const directGate = gate("direct-disconnect");
+    const directPrincipal = await user(value.runtime, "direct-disconnect");
     const direct = value.runtime.runMcpTool({
       id: "direct-disconnect",
-      mcp: ownershipMcp.name,
-      tool: "hold_ownership",
+      authorization: value.runtime.authorizeMcpTool(
+        ownershipMcp.name,
+        "hold_ownership",
+        directPrincipal,
+      ),
       args: { gate: "direct-disconnect" },
-      principal: await user(value.runtime, "direct-disconnect"),
+      principal: directPrincipal,
       signal: directController.signal,
     });
     await directGate.started;

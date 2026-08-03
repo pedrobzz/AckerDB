@@ -232,6 +232,12 @@ import {
   type RuntimeOperationOutcome,
   type SessionOperationOrder,
 } from "./execution/operation-runner.ts";
+import {
+  authorizedMcpTool,
+  mcpToolAuthorization,
+  mcpToolAuthorizationFailure,
+  type RuntimeMcpToolAuthorization,
+} from "./mcp/authorization.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -1848,16 +1854,14 @@ export class Runtime implements RuntimePort {
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
     const provenance = claimHttpRequestProvenance(request);
+    const tool = authorizedMcpTool(request.authorization);
     const requestBytes = this.admittedRequestBytes({
       jsonrpc: "2.0",
       id: request.id,
       method: "tools/call",
-      params: { name: request.tool, arguments: request.args },
+      params: { name: tool.name, arguments: request.args },
     }, provenance?.bytes);
-    const registeredTool = this.registry.mcpTool(request.mcp, request.tool);
-    const functionName = registeredTool === undefined
-      ? "mcp.unknown"
-      : `${registeredTool.mcp.name}:${registeredTool.name}`;
+    const functionName = `${tool.mcp.name}:${tool.name}`;
     const claimedTrace = claimHttpTrace(
       provenance?.trace,
       "procedure",
@@ -1871,8 +1875,7 @@ export class Runtime implements RuntimePort {
     return this.operations.run(null, "procedure", functionName, requestBytes, async () => {
       const signal = this.operationSignal(request.signal);
       return this.dispatchMcpTool(
-        request.mcp,
-        request.tool,
+        tool,
         request.args,
         this.transactionalContext(
           request.principal,
@@ -1892,7 +1895,11 @@ export class Runtime implements RuntimePort {
   }
 
   /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
-  authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
+  authorizeMcpTool(
+    mcp: string,
+    name: string,
+    principal: Principal,
+  ): RuntimeMcpToolAuthorization {
     const endpoint = this.registry.mcps.get(mcp);
     // A token is bound to the provider, not to one endpoint: two endpoints
     // sharing a provider accept the same credentials and scopes are the only
@@ -1911,26 +1918,27 @@ export class Runtime implements RuntimePort {
       tool !== undefined &&
       !(tool.private && !local) &&
       isMcpToolAuthorized(tool.accessPolicy, principal, grant)
-    ) return tool;
+    ) return mcpToolAuthorization(tool);
     if (principal.kind === "anonymous") {
-      throw new AckerDBError("unauthenticated", "authentication required");
+      return mcpToolAuthorizationFailure(
+        new AckerDBError("unauthenticated", "authentication required"),
+      );
     }
     // A private tool refused from outside answers exactly as a missing one, so
     // discovery cannot be used to enumerate what the app keeps to itself. Every
     // other refusal keeps saying "denied": the endpoint is discoverable anyway,
     // and hiding it would only make a real misconfiguration harder to read.
     if (tool !== undefined && tool.private && !local) {
-      throw new AckerDBError("not_found", "MCP tool not found");
+      return mcpToolAuthorizationFailure(new AckerDBError("not_found", "MCP tool not found"));
     }
     if (!providerMatches || tool !== undefined) {
-      throw new AckerDBError("unauthorized", "access denied");
+      return mcpToolAuthorizationFailure(new AckerDBError("unauthorized", "access denied"));
     }
-    throw new AckerDBError("not_found", "MCP tool not found");
+    return mcpToolAuthorizationFailure(new AckerDBError("not_found", "MCP tool not found"));
   }
 
   private async dispatchMcpTool(
-    mcp: string,
-    name: string,
+    tool: AnyRegisteredMcpTool,
     args: unknown,
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
@@ -1946,7 +1954,6 @@ export class Runtime implements RuntimePort {
       this.mcpAiCapability(toolContext, fairnessKey, requestBytes),
     );
     try {
-      const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
       throwIfAborted(toolContext.abortSignal);
       const result = await runInInvocationRoot(
         toolContext.auth,
@@ -3956,20 +3963,22 @@ export class Runtime implements RuntimePort {
         context.auth,
         mcp,
         scopes,
-        () => this.dispatchMcpTool(
-          mcp.name,
-          tool.name,
-          args,
-          this.transactionalContext(
-            context.auth,
+        () => {
+          const authorization = this.authorizeMcpTool(mcp.name, tool.name, context.auth);
+          return this.dispatchMcpTool(
+            authorizedMcpTool(authorization),
+            args,
+            this.transactionalContext(
+              context.auth,
+              fairnessKey,
+              signal,
+              requestBytes,
+              context.timestamp,
+            ),
             fairnessKey,
-            signal,
             requestBytes,
-            context.timestamp,
-          ),
-          fairnessKey,
-          requestBytes,
-        ),
+          );
+        },
       ),
     } satisfies McpAiRuntimeCapability);
   }

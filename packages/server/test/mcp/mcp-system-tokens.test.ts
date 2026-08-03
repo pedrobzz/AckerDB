@@ -409,8 +409,11 @@ describe("system-managed MCP integration tokens", () => {
     }
     await expect(runtime.runMcpTool({
       id: "attacker-mcp",
-      mcp: "agent",
-      tool: "attempt_system_administration",
+      authorization: runtime.authorizeMcpTool(
+        "agent",
+        "attempt_system_administration",
+        delegated,
+      ),
       args: {},
       principal: delegated,
     })).rejects.toMatchObject({ code: "unauthorized" });

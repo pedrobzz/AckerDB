@@ -3,6 +3,7 @@ import type {
   McpPrincipal,
   Principal,
 } from "../../auth/credentials.ts";
+import type { RuntimeMcpToolAuthorization } from "../mcp/authorization.ts";
 
 export interface RuntimeExternalRequest {
   readonly id: number;
@@ -15,8 +16,7 @@ export interface RuntimeExternalRequest {
 
 export interface RuntimeMcpToolRequest {
   readonly id: string | number;
-  readonly mcp: string;
-  readonly tool: string;
+  readonly authorization: RuntimeMcpToolAuthorization;
   readonly args: unknown;
   readonly principal: Principal;
   readonly signal?: AbortSignal;

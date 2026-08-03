@@ -631,8 +631,11 @@ describe("MCP identity-preserving local delegation", () => {
     expect(observations).toEqual([]);
     await expect(runtime.runMcpTool({
       id: "anonymous-http-equivalent",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.admin_orders.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.admin_orders.name,
+        ANONYMOUS_PRINCIPAL,
+      ),
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).rejects.toMatchObject({ code: "unauthenticated" });
@@ -682,8 +685,11 @@ describe("MCP identity-preserving local delegation", () => {
     try {
       const intersection = await runtime.runMcpTool({
         id: "mcp-local-intersection",
-        mcp: scopedMcp.name,
-        tool: scopedMcp.tools.delegate.name,
+        authorization: runtime.authorizeMcpTool(
+          scopedMcp.name,
+          scopedMcp.tools.delegate.name,
+          principal,
+        ),
         args: { mode: "intersection" },
         principal,
       });
@@ -700,8 +706,11 @@ describe("MCP identity-preserving local delegation", () => {
 
       const unavailable = await runtime.runMcpTool({
         id: "mcp-local-unavailable",
-        mcp: scopedMcp.name,
-        tool: scopedMcp.tools.delegate.name,
+        authorization: runtime.authorizeMcpTool(
+          scopedMcp.name,
+          scopedMcp.tools.delegate.name,
+          principal,
+        ),
         args: { mode: "include" },
         principal,
       });
@@ -748,8 +757,11 @@ describe("MCP identity-preserving local delegation", () => {
     const principal = mcpPrincipal();
     const hidden = await runtime.runMcpTool({
       id: "mcp-cross-default",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.delegate.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
       args: { mode: "cross_default" },
       principal,
     });
@@ -757,8 +769,11 @@ describe("MCP identity-preserving local delegation", () => {
 
     const shown = await runtime.runMcpTool({
       id: "mcp-cross-include",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.delegate.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.delegate.name,
+        principal,
+      ),
       args: { mode: "cross_include" },
       principal,
     });
@@ -788,8 +803,11 @@ describe("MCP identity-preserving local delegation", () => {
     );
     await expect(runtime.runMcpTool({
       id: "post-local-authority",
-      mcp: scopedMcp.name,
-      tool: scopedMcp.tools.read_orders.name,
+      authorization: runtime.authorizeMcpTool(
+        scopedMcp.name,
+        scopedMcp.tools.read_orders.name,
+        principal,
+      ),
       args: {},
       principal,
     })).rejects.toMatchObject({ code: "unauthorized" });
