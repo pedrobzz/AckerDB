@@ -142,17 +142,22 @@ export class FakeSocket implements AckerDBWebSocket {
     this.onopen?.();
   }
 
-  /** Opens and admits the session, the ordinary start of a connected test. */
+  /**
+   * Opens and admits the session, the ordinary start of a connected test.
+   * `authEpoch` is explicit because a reconnect that lands on a later epoch is
+   * a different admission than a fresh one, and suites assert on that.
+   */
   welcome(
     clientSessionId: string,
     descriptor: AuthenticationDescriptor = { principal: "anonymous" },
+    authEpoch = 0,
   ): void {
     this.open();
     this.receive({
       v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId,
-      authEpoch: 0,
+      authEpoch,
       ...descriptor,
     });
   }

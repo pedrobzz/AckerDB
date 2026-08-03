@@ -10,26 +10,22 @@ import { describe, expect, mock, test } from "bun:test";
 // suite must do this first (see ./support/dom.ts).
 import { actEnvironment, mountPoint } from "./support/dom.ts";
 import { FakeAppState, setAppState } from "./support/app-state.ts";
+import { createHarness } from "./support/harness.ts";
+import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type ClientMessage,
   type LiveEventCursor,
   type ServerMessage,
 } from "@ackerdb/core";
 import type {
   ClientResult,
-  AckerDBClientClock,
   AckerDBLiveEvent,
-  AckerDBWebSocket,
   EventRef,
   MutationRef,
 } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { AckerDBProviderConfig } from "@ackerdb/client-react";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -50,123 +46,8 @@ const { AckerDBProvider, useConnectionState, useEvent, useMutation } = await imp
   "../src/index.native.ts"
 );
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 1_700_000_000_000;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {
-    return this.frames().filter((frame) => frame.t === type) as Extract<
-      ClientMessage,
-      { t: T }
-    >[];
-  }
-}
-
 const SESSION = "native-suspension-session";
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly config: AckerDBProviderConfig;
-  live(): FakeSocket;
-}
-
-function createHarness(): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config: {
-      url: "http://native-suspension.test",
-      credential: { kind: "anonymous" },
-      clientSessionId: SESSION,
-      clock,
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (!socket) throw new Error("no live socket");
-      return socket;
-    },
-  };
-}
+const APP = { url: "http://native-suspension.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly text: string };
 const todosAdd = { $ref: "todos.add" } as MutationRef<TodoArgs, bigint>;
@@ -257,13 +138,13 @@ describe("useMutation across native AppState suspension", () => {
   test("a call in flight across a background/active cycle settles exactly once with its original identity", async () => {
     actEnvironment(true);
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <MutationProbe />
         </AckerDBProvider>
       </StrictMode>,
@@ -315,13 +196,13 @@ describe("useMutation across native AppState suspension", () => {
   test("a call issued while backgrounded dispatches exactly once on activation", async () => {
     actEnvironment(true);
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <MutationProbe />
         </AckerDBProvider>
       </StrictMode>,
@@ -374,14 +255,14 @@ describe("useEvent across native AppState suspension", () => {
   test("a subscription live across a background/active cycle sees one reset boundary and then only new events", async () => {
     actEnvironment(true);
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const events: AckerDBLiveEvent<PingRow>[] = [];
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <EventProbe onEvent={(event) => events.push(event)} />
         </AckerDBProvider>
       </StrictMode>,
@@ -445,14 +326,14 @@ describe("useEvent across native AppState suspension", () => {
   test("backgrounding during subscription application yields exactly one reset, delivered by the recovery connection", async () => {
     actEnvironment(true);
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const events: AckerDBLiveEvent<PingRow>[] = [];
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <EventProbe onEvent={(event) => events.push(event)} />
         </AckerDBProvider>
       </StrictMode>,

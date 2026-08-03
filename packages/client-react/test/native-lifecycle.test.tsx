@@ -8,29 +8,19 @@ import {
   appStateLog,
   setAppState,
 } from "./support/app-state.ts";
+import { createHarness } from "./support/harness.ts";
+import { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type AuthenticationDescriptor,
-  type ClientMessage,
-  type Credential,
   type Identity,
-  type ServerMessage,
   type SubscriptionCursor,
 } from "@ackerdb/core";
-import type {
-  AckerDBClientClock,
-  AckerDBWebSocket,
-  ProcedureRef,
-  QueryRef,
-} from "@ackerdb/client";
+import type { ProcedureRef, QueryRef } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
   AckerDBAuthenticationState,
-  AckerDBProviderConfig,
   AckerDBQueryProcedureState,
   AckerDBQueryState,
 } from "@ackerdb/client-react";
@@ -69,153 +59,19 @@ const FOREGROUND_AUTHENTICATION = {
   provenance: { issuer: "https://issuer.example", subject: "user-after" },
 } satisfies AuthenticationDescriptor;
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  readonly closeEvents: string[];
-  closed = false;
-
-  constructor(closeEvents: string[]) {
-    this.closeEvents = closeEvents;
-  }
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.closeEvents.push("socket-closed");
-    this.onclose?.();
-  }
-
-  welcome(
-    clientSessionId: string,
-    descriptor: AuthenticationDescriptor = { principal: "anonymous" },
-  ): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      ...descriptor,
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {
-    return this.frames().filter((frame) => frame.t === type) as Extract<
-      ClientMessage,
-      { t: T }
-    >[];
-  }
-}
-
 const SESSION = "native-lifecycle-session";
+const APP = { url: "http://native-lifecycle.test", clientSessionId: SESSION };
 
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly closeOrder: string[];
-  readonly config: AckerDBProviderConfig;
-  live(): FakeSocket;
-}
-
-function createHarness(credential: Credential = { kind: "anonymous" }): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  // Socket closes are recorded into the shared AppState log so listener
-  // removal and socket teardown appear in one chronological sequence.
-  const closeOrder = appStateLog;
-  return {
-    clock,
-    sockets,
-    closeOrder,
-    config: {
-      url: "http://native-lifecycle.test",
-      credential,
-      clientSessionId: SESSION,
-      clock,
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket(closeOrder);
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (!socket) throw new Error("no live socket");
-      return socket;
-    },
-  };
+/**
+ * Socket teardown is recorded into the shared AppState log so listener removal
+ * and socket close appear in one chronological sequence.
+ */
+class LoggingSocket extends FakeSocket {
+  override close(code?: number, reason?: string): void {
+    if (this.closed) return;
+    appStateLog.push("socket-closed");
+    super.close(code, reason);
+  }
 }
 
 type TodoArgs = { readonly list: bigint };
@@ -320,13 +176,13 @@ describe("native AppState lifecycle through the provider", () => {
     actEnvironment(true);
     appStateLog.length = 0;
     setAppState("active");
-    const harness = createHarness({ kind: "bearer", token: "token-a" });
+    const harness = createHarness({ ...APP, credential: { kind: "bearer", token: "token-a" } }, () => new LoggingSocket());
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <AuthenticationReport />
         </AckerDBProvider>
       </StrictMode>,
@@ -360,13 +216,13 @@ describe("native AppState lifecycle through the provider", () => {
     actEnvironment(true);
     appStateLog.length = 0;
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP, () => new LoggingSocket());
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <Report />
         </AckerDBProvider>
       </StrictMode>,
@@ -444,13 +300,13 @@ describe("native AppState lifecycle through the provider", () => {
     appStateLog.length = 0;
     setAppState("active");
     queryProcedureState = undefined;
-    const harness = createHarness();
+    const harness = createHarness(APP, () => new LoggingSocket());
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config}>
+        <AckerDBProvider config={harness.config()}>
           <QueryProcedureReport />
         </AckerDBProvider>
       </StrictMode>,
@@ -513,7 +369,7 @@ describe("native AppState lifecycle through the provider", () => {
   test("activation without demand keeps the native client idle", async () => {
     actEnvironment(true);
     setAppState("active");
-    const harness = createHarness();
+    const harness = createHarness(APP, () => new LoggingSocket());
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -524,7 +380,7 @@ describe("native AppState lifecycle through the provider", () => {
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <ConnectionOnly />
       </AckerDBProvider>,
     );

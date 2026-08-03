@@ -27,7 +27,11 @@ export interface ProviderHarness {
  * to sockets the test writes, on a clock the test advances. Only the identity
  * of the app under test differs, so that is all `defaults` carries.
  */
-export function createHarness(defaults: Partial<AckerDBProviderConfig> = {}): ProviderHarness {
+export function createHarness(
+  defaults: Partial<AckerDBProviderConfig> = {},
+  /** Overridden by suites that instrument socket lifecycle, not its frames. */
+  createSocket: () => FakeSocket = () => new FakeSocket(),
+): ProviderHarness {
   const clock = new ManualClock();
   const sockets: FakeSocket[] = [];
   return {
@@ -41,7 +45,7 @@ export function createHarness(defaults: Partial<AckerDBProviderConfig> = {}): Pr
         clock,
         random: () => 0,
         createWebSocket: () => {
-          const socket = new FakeSocket();
+          const socket = createSocket();
           sockets.push(socket);
           return socket;
         },
