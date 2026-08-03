@@ -1,5 +1,6 @@
 import { v } from "@ackerdb/server";
-import { mcpTool } from "@demo/ackerdb-codegen/server";
+import { query } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import { itemStatus } from "../../../app.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 
@@ -10,15 +11,14 @@ import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
  * everything still PREPARING); orderedAt/statusChangedAt answer how long an
  * item has been waiting.
  */
-export const getOrderItems = mcpTool({
+export const getOrderItems = query({
   title: "Get order items",
   description:
     "List order line items with quantity, unit price (cents), kitchen status " +
     "and orderedAt/statusChangedAt timestamps. Filter by order and/or one or " +
     "more item statuses. Use it to read an order's items, or to find items in a " +
     "given kitchen state and how long they have waited.",
-  access: { anyOf: ["read"] },
-  annotations: { readOnlyHint: true },
+  access: adminToolAccess,
   args: {
     orderId: v
       .bigint()
@@ -36,7 +36,7 @@ export const getOrderItems = mcpTool({
       .optional()
       .describe(`Maximum items to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: v.object({
+  returns: v.object({
     items: v.array(
       v.object({
         id: v.bigint(),
@@ -52,34 +52,33 @@ export const getOrderItems = mcpTool({
       }),
     ),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const limit = clampLimit(args.limit);
-      const orderId = args.orderId;
-      const status = args.status;
-      let query = tx.db.orderItems.query();
-      if (orderId !== undefined) {
-        query = query.where((item) => item.orderId.eq(orderId));
-      }
-      if (status !== undefined) {
-        query = query.where((item) => item.status.in(status));
-      }
-      const rows = await query
-        .orderBy((item) => item.orderedAt.desc())
-        .take(limit);
-      const items = rows
-        .map((item) => ({
-          id: item.id,
-          orderId: item.orderId,
-          menuItemId: item.menuItemId,
-          name: item.name,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          note: item.note,
-          status: item.status,
-          orderedAt: item.orderedAt,
-          statusChangedAt: item.statusChangedAt,
-        }));
-      return { items };
-    }),
+  handler: async (ctx, args) => {
+    const limit = clampLimit(args.limit);
+    const orderId = args.orderId;
+    const status = args.status;
+    let query = ctx.db.orderItems.query();
+    if (orderId !== undefined) {
+      query = query.where((item) => item.orderId.eq(orderId));
+    }
+    if (status !== undefined) {
+      query = query.where((item) => item.status.in(status));
+    }
+    const rows = await query
+      .orderBy((item) => item.orderedAt.desc())
+      .take(limit);
+    const items = rows
+      .map((item) => ({
+        id: item.id,
+        orderId: item.orderId,
+        menuItemId: item.menuItemId,
+        name: item.name,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+        note: item.note,
+        status: item.status,
+        orderedAt: item.orderedAt,
+        statusChangedAt: item.statusChangedAt,
+      }));
+    return { items };
+  },
 });

@@ -3,7 +3,7 @@ import { v } from "@ackerdb/server";
 import { mutation, query } from "@demo/ackerdb-codegen/server";
 import { staffAccess } from "../../lib/access.ts";
 import { tokenNameInput } from "../../lib/inputs.ts";
-import { admin } from "./mcp.ts";
+import { adminAuth } from "./mcp.ts";
 
 /**
  * Staff-gated wrappers over the framework's owner-token operations for the
@@ -16,14 +16,14 @@ import { admin } from "./mcp.ts";
 export const list = query({
   access: staffAccess,
   args: {},
-  handler: (ctx) => admin.tokens.list(ctx),
+  handler: (ctx) => adminAuth.tokens.list(ctx),
 });
 
 export const create = mutation({
   access: staffAccess,
-  args: { name: tokenNameInput, scopes: v.array(admin.scopes).min(1) },
+  args: { name: tokenNameInput, scopes: v.array(adminAuth.scopes).min(1) },
   handler: (ctx, args) =>
-    admin.tokens.create(ctx, { name: args.name, scopes: args.scopes }),
+    adminAuth.tokens.create(ctx, { name: args.name, scopes: args.scopes }),
 });
 
 export const update = mutation({
@@ -31,14 +31,14 @@ export const update = mutation({
   args: {
     id: v.string().min(1),
     name: tokenNameInput.optional(),
-    scopes: v.array(admin.scopes).min(1).optional(),
+    scopes: v.array(adminAuth.scopes).min(1).optional(),
   },
   handler: (ctx, args) => {
     if (args.name === undefined && args.scopes === undefined) {
       return Err("token.update-empty", {}, Status.BadRequest);
     }
-    if (args.name !== undefined) admin.tokens.update(ctx, args.id, { name: args.name });
-    if (args.scopes !== undefined) admin.tokens.updateScopes(ctx, args.id, args.scopes);
+    if (args.name !== undefined) adminAuth.tokens.update(ctx, args.id, { name: args.name });
+    if (args.scopes !== undefined) adminAuth.tokens.updateScopes(ctx, args.id, args.scopes);
     return args.id;
   },
 });
@@ -47,7 +47,7 @@ export const revoke = mutation({
   access: staffAccess,
   args: { id: v.string().min(1) },
   handler: (ctx, args) => {
-    admin.tokens.revoke(ctx, args.id);
+    adminAuth.tokens.revoke(ctx, args.id);
     return args.id;
   },
 });

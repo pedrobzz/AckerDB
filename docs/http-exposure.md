@@ -301,10 +301,10 @@ path is extracted into `validation/json-schema.ts`, which owns every schema
 AckerDB publishes: `argsJsonSchema(args)` for an `ObjectShape` and
 `validatorJsonSchema(validator, options)` for a `returns`, `yields`, or tool
 output. The standard-JSON codec keeps only decode/encode. This is the only MCP
-change in this feature; tool-from-function derivation (registering an app
-function directly as an MCP tool) is a separate follow-up feature — it
-requires bridging the MCP principal restriction and composing function
-policies with MCP scopes.
+change in this feature. Tool-from-function derivation — registering an app
+function directly as an MCP tool — has since shipped; see
+[MCP exposure](mcp-exposure.md) for the endpoint, its `mcpAuth` provider, and
+how a tool's scopes sit alongside the function's own access policy.
 
 ## Registration-time validation
 

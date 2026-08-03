@@ -1,5 +1,6 @@
 import { AckerDBError, v } from "@ackerdb/server";
-import { mcpTool } from "@demo/ackerdb-codegen/server";
+import { mutation } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import {
   advanceOrderItem,
   cancelOpenOrder,
@@ -8,10 +9,12 @@ import { isFinal } from "../../../lib/domain/order-status.ts";
 import { itemStatus } from "../../../app.ts";
 
 /**
- * The staff action tools, gated behind the `operate` scope. Each one reuses the
- * exact domain rule the corresponding staff mutation runs, inside `ctx.tx` so a
- * rejected transition (illegal advance, non-open order, unknown id) rolls back
- * with no partial write and surfaces as a safe `isError` tool result.
+ * The staff action tools, published behind the `operate` scope by the Admin
+ * endpoint. Each one reuses the exact domain rule the corresponding staff
+ * mutation runs. A mutation is itself the transaction, so a rejected
+ * transition (illegal advance, non-open order, unknown id) throws before the
+ * commit: no partial write survives, and the caller sees a safe `isError`
+ * tool result rather than a protocol error.
  */
 
 /**
@@ -19,35 +22,33 @@ import { itemStatus } from "../../../app.ts";
  * ORDERED → PREPARING → PREPARED → SERVED. An already-final item (SERVED or
  * CANCELLED) or an item on a closed order is rejected.
  */
-export const advanceKitchenItem = mcpTool({
+export const advanceKitchenItem = mutation({
   title: "Advance kitchen item",
   description:
     "Advance one order item to the next kitchen status along ORDERED → " +
     "PREPARING → PREPARED → SERVED. Fails if the item is already served or " +
     "cancelled, or if its order is no longer open.",
-  access: { anyOf: ["operate"] },
-  annotations: { destructiveHint: false, idempotentHint: false },
+  access: adminToolAccess,
   args: {
     orderItemId: v
       .bigint()
       .describe("Identifier of the order item to advance."),
   },
-  output: v.object({
+  returns: v.object({
     orderItemId: v.bigint(),
     orderId: v.bigint(),
     status: itemStatus,
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const result = await advanceOrderItem(tx.db, args.orderItemId);
-      if (!result.ok) {
-        throw new AckerDBError(
-          result.error.status === 404 ? "not_found" : "conflict",
-          result.error.code,
-        );
-      }
-      return result.data;
-    }),
+  handler: async (ctx, args) => {
+    const result = await advanceOrderItem(ctx.db, args.orderItemId);
+    if (!result.ok) {
+      throw new AckerDBError(
+        result.error.status === 404 ? "not_found" : "conflict",
+        result.error.code,
+      );
+    }
+    return result.data;
+  },
 });
 
 /**
@@ -56,50 +57,48 @@ export const advanceKitchenItem = mcpTool({
  * rejected. The summary splits items into those voided in flight and those left
  * as-is because they were already final.
  */
-export const cancelOrder = mcpTool({
+export const cancelOrder = mutation({
   title: "Cancel order",
   description:
     "Cancel an open order and free its table. Fails if the order is not " +
     "open (already paid or cancelled) or does not exist. Returns the freed " +
     "table and how many items were voided versus already final.",
-  access: { anyOf: ["operate"] },
-  annotations: { destructiveHint: true, idempotentHint: false },
+  access: adminToolAccess,
   args: {
     orderId: v.bigint().describe("Identifier of the open order to cancel."),
   },
-  output: v.object({
+  returns: v.object({
     orderId: v.bigint(),
     tableId: v.bigint(),
     tableNumber: v.int(),
     itemsCancelled: v.int(),
     itemsPreserved: v.int(),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const result = await cancelOpenOrder(tx.db, args.orderId);
-      if (!result.ok) {
-        throw new AckerDBError(
-          result.error.status === 404 ? "not_found" : "conflict",
-          result.error.code,
-        );
-      }
-      const { order, items } = result.data;
-      const table = await tx.db.restaurantTables.get(order.tableId);
-      if (table === null) {
-        throw new AckerDBError("internal", "Order table relation is missing");
-      }
-      let itemsCancelled = 0;
-      let itemsPreserved = 0;
-      for (const item of items) {
-        if (isFinal(item.status)) itemsPreserved += 1;
-        else itemsCancelled += 1;
-      }
-      return {
-        orderId: order.id,
-        tableId: table.id,
-        tableNumber: table.number,
-        itemsCancelled,
-        itemsPreserved,
-      };
-    }),
+  handler: async (ctx, args) => {
+    const result = await cancelOpenOrder(ctx.db, args.orderId);
+    if (!result.ok) {
+      throw new AckerDBError(
+        result.error.status === 404 ? "not_found" : "conflict",
+        result.error.code,
+      );
+    }
+    const { order, items } = result.data;
+    const table = await ctx.db.restaurantTables.get(order.tableId);
+    if (table === null) {
+      throw new AckerDBError("internal", "Order table relation is missing");
+    }
+    let itemsCancelled = 0;
+    let itemsPreserved = 0;
+    for (const item of items) {
+      if (isFinal(item.status)) itemsPreserved += 1;
+      else itemsCancelled += 1;
+    }
+    return {
+      orderId: order.id,
+      tableId: table.id,
+      tableNumber: table.number,
+      itemsCancelled,
+      itemsPreserved,
+    };
+  },
 });

@@ -170,19 +170,24 @@ then linked to that Identity. Staff operations require
 `ACKERDB_DEMO_SIGNING_SECRET` and `ACKERDB_DEMO_STAFF_TOKEN` before exposing the demo
 outside a local development machine.
 
-Run the focused backend gate without touching the development server:
+The backend gate is the smoke script. It drives a running server through the
+real client rather than starting its own, so seed a server first (above) and
+then run it from the demo root:
 
 ```sh
-bun run --cwd app/server test
+bun run smoke
 ```
 
-It starts the real app through the installed `@ackerdb/cli@0.10.0` on ephemeral
-ports and temporary durable databases. The suite covers durable Identity
-across restart, authorization, atomic seating conflicts, price snapshots,
-item/order transitions, payment, owner-isolated events, and the real schedule
-table path. Its scheduler case advances a test-local clock and invokes the
-runtime scheduler directly, while production continues to use the fixed
-two-minute delay.
+It covers guest login and durable Identity, staff-only authorization, order
+ownership, live subscriptions, kitchen transitions, payment, and cancellation.
+It asserts declared application error codes such as `order.not-owned`, so a
+change to the demo's domain rules fails it rather than passing silently.
+
+Typechecking is the separate gate and needs no server:
+
+```sh
+bun run typecheck
+```
 
 The mobile client defaults to `http://127.0.0.1:3212`. Set
 `EXPO_PUBLIC_ACKERDB_URL` to the machine-reachable backend URL when running a

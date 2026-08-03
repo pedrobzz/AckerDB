@@ -3,7 +3,7 @@
 > Historical implementation plan. Its local-only publication, merge-guard,
 > alpha prerelease, and vendor-comparison benchmark instructions are
 > superseded; do not execute them. Current policy is in
-> [Releases and protected branches](../releases.md).
+> [Releases and protected branches](../../releases.md).
 
 - Parent PRD: `PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming`
 - Source PRDs: `.workflow/react-client-prd/final-report.md` and the approved provider-neutral Identity extension published in parent issue #3

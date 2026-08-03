@@ -9,8 +9,8 @@
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.34",
-    "@ackerdb/client-react": "0.10.0",
-    "@ackerdb/core": "0.10.0",
+    "@ackerdb/client-react": "0.14.2-canary.4",
+    "@ackerdb/core": "0.14.2-canary.4",
     "@demo/ackerdb-codegen": "workspace:*",
     "@tanstack/react-router": "1.170.18",
     "@tanstack/react-start": "1.168.28",

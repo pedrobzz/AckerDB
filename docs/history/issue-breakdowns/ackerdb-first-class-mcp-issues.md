@@ -1,5 +1,11 @@
 # First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools — issue breakdown
 
+> Historical implementation plan; the work it schedules has shipped. The tool
+> surface it describes predates the `mcp({ auth, tools })` redesign — a tool is
+> an ordinary registered function now, not an `mcpTool` blueprint, and scopes
+> live on an `mcpAuth` provider. Do not execute the steps below; the current
+> contract is [MCP exposure](../../mcp-exposure.md).
+
 - Parent PRD: `PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools`
 - Source PRD: approved local draft published as [GitHub issue #19](https://github.com/pedrobzz/ackerdb/issues/19)
 - Date generated: 2026-07-16

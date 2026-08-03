@@ -5,7 +5,7 @@
 > comparison on GitHub's Hetzner runner, and current delivery publishes canary
 > and stable versions to public npm while reserving Verdaccio for local betas.
 > Imperative release instructions or blockers below describe the old state and
-> must not be followed; see [the current release contract](releases.md).
+> must not be followed; see [the current release contract](../releases.md).
 
 - Date: 2026-07-14
 - PRD: [GitHub issue #1 — Production safety and full operational visibility](https://github.com/pedrobzz/ackerdb/issues/1)
@@ -629,7 +629,7 @@ independent failure domain.
    that baseline.
 2. **A version bump was required before merge.** The old local merge guard and
    four-package publication path have been replaced by the protected-branch,
-   twelve-package contract in [Releases](releases.md).
+   twelve-package contract in [Releases](../releases.md).
 
 ### Acceptance gaps and evidence debt
 
@@ -727,7 +727,7 @@ for zero users.
    generated/result file is required.
 3. **Four-package release preparation.** This was the old release path and is
    superseded by the twelve-package protected workflow in
-   [Releases](releases.md).
+   [Releases](../releases.md).
 
 Keep schema-v6/Apple M2 acceptance and raw-log preservation explicitly deferred
 unless Pedro chooses literal PRD closure; neither is required to make the
@@ -835,13 +835,13 @@ Major commit groups:
 
 Detailed local evidence:
 
-- [Authentication contract](authentication.md)
-- [Realtime contract](realtime.md)
-- [Operations and recovery](operations.md)
-- [Telemetry contract](telemetry.md)
-- [Benchmark methodology](../bench/README.md)
-- [Workflow final report](../.workflow/production-safety-operational-visibility/final-report.md)
-- [Hetzner comparison evidence](../.workflow/production-safety-operational-visibility/results/P1-hetzner-current-comparison.md)
+- [Authentication contract](../authentication.md)
+- [Realtime contract](../realtime.md)
+- [Operations and recovery](../operations.md)
+- [Telemetry contract](../telemetry.md)
+- [Benchmark methodology](../../bench/README.md)
+- [Workflow final report](../../.workflow/production-safety-operational-visibility/final-report.md)
+- [Hetzner comparison evidence](../../.workflow/production-safety-operational-visibility/results/P1-hetzner-current-comparison.md)
 
 ## Official comparison sources
 

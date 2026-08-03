@@ -1,5 +1,6 @@
 import { v } from "@ackerdb/server";
-import { mcpTool } from "@demo/ackerdb-codegen/server";
+import { query } from "@demo/ackerdb-codegen/server";
+import { adminToolAccess } from "../../../lib/access.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 
 /**
@@ -7,14 +8,13 @@ import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
  * enumerate what parts the menu has ("which sections are there?") or to resolve
  * a categoryId before drilling into `get_menu_items`.
  */
-export const getMenuCategories = mcpTool({
+export const getMenuCategories = query({
   title: "Get menu categories",
   description:
     "List the menu's categories (sections) in menu order. Use it to enumerate " +
     "the menu's sections, or to resolve a category before calling " +
     "get_menu_items. Optionally restrict to active categories and cap the count.",
-  access: { anyOf: ["read"] },
-  annotations: { readOnlyHint: true },
+  access: adminToolAccess,
   args: {
     activeOnly: v
       .boolean()
@@ -25,7 +25,7 @@ export const getMenuCategories = mcpTool({
       .optional()
       .describe(`Maximum categories to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: v.object({
+  returns: v.object({
     categories: v.array(
       v.object({
         id: v.bigint(),
@@ -35,24 +35,23 @@ export const getMenuCategories = mcpTool({
       }),
     ),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const limit = clampLimit(args.limit);
-      const activeOnly = args.activeOnly ?? false;
-      const query = tx.db.menuCategories.query();
-      const selected = activeOnly
-        ? query.where((category) => category.active.eq(true))
-        : query;
-      const rows = await selected
-        .orderBy((category) => category.sortOrder.asc())
-        .take(limit);
-      const categories = rows
-        .map((category) => ({
-          id: category.id,
-          name: category.name,
-          sortOrder: category.sortOrder,
-          active: category.active,
-        }));
-      return { categories };
-    }),
+  handler: async (ctx, args) => {
+    const limit = clampLimit(args.limit);
+    const activeOnly = args.activeOnly ?? false;
+    const query = ctx.db.menuCategories.query();
+    const selected = activeOnly
+      ? query.where((category) => category.active.eq(true))
+      : query;
+    const rows = await selected
+      .orderBy((category) => category.sortOrder.asc())
+      .take(limit);
+    const categories = rows
+      .map((category) => ({
+        id: category.id,
+        name: category.name,
+        sortOrder: category.sortOrder,
+        active: category.active,
+      }));
+    return { categories };
+  },
 });

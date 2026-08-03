@@ -1,30 +1,14 @@
 import { createRequire } from "node:module";
 import type * as Generated from "../../native/webrtc/binding/index.cjs";
 
-export type NativeIceServerBinding = Generated.NativeIceServer;
 export type NativeRtcConfigurationBinding = Generated.NativeRtcConfiguration;
-export type NativeSessionDescriptionBinding =
-  Generated.NativeSessionDescription;
 export type NativeIceCandidateBinding = Generated.NativeIceCandidate;
-export type NativePeerEventBinding = Generated.NativePeerEvent;
 export type NativeDataChannelEventBinding = Generated.NativeDataChannelEvent;
 export type NativeMediaStreamTrackBinding = Generated.NativeMediaStreamTrack;
 export type NativeMediaStreamBinding = Generated.NativeMediaStream;
 export type NativeRtpSenderBinding = Generated.NativeRtpSender;
 export type NativeRtpReceiverBinding = Generated.NativeRtpReceiver;
-export type NativeRtpEncodingParametersBinding =
-  Generated.NativeRtpEncodingParameters;
-export type NativeRtpCodecParametersBinding =
-  Generated.NativeRtpCodecParameters;
-export type NativeRtpHeaderExtensionParametersBinding =
-  Generated.NativeRtpHeaderExtensionParameters;
-export type NativeRtcpParametersBinding = Generated.NativeRtcpParameters;
 export type NativeRtpParametersBinding = Generated.NativeRtpParameters;
-export type NativeRtpCodecCapabilityBinding =
-  Generated.NativeRtpCodecCapability;
-export type NativeRtpHeaderExtensionCapabilityBinding =
-  Generated.NativeRtpHeaderExtensionCapability;
-export type NativeRtpCapabilitiesBinding = Generated.NativeRtpCapabilities;
 export type NativeRtpTransceiverBinding = Generated.NativeRtpTransceiver;
 export type NativeTrackEventBinding = Generated.NativeTrackEvent;
 export type NativeDataChannelBinding = Generated.NativeDataChannel;

@@ -113,12 +113,6 @@ A tool that must answer content blocks rather than a value declares
 `returns: mcpContent()`. It publishes no `outputSchema`, and `http: true` on it
 is a registration error — an HTTP response has nowhere to put an image.
 
-This is a deliberate pre-1.0 source break with no shim. Convert each `mcpTool`
-blueprint into a `query`, `mutation`, or `procedure` declaring `description` and
-`returns`, move `scopes` from the endpoint to `mcpAuth`, move `endpoint.tokens`
-to `provider.tokens`, assemble entries as `{ fn, access }`, and run
-`acker codegen`.
-
 ## Exact local AI tools
 
 An exported endpoint exposes its declared tool names and validator-derived
