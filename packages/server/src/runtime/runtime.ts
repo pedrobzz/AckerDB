@@ -242,6 +242,7 @@ import {
   type AuthTransitionCapture,
   type RuntimeSession,
 } from "./sessions/store.ts";
+import { RuntimeSampler } from "./telemetry/sampler.ts";
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
@@ -539,6 +540,7 @@ export class Runtime implements RuntimePort {
   private readonly tracing: RuntimeTraceBridge;
   private readonly operations: RuntimeOperationRunner<RuntimeSession>;
   private readonly httpResponses: RuntimeHttpResponses;
+  private readonly sampler: RuntimeSampler;
   private readonly systemRoot: ReturnType<typeof AsyncLocalStorage.snapshot>;
   private readonly ownsTelemetry: boolean;
   private readonly ownsTelemetryJournal: boolean;
@@ -550,13 +552,9 @@ export class Runtime implements RuntimePort {
   private schedulerGeneration = 0;
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private scheduledRun: Promise<number> | null = null;
-  private sampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
-  private lastCpu = process.cpuUsage();
-  private lastCpuAt = performance.now();
-  private expectedSampleAt = performance.now();
 
   constructor(options: RuntimeOptions) {
     if (options.telemetryExporters !== undefined) {
@@ -755,13 +753,36 @@ export class Runtime implements RuntimePort {
           unit: "gauge",
         }),
     });
+    this.sampler = new RuntimeSampler({
+      telemetry: this.telemetry,
+      isReady: () => this.lifecycle === "ready",
+      state: () => ({
+        connections: this.sessionStore.size,
+        activeOperations: this.activeOperations,
+        activeOperationCallers: this.externalOperations.size,
+        activeSse: this.sseProducers.size,
+        realtime: this.realtime?.snapshot() ?? null,
+        reader: this.reads.snapshot(),
+        writer: this.coordinator.snapshot(),
+        reactive: this.reactive.snapshot(),
+        publication: this.reactive.publication.snapshot(),
+        authCaptureBudget: this.authCaptureBudget.snapshot(),
+        sseBudget: this.sseBudget.snapshot(),
+        telemetry: this.telemetry.snapshot(),
+        storage: this.engine.status(),
+      }),
+      sampleRealtime: () => {
+        void this.realtime?.sampleHealth(8);
+      },
+      flushDeliveryFailures: () => this.flushDeliveryFailureSummaries(),
+    });
     this.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",
       operation: "lifecycle",
       lifecycleState: "ready",
     });
-    this.startSampler();
+    this.sampler.start();
     this.armScheduler();
   }
 
@@ -2325,7 +2346,7 @@ export class Runtime implements RuntimePort {
     this.schedulerGeneration++;
     if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
     this.schedulerTimer = null;
-    this.stopSampler();
+    this.sampler.stop();
     this.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",
@@ -3859,155 +3880,6 @@ export class Runtime implements RuntimePort {
     return signal === undefined
       ? this.shutdownController.signal
       : AbortSignal.any([signal, this.shutdownController.signal]);
-  }
-
-  private startSampler(): void {
-    if (!this.telemetry.enabled) return;
-    const interval = this.telemetry.sampleIntervalMs;
-    this.expectedSampleAt = performance.now() + interval;
-    this.sampleTimer = setInterval(() => this.sample(), interval);
-    this.sampleTimer.unref?.();
-  }
-
-  private stopSampler(): void {
-    if (this.sampleTimer === null) return;
-    clearInterval(this.sampleTimer);
-    this.sampleTimer = null;
-  }
-
-  private sample(): void {
-    if (this.lifecycle !== "ready") return;
-    const now = performance.now();
-    const elapsedMs = Math.max(1, now - this.lastCpuAt);
-    const cpu = process.cpuUsage(this.lastCpu);
-    const cores = (cpu.user + cpu.system) / (elapsedMs * 1_000);
-    this.lastCpu = process.cpuUsage();
-    this.lastCpuAt = now;
-    const eventLoopDrift = Math.max(0, now - this.expectedSampleAt);
-    this.expectedSampleAt = now + this.telemetry.sampleIntervalMs;
-    const storage = this.engine.status();
-    const checkpoint = storage.lastCheckpoint;
-    const reactive = this.reactive.snapshot();
-    const reader = this.reads.snapshot();
-    const writer = this.coordinator.snapshot();
-    const publication = this.reactive.publication.snapshot();
-    const authCapture = this.authCaptureBudget.snapshot();
-    const sse = this.sseBudget.snapshot();
-    const realtime = this.realtime?.snapshot();
-    const telemetry = this.telemetry.snapshot();
-    const telemetryDrops = Object.values(telemetry.dropped).reduce((sum, value) => sum + value, 0);
-    const metrics: ReadonlyArray<readonly [string, number, "count" | "bytes" | "milliseconds" | "gauge"]> = [
-      ["runtime.connections", this.sessionStore.size, "gauge"],
-      ["runtime.operations", this.activeOperations, "gauge"],
-      ["runtime.operation_callers", this.externalOperations.size, "gauge"],
-      ["runtime.sse_streams", this.sseProducers.size, "gauge"],
-      ["runtime.realtime_sessions", realtime?.activeSessions ?? 0, "gauge"],
-      ["runtime.realtime_reserved_sessions", realtime?.reservedSessions ?? 0, "gauge"],
-      ["runtime.realtime_active_principals", realtime?.activePrincipals ?? 0, "gauge"],
-      ["runtime.realtime_handshake_windows", realtime?.trackedHandshakeWindows ?? 0, "gauge"],
-      ["runtime.realtime_offers", realtime?.offers ?? 0, "count"],
-      ["runtime.realtime_accepted", realtime?.accepted ?? 0, "count"],
-      ["runtime.realtime_rejected", realtime?.rejected ?? 0, "count"],
-      ["runtime.realtime_overloaded", realtime?.overloaded ?? 0, "count"],
-      ["runtime.realtime_failed", realtime?.failed ?? 0, "count"],
-      ["runtime.realtime_closed", realtime?.closed ?? 0, "count"],
-      ["runtime.realtime_recovery_attempts", realtime?.recoveryAttempts ?? 0, "count"],
-      ["runtime.realtime_recovery_accepted", realtime?.recoveryAccepted ?? 0, "count"],
-      ["runtime.realtime_recovery_rejected", realtime?.recoveryRejected ?? 0, "count"],
-      ["runtime.realtime_recovery_failed", realtime?.recoveryFailed ?? 0, "count"],
-      ["runtime.realtime_closed_client", realtime?.closeReasons.client ?? 0, "count"],
-      ["runtime.realtime_closed_authentication", realtime?.closeReasons.authentication ?? 0, "count"],
-      ["runtime.realtime_closed_transport", realtime?.closeReasons.transport ?? 0, "count"],
-      ["runtime.realtime_closed_handler", realtime?.closeReasons.handler ?? 0, "count"],
-      ["runtime.realtime_closed_draining", realtime?.closeReasons.draining ?? 0, "count"],
-      ["runtime.realtime_closed_setup", realtime?.closeReasons.setup ?? 0, "count"],
-      ["runtime.realtime_health_sampled_peers", realtime?.health.sampledPeers ?? 0, "gauge"],
-      ["runtime.realtime_health_sample_failures", realtime?.health.sampleFailures ?? 0, "gauge"],
-      ["runtime.realtime_direct_paths", realtime?.health.directPaths ?? 0, "gauge"],
-      ["runtime.realtime_relay_paths", realtime?.health.relayPaths ?? 0, "gauge"],
-      ["runtime.realtime_udp_paths", realtime?.health.udpPaths ?? 0, "gauge"],
-      ["runtime.realtime_tcp_paths", realtime?.health.tcpPaths ?? 0, "gauge"],
-      ["runtime.realtime_round_trip_time", realtime?.health.roundTripTimeAverageMs ?? 0, "milliseconds"],
-      ["runtime.realtime_round_trip_time_max", realtime?.health.roundTripTimeMaxMs ?? 0, "milliseconds"],
-      ["runtime.realtime_jitter_max", realtime?.health.jitterMaxMs ?? 0, "milliseconds"],
-      ["runtime.realtime_packets", realtime?.health.packets ?? 0, "gauge"],
-      ["runtime.realtime_packets_lost", realtime?.health.packetsLost ?? 0, "gauge"],
-      ["runtime.realtime_frames", realtime?.health.frames ?? 0, "gauge"],
-      ["runtime.realtime_frames_dropped", realtime?.health.framesDropped ?? 0, "gauge"],
-      ["runtime.realtime_available_incoming_bitrate", realtime?.health.availableIncomingBitrate ?? 0, "gauge"],
-      ["runtime.realtime_available_outgoing_bitrate", realtime?.health.availableOutgoingBitrate ?? 0, "gauge"],
-      ["runtime.realtime_data_channel_buffered_amount", realtime?.health.dataChannelBufferedAmountMax ?? 0, "bytes"],
-      ["runtime.realtime_native_queue_drops", realtime?.health.nativeQueueDrops ?? 0, "count"],
-      ["runtime.realtime_native_process_reserved_bytes", realtime?.health.nativeProcessReservedBytes ?? 0, "bytes"],
-      ["runtime.realtime_native_process_queue_saturations", realtime?.health.nativeProcessQueueSaturations ?? 0, "count"],
-      ["runtime.realtime_native_generation_queue_saturations", realtime?.health.nativeGenerationQueueSaturations ?? 0, "count"],
-      ["runtime.realtime_native_queue_limit_terminations", realtime?.health.nativeQueueLimitTerminations ?? 0, "count"],
-      ["runtime.realtime_native_process_budget_terminations", realtime?.health.nativeProcessBudgetTerminations ?? 0, "count"],
-      ["runtime.realtime_native_generation_budget_terminations", realtime?.health.nativeGenerationBudgetTerminations ?? 0, "count"],
-      ["runtime.realtime_data_channel_pressure", realtime?.health.dataChannelPressure ?? 0, "count"],
-      ["runtime.realtime_stream_capacity_pressure", realtime?.health.streamCapacityPressure ?? 0, "count"],
-      ["runtime.realtime_stream_buffer_pressure", realtime?.health.streamBufferPressure ?? 0, "count"],
-      ["runtime.realtime_handler_saturation", realtime?.health.handlerSaturation ?? 0, "count"],
-      ["runtime.realtime_resource_saturation", realtime?.health.resourceSaturation ?? 0, "count"],
-      ["runtime.realtime_auxiliary_peers", realtime?.resources.active.auxiliaryPeers ?? 0, "gauge"],
-      ["runtime.realtime_decoded_streams", realtime?.resources.active.decodedStreams ?? 0, "gauge"],
-      ["runtime.realtime_media_sources", realtime?.resources.active.mediaSources ?? 0, "gauge"],
-      ["runtime.realtime_tracks", realtime?.resources.active.tracks ?? 0, "gauge"],
-      ["runtime.realtime_auxiliary_peer_saturation", realtime?.resources.saturated.auxiliaryPeers ?? 0, "count"],
-      ["runtime.realtime_decoded_stream_saturation", realtime?.resources.saturated.decodedStreams ?? 0, "count"],
-      ["runtime.realtime_media_source_saturation", realtime?.resources.saturated.mediaSources ?? 0, "count"],
-      ["runtime.realtime_track_saturation", realtime?.resources.saturated.tracks ?? 0, "count"],
-      ["runtime.subscriptions", reactive.queryListeners + reactive.eventListeners, "gauge"],
-      ["runtime.subscription_entries", reactive.sharedEntries, "gauge"],
-      ["runtime.subscription_result_bytes", reactive.resultBytes, "bytes"],
-      ["runtime.subscription_history_items", reactive.historyTransitions, "gauge"],
-      ["runtime.subscription_history_bytes", reactive.historyBytes, "bytes"],
-      ["runtime.read_queue_items", reader.queue.queuedItems, "gauge"],
-      ["runtime.read_queue_bytes", reader.queue.queuedBytes, "bytes"],
-      ["runtime.read_queue_age", reader.queue.oldestAgeMs, "milliseconds"],
-      ["runtime.write_queue_items", writer.queue.queuedItems, "gauge"],
-      ["runtime.write_queue_bytes", writer.queue.queuedBytes, "bytes"],
-      ["runtime.write_queue_age", writer.queue.oldestAgeMs, "milliseconds"],
-      ["runtime.revalidation_active", reactive.revalidation.active, "gauge"],
-      ["runtime.revalidation_queue_items", reactive.revalidation.queue.queuedItems, "gauge"],
-      ["runtime.revalidation_queue_bytes", reactive.revalidation.queue.queuedBytes, "bytes"],
-      ["runtime.revalidation_queue_age", reactive.revalidation.queue.oldestAgeMs, "milliseconds"],
-      ["runtime.publication_items", publication.items, "gauge"],
-      ["runtime.publication_bytes", publication.bytes, "bytes"],
-      ["runtime.publication_age", publication.oldestAgeMs, "milliseconds"],
-      ["runtime.auth_capture_bytes", authCapture.bytes, "bytes"],
-      ["runtime.sse_outbound_bytes", sse.bytes, "bytes"],
-      ["runtime.database_bytes", storage.databaseBytes, "bytes"],
-      ["runtime.wal_bytes", storage.walBytes, "bytes"],
-      ["runtime.checkpoint_completed", checkpoint === null ? 0 : 1, "gauge"],
-      ["runtime.checkpoint_busy", checkpoint?.busy ?? 0, "gauge"],
-      ["runtime.checkpoint_total_frames", checkpoint?.totalFrames ?? 0, "gauge"],
-      ["runtime.checkpoint_checkpointed_frames", checkpoint?.checkpointedFrames ?? 0, "gauge"],
-      ["runtime.checkpoint_residual_frames", checkpoint?.residualFrames ?? 0, "gauge"],
-      ["runtime.checkpoint_duration", checkpoint?.durationMs ?? 0, "milliseconds"],
-      ["runtime.checkpoint_age", storage.lastCheckpointAtMs === null
-        ? 0
-        : Math.max(0, Date.now() - storage.lastCheckpointAtMs), "milliseconds"],
-      ["runtime.recovered_from_crash", storage.recoveredFromCrash ? 1 : 0, "gauge"],
-      ["runtime.mutation_replay_records", storage.mutationRecords, "gauge"],
-      ["runtime.mutation_replay_bytes", storage.mutationResultBytes, "bytes"],
-      ["runtime.telemetry_queue_records", telemetry.queuedRecords, "gauge"],
-      ["runtime.telemetry_queue_bytes", telemetry.queuedBytes, "bytes"],
-      ["runtime.telemetry_queue_age", telemetry.oldestAgeMs, "milliseconds"],
-      ["runtime.telemetry_local_queue_records", telemetry.localSink.pendingRecords, "gauge"],
-      ["runtime.telemetry_local_queue_bytes", telemetry.localSink.pendingBytes, "bytes"],
-      ["runtime.telemetry_export_attempts", telemetry.exporter.attempts, "count"],
-      ["runtime.telemetry_export_failures", telemetry.exporter.failures, "count"],
-      ["runtime.telemetry_export_timeouts", telemetry.exporter.timeouts, "count"],
-      ["runtime.telemetry_export_duration", telemetry.exporter.lastDurationMs ?? 0, "milliseconds"],
-      ["runtime.telemetry_drops", telemetryDrops, "count"],
-      ["runtime.rss_bytes", process.memoryUsage().rss, "bytes"],
-      ["runtime.cpu_cores", cores, "gauge"],
-      ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
-    ];
-    for (const [name, value, unit] of metrics) this.telemetry.recordMetric({ name, value, unit });
-    void this.realtime?.sampleHealth(8);
-    this.flushDeliveryFailureSummaries();
   }
 
   /** Emit and reset one coalesced non-ok delivery observation summary. */
