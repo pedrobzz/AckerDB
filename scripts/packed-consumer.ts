@@ -138,12 +138,18 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
       // and proves that the generated loader resolves the current host.
       overrides: dependencies,
     }, null, 2));
+    // The consumer must be installed from the freshly packed tarballs alone. A
+    // shared bun cache can satisfy name@version lookups with stale contents and
+    // make this gate verify a cache entry instead of the release artifacts.
     await runCommand([
       process.execPath,
       "install",
       "--ignore-scripts",
       "--registry=https://registry.npmjs.org",
-    ], consumerDir);
+    ], consumerDir, {
+      ...process.env,
+      BUN_INSTALL_CACHE_DIR: join(directory, "bun-install-cache"),
+    });
 
     let active = true;
     return Object.freeze({
