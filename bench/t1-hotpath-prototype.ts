@@ -308,12 +308,14 @@ async function schedulerRearm(): Promise<void> {
     }
   };
   await waitForSchedulerRead();
-  const rearm = runtime.armScheduler as unknown as (tables: ReadonlySet<string>) => void;
+  const { scheduler } = runtime as unknown as {
+    scheduler: { arm(touchedTables?: ReadonlySet<string>): void };
+  };
   const trial = async (): Promise<number> => {
     minimumQueries = 0;
     const startedAt = performance.now();
     for (let index = 0; index < SCHEDULER_REARMS_PER_TRIAL; index++) {
-      rearm.call(runtime, new Set(["jobs_0"]));
+      scheduler.arm(new Set(["jobs_0"]));
       await waitForSchedulerRead();
     }
     return performance.now() - startedAt;
