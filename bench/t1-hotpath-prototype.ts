@@ -7,14 +7,28 @@
  * Run one experiment with:
  *   bun bench/t1-hotpath-prototype.ts event-fanout
  *   bun bench/t1-hotpath-prototype.ts query-revalidation
+ *   bun bench/t1-hotpath-prototype.ts http-auth-reject
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LiveEvent, Outcome, SubscriptionTransition } from "@ackerdb/core";
+import type { CredentialVerifier } from "../packages/server/src/auth/credentials.ts";
+import { procedure } from "../packages/server/src/app/functions.ts";
+import { Registry } from "../packages/server/src/app/registry.ts";
+import { Engine } from "../packages/server/src/database/engine.ts";
+import { Runtime } from "../packages/server/src/runtime/runtime.ts";
+import { defineSchema, defineTable } from "../packages/server/src/schema/definition.ts";
+import { reconcile } from "../packages/server/src/schema/reconcile.ts";
+import { AckerDBError } from "../packages/server/src/shared/errors.ts";
 import {
   OrderedReactive,
   ReactiveCommit,
   type QueryEvaluation,
   type Subscriber,
 } from "../packages/server/src/subscriptions/reactive.ts";
+import { serve } from "../packages/server/src/transport/server.ts";
+import { v } from "../packages/server/src/validation/v.ts";
 import { latencyStats } from "./load-engine.ts";
 
 const WARMUP_TRIALS = 3;
@@ -23,6 +37,9 @@ const EVENT_LISTENERS = 100;
 const DELIVERY_DELAY_MS = 1;
 const REVALIDATIONS_PER_TRIAL = 500;
 const QUERY_ARGUMENT_ITEMS = 1_000;
+const HTTP_REJECTIONS_PER_TRIAL = 100;
+const HTTP_REJECTION_CONCURRENCY = 10;
+const HTTP_BODY_BYTES = 64 * 1024;
 
 function evaluation(): QueryEvaluation {
   return {
@@ -177,6 +194,79 @@ async function queryRevalidation(): Promise<void> {
   }, null, 2));
 }
 
+async function httpAuthReject(): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-t1-http-"));
+  const schema = defineSchema({
+    state: defineTable({ id: v.primaryKey() }),
+  });
+  const functions = {
+    protected: {
+      echo: procedure({
+        access: "authenticated",
+        http: true,
+        args: { value: v.string() },
+        handler: (_ctx: unknown, args: { value: string }) => args.value.length,
+      }),
+    },
+  };
+  const verifier: CredentialVerifier = {
+    revocationBound: { kind: "token-expiration" },
+    verify: async () => {
+      throw new AckerDBError("unauthenticated", "invalid benchmark credential");
+    },
+    subscribeInvalidation: () => () => {},
+  };
+  const engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  const runtime = new Runtime({
+    engine,
+    registry: new Registry(functions),
+    verifier,
+    telemetry: false,
+  });
+  const server = serve({ runtime, port: 0 });
+  const body = JSON.stringify({ value: "x".repeat(HTTP_BODY_BYTES - 12) });
+  const url = `http://127.0.0.1:${server.port}/api/protected/echo`;
+  const trial = async (): Promise<number> => {
+    const startedAt = performance.now();
+    let next = 0;
+    await Promise.all(Array.from({ length: HTTP_REJECTION_CONCURRENCY }, async () => {
+      for (;;) {
+        const request = next++;
+        if (request >= HTTP_REJECTIONS_PER_TRIAL) return;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { authorization: "Bearer invalid" },
+          body,
+        });
+        if (response.status !== 401) throw new Error(`expected 401, received ${response.status}`);
+        await response.text();
+      }
+    }));
+    return performance.now() - startedAt;
+  };
+  try {
+    const stats = await measure(trial);
+    console.log(JSON.stringify({
+      commit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe" })
+        .stdout.toString().trim(),
+      operation: "http-auth-reject",
+      load: {
+        bodyBytes: Buffer.byteLength(body),
+        requestsPerTrial: HTTP_REJECTIONS_PER_TRIAL,
+        concurrency: HTTP_REJECTION_CONCURRENCY,
+        measuredTrials: MEASURED_TRIALS,
+      },
+      trialLatencyMs: stats,
+      p50RequestsPerSec: HTTP_REJECTIONS_PER_TRIAL / (stats.p50Ms / 1_000),
+    }, null, 2));
+  } finally {
+    await server.drain();
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 switch (process.argv[2]) {
   case "event-fanout":
     await eventFanout();
@@ -184,8 +274,11 @@ switch (process.argv[2]) {
   case "query-revalidation":
     await queryRevalidation();
     break;
+  case "http-auth-reject":
+    await httpAuthReject();
+    break;
   default:
     throw new Error(
-      "usage: bun bench/t1-hotpath-prototype.ts <event-fanout|query-revalidation>",
+      "usage: bun bench/t1-hotpath-prototype.ts <event-fanout|query-revalidation|http-auth-reject>",
     );
 }
