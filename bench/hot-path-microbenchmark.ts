@@ -41,12 +41,9 @@ const WARMUP_MS = 500;
 const STEADY_MS = 2_000;
 const TRIALS = 3;
 const COMPUTE_ROUNDS = 8;
-const CLOCK_TICKS_PER_SEC = Number(
-  Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe" }).stdout.toString().trim(),
-);
-if (!Number.isFinite(CLOCK_TICKS_PER_SEC) || CLOCK_TICKS_PER_SEC <= 0) {
-  throw new Error("could not resolve process clock ticks");
-}
+const CLOCK_TICKS_PER_SEC = process.platform === "linux"
+  ? Number(Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe" }).stdout.toString().trim())
+  : undefined;
 
 interface Profile {
   readonly name: "latency" | "saturation";
@@ -68,24 +65,36 @@ async function success<Data, Error extends ApplicationError = never>(
 }
 
 function rssBytes(pid: number): number {
-  const status = `/proc/${pid}/status`;
-  const text = Bun.spawnSync(["sed", "-n", "s/^VmRSS:[[:space:]]*\\([0-9]*\\).*/\\1/p", status], {
-    stdout: "pipe",
-  }).stdout.toString().trim();
+  const text = process.platform === "linux"
+    ? Bun.spawnSync(
+        ["sed", "-n", "s/^VmRSS:[[:space:]]*\\([0-9]*\\).*/\\1/p", `/proc/${pid}/status`],
+        { stdout: "pipe" },
+      ).stdout.toString().trim()
+    : Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe" })
+      .stdout.toString().trim();
   const kib = Number(text);
   if (!Number.isFinite(kib)) throw new Error(`could not read RSS for server pid ${pid}`);
   return kib * 1024;
 }
 
-async function processCpuTicks(pid: number): Promise<number> {
-  const text = await Bun.file(`/proc/${pid}/stat`).text();
-  const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
-  const user = Number(fields[11]);
-  const system = Number(fields[12]);
-  if (!Number.isFinite(user) || !Number.isFinite(system)) {
-    throw new Error(`could not read CPU ticks for server pid ${pid}`);
+async function processCpuSeconds(pid: number): Promise<number> {
+  if (process.platform === "linux") {
+    const text = await Bun.file(`/proc/${pid}/stat`).text();
+    const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const ticks = Number(fields[11]) + Number(fields[12]);
+    if (!Number.isFinite(ticks) || CLOCK_TICKS_PER_SEC === undefined) {
+      throw new Error(`could not read CPU ticks for server pid ${pid}`);
+    }
+    return ticks / CLOCK_TICKS_PER_SEC;
   }
-  return user + system;
+  const text = Bun.spawnSync(["ps", "-o", "time=", "-p", String(pid)], { stdout: "pipe" })
+    .stdout.toString().trim();
+  const [daysText, clockText] = text.includes("-") ? text.split("-", 2) : ["0", text];
+  const clock = clockText!.split(":").map(Number).reverse();
+  const seconds = Number(daysText) * 86_400 + (clock[2] ?? 0) * 3_600 +
+    (clock[1] ?? 0) * 60 + (clock[0] ?? Number.NaN);
+  if (!Number.isFinite(seconds)) throw new Error(`could not read CPU time for server pid ${pid}`);
+  return seconds;
 }
 
 async function runWindow(
@@ -97,7 +106,7 @@ async function runWindow(
 ) {
   const payload = fixedPayload("procedure-payload:", PROCEDURE_PAYLOAD_BYTES);
   const startedAt = performance.now();
-  const startedCpuTicks = await processCpuTicks(serverPid);
+  const startedCpuSeconds = await processCpuSeconds(serverPid);
   const deadline = startedAt + durationMs;
   let completed = 0;
   const latencies: number[] = [];
@@ -136,16 +145,16 @@ async function runWindow(
     rss.push(rssBytes(serverPid));
   }
   const endedAt = performance.now();
-  const consumedCpuTicks = await processCpuTicks(serverPid) - startedCpuTicks;
+  const consumedCpuSeconds = await processCpuSeconds(serverPid) - startedCpuSeconds;
   const elapsedMs = endedAt - startedAt;
-  const averageCpuCores = consumedCpuTicks / CLOCK_TICKS_PER_SEC / (elapsedMs / 1_000);
+  const averageCpuCores = consumedCpuSeconds / (elapsedMs / 1_000);
   return {
     throughputPerSec: completed / (durationMs / 1_000),
     cpu: {
       averageCores: averageCpuCores,
       coreMicrosPerCompletion: completed === 0
         ? 0
-        : (consumedCpuTicks / CLOCK_TICKS_PER_SEC * 1_000_000) / completed,
+        : (consumedCpuSeconds * 1_000_000) / completed,
     },
     latency: latencyStats(latencies),
     rss: {
