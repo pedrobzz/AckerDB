@@ -278,8 +278,6 @@ export class OrderedReactive<C = unknown> {
   private historyTransitions = 0;
   private dependencyEdges = 0;
   private multiOwnerDependencyKeys = 0;
-  private eventTail: Promise<void> = Promise.resolve();
-
   constructor(options: OrderedReactiveOptions<C>) {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
@@ -568,7 +566,7 @@ export class OrderedReactive<C = unknown> {
   async close(): Promise<void> {
     await this.publication.close();
     this.revalidation.close();
-    await Promise.all([this.revalidation.drain(), this.eventTail]);
+    await this.revalidation.drain();
   }
 
   private entryFor(input: QueryEvaluationInput<C>): QueryEntry<C> {
@@ -1006,19 +1004,14 @@ export class OrderedReactive<C = unknown> {
     commitVersion: bigint,
     events: readonly ReactiveEvent[],
   ): Promise<DeliveryFailure[]> {
-    const delivery = this.eventTail.then(async () => {
-      const failures: DeliveryFailure[] = [];
-      for (const event of events) failures.push(...await this.publishEvent(commitVersion, event));
-      return failures;
-    });
-    this.eventTail = delivery.then(() => undefined, () => undefined);
-    return delivery;
+    return Promise.all(events.map((event) => this.publishEvent(commitVersion, event)))
+      .then((failures) => failures.flat());
   }
 
-  private async publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {
+  private publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {
     const state = this.eventStates.get(event.table);
-    if (!state) return [];
-    const failures: DeliveryFailure[] = [];
+    if (!state) return Promise.resolve([]);
+    const deliveries: Promise<DeliveryFailure | undefined>[] = [];
     for (const listener of [...state.listeners]) {
       const matchedAt = this.observer ? this.observationNow() : undefined;
       try {
@@ -1048,28 +1041,18 @@ export class OrderedReactive<C = unknown> {
           this.observe(matchedAt, { ...metadata, phase: "event_match", outcome });
           this.observe(matchedAt, { ...metadata, phase: "failure", outcome });
         }
-        listener.gapped = true;
-        failures.push(failure(listener, error));
+        deliveries.push(this.sequence(listener, () => {
+          listener.gapped = true;
+        }).then(() => failure(listener, error)));
         continue;
       }
-      const cursor = {
-        ...listener.cursor,
-        commitVersion,
-        sequence: listener.cursor.sequence + 1n,
-      };
-      try {
-        if (listener.gapped) {
-          await this.sendEvent(listener, { kind: "gap", cursor });
-          listener.gapped = false;
-        } else {
-          await this.sendEvent(listener, { kind: "row", cursor, row: event.row });
-        }
-      } catch (error) {
-        listener.gapped = true;
-        failures.push(failure(listener, error));
-      }
+      deliveries.push(this.sendPublishedEvent(listener, commitVersion, event.row).then(
+        () => undefined,
+        (error) => failure(listener, error),
+      ));
     }
-    return failures;
+    return Promise.all(deliveries).then((failures) =>
+      failures.filter((item): item is DeliveryFailure => item !== undefined));
   }
 
   private async failEntry(entry: QueryEntry<C>, error: unknown): Promise<DeliveryFailure[]> {
@@ -1388,15 +1371,19 @@ export class OrderedReactive<C = unknown> {
       };
     }
 
+    return this.sequence(binding, deliver);
+  }
+
+  private sequence(binding: Binding<C>, work: () => void | Promise<void>): Promise<void> {
     const previous = binding.delivery;
     const reserved = Promise.withResolvers<void>();
     binding.delivery = reserved.promise;
     let delivery: Promise<void>;
     if (previous) {
-      delivery = previous.then(deliver);
+      delivery = previous.then(work);
     } else {
       try {
-        delivery = deliver();
+        delivery = Promise.resolve(work());
       } catch (error) {
         delivery = Promise.reject(error);
       }
@@ -1407,6 +1394,31 @@ export class OrderedReactive<C = unknown> {
     };
     void delivery.then(release, release);
     return delivery;
+  }
+
+  private sendPublishedEvent(
+    listener: EventListener<C>,
+    commitVersion: bigint,
+    row: unknown,
+  ): Promise<void> {
+    return this.queue(listener, async () => {
+      const cursor = {
+        ...listener.cursor,
+        commitVersion,
+        sequence: listener.cursor.sequence + 1n,
+      };
+      const event: LiveEvent = listener.gapped
+        ? { kind: "gap", cursor }
+        : { kind: "row", cursor, row };
+      try {
+        await listener.subscriber.sendEvent(listener.id, event);
+      } catch (error) {
+        listener.gapped = true;
+        throw error;
+      }
+      listener.cursor = cursor;
+      listener.gapped = false;
+    }, commitVersion);
   }
 
   private async sendEvent(listener: EventListener<C>, event: LiveEvent): Promise<void> {
