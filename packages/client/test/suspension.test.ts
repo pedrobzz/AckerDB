@@ -67,7 +67,6 @@ describe("AckerDBClient lifecycle port", () => {
         };
       },
     });
-    client.connect();
     expect(registrations).toBe(1);
     const socket = sockets[0]!;
     const originalClose = socket.close.bind(socket);
@@ -84,7 +83,6 @@ describe("AckerDBClient lifecycle port", () => {
 
   test("notifications after close are inert", () => {
     const { client, sockets, port, phases } = createHarness();
-    client.connect();
     client.close();
     const socketCount = sockets.length;
     port.suspend();
@@ -133,7 +131,6 @@ describe("AckerDBClient suspension", () => {
 
   test("background during connecting retires the pre-open socket without scheduling reconnect", () => {
     const { client, clock, sockets, port } = createHarness();
-    client.connect();
     const first = sockets[0]!;
     expect(first.closed).toBe(false);
     port.suspend();
@@ -192,7 +189,6 @@ describe("AckerDBClient suspension", () => {
     const { client, clock, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.connect();
     sockets[0]!.welcome(client.clientSessionId);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     expect(sockets[0]!.lastFrame("auth").credential).toEqual({ kind: "bearer", token: "token-b" });
@@ -272,8 +268,9 @@ describe("AckerDBClient suspension", () => {
     expect(rejection.code).toBe("indeterminate");
     expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     port.resume();
-    // A settled procedure is not demand: activation does not dial or replay it.
-    expect(sockets).toHaveLength(1);
+    // The settled procedure is not replayed; the client's standing connection
+    // demand still creates a fresh idle transport on activation.
+    expect(sockets).toHaveLength(2);
     client.close();
   });
 
@@ -539,7 +536,6 @@ describe("AckerDBClient activation", () => {
     client.subscribe("todos.list", { list: 2n }, () => {});
     expect(sockets).toHaveLength(1);
     expect(clock.nextDueIn()).toBe(3_000);
-    client.connect();
     expect(sockets).toHaveLength(1);
     void client.mutation("todos.add", { text: "milk" }).catch(() => {});
     expect(sockets).toHaveLength(1);
@@ -678,24 +674,24 @@ describe("AckerDBClient activation", () => {
     client.close();
   });
 
-  test("activation without demand leaves the client idle", () => {
+  test("activation restores the constructor-owned standing connection demand", () => {
     const { client, sockets, port, phases } = createHarness();
     port.suspend();
     port.resume();
-    expect(sockets).toHaveLength(0);
-    expect(client.currentConnectionState.phase).toBe("connecting");
-    expect(phases).toEqual(["suspended", "connecting"]);
+    expect(sockets).toHaveLength(2);
+    expect(client.currentConnectionState.phase).toBe("resuming");
+    expect(phases).toEqual(["suspended", "resuming"]);
     client.close();
   });
 
-  test("demand released before suspension stays released: activation does not redial", () => {
+  test("released operation demand does not cancel standing connection demand", () => {
     const { client, sockets, port } = createHarness();
     const unsubscribe = client.subscribe("todos.list", { list: 1n }, () => {});
     expect(sockets).toHaveLength(1);
     unsubscribe();
     port.suspend();
     port.resume();
-    expect(sockets).toHaveLength(1);
+    expect(sockets).toHaveLength(2);
     expect(sockets[0]!.closed).toBe(true);
     client.close();
   });
@@ -703,14 +699,13 @@ describe("AckerDBClient activation", () => {
   test("work created during suspension is demand for the activation dial, not an immediate one", async () => {
     const { client, sockets, port } = createHarness();
     port.suspend();
-    client.connect();
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
     const result = client.mutation("todos.add", { text: "milk" });
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
 
     port.resume();
-    expect(sockets).toHaveLength(1);
-    const socket = sockets[0]!;
+    expect(sockets).toHaveLength(2);
+    const socket = sockets[1]!;
     socket.welcome(client.clientSessionId);
     const frame = socket.lastFrame("m");
     socket.receive({
@@ -735,7 +730,6 @@ describe("AckerDBClient activation", () => {
 
   test("a mutation pending across suspension keeps its original identity on the fresh connection", () => {
     const { client, sockets, port } = createHarness();
-    client.connect();
     sockets[0]!.welcome(client.clientSessionId);
     void client.mutation("todos.add", { text: "milk" }).catch(() => {});
     const issued = sockets[0]!.lastFrame("m");

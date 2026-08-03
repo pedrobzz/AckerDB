@@ -600,7 +600,6 @@ describe("shared query registry", () => {
   test("reading a source snapshot registers nothing; only a committed listener subscribes", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
     const argsKey = stableEncode({ list: 1n });
@@ -645,7 +644,6 @@ describe("shared query registry", () => {
   test("a listener returning within the release window continues the live subscription", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
     const argsKey = stableEncode({ list: 1n });
@@ -682,8 +680,6 @@ describe("shared query registry", () => {
     const second = createHarness(APP);
     const clientA = new AckerDBClient(first.config());
     const clientB = new AckerDBClient(second.config());
-    clientA.connect();
-    clientB.connect();
     first.live().welcome(SESSION);
     second.live().welcome(SESSION);
     const argsKey = stableEncode({ list: 1n });

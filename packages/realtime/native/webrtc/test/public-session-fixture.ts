@@ -183,20 +183,15 @@ export async function verifyPublicRealtimeSession(
         configuration as PortableRTCConfiguration,
       ) as unknown as NativeRTCPeerConnection,
   });
-  const session = client.realtime(
-    anyApi.assistant.live as AssistantRef,
-    {},
-    {
-      on: {
-        peerConnection(peer) {
-          peer.addTrack(audio.track as NativeMediaStreamTrack);
-        },
-        event: {
-          completed: (event) => completed.resolve(event),
-        },
-      },
+  const session = client.realtime(anyApi.assistant.live as AssistantRef, {});
+  session.observe({
+    peerConnection(peer) {
+      peer.addTrack(audio.track as NativeMediaStreamTrack);
     },
-  );
+    event: {
+      completed: (event) => completed.resolve(event),
+    },
+  });
   let released = false;
 
   try {

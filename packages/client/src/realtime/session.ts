@@ -120,22 +120,11 @@ export interface AckerDBRealtimeOn<
   ) => unknown;
 }
 
-export interface AckerDBRealtimeOptions<
-  ServerEvents extends EventMap,
-  ServerStreams extends RealtimeStreamMap,
-  Error = never,
-> {
-  /**
-   * Makes equal client/ref/args calls one session and one complete `on`
-   * bundle. A missing key is exclusive; a different key is a conflict.
-   */
-  readonly handlerKey?: string;
-  readonly on?: AckerDBRealtimeOn<ServerEvents, ServerStreams, Error>;
-}
-
 export interface AckerDBRealtime<
   ClientEvents extends EventMap,
   ClientStreams extends RealtimeStreamMap,
+  ServerEvents extends EventMap,
+  ServerStreams extends RealtimeStreamMap,
   Error = never,
 > {
   readonly currentState: AckerDBRealtimeState<Error>;
@@ -154,17 +143,11 @@ export interface AckerDBRealtime<
   };
   disconnect(): void;
   reconnect(): void;
+  observe(
+    on: AckerDBRealtimeOn<ServerEvents, ServerStreams, Error>,
+  ): () => void;
   subscribe(listener: () => void): () => void;
   release(): void;
-}
-
-export class RealtimeHandlerKeyConflictError extends Error {
-  constructor() {
-    super(
-      "equal realtime client/ref/args calls must all use the same non-empty handlerKey",
-    );
-    this.name = "RealtimeHandlerKeyConflictError";
-  }
 }
 
 export interface RealtimeManagerClock {
@@ -186,9 +169,17 @@ export interface RealtimeManagerPort {
 }
 
 interface Observer {
-  readonly on?: AckerDBRealtimeOn<EventMap, RealtimeStreamMap, unknown>;
   readonly listeners: Set<() => void>;
+  readonly handlers: Set<HandlerObservation>;
   active: boolean;
+}
+
+interface HandlerObservation {
+  readonly on: AckerDBRealtimeOn<EventMap, RealtimeStreamMap, unknown>;
+  active: boolean;
+  setupGeneration?: number;
+  setupPending?: Promise<void>;
+  setupCleanup?: () => void;
 }
 
 interface PeerGeneration {
@@ -203,7 +194,6 @@ interface PeerGeneration {
   sessionId: string | null;
   clientStreamLimits: Readonly<Record<string, number>>;
   serverStreamLimits: Readonly<Record<string, number>>;
-  setupCleanup?: () => void;
   /** The local end-of-candidates marker must use HTTP until the data plane opens. */
   httpComplete: boolean;
   httpCompleteDelivered: boolean;
@@ -217,7 +207,7 @@ interface PeerGeneration {
   stableHandle?: unknown;
   cleanupStarted: boolean;
   restartingIce: boolean;
-  handlerPending: boolean;
+  handlerPending: number;
   closed: boolean;
 }
 
@@ -225,7 +215,6 @@ interface Group {
   readonly key: string;
   readonly address: string;
   readonly args: unknown;
-  readonly handlerKey: string | null;
   readonly observers: Set<Observer>;
   state: AckerDBRealtimeState<unknown>;
   generation: PeerGeneration | null;
@@ -300,38 +289,27 @@ export class RealtimeManager {
 
   constructor(private readonly port: RealtimeManagerPort) {}
 
-  observe<Ref extends AnyRealtimeRef>(
+  retain<Ref extends AnyRealtimeRef>(
     ref: Ref,
     args: NoInfer<RealtimeArgs<Ref>>,
-    options: AckerDBRealtimeOptions<
-      RealtimeServerEvents<Ref>,
-      RealtimeServerStreams<Ref>,
-      RealtimeError<Ref>
-    > = {},
   ): AckerDBRealtime<
     RealtimeClientEvents<Ref>,
     RealtimeClientStreams<Ref>,
+    RealtimeServerEvents<Ref>,
+    RealtimeServerStreams<Ref>,
     RealtimeError<Ref>
   > {
     if (this.closed) {
       throw this.port.clientError(unavailable("client is closed", false));
     }
-    if (
-      options.handlerKey !== undefined &&
-      (typeof options.handlerKey !== "string" || options.handlerKey.length === 0)
-    ) {
-      throw new TypeError("handlerKey must be a non-empty string");
-    }
     const address = getRef(ref);
     const key = stableEncode([address, args]);
-    const handlerKey = options.handlerKey ?? null;
     let group = this.byKey.get(key);
     if (group === undefined) {
       group = {
         key,
         address,
         args,
-        handlerKey,
         observers: new Set(),
         state: CONNECTING,
         generation: null,
@@ -342,24 +320,10 @@ export class RealtimeManager {
         closed: false,
       };
       this.byKey.set(key, group);
-    } else if (
-      group.handlerKey === null ||
-      handlerKey === null ||
-      group.handlerKey !== handlerKey
-    ) {
-      throw new RealtimeHandlerKeyConflictError();
     }
     const observer: Observer = {
-      ...(options.on === undefined
-        ? {}
-        : {
-            on: options.on as AckerDBRealtimeOn<
-              EventMap,
-              RealtimeStreamMap,
-              unknown
-            >,
-          }),
       listeners: new Set(),
+      handlers: new Set(),
       active: true,
     };
     group.observers.add(observer);
@@ -374,6 +338,8 @@ export class RealtimeManager {
     return this.handle(group, observer) as AckerDBRealtime<
       RealtimeClientEvents<Ref>,
       RealtimeClientStreams<Ref>,
+      RealtimeServerEvents<Ref>,
+      RealtimeServerStreams<Ref>,
       RealtimeError<Ref>
     >;
   }
@@ -436,6 +402,8 @@ export class RealtimeManager {
       for (const observer of group.observers) {
         observer.active = false;
         observer.listeners.clear();
+        for (const observation of observer.handlers) observation.active = false;
+        observer.handlers.clear();
       }
       group.observers.clear();
     }
@@ -445,7 +413,7 @@ export class RealtimeManager {
   private handle(
     group: Group,
     observer: Observer,
-  ): AckerDBRealtime<EventMap, RealtimeStreamMap, unknown> {
+  ): AckerDBRealtime<EventMap, RealtimeStreamMap, EventMap, RealtimeStreamMap, unknown> {
     let released = false;
     return Object.freeze({
       get currentState() {
@@ -501,6 +469,26 @@ export class RealtimeManager {
           void this.connect(group);
         }
       },
+      observe: (
+        on: AckerDBRealtimeOn<EventMap, RealtimeStreamMap, unknown>,
+      ) => {
+        if (released) return () => {};
+        const observation: HandlerObservation = { on, active: true };
+        observer.handlers.add(observation);
+        const generation = group.generation;
+        if (generation !== null && !generation.closed) {
+          void this.attachPeerHandler(group, generation, observation).catch(() => {
+            if (group.generation !== generation || generation.closed) return;
+            this.settle(group, generation, {
+              kind: "failed",
+              error: this.port.clientError(
+                unexpected("realtime on.peerConnection handler failed"),
+              ),
+            });
+          });
+        }
+        return () => this.releaseHandler(observer, observation);
+      },
       subscribe: (listener: () => void) => {
         if (released) return () => {};
         observer.listeners.add(listener);
@@ -516,6 +504,9 @@ export class RealtimeManager {
         released = true;
         observer.active = false;
         observer.listeners.clear();
+        for (const observation of [...observer.handlers]) {
+          this.releaseHandler(observer, observation);
+        }
         group.observers.delete(observer);
         if (group.observers.size !== 0) return;
         group.closed = true;
@@ -548,7 +539,7 @@ export class RealtimeManager {
       const generation = group.generation;
       const handlerTimedOut = generation !== null &&
         generation.controller === controller &&
-        generation.handlerPending;
+        generation.handlerPending > 0;
       const error = handlerTimedOut
         ? this.port.clientError(
           unexpected("realtime on.peerConnection handler timed out"),
@@ -651,7 +642,7 @@ export class RealtimeManager {
         trickleRequested: false,
         cleanupStarted: false,
         restartingIce: false,
-        handlerPending: false,
+        handlerPending: 0,
         setupHandle,
         closed: false,
       };
@@ -662,23 +653,16 @@ export class RealtimeManager {
         phase: "connecting",
         peerConnection: peer,
       }));
-      let setup: void | (() => void);
-      generation.handlerPending = true;
       try {
-        setup = await this.handler(group)?.on?.peerConnection?.(peer);
+        await Promise.all(
+          this.handlers(group).map((observation) =>
+            this.attachPeerHandler(group, generation, observation)
+          ),
+        );
       } catch {
         throw this.port.clientError(
           unexpected("realtime on.peerConnection handler failed"),
         );
-      } finally {
-        generation.handlerPending = false;
-      }
-      if (typeof setup === "function") {
-        if (group.generation === generation && !generation.closed) {
-          generation.setupCleanup = setup;
-        } else {
-          this.invokeHandler(setup);
-        }
       }
       if (group.generation !== generation || generation.closed) return;
 
@@ -779,9 +763,7 @@ export class RealtimeManager {
     });
     peer.addEventListener("track", (event) => {
       if (group.generation !== generation || generation.closed) return;
-      this.invokeHandler(() =>
-        this.handler(group)?.on?.track?.(event)
-      );
+      this.forEachHandler(group, (on) => on.track?.(event));
     });
     peer.addEventListener("connectionstatechange", () => {
       if (group.generation !== generation || generation.closed) return;
@@ -874,9 +856,7 @@ export class RealtimeManager {
       peerConnection: generation.peer,
     }));
     this.armStableOpen(group, generation);
-    this.invokeHandler(() =>
-      this.handler(group)?.on?.connected?.(generation.peer)
-    );
+    this.forEachHandler(group, (on) => on.connected?.(generation.peer));
   }
 
   private scheduleIceRestart(
@@ -1195,7 +1175,7 @@ export class RealtimeManager {
     size: number | undefined,
   ) {
     const maxBytes = generation.serverStreamLimits[stream];
-    const on = this.handler(group)?.on?.stream;
+    const on = this.streamHandler(group, stream);
     if (maxBytes === undefined || on === undefined) return undefined;
     return Object.freeze({
       maxBytes,
@@ -1211,52 +1191,130 @@ export class RealtimeManager {
           readable: input.readable,
           abortSignal: input.abortSignal,
         });
-        return this.handleDataPlaneHandler(() =>
+        return this.handleDataPlaneHandlers([() =>
           typeof on === "function"
             ? on(Object.freeze({ type: stream, ...value }) as never)
             : on[stream]?.(value)
-        );
+        ]);
       },
     });
   }
 
   private deliverEvent(group: Group, event: string, payload: unknown): unknown {
-    const on = this.handler(group)?.on?.event;
-    if (on === undefined) return;
-    return this.handleDataPlaneHandler(() =>
-      typeof on === "function"
-        ? on(Object.freeze({ type: event, payload }))
-        : on[event]?.(payload)
-    );
+    const work: Array<() => unknown> = [];
+    for (const observation of this.handlers(group)) {
+      const on = observation.on.event;
+      if (on === undefined) continue;
+      work.push(() =>
+        typeof on === "function"
+          ? on(Object.freeze({ type: event, payload }))
+          : on[event]?.(payload)
+      );
+    }
+    return this.handleDataPlaneHandlers(work);
   }
 
-  private handler(group: Group): Observer | undefined {
+  private handlers(group: Group): HandlerObservation[] {
+    const handlers: HandlerObservation[] = [];
     for (const observer of group.observers) {
-      if (observer.active) return observer;
+      if (!observer.active) continue;
+      for (const observation of observer.handlers) {
+        if (observation.active) handlers.push(observation);
+      }
+    }
+    return handlers;
+  }
+
+  private attachPeerHandler(
+    group: Group,
+    generation: PeerGeneration,
+    observation: HandlerObservation,
+  ): Promise<void> {
+    if (!observation.active || observation.setupGeneration === generation.number) {
+      return observation.setupPending ?? Promise.resolve();
+    }
+    observation.setupGeneration = generation.number;
+    generation.handlerPending++;
+    const run = (async () => {
+      const setup = await observation.on.peerConnection?.(generation.peer);
+      if (typeof setup !== "function") return;
+      if (
+        observation.active &&
+        group.generation === generation &&
+        !generation.closed
+      ) {
+        observation.setupCleanup = setup;
+      } else {
+        this.invokeHandler(setup);
+      }
+    })().finally(() => {
+      generation.handlerPending--;
+    });
+    observation.setupPending = run;
+    return run.finally(() => {
+      if (observation.setupPending === run) observation.setupPending = undefined;
+    });
+  }
+
+  private releaseHandler(
+    observer: Observer,
+    observation: HandlerObservation,
+  ): void {
+    if (!observation.active) return;
+    observation.active = false;
+    observer.handlers.delete(observation);
+    const cleanup = observation.setupCleanup;
+    observation.setupCleanup = undefined;
+    if (cleanup !== undefined) this.invokeHandler(cleanup);
+  }
+
+  private forEachHandler(
+    group: Group,
+    work: (on: AckerDBRealtimeOn<EventMap, RealtimeStreamMap, unknown>) => unknown,
+  ): void {
+    for (const observation of this.handlers(group)) {
+      this.invokeHandler(() => work(observation.on));
+    }
+  }
+
+  private streamHandler(
+    group: Group,
+    stream: string,
+  ): AckerDBRealtimeStreamOn<RealtimeStreamMap> | undefined {
+    for (const observation of this.handlers(group)) {
+      const on = observation.on.stream;
+      if (typeof on === "function" || on?.[stream] !== undefined) return on;
     }
     return undefined;
   }
 
-  private handleDataPlaneHandler(work: () => unknown): unknown {
-    try {
-      const result = work();
-      return thenable(result)
-        ? Promise.resolve(result).catch(() => {
-          throw HANDLER_FAILURE;
-        })
-        : result;
-    } catch {
-      throw HANDLER_FAILURE;
+  private handleDataPlaneHandlers(work: Array<() => unknown>): unknown {
+    const pending: PromiseLike<unknown>[] = [];
+    let failed = false;
+    for (const run of work) {
+      try {
+        const result = run();
+        if (thenable(result)) pending.push(result);
+      } catch {
+        failed = true;
+      }
     }
+    if (pending.length === 0) {
+      if (failed) throw HANDLER_FAILURE;
+      return;
+    }
+    return Promise.allSettled(pending).then((settlements) => {
+      if (failed || settlements.some((settlement) => settlement.status === "rejected")) {
+        throw HANDLER_FAILURE;
+      }
+    });
   }
 
   private replace(group: Group, state: AckerDBRealtimeState<unknown>): void {
     if (group.state === state) return;
     const previous = group.state;
     group.state = state;
-    this.invokeHandler(() =>
-      this.handler(group)?.on?.stateChange?.(state, previous)
-    );
+    this.forEachHandler(group, (on) => on.stateChange?.(state, previous));
     for (const observer of [...group.observers]) {
       for (const listener of [...observer.listeners]) listener();
     }
@@ -1345,12 +1403,10 @@ export class RealtimeManager {
     generation.controller.abort(reason);
     generation.dataPlane?.close(reason);
     generation.dataPlane = null;
-    try {
-      generation.setupCleanup?.();
-    } catch (error) {
-      this.invokeHandler(() => {
-        throw error;
-      });
+    for (const observation of this.handlers(group)) {
+      const cleanup = observation.setupCleanup;
+      observation.setupCleanup = undefined;
+      if (cleanup !== undefined) this.invokeHandler(cleanup);
     }
     if (generation.peer.connectionState !== "closed") generation.peer.close();
     this.cleanup(generation);

@@ -3,12 +3,13 @@ import {
   PROTOCOL_VERSION,
   RESOURCE_CLASSES,
   encode,
+  encodeSseChunk,
+  encodeSseControl,
   type Outcome,
   type SseDoneMessage,
   type SseErrorMessage,
 } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
-import { standardJsonText } from "../validation/standard-json.ts";
 import type { ServiceLimits } from "../runtime/limits.ts";
 import {
   PUBLIC_ERROR_FALLBACK,
@@ -974,8 +975,9 @@ interface ObservedSseFrame {
 
 interface PreparedSseChunk {
   readonly source: Extract<DeliverySource, "write" | "merge">;
-  readonly encodedValue: string;
-  readonly encodedValueBytes: number;
+  readonly seq: number;
+  readonly proof: string;
+  readonly bytes: Uint8Array;
   readonly observer: DeliveryObserver | undefined;
   readonly encodingStartedAt: number | undefined;
   readonly encodingFinishedAt: number | undefined;
@@ -997,22 +999,7 @@ function waiter(): Waiter {
   return { promise, resolve, reject };
 }
 
-function sseFrameBytes(message: SseDoneMessage | SseErrorMessage): Uint8Array {
-  return utf8.encode(`data: ${encode(message)}\n\n`);
-}
-
-function sseChunkBytes(seq: number, proof: string, encodedValue: string): Uint8Array {
-  return utf8.encode(
-    `data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":${seq},"proof":${JSON.stringify(proof)},"value":${encodedValue}}\n\n`,
-  );
-}
-
 const SSE_PROOF_LENGTH = 22;
-const SSE_CHUNK_FIXED_BYTES =
-  Buffer.byteLength(`data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":`) +
-  Buffer.byteLength(`,"proof":"","value":}\n\n`) +
-  SSE_PROOF_LENGTH;
-const MINIMUM_SSE_VALUE_BYTES = Buffer.byteLength("0");
 
 function sseProof(): string {
   return randomBytes(16).toString("base64url");
@@ -1025,13 +1012,13 @@ function sameProof(left: string, right: string): boolean {
 }
 
 function sseDoneBytes(seq: number, proof: string): Uint8Array {
-  return sseFrameBytes({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
+  return encodeSseControl({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
 }
 
 function sseErrorBytes(error: AckerDBError, maxBytes: number, seq: number, proof: string): Uint8Array {
   const outcome = outcomeFromError(error);
   const fitted = fitOutcome(outcome, maxBytes, (candidate) => {
-    const value = sseFrameBytes({
+    const value = encodeSseControl({
       v: PROTOCOL_VERSION,
       t: "sse_error",
       seq,
@@ -1048,6 +1035,8 @@ function sseErrorBytes(error: AckerDBError, maxBytes: number, seq: number, proof
 
 const MAXIMUM_SSE_SEQUENCE = Number.MAX_SAFE_INTEGER;
 const MAXIMUM_SSE_PROOF = "x".repeat(SSE_PROOF_LENGTH);
+const MINIMUM_SSE_CHUNK_FIXED_BYTES =
+  encodeSseChunk(1, MAXIMUM_SSE_PROOF, 0).byteLength - 1;
 const MAXIMUM_SSE_RESOURCE = RESOURCE_CLASSES.reduce(
   (longest, resource) => resource.length > longest.length ? resource : longest,
 );
@@ -1276,11 +1265,14 @@ export class BoundedSseProducer {
     const observer = captureDeliveryObserver(this.delivery, "application");
     const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     try {
-      const encodedValue = standardJsonText(value);
+      const seq = this.nextSequence;
+      const proof = sseProof();
+      const bytes = encodeSseChunk(seq, proof, value);
       return {
         source,
-        encodedValue,
-        encodedValueBytes: Buffer.byteLength(encodedValue),
+        seq,
+        proof,
+        bytes,
         observer,
         encodingStartedAt,
         encodingFinishedAt: observer === undefined ? undefined : observationNow(this.delivery),
@@ -1303,14 +1295,15 @@ export class BoundedSseProducer {
     if (this.nextSequence >= MAXIMUM_SSE_SEQUENCE) {
       throw overloaded("sse", "SSE sequence space exhausted");
     }
-    return SSE_CHUNK_FIXED_BYTES + String(this.nextSequence).length + frame.encodedValueBytes;
+    if (frame.seq !== this.nextSequence) {
+      throw new Error("SSE frame sequence changed while it was being prepared");
+    }
+    return frame.bytes.byteLength;
   }
 
   private materializeApplicationFrame(frame: PreparedSseChunk): ObservedSseFrame {
     const expectedBytes = this.candidateApplicationBytes(frame);
-    const seq = this.nextSequence;
-    const proof = sseProof();
-    const bytes = sseChunkBytes(seq, proof, frame.encodedValue);
+    const { seq, proof, bytes } = frame;
     if (bytes.byteLength !== expectedBytes) throw new Error("SSE frame byte accounting mismatch");
     observeEncoding(
       this.delivery,
@@ -1460,8 +1453,7 @@ export class BoundedSseProducer {
     if (this.nextSequence >= MAXIMUM_SSE_SEQUENCE) {
       throw overloaded("sse", "SSE sequence space exhausted");
     }
-    const minimumBytes =
-      SSE_CHUNK_FIXED_BYTES + String(this.nextSequence).length + MINIMUM_SSE_VALUE_BYTES;
+    const minimumBytes = MINIMUM_SSE_CHUNK_FIXED_BYTES + String(this.nextSequence).length;
     if (minimumBytes > this.limits.maxFrameBytes || minimumBytes > this.applicationLimit()) {
       throw overloaded("sse", "SSE event envelope exceeds maxFrameBytes");
     }

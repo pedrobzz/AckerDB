@@ -197,14 +197,14 @@ describe("non-resumable work started while suspended", () => {
     port.resume();
     clock.advance(60_000);
     expect(journal.dispatches).toEqual([]);
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(2);
 
     // The client itself is fully usable again after activation.
     const resumed = client.procedure<Record<never, never>, string>("tools.echo", {});
-    expect(sockets).toHaveLength(1);
-    sockets[0]!.welcome(client.clientSessionId);
-    const request = sockets[0]!.lastFrame("p");
-    sockets[0]!.receive({
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.welcome(client.clientSessionId);
+    const request = sockets[1]!.lastFrame("p");
+    sockets[1]!.receive({
       v: PROTOCOL_VERSION,
       t: "ok",
       id: request.id,

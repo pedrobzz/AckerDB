@@ -133,7 +133,6 @@ async function settled(): Promise<void> {
 describe("mutation convergence across suspension", () => {
   test("boundary before send: a mutation issued while backgrounded is sent exactly once, on the recovery connection", async () => {
     const { client, sockets, port } = createHarness();
-    client.connect();
     sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
@@ -162,7 +161,6 @@ describe("mutation convergence across suspension", () => {
 
   test("boundary after send: the recovery connection replays the original identity once and stale receipts stay inert", async () => {
     const { client, sockets, port } = createHarness();
-    client.connect();
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
 
@@ -292,7 +290,6 @@ describe("mutation convergence across suspension", () => {
 
   test("boundary after settlement: recovery does not replay a settled mutation", async () => {
     const { client, sockets, port } = createHarness();
-    client.connect();
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
 
@@ -381,7 +378,6 @@ describe("mutation convergence across suspension", () => {
     const { client, clock, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.connect();
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
 
@@ -422,7 +418,6 @@ describe("mutation convergence across suspension", () => {
     const { client, clock, sockets, port } = createHarness({
       limits: { maxMutationAgeMs: 10_000 },
     });
-    client.connect();
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const result = client.mutation("todos.add", { text: "milk" });
@@ -448,7 +443,6 @@ describe("mutation convergence across suspension", () => {
 
   test("close during suspension settles sent mutations as indeterminate and unsent ones as unavailable", async () => {
     const { client, sockets, port } = createHarness();
-    client.connect();
     sockets[0]!.welcome(client.clientSessionId);
     const sent = client.mutation("todos.add", { text: "milk" });
     port.suspend();
@@ -668,7 +662,6 @@ describe("event convergence across suspension", () => {
   test("demand released while suspended stays released: recovery re-attaches nothing", () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.connect();
     const unsubscribe = client.subscribeEvent<Record<never, never>, { n: number }>(
       "events.pings",
       {},
@@ -1009,7 +1002,6 @@ afterAll(async () => {
 describe("mutation boundaries against a real ackerdb server", () => {
   test("background before send: activation delivers one execution and one settlement", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    client.connect();
     await waitForPhase(client, "ready");
 
     port.suspend();
@@ -1037,7 +1029,6 @@ describe("mutation boundaries against a real ackerdb server", () => {
 
   test("background after send, before the server saw it: the replay executes once under the original identity", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    client.connect();
     await waitForPhase(client, "ready");
 
     const held = app.proxy.holdNextClientFrame(
@@ -1099,7 +1090,6 @@ describe("mutation boundaries against a real ackerdb server", () => {
         clock: undefined,
         reconnect: { baseDelayMs: 10, maxDelayMs: 40, stableOpenMs: 10_000 },
       });
-      client.connect();
       await waitForPhase(client, "ready");
 
       const gate = armSendGate("in-flight");
@@ -1187,7 +1177,6 @@ describe("mutation boundaries against a real ackerdb server", () => {
 
   test("background mid-response: the committed receipt is lost, the replay dedupes to one effect", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    client.connect();
     await waitForPhase(client, "ready");
 
     const held = app.proxy.holdNextServerFrame(
@@ -1289,7 +1278,6 @@ describe("mutation boundaries against a real ackerdb server", () => {
 
   test("background after the receipt: recovery replays nothing", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    client.connect();
     await waitForPhase(client, "ready");
 
     let settlements = 0;
@@ -1356,7 +1344,6 @@ describe("event boundaries against a real ackerdb server", () => {
 
   test("suspension during subscription application: the one reset the consumer sees is the recovery's", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    client.connect();
     await waitForPhase(client, "ready");
 
     const held = app.proxy.holdNextServerFrame(

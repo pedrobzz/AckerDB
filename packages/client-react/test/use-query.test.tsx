@@ -347,7 +347,7 @@ describe("useQuery state transitions", () => {
     const id = await bootToSuccess(harness, root, container);
 
     // The server rejects the subscription with an explicitly retryable error;
-    // the base client removes it, but the mounted consumer's demand stands.
+    // the base client retains and reschedules the mounted demand.
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "err",
@@ -361,12 +361,7 @@ describe("useQuery state transitions", () => {
     });
     expect(container.textContent).toBe("stale:one");
 
-    const deadline = Date.now() + 2_000;
-    while (harness.frames("sub").length < 2 && Date.now() < deadline) {
-      await act(async () => {
-        await Bun.sleep(20);
-      });
-    }
+    await act(async () => harness.clock.advance(100));
     const subs = harness.frames("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]!.args).toEqual({ list: 1n });
@@ -394,7 +389,7 @@ describe("useQuery state transitions", () => {
       outcome: { code: "overloaded", retryable: true, message: "subscription rejected" },
     });
     await render(root, <></>);
-    await Bun.sleep(300);
+    harness.clock.advance(300);
     expect(harness.frames("sub")).toHaveLength(1);
   });
 
@@ -553,7 +548,6 @@ describe("useQuery state transitions", () => {
   test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    client.connect();
     const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const first = harness.live();
@@ -582,7 +576,7 @@ describe("useQuery state transitions", () => {
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
     });
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
-    await Bun.sleep(300);
+    harness.clock.advance(300);
     // The retry deferred against the blocked client instead of dying.
     expect(harness.frames("sub")).toHaveLength(1);
 
@@ -618,7 +612,6 @@ describe("useQuery state transitions", () => {
   test("binary row payloads stay genuine platform typed arrays inside frozen rows", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    client.connect();
     type BlobRow = { readonly name: string; readonly blob: Uint8Array };
     const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
     const stopListening = entry.listen(() => {});
