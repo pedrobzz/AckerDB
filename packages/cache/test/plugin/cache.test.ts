@@ -29,6 +29,13 @@ import { encodeCacheKey } from "../../src/storage/key.ts";
 
 type TestPlugin = PluginInstance;
 type TestPluginOperation = Exclude<PluginExportTree[string], PluginExportTree>;
+const NOOP_LOG = Object.freeze({
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+});
+const NOOP_ANALYTICS = Object.freeze({ track: () => {} });
 
 interface TestEntryRow {
   readonly id: bigint;
@@ -269,6 +276,8 @@ describe("built-in cache operations", () => {
       try {
         const capabilities = runtime.bindMutation({
           timestamp: 10,
+          analyticsFor: () => NOOP_ANALYTICS,
+          logFor: () => NOOP_LOG,
           writes: newWriteCollector(),
         }) as unknown as {
           readonly consumer: {
@@ -328,6 +337,8 @@ describe("built-in cache operations", () => {
       try {
         const capabilities = runtime.bindMutation({
           timestamp: 10,
+          analyticsFor: () => NOOP_ANALYTICS,
+          logFor: () => NOOP_LOG,
           writes: newWriteCollector(),
         }) as unknown as {
           readonly cache: {
@@ -659,6 +670,8 @@ describe("external cache store contract", () => {
       const unavailable = () => Promise.reject(new Error("unused DB boundary"));
       const capabilities = runtime.bindProcedure({
         timestamp: 10,
+        analyticsFor: () => NOOP_ANALYTICS,
+        logFor: () => NOOP_LOG,
         abortSignal: new AbortController().signal,
         runQuery: unavailable,
         runMutation: unavailable,

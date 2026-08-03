@@ -33,6 +33,48 @@ const typedQuery = query as QueryBuilder<S>;
 const typedMutation = mutation as MutationBuilder<S>;
 const typedProcedure = procedure as ProcedureBuilder<S>;
 
+typedQuery({
+  args: {},
+  access: (ctx) => {
+    ctx.log.debug("query policy");
+    return true;
+  },
+  handler: (ctx) => {
+    ctx.log.info("query", {
+      nested: { count: 1n, bytes: new Uint8Array([1, 2, 3]) },
+      values: [null, true, 1, "one"],
+    });
+    // @ts-expect-error metadata excludes arbitrary runtime objects
+    ctx.log.info("invalid", { createdAt: new Date() });
+    // @ts-expect-error reactive queries cannot manufacture analytics events
+    ctx.analytics.track("query viewed");
+    return null;
+  },
+});
+
+typedMutation({
+  args: {},
+  access: "public",
+  handler: (ctx) => {
+    ctx.log.warn("mutation");
+    ctx.analytics.track("counter changed", { source: "mutation" });
+  },
+});
+
+typedProcedure({
+  args: {},
+  access: "public",
+  handler: async (ctx) => {
+    ctx.log.error("procedure");
+    // @ts-expect-error procedures must enter a committing transaction to track
+    ctx.analytics.track("procedure called");
+    await ctx.tx((tx) => {
+      tx.log.info("transaction");
+      tx.analytics.track("transaction committed");
+    });
+  },
+});
+
 const nestedProfileRequired = () =>
   Err("guest.profile-required", {}, Status.NotFound);
 

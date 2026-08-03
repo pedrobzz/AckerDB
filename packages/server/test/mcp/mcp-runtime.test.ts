@@ -123,6 +123,7 @@ const insertOwnershipRecord = typedMutation({
   args: { value: v.string() },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    ctx.analytics.track("ownership record inserted");
     return ctx.db.records.insert({ owner: ctx.auth.identity, value: args.value });
   },
 });
@@ -412,6 +413,11 @@ describe("MCP Runtime ownership", () => {
       },
     });
     const [token] = await tokens(value, "nested", ["Nested"]);
+    const principal = await value.runtime.authenticateMcpToken(
+      ownershipMcp.name,
+      token!,
+      "nested-analytics",
+    );
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
       value: "private-nested-value",
@@ -453,6 +459,15 @@ describe("MCP Runtime ownership", () => {
     expect(observed).not.toContain(token!);
     expect(observed).not.toContain("private-nested-value");
     expect(value.runtime.status().telemetryAggregates.series.length).toBeLessThanOrEqual(32);
+    await value.runtime.telemetryJournal.flush();
+    const analytics = value.runtime.telemetryJournal.readBatch(0n, 16)
+      .filter((record) => record.kind === "analytics");
+    expect(analytics).toHaveLength(1);
+    expect(analytics[0]).toMatchObject({
+      event: "ownership record inserted",
+      functionAddress: "ownership.insertOwnershipRecord",
+      identity: principal.identity,
+    });
   });
 
   test("cancels queued contention and preserves commit/rollback ownership", async () => {

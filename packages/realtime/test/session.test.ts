@@ -45,6 +45,12 @@ function procedure(signal: AbortSignal): ProcedureCtx {
   return Object.freeze({
     auth: ANONYMOUS_PRINCIPAL,
     abortSignal: signal,
+    log: Object.freeze({
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    }),
     timestamp: 1,
     tx: async () => Ok(undefined),
     linkAccount: async () => {},

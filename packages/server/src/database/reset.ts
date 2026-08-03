@@ -4,6 +4,7 @@ import {
   canonicalDatabasePaths,
   initializationArtifactPaths,
   restoreArtifactPaths,
+  telemetryJournalPaths,
 } from "./artifacts.ts";
 import { DatabaseOwnership } from "./ownership.ts";
 
@@ -52,6 +53,7 @@ export function resetDatabase(path: string): DatabaseResetResult {
       ...initializationArtifactPaths(database),
       ...restoreArtifactPaths(database),
       ...canonicalDatabasePaths(database),
+      ...telemetryJournalPaths(database),
     ];
     const failures: unknown[] = [];
     for (const candidate of candidates) {
