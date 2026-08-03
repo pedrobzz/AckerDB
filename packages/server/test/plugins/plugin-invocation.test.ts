@@ -26,7 +26,7 @@ import type {
   RuntimePublication,
   RuntimeRequest,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import { v } from "../../src/validation/v.ts";
 
 type AnyContext = Record<string, any>;

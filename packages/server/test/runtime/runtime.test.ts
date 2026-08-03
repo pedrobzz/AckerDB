@@ -40,7 +40,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import {
   Telemetry,
   type TelemetryRecord,

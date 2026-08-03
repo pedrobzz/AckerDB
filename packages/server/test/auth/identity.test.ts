@@ -22,7 +22,7 @@ import type {
   RuntimePort,
   RuntimeRequest,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 
 const directories: string[] = [];
 const instances = new Map<Runtime, Engine>();

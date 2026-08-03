@@ -1,121 +1,65 @@
 import {
   PROTOCOL_VERSION,
-  ProtocolError,
-  decode,
-  encode,
-  parseClientMessage,
   type AuthenticationDescriptor,
   type AuthenticatedMessage,
-  type ApplicationErrorMessage,
-  type ChannelEventMessage,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
-  type ChannelReadyMessage,
-  type ChannelRejectedMessage,
   type ChannelSendMessage,
   type ClientAuthMessage,
   type ClientMessage,
   type Credential,
-  type ErrorMessage,
-  type EventMessage,
   type MutationMessage,
-  type MutationOkMessage,
-  type MutationReceipt,
-  type Outcome,
   type ProcedureCancelMessage,
-  type PongMessage,
   type ProcedureMessage,
-  type ProcedureOkMessage,
   type QueryMessage,
-  type QueryOkMessage,
   type ResetRequestMessage,
   type SubscribeMessage,
-  type TransitionMessage,
   type UnsubscribeMessage,
-  type WelcomeMessage,
 } from "@ackerdb/core";
-import { positiveSafeInteger } from "../shared/numbers.ts";
+import { positiveSafeInteger } from "../../shared/numbers.ts";
 import {
   verifyClientCredential,
   type ClientPrincipal,
-  type CredentialVerifier,
-  type ExternalAccount,
   type Principal,
   type PrincipalInvalidation,
-} from "../auth/credentials.ts";
+} from "../../auth/credentials.ts";
 import {
   MAX_REVOCATION_DEADLINE_MS,
   validateCredentialVerifierRevocation,
-} from "../auth/lease.ts";
+} from "../../auth/lease.ts";
 import {
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
-} from "../auth/invalidation.ts";
+} from "../../auth/invalidation.ts";
 import {
   callerFairnessKey,
   transportSource,
   type TransportSource,
-} from "../runtime/caller.ts";
-import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
-import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
-import { outcomeFromError } from "../runtime/outcome.ts";
-import type { Identity } from "../validation/v.ts";
-import type {
-  AuthenticationAttemptInput,
-  AuthenticationAttemptObservation,
-  AuthenticationAttemptObserver,
-} from "../auth/attempt-observation.ts";
-
-export type SubscriptionServerMessage = TransitionMessage | EventMessage;
-export type SessionApplicationMessage =
-  | SubscriptionServerMessage
-  | ChannelReadyMessage
-  | ChannelEventMessage
-  | ChannelRejectedMessage
-  | QueryOkMessage
-  | ProcedureOkMessage
-  | MutationOkMessage
-  | ApplicationErrorMessage
-  | ErrorMessage;
-const RUNTIME_PUBLICATION_BRAND: unique symbol = Symbol("ackerdb.runtimePublication");
-const runtimePublications = new WeakSet<object>();
-
-export interface RuntimePublication {
-  readonly message: SessionApplicationMessage;
-  readonly text: string;
-  readonly bytes: number;
-  readonly [RUNTIME_PUBLICATION_BRAND]: true;
-}
-
-export function prepareRuntimePublication(message: SessionApplicationMessage): RuntimePublication {
-  Object.freeze(message);
-  const text = encode(message);
-  const publication = Object.freeze({
-    message,
-    text,
-    bytes: Buffer.byteLength(text),
-    [RUNTIME_PUBLICATION_BRAND]: true as const,
-  });
-  runtimePublications.add(publication);
-  return publication;
-}
-
-export function assertRuntimePublication(publication: RuntimePublication): void {
-  if (!runtimePublications.has(publication)) {
-    throw new TypeError("application publication was not prepared by ackerdb");
-  }
-}
-/**
- * Exact-byte ownership for publications captured during an auth transition.
- * Frames are valid only until `release()`; release is idempotent and empties
- * the batch so terminal Session cleanup cannot retain obsolete publications.
- */
-export interface RuntimePublicationBatch {
-  readonly frames: readonly RuntimePublication[];
-  readonly bytes: number;
-  release(): void;
-}
-export type SessionControlMessage = WelcomeMessage | AuthenticatedMessage | PongMessage | ErrorMessage;
+} from "../../runtime/caller.ts";
+import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
+import { PRODUCTION_LIMITS } from "../../runtime/limits.ts";
+import { outcomeFromError } from "../../runtime/outcome.ts";
+import {
+  assertRuntimePublication,
+  prepareRuntimeRequest,
+  type RuntimePort,
+  type RuntimePublication,
+  type RuntimePublicationBatch,
+  type RuntimeRequest,
+  type SessionClock,
+  type SessionControlMessage,
+  type SessionOptions,
+  type SessionPhase,
+  type SessionRuntimeContext,
+  type SessionSink,
+  type SessionSnapshot,
+} from "./contract.ts";
+import {
+  decodeClientFrame,
+  type DecodedClientFrame,
+  type SessionWireFrame,
+} from "./frame.ts";
+import { PendingAuthObservations } from "./observation.ts";
 
 function authenticationDescriptor(principal: ClientPrincipal): AuthenticationDescriptor {
   if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
@@ -125,152 +69,7 @@ function authenticationDescriptor(principal: ClientPrincipal): AuthenticationDes
     : Object.freeze({ principal: "workload", provenance });
 }
 
-/**
- * A bounded transport queue. Control writes use reserved capacity, while
- * application writes are epoch-tagged and remain removable until accepted in
- * order. A resolved write must not be overtaken by a later write.
- */
-export interface SessionSink {
-  sendControl(message: SessionControlMessage): Promise<void>;
-  sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void>;
-  dropApplicationFramesBefore(authEpoch: number): Promise<void>;
-  close(outcome: Outcome): Promise<void>;
-}
-
-export interface SessionClock {
-  now(): number;
-  setTimeout(callback: () => void, delayMs: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
-const SESSION_AUTH_OBSERVER: unique symbol = Symbol("ackerdb.sessionAuthObserver");
-
-interface InternalSessionOptions {
-  readonly [SESSION_AUTH_OBSERVER]?: AuthenticationAttemptObserver;
-}
-
-interface PendingAuthObservation {
-  readonly owner: object;
-  readonly observation: AuthenticationAttemptObservation;
-}
-
-export interface SessionRuntimeContext {
-  readonly clientSessionId: string;
-  readonly principal: Principal;
-  /** Fixed-width caller ownership shared with HTTP and immutable for this auth epoch. */
-  readonly fairnessKey: string;
-  readonly authEpoch: number;
-  /** Aborted as soon as an auth refresh, expiry, invalidation, or close starts. */
-  readonly signal: AbortSignal;
-  /** Package-owned verifier subscription identity for delayed self-invalidation. */
-  readonly invalidationScope?: AuthInvalidationScope;
-  /** Publishes an application frame only while this exact epoch is current. */
-  publish(message: RuntimePublication): Promise<boolean>;
-}
-
-export interface RuntimeAuthTransition {
-  readonly attemptId: number;
-  readonly reason: "refresh" | "sign-out";
-  readonly from: SessionRuntimeContext;
-  readonly to: SessionRuntimeContext;
-}
-
-export interface RuntimeMutationResult {
-  readonly value: unknown;
-  readonly receipt: MutationReceipt;
-}
-
-/** One raw WebSocket message whose byte ownership remains inside Session. */
-export type SessionWireFrame = string | Uint8Array;
-
-/** One validated operation paired with the byte count owned by its transport. */
-export interface RuntimeRequest<Message> {
-  readonly message: Message;
-  readonly bytes: number;
-  readonly signal?: AbortSignal;
-}
-
-const runtimeRequestBytes = new WeakMap<object, number>();
-
-function prepareRuntimeRequest<Message>(
-  message: Message,
-  bytes: number,
-  signal?: AbortSignal,
-): RuntimeRequest<Message> {
-  const request = Object.freeze({
-    message,
-    bytes,
-    ...(signal === undefined ? {} : { signal }),
-  });
-  runtimeRequestBytes.set(request, bytes);
-  return request;
-}
-
-/** Claims exact Session-owned transport bytes once; intentionally absent from the public index. */
-export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): number | undefined {
-  const bytes = runtimeRequestBytes.get(request);
-  if (bytes !== undefined) runtimeRequestBytes.delete(request);
-  return bytes;
-}
-
-/** Transport-independent adapter implemented by the database runtime. */
-export interface RuntimePort {
-  readonly credentialVerifier: CredentialVerifier | undefined;
-  resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity>;
-  openSession(context: SessionRuntimeContext): Promise<void>;
-  transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
-  subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void>;
-  unsubscribe(context: SessionRuntimeContext, request: RuntimeRequest<UnsubscribeMessage>): Promise<void>;
-  reset(context: SessionRuntimeContext, request: RuntimeRequest<ResetRequestMessage>): Promise<void>;
-  joinChannel(context: SessionRuntimeContext, request: RuntimeRequest<ChannelJoinMessage>): Promise<void>;
-  leaveChannel(context: SessionRuntimeContext, request: RuntimeRequest<ChannelLeaveMessage>): Promise<void>;
-  sendChannel(context: SessionRuntimeContext, request: RuntimeRequest<ChannelSendMessage>): Promise<void>;
-  /** Publishes the success or error frame before settling. */
-  query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown>;
-  /** Publishes the success or error frame before settling. */
-  procedure(context: SessionRuntimeContext, request: RuntimeRequest<ProcedureMessage>): Promise<unknown>;
-  /** Publishes the success or error frame before settling. */
-  mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult>;
-  closeSession(context: SessionRuntimeContext, outcome: Outcome): Promise<void>;
-}
-
-export type SessionPhase = "awaiting_hello" | "opening" | "active" | "refreshing" | "closed";
-
-export interface SessionSnapshot {
-  readonly phase: SessionPhase;
-  readonly clientSessionId: string | null;
-  readonly principal: Principal | null;
-  readonly authEpoch: number;
-  readonly latestAttemptId: number;
-}
-
-export type SessionLimits = Pick<
-  ServiceLimits,
-  "maxRequestBytes" | "maxFrameBytes"
->;
-
-export interface SessionOptions {
-  readonly runtime: RuntimePort;
-  readonly sink: SessionSink;
-  /** Actual peer address captured by the transport; forwarded headers are not trusted. */
-  readonly source: TransportSource;
-  readonly clock?: SessionClock;
-  readonly revocationDeadlineMs?: number;
-  /** Per-session request and transport-frame limits. */
-  readonly limits?: SessionLimits;
-}
-
-/** Attach package-internal auth observation without expanding Session's public options. */
-export function withSessionAuthObserver<T extends SessionOptions>(
-  options: T,
-  observer: AuthenticationAttemptObserver | undefined,
-): T {
-  if (observer !== undefined) Object.assign(options, { [SESSION_AUTH_OBSERVER]: observer });
-  return options;
-}
-
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
-const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
@@ -295,9 +94,6 @@ function operationError(cause: unknown): AckerDBError {
   return isAckerDBError(cause) ? cause : internalError(cause);
 }
 
-function protocolError(error: ProtocolError): AckerDBError {
-  return new AckerDBError(error.code, error.message, { cause: error });
-}
 
 function authStale(): AckerDBError {
   return new AckerDBError("auth_stale", "authentication state changed");
@@ -314,7 +110,7 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly observeAuth: AuthenticationAttemptObserver | undefined;
+  private readonly authObservations: PendingAuthObservations;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
@@ -326,7 +122,6 @@ export class Session {
   private paused = true;
   private epochController = new AbortController();
   private pendingAuthController: AbortController | null = null;
-  private pendingAuthObservation: PendingAuthObservation | null = null;
   private lastAuthAck: AuthenticatedMessage | null = null;
   private expiryTimer: unknown;
   private authTail: Promise<void> = Promise.resolve();
@@ -342,7 +137,7 @@ export class Session {
     validateCredentialVerifierRevocation(options.runtime.credentialVerifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
-    this.observeAuth = (options as SessionOptions & InternalSessionOptions)[SESSION_AUTH_OBSERVER];
+    this.authObservations = new PendingAuthObservations(options);
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
@@ -374,46 +169,16 @@ export class Session {
 
   /** Owns exact byte admission and Protocol-2 decoding for one raw WebSocket message. */
   handle(raw: SessionWireFrame): Promise<void> {
-    let bytes: number;
-    if (typeof raw === "string") {
-      bytes = Buffer.byteLength(raw);
-    } else if (raw instanceof Uint8Array) {
-      bytes = raw.byteLength;
-    } else {
-      return this.rejectFrame(new AckerDBError("malformed", "client frame must be text or binary"));
-    }
-    if (bytes > this.maxFrameBytes) {
-      return this.rejectFrame(new AckerDBError("overloaded", "client frame exceeds maxFrameBytes", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "connection",
-      }));
-    }
-    if (bytes > this.maxRequestBytes) {
-      return this.rejectFrame(new AckerDBError("overloaded", "client request exceeds maxRequestBytes", {
-        resource: "operation",
-      }));
-    }
-
-    let text: string;
+    let frame: DecodedClientFrame;
     try {
-      text = typeof raw === "string" ? raw : STRICT_UTF8.decode(raw);
-    } catch (cause) {
-      return this.rejectFrame(new AckerDBError("malformed", "client frame is not valid UTF-8", { cause }));
-    }
-    let message: ClientMessage;
-    try {
-      message = parseClientMessage(decode(text));
-    } catch (cause) {
-      const error = cause instanceof ProtocolError
-        ? protocolError(cause)
-        : new AckerDBError("malformed", "malformed client frame", { cause });
-      return this.rejectFrame(error);
+      frame = decodeClientFrame(raw, this.maxFrameBytes, this.maxRequestBytes);
+    } catch (error) {
+      return this.rejectFrame(error as AckerDBError);
     }
 
     let result: Promise<void>;
     try {
-      result = Promise.resolve(this.dispatchFrame(message, bytes));
+      result = Promise.resolve(this.dispatchFrame(frame.message, frame.bytes));
     } catch (error) {
       result = Promise.reject(error);
     }
@@ -530,12 +295,9 @@ export class Session {
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
     const authController = new AbortController();
     this.pendingAuthController = authController;
-    const observationOwner = this.observeAuth === undefined ? undefined : authController;
+    const observationOwner = this.authObservations.enabled ? authController : undefined;
     if (observationOwner !== undefined) {
-      this.setPendingAuthObservation(
-        observationOwner,
-        this.beginAuthObservation({ kind: "hello", clientSessionId }),
-      );
+      this.authObservations.begin(observationOwner, { kind: "hello", clientSessionId });
     }
     let principal: ClientPrincipal;
     try {
@@ -544,13 +306,13 @@ export class Session {
       const failure = verifierError(error);
       if (this.pendingAuthController === authController) this.pendingAuthController = null;
       if (observationOwner !== undefined) {
-        this.finishPendingAuthObservation(observationOwner, failure);
+        this.authObservations.finish(observationOwner, failure);
       }
       void this.terminate(failure);
       return;
     }
     if (this.pendingAuthController === authController) this.pendingAuthController = null;
-    if (observationOwner !== undefined) this.finishPendingAuthObservation(observationOwner);
+    if (observationOwner !== undefined) this.authObservations.finish(observationOwner);
     if (this.isClosed()) return;
     try {
       this.clientSessionId = clientSessionId;
@@ -595,27 +357,29 @@ export class Session {
     aborted(this.epochController, stale);
     this.abortActiveProcedures(stale);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, stale);
-    this.finishPendingAuthObservation(undefined, stale);
+    this.authObservations.finish(undefined, stale);
     const transitionController = new AbortController();
     this.pendingAuthController = transitionController;
     const clientSessionId = this.clientSessionId;
-    const observation = clientSessionId === null || this.observeAuth === undefined
-      ? undefined
-      : this.beginAuthObservation({
-          kind: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
-          clientSessionId,
-          attemptId: message.attemptId,
-        });
-    this.setPendingAuthObservation(transitionController, observation);
+    this.authObservations.begin(
+      transitionController,
+      clientSessionId === null
+        ? undefined
+        : {
+            kind: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
+            clientSessionId,
+            attemptId: message.attemptId,
+          },
+    );
 
     void this.verifyCredential(message.credential, transitionController.signal).then(
       (principal) => {
-        this.finishPendingAuthObservation(transitionController);
+        this.authObservations.finish(transitionController);
         this.queueAuthCompletion(message, transitionController, principal);
       },
       (error) => {
         const failure = verifierError(error);
-        this.finishPendingAuthObservation(transitionController, failure);
+        this.authObservations.finish(transitionController, failure);
         this.queueAuthCompletion(message, transitionController, failure);
       },
     );
@@ -857,41 +621,6 @@ export class Session {
     return principal;
   }
 
-  private beginAuthObservation(
-    input: AuthenticationAttemptInput,
-  ): AuthenticationAttemptObservation | undefined {
-    try {
-      return this.observeAuth?.(input);
-    } catch {
-      return undefined;
-    }
-  }
-
-  private finishAuthObservation(
-    observation: AuthenticationAttemptObservation | undefined,
-    error?: unknown,
-  ): void {
-    try {
-      observation?.finish(error);
-    } catch {
-      // Authentication owns application progress; observation is fail-open.
-    }
-  }
-
-  private setPendingAuthObservation(
-    owner: object,
-    observation: AuthenticationAttemptObservation | undefined,
-  ): void {
-    this.pendingAuthObservation = observation === undefined ? null : { owner, observation };
-  }
-
-  private finishPendingAuthObservation(owner?: object, error?: unknown): void {
-    const pending = this.pendingAuthObservation;
-    if (pending === null || (owner !== undefined && pending.owner !== owner)) return;
-    this.pendingAuthObservation = null;
-    this.finishAuthObservation(pending.observation, error);
-  }
-
   private isCurrent(authEpoch: number): boolean {
     return this.phase !== "closed" && this.authEpoch === authEpoch;
   }
@@ -971,7 +700,7 @@ export class Session {
     aborted(this.epochController, error);
     this.abortActiveProcedures(error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
-    this.finishPendingAuthObservation(undefined, error);
+    this.authObservations.finish(undefined, error);
     const authPublications = this.authPublications;
     this.authPublications = null;
     authPublications?.release();

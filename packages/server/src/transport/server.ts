@@ -77,7 +77,8 @@ import type {
   RuntimeHttpResponder,
 } from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
-import { Session, withSessionAuthObserver } from "../subscriptions/session.ts";
+import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
+import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";

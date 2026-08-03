@@ -37,7 +37,7 @@ import {
   type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionRuntimeContext,
-} from "../../subscriptions/session.ts";
+} from "../../subscriptions/session/contract.ts";
 import type { TelemetryOperation } from "../../telemetry/telemetry.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";

@@ -68,7 +68,7 @@ import {
   type RuntimePublicationBatch,
   type RuntimeRequest,
   type SessionRuntimeContext,
-} from "../subscriptions/session.ts";
+} from "../subscriptions/session/contract.ts";
 import type { RuntimeLifecycleState } from "./contracts/lifecycle.ts";
 import type { RuntimeOptions } from "./contracts/options.ts";
 import type {

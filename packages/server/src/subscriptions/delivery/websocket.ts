@@ -11,7 +11,7 @@ import {
   type RuntimePublication,
   type SessionControlMessage,
   type SessionSink,
-} from "../session.ts";
+} from "../session/contract.ts";
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 import {

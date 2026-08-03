@@ -12,7 +12,7 @@ import { mcp as mcpDeclaration, mcpAuth } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { v } from "../../src/validation/v.ts";
 import { serve } from "../../src/transport/server.ts";
-import type { SessionApplicationMessage } from "../../src/subscriptions/session.ts";
+import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
   agentAuth,
   agentMcp,

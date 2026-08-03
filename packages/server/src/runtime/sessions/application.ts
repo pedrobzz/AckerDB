@@ -29,7 +29,7 @@ import type {
   RuntimePublication,
   RuntimeRequest,
   SessionRuntimeContext,
-} from "../../subscriptions/session.ts";
+} from "../../subscriptions/session/contract.ts";
 import type {
   ReactiveCommit,
   Subscriber,

@@ -538,7 +538,6 @@ export {
 export { OrderedReactive } from "./subscriptions/reactive/ordered.ts";
 export {
   prepareRuntimePublication,
-  Session,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
@@ -552,9 +551,10 @@ export {
   type SessionRuntimeContext,
   type SessionSink,
   type SessionSnapshot,
-  type SessionWireFrame,
   type SubscriptionServerMessage,
-} from "./subscriptions/session.ts";
+} from "./subscriptions/session/contract.ts";
+export { type SessionWireFrame } from "./subscriptions/session/frame.ts";
+export { Session } from "./subscriptions/session/session.ts";
 export {
   Runtime,
 } from "./runtime/runtime.ts";

@@ -24,7 +24,7 @@ import {
   prepareRuntimePublication,
   type RuntimePublication,
   type SessionControlMessage,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import {
   CLAIM_DELIVERY_LEASE,
   prepareTelemetryTraceContext,
