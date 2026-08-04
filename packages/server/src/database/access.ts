@@ -17,6 +17,9 @@ import {
 } from "./statement-observation.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
+import { decode, stableEncode } from "@ackerdb/core";
+import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
+import { hashJobArgs } from "../jobs/identity.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -598,6 +601,75 @@ export function makeDbReader(
   return db;
 }
 
+/**
+ * The application-facing writer over the framework jobs table. The runner owns
+ * the state machine, so its columns are guarded here — the one public write
+ * seam — while scheduling intent stays open: `runAt`, `key`, and `argsJson`
+ * may be patched (a patched `argsJson` recomputes the dedup hash so identity
+ * cannot drift), and rows may be deleted. Inserts go through
+ * `ctx.jobs.enqueue`, the door that computes identity and dedup.
+ */
+function guardedJobsWriter(
+  writer: ReturnType<typeof writeMethods>,
+  getRow: (id: bigint) => Promise<Record<string, unknown> | null>,
+): ReturnType<typeof writeMethods> {
+  const refuse = (op: string): never => {
+    throw new ValidationError(
+      `${JOBS_TABLE}.${op}: jobs are created with ctx.jobs.enqueue and settled by the runner`,
+    );
+  };
+  return {
+    ...writer,
+    insert: () => refuse("insert"),
+    replace: () => refuse("replace"),
+    patch: (id: bigint, partial: unknown) => {
+      if (partial !== null && typeof partial === "object" && !Array.isArray(partial)) {
+        const input = partial as Record<string, unknown>;
+        for (const key of Object.keys(input)) {
+          if (input[key] !== undefined && JOBS_GUARDED_COLUMNS.has(key)) {
+            throw new ValidationError(
+              `${JOBS_TABLE}.patch: "${key}" belongs to the runner's state machine; use the ctx.jobs transitions`,
+            );
+          }
+        }
+        const editsIntent = ["argsJson", "key", "runAt"].some(
+          (column) => input[column] !== undefined,
+        );
+        if (editsIntent) {
+          return makeWriteResult(async () => {
+            // A running row's claim already captured its arguments and gate:
+            // editing them mid-flight would settle old work under a new
+            // identity. Cancel first, then edit.
+            const current = await getRow(id);
+            if (current !== null && (current as { state?: unknown }).state === "running") {
+              throw new ValidationError(
+                `${JOBS_TABLE}.patch: the row is running; cancel it before editing its scheduling intent`,
+              );
+            }
+            let patch = input;
+            if (typeof input["argsJson"] === "string") {
+              // Canonicalize before hashing so an equivalent encoding cannot
+              // fork the dedup identity; a non-decodable payload is refused.
+              let canonical: string;
+              try {
+                canonical = stableEncode(decode(input["argsJson"]));
+              } catch {
+                throw new ValidationError(
+                  `${JOBS_TABLE}.patch: argsJson is not a valid canonical encoding`,
+                );
+              }
+              patch = { ...input, argsJson: canonical, argsHash: hashJobArgs(canonical) };
+            }
+            await writer.patch(id, patch);
+            return { value: undefined, row: await getRow(id) };
+          }) as ReturnType<ReturnType<typeof writeMethods>["patch"]>;
+        }
+      }
+      return writer.patch(id, partial);
+    },
+  };
+}
+
 /** Read-write ctx.db (mutations / procedure transactions). */
 export function makeDbWriter(
   engine: Engine,
@@ -614,18 +686,40 @@ export function makeDbWriter(
     }
     const plan = scope.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
+    const reader = readMethods(engine, engine.writer, null, plan, observer);
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),
-      readMethods(engine, engine.writer, null, plan, observer),
-      writer,
+      reader,
+      name === JOBS_TABLE
+        ? guardedJobsWriter(
+            writer,
+            reader["get"] as (id: bigint) => Promise<Record<string, unknown> | null>,
+          )
+        : writer,
     );
-    const upsertWriter = observer === undefined
-      ? writer
-      : writeMethods(engine, writes, plan);
-    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    if (name !== JOBS_TABLE) {
+      const upsertWriter = observer === undefined
+        ? writer
+        : writeMethods(engine, writes, plan);
+      attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    }
     db[name] = accessor;
   }
   return db;
+}
+
+/**
+ * The runner's unguarded door to the jobs table: full write methods over the
+ * jobs plan, with write keys and commit-wake emitted like any table write.
+ * Framework code only — never handed to an application handler.
+ */
+export function makeJobsTableWriter(
+  engine: Engine,
+  writes: WriteCollector,
+  observer?: DbStatementObserver,
+): ReturnType<typeof writeMethods> & { plan: TablePlan } {
+  const plan = engine.rootScope.plan(JOBS_TABLE);
+  return Object.assign(writeMethods(engine, writes, plan, observer), { plan });
 }
 
 export function newWriteCollector(): WriteCollector {

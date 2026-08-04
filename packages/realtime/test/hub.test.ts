@@ -44,6 +44,7 @@ function procedure(signal: AbortSignal): ProcedureCtx {
     abortSignal: signal,
     log: noopLogger,
     timestamp: 1,
+    jobs: {},
     tx: async () => Ok(undefined),
     linkAccount: async () => {},
     unlinkAccount: async () => {},

@@ -66,6 +66,7 @@ import {
 } from "../mcp/token-vault.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
+import { JOBS_TABLE, withJobsTable } from "../jobs/table.ts";
 import {
   canonicalSnapshotJson,
   snapshotOf,
@@ -435,6 +436,12 @@ function storedName(value: unknown, path: string): string {
   return value;
 }
 
+/** Table names: application identifiers plus the framework jobs table. */
+function storedTableName(value: unknown, path: string): string {
+  if (value === JOBS_TABLE) return value;
+  return storedName(value, path);
+}
+
 export function physicalColumnDdl(name: string, descriptor: Descriptor, path: string): string[] {
   if (!storedRecord(descriptor) || typeof descriptor["k"] !== "string") {
     corruptSnapshot(`${path} is not a validator descriptor`);
@@ -578,7 +585,7 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
     corruptSnapshot("root must contain version 2 and a tables object");
   }
   for (const [tableName, value] of Object.entries(parsed["tables"])) {
-    storedName(tableName, "table name");
+    storedTableName(tableName, "table name");
     if (!storedRecord(value) || (value["kind"] !== "table" && value["kind"] !== "event")) {
       corruptSnapshot(`${tableName} has an invalid table kind`);
     }
@@ -1255,6 +1262,9 @@ export class Engine {
     path: string,
     options: EngineOptions = {},
   ) {
+    // Every root schema carries the framework jobs table: storage, migrations,
+    // reactivity, and backups treat it exactly like an application table.
+    schema = withJobsTable(schema);
     this.schema = schema;
     loadVectorRuntimeForSchema(schema);
     this.durability = options.durability ?? "production";
@@ -1531,6 +1541,9 @@ export class Engine {
         !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
         !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
         !object.name.startsWith(FULL_TEXT_OBJECT_PREFIX) &&
+        // The framework jobs table lives in the logical schema; its shape is
+        // verified against the snapshot like any application table.
+        object.tbl_name !== JOBS_TABLE &&
         !INTERNAL_OBJECT_NAMES.has(object.name),
     );
     if (unknown !== undefined) {

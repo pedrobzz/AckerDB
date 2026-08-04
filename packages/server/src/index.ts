@@ -104,6 +104,43 @@ export {
   type ServiceStart,
 } from "./services/definition.ts";
 export {
+  declareJobs,
+  isJob,
+  job,
+  DEFAULT_JOB_RETENTION_MS,
+  type AnyJob,
+  type DeclaredJob,
+  type Job,
+  type JobBuilder,
+  type JobCtx,
+  type JobDedupe,
+  type JobRepeat,
+  type JobRepeatConfig,
+  type JobRetry,
+  type JobRetryConfig,
+  type JobState,
+  type JobTxCtx,
+  type JobWindow,
+} from "./jobs/definition.ts";
+export {
+  type AnyJobsNamespace,
+  type JobControlSurface,
+  type JobMutationSurface,
+  type JobQuerySurface,
+  type MutationJobsOf,
+  type ProcedureJobsOf,
+  type QueryJobsOf,
+  type TypedJobOutcome,
+} from "./jobs/api.ts";
+export { JOBS_TABLE, withJobsTable } from "./jobs/table.ts";
+export {
+  type JobAttemptOutcome,
+  type JobAttemptRecord,
+  type JobEnqueueOptions,
+  type JobHandle,
+  type JobRow,
+} from "./runtime/jobs/runtime.ts";
+export {
   ServiceError,
   ServiceRuntime,
   type ServicePhase,
@@ -625,7 +662,6 @@ export {
   TableDef,
   type IndexDef,
   type IndexOptions,
-  type ScheduledHandler,
   type TableColumns,
   type TableFullTextColumns,
   type TableIndexes,

@@ -67,7 +67,7 @@ describe("reconcile: bootstrap", () => {
   test("fresh database initializes; identical schema is a no-op", () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
-    expect(a.applied).toEqual(["initialized 1 table(s)"]);
+    expect(a.applied).toEqual(["initialized 2 table(s)"]);
     a.engine.close("clean");
     const b = open(baseSchema(), path);
     expect(b.applied).toEqual([]);
@@ -77,7 +77,7 @@ describe("reconcile: bootstrap", () => {
   test("reordering column declarations is not a schema change", () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
-    expect(a.applied).toEqual(["initialized 1 table(s)"]);
+    expect(a.applied).toEqual(["initialized 2 table(s)"]);
     const stored = a.engine.loadSnapshot()!;
     a.engine.close("clean");
 

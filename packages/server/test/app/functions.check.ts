@@ -329,9 +329,6 @@ export const _pipeline = typedProcedure({
   },
 });
 
-defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled(bump);
-// @ts-expect-error scheduled handlers must be mutations so deletion shares their commit
-defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled(_pipeline);
 
 export const _readOnly = typedQuery({
   args: {},

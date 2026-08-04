@@ -656,7 +656,7 @@ describe("MCP Runtime ownership", () => {
         activeOperations: 0,
         activeOperationCallers: 0,
         activeSse: 0,
-        schedulerArmed: false,
+        jobsArmed: false,
         reader: { active: 0, queue: { queuedItems: 0, queuedBytes: 0 } },
         writer: { active: 0, queue: { queuedItems: 0, queuedBytes: 0 } },
       });

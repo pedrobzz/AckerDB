@@ -8,6 +8,7 @@ export const TELEMETRY_OPERATIONS = [
   "sse",
   "transaction",
   "scheduled",
+  "job",
   "subscription",
   "realtime",
   "backup",
@@ -90,6 +91,12 @@ export const TELEMETRY_EVENT_NAMES = [
   "overload",
   "exporter_degraded",
   "failure",
+  "job_claimed",
+  "job_settled",
+  "job_retried",
+  "job_discarded",
+  "job_canceled",
+  "job_failure",
 ] as const;
 export type TelemetryEventName = (typeof TELEMETRY_EVENT_NAMES)[number];
 export type TelemetryLevel = "info" | "warn" | "error";

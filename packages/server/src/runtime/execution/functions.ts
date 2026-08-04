@@ -16,7 +16,9 @@ import {
   type Principal,
 } from "../../auth/credentials.ts";
 import {
+  checkpointWriteCollector,
   makeDbReader,
+  rollbackWriteCollector,
   type ReadRecorder,
   type WriteCollector,
 } from "../../database/access.ts";
@@ -63,6 +65,7 @@ import {
 } from "../coordinator.ts";
 import {
   assertWriterAvailable,
+  runInInvocationRoot,
   withMutationAccess,
   withTransactionAnalytics,
 } from "../invocation-state.ts";
@@ -70,14 +73,38 @@ import { createMutationInvocationScope } from "../mutation-scope.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
 import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
+import { JobsStore, dueJobStats, nextDueJobAt, readJobRow } from "../jobs/store.ts";
 import {
-  quoteSqlIdentifier,
-  type ScheduledCandidate,
-} from "../scheduler/candidate.ts";
+  mutationJobsNamespace,
+  procedureJobsNamespace,
+  queryJobsNamespace,
+} from "../jobs/namespace.ts";
+import type { RuntimeJobs } from "../jobs/runtime.ts";
 import { RuntimeReadExecutor } from "./read.ts";
 
 const releaseNothing = (): void => {};
-const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
+
+/** What one runner transaction can reach; see `jobsWrite`. */
+export interface JobsWriteSurface {
+  readonly jobs: JobsStore;
+  /**
+   * A savepoint over the open transaction plus its write collector: the
+   * mutation-kind envelope runs the handler inside one, so a failed handler
+   * rolls back its writes while the same transaction still records the
+   * failed attempt.
+   */
+  savepoint(): { rollback(): void; release(): void };
+  /**
+   * Run a mutation-kind job handler under a system-principal mutation context
+   * with the same bindings (MCP token vault, analytics attribution) a
+   * registered mutation would have.
+   */
+  runMutationHandler<T>(
+    jobAddress: string,
+    attempt: number,
+    run: (ctx: MutationCtx & { readonly attempt: number }) => T | Promise<T>,
+  ): Promise<T>;
+}
 
 export function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   if (isResult(value)) return value;
@@ -146,7 +173,10 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
-  readonly armScheduler: (touchedTables: ReadonlySet<string>) => void;
+  /** Commit-wake: fired when a transaction touched the jobs table. */
+  readonly armJobs: () => void;
+  /** Lazy: the jobs runner is constructed after this executor. */
+  readonly jobs: () => RuntimeJobs;
   readonly now: () => number;
   readonly hooks?: Pick<RuntimeHooks, "wait">;
 }
@@ -262,93 +292,6 @@ export class RuntimeFunctionExecutor<C> {
     });
   }
 
-  async executeScheduledMutation(
-    candidate: ScheduledCandidate,
-    now: number,
-    signal: AbortSignal,
-  ): Promise<ReadonlySet<string> | null> {
-    let row: Record<string, unknown> | null = null;
-    let scheduledTables: ReadonlySet<string> = new Set();
-    try {
-      await this.coordinator.execute({
-        operation: "scheduled",
-        fairnessKey: "system:scheduler",
-        requestBytes: 1,
-        admissionSignal: signal,
-        ...(this.options.telemetry.enabled
-          ? {
-              telemetry: this.options.tracing.observeCommit,
-              statementTelemetry: this.options.tracing.observeStatement,
-              run: AsyncLocalStorage.snapshot(),
-            }
-          : {}),
-        work: (db, writes) => this.withStagedAnalytics(writes, async () => {
-          const plan = this.options.engine.plan(candidate.table);
-          const raw = this.options.tracing.measureStatement(
-            "read",
-            candidate.table,
-            "scheduledGet",
-            () => this.options.engine.writer.query(
-              `SELECT ${plan.readProjection} FROM ${quoteSqlIdentifier(candidate.table)} WHERE ${quoteSqlIdentifier(plan.pk)} = ? AND ${quoteSqlIdentifier(plan.scheduleAt!)} <= ?`,
-            ).get(candidate.primaryKey as never, now) as Record<string, unknown> | null,
-            (value) => value === null ? 0 : 1,
-          );
-          if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
-          row = this.options.engine.rowFromSql(plan, raw);
-          const fn = this.expectMutation(candidate.address);
-          const invocation = this.hostMutationContext(
-            db,
-            SYSTEM_PRINCIPAL,
-            this.readNow(),
-            writes,
-          );
-          const scope = createMutationInvocationScope(this.options.engine.writer, writes);
-          const result = await scope.runRoot((mutationAccess) =>
-          this.options.mcp !== undefined
-            ? this.options.mcp.bindTokenContext(
-                invocation,
-                SYSTEM_PRINCIPAL,
-                this.options.engine.writer,
-                null,
-                writes,
-                (ctx) => invokeFunction(fn, ctx, row, { mutationAccess }),
-              )
-              : invokeFunction(fn, invocation, row, { mutationAccess }));
-          if (!result.ok) {
-            throw new AckerDBError(
-              "conflict",
-              `scheduled mutation returned application error ${result.error.code}`,
-            );
-          }
-        }),
-        finalize: (writes) => {
-          const scheduledRow = row;
-          if (scheduledRow === null) return;
-          const plan = this.options.engine.plan(candidate.table);
-          this.options.tracing.measureStatement(
-            "write",
-            candidate.table,
-            "scheduledDelete",
-            () => this.options.engine.writer.query(
-              `DELETE FROM ${quoteSqlIdentifier(candidate.table)} WHERE ${quoteSqlIdentifier(plan.pk)} = ?`,
-            ).run(scheduledRow[plan.pk] as never),
-            () => 1,
-          );
-          emitWriteKeys(plan, scheduledRow, writes.keys);
-          writes.scheduledTables.add(candidate.table);
-        },
-        publication: (_version, writes) => {
-          scheduledTables = new Set(writes.scheduledTables);
-          return this.publicationFor(writes);
-        },
-      });
-      return scheduledTables;
-    } catch (error) {
-      if (error === STALE_SCHEDULED_CANDIDATE) return null;
-      throw error;
-    }
-  }
-
   createMcpTransactionContext(
     principal: Principal,
     fairnessKey: string,
@@ -451,6 +394,7 @@ export class RuntimeFunctionExecutor<C> {
       get timestamp(): number {
         return currentTimestamp();
       },
+      jobs: procedureJobsNamespace(this.options.jobs()),
       ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
         this.inTransactionTrace(() => this.executeWrite(
@@ -527,6 +471,7 @@ export class RuntimeFunctionExecutor<C> {
       auth: principal,
       log: this.options.log,
       timestamp,
+      jobs: queryJobsNamespace(this.options.jobs(), db),
       ...plugins,
     }) as QueryCtx;
   }
@@ -536,8 +481,10 @@ export class RuntimeFunctionExecutor<C> {
     principal: Principal,
     timestamp: number,
     writes: WriteCollector,
+    attribution?: { functionAddress: string; functionKind: string },
+    extras?: Record<string, unknown>,
   ): MutationCtx {
-    const analytics = this.options.applicationSignals.analyticsFor(principal);
+    const analytics = this.options.applicationSignals.analyticsFor(principal, attribution);
     const plugins = this.options.pluginRuntime?.bindMutation({
       writes,
       invocation: this.pluginInvocationCapabilities(principal, timestamp),
@@ -546,11 +493,21 @@ export class RuntimeFunctionExecutor<C> {
         : {}),
     }) ?? {};
     return Object.freeze({
+      ...extras,
       db,
       auth: principal,
       analytics,
       log: this.options.log,
       timestamp,
+      jobs: mutationJobsNamespace(
+        this.options.jobs(),
+        db,
+        new JobsStore(
+          this.options.engine,
+          writes,
+          this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
+        ),
+      ),
       ...plugins,
     }) as MutationCtx;
   }
@@ -606,7 +563,7 @@ export class RuntimeFunctionExecutor<C> {
         return this.publicationFor(writes, request.subscriber);
       },
     });
-    if (scheduledTables.size > 0) this.options.armScheduler(scheduledTables);
+    if (scheduledTables.size > 0) this.options.armJobs();
     return result;
   }
 
@@ -646,6 +603,94 @@ export class RuntimeFunctionExecutor<C> {
       work,
     });
     return result.value;
+  }
+
+  /**
+   * One coordinated writer transaction for the job runner: the jobs store
+   * (unguarded framework writes over `_ackerdb_jobs`) plus a system-principal
+   * mutation context for mutation-kind handlers, all inside the ordinary
+   * mutation access scope so table methods, write keys, publication, and
+   * commit-wake behave exactly as they do for any mutation.
+   */
+  async jobsWrite<T>(
+    signal: AbortSignal,
+    work: (surface: JobsWriteSurface) => T | Promise<T>,
+  ): Promise<T> {
+    return await this.executeWrite(
+      "transaction",
+      "system:jobs",
+      signal,
+      1,
+      (db, writes) => {
+        const surface: JobsWriteSurface = {
+          jobs: new JobsStore(
+            this.options.engine,
+            writes,
+            this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
+          ),
+          savepoint: () => {
+            const checkpoint = checkpointWriteCollector(writes);
+            this.options.engine.writer.exec("SAVEPOINT ackerdb_job_handler");
+            let settled = false;
+            return {
+              rollback: () => {
+                if (settled) return;
+                settled = true;
+                this.options.engine.writer.exec("ROLLBACK TO ackerdb_job_handler");
+                this.options.engine.writer.exec("RELEASE ackerdb_job_handler");
+                rollbackWriteCollector(writes, checkpoint);
+              },
+              release: () => {
+                if (settled) return;
+                settled = true;
+                this.options.engine.writer.exec("RELEASE ackerdb_job_handler");
+              },
+            };
+          },
+          runMutationHandler: async (jobAddress, attempt, run) => {
+            // The attempt is part of the context object itself: capability
+            // bindings key off the exact frozen identity, so no caller may
+            // spread a bound context into a copy.
+            const context = this.hostMutationContext(
+              db,
+              SYSTEM_PRINCIPAL,
+              this.readNow(),
+              writes,
+              { functionAddress: jobAddress, functionKind: "job" },
+              { attempt },
+            ) as MutationCtx & { readonly attempt: number };
+            return this.options.mcp !== undefined
+              ? await this.options.mcp.bindTokenContext(
+                  context,
+                  SYSTEM_PRINCIPAL,
+                  this.options.engine.writer,
+                  null,
+                  writes,
+                  run,
+                )
+              : await run(context);
+          },
+        };
+        const scope = createMutationInvocationScope(this.options.engine.writer, writes);
+        // Runner transactions start from timers, not requests: they own their
+        // invocation root, exactly as system.run owns one for its callback.
+        return runInInvocationRoot(SYSTEM_PRINCIPAL, () =>
+          scope.runRoot((mutationAccess) =>
+            withMutationAccess(mutationAccess, async () => await work(surface))));
+      },
+    );
+  }
+
+  readJobRow(connection: Database, id: bigint) {
+    return readJobRow(this.options.engine, connection, id);
+  }
+
+  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = []) {
+    return nextDueJobAt(this.options.engine, connection, inProcessIds);
+  }
+
+  dueJobStats(connection: Database, now: number) {
+    return dueJobStats(this.options.engine, connection, now);
   }
 
   private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {

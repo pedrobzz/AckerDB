@@ -12,6 +12,7 @@ import {
   snapshotOf,
   validateHistoryPrefix,
   type Renames,
+  withJobsTable,
 } from "@ackerdb/server";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
@@ -62,7 +63,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   // here and its refusals flow into the scaffold alongside the shape-classified
   // ones. Re-probed fresh (never carried on the wire), so the scaffold reflects
   // the database as it actually is at write time.
-  const target = snapshotOf(schema);
+  const target = snapshotOf(withJobsTable(schema));
   // Consent is verified against the freshly derived plan, not the one the
   // prompt displayed — so a yes and the write are atomic, and a schema that
   // moved in between can never be generated for unseen.

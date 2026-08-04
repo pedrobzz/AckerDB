@@ -43,7 +43,6 @@ import {
   compileExposedHttpCodec,
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
-import type { Schema, ScheduledHandler } from "../schema/definition.ts";
 
 type ServerOnlyExport = AnyMcpDeclaration | AnyMcpAuthProvider;
 
@@ -336,43 +335,4 @@ export class Registry {
       : undefined);
   }
 
-  /*
-   * The methods below retain the function registry's existing scheduling
-   * contract; MCP tools are deliberately absent from it.
-   */
-
-  /** Resolve a .scheduled(...) handler (string | ref | registered fn) to an address. */
-  resolveHandler(handler: ScheduledHandler, where: string): string {
-    let address: string;
-    if (typeof handler === "string") {
-      address = handler;
-    } else if (isRegisteredFunction(handler)) {
-      const found = this.addressOf(handler);
-      if (found === undefined) {
-        throw new Error(`${where}: scheduled handler is not exported from any function module`);
-      }
-      address = found;
-    } else {
-      address = getRef(handler as never);
-    }
-    const kind = this.kindOf(address);
-    if (kind === undefined) {
-      throw new Error(`${where}: scheduled handler "${address}" does not exist`);
-    }
-    if (kind !== "mutation") {
-      throw new Error(`${where}: scheduled handler "${address}" must be a mutation, got ${kind}`);
-    }
-    return address;
-  }
-
-  /** Validate every scheduled table's handler up front; returns table -> address. */
-  resolveScheduled(schema: Schema): Map<string, string> {
-    const resolved = new Map<string, string>();
-    for (const [table, def] of Object.entries(schema.tables)) {
-      if (def.scheduledHandler !== null) {
-        resolved.set(table, this.resolveHandler(def.scheduledHandler, `table ${table}`));
-      }
-    }
-    return resolved;
-  }
 }

@@ -29,13 +29,19 @@ import {
   reconcilePluginStorage,
   reconcile,
   declareServices,
+  declareJobs,
   ServiceError,
   ServiceRuntime,
   UnsafeSchemaChange,
   validateHistoryPrefix,
 } from "@ackerdb/server";
 import type { AppConfig } from "./config.ts";
-import { importApp, importFunctionModules, importServiceModules } from "./manifest.ts";
+import {
+  importApp,
+  importFunctionModules,
+  importJobModules,
+  importServiceModules,
+} from "./manifest.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
@@ -321,13 +327,15 @@ export async function startApp<const A extends App = App>(
     // not schema migration. Load them only after durable schema work commits so
     // unrelated runtime configuration cannot block a pending migration.
     server.advanceStartup("loading-runtime");
-    const [verifier, modules, serviceModules] = await awaitStartup(Promise.all([
+    const [verifier, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
       importFunctionModules(config),
       importServiceModules(config),
+      importJobModules(config),
     ]));
     requireStartupOwnership();
     const declaredServices = declareServices(serviceModules);
+    const declaredJobs = declareJobs(jobModules);
 
     const assembly = assemblePlugins(app.plugins);
     const pluginStorage = reconcilePluginStorage(ownedEngine, desiredPluginMounts(app));
@@ -347,6 +355,7 @@ export async function startApp<const A extends App = App>(
       engine: ownedEngine,
       registry,
       pluginRuntime,
+      jobs: declaredJobs,
       ...(verifier === undefined ? {} : { verifier }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,

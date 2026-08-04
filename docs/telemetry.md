@@ -282,7 +282,7 @@ interface TelemetryMetricRecord {
 ```
 
 `TelemetryOperation` is one of `query`, `mutation`, `procedure`, `sse`,
-`transaction`, `scheduled`, `subscription`, `realtime`, `backup`, `restore`,
+`transaction`, `scheduled`, `job`, `subscription`, `realtime`, `backup`, `restore`,
 or `lifecycle`. `TELEMETRY_STAGES` is exactly:
 
 ```text

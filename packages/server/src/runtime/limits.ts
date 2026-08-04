@@ -57,7 +57,14 @@ export interface ServiceLimits {
     readonly maxAgeMs: number;
     readonly maxBytes: number;
   };
-  readonly schedulerBatchSize: number;
+  readonly jobs: {
+    /** Max simultaneously running job handlers across every definition. */
+    readonly maxRunning: number;
+    /** Max rows claimed by one runner wake. */
+    readonly claimBatchSize: number;
+    /** How long one claimed attempt owns its row before recovery re-runs it. */
+    readonly leaseMs: number;
+  };
   readonly publication: CapacityLimits;
   readonly mutationReplay: {
     readonly maxAgeMs: number;
@@ -140,7 +147,9 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["resume.maxBytesPerStream", limits.resume.maxBytesPerStream],
     ["resume.maxAgeMs", limits.resume.maxAgeMs],
     ["resume.maxBytes", limits.resume.maxBytes],
-    ["schedulerBatchSize", limits.schedulerBatchSize],
+    ["jobs.maxRunning", limits.jobs.maxRunning],
+    ["jobs.claimBatchSize", limits.jobs.claimBatchSize],
+    ["jobs.leaseMs", limits.jobs.leaseMs],
     ["mutationReplay.maxAgeMs", limits.mutationReplay.maxAgeMs],
     ["mutationReplay.maxResultBytes", limits.mutationReplay.maxResultBytes],
     ["mutationReplay.maxRecords", limits.mutationReplay.maxRecords],
@@ -196,6 +205,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     mutationReplay: Object.freeze({ ...limits.mutationReplay }),
     auth: Object.freeze({ ...limits.auth }),
     mcp: Object.freeze({ ...limits.mcp }),
+    jobs: Object.freeze({ ...limits.jobs }),
   });
 }
 
@@ -222,7 +232,7 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     maxAgeMs: 30_000,
     maxBytes: 128 * MiB,
   },
-  schedulerBatchSize: 100,
+  jobs: { maxRunning: 64, claimBatchSize: 100, leaseMs: 60_000 },
   publication: { maxItems: 4_096, maxBytes: 32 * MiB },
   mutationReplay: {
     maxAgeMs: 24 * 60 * 60 * 1_000,
