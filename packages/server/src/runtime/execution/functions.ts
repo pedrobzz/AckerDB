@@ -71,7 +71,7 @@ import { createMutationInvocationScope } from "../mutation-scope.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
 import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
-import { JobsStore, nextDueJobAt, readJobRow } from "../jobs/store.ts";
+import { JobsStore, dueJobStats, nextDueJobAt, readJobRow } from "../jobs/store.ts";
 import {
   mutationJobsNamespace,
   procedureJobsNamespace,
@@ -164,7 +164,8 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
-  readonly armScheduler: (touchedTables: ReadonlySet<string>) => void;
+  /** Commit-wake: fired when a transaction touched the jobs table. */
+  readonly armJobs: () => void;
   /** Lazy: the jobs runner is constructed after this executor. */
   readonly jobs: () => RuntimeJobs;
   readonly now: () => number;
@@ -553,7 +554,7 @@ export class RuntimeFunctionExecutor<C> {
         return this.publicationFor(writes, request.subscriber);
       },
     });
-    if (scheduledTables.size > 0) this.options.armScheduler(scheduledTables);
+    if (scheduledTables.size > 0) this.options.armJobs();
     return result;
   }
 
@@ -658,6 +659,10 @@ export class RuntimeFunctionExecutor<C> {
 
   nextDueJobAt(connection: Database) {
     return nextDueJobAt(this.options.engine, connection);
+  }
+
+  dueJobStats(connection: Database, now: number) {
+    return dueJobStats(this.options.engine, connection, now);
   }
 
   private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {

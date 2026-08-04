@@ -92,10 +92,6 @@ export function parseCronExpression(expression: string): CronExpression {
   };
 }
 
-export function validateCronExpression(expression: string): void {
-  parseCronExpression(expression);
-}
-
 interface WallClock {
   year: number;
   month: number;

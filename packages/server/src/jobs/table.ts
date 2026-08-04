@@ -16,6 +16,7 @@ export const JOBS_TABLE = "_ackerdb_jobs";
 
 /** Columns only the runner writes; a CRUD patch naming one is refused. */
 export const JOBS_GUARDED_COLUMNS: ReadonlySet<string> = new Set([
+  "name",
   "state",
   "argsHash",
   "attempt",

@@ -29,6 +29,9 @@ interface QueryableDb {
 
 type Leaf = Record<string, unknown>;
 
+const idOf = (handle: JobHandle | bigint): bigint =>
+  typeof handle === "bigint" ? handle : handle.id;
+
 function assignLeaf(root: Record<string, unknown>, name: string, leaf: Leaf): void {
   const segments = name.split(".");
   let node = root;
@@ -83,14 +86,10 @@ export function procedureJobsNamespace(jobs: RuntimeJobs): unknown {
         const handle = await jobs.enqueue(name, args, options);
         return await jobs.wait(handle.id);
       },
-      wait: (handle: JobHandle | bigint): Promise<JobAttemptOutcome> =>
-        jobs.wait(typeof handle === "bigint" ? handle : handle.id),
-      cancel: (handle: JobHandle | bigint) =>
-        jobs.cancel(typeof handle === "bigint" ? handle : handle.id),
-      retry: (handle: JobHandle | bigint) =>
-        jobs.retryNow(typeof handle === "bigint" ? handle : handle.id),
-      reschedule: (handle: JobHandle | bigint, at: number) =>
-        jobs.reschedule(typeof handle === "bigint" ? handle : handle.id, at),
+      wait: (handle: JobHandle | bigint): Promise<JobAttemptOutcome> => jobs.wait(idOf(handle)),
+      cancel: (handle: JobHandle | bigint) => jobs.cancel(idOf(handle)),
+      retry: (handle: JobHandle | bigint) => jobs.retryNow(idOf(handle)),
+      reschedule: (handle: JobHandle | bigint, at: number) => jobs.reschedule(idOf(handle), at),
     });
   }
   return Object.freeze(root);

@@ -23,8 +23,8 @@ import type { SystemCtx, SystemRunner } from "../../app/system.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import { ValidationError } from "../../validation/error.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
-import type { AnyJob, DeclaredJob, JobState } from "../../jobs/definition.ts";
-import { encodeJobArgs, hashJobArgs } from "../../jobs/identity.ts";
+import { DEFAULT_JOB_RETENTION_MS, type AnyJob, type DeclaredJob, type JobState } from "../../jobs/definition.ts";
+import { hashJobArgs } from "../../jobs/identity.ts";
 import type { JobsWriteSurface } from "../execution/functions.ts";
 import type { JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
@@ -39,6 +39,7 @@ export interface JobsExecutor {
   ): Promise<T>;
   readJobRow(connection: Database, id: bigint): JobRow | null;
   nextDueJobAt(connection: Database): number | null;
+  dueJobStats(connection: Database, now: number): { due: number; oldestDueAt: number | null };
 }
 
 const LEASE_EXPIRED = "job lease expired before the attempt settled";
@@ -182,14 +183,18 @@ export class RuntimeJobs {
       await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
         const now = this.options.now();
         for (const [name, definition] of bootstrap) {
-          const argsJson = encodeJobArgs({});
+          const argsJson = stableEncode({});
           const argsHash = hashJobArgs(argsJson);
           if (this.liveRow(surface.jobs, name, argsHash) !== null) continue;
           const at = definition.repeat!(now, now);
           if (at === null) continue;
           await this.insertRow(surface.jobs, { name, argsJson, argsHash, key: null, runAt: at, now });
         }
-      }).catch(() => {}); // arming still proceeds; enqueues re-wake the runner
+      }).catch((error) => {
+        // Arming still proceeds and enqueues re-wake the runner, but the
+        // failure leaves evidence.
+        this.event("failure", "error", outcomeFromError(error).code);
+      });
     }
     this.arm();
   }
@@ -260,7 +265,7 @@ export class RuntimeJobs {
   ): Promise<JobHandle> {
     const definition = this.definition(name);
     const validated = this.validateArgs(definition, name, args);
-    const argsJson = encodeJobArgs(validated);
+    const argsJson = stableEncode(validated);
     const argsHash = hashJobArgs(argsJson);
     const now = this.options.now();
     if (definition.dedupe !== null) {
@@ -424,7 +429,7 @@ export class RuntimeJobs {
         if (claimed !== "settled-inline") this.dispatch(claimed);
       }
       await this.reap(signal);
-      this.recordGauges();
+      await this.recordGauges();
     } catch (error) {
       this.event("failure", "error", outcomeFromError(error).code);
     }
@@ -737,7 +742,9 @@ export class RuntimeJobs {
     definition: AnyJob | undefined,
     state: JobState,
   ): number | "forever" {
-    if (definition === undefined) return 0;
+    // Rows of a no-longer-declared job keep the default retention: deleting a
+    // definition must not silently erase its history at the next sweep.
+    if (definition === undefined) return DEFAULT_JOB_RETENTION_MS;
     const windows: (number | "forever")[] = [definition.retention];
     if (definition.dedupe !== null) {
       windows.push(
@@ -942,11 +949,27 @@ export class RuntimeJobs {
     );
   }
 
-  private recordGauges(): void {
+  private async recordGauges(): Promise<void> {
     if (!this.options.telemetry.enabled) return;
     this.options.telemetry.recordMetric({
       name: "jobs.running",
       value: this.activeRuns,
+      unit: "gauge",
+    });
+    const now = this.options.now();
+    const backlog = await this.options.reads.submit(
+      (connection) => this.options.executor.dueJobStats(connection, now),
+      { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
+      false,
+    );
+    this.options.telemetry.recordMetric({
+      name: "jobs.due_backlog",
+      value: backlog.due,
+      unit: "gauge",
+    });
+    this.options.telemetry.recordMetric({
+      name: "jobs.oldest_due_age_ms",
+      value: backlog.oldestDueAt === null ? 0 : Math.max(0, now - backlog.oldestDueAt),
       unit: "gauge",
     });
   }
@@ -960,7 +983,7 @@ export class RuntimeJobs {
     this.options.telemetry.recordEvent({
       name: `job_${name}`,
       level,
-      operation: "scheduled",
+      operation: "job",
       outcome,
     });
   }

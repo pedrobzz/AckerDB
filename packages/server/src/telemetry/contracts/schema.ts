@@ -8,6 +8,7 @@ export const TELEMETRY_OPERATIONS = [
   "sse",
   "transaction",
   "scheduled",
+  "job",
   "subscription",
   "realtime",
   "backup",

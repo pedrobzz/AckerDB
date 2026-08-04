@@ -1,24 +1,24 @@
 /** The in-repo cron engine: field parsing and timezone-anchored next-occurrence math. */
 import { describe, expect, test } from "bun:test";
-import { cronNext, parseCronExpression, validateCronExpression } from "../../src/jobs/cron.ts";
+import { cronNext, parseCronExpression } from "../../src/jobs/cron.ts";
 
 const utc = (iso: string): number => Date.parse(iso);
 
 describe("cron parsing", () => {
   test("accepts the five-field syntax with lists, ranges, and steps", () => {
-    expect(() => validateCronExpression("*/5 0-6 1,15 * 1-5")).not.toThrow();
-    expect(() => validateCronExpression("0 12 * * 7")).not.toThrow(); // 7 → Sunday
+    expect(() => parseCronExpression("*/5 0-6 1,15 * 1-5")).not.toThrow();
+    expect(() => parseCronExpression("0 12 * * 7")).not.toThrow(); // 7 → Sunday
   });
 
   test("rejects malformed expressions with the field named", () => {
-    expect(() => validateCronExpression("* * * *")).toThrow("exactly 5 fields");
-    expect(() => validateCronExpression("60 * * * *")).toThrow("minute");
-    expect(() => validateCronExpression("* 24 * * *")).toThrow("hour");
-    expect(() => validateCronExpression("* * 0 * *")).toThrow("day-of-month");
-    expect(() => validateCronExpression("* * * 13 *")).toThrow("month");
-    expect(() => validateCronExpression("* * * * a")).toThrow("day-of-week");
-    expect(() => validateCronExpression("*/0 * * * *")).toThrow("step");
-    expect(() => validateCronExpression("5-1 * * * *")).toThrow("minute");
+    expect(() => parseCronExpression("* * * *")).toThrow("exactly 5 fields");
+    expect(() => parseCronExpression("60 * * * *")).toThrow("minute");
+    expect(() => parseCronExpression("* 24 * * *")).toThrow("hour");
+    expect(() => parseCronExpression("* * 0 * *")).toThrow("day-of-month");
+    expect(() => parseCronExpression("* * * 13 *")).toThrow("month");
+    expect(() => parseCronExpression("* * * * a")).toThrow("day-of-week");
+    expect(() => parseCronExpression("*/0 * * * *")).toThrow("step");
+    expect(() => parseCronExpression("5-1 * * * *")).toThrow("minute");
   });
 
   test("normalizes Sunday-as-7 into Sunday-as-0", () => {

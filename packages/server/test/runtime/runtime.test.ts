@@ -391,6 +391,15 @@ const functions = {
     }),
   },
   reminders: {
+    pending: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) =>
+        ctx.jobs.reminders.fire
+          .query()
+          .where((row: Ctx) => row.state.eq("pending"))
+          .collect(),
+    }),
     fire: mutation({
       access: "system",
       args: { id: v.bigint(), message: v.string(), attempt: v.int(), at: v.float() },
@@ -2694,6 +2703,34 @@ describe("jobs runner and lifecycle", () => {
     expect(scheduledAttempts).toBe(2);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:after" }]);
     expect(jobRows()).toMatchObject([{ state: "discarded" }, { state: "completed" }]);
+  });
+
+  test("job rows are live: a subscription over the jobs table updates on enqueue and settle", async () => {
+    await session.open();
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 70,
+      ref: "reminders.pending",
+      args: {},
+    }));
+    const pendingRows = (): Ctx => {
+      const last = [...session.publications].reverse().find(
+        (message: Ctx) => message.id === 70 && message.transition !== undefined,
+      ) as Ctx;
+      return last?.transition?.value;
+    };
+    expect(pendingRows()).toEqual([]);
+
+    const dueAt = Date.now() + 100_000;
+    await session.mutation(1, "reminders.schedule", { message: "live", attempt: 1, at: dueAt });
+    await eventually(() => pendingRows()?.length === 1);
+    expect(pendingRows()[0]).toMatchObject({ name: "reminders.fire", state: "pending" });
+
+    currentTime = dueAt;
+    await runtime.runJobs();
+    // Settling flips the row out of pending; the live query converges to empty.
+    await eventually(() => pendingRows()?.length === 0);
   });
 
   test("bounds one runner batch at jobs.claimBatchSize", async () => {

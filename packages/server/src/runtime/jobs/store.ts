@@ -113,6 +113,23 @@ export function readJobRow(engine: Engine, connection: Database, id: bigint): Jo
   return raw === null ? null : (engine.rowFromSql(plan, raw) as unknown as JobRow);
 }
 
+export function dueJobStats(
+  engine: Engine,
+  connection: Database,
+  now: number,
+): { due: number; oldestDueAt: number | null } {
+  const plan = engine.rootScope.plan(JOBS_TABLE);
+  const row = connection
+    .query(
+      `SELECT COUNT(*) AS due, MIN(${quote("runAt")}) AS oldest FROM ${quote(plan.name)} WHERE ${quote("state")} = 'pending' AND ${quote("runAt")} <= ?`,
+    )
+    .get(now as never) as { due: number | bigint; oldest: number | bigint | null };
+  return {
+    due: Number(row.due),
+    oldestDueAt: row.oldest === null ? null : Number(row.oldest),
+  };
+}
+
 export function nextDueJobAt(engine: Engine, connection: Database): number | null {
   const plan = engine.rootScope.plan(JOBS_TABLE);
   const row = connection

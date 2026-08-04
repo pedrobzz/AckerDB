@@ -161,9 +161,9 @@ Column ownership is split exactly at the state machine:
   `argsJson` recomputes the dedup hash), and rows may be deleted. Deleting or
   editing a running row does not stop its handler; the settle self-discards on
   the stale lease.
-- **Guarded**: `state`, `attempt`, `attemptsJson`, `outputJson`, the lease
-  columns, and timestamps belong to the runner; a CRUD write naming one is
-  refused. State moves through the `ctx.jobs` transitions.
+- **Guarded**: `name`, `state`, `attempt`, `attemptsJson`, `outputJson`, the
+  lease columns, and timestamps belong to the runner; a CRUD write naming one
+  is refused. State moves through the `ctx.jobs` transitions.
 - **Inserts** go through `enqueue`, the one door that computes identity and
   dedup.
 
@@ -179,13 +179,77 @@ table.
 ## Operations
 
 Job state transitions emit telemetry events (`job_claimed`, `job_settled`,
-`job_retried`, `job_discarded`, `job_canceled`) and the runner reports a
-`jobs.running` gauge; `/status` reports `declaredJobs` and `jobsArmed`. The
+`job_retried`, `job_discarded`, `job_canceled`) under the `job` operation, and
+the runner reports `jobs.running`, `jobs.due_backlog`, and
+`jobs.oldest_due_age_ms` gauges — the last is the one that catches a starved
+runner; `/status` reports `declaredJobs` and `jobsArmed`. The
 runner wakes on the commits that touch the jobs table and on a timer armed to
 the next due row — a quiet application spends nothing.
 
 Crash behavior: attempts are recovered through leases. If the process dies
 mid-attempt, the row's lease expires and recovery re-runs it under the retry
-policy — work is delayed, never lost. For external effects, derive an
-idempotency key from the job id and attempt so the outside world can
-deduplicate what the envelope cannot.
+policy — work is delayed, never lost.
+
+## Recipes
+
+### External effects: claim → effect → settle, reconcile — don't assume
+
+A procedure-kind job is at-least-once under retries, so an external effect
+needs two things from the handler: an idempotency key derived from the job's
+identity, and recovery that *asks* the provider what happened instead of
+assuming.
+
+```ts
+export const charge = job({
+  args: { orderId: v.bigint() },
+  key: (args) => args.orderId,
+  concurrency: 1,
+  retry: { attempts: 5, backoff: "exponential" },
+  handler: async (ctx, args) => {
+    // Re-validate on entry: the world may have changed between attempts.
+    const order = await ctx.tx((tx) => tx.db.orders.get(args.orderId));
+    if (!order.ok || order.data?.status !== "payable") return null;
+
+    // The idempotency key is the job identity: a crashed attempt that
+    // already reached the provider dedupes instead of double-charging.
+    const key = `job:${args.orderId}`;
+    const existing = await psp.findByIdempotencyKey(key);
+    const outcome = existing ?? await psp.charge(order.data.amountCents, { idempotencyKey: key });
+
+    await ctx.tx((tx) => tx.db.orders.patch(args.orderId, {
+      status: outcome.ok ? "charged" : "payable",
+    }));
+    return outcome;
+  },
+});
+```
+
+Never mark an ambiguous external outcome as failed: if the provider cannot
+answer "did request X happen?", keep the row retrying (return a delay) or
+settle into a state a human reconciles — a discarded charge that actually
+landed is an incident.
+
+### Fan-in: run a join step after N children finish
+
+Transactional enqueue makes the classic counter pattern crash-proof — the
+decrement and the join-enqueue commit atomically with each child's own writes:
+
+```ts
+export const processChunk = job({
+  kind: "mutation",
+  args: { batchId: v.bigint(), chunk: v.int() },
+  handler: async (tx, args) => {
+    // ...process the chunk...
+    const batch = (await tx.db.batches.get(args.batchId))!;
+    const remaining = batch.remaining - 1;
+    await tx.db.batches.patch(args.batchId, { remaining });
+    if (remaining === 0) {
+      await tx.jobs.batches.merge.enqueue({ batchId: args.batchId });
+    }
+  },
+});
+```
+
+Whichever child reaches zero enqueues the join exactly once; a crashed child
+re-runs through its lease, and its decrement either committed or did not —
+never half.
