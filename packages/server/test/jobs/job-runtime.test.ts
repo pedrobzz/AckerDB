@@ -539,6 +539,161 @@ describe("durability", () => {
     expect(await wait).toEqual({ ok: true, value: "second life" });
   });
 
+  test("an abandoned lease wakes the runner by itself: no manual drive needed", async () => {
+    clock = 14_000_000;
+    const hang = deferred<never>();
+    let recovered = 0;
+    const jobs = () => declareJobs({
+      work: {
+        stuck: job({
+          args: {},
+          retry: { attempts: 2, backoff: "fixed", delayMs: 0 },
+          handler: async (ctx: Ctx) => {
+            if (ctx.attempt === 1) return await hang.promise;
+            recovered++;
+            return "recovered";
+          },
+        }),
+      },
+    });
+    start(jobs(), limits({ leaseMs: 30_000 }));
+    await runtime.jobs.enqueue("work.stuck", {});
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    expect(jobRows()).toMatchObject([{ state: "running" }]);
+
+    // Crash mid-attempt, restart with the clock already past the lease.
+    engine.close("clean");
+    clock = 14_000_000 + 31_000;
+    engine = new Engine(schema, join(directory, "data.db"));
+    reconcile(engine);
+    runtime = new Runtime({
+      engine,
+      registry: new Registry({}),
+      telemetry: false,
+      limits: limits({ leaseMs: 30_000 }),
+      jobs: jobs(),
+      now: () => clock,
+    });
+    // No runJobs() call: the arm pass must see the expired lease and wake
+    // recovery on its own timer.
+    const deadline = Date.now() + 2_000;
+    while (recovered === 0 && Date.now() < deadline) await Bun.sleep(5);
+    expect(recovered).toBe(1);
+    expect(jobRows()).toMatchObject([{ state: "completed" }]);
+  });
+
+  test("dedup identity survives more than 64 retained same-identity rows", async () => {
+    clock = 15_000_000;
+    start(declareJobs({
+      work: {
+        tick: job({
+          kind: "mutation" as const,
+          args: {},
+          repeat: { everyMs: 1_000 },
+          retention: "forever",
+          handler: async () => "tick",
+        }),
+      },
+    }));
+    await runtime.jobs.activate();
+    await Bun.sleep(5);
+    // 70 settled occurrences share one identity; the mint-time live check must
+    // still see the newest pending row or every settle would fork a duplicate.
+    for (let index = 0; index < 70; index++) {
+      clock += 1_000;
+      await runtime.runJobs();
+    }
+    const rows = jobRows();
+    expect(rows.filter((row) => row.state === "completed").length).toBe(70);
+    expect(rows.filter((row) => row.state === "pending").length).toBe(1);
+  });
+
+  test("a gate-blocked overdue row parks the runner instead of spinning", async () => {
+    clock = 16_000_000;
+    const first = deferred<string>();
+    start(declareJobs({
+      work: {
+        serial: job({
+          args: { n: v.int() },
+          key: () => "one",
+          concurrency: 1,
+          handler: async (_ctx: Ctx, args: Ctx) =>
+            args.n === 1 ? await first.promise : `ran:${args.n}`,
+        }),
+      },
+    }));
+    const one = await runtime.jobs.enqueue("work.serial", { n: 1 });
+    void one;
+    const two = await runtime.jobs.enqueue("work.serial", { n: 2 });
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    // n=1 runs; n=2 is due but gated: the runner must not arm a zero-delay
+    // timer for it — the settle commit wakes it instead.
+    expect(jobRows()).toMatchObject([{ state: "running" }, { state: "pending" }]);
+    expect(runtime.jobs.armed).toBe(false);
+    const waitTwo = runtime.jobs.wait(two.id);
+    first.resolve("done");
+    expect(await waitTwo).toEqual({ ok: true, value: "ran:2" });
+  });
+
+  test("claiming pages past a saturated key to eligible work behind it", async () => {
+    clock = 17_000_000;
+    const gate = deferred<string>();
+    let otherRan = false;
+    start(declareJobs({
+      work: {
+        keyed: job({
+          args: { n: v.int() },
+          key: () => "hot",
+          concurrency: 1,
+          handler: async (_ctx: Ctx, args: Ctx) =>
+            args.n === 1 ? await gate.promise : `ran:${args.n}`,
+        }),
+        other: job({
+          args: {},
+          handler: async () => {
+            otherRan = true;
+            return "other";
+          },
+        }),
+      },
+    }), limits({ claimBatchSize: 2 }));
+    // Due order: keyed 1..3 first, then the unrelated job — beyond the first
+    // claim page.
+    await runtime.jobs.enqueue("work.keyed", { n: 1 }, { at: 17_000_000 - 40 });
+    await runtime.jobs.enqueue("work.keyed", { n: 2 }, { at: 17_000_000 - 30 });
+    await runtime.jobs.enqueue("work.keyed", { n: 3 }, { at: 17_000_000 - 20 });
+    const other = await runtime.jobs.enqueue("work.other", {}, { at: 17_000_000 - 10 });
+    await runtime.runJobs();
+    const outcome = await runtime.jobs.wait(other.id);
+    expect(outcome).toEqual({ ok: true, value: "other" });
+    expect(otherRan).toBe(true);
+    gate.resolve("done");
+  });
+
+  test("drain delivers a typed outcome to stranded waiters instead of holding them", async () => {
+    clock = 18_000_000;
+    const never = deferred<never>();
+    start(declareJobs({
+      work: { forever: job({ args: {}, handler: async () => await never.promise }) },
+    }));
+    const handle = await runtime.jobs.enqueue("work.forever", {});
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    const drained = runtime.drain();
+    // The waiter resolves promptly — it must not hold out for the drain
+    // deadline while the uncooperative handler ignores its abort signal.
+    const outcome = await Promise.race([
+      wait,
+      Bun.sleep(1_000).then(() => "timed-out" as const),
+    ]);
+    expect(outcome).toMatchObject({ ok: false, state: "pending", nextRetryAt: null });
+    never.reject(new Error("shutdown")); // release the handler so drain completes
+    await drained;
+  });
+
   test("terminal rows are reaped after their retention window", async () => {
     clock = 12_000_000;
     start(declareJobs({

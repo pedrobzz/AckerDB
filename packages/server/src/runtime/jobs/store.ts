@@ -58,23 +58,40 @@ export class JobsStore {
     return this.select(`${quote("id")} = ?`, "", 1, [id])[0] ?? null;
   }
 
-  /** Every row of one identity — bounded by dedup collapsing live duplicates. */
-  byIdentity(name: string, argsHash: string): JobRow[] {
+  /** The live (pending or running) row of one identity, if any. */
+  liveRowFor(name: string, argsHash: string): JobRow | null {
     return this.select(
-      `${quote("name")} = ? AND ${quote("argsHash")} = ?`,
+      `${quote("name")} = ? AND ${quote("argsHash")} = ? AND ${quote("state")} IN ('pending', 'running')`,
       "",
-      64,
+      1,
       [name, argsHash],
-    );
+    )[0] ?? null;
   }
 
-  /** Due pending rows in due order; the claim scan. */
-  due(now: number, limit: number): JobRow[] {
+  /** The newest settled row of one identity in the given state, if any. */
+  newestSettledFor(name: string, argsHash: string, state: JobState): JobRow | null {
     return this.select(
-      `${quote("state")} = 'pending' AND ${quote("runAt")} <= ?`,
+      `${quote("name")} = ? AND ${quote("argsHash")} = ? AND ${quote("state")} = ?`,
+      ` ORDER BY ${quote("settledAt")} DESC`,
+      1,
+      [name, argsHash, state],
+    )[0] ?? null;
+  }
+
+  /**
+   * Due pending rows in due order; the claim scan. `after` pages past rows an
+   * earlier scan skipped (gate-saturated or undeclared) without re-reading
+   * them: keyset on the same (runAt, id) order.
+   */
+  due(now: number, limit: number, after?: { runAt: number; id: bigint }): JobRow[] {
+    const where = after === undefined
+      ? `${quote("state")} = 'pending' AND ${quote("runAt")} <= ?`
+      : `${quote("state")} = 'pending' AND ${quote("runAt")} <= ? AND (${quote("runAt")} > ? OR (${quote("runAt")} = ? AND ${quote("id")} > ?))`;
+    return this.select(
+      where,
       ` ORDER BY ${quote("runAt")}, ${quote("id")}`,
       limit,
-      [now],
+      after === undefined ? [now] : [now, after.runAt, after.runAt, after.id],
     );
   }
 
@@ -93,13 +110,31 @@ export class JobsStore {
     );
   }
 
-  /** Terminal rows settled on or before `cutoff`, oldest first. */
-  settledBefore(state: JobState, cutoff: number, limit: number): JobRow[] {
+  /** One definition's terminal rows settled on or before `cutoff`, oldest first. */
+  settledBefore(name: string, state: JobState, cutoff: number, limit: number): JobRow[] {
     return this.select(
-      `${quote("state")} = ? AND ${quote("settledAt")} IS NOT NULL AND ${quote("settledAt")} <= ?`,
+      `${quote("name")} = ? AND ${quote("state")} = ? AND ${quote("settledAt")} IS NOT NULL AND ${quote("settledAt")} <= ?`,
       ` ORDER BY ${quote("settledAt")}`,
       limit,
-      [state, cutoff],
+      [name, state, cutoff],
+    );
+  }
+
+  /** Terminal rows of undeclared definitions, settled on or before `cutoff`. */
+  settledBeforeExcluding(
+    declared: readonly string[],
+    state: JobState,
+    cutoff: number,
+    limit: number,
+  ): JobRow[] {
+    const exclusion = declared.length === 0
+      ? ""
+      : ` AND ${quote("name")} NOT IN (${declared.map(() => "?").join(", ")})`;
+    return this.select(
+      `${quote("state")} = ? AND ${quote("settledAt")} IS NOT NULL AND ${quote("settledAt")} <= ?${exclusion}`,
+      ` ORDER BY ${quote("settledAt")}`,
+      limit,
+      [state, cutoff, ...declared],
     );
   }
 }
@@ -130,12 +165,32 @@ export function dueJobStats(
   };
 }
 
-export function nextDueJobAt(engine: Engine, connection: Database): number | null {
+/**
+ * The next moment the runner must wake: the earliest pending `runAt`, or the
+ * earliest `leaseUntil` of a running row with no live in-process run — a
+ * crashed attempt whose recovery deadline is a wake reason of its own.
+ */
+export function nextDueJobAt(
+  engine: Engine,
+  connection: Database,
+  inProcessIds: readonly bigint[] = [],
+): number | null {
   const plan = engine.rootScope.plan(JOBS_TABLE);
-  const row = connection
+  const pending = connection
     .query(
       `SELECT MIN(${quote("runAt")}) AS at FROM ${quote(plan.name)} WHERE ${quote("state")} = 'pending'`,
     )
     .get() as { at: number | bigint | null };
-  return row.at === null ? null : Number(row.at);
+  const exclusion = inProcessIds.length === 0
+    ? ""
+    : ` AND ${quote("id")} NOT IN (${inProcessIds.map(() => "?").join(", ")})`;
+  const abandoned = connection
+    .query(
+      `SELECT MIN(${quote("leaseUntil")}) AS at FROM ${quote(plan.name)} WHERE ${quote("state")} = 'running'${exclusion}`,
+    )
+    .get(...(inProcessIds as never[])) as { at: number | bigint | null };
+  const candidates = [pending.at, abandoned.at]
+    .filter((value): value is number | bigint => value !== null)
+    .map(Number);
+  return candidates.length === 0 ? null : Math.min(...candidates);
 }

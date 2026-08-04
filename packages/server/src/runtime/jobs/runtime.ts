@@ -38,7 +38,7 @@ export interface JobsExecutor {
     work: (surface: JobsWriteSurface) => T | Promise<T>,
   ): Promise<T>;
   readJobRow(connection: Database, id: bigint): JobRow | null;
-  nextDueJobAt(connection: Database): number | null;
+  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[]): number | null;
   dueJobStats(connection: Database, now: number): { due: number; oldestDueAt: number | null };
 }
 
@@ -126,16 +126,6 @@ interface Notification {
   readonly errorCode?: OutcomeCode;
 }
 
-/** Control-flow carrier: a mutation-kind handler failed and rolled back. */
-class MutationJobFailure {
-  constructor(
-    readonly row: JobRow,
-    readonly attempt: number,
-    readonly error: unknown,
-    readonly startedAt: number,
-  ) {}
-}
-
 export class RuntimeJobs {
   private readonly definitions = new Map<string, AnyJob>();
   private readonly waiters = new Map<bigint, Set<(outcome: JobAttemptOutcome) => void>>();
@@ -146,6 +136,13 @@ export class RuntimeJobs {
   private running: Promise<void> | null = null;
   private leaseCounter = 0;
   private lastReapAt = 0;
+  /**
+   * True after a batch that claimed nothing: every due row is gated,
+   * undeclared, or already running. Overdue-but-unclaimable work must not arm
+   * a zero-delay timer — the commits that free it (settles, cancels, CRUD,
+   * enqueues) and dispatch completions wake the runner instead.
+   */
+  private stalled = false;
 
   constructor(private readonly options: RuntimeJobsOptions) {
     for (const { name, job } of options.declared) {
@@ -200,7 +197,8 @@ export class RuntimeJobs {
   }
 
   /** Commit-wake: called after any transaction that touched the jobs table. */
-  arm(): void {
+  arm(reason: "wake" | "requeue" = "wake"): void {
+    if (reason === "wake") this.stalled = false;
     const generation = ++this.generation;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
@@ -209,7 +207,9 @@ export class RuntimeJobs {
       (at) => {
         if (!this.options.isReady() || generation !== this.generation) return;
         if (at === null) return;
-        const delay = Math.min(Math.max(0, at - this.options.now()), 0x7fff_ffff);
+        const now = this.options.now();
+        if (at <= now && this.stalled) return; // overdue but unclaimable: wait for a wake
+        const delay = Math.min(Math.max(0, at - now), 0x7fff_ffff);
         this.timer = setTimeout(() => {
           this.timer = null;
           void this.run().catch(() => {});
@@ -238,6 +238,18 @@ export class RuntimeJobs {
     for (const controller of this.runControllers.values()) {
       controller.abort(new AckerDBError("unavailable", "runtime is shutting down"));
     }
+    // Waiters must not hold admitted operations open until the drain
+    // deadline: deliver a typed draining outcome now. The rows themselves are
+    // durable — pending and running work resumes after restart.
+    const stranded = [...this.waiters.keys()];
+    for (const id of stranded) {
+      this.notifyDirect(id, {
+        ok: false,
+        state: "pending",
+        error: new AckerDBError("draining", "runtime is draining; the job resumes after restart"),
+        nextRetryAt: null,
+      });
+    }
   }
 
   /** One single-flight batch: recover leases, claim due work, reap history. */
@@ -245,7 +257,7 @@ export class RuntimeJobs {
     if (this.running !== null) return this.running;
     const batch = this.batch().finally(() => {
       this.running = null;
-      if (this.options.isReady()) this.arm();
+      if (this.options.isReady()) this.arm("requeue");
     });
     this.running = batch;
     return batch;
@@ -418,16 +430,19 @@ export class RuntimeJobs {
     let claims = 0;
     try {
       await this.recoverExpiredLeases(signal);
+      let cursor: { runAt: number; id: bigint } | undefined;
       while (
         claims < claimBudget &&
         this.activeRuns < this.options.limits.maxRunning &&
         !signal.aborted
       ) {
-        const claimed = await this.claimNext(signal);
-        if (claimed === null) break;
+        const next = await this.claimNext(signal, cursor);
+        if (next === null) break;
+        cursor = next.cursor;
         claims++;
-        if (claimed !== "settled-inline") this.dispatch(claimed);
+        if (next.outcome !== "settled-inline") this.dispatch(next.outcome);
       }
+      this.stalled = claims === 0;
       await this.reap(signal);
       await this.recordGauges();
     } catch (error) {
@@ -456,31 +471,47 @@ export class RuntimeJobs {
   }
 
   /**
-   * Claim the next eligible due row. Mutation-kind rows execute and settle in
-   * the same transaction; procedure-kind rows are leased for dispatch.
+   * Claim the next eligible due row at or beyond `cursor`. Mutation-kind rows
+   * execute and settle in the same transaction; procedure-kind rows are
+   * leased for dispatch. Pages past gate-saturated and undeclared rows so a
+   * blocked prefix cannot starve eligible work behind it.
    */
-  private async claimNext(signal: AbortSignal): Promise<ClaimedRow | "settled-inline" | null> {
-    let outcome:
-      | { claimed: ClaimedRow }
-      | { inline: Notification }
-      | null = null;
-    try {
-      outcome = await this.options.executor.jobsWrite(signal, async (surface) => {
-        const now = this.options.now();
-        const runningByGate = new Map<string, number>();
-        for (const row of surface.jobs.running()) {
-          const gate = `${row.name} ${row.key ?? ""}`;
-          runningByGate.set(gate, (runningByGate.get(gate) ?? 0) + 1);
-        }
-        for (const row of surface.jobs.due(now, this.options.limits.claimBatchSize)) {
+  private async claimNext(
+    signal: AbortSignal,
+    cursor?: { runAt: number; id: bigint },
+  ): Promise<
+    | {
+        outcome: ClaimedRow | "settled-inline";
+        cursor: { runAt: number; id: bigint } | undefined;
+      }
+    | null
+  > {
+    type Page = { runAt: number; id: bigint } | undefined;
+    type ClaimTxResult =
+      | { readonly inline: Notification; readonly page: Page }
+      | { readonly claimed: ClaimedRow; readonly page: Page }
+      | null;
+    const result = await this.options.executor.jobsWrite<ClaimTxResult>(signal, async (surface) => {
+      const now = this.options.now();
+      const runningByGate = new Map<string, number>();
+      for (const row of surface.jobs.running()) {
+        const gate = `${row.name}\u0000${row.key ?? ""}`;
+        runningByGate.set(gate, (runningByGate.get(gate) ?? 0) + 1);
+      }
+      let page = cursor;
+      for (;;) {
+        const due = surface.jobs.due(now, this.options.limits.claimBatchSize, page);
+        if (due.length === 0) return null;
+        for (const row of due) {
+          page = { runAt: row.runAt, id: row.id };
           const definition = this.definitions.get(row.name);
           if (definition === undefined) continue; // undeclared leftover; visible in the table
-          const gate = `${row.name} ${row.key ?? ""}`;
+          const gate = `${row.name}\u0000${row.key ?? ""}`;
           if ((runningByGate.get(gate) ?? 0) >= definition.concurrency) continue;
           const attempt = row.attempt + 1;
           if (definition.kind === "mutation") {
             const inline = await this.runMutationJob(surface, row, definition, attempt);
-            return { inline };
+            return { inline, page };
           }
           const leaseToken = `${now.toString(36)}-${(++this.leaseCounter).toString(36)}`;
           await surface.jobs.patch(row.id, {
@@ -497,41 +528,28 @@ export class RuntimeJobs {
               attempt,
               leaseToken,
             },
+            page,
           };
         }
-        return null;
-      });
-    } catch (error) {
-      if (!(error instanceof MutationJobFailure)) throw error;
-      // The handler's transaction rolled back whole; record the failed
-      // attempt in a fresh transaction so no partial write survives.
-      const notification = await this.options.executor.jobsWrite(
-        signal,
-        async (surface) => {
-          const row = surface.jobs.byId(error.row.id);
-          if (row === null || row.state !== "pending") return null;
-          return await this.settleFailureIn(
-            surface,
-            { ...row, attempt: error.attempt },
-            error.error,
-            error.startedAt,
-          );
-        },
-      );
-      this.deliver(notification === null ? [] : [notification]);
-      return "settled-inline";
-    }
-    if (outcome === null) return null;
-    if ("inline" in outcome) {
-      this.deliver([outcome.inline]);
+        if (due.length < this.options.limits.claimBatchSize) return null;
+      }
+    });
+    if (result === null) return null;
+    if ("inline" in result) {
+      this.deliver([result.inline]);
       this.event("claimed", "info");
-      return "settled-inline";
+      return { outcome: "settled-inline", cursor: result.page };
     }
     this.event("claimed", "info");
-    return outcome.claimed;
+    return { outcome: result.claimed, cursor: result.page };
   }
 
-  /** Claim + handler + settle in one writer transaction: exactly-once. */
+  /**
+   * Claim + handler + settle in one writer transaction: exactly-once. The
+   * handler runs inside a savepoint, so its writes roll back on failure while
+   * the same transaction still records the failed attempt — no window in
+   * which a concurrent transition can observe the claim half-done.
+   */
   private async runMutationJob(
     surface: JobsWriteSurface,
     row: JobRow,
@@ -540,22 +558,29 @@ export class RuntimeJobs {
   ): Promise<Notification> {
     const startedAt = this.options.now();
     const args = decode(row.argsJson);
+    const claimed: JobRow = { ...row, attempt };
+    const savepoint = surface.savepoint();
+    let failure: { error: unknown } | null = null;
     let value: unknown;
+    let outputJson = "";
     try {
       value = await surface.runMutationHandler(row.name, attempt, (ctx) =>
         definition.handler(ctx as never, args as never));
+      if (isResult(value) && !value.ok) {
+        failure = { error: value.error };
+      } else {
+        value = isResult(value) ? value.data : value;
+        outputJson = stableEncode(value); // an unencodable result fails the attempt whole
+      }
     } catch (error) {
-      throw new MutationJobFailure(row, attempt, error, startedAt);
+      failure = { error };
     }
-    if (isResult(value) && !value.ok) {
-      throw new MutationJobFailure(row, attempt, value.error, startedAt);
+    if (failure !== null) {
+      savepoint.rollback();
+      return await this.settleFailureIn(surface, claimed, failure.error, startedAt);
     }
-    return await this.settleSuccessIn(
-      surface,
-      { ...row, attempt },
-      isResult(value) ? value.data : value,
-      startedAt,
-    );
+    savepoint.release();
+    return await this.settleSuccessIn(surface, claimed, value, startedAt, outputJson);
   }
 
   /** Procedure-kind dispatch: run as a system operation, then settle. */
@@ -565,7 +590,19 @@ export class RuntimeJobs {
     this.runControllers.set(claimed.id, controller);
     this.activeRuns++;
     const startedAt = this.options.now();
-    const args = decode(claimed.argsJson);
+    let args: unknown;
+    try {
+      args = decode(claimed.argsJson);
+    } catch (error) {
+      // A row whose stored args no longer decode fails through the ordinary
+      // settle path; the slot and controller are released either way.
+      void this.settle(claimed, { ok: false, error }, startedAt).finally(() => {
+        this.activeRuns--;
+        this.runControllers.delete(claimed.id);
+        if (this.options.isReady()) this.arm();
+      });
+      return;
+    }
     void this.options.system
       .run(
         `jobs.${claimed.name}`,
@@ -625,11 +662,12 @@ export class RuntimeJobs {
     row: JobRow,
     value: unknown,
     startedAt = this.options.now(),
+    encodedOutput?: string,
   ): Promise<Notification> {
     const now = this.options.now();
     let outputJson: string;
     try {
-      outputJson = stableEncode(value);
+      outputJson = encodedOutput ?? stableEncode(value);
     } catch (error) {
       return await this.settleFailureIn(surface, row, error, startedAt);
     }
@@ -722,17 +760,33 @@ export class RuntimeJobs {
     });
   }
 
-  /** Delete terminal rows past their definition's effective retention. */
+  /**
+   * Delete terminal rows past their definition's effective retention. Reads
+   * are targeted per definition and state, so forever-retained rows can never
+   * shadow finite-retention rows behind them.
+   */
   private async reap(signal: AbortSignal): Promise<void> {
     const now = this.options.now();
     if (now - this.lastReapAt < REAP_INTERVAL_MS) return;
     this.lastReapAt = now;
+    const limit = this.options.limits.claimBatchSize;
     await this.options.executor.jobsWrite(signal, async (surface) => {
       for (const state of ["completed", "discarded", "canceled"] as const) {
-        for (const row of surface.jobs.settledBefore(state, now, this.options.limits.claimBatchSize)) {
-          const retention = this.effectiveRetention(this.definitions.get(row.name), state);
+        for (const [name, definition] of this.definitions) {
+          const retention = this.effectiveRetention(definition, state);
           if (retention === "forever") continue;
-          if (row.settledAt! + retention <= now) await surface.jobs.delete(row.id);
+          for (const row of surface.jobs.settledBefore(name, state, now - retention, limit)) {
+            await surface.jobs.delete(row.id);
+          }
+        }
+        // Rows of no-longer-declared jobs keep the default retention.
+        for (const row of surface.jobs.settledBeforeExcluding(
+          this.declaredNames,
+          state,
+          now - DEFAULT_JOB_RETENTION_MS,
+          limit,
+        )) {
+          await surface.jobs.delete(row.id);
         }
       }
     });
@@ -810,11 +864,7 @@ export class RuntimeJobs {
 
   /** A live (pending or running) row for this identity, if any. */
   private liveRow(store: JobsStore, name: string, argsHash: string): JobRow | null {
-    return (
-      store
-        .byIdentity(name, argsHash)
-        .find((row) => row.state === "pending" || row.state === "running") ?? null
-    );
+    return store.liveRowFor(name, argsHash);
   }
 
   private dedupeRow(
@@ -824,20 +874,15 @@ export class RuntimeJobs {
     argsHash: string,
     now: number,
   ): JobRow | null {
-    const rows = store.byIdentity(name, argsHash);
-    const live = rows.find((row) => row.state === "pending" || row.state === "running");
-    if (live !== undefined) return live;
+    const live = store.liveRowFor(name, argsHash);
+    if (live !== null) return live;
     const windows = definition.dedupe!;
-    if (windows.completed === 0 && windows.discarded === 0) return null;
     let best: JobRow | null = null;
-    for (const row of rows) {
-      if (row.settledAt === null) continue;
-      const window = row.state === "completed"
-        ? windows.completed
-        : row.state === "discarded"
-          ? windows.discarded
-          : 0;
+    for (const state of ["completed", "discarded"] as const) {
+      const window = windows[state];
       if (window === 0) continue;
+      const row = store.newestSettledFor(name, argsHash, state);
+      if (row === null || row.settledAt === null) continue;
       if (window !== "forever" && row.settledAt + window <= now) continue;
       if (best === null || row.settledAt > best.settledAt!) best = row;
     }
@@ -918,6 +963,13 @@ export class RuntimeJobs {
     return null;
   }
 
+  private notifyDirect(id: bigint, outcome: JobAttemptOutcome): void {
+    const set = this.waiters.get(id);
+    if (set === undefined) return;
+    this.waiters.delete(id);
+    for (const resolve of set) resolve(outcome);
+  }
+
   /** Post-commit delivery: waiters and telemetry see only committed settles. */
   private deliver(notifications: readonly Notification[]): void {
     for (const notification of notifications) {
@@ -926,10 +978,7 @@ export class RuntimeJobs {
         notification.event === "settled" ? "info" : notification.event === "retried" ? "warn" : "error",
         notification.errorCode ?? "ok",
       );
-      const set = this.waiters.get(notification.id);
-      if (set === undefined) continue;
-      this.waiters.delete(notification.id);
-      for (const resolve of set) resolve(notification.outcome);
+      this.notifyDirect(notification.id, notification.outcome);
     }
   }
 
@@ -942,8 +991,9 @@ export class RuntimeJobs {
   }
 
   private async nextDueAt(): Promise<number | null> {
+    const inProcessIds = [...this.runControllers.keys()];
     return await this.options.reads.submit(
-      (connection) => this.options.executor.nextDueJobAt(connection),
+      (connection) => this.options.executor.nextDueJobAt(connection, inProcessIds),
       { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
       false,
     );

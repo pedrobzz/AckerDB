@@ -17,6 +17,7 @@ import {
 } from "./statement-observation.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
+import { decode, stableEncode } from "@ackerdb/core";
 import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
 import { hashJobArgs } from "../jobs/identity.ts";
 
@@ -610,6 +611,7 @@ export function makeDbReader(
  */
 function guardedJobsWriter(
   writer: ReturnType<typeof writeMethods>,
+  getRow: (id: bigint) => Promise<Record<string, unknown> | null>,
 ): ReturnType<typeof writeMethods> {
   const refuse = (op: string): never => {
     throw new ValidationError(
@@ -630,8 +632,37 @@ function guardedJobsWriter(
             );
           }
         }
-        if (typeof input["argsJson"] === "string") {
-          return writer.patch(id, { ...input, argsHash: hashJobArgs(input["argsJson"]) });
+        const editsIntent = ["argsJson", "key", "runAt"].some(
+          (column) => input[column] !== undefined,
+        );
+        if (editsIntent) {
+          return makeWriteResult(async () => {
+            // A running row's claim already captured its arguments and gate:
+            // editing them mid-flight would settle old work under a new
+            // identity. Cancel first, then edit.
+            const current = await getRow(id);
+            if (current !== null && (current as { state?: unknown }).state === "running") {
+              throw new ValidationError(
+                `${JOBS_TABLE}.patch: the row is running; cancel it before editing its scheduling intent`,
+              );
+            }
+            let patch = input;
+            if (typeof input["argsJson"] === "string") {
+              // Canonicalize before hashing so an equivalent encoding cannot
+              // fork the dedup identity; a non-decodable payload is refused.
+              let canonical: string;
+              try {
+                canonical = stableEncode(decode(input["argsJson"]));
+              } catch {
+                throw new ValidationError(
+                  `${JOBS_TABLE}.patch: argsJson is not a valid canonical encoding`,
+                );
+              }
+              patch = { ...input, argsJson: canonical, argsHash: hashJobArgs(canonical) };
+            }
+            await writer.patch(id, patch);
+            return { value: undefined, row: await getRow(id) };
+          }) as ReturnType<ReturnType<typeof writeMethods>["patch"]>;
         }
       }
       return writer.patch(id, partial);
@@ -655,10 +686,16 @@ export function makeDbWriter(
     }
     const plan = scope.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
+    const reader = readMethods(engine, engine.writer, null, plan, observer);
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),
-      readMethods(engine, engine.writer, null, plan, observer),
-      name === JOBS_TABLE ? guardedJobsWriter(writer) : writer,
+      reader,
+      name === JOBS_TABLE
+        ? guardedJobsWriter(
+            writer,
+            reader["get"] as (id: bigint) => Promise<Record<string, unknown> | null>,
+          )
+        : writer,
     );
     if (name !== JOBS_TABLE) {
       const upsertWriter = observer === undefined

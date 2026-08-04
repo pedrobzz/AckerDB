@@ -16,7 +16,9 @@ import {
   type Principal,
 } from "../../auth/credentials.ts";
 import {
+  checkpointWriteCollector,
   makeDbReader,
+  rollbackWriteCollector,
   type ReadRecorder,
   type WriteCollector,
 } from "../../database/access.ts";
@@ -85,6 +87,13 @@ const releaseNothing = (): void => {};
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
   readonly jobs: JobsStore;
+  /**
+   * A savepoint over the open transaction plus its write collector: the
+   * mutation-kind envelope runs the handler inside one, so a failed handler
+   * rolls back its writes while the same transaction still records the
+   * failed attempt.
+   */
+  savepoint(): { rollback(): void; release(): void };
   /**
    * Run a mutation-kind job handler under a system-principal mutation context
    * with the same bindings (MCP token vault, analytics attribution) a
@@ -619,6 +628,25 @@ export class RuntimeFunctionExecutor<C> {
             writes,
             this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
           ),
+          savepoint: () => {
+            const checkpoint = checkpointWriteCollector(writes);
+            this.options.engine.writer.exec("SAVEPOINT ackerdb_job_handler");
+            let settled = false;
+            return {
+              rollback: () => {
+                if (settled) return;
+                settled = true;
+                this.options.engine.writer.exec("ROLLBACK TO ackerdb_job_handler");
+                this.options.engine.writer.exec("RELEASE ackerdb_job_handler");
+                rollbackWriteCollector(writes, checkpoint);
+              },
+              release: () => {
+                if (settled) return;
+                settled = true;
+                this.options.engine.writer.exec("RELEASE ackerdb_job_handler");
+              },
+            };
+          },
           runMutationHandler: async (jobAddress, attempt, run) => {
             // The attempt is part of the context object itself: capability
             // bindings key off the exact frozen identity, so no caller may
@@ -657,8 +685,8 @@ export class RuntimeFunctionExecutor<C> {
     return readJobRow(this.options.engine, connection, id);
   }
 
-  nextDueJobAt(connection: Database) {
-    return nextDueJobAt(this.options.engine, connection);
+  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = []) {
+    return nextDueJobAt(this.options.engine, connection, inProcessIds);
   }
 
   dueJobStats(connection: Database, now: number) {

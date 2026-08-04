@@ -169,23 +169,39 @@ const SEARCH_LIMIT_MS = 4 * 366 * 24 * 60 * MINUTE_MS;
  * The first occurrence strictly after `after`, evaluated on the timezone's
  * wall clock, or null when the expression cannot match within four years
  * (impossible dates like `0 0 31 2 *`).
+ *
+ * A wall-clock time repeated by a fall-back transition fires once: a
+ * candidate whose complete wall tuple equals `after`'s is the second leg of
+ * the overlap and is skipped.
  */
 export function cronNext(expression: string, tz: string, after: number): number | null {
   const parsed = parseCronExpression(expression);
+  const afterClock = wallClockAt(after, tz);
   // Start at the next whole minute strictly after `after`.
   let timestamp = (Math.floor(after / MINUTE_MS) + 1) * MINUTE_MS;
   const limit = timestamp + SEARCH_LIMIT_MS;
   while (timestamp < limit) {
     const clock = wallClockAt(timestamp, tz);
-    if (matches(parsed, clock)) return timestamp;
-    // Skip ahead by whole hours/days when the coarse fields cannot match, so
-    // sparse expressions (first of month) do not walk half a million minutes.
-    if (!parsed.month.any && !parsed.month.values.has(clock.month)) {
-      timestamp += 24 * 60 * MINUTE_MS;
+    if (matches(parsed, clock)) {
+      const repeatedWallTuple =
+        clock.year === afterClock.year &&
+        clock.month === afterClock.month &&
+        clock.day === afterClock.day &&
+        clock.hour === afterClock.hour &&
+        clock.minute === afterClock.minute;
+      if (!repeatedWallTuple) return timestamp;
+      timestamp += MINUTE_MS;
       continue;
     }
-    if (!matchesDay(parsed, clock)) {
-      // Jump to the next day's first minute in this timezone.
+    // Skip ahead when the coarse fields cannot match, so sparse expressions
+    // (first of month) do not walk half a million minutes. Every jump lands
+    // on the next *local* midnight, recomputed from the current wall clock —
+    // a fixed 24-hour hop would drift across DST transitions and could
+    // overshoot straight past a matching midnight.
+    if (
+      (!parsed.month.any && !parsed.month.values.has(clock.month)) ||
+      !matchesDay(parsed, clock)
+    ) {
       timestamp += (24 * 60 - (clock.hour * 60 + clock.minute)) * MINUTE_MS;
       continue;
     }

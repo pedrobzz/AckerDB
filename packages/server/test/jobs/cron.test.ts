@@ -59,6 +59,22 @@ describe("cron next occurrence", () => {
     expect(cronNext("0 0 13 * 0", "UTC", from)).toBe(utc("2026-02-08T00:00:00Z"));
   });
 
+  test("month skips recompute local midnight: DST drift cannot overshoot a match", () => {
+    // Searching December 1 midnight (New York) from March crosses the
+    // November fall-back; a fixed 24h hop would arrive at Dec 1 23:00 and
+    // walk straight past the midnight match into next year.
+    const next = cronNext("0 0 1 12 *", "America/New_York", utc("2026-03-15T00:00:00Z"));
+    expect(next).toBe(utc("2026-12-01T05:00:00Z")); // midnight EST
+  });
+
+  test("a wall-clock time repeated by fall-back fires once", () => {
+    // 2026-11-01 America/New_York: 01:30 EDT (05:30Z) repeats as 01:30 EST
+    // (06:30Z). The next occurrence after the first leg is the next *day*.
+    const first = cronNext("30 1 * * *", "America/New_York", utc("2026-11-01T00:00:00Z"));
+    expect(first).toBe(utc("2026-11-01T05:30:00Z"));
+    expect(cronNext("30 1 * * *", "America/New_York", first!)).toBe(utc("2026-11-02T06:30:00Z"));
+  });
+
   test("an impossible date returns null instead of searching forever", () => {
     expect(cronNext("0 0 31 2 *", "UTC", utc("2026-01-01T00:00:00Z"))).toBeNull();
   });
