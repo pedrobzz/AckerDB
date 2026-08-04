@@ -18,6 +18,7 @@ import {
   invokeFunction,
 } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
+import { ANONYMOUS_PRINCIPAL } from "../../auth/credentials.ts";
 import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
@@ -46,9 +47,11 @@ import type {
   RuntimeExternalRequest,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
+  RuntimeHttpHandlerRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
+import { runInInvocationRoot } from "../invocation-state.ts";
 import type { IdempotencyIdentity } from "../coordinator.ts";
 import {
   restoreMutationResult,
@@ -230,6 +233,90 @@ export class RuntimeHttp {
         }
       },
       claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /**
+   * The HTTP entry point for a raw handler. No credential resolution, no args
+   * decode, no codec: the buffered Request crosses whole and the handler's
+   * Response leaves whole. A failure rejects with the transport error and the
+   * listener answers it as the bare Outcome — the handler authored nothing, so
+   * the framework speaks its own language.
+   */
+  runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
+    const registered = this.options.registry.httpHandler(input.address);
+    if (registered === undefined) {
+      return Promise.reject(
+        new AckerDBError("not_found", `unknown http handler "${input.address}"`),
+      );
+    }
+    const requestBytes = Math.max(1, input.requestBytes ?? 1);
+    const fairnessKey = input.fairnessKey
+      ?? callerFairnessKey(ANONYMOUS_PRINCIPAL, DIRECT_RUNTIME_SOURCE);
+    // "procedure" is the telemetry operation, as for MCP tools: an externally
+    // addressed side-effecting call, named by its address.
+    return this.options.operations.run(null, "procedure", input.address, requestBytes, async () => {
+      const signal = this.options.operationSignal(input.signal);
+      throwIfAborted(signal);
+      // The http surface has no auth members, so no account can ever unlink.
+      const context = this.options.functions.createProcedureContext(
+        ANONYMOUS_PRINCIPAL,
+        fairnessKey,
+        signal,
+        requestBytes,
+        this.readNow(),
+        () => {},
+        "http",
+      );
+      try {
+        return await invokeSideEffectingHandler(
+          signal,
+          "http handler",
+          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
+            onAuthorized();
+            try {
+              const response = await registered.handler(context.value, input.request);
+              if (!(response instanceof Response)) {
+                throw new Error("http handler returned a non-Response value");
+              }
+              return response;
+            } catch (cause) {
+              // Every uncaught throw — an AckerDBError, a validation error,
+              // anything — crosses as the one sanitized `internal` outcome:
+              // the handler authors its failures as Responses, so a thrown
+              // message is never the handler speaking to the caller. The
+              // specifics stay in the server log. Rethrowing a plain Error
+              // keeps the abort conversion above intact.
+              //
+              // Describing the cause is itself handler-controlled work: an
+              // accessor that throws would otherwise escape past this frame
+              // carrying its own message to the caller, which is the exact
+              // leak the sanitizing throw below exists to close.
+              let described: string;
+              try {
+                described = cause instanceof Error
+                  ? cause.stack ?? cause.message
+                  : String(cause);
+              } catch {
+                described = "<unreadable handler error>";
+              }
+              try {
+                context.value.log.error(`http handler "${input.address}" failed`, {
+                  error: described,
+                });
+              } catch {
+                // Logging is best effort; the sanitized failure is the contract.
+              }
+              throw new Error(`http handler "${input.address}" failed`);
+            }
+          }),
+        );
+      } finally {
+        context.release();
+      }
+    }, {
+      identifiers: { requestId: String(input.id ?? 0) },
       fairnessKey,
     });
   }

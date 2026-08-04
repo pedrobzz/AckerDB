@@ -48,6 +48,7 @@ function serverTs(config: AppConfig): string {
 import {
   mcp as mcpGeneric,
   channel as channelGeneric,
+  httpHandler as httpHandlerGeneric,
   realtime as realtimeGeneric,
   mcpAuth as mcpAuthGeneric,
   mutation as mutationGeneric,
@@ -62,6 +63,8 @@ import type {
   ChannelBuilder,
   DbReader,
   DbWriter,
+  HttpHandlerBuilder,
+  HttpHandlerCtx as GenericHttpHandlerCtx,
   McpAuthBuilder,
   McpBuilder,
   MutationBuilder,
@@ -90,6 +93,7 @@ export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Pr
 export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins>;
+export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const mcp = mcpGeneric as McpBuilder<Schema>;
 export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
@@ -98,6 +102,7 @@ export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
 export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>;
+export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SystemCtx = GenericSystemCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type ServiceCtx = GenericServiceContext<SystemCtx>;
 export type DatabaseReader = DbReader<Schema>;

@@ -6,6 +6,12 @@ clients that speak `fetch`/curl/any language, without the WebSocket protocol —
 plus OpenAPI generation for that surface. Implementation issues reference this
 document; divergences discovered during implementation must update it.
 
+This document covers the *contract* surface: functions served through their
+`v` validators and published in OpenAPI. Endpoints whose shapes an external
+party dictates — webhooks verifying an HMAC over raw bytes, OAuth callbacks —
+are the contract-less side of the same surface, owned by
+[raw HTTP handlers](http-handlers.md).
+
 ## Motivation
 
 Every registered function is callable today, but only through Protocol-2: the

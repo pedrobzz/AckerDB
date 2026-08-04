@@ -352,6 +352,15 @@ export {
   type TxCtx,
 } from "./app/functions.ts";
 export {
+  httpHandler,
+  HTTP_HANDLER_METHODS,
+  type AnyRegisteredHttpHandler,
+  type HttpHandlerBuilder,
+  type HttpHandlerCtx,
+  type HttpHandlerMethod,
+  type RegisteredHttpHandler,
+} from "./app/http-handler.ts";
+export {
   channel,
   isRegisteredChannel,
   type AnyRegisteredChannel,
@@ -576,6 +585,7 @@ export {
 } from "./runtime/contracts/options.ts";
 export {
   type HttpMutationReceipt,
+  type RuntimeHttpHandlerRequest,
   type RuntimeHttpMutationRequest,
   type RuntimeHttpRequest,
   type RuntimeHttpResponder,
