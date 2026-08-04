@@ -132,7 +132,7 @@ export {
   type QueryJobsOf,
   type TypedJobOutcome,
 } from "./jobs/api.ts";
-export { JOBS_TABLE } from "./jobs/table.ts";
+export { JOBS_TABLE, withJobsTable } from "./jobs/table.ts";
 export {
   type JobAttemptOutcome,
   type JobAttemptRecord,

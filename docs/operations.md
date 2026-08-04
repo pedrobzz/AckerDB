@@ -40,7 +40,9 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Resume history, per stream | 64 transitions, 2 MiB, 30 s |
 | Resume history, global | 128 MiB |
 | Publication handoff | 4,096 items, 32 MiB |
-| Scheduled handlers per batch | 100 |
+| Job claims per runner wake (`jobs.claimBatchSize`) | 100 |
+| Concurrently running job handlers (`jobs.maxRunning`) | 64 |
+| Job attempt lease (`jobs.leaseMs`) | 60 s |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
 | Realtime peers, global / per principal | 1,024 / 16 |
 | Realtime handshakes, per principal and 10 s window | 32 |

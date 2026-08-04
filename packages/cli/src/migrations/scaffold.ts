@@ -41,6 +41,7 @@ import {
   type SchemaRefusal,
   type SchemaSnapshot,
   type TableSnapshot,
+  withJobsTable,
 } from "@ackerdb/server";
 
 /** Raised when a descriptor kind cannot be rendered structurally — a hard stop. */
@@ -216,7 +217,7 @@ export function generateMigration(input: GenerateMigrationInput): GeneratedMigra
     columns: renames.columns ?? {},
     variants: renames.variants ?? {},
   };
-  const target = snapshotOf(input.schema);
+  const target = snapshotOf(withJobsTable(input.schema));
 
   const diff = diffSnapshots(applyRenames(pre, normalizedRenames), target);
   const { refusals } = classifySchemaDiff(diff);

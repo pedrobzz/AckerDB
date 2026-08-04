@@ -1,7 +1,7 @@
 # AckerDB — The All-in-One Back-End Framework
 
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
-provides typed queries, transactional mutations, procedures, scheduled work,
+provides typed queries, transactional mutations, procedures, durable jobs,
 live query subscriptions, application channels, and WebRTC media sessions
 through Protocol 5.
 
@@ -41,7 +41,7 @@ Do not install a host-specific `@ackerdb/realtime-*` package directly.
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # app.ts, functions/, .ackerdb.config.json
+│   ├── server/                 # app.ts, functions/, jobs/, services/, .ackerdb.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
@@ -58,8 +58,9 @@ your-app/
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
-  external work and open explicit `ctx.tx(...)` transactions. Scheduled
-  mutations execute as the local `system` principal.
+  external work and open explicit `ctx.tx(...)` transactions. Durable jobs
+  declared in `jobs/` execute as the local `system` principal with retries,
+  recurrence, dedup, and per-key concurrency (see docs/jobs.md).
 - Direct server-side query/mutation composition preserves the caller's
   immutable principal and still validates arguments and the callee's policy.
   Procedures and SSE procedures exist only at the transport boundary.

@@ -13,6 +13,7 @@ import {
   newWriteCollector,
   reconcile,
   snapshotOf,
+  withJobsTable,
   type Schema,
 } from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
@@ -247,9 +248,9 @@ describe("generateMigration: meta sidecar", () => {
     expect(Object.keys(meta)).toEqual(["number", "name", "fingerprint", "pre", "target"]);
     expect(meta.number).toBe(3);
     expect(meta.name).toBe("restructure");
-    expect(meta.pre).toEqual(snapshotOf(PRE));
-    expect(meta.target).toEqual(snapshotOf(TARGET));
-    expect(meta.fingerprint).toBe(migrationFingerprint(snapshotOf(TARGET)));
+    expect(meta.pre).toEqual(snapshotOf(PRE)); // passthrough: real pre comes from the stored snapshot
+    expect(meta.target).toEqual(snapshotOf(withJobsTable(TARGET)));
+    expect(meta.fingerprint).toBe(migrationFingerprint(snapshotOf(withJobsTable(TARGET))));
   });
 });
 
