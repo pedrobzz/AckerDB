@@ -138,6 +138,20 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
       // and proves that the generated loader resolves the current host.
       overrides: dependencies,
     }, null, 2));
+    // A clean consumer resolves open transitive ranges at install time, so a
+    // registry package published hours ago could reach this gate before anyone
+    // reviewed it. Quarantine consumer resolution to day-old releases; the
+    // workspace's advisory-floored excludes (bunfig.toml) carry over so each
+    // audited pin stays installable. File-path @ackerdb tarballs are unaffected.
+    const workspaceInstall = (Bun.TOML.parse(
+      readFileSync(join(root, "bunfig.toml"), "utf8"),
+    ) as { install?: { minimumReleaseAgeExcludes?: readonly string[] } }).install;
+    writeFileSync(join(consumerDir, "bunfig.toml"), [
+      "[install]",
+      "minimumReleaseAge = 86400",
+      `minimumReleaseAgeExcludes = ${JSON.stringify(workspaceInstall?.minimumReleaseAgeExcludes ?? [])}`,
+      "",
+    ].join("\n"));
     // The consumer must be installed from the freshly packed tarballs alone. A
     // shared bun cache can satisfy name@version lookups with stale contents and
     // make this gate verify a cache entry instead of the release artifacts.
