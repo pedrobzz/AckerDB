@@ -27,6 +27,8 @@ export interface AppConfig {
   functionsDir: string;
   /** Directory of application service modules. */
   servicesDir: string;
+  /** Directory of job modules. */
+  jobsDir: string;
   /** Directory of migration modules and their `meta/` sidecars. */
   migrationsDir: string;
   /** Where codegen writes _generated files. */
@@ -47,6 +49,7 @@ interface RawConfig {
   app?: string;
   functions?: string;
   services?: string;
+  jobs?: string;
   migrations?: string;
   generated?: string;
   db?: string;
@@ -61,6 +64,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "app",
   "functions",
   "services",
+  "jobs",
   "migrations",
   "generated",
   "db",
@@ -159,6 +163,7 @@ export function loadConfig(
     appPath: abs(raw.app ?? "./app.ts"),
     functionsDir: abs(raw.functions ?? "./functions"),
     servicesDir: abs(raw.services ?? "./services"),
+    jobsDir: abs(raw.jobs ?? "./jobs"),
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.ackerdb"),

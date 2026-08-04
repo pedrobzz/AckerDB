@@ -55,36 +55,22 @@ type JobExports<M> = {
   [Exp in keyof M as M[Exp] extends AnyJob ? Exp : never]: M[Exp];
 };
 
-/** ctx.jobs in queries, from the jobs-directory module map. */
-export type QueryJobsApi<Modules> = {
-  readonly [Mod in keyof Modules as keyof JobExports<Modules[Mod]> extends never
-    ? never
-    : Mod]: {
-    readonly [Exp in keyof JobExports<Modules[Mod]>]: JobQuerySurface;
-  };
+/** One job module's ctx.jobs slice in queries; codegen nests these. */
+export type QueryJobsOf<M> = {
+  readonly [Exp in keyof JobExports<M>]: JobQuerySurface;
 };
 
-/** ctx.jobs in mutations and transactions. */
-export type MutationJobsApi<Modules> = {
-  readonly [Mod in keyof Modules as keyof JobExports<Modules[Mod]> extends never
-    ? never
-    : Mod]: {
-    readonly [Exp in keyof JobExports<Modules[Mod]>]: JobMutationSurface<
-      ArgsOf<JobExports<Modules[Mod]>[Exp]>
-    >;
-  };
+/** One job module's ctx.jobs slice in mutations and transactions. */
+export type MutationJobsOf<M> = {
+  readonly [Exp in keyof JobExports<M>]: JobMutationSurface<ArgsOf<JobExports<M>[Exp]>>;
 };
 
-/** ctx.jobs in procedures, system runs, services, and job handlers. */
-export type ProcedureJobsApi<Modules> = {
-  readonly [Mod in keyof Modules as keyof JobExports<Modules[Mod]> extends never
-    ? never
-    : Mod]: {
-    readonly [Exp in keyof JobExports<Modules[Mod]>]: JobControlSurface<
-      ArgsOf<JobExports<Modules[Mod]>[Exp]>,
-      ResultOf<JobExports<Modules[Mod]>[Exp]>
-    >;
-  };
+/** One job module's ctx.jobs slice in procedures, system runs, and jobs. */
+export type ProcedureJobsOf<M> = {
+  readonly [Exp in keyof JobExports<M>]: JobControlSurface<
+    ArgsOf<JobExports<M>[Exp]>,
+    ResultOf<JobExports<M>[Exp]>
+  >;
 };
 
 // Untyped fallbacks: base contexts outside generated code stay usable.
