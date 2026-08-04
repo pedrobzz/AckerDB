@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/server",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "license": "FSL-1.1-ALv2",
   "repository": {
     "type": "git",
@@ -21,7 +21,7 @@
     "./realtime-host": "./src/realtime/host.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.14.3",
+    "@ackerdb/core": "workspace:0.15.0",
     "@fastify/proxy-addr": "5.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "jose": "6.2.3",
