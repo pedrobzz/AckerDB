@@ -1212,17 +1212,27 @@ export class AckerDBServer {
         signal: request.signal,
         fairnessKey,
       });
-      if (response.body === null) return response;
+      // Every part of the handler's Response is read exactly once: a second
+      // read of an accessor that answered differently — or threw — would
+      // strand the admission slot this frame is transferring.
+      const stream = response.body;
+      if (stream === null) return response;
       // A streaming body keeps its admission slot until the stream settles:
       // without this, a public raw route could hold open more streams than
       // `maxOperations` ever admitted, and drain would not own them.
-      const streamAdmission = admission!;
+      const streamAdmission = admission;
       admission = undefined;
-      return new Response(ownedStream(response.body, () => streamAdmission.release()), {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
+      try {
+        return new Response(ownedStream(stream, () => streamAdmission.release()), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      } catch (error) {
+        // The wrapper never took ownership, so this frame still owes the slot.
+        streamAdmission.release();
+        throw error;
+      }
     } catch (error) {
       return outcomeError(error);
     } finally {

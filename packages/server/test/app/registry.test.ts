@@ -114,8 +114,11 @@ describe("raw http handler routes", () => {
 
     const route = registry.httpRoutes.get("/api/hooks/stripe");
     expect(route).toMatchObject({ address: "hooks.stripe", path: "/api/hooks/stripe" });
-    expect(route?.fn).toBe(hook);
-    expect(registry.httpHandler("hooks.stripe")).toBe(hook);
+    // The route serves the registry's own validated snapshot; the handler it
+    // calls is the exported one.
+    expect(route?.fn.handler).toBe(hook.handler);
+    expect(route?.fn.methods).toEqual(["POST"]);
+    expect(registry.httpHandler("hooks.stripe")).toBe(route?.fn);
     // Not a contract function: it is neither addressable nor exposed.
     expect(registry.get("hooks.stripe")).toBeUndefined();
     expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
@@ -164,6 +167,41 @@ describe("raw http handler routes", () => {
     const unmarked = rest as never;
     expect(() => new Registry({ hooks: { unmarked } })).toThrow(
       'http handler "hooks.unmarked" must carry isAckerDBServerOnly: true',
+    );
+  });
+
+  test("serves the validated snapshot, not the exported object", () => {
+    // A value whose fields change after registration — a getter that answers
+    // twice, or a mutated methods array — must not change what the surface
+    // serves: every field is read once, at registration, and copied.
+    const mutable = {
+      isAckerDB: true,
+      isAckerDBServerOnly: true,
+      kind: "http",
+      methods: ["POST"],
+      handler: () => new Response(null),
+    };
+    const registry = new Registry({ hooks: { mutable: mutable as never } });
+    const route = registry.httpRoutes.get("/api/hooks/mutable")!;
+
+    mutable.methods[0] = "TRACE";
+    mutable.handler = null as never;
+    expect(route.fn.methods).toEqual(["POST"]);
+    expect(typeof route.fn.handler).toBe("function");
+    expect(Object.isFrozen(route.fn)).toBe(true);
+  });
+
+  test("refuses a shape hiding fields behind non-enumerable keys", () => {
+    // An array carries a non-enumerable `length`; Object.keys would miss it.
+    const arrayShaped = Object.assign([], {
+      isAckerDB: true,
+      isAckerDBServerOnly: true,
+      kind: "http",
+      methods: ["POST"],
+      handler: () => new Response(null),
+    });
+    expect(() => new Registry({ hooks: { arrayShaped: arrayShaped as never } })).toThrow(
+      'http handler "hooks.arrayShaped" must not declare "length"',
     );
   });
 

@@ -103,15 +103,20 @@ const REGISTERED_KEYS = Object.freeze(
   [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"] as const,
 );
 
+/**
+ * Every own key, enumerable or not, string or symbol: a field hidden behind
+ * `enumerable: false` is still a field the author expected something to
+ * consume, and nothing here consumes any of them.
+ */
 function refuseUnknownKeys(
   value: object,
   allowed: readonly string[],
   where: string,
 ): void {
-  for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) {
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === "symbol" || !allowed.includes(key)) {
       throw new TypeError(
-        `${where} must not declare "${key}" — an httpHandler carries exactly methods and handler`,
+        `${where} must not declare "${String(key)}" — an httpHandler carries exactly methods and handler`,
       );
     }
   }
@@ -140,18 +145,39 @@ export function validateHttpHandlerShape(
  * marker the builder stamps. `isAckerDBServerOnly` is the marker generated
  * client APIs erase the export by, so a value missing it would register a
  * live route while leaking a client reference — refused here instead.
+ *
+ * Returns the frozen snapshot the registry stores. Validating the caller's
+ * object and then serving from it would let an accessor answer one way here
+ * and another way at dispatch; every field the surface reads is read exactly
+ * once, here, and copied.
  */
-export function validateRegisteredHttpHandler(value: object, where: string): void {
+export function validateRegisteredHttpHandler(
+  value: object,
+  where: string,
+): AnyRegisteredHttpHandler {
   refuseUnknownKeys(value, REGISTERED_KEYS, where);
-  if ((value as { isAckerDBServerOnly?: unknown }).isAckerDBServerOnly !== true) {
+  const snapshot = value as {
+    isAckerDBServerOnly?: unknown;
+    methods?: unknown;
+    handler?: unknown;
+  };
+  if (snapshot.isAckerDBServerOnly !== true) {
     throw new TypeError(
       `${where} must carry isAckerDBServerOnly: true — generated client APIs erase the export by that marker`,
     );
   }
-  validateMethods((value as { methods?: unknown }).methods, where);
-  if (typeof (value as { handler?: unknown }).handler !== "function") {
+  const methods = validateMethods(snapshot.methods, where);
+  const handler = snapshot.handler;
+  if (typeof handler !== "function") {
     throw new TypeError(`${where} handler must be a function`);
   }
+  return Object.freeze({
+    isAckerDB: true as const,
+    isAckerDBServerOnly: true as const,
+    kind: "http" as const,
+    methods,
+    handler: handler as AnyRegisteredHttpHandler["handler"],
+  });
 }
 
 export function httpHandler<S extends Schema>(def: {

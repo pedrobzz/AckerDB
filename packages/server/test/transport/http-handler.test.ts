@@ -114,6 +114,19 @@ const functions = {
         throw new ValidationError("secret field detail");
       },
     }),
+    boomHostile: httpHandler({
+      methods: ["POST"],
+      handler: () => {
+        // Describing the cause is handler-controlled work too: an accessor
+        // that throws must not carry its own error past the sanitizer.
+        throw new Proxy(new AckerDBError("validation", "secret proxy detail"), {
+          get(target, key, receiver) {
+            if (key === "stack") throw target;
+            return Reflect.get(target, key, receiver);
+          },
+        });
+      },
+    }),
     invalid: httpHandler({
       methods: ["POST"],
       handler: () => ({ nope: true }) as never,
@@ -278,6 +291,7 @@ describe("framework-authored responses speak the bare Outcome", () => {
       ["boom", "secret cause"],
       ["boomFramework", "secret validation detail"],
       ["boomValidation", "secret field detail"],
+      ["boomHostile", "secret proxy detail"],
     ] as const) {
       const response = await fetch(`${base}/api/hooks/${address}`, { method: "POST", body: "{}" });
 

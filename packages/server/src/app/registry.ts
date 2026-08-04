@@ -118,9 +118,12 @@ export class Registry {
 
     for (const { address, value } of moduleExports) {
       if (!isHttpHandlerShaped(value)) continue;
-      validateRegisteredHttpHandler(value, `http handler "${address}"`);
+      // The registry serves the validated snapshot, never the exported object:
+      // an accessor cannot answer one way at registration and another at
+      // dispatch. Addresses still key off the exported identity.
+      const registered = validateRegisteredHttpHandler(value, `http handler "${address}"`);
       this.registerAddress(address, value);
-      this.httpHandlersByAddress.set(address, value);
+      this.httpHandlersByAddress.set(address, registered);
     }
 
     for (const { address, value } of moduleExports) {
