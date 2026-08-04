@@ -46,6 +46,35 @@ Queries support `collect`, `take`, `first`, `unique`, `count`, `iter`, and
 keyset `paginate`. `unique` returns `null` for no row and rejects more than one
 row. Filtering, limiting, counting, and pagination stay in SQLite.
 
+## Scalar aggregates
+
+`sum`, `avg`, `min`, and `max` aggregate the filtered set inside SQLite —
+no row crosses into JavaScript — and record the same reactive dependencies
+as any other materializer, so a live aggregate recomputes only when a write
+touches its predicate's index range:
+
+```ts
+const revenue = await ctx.db.orders
+  .query()
+  .where((row) => row.status.eq("paid"))
+  .sum((row) => row.amount);
+```
+
+The callback selects one column, like `orderBy`. `sum` and `avg` accept
+numeric columns (`int`, `float`, `bigint`); `min` and `max` accept every
+ordered kind — the `lt`/`gt` set — and return the column's decoded value.
+Declared ordering is ignored; aggregates are terminal over the whole
+filtered set, so there is no "sum of the top N" — `take(N)` and reduce in
+JavaScript for that.
+
+Aggregates follow SQL NULL semantics: NULL values do not contribute. An
+empty (or all-NULL) set yields the sum identity — `0`, or `0n` for bigint
+columns — while `avg`, `min`, and `max` yield `null`, and `avg` is always a
+float. Sums never lose precision silently: an `int` sum whose exact value
+exceeds `Number.MAX_SAFE_INTEGER` throws and names the bigint-column fix,
+and a `bigint` sum past SQLite's 64-bit integer range surfaces its overflow
+as an error.
+
 ## Deterministic order and pagination
 
 Without an explicit order, rows use primary-key ascending order. With an

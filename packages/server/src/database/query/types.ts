@@ -38,6 +38,18 @@ type NarrowUnionColumn<Row, K extends keyof Row, Variant extends string> = Expan
 declare const PREDICATE_EXPRESSION: unique symbol;
 declare const ORDER_EXPRESSION: unique symbol;
 declare const UNSUPPORTED_COLUMN: unique symbol;
+declare const SUMMABLE_COLUMN: unique symbol;
+declare const MINMAX_COLUMN: unique symbol;
+
+/** Phantom capability of numeric columns (int, float, bigint): accepted by `sum()`/`avg()`. */
+export interface SummableColumn<Value> {
+  readonly [SUMMABLE_COLUMN]: Value;
+}
+
+/** Phantom capability of ordered columns (the `lt`/`gt` set): accepted by `min()`/`max()`. */
+export interface MinMaxColumn<Value> {
+  readonly [MINMAX_COLUMN]: Value;
+}
 
 /** A SQL predicate. Its row phantom carries only sound positive narrowing. */
 export interface PredicateExpression<NarrowRow, BaseRow = NarrowRow> {
@@ -103,7 +115,11 @@ type ScalarColumn<V, Row, Key extends keyof Row> =
     ? UnionColumn<Members, Row, Key>
     : BaseValidator<V> extends Validator<unknown, infer Kind>
       ? Kind extends "string" | "int" | "float" | "bigint" | "identity" | "pk" | "scheduleAt"
-        ? OrderedColumn<ComparableValue<V>, Row>
+        ? OrderedColumn<ComparableValue<V>, Row> &
+            MinMaxColumn<ComparableValue<V>> &
+            (Kind extends "int" | "float" | "bigint"
+              ? SummableColumn<ComparableValue<V>>
+              : object)
         : Kind extends "boolean"
           ? ComparableColumn<ComparableValue<V>, Row>
           : Kind extends "enum"
@@ -143,8 +159,23 @@ export interface QueryMaterializers<Row> {
   paginate(options: { cursor?: string | null; pageSize: number }): Promise<QueryPage<Row>>;
 }
 
+/**
+ * Scalar SQL aggregates over the filtered set. Ordering is ignored, NULLs are
+ * skipped per SQL semantics, and an empty set yields `sum` 0/0n and `null`
+ * elsewhere. An `int` sum whose exact value exceeds `Number.MAX_SAFE_INTEGER`
+ * throws instead of losing precision.
+ */
+export interface AggregateMaterializers<C extends ObjectShape> {
+  sum<Value extends number | bigint>(
+    column: (row: QueryRow<C>) => SummableColumn<Value>,
+  ): Promise<Value>;
+  avg(column: (row: QueryRow<C>) => SummableColumn<number | bigint>): Promise<number | null>;
+  min<Value>(column: (row: QueryRow<C>) => MinMaxColumn<Value>): Promise<Value | null>;
+  max<Value>(column: (row: QueryRow<C>) => MinMaxColumn<Value>): Promise<Value | null>;
+}
+
 export interface TableQuery<C extends ObjectShape, Row = RowShape<C>>
-  extends QueryMaterializers<Row> {
+  extends QueryMaterializers<Row>, AggregateMaterializers<C> {
   where<Expression extends PredicateExpression<unknown, RowShape<C>>>(
     predicate: (row: QueryRow<C>) => Expression,
   ): TableQuery<C, Row & NarrowedRow<Expression>>;
@@ -152,7 +183,7 @@ export interface TableQuery<C extends ObjectShape, Row = RowShape<C>>
 }
 
 export interface OrderedTableQuery<C extends ObjectShape, Row = RowShape<C>>
-  extends QueryMaterializers<Row> {
+  extends QueryMaterializers<Row>, AggregateMaterializers<C> {
   where<Expression extends PredicateExpression<unknown, RowShape<C>>>(
     predicate: (row: QueryRow<C>) => Expression,
   ): OrderedTableQuery<C, Row & NarrowedRow<Expression>>;

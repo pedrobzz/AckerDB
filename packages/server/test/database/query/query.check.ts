@@ -117,6 +117,27 @@ export async function _queryTypecheck(): Promise<void> {
   // @ts-expect-error order expressions carry an unforgeable runtime-owned brand
   reader.documents.query().orderBy(() => ({}));
 
+  const _floatSum: number = await reader.documents.query().sum((row) => row.score);
+  const _bigintSum: bigint = await reader.documents.query().sum((row) => row.tenantId);
+  const _avg: number | null = await reader.documents.query().avg((row) => row.score);
+  const _minPk: bigint | null = await reader.documents.query().min((row) => row.id);
+  const _maxNote: string | null = await reader.documents.query().max((row) => row.note);
+  const _orderedSum: number = await reader.documents
+    .query()
+    .where((row) => row.tenantId.eq(1n))
+    .orderBy((row) => row.score.desc())
+    .sum((row) => row.score);
+  // @ts-expect-error a float sum is a number, not a bigint
+  const _wrongSum: bigint = await reader.documents.query().sum((row) => row.score);
+  // @ts-expect-error string columns are not summable
+  reader.documents.query().sum((row) => row.note);
+  // @ts-expect-error enum columns have no order, so no extrema
+  reader.documents.query().min((row) => row.status);
+  // @ts-expect-error structured columns are not aggregable
+  reader.documents.query().max((row) => row.metadata);
+  // @ts-expect-error union columns are not summable
+  reader.users.query().avg((row) => row.payload);
+
   await writer.users.upsert(
     { email: "a@example.com" },
     { name: "A", payload: { tag: "empty", value: null } },
