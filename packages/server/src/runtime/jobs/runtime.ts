@@ -179,7 +179,7 @@ export class RuntimeJobs {
         definition.repeat !== null && Object.keys(definition.args).length === 0,
     );
     if (bootstrap.length > 0) {
-      await this.options.executor.jobsWrite(this.options.signal(), (surface) => {
+      await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
         const now = this.options.now();
         for (const [name, definition] of bootstrap) {
           const argsJson = encodeJobArgs({});
@@ -187,7 +187,7 @@ export class RuntimeJobs {
           if (this.liveRow(surface.jobs, name, argsHash) !== null) continue;
           const at = definition.repeat!(now, now);
           if (at === null) continue;
-          this.insertRow(surface.jobs, { name, argsJson, argsHash, key: null, runAt: at, now });
+          await this.insertRow(surface.jobs, { name, argsJson, argsHash, key: null, runAt: at, now });
         }
       }).catch(() => {}); // arming still proceeds; enqueues re-wake the runner
     }
@@ -252,12 +252,12 @@ export class RuntimeJobs {
    * Insert one job row (or resolve to an existing one under dedup) inside an
    * already-open transaction — the transactional-enqueue seam mutations use.
    */
-  enqueueWith(
+  async enqueueWith(
     store: JobsStore,
     name: string,
     args: unknown,
     options: JobEnqueueOptions = {},
-  ): JobHandle {
+  ): Promise<JobHandle> {
     const definition = this.definition(name);
     const validated = this.validateArgs(definition, name, args);
     const argsJson = encodeJobArgs(validated);
@@ -272,7 +272,7 @@ export class RuntimeJobs {
       throw new ValidationError(`jobs.${name}: enqueue at/delayMs must be finite milliseconds`);
     }
     const key = definition.key === null ? null : String(definition.key(validated as never));
-    const id = this.insertRow(store, { name, argsJson, argsHash, key, runAt, now });
+    const id = await this.insertRow(store, { name, argsJson, argsHash, key, runAt, now });
     return { id, deduped: false };
   }
 
@@ -333,11 +333,11 @@ export class RuntimeJobs {
     if (typeof id !== "bigint") {
       throw new ValidationError("jobs.cancel: expected a bigint job id");
     }
-    const state = await this.options.executor.jobsWrite(this.options.signal(), (surface) => {
+    const state = await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
       const row = surface.jobs.byId(id);
       if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
       if (row.state !== "pending" && row.state !== "running") return row.state;
-      surface.jobs.patch(id, {
+      await surface.jobs.patch(id, {
         state: "canceled",
         leaseToken: null,
         leaseUntil: null,
@@ -369,13 +369,13 @@ export class RuntimeJobs {
     if (typeof id !== "bigint") {
       throw new ValidationError("jobs.retry: expected a bigint job id");
     }
-    await this.options.executor.jobsWrite(this.options.signal(), (surface) => {
+    await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
       const row = surface.jobs.byId(id);
       if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
       if (row.state === "pending" || row.state === "running") {
         throw new AckerDBError("conflict", `job ${id} is ${row.state}; only settled jobs retry`);
       }
-      surface.jobs.patch(id, {
+      await surface.jobs.patch(id, {
         state: "pending",
         runAt: this.options.now(),
         outputJson: null,
@@ -394,13 +394,13 @@ export class RuntimeJobs {
     if (typeof at !== "number" || !Number.isFinite(at)) {
       throw new ValidationError("jobs.reschedule: expected finite milliseconds");
     }
-    await this.options.executor.jobsWrite(this.options.signal(), (surface) => {
+    await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
       const row = surface.jobs.byId(id);
       if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
       if (row.state !== "pending") {
         throw new AckerDBError("conflict", `job ${id} is ${row.state}; only pending jobs reschedule`);
       }
-      surface.jobs.patch(id, { runAt: at });
+      await surface.jobs.patch(id, { runAt: at });
     });
   }
 
@@ -437,12 +437,12 @@ export class RuntimeJobs {
    */
   private async recoverExpiredLeases(signal: AbortSignal): Promise<void> {
     const now = this.options.now();
-    const notifications = await this.options.executor.jobsWrite(signal, (surface) => {
+    const notifications = await this.options.executor.jobsWrite(signal, async (surface) => {
       const delivered: Notification[] = [];
       for (const row of surface.jobs.expiredLeases(now, this.options.limits.claimBatchSize)) {
         if (this.runControllers.has(row.id)) continue;
         delivered.push(
-          this.settleFailureIn(surface, row, new AckerDBError("unavailable", LEASE_EXPIRED)),
+          await this.settleFailureIn(surface, row, new AckerDBError("unavailable", LEASE_EXPIRED)),
         );
       }
       return delivered;
@@ -478,7 +478,7 @@ export class RuntimeJobs {
             return { inline };
           }
           const leaseToken = `${now.toString(36)}-${(++this.leaseCounter).toString(36)}`;
-          surface.jobs.patch(row.id, {
+          await surface.jobs.patch(row.id, {
             state: "running",
             attempt,
             leaseToken,
@@ -502,10 +502,10 @@ export class RuntimeJobs {
       // attempt in a fresh transaction so no partial write survives.
       const notification = await this.options.executor.jobsWrite(
         signal,
-        (surface) => {
+        async (surface) => {
           const row = surface.jobs.byId(error.row.id);
           if (row === null || row.state !== "pending") return null;
-          return this.settleFailureIn(
+          return await this.settleFailureIn(
             surface,
             { ...row, attempt: error.attempt },
             error.error,
@@ -548,7 +548,7 @@ export class RuntimeJobs {
     if (isResult(value) && !value.ok) {
       throw new MutationJobFailure(row, attempt, value.error, startedAt);
     }
-    return this.settleSuccessIn(
+    return await this.settleSuccessIn(
       surface,
       { ...row, attempt },
       isResult(value) ? value.data : value,
@@ -600,14 +600,14 @@ export class RuntimeJobs {
     try {
       const notification = await this.options.executor.jobsWrite(
         this.options.signal(),
-        (surface) => {
+        async (surface) => {
           const row = surface.jobs.byId(claimed.id);
           if (row === null || row.state !== "running" || row.leaseToken !== claimed.leaseToken) {
             return null; // canceled, reclaimed, or deleted while running: the row moved on
           }
           return outcome.ok
-            ? this.settleSuccessIn(surface, row, outcome.value, startedAt)
-            : this.settleFailureIn(surface, row, outcome.error, startedAt);
+            ? await this.settleSuccessIn(surface, row, outcome.value, startedAt)
+            : await this.settleFailureIn(surface, row, outcome.error, startedAt);
         },
       );
       this.deliver(notification === null ? [] : [notification]);
@@ -618,37 +618,38 @@ export class RuntimeJobs {
     }
   }
 
-  private settleSuccessIn(
+  private async settleSuccessIn(
     surface: JobsWriteSurface,
     row: JobRow,
     value: unknown,
     startedAt = this.options.now(),
-  ): Notification {
+  ): Promise<Notification> {
     const now = this.options.now();
     let outputJson: string;
     try {
       outputJson = stableEncode(value);
     } catch (error) {
-      return this.settleFailureIn(surface, row, error, startedAt);
+      return await this.settleFailureIn(surface, row, error, startedAt);
     }
-    surface.jobs.patch(row.id, {
+    await surface.jobs.patch(row.id, {
       state: "completed",
+      attempt: row.attempt,
       outputJson,
       leaseToken: null,
       leaseUntil: null,
       settledAt: now,
       attemptsJson: this.appendAttempt(row, "completed", null, startedAt, now),
     });
-    this.mintRepeat(surface, row, now);
+    await this.mintRepeat(surface, row, now);
     return { id: row.id, event: "settled", outcome: { ok: true, value } };
   }
 
-  private settleFailureIn(
+  private async settleFailureIn(
     surface: JobsWriteSurface,
     row: JobRow,
     error: unknown,
     startedAt = this.options.now(),
-  ): Notification {
+  ): Promise<Notification> {
     const definition = this.definitions.get(row.name);
     const now = this.options.now();
     let delay: number | null = null;
@@ -664,7 +665,7 @@ export class RuntimeJobs {
     }
     if (delay !== null) {
       const nextRetryAt = now + delay;
-      surface.jobs.patch(row.id, {
+      await surface.jobs.patch(row.id, {
         state: "pending",
         runAt: nextRetryAt,
         attempt: row.attempt,
@@ -679,7 +680,7 @@ export class RuntimeJobs {
         outcome: { ok: false, state: "pending", error, nextRetryAt },
       };
     }
-    surface.jobs.patch(row.id, {
+    await surface.jobs.patch(row.id, {
       state: "discarded",
       attempt: row.attempt,
       leaseToken: null,
@@ -687,7 +688,7 @@ export class RuntimeJobs {
       settledAt: now,
       attemptsJson: this.appendAttempt(row, "discarded", error, startedAt, now),
     });
-    this.mintRepeat(surface, row, now);
+    await this.mintRepeat(surface, row, now);
     return {
       id: row.id,
       event: "discarded",
@@ -697,7 +698,7 @@ export class RuntimeJobs {
   }
 
   /** Recurrence is framework-owned: the next occurrence is a fresh row. */
-  private mintRepeat(surface: JobsWriteSurface, row: JobRow, now: number): void {
+  private async mintRepeat(surface: JobsWriteSurface, row: JobRow, now: number): Promise<void> {
     const definition = this.definitions.get(row.name);
     if (definition === undefined || definition.repeat === null) return;
     let at: number | null;
@@ -709,7 +710,7 @@ export class RuntimeJobs {
     if (at === null) return;
     if (typeof at !== "number" || !Number.isFinite(at)) return;
     if (this.liveRow(surface.jobs, row.name, row.argsHash) !== null) return;
-    this.insertRow(surface.jobs, {
+    await this.insertRow(surface.jobs, {
       name: row.name,
       argsJson: row.argsJson,
       argsHash: row.argsHash,
@@ -724,12 +725,12 @@ export class RuntimeJobs {
     const now = this.options.now();
     if (now - this.lastReapAt < REAP_INTERVAL_MS) return;
     this.lastReapAt = now;
-    await this.options.executor.jobsWrite(signal, (surface) => {
+    await this.options.executor.jobsWrite(signal, async (surface) => {
       for (const state of ["completed", "discarded", "canceled"] as const) {
         for (const row of surface.jobs.settledBefore(state, now, this.options.limits.claimBatchSize)) {
           const retention = this.effectiveRetention(this.definitions.get(row.name), state);
           if (retention === "forever") continue;
-          if (row.settledAt! + retention <= now) surface.jobs.delete(row.id);
+          if (row.settledAt! + retention <= now) await surface.jobs.delete(row.id);
         }
       }
     });
@@ -785,7 +786,7 @@ export class RuntimeJobs {
       readonly runAt: number;
       readonly now: number;
     },
-  ): bigint {
+  ): Promise<bigint> {
     return store.insert({
       name: row.name,
       argsJson: row.argsJson,

@@ -32,27 +32,16 @@ export class JobsStore {
     this.plan = this.writer.plan;
   }
 
-  insert(row: Record<string, unknown>): bigint {
-    let id: bigint | undefined;
-    void this.writer.insert(row).then((inserted) => { id = inserted; }, () => {});
-    if (id === undefined) {
-      // The write result is synchronous under the writer transaction; a
-      // rejection above rethrows through the promise, never reaches here.
-      throw new Error("jobs insert did not complete synchronously");
-    }
-    return id;
+  insert(row: Record<string, unknown>): Promise<bigint> {
+    return this.writer.insert(row);
   }
 
-  patch(id: bigint, partial: Record<string, unknown>): void {
-    let done = false;
-    let failure: unknown;
-    void this.writer.patch(id, partial).then(() => { done = true; }, (error) => { failure = error; });
-    if (failure !== undefined) throw failure;
-    if (!done) throw new Error("jobs patch did not complete synchronously");
+  patch(id: bigint, partial: Record<string, unknown>): Promise<void> {
+    return this.writer.patch(id, partial);
   }
 
-  delete(id: bigint): void {
-    void this.writer.delete(id).then(() => {}, () => {});
+  delete(id: bigint): Promise<void> {
+    return this.writer.delete(id);
   }
 
   private select(where: string, order: string, limit: number, params: unknown[]): JobRow[] {

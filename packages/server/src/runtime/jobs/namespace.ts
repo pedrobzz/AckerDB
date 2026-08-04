@@ -65,13 +65,8 @@ export function mutationJobsNamespace(
   for (const name of jobs.declaredNames) {
     assignLeaf(root, name, {
       ...queryLeaf(db as QueryableDb, name),
-      enqueue: (args: unknown, options?: JobEnqueueOptions): Promise<JobHandle> => {
-        try {
-          return Promise.resolve(jobs.enqueueWith(store, name, args, options));
-        } catch (error) {
-          return Promise.reject(error);
-        }
-      },
+      enqueue: (args: unknown, options?: JobEnqueueOptions): Promise<JobHandle> =>
+        jobs.enqueueWith(store, name, args, options),
     });
   }
   return Object.freeze(root);

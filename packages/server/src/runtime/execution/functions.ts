@@ -63,6 +63,7 @@ import {
 } from "../coordinator.ts";
 import {
   assertWriterAvailable,
+  runInInvocationRoot,
   withMutationAccess,
   withTransactionAnalytics,
 } from "../invocation-state.ts";
@@ -610,8 +611,11 @@ export class RuntimeFunctionExecutor<C> {
             this.hostMutationContext(db, SYSTEM_PRINCIPAL, this.readNow(), writes),
         };
         const scope = createMutationInvocationScope(this.options.engine.writer, writes);
-        return scope.runRoot((mutationAccess) =>
-          withMutationAccess(mutationAccess, async () => await work(surface)));
+        // Runner transactions start from timers, not requests: they own their
+        // invocation root, exactly as system.run owns one for its callback.
+        return runInInvocationRoot(SYSTEM_PRINCIPAL, () =>
+          scope.runRoot((mutationAccess) =>
+            withMutationAccess(mutationAccess, async () => await work(surface))));
       },
     );
   }
