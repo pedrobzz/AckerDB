@@ -17,6 +17,8 @@ import {
 } from "./statement-observation.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
+import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
+import { hashJobArgs } from "../jobs/identity.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -598,6 +600,45 @@ export function makeDbReader(
   return db;
 }
 
+/**
+ * The application-facing writer over the framework jobs table. The runner owns
+ * the state machine, so its columns are guarded here — the one public write
+ * seam — while scheduling intent stays open: `runAt`, `key`, and `argsJson`
+ * may be patched (a patched `argsJson` recomputes the dedup hash so identity
+ * cannot drift), and rows may be deleted. Inserts go through
+ * `ctx.jobs.enqueue`, the door that computes identity and dedup.
+ */
+function guardedJobsWriter(
+  writer: ReturnType<typeof writeMethods>,
+): ReturnType<typeof writeMethods> {
+  const refuse = (op: string): never => {
+    throw new ValidationError(
+      `${JOBS_TABLE}.${op}: jobs are created with ctx.jobs.enqueue and settled by the runner`,
+    );
+  };
+  return {
+    ...writer,
+    insert: () => refuse("insert"),
+    replace: () => refuse("replace"),
+    patch: (id: bigint, partial: unknown) => {
+      if (partial !== null && typeof partial === "object" && !Array.isArray(partial)) {
+        const input = partial as Record<string, unknown>;
+        for (const key of Object.keys(input)) {
+          if (input[key] !== undefined && JOBS_GUARDED_COLUMNS.has(key)) {
+            throw new ValidationError(
+              `${JOBS_TABLE}.patch: "${key}" belongs to the runner's state machine; use the ctx.jobs transitions`,
+            );
+          }
+        }
+        if (typeof input["argsJson"] === "string") {
+          return writer.patch(id, { ...input, argsHash: hashJobArgs(input["argsJson"]) });
+        }
+      }
+      return writer.patch(id, partial);
+    },
+  };
+}
+
 /** Read-write ctx.db (mutations / procedure transactions). */
 export function makeDbWriter(
   engine: Engine,
@@ -617,15 +658,31 @@ export function makeDbWriter(
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),
       readMethods(engine, engine.writer, null, plan, observer),
-      writer,
+      name === JOBS_TABLE ? guardedJobsWriter(writer) : writer,
     );
-    const upsertWriter = observer === undefined
-      ? writer
-      : writeMethods(engine, writes, plan);
-    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    if (name !== JOBS_TABLE) {
+      const upsertWriter = observer === undefined
+        ? writer
+        : writeMethods(engine, writes, plan);
+      attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    }
     db[name] = accessor;
   }
   return db;
+}
+
+/**
+ * The runner's unguarded door to the jobs table: full write methods over the
+ * jobs plan, with write keys and commit-wake emitted like any table write.
+ * Framework code only — never handed to an application handler.
+ */
+export function makeJobsTableWriter(
+  engine: Engine,
+  writes: WriteCollector,
+  observer?: DbStatementObserver,
+): ReturnType<typeof writeMethods> & { plan: TablePlan } {
+  const plan = engine.rootScope.plan(JOBS_TABLE);
+  return Object.assign(writeMethods(engine, writes, plan, observer), { plan });
 }
 
 export function newWriteCollector(): WriteCollector {

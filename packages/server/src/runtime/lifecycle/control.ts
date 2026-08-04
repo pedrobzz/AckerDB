@@ -18,7 +18,7 @@ import type {
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { ServiceLimits } from "../limits.ts";
 import { outcomeFromError } from "../outcome.ts";
-import type { RuntimeScheduler } from "../scheduler/runtime.ts";
+import type { RuntimeJobs } from "../jobs/runtime.ts";
 import type {
   RuntimeReactiveContext,
   RuntimeSession,
@@ -42,7 +42,7 @@ export interface RuntimeControlOptions {
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly sessions: RuntimeSessionStore;
-  readonly scheduler: RuntimeScheduler;
+  readonly jobs: RuntimeJobs;
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
@@ -216,8 +216,8 @@ export class RuntimeControl {
       activeOperationCallers: this.externalOperations.size,
       activeSse: this.options.sseProducers.size,
       realtime: this.options.realtime?.snapshot() ?? null,
-      scheduledHandlers: this.options.scheduler.handlerCount,
-      schedulerArmed: this.options.scheduler.armed,
+      declaredJobs: this.options.jobs.declaredCount,
+      jobsArmed: this.options.jobs.armed,
       reader: this.options.reads.snapshot(),
       writer: this.options.functions.snapshot(),
       reactive: this.options.reactive.snapshot(),
@@ -240,7 +240,7 @@ export class RuntimeControl {
     }
     this.lifecycle = "draining";
     this.releaseTelemetryJournalFailure();
-    this.options.scheduler.stop();
+    this.options.jobs.stop();
     this.options.stopSampler();
     this.options.telemetry.recordEvent({
       name: "lifecycle",

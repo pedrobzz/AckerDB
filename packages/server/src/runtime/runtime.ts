@@ -100,8 +100,7 @@ import {
 import { RuntimeSessionApplication } from "./sessions/application.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
-import { RuntimeScheduledCandidates } from "./scheduler/candidate.ts";
-import { RuntimeScheduler } from "./scheduler/runtime.ts";
+import { RuntimeJobs } from "./jobs/runtime.ts";
 import { RuntimeControl } from "./lifecycle/control.ts";
 import { RuntimeQueries } from "./queries/runtime.ts";
 import { RuntimeSystem } from "./system/runtime.ts";
@@ -140,7 +139,7 @@ export class Runtime implements RuntimePort {
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   private readonly queries: RuntimeQueries;
   private readonly mcp: RuntimeMcp;
-  private readonly scheduler: RuntimeScheduler;
+  readonly jobs: RuntimeJobs;
   private readonly sessionStore: RuntimeSessionStore;
   private readonly sessionApplication: RuntimeSessionApplication;
   private readonly authCaptureBudget: OutboundBudget;
@@ -206,7 +205,6 @@ export class Runtime implements RuntimePort {
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
-    const scheduled = options.registry.resolveScheduled(options.engine.schema);
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
@@ -264,12 +262,6 @@ export class Runtime implements RuntimePort {
       telemetryEnabled: this.telemetry.enabled,
       tracing: this.tracing,
     });
-    const schedulerCandidates = new RuntimeScheduledCandidates({
-      scheduled,
-      engine: this.engine,
-      reads: this.reads,
-      tracing: this.tracing,
-    });
     this.reactive = new OrderedReactive<RuntimeReactiveContext>({
       limits: this.limits,
       initialVersion: this.engine.commitVersion(),
@@ -308,7 +300,7 @@ export class Runtime implements RuntimePort {
             },
           }
         : {}),
-      armScheduler: (touchedTables) => this.scheduler.arm(touchedTables),
+      armScheduler: () => this.jobs.arm(),
       hooks: options.hooks,
       now: this.now,
     });
@@ -350,19 +342,6 @@ export class Runtime implements RuntimePort {
         this.control.admittedRequestBytes(request, receivedBytes),
       publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
     });
-    this.scheduler = new RuntimeScheduler({
-      candidates: schedulerCandidates,
-      scheduled,
-      batchSize: this.limits.schedulerBatchSize,
-      operations: this.operations,
-      telemetry: this.telemetry,
-      signal: () => this.control.shutdownSignal,
-      now: this.now,
-      isReady: () => this.control.isReady,
-      assertReady: () => this.control.assertReady(),
-      executeMutation: (candidate, now, signal) =>
-        this.functions.executeScheduledMutation(candidate, now, signal),
-    });
     const authCaptureControlReserve = Math.min(
       this.limits.maxFrameBytes,
       this.limits.webSocket.maxBytes - 1,
@@ -393,6 +372,26 @@ export class Runtime implements RuntimePort {
           unit: "gauge",
         }),
     });
+    this.system = new RuntimeSystem({
+      functions: this.functions,
+      operations: this.operations,
+      telemetry: this.telemetry,
+      tracing: this.tracing,
+      invalidations: this.immediateProcedureInvalidations,
+      signal: (signal) => this.control.systemSignal(signal),
+      now: this.now,
+    });
+    this.jobs = new RuntimeJobs({
+      declared: options.jobs ?? [],
+      executor: this.functions,
+      reads: this.reads,
+      system: this.system,
+      telemetry: this.telemetry,
+      limits: this.limits.jobs,
+      now: this.now,
+      signal: () => this.control.shutdownSignal,
+      isReady: () => this.control.isReady,
+    });
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
@@ -409,21 +408,12 @@ export class Runtime implements RuntimePort {
       functions: this.functions,
       reactive: this.reactive,
       sessions: this.sessionStore,
-      scheduler: this.scheduler,
+      jobs: this.jobs,
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
       stopSampler: () => this.sampler.stop(),
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.system = new RuntimeSystem({
-      functions: this.functions,
-      operations: this.operations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      invalidations: this.immediateProcedureInvalidations,
-      signal: (signal) => this.control.systemSignal(signal),
-      now: this.now,
     });
     this.sessionApplication = new RuntimeSessionApplication({
       engine: this.engine,
@@ -460,7 +450,7 @@ export class Runtime implements RuntimePort {
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sampler.start();
-    this.scheduler.arm();
+    void this.jobs.activate();
   }
 
   get state(): RuntimeLifecycleState {
@@ -627,8 +617,9 @@ export class Runtime implements RuntimePort {
     return this.http.sseSnapshot(streamId);
   }
 
-  runScheduled(now = this.readNow()): Promise<number> {
-    return this.scheduler.run(now);
+  /** Drive one runner batch now — deterministic tests advance work this way. */
+  runJobs(): Promise<void> {
+    return this.jobs.run();
   }
 
   status(): RuntimeStatus {

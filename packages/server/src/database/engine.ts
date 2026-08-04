@@ -66,6 +66,7 @@ import {
 } from "../mcp/token-vault.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
+import { withJobsTable } from "../jobs/table.ts";
 import {
   canonicalSnapshotJson,
   snapshotOf,
@@ -1255,6 +1256,9 @@ export class Engine {
     path: string,
     options: EngineOptions = {},
   ) {
+    // Every root schema carries the framework jobs table: storage, migrations,
+    // reactivity, and backups treat it exactly like an application table.
+    schema = withJobsTable(schema);
     this.schema = schema;
     loadVectorRuntimeForSchema(schema);
     this.durability = options.durability ?? "production";

@@ -27,8 +27,8 @@ export interface RuntimeStatus {
   readonly activeOperationCallers: number;
   readonly activeSse: number;
   readonly realtime: RealtimeRuntimeSnapshot | null;
-  readonly scheduledHandlers: number;
-  readonly schedulerArmed: boolean;
+  readonly declaredJobs: number;
+  readonly jobsArmed: boolean;
   readonly reader: ExecutorSnapshot;
   readonly writer: ExecutorSnapshot;
   readonly reactive: ReturnType<OrderedReactive<RuntimeReactiveContext>["snapshot"]>;

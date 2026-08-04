@@ -625,7 +625,6 @@ export {
   TableDef,
   type IndexDef,
   type IndexOptions,
-  type ScheduledHandler,
   type TableColumns,
   type TableFullTextColumns,
   type TableIndexes,

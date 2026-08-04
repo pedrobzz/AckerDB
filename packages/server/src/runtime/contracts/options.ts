@@ -13,6 +13,7 @@ import type {
 import type { Telemetry, TelemetryOptions } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
+import type { DeclaredJob } from "../../jobs/definition.ts";
 
 export interface RuntimeOptions {
   readonly engine: Engine;
@@ -25,6 +26,8 @@ export interface RuntimeOptions {
   readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
   readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;
   readonly hooks?: RuntimeHooks;
+  /** Declared jobs, named and ordered by declareJobs(...). */
+  readonly jobs?: readonly DeclaredJob[];
   readonly now?: () => number;
   readonly realtime?: RealtimeRuntimeModule;
 }
