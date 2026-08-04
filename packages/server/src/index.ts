@@ -585,6 +585,7 @@ export {
 } from "./runtime/contracts/options.ts";
 export {
   type HttpMutationReceipt,
+  type RuntimeHttpHandlerRequest,
   type RuntimeHttpMutationRequest,
   type RuntimeHttpRequest,
   type RuntimeHttpResponder,

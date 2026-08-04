@@ -47,7 +47,7 @@ import type {
   RuntimeExternalRequest,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
-  RuntimeRawHttpRequest,
+  RuntimeHttpHandlerRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
@@ -244,7 +244,7 @@ export class RuntimeHttp {
    * listener answers it as the bare Outcome — the handler authored nothing, so
    * the framework speaks its own language.
    */
-  runHttpHandler(input: RuntimeRawHttpRequest): Promise<Response> {
+  runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
     const registered = this.options.registry.httpHandler(input.address);
     if (registered === undefined) {
       return Promise.reject(
@@ -270,25 +270,31 @@ export class RuntimeHttp {
         "http",
       );
       try {
-        const response = await invokeSideEffectingHandler(
+        return await invokeSideEffectingHandler(
           signal,
           "http handler",
-          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, () => {
+          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
             onAuthorized();
-            return registered.handler(context.value, input.request);
+            try {
+              const response = await registered.handler(context.value, input.request);
+              if (!(response instanceof Response)) {
+                throw new Error("http handler returned a non-Response value");
+              }
+              return response;
+            } catch (cause) {
+              // Every uncaught throw — an AckerDBError, a validation error,
+              // anything — crosses as the one sanitized `internal` outcome:
+              // the handler authors its failures as Responses, so a thrown
+              // message is never the handler speaking to the caller. The
+              // specifics stay in the server log. Rethrowing a plain Error
+              // keeps the abort conversion above intact.
+              context.value.log.error(`http handler "${input.address}" failed`, {
+                error: cause instanceof Error ? cause.stack ?? cause.message : String(cause),
+              });
+              throw new Error(`http handler "${input.address}" failed`, { cause });
+            }
           }),
         );
-        if (!(response instanceof Response)) {
-          // A plain Error crosses as the same sanitized `internal` outcome an
-          // uncaught handler throw answers; the specifics stay in the log.
-          throw new Error("http handler returned a non-Response value");
-        }
-        return response;
-      } catch (error) {
-        context.value.log.error(`http handler "${input.address}" failed`, {
-          error: error instanceof Error ? error.stack ?? error.message : String(error),
-        });
-        throw error;
       } finally {
         context.release();
       }

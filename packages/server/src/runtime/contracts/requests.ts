@@ -63,7 +63,7 @@ export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
  * its own Response. Also the direct test entry point, so everything but the
  * address and the Request defaults.
  */
-export interface RuntimeRawHttpRequest {
+export interface RuntimeHttpHandlerRequest {
   readonly address: string;
   readonly request: Request;
   /** The listener's own sequence; telemetry correlation only. */

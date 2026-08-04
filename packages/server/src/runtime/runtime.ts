@@ -76,7 +76,7 @@ import type {
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
   RuntimeMcpToolRequest,
-  RuntimeRawHttpRequest,
+  RuntimeHttpHandlerRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
@@ -595,7 +595,7 @@ export class Runtime implements RuntimePort {
     return this.http.runProcedure(request);
   }
 
-  async runHttpHandler(input: RuntimeRawHttpRequest): Promise<Response> {
+  async runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
     return this.http.runHttpHandler(input);
   }
 

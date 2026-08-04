@@ -98,21 +98,60 @@ function validateMethods(value: unknown, where: string): readonly HttpHandlerMet
   return Object.freeze([...value]) as readonly HttpHandlerMethod[];
 }
 
+const DEFINITION_KEYS = Object.freeze(["methods", "handler"] as const);
+const REGISTERED_KEYS = Object.freeze(
+  [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"] as const,
+);
+
+function refuseUnknownKeys(
+  value: object,
+  allowed: readonly string[],
+  where: string,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new TypeError(
+        `${where} must not declare "${key}" — an httpHandler carries exactly methods and handler`,
+      );
+    }
+  }
+}
+
 /**
- * The one interpreter of a raw handler's shape. The builder runs it at
- * definition; the registry runs it again for untyped exports, so a malformed
- * shape is always a registration error naming the export, never a route that
- * silently fails to serve.
+ * The one interpreter of a raw handler's definition. Exactly `methods` and
+ * `handler`: nothing else exists to consume — no validators, no OpenAPI
+ * operation, no policy — so any other field is a registration error, never a
+ * silently ignored expectation.
  */
 export function validateHttpHandlerShape(
   value: { readonly methods?: unknown; readonly handler?: unknown },
   where = "httpHandler",
 ): readonly HttpHandlerMethod[] {
+  refuseUnknownKeys(value, DEFINITION_KEYS, where);
   const methods = validateMethods(value.methods, where);
   if (typeof value.handler !== "function") {
     throw new TypeError(`${where} handler must be a function`);
   }
   return methods;
+}
+
+/**
+ * The registered form, for untyped exports: the definition fields plus every
+ * marker the builder stamps. `isAckerDBServerOnly` is the marker generated
+ * client APIs erase the export by, so a value missing it would register a
+ * live route while leaking a client reference — refused here instead.
+ */
+export function validateRegisteredHttpHandler(value: object, where: string): void {
+  refuseUnknownKeys(value, REGISTERED_KEYS, where);
+  if ((value as { isAckerDBServerOnly?: unknown }).isAckerDBServerOnly !== true) {
+    throw new TypeError(
+      `${where} must carry isAckerDBServerOnly: true — generated client APIs erase the export by that marker`,
+    );
+  }
+  validateMethods((value as { methods?: unknown }).methods, where);
+  if (typeof (value as { handler?: unknown }).handler !== "function") {
+    throw new TypeError(`${where} handler must be a function`);
+  }
 }
 
 export function httpHandler<S extends Schema>(def: {

@@ -13,6 +13,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../../src/validation/v.ts";
+import { ValidationError } from "../../src/validation/error.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
@@ -37,10 +39,11 @@ const schema = defineSchema({
   deliveries: defineTable({ id: v.primaryKey(), type: v.string() }),
 });
 
-/** Small enough to cross with one fetch; the over-limit case rides on it. */
+/** Small bounds so the over-limit and stream-admission cases cross with a few fetches. */
 const limits = defineServiceLimits({
   ...PRODUCTION_LIMITS,
   maxRequestBytes: 1024,
+  maxOperationsPerCaller: 2,
   gracefulShutdownMs: 250,
 });
 
@@ -99,9 +102,34 @@ const functions = {
         throw new Error("the secret cause");
       },
     }),
+    boomFramework: httpHandler({
+      methods: ["POST"],
+      handler: () => {
+        throw new AckerDBError("validation", "secret validation detail");
+      },
+    }),
+    boomValidation: httpHandler({
+      methods: ["POST"],
+      handler: () => {
+        throw new ValidationError("secret field detail");
+      },
+    }),
     invalid: httpHandler({
       methods: ["POST"],
       handler: () => ({ nope: true }) as never,
+    }),
+    hold: httpHandler({
+      methods: ["GET"],
+      handler: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("open"));
+              // Never closed: the stream stays open until the caller lets go.
+            },
+          }),
+          { headers: { "content-type": "text/plain" } },
+        ),
     }),
     stream: httpHandler({
       methods: ["GET"],
@@ -242,17 +270,26 @@ describe("framework-authored responses speak the bare Outcome", () => {
     expect(await response.json()).toMatchObject({ code: "malformed", retryable: false });
   });
 
-  test("an uncaught throw answers a sanitized internal outcome", async () => {
-    const response = await fetch(`${base}/api/hooks/boom`, { method: "POST", body: "{}" });
+  test("an uncaught throw answers a sanitized internal outcome, whatever its type", async () => {
+    // A plain Error, an AckerDBError, and a ValidationError must all cross
+    // identically: a thrown message is never the handler speaking to the
+    // caller — the handler authors its failures as Responses.
+    for (const [address, secret] of [
+      ["boom", "secret cause"],
+      ["boomFramework", "secret validation detail"],
+      ["boomValidation", "secret field detail"],
+    ] as const) {
+      const response = await fetch(`${base}/api/hooks/${address}`, { method: "POST", body: "{}" });
 
-    expect(response.status).toBe(500);
-    const text = await response.text();
-    expect(JSON.parse(text)).toEqual({
-      code: "internal",
-      retryable: false,
-      message: "internal server error",
-    });
-    expect(text).not.toContain("secret cause");
+      expect(response.status).toBe(500);
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({
+        code: "internal",
+        retryable: false,
+        message: "internal server error",
+      });
+      expect(text).not.toContain(secret);
+    }
   });
 
   test("a non-Response return is a defect answered identically to a throw", async () => {
@@ -266,6 +303,35 @@ describe("framework-authored responses speak the bare Outcome", () => {
     });
   });
 
+  test("a streaming body holds its admission slot until the caller lets go", async () => {
+    const openStream = async (): Promise<AbortController> => {
+      const controller = new AbortController();
+      const response = await fetch(`${base}/api/hooks/hold`, { signal: controller.signal });
+      expect(response.status).toBe(200);
+      // Read the first chunk so the stream is live end to end.
+      await response.body!.getReader().read();
+      return controller;
+    };
+    const held = [await openStream(), await openStream()];
+
+    // Every per-caller slot is owned by an open stream: the next call sheds.
+    const shed = await fetch(`${base}/api/hooks/echo`, { method: "POST", body: "{}" });
+    expect(shed.status).toBe(503);
+    expect(await shed.json()).toMatchObject({ code: "overloaded", retryable: true });
+
+    // Letting one stream go returns its capacity; the release follows the
+    // disconnect, so the retry polls briefly instead of racing it.
+    held[0]!.abort();
+    let after: Response;
+    for (let attempt = 0; ; attempt++) {
+      after = await fetch(`${base}/api/hooks/echo`, { method: "POST", body: "{}" });
+      if (after.status !== 503 || attempt >= 40) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(after.status).toBe(200);
+    held[1]!.abort();
+  });
+
   test("an over-limit body answers before the handler runs", async () => {
     const response = await fetch(`${base}/api/hooks/stripe`, {
       method: "POST",
@@ -277,15 +343,19 @@ describe("framework-authored responses speak the bare Outcome", () => {
     expect(handlerRuns).toBe(0);
   });
 
-  test("a raw path answers unavailable while the server is not ready", async () => {
+  test("a raw path answers unavailable while the server is not ready — preflight included", async () => {
     const starting = new AckerDBServer({ limits, port: 0 });
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${starting.port}/api/hooks/stripe`,
-        { method: "POST", body: "{}" },
-      );
-      expect(response.status).toBe(503);
-      expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
+      // Both the call and its preflight: the listener's global OPTIONS answer
+      // must never speak for a handler that does not exist yet.
+      for (const method of ["POST", "OPTIONS"] as const) {
+        const response = await fetch(
+          `http://127.0.0.1:${starting.port}/api/hooks/stripe`,
+          { method, ...(method === "POST" ? { body: "{}" } : {}) },
+        );
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
+      }
     } finally {
       await starting.drain().catch(() => {});
     }

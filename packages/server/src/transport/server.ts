@@ -953,13 +953,21 @@ export class AckerDBServer {
         boundary.cors,
       );
     }
+    // The application owns every `/api/` path AckerDB has not reserved, and it
+    // answers the bare unavailable outcome before the registry that would
+    // resolve it exists — even for a preflight, because a raw route's OPTIONS
+    // belongs to its handler and no handler exists yet.
+    if (
+      (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
+      url.pathname.startsWith("/api/") &&
+      !isAckerDBHttpRoute(url.pathname)
+    ) {
+      return outcomeError(unavailableWhile(this.lifecycle));
+    }
     // Raw routes resolve before the listener's own OPTIONS answer: preflight
     // on a raw path is the handler's business when declared, a 405 otherwise.
     const rawRoute = this.activeRuntime?.registry.httpRoutes.get(url.pathname);
     if (rawRoute !== undefined) {
-      if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-        return outcomeError(unavailableWhile(this.lifecycle));
-      }
       if (!(rawRoute.fn.methods as readonly string[]).includes(request.method)) {
         return methodNotAllowed(rawRoute.fn.methods.join(", "));
       }
@@ -972,12 +980,7 @@ export class AckerDBServer {
       return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
     }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-      // The application owns every `/api/` path AckerDB has not reserved, and it
-      // answers plain JSON even before the registry that would resolve it exists.
-      const unavailable = unavailableWhile(this.lifecycle);
-      return url.pathname.startsWith("/api/") && !isAckerDBHttpRoute(url.pathname)
-        ? outcomeError(unavailable)
-        : protocolError(unavailable);
+      return protocolError(unavailableWhile(this.lifecycle));
     }
     if (url.pathname === ACKERDB_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
@@ -1200,7 +1203,7 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
-      return await runtime.runHttpHandler({
+      const response = await runtime.runHttpHandler({
         address: route.address,
         request: bufferedRawRequest(request, body),
         id,
@@ -1208,6 +1211,17 @@ export class AckerDBServer {
         ...(body === null ? {} : { requestBytes: body.byteLength }),
         signal: request.signal,
         fairnessKey,
+      });
+      if (response.body === null) return response;
+      // A streaming body keeps its admission slot until the stream settles:
+      // without this, a public raw route could hold open more streams than
+      // `maxOperations` ever admitted, and drain would not own them.
+      const streamAdmission = admission!;
+      admission = undefined;
+      return new Response(ownedStream(response.body, () => streamAdmission.release()), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
       });
     } catch (error) {
       return outcomeError(error);

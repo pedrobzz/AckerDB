@@ -12,7 +12,7 @@ import {
 } from "./functions.ts";
 import {
   isHttpHandlerShaped,
-  validateHttpHandlerShape,
+  validateRegisteredHttpHandler,
   type AnyRegisteredHttpHandler,
 } from "./http-handler.ts";
 import {
@@ -72,7 +72,7 @@ export interface HttpHandlerRoute {
 }
 
 /** Address segments become path segments: "messages.list" -> "/api/messages/list". */
-function exposedPath(address: string): string {
+function httpPathForAddress(address: string): string {
   return `/api/${address.replaceAll(".", "/")}`;
 }
 
@@ -118,7 +118,7 @@ export class Registry {
 
     for (const { address, value } of moduleExports) {
       if (!isHttpHandlerShaped(value)) continue;
-      validateHttpHandlerShape(value, `http handler "${address}"`);
+      validateRegisteredHttpHandler(value, `http handler "${address}"`);
       this.registerAddress(address, value);
       this.httpHandlersByAddress.set(address, value);
     }
@@ -185,18 +185,7 @@ export class Registry {
           `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
         );
       }
-      const path = exposedPath(address);
-      if (isAckerDBHttpRoute(path)) {
-        throw new Error(
-          `HTTP-exposed function "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
-        );
-      }
-      const mcp = this.mcpByPath.get(path);
-      if (mcp !== undefined) {
-        throw new Error(
-          `HTTP-exposed function "${address}" and MCP "${mcp.name}" both use path "${path}"`,
-        );
-      }
+      const path = this.claimApplicationHttpPath(address, "HTTP-exposed function");
       // The codec is compiled here, once: a contract that cannot cross the
       // surface's standard-JSON boundary fails the load, never a caller.
       const exposed = Object.freeze({
@@ -216,18 +205,7 @@ export class Registry {
     // with an exposed one — both derive from addresses, and addresses are
     // unique by construction.
     for (const [address, fn] of this.httpHandlersByAddress) {
-      const path = exposedPath(address);
-      if (isAckerDBHttpRoute(path)) {
-        throw new Error(
-          `http handler "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
-        );
-      }
-      const mcp = this.mcpByPath.get(path);
-      if (mcp !== undefined) {
-        throw new Error(
-          `http handler "${address}" and MCP "${mcp.name}" both use path "${path}"`,
-        );
-      }
+      const path = this.claimApplicationHttpPath(address, "http handler");
       this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
     }
 
@@ -247,6 +225,21 @@ export class Registry {
         throw new Error(`unknown server-only export at "${address}"`);
       }
     }
+  }
+
+  /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
+  private claimApplicationHttpPath(address: string, label: string): string {
+    const path = httpPathForAddress(address);
+    if (isAckerDBHttpRoute(path)) {
+      throw new Error(
+        `${label} "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
+      );
+    }
+    const mcp = this.mcpByPath.get(path);
+    if (mcp !== undefined) {
+      throw new Error(`${label} "${address}" and MCP "${mcp.name}" both use path "${path}"`);
+    }
+    return path;
   }
 
   private registerAddress(address: string, value: object): void {

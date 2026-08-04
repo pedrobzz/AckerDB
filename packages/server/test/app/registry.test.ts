@@ -156,6 +156,26 @@ describe("raw http handler routes", () => {
       'http handler "hooks.noHandler" handler must be a function',
     );
   });
+
+  test("refuses an untyped export missing the client-erasure marker", () => {
+    // Generated client APIs erase the export by isAckerDBServerOnly; a value
+    // without it would register a live route while leaking a client reference.
+    const { isAckerDBServerOnly: _erased, ...rest } = hook;
+    const unmarked = rest as never;
+    expect(() => new Registry({ hooks: { unmarked } })).toThrow(
+      'http handler "hooks.unmarked" must carry isAckerDBServerOnly: true',
+    );
+  });
+
+  test("refuses fields no raw handler consumes", () => {
+    const withAccess = { ...hook, access: "public" } as never;
+    expect(() => new Registry({ hooks: { withAccess } })).toThrow(
+      'http handler "hooks.withAccess" must not declare "access"',
+    );
+    expect(() =>
+      httpHandler({ methods: ["POST"], handler: () => new Response(null), description: "x" } as never)
+    ).toThrow('httpHandler must not declare "description"');
+  });
 });
 
 describe("the httpHandler builder", () => {
