@@ -15,6 +15,7 @@ import type { ObjectShape, InferShape, InferInputShape } from "../validation/com
 import type { Expand } from "../validation/validator.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
+import type { AnyJobsNamespace } from "./api.ts";
 import type { SystemPrincipal } from "../auth/credentials.ts";
 import { cronNext, validateCronExpression } from "./cron.ts";
 
@@ -55,7 +56,8 @@ export interface JobDedupe {
 export type JobTxCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
-> = Omit<MutationCtx<S, Capabilities>, "auth"> & {
+  TxJobs extends object = AnyJobsNamespace,
+> = Omit<MutationCtx<S, Capabilities, TxJobs>, "auth"> & {
   readonly auth: SystemPrincipal;
   /** 1-based attempt number of this execution. */
   readonly attempt: number;
@@ -66,16 +68,48 @@ export type JobCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
-> = Omit<ProcedureCtx<S, Capabilities, TransactionCapabilities>, "auth" | "tx" | "linkAccount" | "unlinkAccount"> & {
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
+> = Omit<
+  ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs>,
+  "auth" | "tx" | "linkAccount" | "unlinkAccount"
+> & {
   readonly auth: SystemPrincipal;
   /** 1-based attempt number of this execution. */
   readonly attempt: number;
   /** Fires on cancel, shutdown, or lease expiry: stop cooperatively. */
   readonly abortSignal: AbortSignal;
   tx<R>(
-    fn: (tx: JobTxCtx<S, TransactionCapabilities>) => R,
+    fn: (tx: JobTxCtx<S, TransactionCapabilities, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
+
+/**
+ * The exact builder code generation publishes, bound to one application's
+ * schema, Plugin capabilities, and jobs directory.
+ */
+export interface JobBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
+> {
+  <A extends ObjectShape, R>(
+    definition: MutationJobDefinition<
+      A,
+      JobTxCtx<S, TransactionCapabilities, TxJobs>,
+      R
+    >,
+  ): Job<A, Awaited<R>>;
+  <A extends ObjectShape, R>(
+    definition: ProcedureJobDefinition<
+      A,
+      JobCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+      R
+    >,
+  ): Job<A, Awaited<R>>;
+}
 
 interface JobDefinitionBase<A extends ObjectShape> {
   readonly args: A;

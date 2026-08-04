@@ -71,6 +71,12 @@ import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
 import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
 import { JobsStore, nextDueJobAt, readJobRow } from "../jobs/store.ts";
+import {
+  mutationJobsNamespace,
+  procedureJobsNamespace,
+  queryJobsNamespace,
+} from "../jobs/namespace.ts";
+import type { RuntimeJobs } from "../jobs/runtime.ts";
 import { RuntimeReadExecutor } from "./read.ts";
 
 const releaseNothing = (): void => {};
@@ -150,6 +156,8 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly credentialVerifier?: CredentialVerifier;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
   readonly armScheduler: (touchedTables: ReadonlySet<string>) => void;
+  /** Lazy: the jobs runner is constructed after this executor. */
+  readonly jobs: () => RuntimeJobs;
   readonly now: () => number;
   readonly hooks?: Pick<RuntimeHooks, "wait">;
 }
@@ -367,6 +375,7 @@ export class RuntimeFunctionExecutor<C> {
       get timestamp(): number {
         return currentTimestamp();
       },
+      jobs: procedureJobsNamespace(this.options.jobs()),
       ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
         this.inTransactionTrace(() => this.executeWrite(
@@ -443,6 +452,7 @@ export class RuntimeFunctionExecutor<C> {
       auth: principal,
       log: this.options.log,
       timestamp,
+      jobs: queryJobsNamespace(this.options.jobs(), db),
       ...plugins,
     }) as QueryCtx;
   }
@@ -467,6 +477,15 @@ export class RuntimeFunctionExecutor<C> {
       analytics,
       log: this.options.log,
       timestamp,
+      jobs: mutationJobsNamespace(
+        this.options.jobs(),
+        db,
+        new JobsStore(
+          this.options.engine,
+          writes,
+          this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
+        ),
+      ),
       ...plugins,
     }) as MutationCtx;
   }

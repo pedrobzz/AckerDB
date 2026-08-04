@@ -26,6 +26,7 @@ import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { AnyJob, DeclaredJob, JobState } from "../../jobs/definition.ts";
 import { encodeJobArgs, hashJobArgs } from "../../jobs/identity.ts";
 import type { JobsWriteSurface } from "../execution/functions.ts";
+import type { JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { Database } from "bun:sqlite";
 import { outcomeFromError } from "../outcome.ts";
@@ -155,6 +156,10 @@ export class RuntimeJobs {
     return this.definitions.size;
   }
 
+  get declaredNames(): readonly string[] {
+    return [...this.definitions.keys()];
+  }
+
   get runningCount(): number {
     return this.activeRuns;
   }
@@ -179,10 +184,10 @@ export class RuntimeJobs {
         for (const [name, definition] of bootstrap) {
           const argsJson = encodeJobArgs({});
           const argsHash = hashJobArgs(argsJson);
-          if (this.liveRow(surface, name, argsHash) !== null) continue;
+          if (this.liveRow(surface.jobs, name, argsHash) !== null) continue;
           const at = definition.repeat!(now, now);
           if (at === null) continue;
-          this.insertRow(surface, { name, argsJson, argsHash, key: null, runAt: at, now });
+          this.insertRow(surface.jobs, { name, argsJson, argsHash, key: null, runAt: at, now });
         }
       }).catch(() => {}); // arming still proceeds; enqueues re-wake the runner
     }
@@ -248,7 +253,7 @@ export class RuntimeJobs {
    * already-open transaction — the transactional-enqueue seam mutations use.
    */
   enqueueWith(
-    surface: JobsWriteSurface,
+    store: JobsStore,
     name: string,
     args: unknown,
     options: JobEnqueueOptions = {},
@@ -259,7 +264,7 @@ export class RuntimeJobs {
     const argsHash = hashJobArgs(argsJson);
     const now = this.options.now();
     if (definition.dedupe !== null) {
-      const existing = this.dedupeRow(surface, definition, name, argsHash, now);
+      const existing = this.dedupeRow(store, definition, name, argsHash, now);
       if (existing !== null) return { id: existing.id, deduped: true };
     }
     const runAt = options.at ?? (options.delayMs !== undefined ? now + options.delayMs : now);
@@ -267,7 +272,7 @@ export class RuntimeJobs {
       throw new ValidationError(`jobs.${name}: enqueue at/delayMs must be finite milliseconds`);
     }
     const key = definition.key === null ? null : String(definition.key(validated as never));
-    const id = this.insertRow(surface, { name, argsJson, argsHash, key, runAt, now });
+    const id = this.insertRow(store, { name, argsJson, argsHash, key, runAt, now });
     return { id, deduped: false };
   }
 
@@ -279,7 +284,7 @@ export class RuntimeJobs {
   ): Promise<JobHandle> {
     return await this.options.executor.jobsWrite(
       this.options.signal(),
-      (surface) => this.enqueueWith(surface, name, args, options),
+      (surface) => this.enqueueWith(surface.jobs, name, args, options),
     );
   }
 
@@ -703,8 +708,8 @@ export class RuntimeJobs {
     }
     if (at === null) return;
     if (typeof at !== "number" || !Number.isFinite(at)) return;
-    if (this.liveRow(surface, row.name, row.argsHash) !== null) return;
-    this.insertRow(surface, {
+    if (this.liveRow(surface.jobs, row.name, row.argsHash) !== null) return;
+    this.insertRow(surface.jobs, {
       name: row.name,
       argsJson: row.argsJson,
       argsHash: row.argsHash,
@@ -771,7 +776,7 @@ export class RuntimeJobs {
   }
 
   private insertRow(
-    surface: JobsWriteSurface,
+    store: JobsStore,
     row: {
       readonly name: string;
       readonly argsJson: string;
@@ -781,7 +786,7 @@ export class RuntimeJobs {
       readonly now: number;
     },
   ): bigint {
-    return surface.jobs.insert({
+    return store.insert({
       name: row.name,
       argsJson: row.argsJson,
       argsHash: row.argsHash,
@@ -799,22 +804,22 @@ export class RuntimeJobs {
   }
 
   /** A live (pending or running) row for this identity, if any. */
-  private liveRow(surface: JobsWriteSurface, name: string, argsHash: string): JobRow | null {
+  private liveRow(store: JobsStore, name: string, argsHash: string): JobRow | null {
     return (
-      surface.jobs
+      store
         .byIdentity(name, argsHash)
         .find((row) => row.state === "pending" || row.state === "running") ?? null
     );
   }
 
   private dedupeRow(
-    surface: JobsWriteSurface,
+    store: JobsStore,
     definition: AnyJob,
     name: string,
     argsHash: string,
     now: number,
   ): JobRow | null {
-    const rows = surface.jobs.byIdentity(name, argsHash);
+    const rows = store.byIdentity(name, argsHash);
     const live = rows.find((row) => row.state === "pending" || row.state === "running");
     if (live !== undefined) return live;
     const windows = definition.dedupe!;

@@ -301,6 +301,7 @@ export class Runtime implements RuntimePort {
           }
         : {}),
       armScheduler: () => this.jobs.arm(),
+      jobs: () => this.jobs,
       hooks: options.hooks,
       now: this.now,
     });
