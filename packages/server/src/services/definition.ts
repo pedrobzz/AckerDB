@@ -12,6 +12,7 @@
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { Schema } from "../schema/definition.ts";
 import type { SystemCtx, SystemRunner } from "../app/system.ts";
+import type { AnyJobsNamespace } from "../jobs/api.ts";
 
 const SERVICE_IDENTITY = Symbol.for("@ackerdb/server/Service/v1");
 
@@ -59,9 +60,13 @@ export type ServiceBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
 > = (
-  definition: ServiceDefinition<SystemCtx<S, Capabilities, TransactionCapabilities>>,
-) => Service<SystemCtx<S, Capabilities, TransactionCapabilities>>;
+  definition: ServiceDefinition<
+    SystemCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
+  >,
+) => Service<SystemCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>>;
 
 export function service<Ctx = SystemCtx>(
   definition: ServiceDefinition<Ctx>,

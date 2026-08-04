@@ -38,11 +38,6 @@ const schema = defineSchema({
     role,
     payload,
   }).index(["channelId"]),
-  jobs: defineTable({
-    id: v.primaryKey(),
-    note: v.string(),
-    at: v.scheduleAt(),
-  }).scheduled("messages.runJob"),
   typingEvents: defineEventTable({
     id: v.primaryKey(),
     channelId: v.bigint(),
@@ -91,11 +86,23 @@ export const send = mutation({
   },
 });
 
-export const runJob = mutation({
-  access: "system",
-  args: { id: v.bigint(), note: v.string(), at: v.int() },
-  handler: async (ctx, args) => {
-    await ctx.db.messages.insert({
+export const enqueueNote = mutation({
+  access: "public",
+  args: { note: v.string(), at: v.int() },
+  handler: (ctx, args) =>
+    ctx.jobs.notes.record.enqueue({ note: args.note }, { at: args.at }),
+});
+`;
+
+export const FIXTURE_JOBS = `
+import { v } from "@ackerdb/server";
+import { job } from "../_generated/server.ts";
+
+export const record = job({
+  kind: "mutation",
+  args: { note: v.string() },
+  handler: async (tx, args) => {
+    await tx.db.messages.insert({
       channelId: 0n,
       body: args.note,
       role: "admin",

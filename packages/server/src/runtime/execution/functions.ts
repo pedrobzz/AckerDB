@@ -94,7 +94,7 @@ export interface JobsWriteSurface {
     jobAddress: string,
     attempt: number,
     run: (ctx: MutationCtx & { readonly attempt: number }) => T | Promise<T>,
-  ): Promise<Awaited<T>>;
+  ): Promise<T>;
 }
 
 export function restoreMutationResult(value: unknown): Result<unknown, unknown> {

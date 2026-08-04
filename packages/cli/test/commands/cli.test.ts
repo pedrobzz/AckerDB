@@ -9,7 +9,7 @@ import type { CredentialVerifier } from "@ackerdb/server";
 import { startApp, StartupInterruptedError } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
-import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 import { within } from "ackerdb-test-support/async";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
@@ -88,6 +88,7 @@ const fixture = (port: number) => {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
+    "jobs/notes.ts": FIXTURE_JOBS,
     "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
     ".ackerdb.config.json": JSON.stringify({ port }),
   });
