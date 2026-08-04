@@ -1,5 +1,5 @@
 import type { TelemetryMetadata } from "./value.ts";
-import type { Identity } from "../../validation/v.ts";
+import type { Identity } from "@ackerdb/core";
 
 export type ApplicationLogLevel = "debug" | "info" | "warn" | "error";
 

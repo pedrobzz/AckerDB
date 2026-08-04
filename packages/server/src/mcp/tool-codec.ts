@@ -22,7 +22,8 @@ import {
   validatorJsonSchema,
   type JsonObjectSchema,
 } from "../validation/json-schema.ts";
-import { v, type StandardValidator } from "../validation/v.ts";
+import type { StandardValidator } from "../validation/validator.ts";
+import { v } from "../validation/v.ts";
 import { isMcpContentValidator } from "./content.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 

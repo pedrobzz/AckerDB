@@ -3,30 +3,27 @@ import {
   type PortableRTCConfiguration,
   type PortableRTCPeerConnection,
   type RegisteredRealtimeContract,
-  type RealtimeRef,
   type RealtimeStreamMap,
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
-  isAccessPolicy,
-  validateArgsShape,
-  type AccessPolicy,
   type ArgsInput,
   type Invocable,
   type ProcedureCtx,
 } from "../app/functions.ts";
+import { compileInvocation } from "../app/invocation.ts";
 import {
-  compileInvocation,
+  isAccessPolicy,
+  type AccessPolicy,
   type InvocationContext,
-} from "../app/invocation.ts";
-import {
-  type Expand,
-  type InferShape,
-  type InferValidator,
-  type InferValidatorInput,
-  type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+} from "../app/access.ts";
+import type {
+  Expand,
+  InferValidator,
+  InferValidatorInput,
+  Validator,
+} from "../validation/validator.ts";
+import type { InferShape, ObjectShape } from "../validation/composites.ts";
 import {
   type AuthorizationError,
   type AuthorizationState,
@@ -35,6 +32,7 @@ import {
   authorizationResult as realtimeAuthorizationResult,
   validateDeclaration,
   validateEventDeclarations,
+  validateArgsShape,
 } from "../validation/declarations.ts";
 import type { RealtimeMedia } from "./media.ts";
 
@@ -416,27 +414,3 @@ export function realtimeAuthorization(
 }
 
 export { realtimeAuthorizationResult };
-
-/** Server-only helper for targeting a generated realtime reference in tests/tools. */
-export type RealtimeReferenceOf<Definition extends AnyRegisteredRealtime> =
-  Definition extends RegisteredRealtime<
-    infer A,
-    infer ClientEvents,
-    infer ServerEvents,
-    infer ClientStreams,
-    infer ServerStreams,
-    infer AuthorizationReturn,
-    unknown,
-    Schema,
-    any,
-    any
-  >
-    ? RealtimeRef<
-      ArgsInput<A>,
-      EventInputs<ClientEvents>,
-      EventOutputs<ServerEvents>,
-      StreamInputs<ClientStreams>,
-      StreamOutputs<ServerStreams>,
-      AuthorizationError<AuthorizationReturn>
-    >
-    : never;

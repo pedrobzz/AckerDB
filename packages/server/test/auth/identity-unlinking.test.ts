@@ -21,14 +21,15 @@ import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
-import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import {
-  Session,
   type RuntimePublication,
   type SessionControlMessage,
   type SessionSink,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
+import { Session } from "../../src/subscriptions/session/session.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const NOW = 2_000_000;

@@ -24,7 +24,7 @@ import type {
   StandardJsonOutput,
   StandardJsonProtocolSchema,
 } from "../validation/standard-schema.ts";
-import type { ObjectShape, ObjectValidator } from "../validation/v.ts";
+import type { ObjectShape, ObjectValidator } from "../validation/composites.ts";
 
 /**
  * Every tool declares `returns`, so every local result is structured JSON.
@@ -326,7 +326,8 @@ export function createMcpAiTools(
   }
   const normalized = normalizeOptions(mcp, options);
   const scopes = effectiveGrant(context.auth, normalized.scopes);
-  const endpointAvailable = context.auth.kind !== "mcp" || context.auth.mcp === mcp.name;
+  const endpointAvailable = context.auth.kind !== "mcp" ||
+    context.auth.mcp === mcp.auth.name;
 
   const runInParent = AsyncLocalStorage.snapshot();
   const tools: Record<string, McpAiTool> = Object.create(null) as Record<string, McpAiTool>;

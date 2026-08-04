@@ -1,17 +1,19 @@
 import { Buffer } from "node:buffer";
 import { toStandardJson } from "@ackerdb/core";
-import {
-  type ArrayValidator,
-  type InferValidator,
-  type LiteralValidator,
-  type NullableValidator,
-  type ObjectShape,
-  type ObjectValidator,
-  type NullishValidator,
-  type OptionalValidator,
-  type StandardValidator,
-  type UnionValidator,
-} from "./v.ts";
+import type {
+  InferValidator,
+  NullableValidator,
+  NullishValidator,
+  OptionalValidator,
+  StandardValidator,
+} from "./validator.ts";
+import type {
+  ArrayValidator,
+  LiteralValidator,
+  ObjectShape,
+  ObjectValidator,
+  UnionValidator,
+} from "./composites.ts";
 import {
   BASE64_PATTERN,
   DECIMAL_PATTERN,

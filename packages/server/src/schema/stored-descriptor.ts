@@ -1,5 +1,5 @@
 import { decode, encode } from "@ackerdb/core";
-import type { Descriptor } from "../validation/v.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import { validateConstraintDescriptor } from "../validation/constraints.ts";
 import { ValidationError } from "../validation/error.ts";
 

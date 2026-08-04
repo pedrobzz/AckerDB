@@ -19,11 +19,6 @@ import {
 
 export type { AckerDBQueryState } from "./query-observation.ts";
 
-// Re-establishing a rejected-but-retryable subscription mirrors the client's
-// own reconnect shape, floored by the server's explicit retry hint.
-const RETRY_BASE_MS = 100;
-const RETRY_MAX_MS = 3_000;
-
 /** What useQuery observes: an immutable snapshot plus a counted listener slot. */
 export type QuerySource<Rows, Error extends ApplicationError = never> =
   ObservationSource<AckerDBQueryState<Rows, Error>>;
@@ -47,9 +42,6 @@ export class QueryStoreEntry<
 > extends SharedObservation<AckerDBQueryState<Rows, Error>> {
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
-  private retryHandle: ReturnType<typeof setTimeout> | null = null;
-  private retryAttempt = 0;
-  private retryDeferred = false;
   private lastApplicationError: Error | null = null;
 
   constructor(
@@ -91,8 +83,6 @@ export class QueryStoreEntry<
   }
 
   protected stopObservation(): void {
-    this.clearRetry();
-    this.retryDeferred = false;
     this.stopQuery?.();
     this.stopQuery = null;
     this.stopConnectionState?.();
@@ -101,7 +91,6 @@ export class QueryStoreEntry<
   }
 
   private onApplicationError(error: Error): void {
-    this.settleRetries();
     this.lastApplicationError = error;
     // This callback is only present when the reference carries an Error.
     // TypeScript cannot reduce a conditional type over a still-generic Error,
@@ -112,13 +101,11 @@ export class QueryStoreEntry<
   private onSuccess(data: Rows): void {
     // Applied reset/update deliveries are authoritative on the live
     // connection: delivered data is always fresh.
-    this.settleRetries();
     this.lastApplicationError = null;
     this.replace(querySuccess<Rows, Error>(data));
   }
 
   private onCursorConfirmed(): void {
-    this.settleRetries();
     const state = this.snapshot();
     if (state.status !== "unavailable") return;
     if (state.data !== undefined) {
@@ -139,66 +126,9 @@ export class QueryStoreEntry<
   private onError(error: AckerDBClientError): void {
     if (error.kind === "framework") this.lastApplicationError = null;
     this.replace(queryClientError(this.snapshot(), error));
-    // A retryable rejection removed the subscription, but the consumer's
-    // demand still stands: re-establish it after the server's hint or the
-    // client's own backoff shape, whichever is later.
-    if (error.retryable && this.hasDemand && this.retryHandle === null) {
-      const backoff = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** this.retryAttempt);
-      this.retryAttempt++;
-      this.retryHandle = setTimeout(
-        () => {
-          this.retryHandle = null;
-          this.resubscribe();
-        },
-        Math.max(error.retryAfterMs ?? 0, backoff),
-      );
-    }
-  }
-
-  private resubscribe(): void {
-    if (!this.hasDemand) return;
-    const phase = this.client.currentConnectionState.phase;
-    // Failed and closed clients never accept work again for this lifetime.
-    if (phase === "terminal-error" || phase === "closed") return;
-    // A blocked client rejects new subscriptions until refreshCredential()
-    // recovers it; hold the demand and resubscribe on that recovery instead
-    // of consuming the retry here.
-    if (phase === "authentication-blocked") {
-      this.retryDeferred = true;
-      return;
-    }
-    this.stopQuery?.();
-    this.stopQuery = null;
-    this.startQuery();
-  }
-
-  private settleRetries(): void {
-    // An authoritative delivery proves the subscription healthy: cancel any
-    // scheduled resubscribe and restart the backoff shape.
-    this.retryAttempt = 0;
-    this.retryDeferred = false;
-    this.clearRetry();
-  }
-
-  private clearRetry(): void {
-    if (this.retryHandle !== null) {
-      clearTimeout(this.retryHandle);
-      this.retryHandle = null;
-    }
   }
 
   private onConnectionState(connection: AckerDBConnectionState): void {
-    // A deferred retry fires once the client leaves its blocked state, e.g.
-    // when refreshCredential() installs new credentials.
-    if (
-      this.retryDeferred &&
-      connection.phase !== "authentication-blocked" &&
-      connection.phase !== "terminal-error" &&
-      connection.phase !== "closed"
-    ) {
-      this.retryDeferred = false;
-      this.resubscribe();
-    }
     // Leaving ready means held rows can no longer be assumed current. Ready
     // itself proves nothing for this query — freshness returns only through
     // the subscription's own resume/reset confirmation.

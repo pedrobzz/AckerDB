@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type AuthenticationDescriptor,
-  type ClientMessage,
   type Identity,
   type ServerMessage,
   type SubscriptionCursor,
@@ -16,11 +12,11 @@ import {
 import {
   AckerDBClient,
   AckerDBClientError,
-  type AckerDBClientClock,
-  type AckerDBClientOptions,
   type AckerDBLifecyclePort,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
+import { ManualClock } from "ackerdb-test-support/client-transport";
+import { createHarness, cursor, mustErr } from "./support/harness.ts";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -40,212 +36,6 @@ const USER_AUTHENTICATION = {
   identity: 1n as Identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1" },
 } satisfies AuthenticationDescriptor;
-
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-
-  constructor(private time = 0) {}
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  nextDueIn(): number | undefined {
-    let due: number | undefined;
-    for (const task of this.tasks.values()) {
-      const delay = task.at - this.time;
-      if (due === undefined || delay < due) due = delay;
-    }
-    return due;
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  readonly closes: Array<{ code?: number; reason?: string }> = [];
-  /** Real socket close is asynchronous; set this to hold the close event back. */
-  deferClose = false;
-  private closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.closes.push({ code, reason });
-    if (!this.deferClose) this.onclose?.();
-  }
-
-  open(): void {
-    this.onopen?.();
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  drop(): void {
-    this.close();
-  }
-
-  isClosed(): boolean {
-    return this.closed;
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-}
-
-interface Harness {
-  readonly client: AckerDBClient;
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly port: AckerDBLifecyclePort;
-  readonly phases: string[];
-  stops(): number;
-  failNextDial(): void;
-}
-
-function harness(overrides: Partial<AckerDBClientOptions> = {}): Harness {
-  const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
-  const sockets: FakeSocket[] = [];
-  let port: AckerDBLifecyclePort | undefined;
-  let stops = 0;
-  let failDials = 0;
-  const client = new AckerDBClient({
-    url: "http://ackerdb.test",
-    credential: { kind: "anonymous" },
-    clientSessionId: "suspension-session",
-    clock,
-    random: () => 0,
-    createWebSocket: () => {
-      if (failDials > 0) {
-        failDials--;
-        throw new Error("dial refused");
-      }
-      const socket = new FakeSocket();
-      sockets.push(socket);
-      return socket;
-    },
-    lifecycle: (livePort) => {
-      port = livePort;
-      return () => {
-        stops++;
-      };
-    },
-    ...overrides,
-  });
-  const phases: string[] = [];
-  client.subscribeConnectionState((state) => phases.push(state.phase));
-  return {
-    client,
-    clock,
-    sockets,
-    get port(): AckerDBLifecyclePort {
-      if (!port) throw new Error("the harness lifecycle source was overridden");
-      return port;
-    },
-    phases,
-    stops: () => stops,
-    failNextDial: () => {
-      failDials++;
-    },
-  };
-}
-
-function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
-  readonly ok: false;
-  readonly error: E;
-}): E {
-  if (result.ok) throw new Error("expected a failed Result");
-  return result.error;
-}
-
-function welcome(client: AckerDBClient, socket: FakeSocket, authEpoch = 0): void {
-  socket.open();
-  socket.receive({
-    v: PROTOCOL_VERSION,
-    t: "welcome",
-    clientSessionId: client.clientSessionId,
-    authEpoch,
-    principal: "anonymous",
-  });
-}
-
-function cursor(commitVersion: bigint): SubscriptionCursor {
-  return {
-    generation: "generation-1",
-    commitVersion,
-    authEpoch: 0,
-    identity: "todos.list:{list:1}",
-  };
-}
-
-function lastFrame<T extends ClientMessage["t"]>(
-  socket: FakeSocket,
-  type: T,
-): Extract<ClientMessage, { t: T }> {
-  const frame = socket.frames().findLast((candidate) => candidate.t === type);
-  if (!frame) throw new Error(`No ${type} frame`);
-  return frame as Extract<ClientMessage, { t: T }>;
-}
 
 function transition(
   id: number,
@@ -268,7 +58,7 @@ describe("AckerDBClient lifecycle port", () => {
   test("registers one observer per client lifetime and removes it before teardown", () => {
     const sequence: string[] = [];
     let registrations = 0;
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       lifecycle: (port) => {
         registrations++;
         void port;
@@ -277,7 +67,6 @@ describe("AckerDBClient lifecycle port", () => {
         };
       },
     });
-    client.connect();
     expect(registrations).toBe(1);
     const socket = sockets[0]!;
     const originalClose = socket.close.bind(socket);
@@ -293,8 +82,7 @@ describe("AckerDBClient lifecycle port", () => {
   });
 
   test("notifications after close are inert", () => {
-    const { client, sockets, port, phases } = harness();
-    client.connect();
+    const { client, sockets, port, phases } = createHarness();
     client.close();
     const socketCount = sockets.length;
     port.suspend();
@@ -307,12 +95,12 @@ describe("AckerDBClient lifecycle port", () => {
 
 describe("AckerDBClient suspension", () => {
   test("background during ready atomically publishes suspended, retires socket and timers, and keeps logical state", () => {
-    const { client, clock, sockets, port, phases } = harness();
+    const { client, clock, sockets, port, phases } = createHarness();
     const updates: unknown[] = [];
     client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     first.receive(transition(subscription.id, cursor(5n), ["one"]));
     expect(updates).toEqual([["one"]]);
     expect(clock.taskCount).toBe(2); // stable-open timeout + heartbeat interval
@@ -335,17 +123,16 @@ describe("AckerDBClient suspension", () => {
     port.resume();
     expect(sockets).toHaveLength(2);
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "suspended", "resuming", "ready"]);
-    expect(lastFrame(second, "sub").cursor).toEqual(cursor(5n));
+    expect(second.lastFrame("sub").cursor).toEqual(cursor(5n));
     client.close();
   });
 
   test("background during connecting retires the pre-open socket without scheduling reconnect", () => {
-    const { client, clock, sockets, port } = harness();
-    client.connect();
+    const { client, clock, sockets, port } = createHarness();
     const first = sockets[0]!;
-    expect(first.isClosed()).toBe(false);
+    expect(first.closed).toBe(false);
     port.suspend();
     expect(first.closes).toEqual([{ code: 4001, reason: "client suspended" }]);
     expect(clock.taskCount).toBe(0);
@@ -357,19 +144,19 @@ describe("AckerDBClient suspension", () => {
   });
 
   test("background during subscription application resumes with a fresh cursorless subscribe", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const updates: unknown[] = [];
     client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     expect(subscription.cursor).toBeUndefined();
 
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const resent = lastFrame(second, "sub");
+    second.welcome(client.clientSessionId);
+    const resent = second.lastFrame("sub");
     expect(resent.id).toBe(subscription.id);
     expect(resent.cursor).toBeUndefined();
     second.receive(transition(subscription.id, cursor(1n), ["fresh"]));
@@ -378,11 +165,11 @@ describe("AckerDBClient suspension", () => {
   });
 
   test("background clears a stale reconnect backoff so nothing dials before activation", () => {
-    const { client, clock, sockets, port } = harness();
+    const { client, clock, sockets, port } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
-    welcome(client, first);
-    first.drop();
+    first.welcome(client.clientSessionId);
+    first.close();
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     expect(clock.nextDueIn()).toBe(100);
 
@@ -393,19 +180,18 @@ describe("AckerDBClient suspension", () => {
 
     port.resume();
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState.phase).toBe("ready");
     client.close();
   });
 
   test("background pauses the credential deadline and activation re-arms the remainder", async () => {
-    const { client, clock, sockets, port } = harness({
+    const { client, clock, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
-    expect(lastFrame(sockets[0]!, "auth").credential).toEqual({ kind: "bearer", token: "token-b" });
+    expect(sockets[0]!.lastFrame("auth").credential).toEqual({ kind: "bearer", token: "token-b" });
 
     port.suspend();
     expect(clock.taskCount).toBe(0);
@@ -416,7 +202,7 @@ describe("AckerDBClient suspension", () => {
     expect(clock.nextDueIn()).toBe(20_000);
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
       v: PROTOCOL_VERSION,
       t: "welcome",
@@ -433,11 +219,11 @@ describe("AckerDBClient suspension", () => {
   });
 
   test("a credential deadline that elapsed during suspension expires on activation without dialing", async () => {
-    const { client, clock, sockets, port, phases } = harness({
+    const { client, clock, sockets, port, phases } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
 
     port.suspend();
@@ -454,13 +240,13 @@ describe("AckerDBClient suspension", () => {
     // A new credential recovers the ordinary way now that the app is active.
     const recovered = client.refreshCredential({ kind: "bearer", token: "token-c" });
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!, 2);
+    sockets[1]!.welcome(client.clientSessionId, { principal: "anonymous" }, 2);
     expect(await recovered).toEqual({ authEpoch: 2, principal: "anonymous" });
     client.close();
   });
 
   test("pending request deadlines stay absolute across suspension", async () => {
-    const { client, clock, port } = harness();
+    const { client, clock, port } = createHarness();
     const result = client.query("todos.list", { list: 1n }).then(mustErr);
     port.suspend();
     clock.advance(30_000);
@@ -471,25 +257,26 @@ describe("AckerDBClient suspension", () => {
   });
 
   test("in-flight procedures settle promptly at suspension and never restart", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const call = client.procedure("todos.tally", {}).then(mustErr);
     expect(sockets).toHaveLength(1);
-    welcome(client, sockets[0]!);
-    const request = lastFrame(sockets[0]!, "p");
+    sockets[0]!.welcome(client.clientSessionId);
+    const request = sockets[0]!.lastFrame("p");
     port.suspend();
     const rejection = (await call) as AckerDBClientError;
     expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("indeterminate");
-    expect(lastFrame(sockets[0]!, "cancel").id).toBe(request.id);
+    expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     port.resume();
-    // A settled procedure is not demand: activation does not dial or replay it.
-    expect(sockets).toHaveLength(1);
+    // The settled procedure is not replayed; the client's standing connection
+    // demand still creates a fresh idle transport on activation.
+    expect(sockets).toHaveLength(2);
     client.close();
   });
 
   test("in-flight SSE streams settle promptly at suspension and never restart", async () => {
     let fetches = 0;
-    const { client, port } = harness({
+    const { client, port } = createHarness({
       fetch: () => {
         fetches++;
         return new Promise<Response>(() => {});
@@ -510,13 +297,13 @@ describe("AckerDBClient suspension", () => {
 
 describe("AckerDBClient activation", () => {
   test("activation with demand dials in the same event turn regardless of prior backoff depth", () => {
-    const { client, clock, sockets, port, phases } = harness();
+    const { client, clock, sockets, port, phases } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     // Deepen the backoff shape before suspending.
-    sockets[0]!.drop();
+    sockets[0]!.close();
     clock.advance(100);
-    sockets[1]!.drop();
+    sockets[1]!.close();
     expect(clock.nextDueIn()).toBe(100);
     port.suspend();
     clock.advance(60_000);
@@ -526,13 +313,13 @@ describe("AckerDBClient activation", () => {
     port.resume();
     // The dial happened inside the resume call itself: same event turn.
     expect(sockets.length).toBe(before + 1);
-    welcome(client, sockets[2]!);
+    sockets[2]!.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "reconnecting", "suspended", "resuming", "ready"]);
     client.close();
   });
 
   test("retired-generation callbacks cannot mutate or close the replacement connection", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const updates: unknown[] = [];
     const errors: string[] = [];
     client.subscribe(
@@ -542,14 +329,14 @@ describe("AckerDBClient activation", () => {
       (error) => errors.push(error.code),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     first.receive(transition(subscription.id, cursor(1n), ["one"]));
 
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     second.receive(transition(subscription.id, cursor(2n), ["two"]));
     expect(updates).toEqual([["one"], ["two"]]);
     const ready = client.currentConnectionState;
@@ -585,7 +372,7 @@ describe("AckerDBClient activation", () => {
     expect(client.currentConnectionState).toBe(ready);
     expect(updates).toEqual([["one"], ["two"]]);
     expect(errors).toEqual([]);
-    expect(second.isClosed()).toBe(false);
+    expect(second.closed).toBe(false);
 
     // The replacement generation still works normally afterwards.
     second.receive(transition(subscription.id, cursor(3n), ["three"], cursor(2n)));
@@ -594,9 +381,9 @@ describe("AckerDBClient activation", () => {
   });
 
   test("rapid background/active cycles coalesce to one active generation with no parallel sockets", () => {
-    const { client, clock, sockets, port, phases } = harness();
+    const { client, clock, sockets, port, phases } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
 
     for (let cycle = 0; cycle < 3; cycle++) {
       port.suspend();
@@ -605,7 +392,7 @@ describe("AckerDBClient activation", () => {
       port.resume();
     }
     expect(sockets).toHaveLength(4); // the original dial plus one per coalesced cycle
-    expect(sockets.filter((socket) => !socket.isClosed())).toHaveLength(1);
+    expect(sockets.filter((socket) => !socket.closed)).toHaveLength(1);
     expect(phases).toEqual([
       "ready",
       "suspended",
@@ -615,7 +402,7 @@ describe("AckerDBClient activation", () => {
       "suspended",
       "resuming",
     ]);
-    welcome(client, sockets[3]!);
+    sockets[3]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState.phase).toBe("ready");
     expect(clock.taskCount).toBe(2);
     client.close();
@@ -623,9 +410,9 @@ describe("AckerDBClient activation", () => {
   });
 
   test("activation with the dial failing outright enters ordinary reconnect and recovers", () => {
-    const { client, clock, sockets, port, phases, failNextDial } = harness();
+    const { client, clock, sockets, port, phases, failNextDial } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
     failNextDial();
@@ -636,35 +423,35 @@ describe("AckerDBClient activation", () => {
     expect(delay).toBeGreaterThan(0);
     clock.advance(delay!);
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "suspended", "reconnecting", "ready"]);
     client.close();
   });
 
   test("activation with the server down enters ordinary reconnect and recovers when it returns", () => {
-    const { client, clock, sockets, port, phases } = harness();
+    const { client, clock, sockets, port, phases } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
     port.resume();
     expect(client.currentConnectionState.phase).toBe("resuming");
     // The immediate attempt dies before its handshake: ordinary reconnect.
-    sockets[1]!.drop();
+    sockets[1]!.close();
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     const delay = clock.nextDueIn();
     expect(delay).toBeGreaterThan(0);
     clock.advance(delay!);
     // The server has returned: recovery completes without any restart.
-    welcome(client, sockets[2]!);
+    sockets[2]!.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "suspended", "resuming", "reconnecting", "ready"]);
     client.close();
   });
 
   test("a server retry hint outlives suspension: activation honors the remaining pushback", () => {
-    const { client, clock, sockets, port, phases } = harness();
+    const { client, clock, sockets, port, phases } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     // The server sheds load with an explicit admission deadline.
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
@@ -691,15 +478,15 @@ describe("AckerDBClient activation", () => {
     expect(clock.nextDueIn()).toBe(3_000);
     clock.advance(3_000);
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "reconnecting", "suspended", "reconnecting", "ready"]);
     client.close();
   });
 
   test("a server retry hint that elapsed during suspension no longer delays activation", () => {
-    const { client, clock, sockets, port } = harness();
+    const { client, clock, sockets, port } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -719,15 +506,15 @@ describe("AckerDBClient activation", () => {
     // attempt begins in the activation turn as usual.
     expect(sockets).toHaveLength(2);
     expect(client.currentConnectionState.phase).toBe("resuming");
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(client.currentConnectionState.phase).toBe("ready");
     client.close();
   });
 
   test("new demand during a Retry-After window defers to the deadline instead of dialing", () => {
-    const { client, clock, sockets } = harness();
+    const { client, clock, sockets } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -749,7 +536,6 @@ describe("AckerDBClient activation", () => {
     client.subscribe("todos.list", { list: 2n }, () => {});
     expect(sockets).toHaveLength(1);
     expect(clock.nextDueIn()).toBe(3_000);
-    client.connect();
     expect(sockets).toHaveLength(1);
     void client.mutation("todos.add", { text: "milk" }).catch(() => {});
     expect(sockets).toHaveLength(1);
@@ -757,18 +543,18 @@ describe("AckerDBClient activation", () => {
 
     clock.advance(3_000);
     expect(sockets).toHaveLength(2);
-    welcome(client, sockets[1]!);
+    sockets[1]!.welcome(client.clientSessionId);
     expect(sockets[1]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(2);
     client.close();
   });
 
   test("late frames after an authentication timeout cannot revive or terminally fail the client", async () => {
-    const { client, clock, sockets, phases } = harness({
+    const { client, clock, sockets, phases } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     client.subscribe("todos.list", { list: 1n }, () => {});
     const socket = sockets[0]!;
-    welcome(client, socket);
+    socket.welcome(client.clientSessionId);
     // Real transports close asynchronously: queued frames can still arrive
     // after the client issued close().
     socket.deferClose = true;
@@ -807,19 +593,19 @@ describe("AckerDBClient activation", () => {
 
     // A new credential still recovers the ordinary way.
     const recovered = client.refreshCredential({ kind: "bearer", token: "token-c" });
-    welcome(client, sockets[1]!, 2);
+    sockets[1]!.welcome(client.clientSessionId, { principal: "anonymous" }, 2);
     expect(await recovered).toEqual({ authEpoch: 2, principal: "anonymous" });
     expect(phases.at(-1)).toBe("ready");
     client.close();
   });
 
   test("late frames after a server credential rejection stay inert until the deferred close lands", () => {
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     client.subscribe("todos.list", { list: 1n }, () => {});
     const socket = sockets[0]!;
-    welcome(client, socket);
+    socket.welcome(client.clientSessionId);
     socket.deferClose = true;
     socket.receive({
       v: PROTOCOL_VERSION,
@@ -844,7 +630,7 @@ describe("AckerDBClient activation", () => {
   });
 
   test("a synchronous refreshCredential from onError dials a replacement in the same turn", async () => {
-    const { client, sockets } = harness({
+    const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     let refresh: Promise<unknown> | undefined;
@@ -860,7 +646,7 @@ describe("AckerDBClient activation", () => {
       },
     );
     const first = sockets[0]!;
-    welcome(client, first);
+    first.welcome(client.clientSessionId);
     first.deferClose = true;
     first.receive({
       v: PROTOCOL_VERSION,
@@ -871,7 +657,7 @@ describe("AckerDBClient activation", () => {
     expect(sockets).toHaveLength(2);
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
       v: PROTOCOL_VERSION,
       t: "welcome",
@@ -884,45 +670,44 @@ describe("AckerDBClient activation", () => {
     // The rejected socket's deferred close event stays inert.
     first.onclose?.();
     expect(client.currentConnectionState.phase).toBe("ready");
-    expect(second.isClosed()).toBe(false);
+    expect(second.closed).toBe(false);
     client.close();
   });
 
-  test("activation without demand leaves the client idle", () => {
-    const { client, sockets, port, phases } = harness();
+  test("activation restores the constructor-owned standing connection demand", () => {
+    const { client, sockets, port, phases } = createHarness();
     port.suspend();
     port.resume();
-    expect(sockets).toHaveLength(0);
-    expect(client.currentConnectionState.phase).toBe("connecting");
-    expect(phases).toEqual(["suspended", "connecting"]);
+    expect(sockets).toHaveLength(2);
+    expect(client.currentConnectionState.phase).toBe("resuming");
+    expect(phases).toEqual(["suspended", "resuming"]);
     client.close();
   });
 
-  test("demand released before suspension stays released: activation does not redial", () => {
-    const { client, sockets, port } = harness();
+  test("released operation demand does not cancel standing connection demand", () => {
+    const { client, sockets, port } = createHarness();
     const unsubscribe = client.subscribe("todos.list", { list: 1n }, () => {});
     expect(sockets).toHaveLength(1);
     unsubscribe();
     port.suspend();
     port.resume();
-    expect(sockets).toHaveLength(1);
-    expect(sockets[0]!.isClosed()).toBe(true);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0]!.closed).toBe(true);
     client.close();
   });
 
   test("work created during suspension is demand for the activation dial, not an immediate one", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     port.suspend();
-    client.connect();
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
     const result = client.mutation("todos.add", { text: "milk" });
-    expect(sockets).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
 
     port.resume();
-    expect(sockets).toHaveLength(1);
-    const socket = sockets[0]!;
-    welcome(client, socket);
-    const frame = lastFrame(socket, "m");
+    expect(sockets).toHaveLength(2);
+    const socket = sockets[1]!;
+    socket.welcome(client.clientSessionId);
+    const frame = socket.lastFrame("m");
     socket.receive({
       v: PROTOCOL_VERSION,
       t: "ok",
@@ -944,17 +729,16 @@ describe("AckerDBClient activation", () => {
   });
 
   test("a mutation pending across suspension keeps its original identity on the fresh connection", () => {
-    const { client, sockets, port } = harness();
-    client.connect();
-    welcome(client, sockets[0]!);
+    const { client, sockets, port } = createHarness();
+    sockets[0]!.welcome(client.clientSessionId);
     void client.mutation("todos.add", { text: "milk" }).catch(() => {});
-    const issued = lastFrame(sockets[0]!, "m");
+    const issued = sockets[0]!.lastFrame("m");
 
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const replayed = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const replayed = second.lastFrame("m");
     expect(replayed.id).toBe(issued.id);
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
     client.close();

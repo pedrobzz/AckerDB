@@ -69,7 +69,7 @@ export class QueryProcedureEntry<
   private readonly refresh: () => void;
   private stopConnectionState: (() => void) | null = null;
   private activeController: AbortController | null = null;
-  private refreshHandle: ReturnType<typeof setTimeout> | null = null;
+  private refreshHandle: unknown | null = null;
   private refreshRemainingMs = 0;
   private refreshAfterExecution = false;
   private connectionPhase: AckerDBConnectionState["phase"];
@@ -165,10 +165,13 @@ export class QueryProcedureEntry<
 
   private scheduleRefreshStep(): void {
     const stepMs = Math.min(this.refreshRemainingMs, MAX_TIMER_DELAY_MS);
-    const startedAtMs = Date.now();
-    this.refreshHandle = setTimeout(() => {
+    const startedAtMs = this.client.scheduler.now();
+    this.refreshHandle = this.client.scheduler.setTimeout(() => {
       this.refreshHandle = null;
-      const elapsedMs = Math.max(stepMs, Math.max(0, Date.now() - startedAtMs));
+      const elapsedMs = Math.max(
+        stepMs,
+        Math.max(0, this.client.scheduler.now() - startedAtMs),
+      );
       this.refreshRemainingMs = Math.max(0, this.refreshRemainingMs - elapsedMs);
       if (this.refreshRemainingMs > 0) {
         this.scheduleRefreshStep();
@@ -180,7 +183,7 @@ export class QueryProcedureEntry<
 
   private clearRefresh(): void {
     if (this.refreshHandle !== null) {
-      clearTimeout(this.refreshHandle);
+      this.client.scheduler.clearTimeout(this.refreshHandle);
       this.refreshHandle = null;
     }
     this.refreshRemainingMs = 0;

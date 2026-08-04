@@ -109,10 +109,6 @@ export class ChannelManager {
 
   constructor(private readonly port: ChannelManagerPort) {}
 
-  get hasDemand(): boolean {
-    return this.byId.size > 0;
-  }
-
   observe<Ref extends AnyChannelRef>(
     ref: Ref,
     args: NoInfer<ChannelArgs<Ref>>,

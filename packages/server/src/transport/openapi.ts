@@ -27,7 +27,7 @@ import {
   argsJsonSchema,
   validatorJsonSchema,
 } from "../validation/json-schema.ts";
-import type { StandardValidator } from "../validation/v.ts";
+import type { StandardValidator } from "../validation/validator.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   EXPOSED_HTTP_METHODS,

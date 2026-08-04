@@ -13,17 +13,18 @@ import type {
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
 import {
-  isPluginOperationImplementation,
   isPluginOperationSpec,
-  type AnyPluginInstance,
-  type AnyPluginOperationImplementation,
   type AnyPluginOperationSpec,
-  type PluginAssembly,
   type PluginContractTree,
-  type PluginDependencyContracts,
-  type PluginExportTree,
   type PluginOperationKind,
-} from "./definition.ts";
+} from "./contract.ts";
+import type { PluginDependencyContracts } from "./capabilities.ts";
+import {
+  isPluginOperationImplementation,
+  type AnyPluginOperationImplementation,
+} from "./builders.ts";
+import type { PluginExportTree } from "./definition.ts";
+import type { AnyPluginInstance, PluginAssembly } from "./assembly.ts";
 
 export type PluginRuntimeState =
   | "created"
@@ -51,28 +52,23 @@ export interface PluginWriteExecution {
   readonly statementObserver?: DbStatementObserver;
 }
 
-export interface PluginQueryBinding extends PluginReadExecution {
+export interface PluginInvocationCapabilities {
   readonly timestamp: number;
-  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
+  readonly log: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
+  readonly analytics: (functionAddress: string, functionKind: PluginOperationKind) => AnalyticsTracker;
+}
+
+export interface PluginQueryBinding extends PluginReadExecution {
+  readonly invocation: Readonly<PluginInvocationCapabilities>;
 }
 
 export interface PluginMutationBinding extends PluginWriteExecution {
-  readonly analyticsFor: (
-    functionAddress: string,
-    functionKind: PluginOperationKind,
-  ) => AnalyticsTracker;
-  readonly timestamp: number;
-  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
+  readonly invocation: Readonly<PluginInvocationCapabilities>;
 }
 
 export interface PluginProcedureBinding {
-  readonly analyticsFor: (
-    functionAddress: string,
-    functionKind: PluginOperationKind,
-  ) => AnalyticsTracker;
-  readonly timestamp: number;
+  readonly invocation: Readonly<PluginInvocationCapabilities>;
   readonly abortSignal: AbortSignal;
-  readonly logFor: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
   runQuery<T>(
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T>;
@@ -297,19 +293,19 @@ export class PluginRuntime {
 
   bindQuery(binding: Readonly<PluginQueryBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
-    finiteTimestamp(binding.timestamp);
+    finiteTimestamp(binding.invocation.timestamp);
     return this.bindPlan(this.mountPlan, "query", { kind: "query", value: binding });
   }
 
   bindMutation(binding: Readonly<PluginMutationBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
-    finiteTimestamp(binding.timestamp);
+    finiteTimestamp(binding.invocation.timestamp);
     return this.bindPlan(this.mountPlan, "mutation", { kind: "mutation", value: binding });
   }
 
   bindProcedure(binding: Readonly<PluginProcedureBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
-    finiteTimestamp(binding.timestamp);
+    finiteTimestamp(binding.invocation.timestamp);
     return this.bindPlan(this.mountPlan, "procedure", { kind: "procedure", value: binding });
   }
 
@@ -507,8 +503,7 @@ export class PluginRuntime {
           kind: "query",
           value: {
             ...execution,
-            timestamp: binding.value.timestamp,
-            logFor: binding.value.logFor,
+            invocation: binding.value.invocation,
           },
         },
         rawArgs,
@@ -522,9 +517,7 @@ export class PluginRuntime {
           kind: "mutation",
           value: {
             ...execution,
-            analyticsFor: binding.value.analyticsFor,
-            timestamp: binding.value.timestamp,
-            logFor: binding.value.logFor,
+            invocation: binding.value.invocation,
           },
         },
         rawArgs,
@@ -581,8 +574,7 @@ export class PluginRuntime {
         : {
             connection: this.engine.writer,
             reads: null,
-            timestamp: binding.value.timestamp,
-            logFor: binding.value.logFor,
+            invocation: binding.value.invocation,
             ...(binding.value.statementObserver === undefined
               ? {}
               : { statementObserver: binding.value.statementObserver }),
@@ -595,9 +587,9 @@ export class PluginRuntime {
         scope,
       );
       return Object.freeze({
-        timestamp: read.timestamp,
+        timestamp: read.invocation.timestamp,
         mount,
-        log: read.logFor(functionAddress, functionKind),
+        log: read.invocation.log(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -617,10 +609,10 @@ export class PluginRuntime {
         scope,
       );
       return Object.freeze({
-        timestamp: binding.value.timestamp,
+        timestamp: binding.value.invocation.timestamp,
         mount,
-        analytics: binding.value.analyticsFor(functionAddress, functionKind),
-        log: binding.value.logFor(functionAddress, functionKind),
+        analytics: binding.value.invocation.analytics(functionAddress, functionKind),
+        log: binding.value.invocation.log(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -630,9 +622,9 @@ export class PluginRuntime {
       throw new TypeError(`Plugin procedure "${mount}" has no procedure boundary`);
     }
     return Object.freeze({
-      timestamp: binding.value.timestamp,
+      timestamp: binding.value.invocation.timestamp,
       mount,
-      log: binding.value.logFor(functionAddress, functionKind),
+      log: binding.value.invocation.log(functionAddress, functionKind),
       abortSignal: binding.value.abortSignal,
       ...dependencies,
       tx: <T>(work: (context: Readonly<Record<string, unknown>>) => T | Promise<T>) =>
@@ -643,9 +635,7 @@ export class PluginRuntime {
             kind: "mutation",
             value: {
               ...execution,
-              analyticsFor: binding.value.analyticsFor,
-              timestamp: binding.value.timestamp,
-              logFor: binding.value.logFor,
+              invocation: binding.value.invocation,
             },
           },
           functionAddress,

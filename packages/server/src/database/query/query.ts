@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { isValidationError, ValidationError } from "../../validation/v.ts";
+import { isValidationError, ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
 import {

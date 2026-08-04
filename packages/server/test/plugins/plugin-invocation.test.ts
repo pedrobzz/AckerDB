@@ -10,22 +10,23 @@ import { Engine, type StorageScope } from "../../src/database/engine.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
-} from "../../src/plugins/definition.ts";
+} from "../../src/plugins/contract.ts";
+import { definePlugin } from "../../src/plugins/definition.ts";
+import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import type {
   RuntimePublication,
   RuntimeRequest,
   SessionRuntimeContext,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
 import { v } from "../../src/validation/v.ts";
 
 type AnyContext = Record<string, any>;
@@ -725,11 +726,11 @@ describe("Plugin invocation boundaries", () => {
       settleCore = resolve;
     });
     const internals = harness.runtime as unknown as {
-      reader: { drain: () => Promise<void> };
-      coordinator: { drain: () => Promise<void> };
+      reads: { drain: () => Promise<void> };
+      functions: { drain: () => Promise<void> };
     };
-    internals.reader.drain = () => Promise.reject(coreError);
-    internals.coordinator.drain = () => coreGate;
+    internals.reads.drain = () => Promise.reject(coreError);
+    internals.functions.drain = () => coreGate;
 
     const draining = harness.runtime.drain();
     await Promise.resolve();

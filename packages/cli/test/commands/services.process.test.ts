@@ -10,9 +10,12 @@ import type { Subprocess } from "bun";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
+import { steps } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 90_000;
 const STEP_TIMEOUT_MS = 20_000;
+const { eventually } = steps(STEP_TIMEOUT_MS);
 
 const children = new Set<Subprocess>();
 const dirs: string[] = [];
@@ -57,24 +60,6 @@ function events(dir: string): string[] {
   const log = join(dir, "events.log");
   if (!existsSync(log)) return [];
   return readFileSync(log, "utf8").split("\n").filter((line) => line.length > 0);
-}
-
-async function eventually(
-  assertion: () => void | Promise<void>,
-  label: string,
-): Promise<void> {
-  const deadline = Date.now() + STEP_TIMEOUT_MS;
-  let last: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await assertion();
-      return;
-    } catch (error) {
-      last = error;
-      await Bun.sleep(25);
-    }
-  }
-  throw new Error(`${label} did not settle: ${String(last)}`);
 }
 
 function fixture(files: Record<string, string>, port: number): string {

@@ -5,8 +5,9 @@
  * the branch's real client/server implementation sustain without the release
  * benchmark's unrelated workloads?
  *
- * Run on the idle Hetzner host:
- *   bun bench/hot-path-microbenchmark.ts procedure
+ * Run on an otherwise idle host:
+ *   bun bench/hot-path-microbenchmark.ts procedure enabled
+ *   bun bench/hot-path-microbenchmark.ts procedure disabled
  */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,12 +41,9 @@ const WARMUP_MS = 500;
 const STEADY_MS = 2_000;
 const TRIALS = 3;
 const COMPUTE_ROUNDS = 8;
-const CLOCK_TICKS_PER_SEC = Number(
-  Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe" }).stdout.toString().trim(),
-);
-if (!Number.isFinite(CLOCK_TICKS_PER_SEC) || CLOCK_TICKS_PER_SEC <= 0) {
-  throw new Error("could not resolve process clock ticks");
-}
+const CLOCK_TICKS_PER_SEC = process.platform === "linux"
+  ? Number(Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe" }).stdout.toString().trim())
+  : undefined;
 
 interface Profile {
   readonly name: "latency" | "saturation";
@@ -67,24 +65,36 @@ async function success<Data, Error extends ApplicationError = never>(
 }
 
 function rssBytes(pid: number): number {
-  const status = `/proc/${pid}/status`;
-  const text = Bun.spawnSync(["sed", "-n", "s/^VmRSS:[[:space:]]*\\([0-9]*\\).*/\\1/p", status], {
-    stdout: "pipe",
-  }).stdout.toString().trim();
+  const text = process.platform === "linux"
+    ? Bun.spawnSync(
+        ["sed", "-n", "s/^VmRSS:[[:space:]]*\\([0-9]*\\).*/\\1/p", `/proc/${pid}/status`],
+        { stdout: "pipe" },
+      ).stdout.toString().trim()
+    : Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe" })
+      .stdout.toString().trim();
   const kib = Number(text);
   if (!Number.isFinite(kib)) throw new Error(`could not read RSS for server pid ${pid}`);
   return kib * 1024;
 }
 
-async function processCpuTicks(pid: number): Promise<number> {
-  const text = await Bun.file(`/proc/${pid}/stat`).text();
-  const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
-  const user = Number(fields[11]);
-  const system = Number(fields[12]);
-  if (!Number.isFinite(user) || !Number.isFinite(system)) {
-    throw new Error(`could not read CPU ticks for server pid ${pid}`);
+async function processCpuSeconds(pid: number): Promise<number> {
+  if (process.platform === "linux") {
+    const text = await Bun.file(`/proc/${pid}/stat`).text();
+    const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const ticks = Number(fields[11]) + Number(fields[12]);
+    if (!Number.isFinite(ticks) || CLOCK_TICKS_PER_SEC === undefined) {
+      throw new Error(`could not read CPU ticks for server pid ${pid}`);
+    }
+    return ticks / CLOCK_TICKS_PER_SEC;
   }
-  return user + system;
+  const text = Bun.spawnSync(["ps", "-o", "time=", "-p", String(pid)], { stdout: "pipe" })
+    .stdout.toString().trim();
+  const [daysText, clockText] = text.includes("-") ? text.split("-", 2) : ["0", text];
+  const clock = clockText!.split(":").map(Number).reverse();
+  const seconds = Number(daysText) * 86_400 + (clock[2] ?? 0) * 3_600 +
+    (clock[1] ?? 0) * 60 + (clock[0] ?? Number.NaN);
+  if (!Number.isFinite(seconds)) throw new Error(`could not read CPU time for server pid ${pid}`);
+  return seconds;
 }
 
 async function runWindow(
@@ -96,7 +106,7 @@ async function runWindow(
 ) {
   const payload = fixedPayload("procedure-payload:", PROCEDURE_PAYLOAD_BYTES);
   const startedAt = performance.now();
-  const startedCpuTicks = await processCpuTicks(serverPid);
+  const startedCpuSeconds = await processCpuSeconds(serverPid);
   const deadline = startedAt + durationMs;
   let completed = 0;
   const latencies: number[] = [];
@@ -135,16 +145,16 @@ async function runWindow(
     rss.push(rssBytes(serverPid));
   }
   const endedAt = performance.now();
-  const consumedCpuTicks = await processCpuTicks(serverPid) - startedCpuTicks;
+  const consumedCpuSeconds = await processCpuSeconds(serverPid) - startedCpuSeconds;
   const elapsedMs = endedAt - startedAt;
-  const averageCpuCores = consumedCpuTicks / CLOCK_TICKS_PER_SEC / (elapsedMs / 1_000);
+  const averageCpuCores = consumedCpuSeconds / (elapsedMs / 1_000);
   return {
     throughputPerSec: completed / (durationMs / 1_000),
     cpu: {
       averageCores: averageCpuCores,
       coreMicrosPerCompletion: completed === 0
         ? 0
-        : (consumedCpuTicks / CLOCK_TICKS_PER_SEC * 1_000_000) / completed,
+        : (consumedCpuSeconds * 1_000_000) / completed,
     },
     latency: latencyStats(latencies),
     rss: {
@@ -181,7 +191,9 @@ async function runClient(serverPid: number) {
   }
 }
 
-async function server(dbDir: string): Promise<never> {
+type TelemetryMode = "enabled" | "disabled";
+
+async function server(dbDir: string, telemetryMode: TelemetryMode): Promise<never> {
   const config = loadConfig(APP);
   const schema = (await importApp(config)).schema;
   const modules = await importFunctionModules(config);
@@ -195,7 +207,7 @@ async function server(dbDir: string): Promise<never> {
     runtime = new Runtime({
       engine,
       registry: new Registry(modules),
-      telemetry: false,
+      telemetry: telemetryMode === "enabled" ? { localSink: false } : false,
     });
     listener = serve({ runtime, port: PORT });
     console.log("@@ready");
@@ -241,16 +253,26 @@ async function main(): Promise<void> {
   if (process.argv[2] === "--server") {
     const dbDir = process.argv[3];
     if (dbDir === undefined) throw new Error("server mode requires a database directory");
-    await server(dbDir);
+    const telemetryMode = process.argv[4];
+    if (telemetryMode !== "enabled" && telemetryMode !== "disabled") {
+      throw new Error("server mode requires enabled or disabled telemetry");
+    }
+    await server(dbDir, telemetryMode);
   }
-  if (process.argv[2] !== "procedure") {
-    throw new Error("usage: bun bench/hot-path-microbenchmark.ts procedure");
+  const telemetryMode = process.argv[3];
+  if (
+    process.argv[2] !== "procedure" ||
+    (telemetryMode !== "enabled" && telemetryMode !== "disabled")
+  ) {
+    throw new Error(
+      "usage: bun bench/hot-path-microbenchmark.ts procedure <enabled|disabled>",
+    );
   }
 
   await runCodegen(loadConfig(APP));
   const scratch = mkdtempSync(join(tmpdir(), "ackerdb-hot-path-"));
   const child = Bun.spawn(
-    [process.execPath, import.meta.path, "--server", scratch],
+    [process.execPath, import.meta.path, "--server", scratch, telemetryMode],
     { stdout: "pipe", stderr: "pipe" },
   );
   const stderr = collect(child.stderr);
@@ -260,6 +282,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({
       commit: Bun.spawnSync(["git", "rev-parse", "HEAD"], { stdout: "pipe" }).stdout.toString().trim(),
       operation: "procedure",
+      telemetry: telemetryMode,
       host: Bun.spawnSync(["hostname"], { stdout: "pipe" }).stdout.toString().trim(),
       warmupMs: WARMUP_MS,
       steadyMs: STEADY_MS,

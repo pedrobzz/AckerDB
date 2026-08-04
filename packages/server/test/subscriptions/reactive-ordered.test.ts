@@ -9,24 +9,30 @@ import { stableEncode } from "@ackerdb/core";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
-  OrderedReactive,
   ReactiveCommit,
   type QueryEvaluation,
   type ReactiveCommitResult,
   type ReactiveObservation,
   type Subscriber,
-} from "../../src/subscriptions/reactive.ts";
+} from "../../src/subscriptions/reactive/contract.ts";
+import { OrderedReactive } from "../../src/subscriptions/reactive/ordered.ts";
 import { deferred } from "ackerdb-test-support/async";
 
 class RecordingSubscriber implements Subscriber {
   readonly transitions: Array<{ id: number; transition: SubscriptionTransition }> = [];
   readonly transitionAttempts: number[] = [];
   readonly events: Array<{ id: number; event: LiveEvent }> = [];
+  readonly eventAttempts: number[] = [];
   readonly errors: Array<{ id: number; outcome: Outcome }> = [];
   readonly failNextTransition = new Set<number>();
   readonly failNextEvent = new Set<number>();
   private nextTransitionHook?: () => void;
   private nextTransitionGate?: {
+    readonly id: number;
+    readonly entered: () => void;
+    readonly release: Promise<void>;
+  };
+  private nextEventGate?: {
     readonly id: number;
     readonly entered: () => void;
     readonly release: Promise<void>;
@@ -48,6 +54,13 @@ class RecordingSubscriber implements Subscriber {
   }
 
   async sendEvent(id: number, event: LiveEvent): Promise<void> {
+    this.eventAttempts.push(id);
+    const gate = this.nextEventGate;
+    if (gate?.id === id) {
+      this.nextEventGate = undefined;
+      gate.entered();
+      await gate.release;
+    }
     if (this.failNextEvent.delete(id)) throw new Error(`event ${id} failed`);
     this.events.push({ id, event });
   }
@@ -71,6 +84,13 @@ class RecordingSubscriber implements Subscriber {
 
   runOnNextTransition(hook: () => void): void {
     this.nextTransitionHook = hook;
+  }
+
+  gateNextEvent(id: number): { readonly entered: Promise<void>; release(): void } {
+    const entered = deferred();
+    const release = deferred();
+    this.nextEventGate = { id, entered: entered.resolve, release: release.promise };
+    return { entered: entered.promise, release: release.resolve };
   }
 }
 
@@ -651,6 +671,44 @@ describe("ordered reactive ownership", () => {
         resource: "revalidation",
       },
     }]);
+  });
+
+  test("reuses one immutable canonical argument envelope across revalidations", async () => {
+    let version = 0n;
+    const input = { nested: { value: "before" }, ids: [1n, 2n] };
+    const encodedBytes = new TextEncoder().encode(stableEncode(input)).byteLength;
+    const evaluatedArgs: unknown[] = [];
+    const requestBytes: number[] = [];
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async ({ args, requestBytes: bytes }) => {
+        evaluatedArgs.push(args);
+        requestBytes.push(bytes);
+        return evaluation("value", version, "hot");
+      },
+    });
+    await reactive.subscribeQuery({
+      address: "messages.byIds",
+      args: input,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber: new RecordingSubscriber(),
+      id: 1,
+      authEpoch: 0,
+    });
+    input.nested.value = "after";
+    await publish(reactive, new Set(["hot"]), (commitVersion) => {
+      version = commitVersion;
+    });
+
+    expect(evaluatedArgs).toHaveLength(2);
+    expect(evaluatedArgs[1]).toBe(evaluatedArgs[0]);
+    expect(evaluatedArgs[1]).toEqual({ nested: { value: "before" }, ids: [1n, 2n] });
+    expect(Object.isFrozen(evaluatedArgs[1])).toBe(true);
+    expect(Object.isFrozen((evaluatedArgs[1] as { nested: object }).nested)).toBe(true);
+    expect(requestBytes).toEqual([encodedBytes, encodedBytes]);
+    await reactive.close();
   });
 
   test("makes round-robin progress across callers independently of policy fingerprints", async () => {
@@ -1262,6 +1320,43 @@ describe("ordered reactive ownership", () => {
     });
   });
 
+  test("delivers independent event listeners concurrently while preserving each listener's order", async () => {
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation(null, 0n, "unused"),
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const id of [1, 2]) {
+      await reactive.subscribeEvent({
+        subscriber,
+        id,
+        table: "messages",
+        authEpoch: 0,
+        args: null,
+        matches: () => true,
+      });
+    }
+    subscriber.eventAttempts.length = 0;
+    subscriber.events.length = 0;
+
+    const gate = subscriber.gateNextEvent(1);
+    const first = publish(reactive, new Set(), () => {}, {
+      events: [{ table: "messages", row: "first" }],
+    });
+    await gate.entered;
+    const second = publish(reactive, new Set(), () => {}, {
+      events: [{ table: "messages", row: "second" }],
+    });
+
+    await Bun.sleep(0);
+    expect(subscriber.eventAttempts).toEqual([1, 2, 2]);
+    gate.release();
+    await Promise.all([first, second]);
+    expect(subscriber.eventAttempts).toEqual([1, 2, 2, 1]);
+    expect(subscriber.events.filter(({ id }) => id === 1).map(({ event }) =>
+      event.kind === "row" ? event.row : event.kind)).toEqual(["first", "second"]);
+  });
+
   test("partitions event rows per listener without exposing mutable matcher input", async () => {
     let version = 0n;
     const reactive = new OrderedReactive({
@@ -1617,7 +1712,7 @@ describe("ordered reactive ownership", () => {
       kind: "query",
       phase: "invalidation_match",
       outcome: "matched",
-      durationMs: 0,
+      durationMs: expect.any(Number),
       commitVersion: 1n,
       dependencyCount: 2,
       resultCount: 2,
@@ -1647,7 +1742,7 @@ describe("ordered reactive ownership", () => {
         kind: "query",
         phase: "invalidation_match",
         outcome: "unmatched",
-        durationMs: 0,
+        durationMs: expect.any(Number),
         commitVersion: 2n,
         dependencyCount: 1,
         resultCount: 0,
@@ -1744,7 +1839,7 @@ describe("ordered reactive ownership", () => {
       kind: "query",
       phase: "invalidation_match",
       outcome: "matched",
-      durationMs: 0,
+      durationMs: expect.any(Number),
       commitVersion: 1n,
       dependencyCount: 1,
       resultCount: 1,

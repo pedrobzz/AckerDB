@@ -1,5 +1,5 @@
 import { assertStandardJson } from "../validation/standard-json.ts";
-import type { Validator } from "../validation/v.ts";
+import type { Validator } from "../validation/validator.ts";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;

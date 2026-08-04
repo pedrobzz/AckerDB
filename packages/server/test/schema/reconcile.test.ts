@@ -73,6 +73,28 @@ describe("reconcile: bootstrap", () => {
     expect(b.applied).toEqual([]);
     b.engine.close("clean");
   });
+
+  test("reordering column declarations is not a schema change", () => {
+    const path = freshPath();
+    const a = open(baseSchema(), path);
+    expect(a.applied).toEqual(["initialized 1 table(s)"]);
+    const stored = a.engine.loadSnapshot()!;
+    a.engine.close("clean");
+
+    // Same columns, declared in a different order. Column order is not physical
+    // truth, so this must not cost a startup write or claim an update.
+    const reordered = defineSchema({
+      users: defineTable({
+        role: RRole(),
+        name: v.string(),
+        id: v.primaryKey(),
+      }).index(["name"]),
+    });
+    const b = open(reordered, path);
+    expect(b.applied).toEqual([]);
+    expect(b.engine.loadSnapshot()).toEqual(stored);
+    b.engine.close("clean");
+  });
 });
 
 describe("reconcile: shape-safe changes apply with data present", () => {

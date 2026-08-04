@@ -8,7 +8,22 @@ import type {
   InferValidator,
   InferValidatorInput,
   Validator,
-} from "./v.ts";
+} from "./validator.ts";
+import type { ObjectShape } from "./composites.ts";
+
+export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
+  for (const [name, validator] of Object.entries(args)) {
+    if (
+      validator.kind === "pk" ||
+      validator.kind === "scheduleAt" ||
+      validator.kind === "tag"
+    ) {
+      throw new Error(
+        `${prefix}.${name}: v.${validator.kind}() is not a valid argument validator`,
+      );
+    }
+  }
+}
 
 export type DeclarationInputs<
   Declarations extends Readonly<Record<string, Validator<unknown, string>>>,

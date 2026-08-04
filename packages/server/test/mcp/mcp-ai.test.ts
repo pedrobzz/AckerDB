@@ -6,11 +6,12 @@ import {
   PROTOCOL_VERSION,
   parseSseMessage,
   type SseMessage,
+  type Identity,
 } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
-import { v, type Identity } from "../../src/validation/v.ts";
+import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
   procedure,
@@ -29,11 +30,11 @@ import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import {
-  Runtime,
-  type RuntimeHttpResponse,
-  type RuntimeSseResponse,
-} from "../../src/runtime/runtime.ts";
+import { Runtime } from "../../src/runtime/runtime.ts";
+import type {
+  RuntimeHttpResponse,
+  RuntimeSseResponse,
+} from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 

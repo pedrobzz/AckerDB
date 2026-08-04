@@ -6,6 +6,12 @@ clients that speak `fetch`/curl/any language, without the WebSocket protocol —
 plus OpenAPI generation for that surface. Implementation issues reference this
 document; divergences discovered during implementation must update it.
 
+This document covers the *contract* surface: functions served through their
+`v` validators and published in OpenAPI. Endpoints whose shapes an external
+party dictates — webhooks verifying an HMAC over raw bytes, OAuth callbacks —
+are the contract-less side of the same surface, owned by
+[raw HTTP handlers](http-handlers.md).
+
 ## Motivation
 
 Every registered function is callable today, but only through Protocol-2: the
@@ -301,10 +307,10 @@ path is extracted into `validation/json-schema.ts`, which owns every schema
 AckerDB publishes: `argsJsonSchema(args)` for an `ObjectShape` and
 `validatorJsonSchema(validator, options)` for a `returns`, `yields`, or tool
 output. The standard-JSON codec keeps only decode/encode. This is the only MCP
-change in this feature; tool-from-function derivation (registering an app
-function directly as an MCP tool) is a separate follow-up feature — it
-requires bridging the MCP principal restriction and composing function
-policies with MCP scopes.
+change in this feature. Tool-from-function derivation — registering an app
+function directly as an MCP tool — has since shipped; see
+[MCP exposure](mcp-exposure.md) for the endpoint, its `mcpAuth` provider, and
+how a tool's scopes sit alongside the function's own access policy.
 
 ## Registration-time validation
 

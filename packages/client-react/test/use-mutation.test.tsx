@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness } from "./support/harness.ts";
+import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type ClientMessage,
   type ServerMessage,
 } from "@ackerdb/core";
@@ -12,9 +11,6 @@ import {
   AckerDBClientError,
   anyApi,
   type ClientResult,
-  type AckerDBClientClock,
-  type AckerDBClientLimits,
-  type AckerDBWebSocket,
   type MutationRef,
 } from "@ackerdb/client";
 import {
@@ -28,133 +24,11 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AckerDBProvider, useConnectionState, useMutation, type AckerDBProviderConfig } from "@ackerdb/client-react";
+import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 1_700_000_000_000;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-}
-
 const SESSION = "react-mutation-session";
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  config(url?: string): AckerDBProviderConfig;
-}
-
-function createHarness(limits?: Partial<AckerDBClientLimits>): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config(url = "http://one.test") {
-      return {
-        url,
-        credential: { kind: "anonymous" },
-        clientSessionId: SESSION,
-        limits,
-        clock,
-        random: () => 0,
-        createWebSocket: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      };
-    },
-  };
-}
+const APP = { url: "http://one.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly text: string };
 type SendTodo = (args: TodoArgs) => Promise<ClientResult<bigint>>;
@@ -248,12 +122,12 @@ afterAll(() => actEnvironment(false));
 
 describe("useMutation", () => {
   test("returns one callable per hook instance across renders, client arrival, and reconfiguration", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
     const app = (url: string, tick: number): ReactNode => (
-      <AckerDBProvider config={harness.config(url)}>
+      <AckerDBProvider config={harness.config({ url })}>
         <probe.Component tick={tick} />
       </AckerDBProvider>
     );
@@ -287,7 +161,7 @@ describe("useMutation", () => {
   });
 
   test("a changed reference address redirects the same callable to the new target", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -318,7 +192,7 @@ describe("useMutation", () => {
   });
 
   test("resolves determinate success with the exact server value", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -349,7 +223,7 @@ describe("useMutation", () => {
   });
 
   test("passes determinate failures and connection errors through as exact AckerDBClientError values", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -416,7 +290,7 @@ describe("useMutation", () => {
   });
 
   test("an interrupted mutation replays across reconnect with its original identifier", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -467,7 +341,7 @@ describe("useMutation", () => {
   });
 
   test("preserves the indeterminate outcome when a sent mutation outlives its retention", async () => {
-    const harness = createHarness({ maxMutationAgeMs: 10 });
+    const harness = createHarness({ ...APP, limits: { maxMutationAgeMs: 10 } });
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -496,7 +370,7 @@ describe("useMutation", () => {
   });
 
   test("provider unmount settles sent mutations as indeterminate and unsent ones as unavailable", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
@@ -537,7 +411,7 @@ describe("useMutation", () => {
   });
 
   test("a mount-effect call issued before the client exists dispatches exactly once on arrival", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     let result: Promise<ClientResult<bigint>> | null = null;
@@ -575,7 +449,7 @@ describe("useMutation", () => {
   });
 
   test("a queued call transmits its call-time argument values, not later mutations", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     let result: Promise<ClientResult<bigint>> | null = null;
@@ -615,7 +489,7 @@ describe("useMutation", () => {
   });
 
   test("a queued dispatch that throws synchronously rejects its own calls and spares the rest", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     // A runtime-malformed reference: the client's getRef throws synchronously
@@ -667,7 +541,7 @@ describe("useMutation", () => {
   });
 
   test("unmount before the client arrives settles a queued call with the typed discard", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     let settlement: Promise<unknown> | null = null;
@@ -717,7 +591,7 @@ describe("useMutation", () => {
   });
 
   test("Strict Mode mount-effect calls each dispatch exactly once through the surviving lifetime", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const results: Array<Promise<ClientResult<bigint>>> = [];

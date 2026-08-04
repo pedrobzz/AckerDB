@@ -1,7 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { decode, encode } from "@ackerdb/core";
-import type { Identity } from "../validation/v.ts";
+import { decode, encode, type Identity } from "@ackerdb/core";
 import { CorruptDatabaseError, AckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { MCP_TOKEN_PREFIX, type ParsedMcpToken } from "./credential.ts";

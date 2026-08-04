@@ -6,8 +6,7 @@ import {
   type JWTVerifyOptions,
   type JWTPayload,
 } from "jose";
-import { parseCredential, type Credential } from "@ackerdb/core";
-import type { Identity } from "../validation/v.ts";
+import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { hasMcpTokenPrefix } from "../mcp/credential.ts";

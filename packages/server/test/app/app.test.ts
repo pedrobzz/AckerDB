@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defineApp, isApp, type AppSchema } from "../../src/app/definition.ts";
-import { definePlugin, definePluginContract, pluginQuery } from "../../src/plugins/definition.ts";
+import { definePluginContract, pluginQuery } from "../../src/plugins/contract.ts";
+import { definePlugin } from "../../src/plugins/definition.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 

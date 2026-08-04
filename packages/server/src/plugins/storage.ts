@@ -135,10 +135,15 @@ function normalizeDesiredMounts(desired: DesiredPluginMounts): NormalizedDesired
   });
 }
 
-function prepareDesired(engine: Engine, desired: DesiredPluginMounts): DesiredMount[] {
+/**
+ * Plan every desired mount's private storage. Planning only — the scopes are
+ * not activated on the Engine, because reconciliation may still refuse any of
+ * them for want of explicit consent.
+ */
+function planDesired(engine: Engine, desired: DesiredPluginMounts): DesiredMount[] {
   return normalizeDesiredMounts(desired).map((entry) => Object.freeze({
     ...entry,
-    scope: engine.createPluginScope(entry.mount, entry.schema),
+    scope: engine.planPluginScope(entry.mount, entry.schema),
   }));
 }
 
@@ -217,7 +222,7 @@ function sortedRequirements(
   return [...requirements].sort((left, right) => compareCodeUnits(left.mount, right.mount));
 }
 
-function writeInventory(engine: Engine, target: DesiredMount): void {
+function writeInventory(engine: Engine, target: NormalizedDesiredMount): void {
   engine.writer.query(
     `INSERT INTO _ackerdb_plugins (mount, definition_identity, schema) VALUES (?, ?, ?)
       ON CONFLICT(mount) DO UPDATE SET
@@ -267,7 +272,7 @@ export function reconcilePluginStorage(
   engine: Engine,
   desired: DesiredPluginMounts,
 ): PluginStorageReconcileResult {
-  const targets = prepareDesired(engine, desired);
+  const targets = planDesired(engine, desired);
   const targetByMount = new Map(targets.map((target) => [target.mount, target]));
   const stored = readStoredPluginInventory(engine.writer);
   const requirements: PluginStorageRequirement[] = [];
@@ -309,6 +314,7 @@ export function reconcilePluginStorage(
     mount.current === undefined || mount.current.encodedSnapshot !== mount.normalized.encoded
   );
   if (changed.length === 0) {
+    for (const target of targets) engine.activateScope(target.scope);
     return Object.freeze({
       scopes: new Map(targets.map((target) => [target.mount, target.scope])),
       applied: Object.freeze([]),
@@ -330,6 +336,10 @@ export function reconcilePluginStorage(
     if (dataRequirements.length > 0) {
       throw new PluginStorageRequirementsError(sortedRequirements(dataRequirements));
     }
+
+    // Every mount is accepted from here on: publish the planned tag maps and
+    // bring up the capabilities their tables need, then do the physical work.
+    for (const target of targets) engine.activateScope(target.scope);
 
     const applied: string[] = [];
     for (const mount of changed) {
@@ -364,7 +374,9 @@ export function resetPluginStorage(
   requirement: PluginStorageResetRequirement,
 ): StorageScope {
   if (requirement.kind !== "reset") throw new TypeError("Plugin reset requires a reset requirement");
-  const target = prepareDesired(engine, desired).find((candidate) => candidate.mount === requirement.mount);
+  // Only the mount identities and normalized snapshots matter for the consent
+  // check; the scope is built once, after consent holds, inside the transaction.
+  const target = normalizeDesiredMounts(desired).find((candidate) => candidate.mount === requirement.mount);
   if (target === undefined) throw new Error(`Plugin reset target "${requirement.mount}" is not desired`);
   if (
     requirement.targetFingerprint !==
@@ -379,7 +391,7 @@ export function resetPluginStorage(
       requirement,
     );
     dropPhysicalScope(engine, requirement.mount, current.snapshot);
-    const freshScope = engine.createPluginScope(requirement.mount, target.scope.schema);
+    const freshScope = engine.createPluginScope(requirement.mount, target.schema);
     engine.persistTags(freshScope);
     for (const table of freshScope.plans.values()) engine.createTablePhysical(table);
     writeInventory(engine, target);
@@ -401,7 +413,9 @@ export function dropPluginStorage(
   requirement: PluginStorageDropRequirement,
 ): void {
   if (requirement.kind !== "drop") throw new TypeError("Plugin drop requires a drop requirement");
-  if (prepareDesired(engine, desired).some((target) => target.mount === requirement.mount)) {
+  // A drop only has to prove the mount is no longer desired, which is a name
+  // comparison — it never needs a storage plan, let alone an activated scope.
+  if (normalizeDesiredMounts(desired).some((target) => target.mount === requirement.mount)) {
     throw new Error(`stale Plugin storage consent for mount "${requirement.mount}"`);
   }
   if (requirement.targetFingerprint !== stateFingerprint(requirement.mount, null, null)) {

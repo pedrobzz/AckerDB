@@ -70,19 +70,7 @@ jobs:
         if: needs.changes.result == 'success' && needs.changes.outputs.test_packages != '[]'
         env:
           TEST_PACKAGES: ${{ needs.changes.outputs.test_packages }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { spawnSync } from "node:child_process";
-          const allowed = new Set(["core", "server", "realtime", "cache", "client", "client-react", "cli"]);
-          const packages = JSON.parse(process.env.TEST_PACKAGES);
-          if (!Array.isArray(packages) || packages.some((name) => !allowed.has(name))) {
-            throw new Error("affected package output contains an unknown package");
-          }
-          for (const name of packages) {
-            const result = spawnSync("bun", ["test", `./packages/${name}/test`], { stdio: "inherit" });
-            if (result.status !== 0) process.exit(result.status ?? 1);
-          }
-          NODE
+        run: bun scripts/ci/test-affected.ts
       - name: Typecheck packages
         if: needs.changes.outputs.code == 'true'
         run: bun run typecheck

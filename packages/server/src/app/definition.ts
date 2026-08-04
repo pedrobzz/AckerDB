@@ -1,10 +1,10 @@
 import { brand, hasBrand } from "../shared/identity.ts";
+import type { PluginCapabilities } from "../plugins/capabilities.ts";
+import type { PluginOperationKind } from "../plugins/contract.ts";
 import {
   assemblePlugins,
-  type PluginCapabilities,
   type PluginMounts,
-  type PluginOperationKind,
-} from "../plugins/definition.ts";
+} from "../plugins/assembly.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 
 const APP_IDENTITY = Symbol.for("@ackerdb/server/App/v1");

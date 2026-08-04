@@ -3,7 +3,7 @@
  * Reconciliation diffs the stored snapshot against the live schema's
  * descriptor; equality of descriptors means "nothing changed".
  */
-import type { Descriptor } from "../validation/v.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import type { Schema } from "./definition.ts";
 import { compareCodeUnits } from "../shared/ordering.ts";
 

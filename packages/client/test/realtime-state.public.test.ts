@@ -727,7 +727,7 @@ async function runSemanticCut(cut: number): Promise<void> {
       } else {
         cutConnectionId = (await fault!).connectionId;
       }
-      const recovery = await recoverCutConnection(app, cutConnectionId, 0, "reset");
+      const recovery = await recoverCutConnection(app, cutConnectionId, 1, "reset");
       await updates.waitFor((rows) => rows.length === 0, `R2.${cut} authoritative snapshot`);
       expect(recovery).toBeGreaterThan(cutConnectionId);
       await assertMutation(app, beginMutation(app, `semantic-${cut}`), 1, "executed", updates);

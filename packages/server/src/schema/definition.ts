@@ -4,24 +4,27 @@
  * time with a message naming the table/column/index at fault.
  */
 import type { FunctionReference, RegisteredFunction } from "@ackerdb/core";
+import { ValidationError } from "../validation/error.ts";
 import {
   baseValidator,
-  ValidationError,
   type Descriptor,
   type Expand,
-  type InferInputShape,
-  type InferShape,
   type InferValidator,
-  type ObjectShape,
   type Validator,
-} from "../validation/v.ts";
+} from "../validation/validator.ts";
+import type {
+  InferInputShape,
+  InferShape,
+  ObjectShape,
+} from "../validation/composites.ts";
 import {
   isAccessPolicy,
-  validateArgsShape,
   type AccessPolicy,
-} from "../app/functions.ts";
+  type InvocationContext,
+} from "../app/access.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
-import type { InvocationContext } from "../app/invocation.ts";
+import { sqlTypeOf } from "./descriptor-kinds.ts";
+import { validateArgsShape } from "../validation/declarations.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 const SCHEMA_IDENTITY = Symbol.for("@ackerdb/server/Schema/v1");
@@ -53,6 +56,17 @@ function assertStoredValidator(
       directColumn,
     );
     return;
+  }
+  // A direct column must have a physical layout: its own SQLite type, or the
+  // custom pk/union layouts. Refuse here, at definition time with the column
+  // named, rather than deep inside plan construction.
+  if (directColumn && validator.kind !== "pk" && validator.kind !== "union") {
+    if (validator.kind === "tag") {
+      throw new ValidationError(`${where}: v.tag() is only valid inside a union`);
+    }
+    if (sqlTypeOf(validator.kind) === undefined) {
+      throw new ValidationError(`${where}: v.${validator.kind}() has no column storage`);
+    }
   }
   if (validator.kind === "vector") {
     if (!directColumn) {
@@ -188,9 +202,6 @@ export class TableDef<
       assertStoredValidator(validator, `column "${name}"`, true);
       if (validator.kind === "pk") pkCount++;
       if (validator.kind === "scheduleAt") scheduleAtCount++;
-      if (validator.kind === "tag") {
-        throw new ValidationError(`column "${name}": v.tag() is only valid inside a union`);
-      }
     }
     if (pkCount !== 1) {
       throw new ValidationError(

@@ -4,16 +4,15 @@
  * Schema view, and the OpenAPI document. There is no second emitter — a
  * validator describes itself exactly once, whoever is asking.
  */
+import type { Descriptor, StandardValidator } from "./validator.ts";
+import type { VectorValidator } from "./primitives.ts";
 import type {
-  Descriptor,
   EnumValidator,
   LiteralValidator,
   ObjectShape,
   ObjectValidator,
-  StandardValidator,
   UnionValidator,
-  VectorValidator,
-} from "./v.ts";
+} from "./composites.ts";
 
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const JSON_SCHEMA_DRAFT_07 = "http://json-schema.org/draft-07/schema#";

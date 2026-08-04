@@ -1,22 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness, type ProviderHarness } from "./support/harness.ts";
+import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   type AuthenticationDescriptor,
   type ClientMessage,
-  type Credential,
   type Identity,
-  type ServerMessage,
 } from "@ackerdb/core";
 import type {
   AckerDBAuthentication,
   AckerDBAuthenticationState,
-  AckerDBClientClock,
   AckerDBClientError,
-  AckerDBWebSocket,
 } from "@ackerdb/client";
 import { StrictMode, act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -29,6 +24,17 @@ import {
 } from "@ackerdb/client-react";
 
 const SESSION_ID = "react-auth-session";
+const APP = { url: "http://auth.test", clientSessionId: SESSION_ID };
+
+/**
+ * Re-authentication must replace the connection, never add one: every read of
+ * the socket here asserts the client is holding exactly one.
+ */
+function onlyLive(harness: ProviderHarness): FakeSocket {
+  const open = harness.open();
+  if (open.length !== 1) throw new Error(`expected one live socket, found ${open.length}`);
+  return open[0]!;
+}
 const USER_AUTHENTICATION = {
   principal: "user",
   identity: 42n as Identity,
@@ -40,160 +46,10 @@ const REFRESHED_USER_AUTHENTICATION = {
   provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
 } satisfies AuthenticationDescriptor;
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  open(): void {
-    this.onopen?.();
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-}
-
 function lastAuthFrame(socket: FakeSocket): Extract<ClientMessage, { t: "auth" }> {
   const frame = socket.frames().findLast((candidate) => candidate.t === "auth");
   if (!frame) throw new Error("No auth frame");
   return frame as Extract<ClientMessage, { t: "auth" }>;
-}
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  config(credential: Credential, url?: string): AckerDBProviderConfig;
-  live(): FakeSocket;
-  authFrames(): Extract<ClientMessage, { t: "auth" }>[];
-}
-
-function createHarness(): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config(credential, url = "http://auth.test") {
-      return {
-        url,
-        credential,
-        clientSessionId: SESSION_ID,
-        clock,
-        random: () => 0,
-        createWebSocket: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      };
-    },
-    live() {
-      const open = sockets.filter((socket) => !socket.closed);
-      if (open.length !== 1) throw new Error(`expected one live socket, found ${open.length}`);
-      return open[0]!;
-    },
-    authFrames() {
-      return sockets.flatMap(
-        (socket) =>
-          socket.frames().filter((frame) => frame.t === "auth") as Extract<
-            ClientMessage,
-            { t: "auth" }
-          >[],
-      );
-    },
-  };
-}
-
-function welcome(
-  socket: FakeSocket,
-  descriptor: AuthenticationDescriptor = { principal: "anonymous" },
-  authEpoch = 0,
-): void {
-  socket.open();
-  socket.receive({
-    v: PROTOCOL_VERSION,
-    t: "welcome",
-    clientSessionId: SESSION_ID,
-    authEpoch,
-    ...descriptor,
-  });
 }
 
 function describeAuthentication(state: AckerDBAuthenticationState): string {
@@ -269,14 +125,14 @@ afterAll(() => actEnvironment(false));
 
 describe("useAuthentication", () => {
   test("an anonymous connection reports authenticating then unauthenticated, coherently", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "anonymous" })));
+    await render(root, app(harness.config({ credential: { kind: "anonymous" } })));
     expect(container.textContent).toBe("authenticating:anonymous|connecting");
 
     await act(async () => {
-      welcome(harness.live());
+      onlyLive(harness).welcome(SESSION_ID);
     });
     expect(container.textContent).toBe("unauthenticated@0|ready");
 
@@ -288,14 +144,14 @@ describe("useAuthentication", () => {
   });
 
   test("a bearer connection reports authenticated with the confirmed principal", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-a" } })));
     expect(container.textContent).toBe("authenticating:bearer|connecting");
 
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION, 3);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION, 3);
     });
     expect(container.textContent).toBe("authenticated:user@3|ready");
     await act(async () => {
@@ -304,12 +160,12 @@ describe("useAuthentication", () => {
   });
 
   test("refresh runs once under Strict Mode with stable operation identities", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-a" } })));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
 
     operationIdentities.length = 0;
@@ -319,13 +175,13 @@ describe("useAuthentication", () => {
     });
     // One user action produced exactly one protocol attempt across every
     // socket of the Strict Mode double-mounted tree.
-    expect(harness.authFrames()).toHaveLength(1);
+    expect(harness.frames("auth")).toHaveLength(1);
     expect(container.textContent).toBe("authenticating:bearer|ready");
 
-    const attempt = lastAuthFrame(harness.live());
+    const attempt = lastAuthFrame(onlyLive(harness));
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
     await act(async () => {
-      harness.live().receive({
+      onlyLive(harness).receive({
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
@@ -357,10 +213,10 @@ describe("useAuthentication", () => {
   });
 
   test("a Strict Mode-replayed effect sign-out coalesces into one protocol attempt", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    const config = harness.config({ kind: "bearer", token: "token-a" });
+    const config = harness.config({ credential: { kind: "bearer", token: "token-a" } });
     const tree = (auto: boolean): ReactNode => (
       <StrictMode>
         <AckerDBProvider config={config}>
@@ -372,7 +228,7 @@ describe("useAuthentication", () => {
     );
     await render(root, tree(false));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
 
@@ -382,11 +238,11 @@ describe("useAuthentication", () => {
     // and one auth frame, with no auth_stale rejection for the first caller.
     expect(effectSignOuts).toHaveLength(2);
     expect(effectSignOuts[1]).toBe(effectSignOuts[0]!);
-    expect(harness.authFrames()).toHaveLength(1);
-    const attempt = lastAuthFrame(harness.live());
+    expect(harness.frames("auth")).toHaveLength(1);
+    const attempt = lastAuthFrame(onlyLive(harness));
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
-      harness.live().receive({
+      onlyLive(harness).receive({
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
@@ -403,12 +259,12 @@ describe("useAuthentication", () => {
   });
 
   test("refresh failure preserves the exact error in the state and the rejection", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-a" } })));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
 
     let refresh!: Promise<unknown>;
@@ -419,7 +275,7 @@ describe("useAuthentication", () => {
     });
     // The server rejects the refreshed credential by terminating the session.
     await act(async () => {
-      harness.live().receive({
+      onlyLive(harness).receive({
         v: PROTOCOL_VERSION,
         t: "err",
         id: null,
@@ -439,12 +295,12 @@ describe("useAuthentication", () => {
   });
 
   test("sign-out presents the anonymous credential and reconnects signed out", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-a" } })));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
 
@@ -453,10 +309,10 @@ describe("useAuthentication", () => {
       signOut = operations().signOut();
     });
     expect(container.textContent).toBe("authenticating:anonymous|ready");
-    const attempt = lastAuthFrame(harness.live());
+    const attempt = lastAuthFrame(onlyLive(harness));
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
-      harness.live().receive({
+      onlyLive(harness).receive({
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
@@ -474,15 +330,15 @@ describe("useAuthentication", () => {
     // The stored credential is now anonymous: the reconnect handshake presents
     // it before any authenticated work is restored.
     await act(async () => {
-      harness.live().close();
+      onlyLive(harness).close();
     });
     expect(container.textContent).toBe("authenticating:anonymous|reconnecting");
     await act(async () => {
       harness.clock.advance(100);
     });
-    const replacement = harness.live();
+    const replacement = onlyLive(harness);
     await act(async () => {
-      welcome(replacement);
+      replacement.welcome(SESSION_ID);
     });
     const hello = replacement.frames().find((frame) => frame.t === "hello");
     if (hello?.t !== "hello") throw new Error("expected a hello frame");
@@ -494,16 +350,16 @@ describe("useAuthentication", () => {
   });
 
   test("credential expiry during reconnect blocks until a new credential is presented", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-expired" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-expired" } })));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
 
     await act(async () => {
-      harness.live().close();
+      onlyLive(harness).close();
     });
     expect(container.textContent).toBe("authenticating:bearer|reconnecting");
     await act(async () => {
@@ -511,7 +367,7 @@ describe("useAuthentication", () => {
     });
     // The reconnect handshake presents the stored credential; the server
     // rejects the expired token before welcome.
-    const reconnecting = harness.live();
+    const reconnecting = onlyLive(harness);
     await act(async () => {
       reconnecting.open();
       reconnecting.receive({
@@ -528,9 +384,9 @@ describe("useAuthentication", () => {
       refresh = operations().refresh({ kind: "bearer", token: "token-fresh" });
     });
     expect(container.textContent).toBe("authenticating:bearer|reconnecting");
-    const recovered = harness.live();
+    const recovered = onlyLive(harness);
     await act(async () => {
-      welcome(recovered, USER_AUTHENTICATION);
+      recovered.welcome(SESSION_ID, USER_AUTHENTICATION);
     });
     // The recovery hello presented the fresh credential, so its welcome is
     // the verification: one round-trip, no separate auth frame.
@@ -547,20 +403,28 @@ describe("useAuthentication", () => {
   });
 
   test("provider reconfiguration closes the old lifetime and starts a detached one", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
+    await render(root, app(harness.config({ credential: { kind: "bearer", token: "token-a" } })));
     await act(async () => {
-      welcome(harness.live(), USER_AUTHENTICATION);
+      onlyLive(harness).welcome(SESSION_ID, USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
-    const firstLifetime = harness.live();
+    const firstLifetime = onlyLive(harness);
     const firstRefresh = operations().refresh;
 
     // A changed configuration is the React form of provider close: the old
     // client closes and the new lifetime starts unconfirmed.
-    await render(root, app(harness.config({ kind: "anonymous" }, "http://replacement.test")));
+    await render(
+      root,
+      app(
+        harness.config({
+          credential: { kind: "anonymous" },
+          url: "http://replacement.test",
+        }),
+      ),
+    );
     expect(firstLifetime.closed).toBe(true);
     expect(container.textContent).toBe("authenticating:anonymous|connecting");
     expect(operations().refresh).not.toBe(firstRefresh);
@@ -572,7 +436,7 @@ describe("useAuthentication", () => {
     expect(stale).toMatchObject({ code: "unavailable", message: "client is closed" });
 
     await act(async () => {
-      welcome(harness.live());
+      onlyLive(harness).welcome(SESSION_ID);
     });
     expect(container.textContent).toBe("unauthenticated@0|ready");
     await act(async () => {

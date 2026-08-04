@@ -8,20 +8,19 @@ import {
   type Outcome,
 } from "@ackerdb/core";
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
+import type { Expand, Validator } from "../validation/validator.ts";
 import {
   compileShape,
-  type Expand,
   type InferShape,
   type ObjectShape,
-  type Validator,
-} from "../validation/v.ts";
+} from "../validation/composites.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type {
-  AccessPolicy,
   AnyInvocable,
   FunctionResult,
   Invocable,
 } from "./functions.ts";
+import type { AccessPolicy, InvocationContext } from "./access.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import {
@@ -30,10 +29,6 @@ import {
   type InvocationState,
   type MutationAccess,
 } from "../runtime/invocation-state.ts";
-
-export interface InvocationContext {
-  readonly auth: Principal;
-}
 
 type AccessEnforcer<Ctx, Args> = (ctx: Ctx, args: Args) => void | Promise<void>;
 
@@ -85,14 +80,12 @@ interface InvocationInstrumentationState {
   readonly depth: number;
   readonly parent?: InvocationInstrumentationState;
   readonly fn?: AnyInvocable;
-  readonly phase?: InvocationPhase;
 }
 
 export interface InvocationTelemetryContext {
   readonly invocationId: number;
   readonly parent?: InvocationTelemetryContext;
   readonly fn: AnyInvocable;
-  readonly phase: InvocationPhase;
 }
 
 export interface InvocationFunctionContext {
@@ -103,6 +96,7 @@ export interface InvocationFunctionContext {
 
 export type InvocationTelemetryObserver = (
   context: InvocationTelemetryContext,
+  phase: InvocationPhase,
   durationMs: number,
   outcome: InvocationOutcome,
 ) => unknown;
@@ -171,7 +165,7 @@ export function currentInvocationFunctionContext(): InvocationFunctionContext | 
 /** Returns the existing ambient invocation frame without allocating a public observation. */
 export function currentInvocationTelemetryContext(): InvocationTelemetryContext | undefined {
   const state = invocationInstrumentation.getStore();
-  return state?.invocationId !== null && state?.fn !== undefined && state.phase !== undefined
+  return state?.invocationId !== null && state?.fn !== undefined
     ? state as InvocationTelemetryContext
     : undefined;
 }
@@ -347,7 +341,12 @@ function emitObservation(
   try {
     const result = invocationInstrumentation.exit(() => {
       if (state.scope.telemetryObserver !== undefined) {
-        return state.scope.telemetryObserver(state as InvocationTelemetryContext, durationMs, outcome);
+        return state.scope.telemetryObserver(
+          state as InvocationTelemetryContext,
+          phase,
+          durationMs,
+          outcome,
+        );
       }
       const observation: InvocationObservation = Object.freeze({
         fn,
@@ -379,10 +378,6 @@ function observePhase<T>(
     state.scope.telemetryObserver === undefined &&
     state.scope.runPhase === undefined
   ) return work();
-  const phaseState: InvocationInstrumentationState =
-    state.scope.telemetryObserver === undefined
-      ? state
-      : { ...state, phase };
   const run = (): T | Promise<T> => {
     const startedAt = performance.now();
     try {
@@ -390,19 +385,19 @@ function observePhase<T>(
       if (isPromiseLike(value)) {
         return Promise.resolve(value).then(
           (settled) => {
-            emitObservation(phaseState, fn, phase, startedAt, "ok");
+            emitObservation(state, fn, phase, startedAt, "ok");
             return settled;
           },
           (error: unknown) => {
-            emitObservation(phaseState, fn, phase, startedAt, safeOutcome(error));
+            emitObservation(state, fn, phase, startedAt, safeOutcome(error));
             throw error;
           },
         );
       }
-      emitObservation(phaseState, fn, phase, startedAt, "ok");
+      emitObservation(state, fn, phase, startedAt, "ok");
       return value;
     } catch (error) {
-      emitObservation(phaseState, fn, phase, startedAt, safeOutcome(error));
+      emitObservation(state, fn, phase, startedAt, safeOutcome(error));
       throw error;
     }
   };
@@ -419,9 +414,7 @@ function observePhase<T>(
       phase,
     }), run);
   };
-  return phaseState === state
-    ? observed()
-    : invocationInstrumentation.run(phaseState, observed);
+  return observed();
 }
 
 function runHandler<Ctx extends InvocationContext, Args, R>(

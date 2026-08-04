@@ -5,7 +5,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { decode } from "@ackerdb/core";
-import type { Descriptor } from "../validation/v.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import type { TableSnapshot } from "./snapshot.ts";
 import { scalarDecoder } from "./descriptor-kinds.ts";
 

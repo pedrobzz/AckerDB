@@ -26,12 +26,11 @@ import {
   type VerifiedUserCredential,
 } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
-import type { Identity } from "../../src/validation/v.ts";
+import type { Identity } from "@ackerdb/core";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { outcomeFromError } from "../../src/runtime/outcome.ts";
 import {
   prepareRuntimePublication,
-  Session,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
@@ -44,7 +43,8 @@ import {
   type SessionLimits,
   type SessionRuntimeContext,
   type SessionSink,
-} from "../../src/subscriptions/session.ts";
+} from "../../src/subscriptions/session/contract.ts";
+import { Session } from "../../src/subscriptions/session/session.ts";
 import { deferred } from "ackerdb-test-support/async";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "session-auth" });

@@ -28,7 +28,8 @@ import {
   transportSource,
   type TransportSource,
 } from "../runtime/caller.ts";
-import { OutboundBudget, WebSocketSessionSink } from "../subscriptions/delivery.ts";
+import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
+import { WebSocketSessionSink } from "../subscriptions/delivery/websocket.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import {
   beginHttpTrace,
@@ -49,7 +50,7 @@ import {
 } from "./http-surface.ts";
 import type { ExposedHttpCodec } from "./http-codec.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
-import type { ExposedFunction } from "../app/registry.ts";
+import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
 import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
@@ -68,13 +69,16 @@ import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
-  type HttpMutationReceipt,
-  type McpCredentialLease,
   type Runtime,
-  type RuntimeHttpResponder,
-  type RuntimeStatus,
 } from "../runtime/runtime.ts";
-import { Session, withSessionAuthObserver } from "../subscriptions/session.ts";
+import type {
+  HttpMutationReceipt,
+  McpCredentialLease,
+  RuntimeHttpResponder,
+} from "../runtime/contracts/requests.ts";
+import type { RuntimeStatus } from "../runtime/contracts/status.ts";
+import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
+import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
@@ -149,7 +153,6 @@ interface WsData {
 
 const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
-const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 const utf8 = new TextEncoder();
 
 const CORS = Object.freeze({
@@ -475,12 +478,19 @@ interface ParsedHttpBody<T> {
   readonly bytes: number;
 }
 
-/** Read no more than maxBytes of the raw HTTP body before any UTF-8 or wire decode. */
-async function readBoundedBody(
+/** How a bounded body read consumes its chunks and settles its value. */
+interface BoundedBodySink<T> {
+  write(chunk: Uint8Array): void;
+  finish(bytes: number): T;
+}
+
+/** Read no more than maxBytes of the raw HTTP body, streaming each chunk into `sink`. */
+async function readBounded<T>(
   request: Request,
   maxBytes: number,
   maxAgeMs: number,
-): Promise<BoundedHttpBody> {
+  sink: BoundedBodySink<T>,
+): Promise<T> {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {
@@ -491,7 +501,6 @@ async function readBoundedBody(
   if (request.body === null) throw new AckerDBError("malformed", "request body is required");
 
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
   let bytes = 0;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -508,26 +517,79 @@ async function readBoundedBody(
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes) throw requestTooLarge();
-      chunks.push(value);
+      sink.write(value);
     }
+    return sink.finish(bytes);
   } catch (error) {
     cancel(reader, error);
     throw error;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
 
-  const body = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return { text: strictUtf8.decode(body), bytes };
-  } catch (cause) {
-    throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
-  }
+function utf8Malformed(cause: unknown): AckerDBError {
+  return new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
+}
+
+/** The bounded body as UTF-8 text, decoded incrementally so the bytes are never held twice. */
+async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<BoundedHttpBody> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks: string[] = [];
+  return readBounded(request, maxBytes, maxAgeMs, {
+    write(chunk) {
+      try {
+        chunks.push(decoder.decode(chunk, { stream: true }));
+      } catch (cause) {
+        throw utf8Malformed(cause);
+      }
+    },
+    finish(bytes) {
+      try {
+        chunks.push(decoder.decode());
+      } catch (cause) {
+        throw utf8Malformed(cause);
+      }
+      return { text: chunks.join(""), bytes };
+    },
+  });
+}
+
+/** The bounded body byte-exact and undecoded, for the raw handler surface. */
+async function readBoundedBytes(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const chunks: Uint8Array[] = [];
+  return readBounded(request, maxBytes, maxAgeMs, {
+    write(chunk) {
+      chunks.push(chunk);
+    },
+    finish(bytes) {
+      const body = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return body;
+    },
+  });
+}
+
+/** The handler's Request: same URL, method, headers, and signal; the buffered bytes as body. */
+function bufferedRawRequest(request: Request, body: Uint8Array<ArrayBuffer> | null): Request {
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    ...(body === null ? {} : { body }),
+    signal: request.signal,
+  });
 }
 
 function decodeHttpBody(text: string): unknown {
@@ -891,6 +953,26 @@ export class AckerDBServer {
         boundary.cors,
       );
     }
+    // The application owns every `/api/` path AckerDB has not reserved, and it
+    // answers the bare unavailable outcome before the registry that would
+    // resolve it exists — even for a preflight, because a raw route's OPTIONS
+    // belongs to its handler and no handler exists yet.
+    if (
+      (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
+      url.pathname.startsWith("/api/") &&
+      !isAckerDBHttpRoute(url.pathname)
+    ) {
+      return outcomeError(unavailableWhile(this.lifecycle));
+    }
+    // Raw routes resolve before the listener's own OPTIONS answer: preflight
+    // on a raw path is the handler's business when declared, a 405 otherwise.
+    const rawRoute = this.activeRuntime?.registry.httpRoutes.get(url.pathname);
+    if (rawRoute !== undefined) {
+      if (!(rawRoute.fn.methods as readonly string[]).includes(request.method)) {
+        return methodNotAllowed(rawRoute.fn.methods.join(", "));
+      }
+      return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
+    }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") return methodNotAllowed("POST");
@@ -898,12 +980,7 @@ export class AckerDBServer {
       return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
     }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-      // The application owns every `/api/` path AckerDB has not reserved, and it
-      // answers plain JSON even before the registry that would resolve it exists.
-      const unavailable = unavailableWhile(this.lifecycle);
-      return url.pathname.startsWith("/api/") && !isAckerDBHttpRoute(url.pathname)
-        ? outcomeError(unavailable)
-        : protocolError(unavailable);
+      return protocolError(unavailableWhile(this.lifecycle));
     }
     if (url.pathname === ACKERDB_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
@@ -1040,6 +1117,11 @@ export class AckerDBServer {
       const id = ++this.httpRequests;
       const address = exposed.address;
       identifyHttpTrace(externalTrace, address, String(id));
+      lease = externalTrace === undefined
+        ? await this.authenticate(request)
+        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      const fairnessKey = callerFairnessKey(lease.principal, source);
+      admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
         ? parseArgsSearchParameter(url, exposed.codec, runtime.limits.maxRequestBytes)
         : await parseArgsHttpBody(
@@ -1048,11 +1130,6 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
-      lease = externalTrace === undefined
-        ? await this.authenticate(request)
-        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
-      const fairnessKey = callerFairnessKey(lease.principal, source);
-      admission.transfer(fairnessKey);
       const input = carryHttpRequestProvenance({
         id,
         address,
@@ -1097,6 +1174,68 @@ export class AckerDBServer {
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
+      admission?.release();
+    }
+  }
+
+  /**
+   * One raw handler call. The framework's part here is survival, not
+   * semantics: admission and the byte bound run before the handler, and the
+   * buffered Request then crosses whole — body bytes exact, every header
+   * including Authorization. The handler's Response passes through unstamped;
+   * only failures answer framework-authored bare Outcomes.
+   */
+  private async rawHandlerCall(
+    request: Request,
+    route: HttpHandlerRoute,
+    source: TransportSource,
+  ): Promise<Response> {
+    const runtime = this.requireRuntime();
+    let admission: HttpAdmissionLease | undefined;
+    try {
+      const fairnessKey = callerFairnessKey(ANONYMOUS_PRINCIPAL, source);
+      admission = this.httpAdmission.admit(fairnessKey);
+      const id = ++this.httpRequests;
+      const body = request.body === null
+        ? null
+        : await readBoundedBytes(
+            request,
+            runtime.limits.maxRequestBytes,
+            runtime.limits.readQueue.maxAgeMs,
+          );
+      const response = await runtime.runHttpHandler({
+        address: route.address,
+        request: bufferedRawRequest(request, body),
+        id,
+        // The runtime owns the floor for bodiless requests.
+        ...(body === null ? {} : { requestBytes: body.byteLength }),
+        signal: request.signal,
+        fairnessKey,
+      });
+      // Every part of the handler's Response is read exactly once: a second
+      // read of an accessor that answered differently — or threw — would
+      // strand the admission slot this frame is transferring.
+      const stream = response.body;
+      if (stream === null) return response;
+      // A streaming body keeps its admission slot until the stream settles:
+      // without this, a public raw route could hold open more streams than
+      // `maxOperations` ever admitted, and drain would not own them.
+      const streamAdmission = admission;
+      admission = undefined;
+      try {
+        return new Response(ownedStream(stream, () => streamAdmission.release()), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      } catch (error) {
+        // The wrapper never took ownership, so this frame still owes the slot.
+        streamAdmission.release();
+        throw error;
+      }
+    } catch (error) {
+      return outcomeError(error);
+    } finally {
       admission?.release();
     }
   }

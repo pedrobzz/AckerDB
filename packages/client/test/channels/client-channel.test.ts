@@ -14,6 +14,7 @@ import {
   type AckerDBClientClock,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
+import { FakeSocket } from "ackerdb-test-support/client-transport";
 
 class Clock implements AckerDBClientClock {
   now = (): number => 1;
@@ -21,29 +22,6 @@ class Clock implements AckerDBClientClock {
   clearTimeout = (): void => {};
   setInterval = (): number => 2;
   clearInterval = (): void => {};
-}
-
-class Socket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: ClientMessage[] = [];
-  closed = false;
-
-  send(data: string): void {
-    this.sent.push(parseClientMessage(decode(data)));
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  receive(message: ServerMessage): void {
-    this.onmessage?.({ data: encode(message) });
-  }
 }
 
 type Chat = ChannelRef<
@@ -61,19 +39,9 @@ type Chat = ChannelRef<
 
 const chat = { $ref: "chat.room" } as Chat;
 
-function frames<T extends ClientMessage["t"]>(
-  socket: Socket,
-  type: T,
-): Extract<ClientMessage, { readonly t: T }>[] {
-  return socket.sent.filter(
-    (message): message is Extract<ClientMessage, { readonly t: T }> =>
-      message.t === type,
-  );
-}
-
 describe("AckerDBClient channels", () => {
   test("uses the existing socket, shares one join, dispatches once per observer, and leaves once", () => {
-    const socket = new Socket();
+    const socket = new FakeSocket();
     const client = new AckerDBClient({
       url: "http://ackerdb.test",
       credential: { kind: "anonymous" },
@@ -100,7 +68,7 @@ describe("AckerDBClient channels", () => {
       authEpoch: 0,
       principal: "anonymous",
     });
-    const joins = frames(socket, "channel_join");
+    const joins = socket.framesOf("channel_join");
     expect(joins).toHaveLength(1);
     socket.receive({
       v: PROTOCOL_VERSION,
@@ -110,7 +78,7 @@ describe("AckerDBClient channels", () => {
     });
     expect(first.currentState.phase).toBe("connected");
     expect(first.send("message", { body: "hello" })).toBe(true);
-    expect(frames(socket, "channel_send")).toHaveLength(1);
+    expect(socket.framesOf("channel_send")).toHaveLength(1);
 
     socket.receive({
       v: PROTOCOL_VERSION,
@@ -122,14 +90,14 @@ describe("AckerDBClient channels", () => {
     expect(received).toEqual(["first:hello", "second:hello"]);
 
     first.close();
-    expect(frames(socket, "channel_leave")).toHaveLength(0);
+    expect(socket.framesOf("channel_leave")).toHaveLength(0);
     second.close();
-    expect(frames(socket, "channel_leave")).toHaveLength(1);
+    expect(socket.framesOf("channel_leave")).toHaveLength(1);
     client.close();
   });
 
   test("surfaces typed membership rejection without creating another socket", () => {
-    const socket = new Socket();
+    const socket = new FakeSocket();
     const client = new AckerDBClient({
       url: "http://ackerdb.test",
       credential: { kind: "anonymous" },
@@ -147,7 +115,7 @@ describe("AckerDBClient channels", () => {
       authEpoch: 0,
       principal: "anonymous",
     });
-    const join = frames(socket, "channel_join")[0]!;
+    const join = socket.framesOf("channel_join")[0]!;
     socket.receive({
       v: PROTOCOL_VERSION,
       t: "channel_rejected",

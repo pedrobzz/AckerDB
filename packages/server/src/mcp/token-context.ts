@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { stableEncode } from "@ackerdb/core";
+import { stableEncode, type Identity } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
-import type { Identity } from "../validation/v.ts";
 import type { ReadRecorder, WriteCollector } from "../database/access.ts";
 import type { Engine } from "../database/engine.ts";
 import { AckerDBError } from "../shared/errors.ts";

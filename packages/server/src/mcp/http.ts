@@ -9,10 +9,12 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Principal } from "../auth/credentials.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import type { McpEndpointDeclaration } from "./index.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
+import type { RuntimeMcpToolAuthorization } from "../runtime/mcp/authorization.ts";
 
 // The SDK defaults to constructing AJV for every Server. Stateless MCP needs a
 // fresh protocol state per POST, but schema compilation state is process-safe.
@@ -36,28 +38,39 @@ function toolError(error: unknown): CallToolResult {
   };
 }
 
-function callNames(body: unknown): readonly string[] {
+function authorizeToolCalls(
+  body: unknown,
+  runtime: Runtime,
+  mcp: string,
+  principal: Principal,
+): ReadonlyMap<string | number, RuntimeMcpToolAuthorization> {
   const messages = Array.isArray(body) ? body : [body];
-  if (messages.some((message) => !JSONRPCMessageSchema.safeParse(message).success)) return [];
-  const names: string[] = [];
+  if (messages.some((message) => !JSONRPCMessageSchema.safeParse(message).success)) {
+    return new Map();
+  }
+  const authorizations = new Map<string | number, RuntimeMcpToolAuthorization>();
   for (const message of messages) {
     if (!isJSONRPCRequest(message)) continue;
     if (message.method === "tools/call" && typeof message.params?.name === "string") {
-      names.push(message.params.name);
+      const authorization = runtime.authorizeMcpTool(mcp, message.params.name, principal);
+      if (!authorization.ok) throw authorization.error;
+      authorizations.set(message.id, authorization);
     }
   }
-  return names;
+  return authorizations;
 }
 
 /** One private official-SDK server/transport pair for exactly one stateless POST. */
 export async function handleMcpPost(options: McpPostOptions): Promise<Response> {
   options.signal.throwIfAborted();
-  // The transport cannot attach HTTP auth status to a JSON-RPC handler result.
-  // Preflight only valid tools/call requests, then the dispatcher repeats this
-  // same decision as the authoritative execution boundary.
-  for (const name of callNames(options.body)) {
-    options.runtime.authorizeMcpTool(options.mcp.name, name, options.principal);
-  }
+  // Preflight the whole valid batch before any member can execute, retaining
+  // the runtime's typed decision so the dispatcher never reauthorizes it.
+  const authorizations = authorizeToolCalls(
+    options.body,
+    options.runtime,
+    options.mcp.name,
+    options.principal,
+  );
 
   const server = new Server(
     { name: options.mcp.name, version: "1", ...options.mcp.metadata },
@@ -89,10 +102,13 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
   server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
     try {
       options.signal.throwIfAborted();
+      const authorization = authorizations.get(extra.requestId);
+      if (authorization === undefined) {
+        throw new AckerDBError("internal", "MCP tool authorization was not prepared");
+      }
       const result = await options.runtime.runMcpTool(carryHttpRequestProvenance({
         id: extra.requestId,
-        mcp: options.mcp.name,
-        tool: call.params.name,
+        authorization,
         args: call.params.arguments ?? {},
         principal: options.principal,
         signal: AbortSignal.any([options.signal, extra.signal]),

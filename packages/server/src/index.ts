@@ -6,55 +6,62 @@ export {
   type AppSchema,
 } from "./app/definition.ts";
 export {
-  assemblePlugins,
-  definePlugin,
   definePluginContract,
   pluginMutation,
   pluginProcedure,
   pluginQuery,
-  type PluginBuilders,
+  type PluginOperationSpec,
+} from "./plugins/contract.ts";
+export {
+  type PluginMutationCtx,
+  type PluginProcedureCtx,
+  type PluginQueryCtx,
+} from "./plugins/capabilities.ts";
+export { type PluginBuilders } from "./plugins/builders.ts";
+export {
+  definePlugin,
   type PluginCleanup,
   type PluginExportTree,
   type PluginInstance,
   type PluginLifecycle,
   type PluginLifecycleContext,
-  type PluginMutationCtx,
-  type PluginOperationSpec,
-  type PluginProcedureCtx,
-  type PluginQueryCtx,
 } from "./plugins/definition.ts";
+export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
+export { type Identity } from "@ackerdb/core";
 export {
-  v,
-  ValidationError,
-  isValidationError,
-  checkShape,
   type Descriptor,
   type Expand,
-  type Identity,
-  type InferInputShape,
   type InferValidator,
   type InferValidatorInput,
+  type StandardValidator,
+  type ChainableValidator,
+  type BoundedValidator,
+  type Validator,
+  type NullableValidator,
+  type OptionalValidator,
+  type NullishValidator,
+} from "./validation/validator.ts";
+export {
+  type StringValidator,
+  type VectorValidator,
+} from "./validation/primitives.ts";
+export {
+  checkShape,
+  type InferInputShape,
   type LiteralValidator,
   type ObjectShape,
   type ObjectValidator,
   type InferShape,
-  type StandardValidator,
-  type ChainableValidator,
-  type BoundedValidator,
-  type StringValidator,
-  type VectorValidator,
   type ArrayValidator,
-  type Validator,
   type EnumValidator,
   type UnionValidator,
-  type NullableValidator,
-  type OptionalValidator,
-  type NullishValidator,
   type UnionMembers,
   type UnionValue,
   type UnionNamespace,
-} from "./validation/v.ts";
+} from "./validation/composites.ts";
+export { v } from "./validation/v.ts";
+export { ValidationError, isValidationError } from "./validation/error.ts";
 export {
   CorruptDatabaseError,
   Engine,
@@ -307,7 +314,8 @@ export type {
   TelemetryMetadata,
   TelemetryValue,
 } from "./telemetry/application-signals/value.ts";
-export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
+export { invokeFunction } from "./app/invocation.ts";
+export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {
   AppSystemCtx,
   SystemCtx,
@@ -321,7 +329,6 @@ export {
   procedure,
   sseProcedure,
   isRegisteredFunction,
-  type AccessPolicy,
   type AnyRegistered,
   type AnyInvocable,
   type ArgsInput,
@@ -344,6 +351,15 @@ export {
   type SseSource,
   type TxCtx,
 } from "./app/functions.ts";
+export {
+  httpHandler,
+  HTTP_HANDLER_METHODS,
+  type AnyRegisteredHttpHandler,
+  type HttpHandlerBuilder,
+  type HttpHandlerCtx,
+  type HttpHandlerMethod,
+  type RegisteredHttpHandler,
+} from "./app/http-handler.ts";
 export {
   channel,
   isRegisteredChannel,
@@ -490,10 +506,12 @@ export {
 } from "./validation/standard-schema.ts";
 export { Registry, type ExposedFunction } from "./app/registry.ts";
 export {
-  BoundedSseProducer,
   OutboundBudget,
-  WebSocketSessionSink,
-  type BoundedSseProducerOptions,
+  type OutboundBudgetSnapshot,
+  type OutboundLane,
+  type OutboundReservation,
+} from "./subscriptions/delivery/budget.ts";
+export {
   type DeliveryClock,
   type DeliveryObservation,
   type DeliveryObserver,
@@ -502,16 +520,19 @@ export {
   type DeliverySource,
   type DeliveryStage,
   type DeliveryTransport,
-  type OutboundBudgetSnapshot,
-  type OutboundLane,
-  type OutboundReservation,
-  type SseDeliverySnapshot,
+} from "./subscriptions/delivery/observation.ts";
+export {
+  WebSocketSessionSink,
   type WebSocketDeliverySnapshot,
   type WebSocketDeliverySocket,
   type WebSocketSessionSinkOptions,
-} from "./subscriptions/delivery.ts";
+} from "./subscriptions/delivery/websocket.ts";
 export {
-  OrderedReactive,
+  BoundedSseProducer,
+  type BoundedSseProducerOptions,
+  type SseDeliverySnapshot,
+} from "./subscriptions/delivery/sse.ts";
+export {
   ReactiveCommit,
   type AuthRotationResult,
   type DeliveryFailure,
@@ -529,10 +550,10 @@ export {
   type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
-} from "./subscriptions/reactive.ts";
+} from "./subscriptions/reactive/contract.ts";
+export { OrderedReactive } from "./subscriptions/reactive/ordered.ts";
 export {
   prepareRuntimePublication,
-  Session,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
@@ -546,26 +567,36 @@ export {
   type SessionRuntimeContext,
   type SessionSink,
   type SessionSnapshot,
-  type SessionWireFrame,
   type SubscriptionServerMessage,
-} from "./subscriptions/session.ts";
+} from "./subscriptions/session/contract.ts";
+export { type SessionWireFrame } from "./subscriptions/session/frame.ts";
+export { Session } from "./subscriptions/session/session.ts";
 export {
   Runtime,
-  type HttpMutationReceipt,
+} from "./runtime/runtime.ts";
+export {
   type RuntimeHookContext,
   type RuntimeHooks,
   type RuntimeHookStage,
+  type RuntimeLifecycleState,
+} from "./runtime/contracts/lifecycle.ts";
+export {
+  type RuntimeOptions,
+} from "./runtime/contracts/options.ts";
+export {
+  type HttpMutationReceipt,
+  type RuntimeHttpHandlerRequest,
   type RuntimeHttpMutationRequest,
   type RuntimeHttpRequest,
   type RuntimeHttpResponder,
   type RuntimeHttpResponse,
-  type RuntimeLifecycleState,
   type RuntimeMcpToolRequest,
-  type RuntimeOptions,
   type RuntimeSseRequest,
   type RuntimeSseResponse,
+} from "./runtime/contracts/requests.ts";
+export {
   type RuntimeStatus,
-} from "./runtime/runtime.ts";
+} from "./runtime/contracts/status.ts";
 export {
   openApiBytes,
   openApiDocument,

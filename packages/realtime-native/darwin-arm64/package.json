@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/realtime-darwin-arm64",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",

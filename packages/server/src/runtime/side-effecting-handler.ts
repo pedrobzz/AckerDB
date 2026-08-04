@@ -6,6 +6,7 @@ import {
 
 export type SideEffectingHandlerKind =
   | "procedure"
+  | "http handler"
   | "MCP tool"
   | "realtime handler"
   | "system callback";

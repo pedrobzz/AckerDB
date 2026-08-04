@@ -35,7 +35,7 @@
 import type { Database } from "bun:sqlite";
 import { Engine, indexSqlName, type PhysicalTablePlan } from "../database/engine.ts";
 import { CorruptDatabaseError } from "../shared/errors.ts";
-import { isValidationError } from "../validation/v.ts";
+import { isValidationError } from "../validation/error.ts";
 import { checkDescriptor } from "./descriptor-kinds.ts";
 import { classifySchemaDiff, refusalSite, type OptimisticChange, type SafeChange, type SchemaRefusal } from "./classify.ts";
 import { diffSnapshots, type SchemaDiff } from "./diff.ts";
