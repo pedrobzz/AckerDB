@@ -12,8 +12,11 @@ import { markTransactionPoisoned } from "../../runtime/transaction-context.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
+  MINMAX_KINDS,
+  resolveAggregateColumn,
   resolveOrder,
   resolvePredicate,
+  SUMMABLE_KINDS,
   type PredicateNode,
   type QueryOrder,
 } from "./predicate.ts";
@@ -385,7 +388,7 @@ class TableQueryRuntime {
     );
   }
 
-  private countRows(): number {
+  private aggregateRaw(select: string): unknown {
     assertMutationAccess();
     this.recordRead();
     const predicate = compilePredicates(
@@ -395,9 +398,9 @@ class TableQueryRuntime {
     );
     const where = predicate.sql === "" ? "" : ` WHERE ${predicate.sql}`;
     const row = this.engine
-      .statement(this.conn, `SELECT COUNT(*) AS n FROM ${quote(this.plan.name)}${where}`)
-      .get(...(predicate.params as never[])) as { n: bigint };
-    return Number(row.n);
+      .statement(this.conn, `SELECT ${select} AS v FROM ${quote(this.plan.name)}${where}`)
+      .get(...(predicate.params as never[])) as { v: unknown };
+    return row.v;
   }
 
   async count(): Promise<number> {
@@ -406,8 +409,108 @@ class TableQueryRuntime {
       "read",
       this.plan.displayName,
       "count",
-      () => this.countRows(),
+      () => Number(this.aggregateRaw("COUNT(*)")),
       (count) => count,
+    );
+  }
+
+  private sumValue(column: string, kind: string): number | bigint {
+    const path = `${this.plan.displayName}.query.sum`;
+    let raw: unknown;
+    try {
+      raw = this.aggregateRaw(`SUM(${quote(column)})`);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("integer overflow")) {
+        throw new Error(
+          `${path}: sum of ${JSON.stringify(column)} exceeds SQLite's 64-bit integer range`,
+        );
+      }
+      throw error;
+    }
+    if (kind === "bigint") return raw === null ? 0n : (raw as bigint);
+    if (raw === null) return 0;
+    if (typeof raw !== "bigint") return raw as number;
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER) || raw < -BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        `${path}: exact sum of ${JSON.stringify(column)} exceeds Number.MAX_SAFE_INTEGER; store it as a bigint column`,
+      );
+    }
+    return Number(raw);
+  }
+
+  async sum(callback: unknown): Promise<number | bigint> {
+    const { column, kind } = resolveAggregateColumn(
+      this.plan.environment,
+      callback,
+      `${this.plan.displayName}.query.sum`,
+      SUMMABLE_KINDS,
+    );
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "sum",
+      () => this.sumValue(column, kind),
+      () => undefined,
+    );
+  }
+
+  async avg(callback: unknown): Promise<number | null> {
+    const { column } = resolveAggregateColumn(
+      this.plan.environment,
+      callback,
+      `${this.plan.displayName}.query.avg`,
+      SUMMABLE_KINDS,
+    );
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "avg",
+      () => {
+        const raw = this.aggregateRaw(`AVG(${quote(column)})`);
+        return raw === null ? null : typeof raw === "bigint" ? Number(raw) : (raw as number);
+      },
+      () => undefined,
+    );
+  }
+
+  private extremeValue(fn: "MIN" | "MAX", column: string): unknown {
+    const raw = this.aggregateRaw(`${fn}(${quote(column)})`);
+    return raw === null ? null : this.plan.columns.get(column)!.fromSql([raw]);
+  }
+
+  async min(callback: unknown): Promise<unknown> {
+    const { column } = resolveAggregateColumn(
+      this.plan.environment,
+      callback,
+      `${this.plan.displayName}.query.min`,
+      MINMAX_KINDS,
+    );
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "min",
+      () => this.extremeValue("MIN", column),
+      () => undefined,
+    );
+  }
+
+  async max(callback: unknown): Promise<unknown> {
+    const { column } = resolveAggregateColumn(
+      this.plan.environment,
+      callback,
+      `${this.plan.displayName}.query.max`,
+      MINMAX_KINDS,
+    );
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "max",
+      () => this.extremeValue("MAX", column),
+      () => undefined,
     );
   }
 

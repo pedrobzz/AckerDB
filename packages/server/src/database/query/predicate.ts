@@ -26,8 +26,15 @@ interface OrderMeta {
   readonly direction: "asc" | "desc";
 }
 
+interface ColumnReferenceMeta {
+  readonly owner: object;
+  readonly column: string;
+  readonly kind: string;
+}
+
 const predicates = new WeakMap<object, PredicateMeta>();
 const orders = new WeakMap<object, OrderMeta>();
+const columnReferences = new WeakMap<object, ColumnReferenceMeta>();
 const EQUATABLE_KINDS = new Set([
   "pk",
   "string",
@@ -226,6 +233,7 @@ function makeColumnReference(
       (() => expression({ kind: "null", column, isNull: false })) as never,
     );
   }
+  columnReferences.set(reference, Object.freeze({ owner, column, kind: columnPlan.kind }));
   return Object.freeze(reference);
 }
 
@@ -293,6 +301,43 @@ export function resolveOrder(
   const meta = orders.get(result as object);
   if (meta === undefined || meta.owner !== environment.row) {
     throw new ValidationError(`${path}: expected an order expression from this table`);
+  }
+  return meta;
+}
+
+/** Numeric kinds accepted by `sum()` and `avg()`. */
+export const SUMMABLE_KINDS: ReadonlySet<string> = new Set(["int", "float", "bigint"]);
+
+/** Ordered kinds accepted by `min()` and `max()` — the `lt`/`gt` set. */
+export const MINMAX_KINDS: ReadonlySet<string> = ORDERED_KINDS;
+
+export interface AggregateColumn {
+  readonly column: string;
+  readonly kind: string;
+}
+
+/** Execute an aggregate column callback once and verify table origin and column kind. */
+export function resolveAggregateColumn(
+  environment: PredicateEnvironment,
+  callback: unknown,
+  path: string,
+  kinds: ReadonlySet<string>,
+): AggregateColumn {
+  if (typeof callback !== "function") {
+    throw new ValidationError(`${path}: expected a column callback like (row) => row.column`);
+  }
+  const result = callback(environment.row);
+  if (result === null || (typeof result !== "object" && typeof result !== "function")) {
+    throw new ValidationError(`${path}: expected a column reference like (row) => row.column`);
+  }
+  const meta = columnReferences.get(result as object);
+  if (meta === undefined || meta.owner !== environment.row) {
+    throw new ValidationError(`${path}: expected a column reference from this table`);
+  }
+  if (!kinds.has(meta.kind)) {
+    throw new ValidationError(
+      `${path}: column ${JSON.stringify(meta.column)} (${meta.kind}) is not supported here`,
+    );
   }
   return meta;
 }
