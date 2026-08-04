@@ -537,11 +537,8 @@ export class RuntimeJobs {
     const args = decode(row.argsJson);
     let value: unknown;
     try {
-      const context = Object.freeze({
-        ...surface.systemMutationCtx(),
-        attempt,
-      });
-      value = await definition.handler(context as never, args as never);
+      value = await surface.runMutationHandler(row.name, attempt, (ctx) =>
+        definition.handler(ctx as never, args as never));
     } catch (error) {
       throw new MutationJobFailure(row, attempt, error, startedAt);
     }
@@ -865,10 +862,11 @@ export class RuntimeJobs {
   }
 
   private describeError(error: unknown): string {
+    const code = (error as { readonly code?: unknown }).code;
     const text = isApplicationError(error)
       ? `${error.code}: ${stableEncode(error.body ?? null)}`
       : error instanceof Error
-        ? `${error.name}: ${error.message}`
+        ? `${error.name}${typeof code === "string" ? `(${code})` : ""}: ${error.message}`
         : String(error);
     return text.length > MAX_STORED_ERROR_LENGTH
       ? `${text.slice(0, MAX_STORED_ERROR_LENGTH - 1)}…`

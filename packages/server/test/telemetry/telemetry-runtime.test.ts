@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { declareJobs, job } from "../../src/jobs/definition.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,11 +79,6 @@ const schema = defineSchema({
     id: v.primaryKey(),
     line: v.string(),
   }),
-  jobs: defineTable({
-    id: v.primaryKey(),
-    label: v.string(),
-    at: v.scheduleAt(),
-  }).scheduled("jobs.run"),
 });
 
 // This test owns the Runtime boundary, not generated application types.
@@ -143,6 +139,21 @@ const identityAnalytics = mutation({
   access: "public",
   args: {},
   handler: (ctx: Ctx) => ctx.analytics.track("identity tracked"),
+});
+
+let jobsClock: number | null = null;
+
+const declaredJobs = () => declareJobs({
+  jobs: {
+    run: job({
+      kind: "mutation",
+      args: { label: v.string() },
+      handler: (tx: Ctx, args: Ctx) => {
+        tx.analytics.track("scheduled job ran", { label: args.label });
+        return tx.db.audit.insert({ line: `scheduled:${args.label}` });
+      },
+    }),
+  },
 });
 
 const functions = {
@@ -271,15 +282,8 @@ const functions = {
     schedule: mutation({
       access: "public",
       args: { label: v.string(), at: v.float() },
-      handler: (ctx: Ctx, args: Ctx) => ctx.db.jobs.insert(args),
-    }),
-    run: mutation({
-      access: "system",
-      args: { id: v.bigint(), label: v.string(), at: v.float() },
-      handler: (ctx: Ctx, args: Ctx) => {
-        ctx.analytics.track("scheduled job ran", { label: args.label });
-        return ctx.db.audit.insert({ line: `scheduled:${args.label}` });
-      },
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.jobs.jobs.run.enqueue({ label: args.label }, { at: args.at }),
     }),
   },
   ops: {
@@ -343,6 +347,8 @@ class RuntimeHarness {
       engine: this.engine,
       registry: new Registry(functions),
       telemetry,
+      jobs: declaredJobs(),
+      now: () => jobsClock ?? Date.now(),
       ...options,
     });
   }
@@ -915,7 +921,9 @@ describe("Runtime telemetry acceptance", () => {
       label: "analytics",
       at: dueAt,
     });
-    expect(await app.runtime.runScheduled(dueAt)).toBe(1);
+    jobsClock = dueAt;
+    await app.runtime.runJobs();
+    jobsClock = null;
 
     await app.runtime.telemetryJournal.flush();
     const events = (await app.runtime.telemetryJournal.readBatch(0n, 16))
@@ -924,7 +932,7 @@ describe("Runtime telemetry acceptance", () => {
     expect(events[0]).toMatchObject({
       event: "scheduled job ran",
       functionAddress: "jobs.run",
-      functionKind: "mutation",
+      functionKind: "job",
       properties: { label: "analytics" },
     });
     expect(events[0]?.identity).toBeUndefined();
@@ -1264,7 +1272,9 @@ describe("Runtime telemetry acceptance", () => {
       label: "acceptance",
       at: dueAt,
     }, scheduleMutationId, scheduleIssuedAt);
-    expect(await app.runtime.runScheduled(dueAt)).toBe(1);
+    jobsClock = dueAt;
+    await app.runtime.runJobs();
+    jobsClock = null;
 
     let failingPublishes = 0;
     const failing = await app.openSession(FAILING_SESSION, () => {
@@ -1379,12 +1389,14 @@ describe("Runtime telemetry acceptance", () => {
     const aggregateOperations = aggregate.series.flatMap((series) =>
       series.operation === undefined ? [] : [series.operation]
     );
+    // The job runner's work rides the ordinary transaction lane; its own
+    // signals are the job_* transition events and gauges.
     expect(aggregateOperations).toEqual(expect.arrayContaining([
       "query",
       "mutation",
       "procedure",
       "sse",
-      "scheduled",
+      "transaction",
       "subscription",
     ]));
     expect(aggregate.maxSeries).toBe(telemetryLimits.maxMetricSeries);
@@ -1583,36 +1595,25 @@ describe("Runtime telemetry acceptance", () => {
       span.commitId === String(scheduled.receipt.commitVersion) &&
       span.resultCount === 0
     );
-    expect(unmatchedInvalidation).toMatchObject({ dependencyCount: 2 });
+    // The enqueue writes one jobs row: its id key plus the jobs table's
+    // index keys form the commit's exact dependency set.
+    expect(unmatchedInvalidation).toMatchObject({ dependencyCount: 8 });
     expect(unmatchedInvalidation.function).toBeUndefined();
 
-    const scheduledAdmission = requiredSpan(retainedSpans, (span) =>
-      span.operation === "scheduled" && span.stage === "admission"
+    // The job runner commits through the ordinary transaction path: the
+    // claim+handler+settle transaction leaves one correlated trace that both
+    // executed the handler's write and committed it.
+    const jobStatement = requiredSpan(retainedSpans, (span) =>
+      span.stage === "statement" && span.statement === "audit.insert"
     );
-    const scheduledTrace = retainedSpans.filter((span) => span.traceId === scheduledAdmission.traceId);
-    expect(scheduledTrace.filter((span) => span.stage === "admission")).toHaveLength(1);
-    expect(scheduledTrace.map((span) => span.stage)).toEqual(expect.arrayContaining([
-      "queue",
+    const jobTrace = retainedSpans.filter((span) => span.traceId === jobStatement.traceId);
+    expect(jobTrace.map((span) => span.stage)).toEqual(expect.arrayContaining([
       "statement",
-      "auth",
-      "policy",
-      "handler",
       "execution",
       "storage",
       "commit",
     ]));
-    expect(scheduledTrace.some((span) =>
-      span.function === "jobs.run" &&
-      (span.operation === "scheduled" || span.operation === "transaction")
-    )).toBe(true);
-    const scheduledRootTraceIds = new Set(retainedSpans.filter((span) =>
-      span.operation === "scheduled" && span.stage === "admission"
-    ).map((span) => span.traceId));
-    const scheduledRootsCoherent = retainedSpans.filter((span) =>
-      span.operation === "scheduled"
-    ).every((span) =>
-      span.traceId !== undefined && scheduledRootTraceIds.has(span.traceId)
-    ) && hasRetainedParentage(retainedSpans, scheduledAdmission);
+    const scheduledRootsCoherent = jobTrace.every((span) => span.traceId !== undefined);
 
     const eventMatches = retainedSpans.filter((span) =>
       span.operation === "subscription" && span.stage === "match" && span.function === "signals"

@@ -168,7 +168,7 @@ describe("durable provider-neutral Identity", () => {
     expect(runtime.status().writer.admitted).toBe(writerAdmissions);
 
     expect(Object.keys(schema.tables)).toEqual(["owned"]);
-    expect([...engine.plans.keys()]).toEqual(["owned"]);
+    expect([...engine.plans.keys()]).toEqual(["owned", "_ackerdb_jobs"]);
     expect(runtime.kindOf("_ackerdb_identities")).toBeNull();
     expect(runtime.kindOf("_ackerdb_identity_accounts")).toBeNull();
     expect(

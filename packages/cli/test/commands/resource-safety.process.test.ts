@@ -736,8 +736,8 @@ function resourcesReleased(value: ResourceStatus): boolean {
     value.runtime.activeOperations === 0 &&
     value.runtime.activeOperationCallers === 0 &&
     value.runtime.activeSse === 0 &&
-    value.runtime.scheduledHandlers === 0 &&
-    value.runtime.schedulerArmed === false &&
+    value.runtime.declaredJobs === 0 &&
+    value.runtime.jobsArmed === false &&
     value.runtime.reader.active === 0 &&
     queueReleased(value.runtime.reader.queue) &&
     value.runtime.writer.active === 0 &&
@@ -780,8 +780,8 @@ function assertResourcesReleased(value: ResourceStatus): void {
       activeOperations: 0,
       activeOperationCallers: 0,
       activeSse: 0,
-      scheduledHandlers: 0,
-      schedulerArmed: false,
+      declaredJobs: 0,
+      jobsArmed: false,
       reader: { active: 0 },
       writer: { active: 0 },
       reactive: {

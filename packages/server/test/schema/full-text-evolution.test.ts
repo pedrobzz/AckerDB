@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { withJobsTable } from "../../src/jobs/table.ts";
 import {
   applyRenames,
   classifySchemaDiff,
@@ -24,8 +25,8 @@ function documents(fullText: readonly ("title" | "body")[] = []) {
 
 describe("full-text schema evolution", () => {
   test("adding and dropping targets are shape-safe derived-storage changes", () => {
-    const plain = snapshotOf(documents());
-    const searchable = snapshotOf(documents(["body"]));
+    const plain = snapshotOf(withJobsTable(documents()));
+    const searchable = snapshotOf(withJobsTable(documents(["body"])));
     const added = diffSnapshots(plain, searchable);
 
     expect(added).toEqual([
@@ -53,27 +54,27 @@ describe("full-text schema evolution", () => {
   test("target order is structural noise", () => {
     expect(
       diffSnapshots(
-        snapshotOf(documents(["title", "body"])),
-        snapshotOf(documents(["body", "title"])),
+        snapshotOf(withJobsTable(documents(["title", "body"]))),
+        snapshotOf(withJobsTable(documents(["body", "title"]))),
       ),
     ).toEqual([]);
   });
 
   test("a table rebuild absorbs full-text target changes", () => {
-    const current = snapshotOf(defineSchema({
+    const current = snapshotOf(withJobsTable(defineSchema({
       documents: defineTable({
         id: v.primaryKey(),
         title: v.string(),
         body: v.string(),
       }).fullText(["title"]),
-    }));
-    const target = snapshotOf(defineSchema({
+    })));
+    const target = snapshotOf(withJobsTable(defineSchema({
       documents: defineTable({
         id: v.primaryKey(),
         title: v.string().nullable(),
         body: v.string(),
       }).fullText(["body"]),
-    }));
+    })));
 
     expect(classifySchemaDiff(diffSnapshots(current, target))).toEqual({
       safe: [{ op: "rebuild-table", table: "documents" }],
@@ -83,7 +84,7 @@ describe("full-text schema evolution", () => {
   });
 
   test("column renames carry full-text target identity", () => {
-    const current = snapshotOf(documents(["body"]));
+    const current = snapshotOf(withJobsTable(documents(["body"])));
     const renamed = applyRenames(current, {
       tables: {},
       columns: { documents: { body: "content" } },

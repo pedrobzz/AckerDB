@@ -85,8 +85,16 @@ const releaseNothing = (): void => {};
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
   readonly jobs: JobsStore;
-  /** A system-principal mutation context for mutation-kind job handlers. */
-  systemMutationCtx(): MutationCtx;
+  /**
+   * Run a mutation-kind job handler under a system-principal mutation context
+   * with the same bindings (MCP token vault, analytics attribution) a
+   * registered mutation would have.
+   */
+  runMutationHandler<T>(
+    jobAddress: string,
+    attempt: number,
+    run: (ctx: MutationCtx & { readonly attempt: number }) => T | Promise<T>,
+  ): Promise<Awaited<T>>;
 }
 
 export function restoreMutationResult(value: unknown): Result<unknown, unknown> {
@@ -463,8 +471,10 @@ export class RuntimeFunctionExecutor<C> {
     principal: Principal,
     timestamp: number,
     writes: WriteCollector,
+    attribution?: { functionAddress: string; functionKind: string },
+    extras?: Record<string, unknown>,
   ): MutationCtx {
-    const analytics = this.options.applicationSignals.analyticsFor(principal);
+    const analytics = this.options.applicationSignals.analyticsFor(principal, attribution);
     const plugins = this.options.pluginRuntime?.bindMutation({
       writes,
       invocation: this.pluginInvocationCapabilities(principal, timestamp),
@@ -473,6 +483,7 @@ export class RuntimeFunctionExecutor<C> {
         : {}),
     }) ?? {};
     return Object.freeze({
+      ...extras,
       db,
       auth: principal,
       analytics,
@@ -607,8 +618,29 @@ export class RuntimeFunctionExecutor<C> {
             writes,
             this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
           ),
-          systemMutationCtx: () =>
-            this.hostMutationContext(db, SYSTEM_PRINCIPAL, this.readNow(), writes),
+          runMutationHandler: async (jobAddress, attempt, run) => {
+            // The attempt is part of the context object itself: capability
+            // bindings key off the exact frozen identity, so no caller may
+            // spread a bound context into a copy.
+            const context = this.hostMutationContext(
+              db,
+              SYSTEM_PRINCIPAL,
+              this.readNow(),
+              writes,
+              { functionAddress: jobAddress, functionKind: "job" },
+              { attempt },
+            ) as MutationCtx & { readonly attempt: number };
+            return this.options.mcp !== undefined
+              ? await this.options.mcp.bindTokenContext(
+                  context,
+                  SYSTEM_PRINCIPAL,
+                  this.options.engine.writer,
+                  null,
+                  writes,
+                  run,
+                )
+              : await run(context);
+          },
         };
         const scope = createMutationInvocationScope(this.options.engine.writer, writes);
         // Runner transactions start from timers, not requests: they own their
