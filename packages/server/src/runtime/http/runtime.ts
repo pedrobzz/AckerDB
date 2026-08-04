@@ -18,6 +18,7 @@ import {
   invokeFunction,
 } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
+import { ANONYMOUS_PRINCIPAL } from "../../auth/credentials.ts";
 import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
@@ -46,9 +47,11 @@ import type {
   RuntimeExternalRequest,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
+  RuntimeRawHttpRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
+import { runInInvocationRoot } from "../invocation-state.ts";
 import type { IdempotencyIdentity } from "../coordinator.ts";
 import {
   restoreMutationResult,
@@ -230,6 +233,67 @@ export class RuntimeHttp {
         }
       },
       claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /**
+   * The HTTP entry point for a raw handler. No credential resolution, no args
+   * decode, no codec: the buffered Request crosses whole and the handler's
+   * Response leaves whole. A failure rejects with the transport error and the
+   * listener answers it as the bare Outcome — the handler authored nothing, so
+   * the framework speaks its own language.
+   */
+  runHttpHandler(input: RuntimeRawHttpRequest): Promise<Response> {
+    const registered = this.options.registry.httpHandler(input.address);
+    if (registered === undefined) {
+      return Promise.reject(
+        new AckerDBError("not_found", `unknown http handler "${input.address}"`),
+      );
+    }
+    const requestBytes = Math.max(1, input.requestBytes ?? 1);
+    const fairnessKey = input.fairnessKey
+      ?? callerFairnessKey(ANONYMOUS_PRINCIPAL, DIRECT_RUNTIME_SOURCE);
+    // "procedure" is the telemetry operation, as for MCP tools: an externally
+    // addressed side-effecting call, named by its address.
+    return this.options.operations.run(null, "procedure", input.address, requestBytes, async () => {
+      const signal = this.options.operationSignal(input.signal);
+      throwIfAborted(signal);
+      // The http surface has no auth members, so no account can ever unlink.
+      const context = this.options.functions.createProcedureContext(
+        ANONYMOUS_PRINCIPAL,
+        fairnessKey,
+        signal,
+        requestBytes,
+        this.readNow(),
+        () => {},
+        "http",
+      );
+      try {
+        const response = await invokeSideEffectingHandler(
+          signal,
+          "http handler",
+          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, () => {
+            onAuthorized();
+            return registered.handler(context.value, input.request);
+          }),
+        );
+        if (!(response instanceof Response)) {
+          // A plain Error crosses as the same sanitized `internal` outcome an
+          // uncaught handler throw answers; the specifics stay in the log.
+          throw new Error("http handler returned a non-Response value");
+        }
+        return response;
+      } catch (error) {
+        context.value.log.error(`http handler "${input.address}" failed`, {
+          error: error instanceof Error ? error.stack ?? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        context.release();
+      }
+    }, {
+      identifiers: { requestId: String(input.id ?? 0) },
       fairnessKey,
     });
   }

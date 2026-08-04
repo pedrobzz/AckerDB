@@ -34,6 +34,7 @@ import type {
   QueryCtx,
   TxCtx,
 } from "../../app/functions.ts";
+import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { McpAiContext } from "../../mcp/ai.ts";
 import {
@@ -399,7 +400,27 @@ export class RuntimeFunctionExecutor<C> {
     requestBytes: number,
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
-  ): OwnedProcedureContext {
+    surface?: "procedure",
+  ): OwnedProcedureContext;
+  createProcedureContext(
+    principal: Principal,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    timestamp: number | (() => number),
+    accountUnlinked: (account: ExternalAccount) => void,
+    surface: "http",
+  ): OwnedHttpHandlerContext;
+  createProcedureContext(
+    principal: Principal,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    timestamp: number | (() => number),
+    accountUnlinked: (account: ExternalAccount) => void,
+    /** "http" omits the auth members: raw routes resolve no credential. */
+    surface: "procedure" | "http" = "procedure",
+  ): OwnedProcedureContext | OwnedHttpHandlerContext {
     const currentTimestamp = typeof timestamp === "function"
       ? timestamp
       : () => timestamp;
@@ -424,7 +445,7 @@ export class RuntimeFunctionExecutor<C> {
       ),
     }) ?? {};
     const value = Object.freeze({
-      auth: principal,
+      ...(surface === "http" ? {} : { auth: principal }),
       abortSignal: signal,
       log: this.options.log,
       get timestamp(): number {
@@ -465,24 +486,29 @@ export class RuntimeFunctionExecutor<C> {
               }));
           },
         )),
-      linkAccount: (rawBearerToken: string) => this.linkAccount(
-        principal,
-        rawBearerToken,
-        fairnessKey,
-        signal,
-        requestBytes,
-      ),
-      unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
-        principal,
-        account,
-        fairnessKey,
-        signal,
-        requestBytes,
-        accountUnlinked,
-      ),
+      ...(surface === "http" ? {} : {
+        linkAccount: (rawBearerToken: string) => this.linkAccount(
+          principal,
+          rawBearerToken,
+          fairnessKey,
+          signal,
+          requestBytes,
+        ),
+        unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
+          principal,
+          account,
+          fairnessKey,
+          signal,
+          requestBytes,
+          accountUnlinked,
+        ),
+      }),
     }) as ProcedureCtx;
-    const release = this.options.mcp?.bindAiContext(value, fairnessKey, requestBytes)
-      ?? releaseNothing;
+    // The MCP AI capability authenticates as the calling principal; the http
+    // surface has none, so binding it there would carry an absent identity.
+    const release = surface !== "http"
+      ? this.options.mcp?.bindAiContext(value, fairnessKey, requestBytes) ?? releaseNothing
+      : releaseNothing;
     return Object.freeze({ value, release });
   }
 

@@ -50,7 +50,7 @@ import {
 } from "./http-surface.ts";
 import type { ExposedHttpCodec } from "./http-codec.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
-import type { ExposedFunction } from "../app/registry.ts";
+import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
 import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
@@ -478,12 +478,19 @@ interface ParsedHttpBody<T> {
   readonly bytes: number;
 }
 
-/** Read no more than maxBytes of the raw HTTP body before any UTF-8 or wire decode. */
-async function readBoundedBody(
+/** How a bounded body read consumes its chunks and settles its value. */
+interface BoundedBodySink<T> {
+  write(chunk: Uint8Array): void;
+  finish(bytes: number): T;
+}
+
+/** Read no more than maxBytes of the raw HTTP body, streaming each chunk into `sink`. */
+async function readBounded<T>(
   request: Request,
   maxBytes: number,
   maxAgeMs: number,
-): Promise<BoundedHttpBody> {
+  sink: BoundedBodySink<T>,
+): Promise<T> {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {
@@ -494,8 +501,6 @@ async function readBoundedBody(
   if (request.body === null) throw new AckerDBError("malformed", "request body is required");
 
   const reader = request.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const chunks: string[] = [];
   let bytes = 0;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -512,25 +517,79 @@ async function readBoundedBody(
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes) throw requestTooLarge();
-      try {
-        chunks.push(decoder.decode(value, { stream: true }));
-      } catch (cause) {
-        throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
-      }
+      sink.write(value);
     }
-    try {
-      chunks.push(decoder.decode());
-    } catch (cause) {
-      throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
-    }
+    return sink.finish(bytes);
   } catch (error) {
     cancel(reader, error);
     throw error;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
 
-  return { text: chunks.join(""), bytes };
+function utf8Malformed(cause: unknown): AckerDBError {
+  return new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
+}
+
+/** The bounded body as UTF-8 text, decoded incrementally so the bytes are never held twice. */
+async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<BoundedHttpBody> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks: string[] = [];
+  return readBounded(request, maxBytes, maxAgeMs, {
+    write(chunk) {
+      try {
+        chunks.push(decoder.decode(chunk, { stream: true }));
+      } catch (cause) {
+        throw utf8Malformed(cause);
+      }
+    },
+    finish(bytes) {
+      try {
+        chunks.push(decoder.decode());
+      } catch (cause) {
+        throw utf8Malformed(cause);
+      }
+      return { text: chunks.join(""), bytes };
+    },
+  });
+}
+
+/** The bounded body byte-exact and undecoded, for the raw handler surface. */
+async function readBoundedBytes(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const chunks: Uint8Array[] = [];
+  return readBounded(request, maxBytes, maxAgeMs, {
+    write(chunk) {
+      chunks.push(chunk);
+    },
+    finish(bytes) {
+      const body = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return body;
+    },
+  });
+}
+
+/** The handler's Request: same URL, method, headers, and signal; the buffered bytes as body. */
+function bufferedRawRequest(request: Request, body: Uint8Array<ArrayBuffer> | null): Request {
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    ...(body === null ? {} : { body }),
+    signal: request.signal,
+  });
 }
 
 function decodeHttpBody(text: string): unknown {
@@ -894,6 +953,18 @@ export class AckerDBServer {
         boundary.cors,
       );
     }
+    // Raw routes resolve before the listener's own OPTIONS answer: preflight
+    // on a raw path is the handler's business when declared, a 405 otherwise.
+    const rawRoute = this.activeRuntime?.registry.httpRoutes.get(url.pathname);
+    if (rawRoute !== undefined) {
+      if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
+        return outcomeError(unavailableWhile(this.lifecycle));
+      }
+      if (!(rawRoute.fn.methods as readonly string[]).includes(request.method)) {
+        return methodNotAllowed(rawRoute.fn.methods.join(", "));
+      }
+      return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
+    }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") return methodNotAllowed("POST");
@@ -1100,6 +1171,47 @@ export class AckerDBServer {
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
+      admission?.release();
+    }
+  }
+
+  /**
+   * One raw handler call. The framework's part here is survival, not
+   * semantics: admission and the byte bound run before the handler, and the
+   * buffered Request then crosses whole — body bytes exact, every header
+   * including Authorization. The handler's Response passes through unstamped;
+   * only failures answer framework-authored bare Outcomes.
+   */
+  private async rawHandlerCall(
+    request: Request,
+    route: HttpHandlerRoute,
+    source: TransportSource,
+  ): Promise<Response> {
+    const runtime = this.requireRuntime();
+    let admission: HttpAdmissionLease | undefined;
+    try {
+      const fairnessKey = callerFairnessKey(ANONYMOUS_PRINCIPAL, source);
+      admission = this.httpAdmission.admit(fairnessKey);
+      const id = ++this.httpRequests;
+      const body = request.body === null
+        ? null
+        : await readBoundedBytes(
+            request,
+            runtime.limits.maxRequestBytes,
+            runtime.limits.readQueue.maxAgeMs,
+          );
+      return await runtime.runHttpHandler({
+        address: route.address,
+        request: bufferedRawRequest(request, body),
+        id,
+        // The runtime owns the floor for bodiless requests.
+        ...(body === null ? {} : { requestBytes: body.byteLength }),
+        signal: request.signal,
+        fairnessKey,
+      });
+    } catch (error) {
+      return outcomeError(error);
+    } finally {
       admission?.release();
     }
   }

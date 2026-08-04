@@ -76,6 +76,7 @@ import type {
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
   RuntimeMcpToolRequest,
+  RuntimeRawHttpRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
@@ -592,6 +593,10 @@ export class Runtime implements RuntimePort {
 
   async runProcedure(request: RuntimeHttpRequest): Promise<Response> {
     return this.http.runProcedure(request);
+  }
+
+  async runHttpHandler(input: RuntimeRawHttpRequest): Promise<Response> {
+    return this.http.runHttpHandler(input);
   }
 
   /** The single deep MCP execution path used by every present and future adapter. */

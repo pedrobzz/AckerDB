@@ -11,6 +11,11 @@ import {
   type AnyRegistered,
 } from "./functions.ts";
 import {
+  isHttpHandlerShaped,
+  validateHttpHandlerShape,
+  type AnyRegisteredHttpHandler,
+} from "./http-handler.ts";
+import {
   isRegisteredChannel,
   type AnyRegisteredChannel,
 } from "../channels/definition.ts";
@@ -59,6 +64,13 @@ export interface ExposedFunction {
   readonly codec: ExposedHttpCodec;
 }
 
+/** One raw handler: the path it owns and the registered handler that serves it. */
+export interface HttpHandlerRoute {
+  readonly address: string;
+  readonly path: string;
+  readonly fn: AnyRegisteredHttpHandler;
+}
+
 /** Address segments become path segments: "messages.list" -> "/api/messages/list". */
 function exposedPath(address: string): string {
   return `/api/${address.replaceAll(".", "/")}`;
@@ -70,6 +82,9 @@ export class Registry {
   readonly exposed = new Map<string, ExposedFunction>();
   /** The same functions keyed by address: the served call knows its path, the runtime its address. */
   private readonly exposedByAddress = new Map<string, ExposedFunction>();
+  /** Raw handler routes keyed by the path they own. */
+  readonly httpRoutes = new Map<string, HttpHandlerRoute>();
+  private readonly httpHandlersByAddress = new Map<string, AnyRegisteredHttpHandler>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   readonly realtime = new Map<string, AnyRegisteredRealtime>();
   readonly serverOnly = new Map<string, ServerOnlyExport>();
@@ -99,6 +114,13 @@ export class Registry {
       if (!isRegisteredFunction(value)) continue;
       this.registerAddress(address, value);
       this.functions.set(address, value);
+    }
+
+    for (const { address, value } of moduleExports) {
+      if (!isHttpHandlerShaped(value)) continue;
+      validateHttpHandlerShape(value, `http handler "${address}"`);
+      this.registerAddress(address, value);
+      this.httpHandlersByAddress.set(address, value);
     }
 
     for (const { address, value } of moduleExports) {
@@ -189,6 +211,26 @@ export class Registry {
       this.exposedByAddress.set(address, exposed);
     }
 
+    // Raw handler paths are claimed with the same nets as exposed functions:
+    // the reserved prefix and MCP collisions. A raw path can never collide
+    // with an exposed one — both derive from addresses, and addresses are
+    // unique by construction.
+    for (const [address, fn] of this.httpHandlersByAddress) {
+      const path = exposedPath(address);
+      if (isAckerDBHttpRoute(path)) {
+        throw new Error(
+          `http handler "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
+        );
+      }
+      const mcp = this.mcpByPath.get(path);
+      if (mcp !== undefined) {
+        throw new Error(
+          `http handler "${address}" and MCP "${mcp.name}" both use path "${path}"`,
+        );
+      }
+      this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
+    }
+
     for (const { address, value } of moduleExports) {
       if (!isMcpAuthProvider(value)) continue;
       this.serverOnly.set(address, value);
@@ -199,7 +241,8 @@ export class Registry {
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
         (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
-        !this.serverOnly.has(address)
+        !this.serverOnly.has(address) &&
+        !this.httpHandlersByAddress.has(address)
       ) {
         throw new Error(`unknown server-only export at "${address}"`);
       }
@@ -209,6 +252,7 @@ export class Registry {
   private registerAddress(address: string, value: object): void {
     if (
       this.functions.has(address) ||
+      this.httpHandlersByAddress.has(address) ||
       this.channels.has(address) ||
       this.realtime.has(address) ||
       this.serverOnly.has(address)
@@ -219,6 +263,8 @@ export class Registry {
     if (existingAddress !== undefined) {
       const kind = isRegisteredFunction(value)
         ? "registered function"
+        : isHttpHandlerShaped(value)
+          ? "registered http handler"
         : isRegisteredChannel(value)
           ? "registered channel"
           : isRegisteredRealtime(value)
@@ -240,6 +286,11 @@ export class Registry {
   /** The HTTP surface of one address, or undefined when the function is not exposed. */
   exposedFunction(address: string): ExposedFunction | undefined {
     return this.exposedByAddress.get(address);
+  }
+
+  /** The raw handler at one address, or undefined when none is registered. */
+  httpHandler(address: string): AnyRegisteredHttpHandler | undefined {
+    return this.httpHandlersByAddress.get(address);
   }
 
   toolsFor(
@@ -273,6 +324,7 @@ export class Registry {
 
   kindOf(address: string): string | undefined {
     return this.functions.get(address)?.kind ??
+      this.httpHandlersByAddress.get(address)?.kind ??
       this.channels.get(address)?.kind ??
       this.realtime.get(address)?.kind;
   }

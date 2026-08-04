@@ -57,6 +57,23 @@ export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
   readonly idempotencyKey?: string;
 }
 
+/**
+ * One raw handler call. `request` is the buffered Request the handler
+ * receives whole — no codec, no principal, no responder: the handler authors
+ * its own Response. Also the direct test entry point, so everything but the
+ * address and the Request defaults.
+ */
+export interface RuntimeRawHttpRequest {
+  readonly address: string;
+  readonly request: Request;
+  /** The listener's own sequence; telemetry correlation only. */
+  readonly id?: number;
+  /** The buffered body size the listener admitted; 1 when bodiless. */
+  readonly requestBytes?: number;
+  readonly signal?: AbortSignal;
+  readonly fairnessKey?: string;
+}
+
 export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 
 export interface RuntimeSseResponse {

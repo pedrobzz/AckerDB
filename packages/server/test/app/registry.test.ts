@@ -4,6 +4,7 @@ import { ValidationError } from "../../src/validation/error.ts";
 import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
+import { httpHandler } from "../../src/app/http-handler.ts";
 import { mcp, mcpAuth } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
 
@@ -102,6 +103,82 @@ describe("HTTP-exposed function paths", () => {
     // Unexposed, no HTTP surface reads its kind and the load stands.
     const internalKind = { ...exposed, kind: "queryy", http: false } as never;
     expect(() => new Registry({ notes: { internalKind } })).not.toThrow();
+  });
+});
+
+describe("raw http handler routes", () => {
+  const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+
+  test("claims its address-derived path outside the function and exposed maps", () => {
+    const registry = new Registry({ hooks: { stripe: hook } });
+
+    const route = registry.httpRoutes.get("/api/hooks/stripe");
+    expect(route).toMatchObject({ address: "hooks.stripe", path: "/api/hooks/stripe" });
+    expect(route?.fn).toBe(hook);
+    expect(registry.httpHandler("hooks.stripe")).toBe(hook);
+    // Not a contract function: it is neither addressable nor exposed.
+    expect(registry.get("hooks.stripe")).toBeUndefined();
+    expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
+  });
+
+  test("refuses the AckerDB-owned module prefix", () => {
+    expect(() => new Registry({ _internal: { hook } })).toThrow(
+      'http handler "_internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "/api/_" is reserved',
+    );
+  });
+
+  test("refuses a path claimed by both a handler and an MCP endpoint, in either order", () => {
+    const endpoint = mcp({
+      name: "agent",
+      auth: mcpAuth({ name: "agent" }),
+      path: "/api/hooks/stripe",
+      tools: {},
+    });
+    const message = 'http handler "hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
+
+    expect(() => new Registry({ hooks: { stripe: hook }, mcp: { endpoint } })).toThrow(message);
+    expect(() => new Registry({ mcp: { endpoint }, hooks: { stripe: hook } })).toThrow(message);
+  });
+
+  test("refuses one handler exported at two addresses", () => {
+    expect(() => new Registry({ hooks: { stripe: hook, again: hook } })).toThrow(
+      'registered http handler is exported at both "hooks.again" and "hooks.stripe"',
+    );
+  });
+
+  test("refuses a malformed shape from an untyped export", () => {
+    const badMethod = { ...hook, methods: ["POST", "FETCH"] } as never;
+    expect(() => new Registry({ hooks: { badMethod } })).toThrow(
+      'http handler "hooks.badMethod" methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
+    );
+    const noHandler = { ...hook, handler: "later" } as never;
+    expect(() => new Registry({ hooks: { noHandler } })).toThrow(
+      'http handler "hooks.noHandler" handler must be a function',
+    );
+  });
+});
+
+describe("the httpHandler builder", () => {
+  test("refuses malformed methods", () => {
+    const handler = () => new Response(null);
+    expect(() => httpHandler({ methods: [], handler })).toThrow(
+      "httpHandler methods must be a non-empty array of HTTP methods",
+    );
+    expect(() => httpHandler({ methods: "POST" as never, handler })).toThrow(
+      "httpHandler methods must be a non-empty array of HTTP methods",
+    );
+    expect(() => httpHandler({ methods: ["POST", "TRACE" as never], handler })).toThrow(
+      "httpHandler methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    );
+    expect(() => httpHandler({ methods: ["POST", "POST"], handler })).toThrow(
+      'httpHandler methods must not repeat "POST"',
+    );
+  });
+
+  test("refuses a non-function handler", () => {
+    expect(() => httpHandler({ methods: ["POST"], handler: null as never })).toThrow(
+      "httpHandler handler must be a function",
+    );
   });
 });
 
