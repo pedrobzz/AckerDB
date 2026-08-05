@@ -12,10 +12,13 @@ import { useProviderClient, useProviderCredentialKind } from "./provider.tsx";
  * protocol-supported operations. `refresh` presents a new credential through
  * the base client's `refreshCredential`; on a credential-source provider it
  * takes no argument and re-invokes the source immediately — the "sign-in just
- * happened" path. `signOut` presents the anonymous credential, which the
- * ackerdb server classifies as a sign-out; on a credential-source provider it
- * re-invokes the source instead, so sign out of the identity SDK first — the
- * source owns what "signed out" produces. Both resolve with the
+ * happened" path. `signOut` resolves only when the server actually confirmed
+ * the anonymous principal: on a fixed-credential provider it presents the
+ * anonymous credential (the protocol's sign-out), and on a credential-source
+ * provider it re-invokes the source and rejects with `conflict` when the
+ * source still produces a signed-in credential — sign out of the identity
+ * SDK first; the source owns what "signed out" produces, and this operation
+ * never claims a sign-out it cannot perform. Both resolve with the
  * server-confirmed authentication and reject with the exact
  * `AckerDBClientError`.
  */
@@ -93,10 +96,21 @@ export function useAuthentication(): UseAuthenticationResult {
     },
     [client],
   );
-  const signOut = useCallback(
-    () => (credentialKind === "source" ? refresh() : refresh(ANONYMOUS_CREDENTIAL)),
-    [credentialKind, refresh],
-  );
+  const signOut = useCallback((): Promise<AckerDBAuthentication> => {
+    if (credentialKind !== "source") return refresh(ANONYMOUS_CREDENTIAL);
+    return refresh().then((authentication) => {
+      if (authentication.principal === "anonymous") return authentication;
+      // Honest by construction: this operation never resolves "signed out"
+      // while the server still confirms a signed-in principal.
+      throw new AckerDBClientError({
+        code: "conflict",
+        message:
+          "the credential source still produces a signed-in credential; sign out of the identity provider first",
+        retryable: false,
+        resource: "connection",
+      });
+    });
+  }, [credentialKind, refresh]);
 
   return useMemo(() => ({ state, refresh, signOut }), [state, refresh, signOut]);
 }

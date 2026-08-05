@@ -85,7 +85,8 @@ export function Root() {
 }
 ```
 
-`url` and an explicit `credential` are required. A bearer configuration is
+`url` is required, along with exactly one of an explicit `credential` or a
+[`credentialSource`](#credential-source) callback. A bearer configuration is
 `{ kind: "bearer", token }`. Optional configuration includes
 `clientSessionId`, partial `limits`, partial `reconnect` settings, and injected
 `clock`, `random`, `createWebSocket`, `createPeerConnection`, `fetch`, or
@@ -555,10 +556,13 @@ pull.
 
 In source mode `refresh()` takes no argument and re-invokes the source
 immediately — call it right after the identity SDK completes sign-in.
-`signOut()` also re-invokes the source, so sign out of the identity SDK
-first: the source owns what "signed out" produces. The source callback is a
-captured capability, not part of the provider's configuration identity —
-credentials change by re-pulling, never by client replacement.
+`signOut()` re-invokes the source and resolves only when the server actually
+confirmed the anonymous principal; if the source still produces a signed-in
+credential it rejects with `conflict` — sign out of the identity SDK first,
+then call it. The operation never claims a sign-out it cannot perform. The
+source callback is a captured capability, not part of the provider's
+configuration identity — credentials change by re-pulling, never by client
+replacement.
 
 ### Awaiting principal change
 

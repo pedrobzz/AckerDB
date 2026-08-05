@@ -61,6 +61,18 @@ client while the `credentialVerifier` contract deliberately keeps
 credentials format-opaque; disclosure lets any credential format refresh
 proactively, and anonymous principals disclose nothing.
 
+Exactness is the contract, not the interface. A follow-up developer-experience
+review demonstrated that shipping the seven-field exact form as the *primary*
+surface loses badly to Convex's two-field product shape, so known providers
+get **presets**: a named entry resolved into exact configuration at startup,
+filling in only what the provider's published token shape determines,
+refusing what it cannot (Auth0's API audience, WorkOS's client ID), and
+always inspectable through the exported resolver. A preset is a compression
+of exact configuration, never an alternative to it. The same review caught
+`claimNames` violating this ADR's own rule — silently projecting zero claims
+by default while every other dimension demanded a visible declaration — so
+claim projection became `claimNames: [...] | "none"`, required.
+
 Provider compatibility is enforced by construction: a conformance suite
 mints tokens in each studied provider's exact shape — bare-origin issuers,
 missing `aud`, missing `typ`, EdDSA, RFC 9068 `at+jwt`, loopback plaintext —

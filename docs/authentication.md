@@ -228,6 +228,17 @@ The CLI reads OIDC configuration from `.ackerdb.config.json` and passes it to
 `createOidcVerifier`. AckerDB is a relying party only: it does not implement login,
 passwords, passkeys, token issuance, or OIDC discovery.
 
+A provider entry is either the full field-by-field configuration below or a
+**provider preset** — `{ "preset": "clerk" | "auth0" | "workos" |
+"betterauth", "issuer": "…", … }` — the provider's published token shape
+resolved into exact configuration at startup. Presets never weaken
+verification: they fill in only the fields whose values follow from what the
+provider mints, refuse the ones that cannot be defaulted (Auth0's API
+audience, WorkOS's client ID), accept the same overrides as the full form,
+and `resolveOidcProvider` (exported from `@ackerdb/server`) returns the exact
+configuration any preset stands for. Per-provider recipes and the resolved
+form of each preset live in [Auth providers](auth-providers.md).
+
 ```json
 {
   "oidc": {
@@ -305,10 +316,14 @@ verifies all of the following with `jose`:
   verification path); and
 - `jti` as a string when present.
 
-Only names in `claimNames` are copied to `ctx.auth.claims`. Omitting
-`claimNames` produces an empty claims object even though the token was fully
-verified. In particular, a workload provider used for `GET /status` must select
-the `scope` claim.
+Claim projection is a declaration like every other dimension: `claimNames`
+is required and is either a non-empty list of claims to copy to
+`ctx.auth.claims` or the explicit `"none"` for the empty projection. Verified
+claims outside the selection are discarded — that stays deliberate claim
+minimization, but discarding everything is now a visible choice instead of a
+silent default a newcomer discovers when every claim-based policy fails. In
+particular, a workload provider used for `GET /status` must select the
+`scope` claim.
 
 Supported algorithms are `RS256`, `PS256`, `ES256`, and `EdDSA`. The verifier
 does not accept an algorithm merely because the token requests it. `tokenType`

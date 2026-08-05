@@ -8,10 +8,10 @@ import {
   type ClientMessage,
   type Identity,
 } from "@ackerdb/core";
-import type {
-  AckerDBAuthentication,
-  AckerDBAuthenticationState,
+import {
   AckerDBClientError,
+  type AckerDBAuthentication,
+  type AckerDBAuthenticationState,
 } from "@ackerdb/client";
 import { StrictMode, act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -531,6 +531,69 @@ describe("credential-source provider", () => {
     await act(flush);
     expect((await signedOut).principal).toBe("anonymous");
     expect(container.textContent).toContain("unauthenticated@2");
+    await render(root, <></>);
+  });
+});
+
+describe("honest sign-out", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("source-mode signOut rejects while the source still produces a signed-in credential", async () => {
+    let signedIn = true;
+    const harness = createHarness({
+      ...APP,
+      credentialSource: async () =>
+        signedIn ? { kind: "bearer", token: "still-here" } : { kind: "anonymous" },
+    });
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(root, app(harness.config()));
+    await act(flush);
+    onlyLive(harness).welcome(SESSION_ID, { ...USER_AUTHENTICATION, credentialTtlMs: 60_000 });
+    await act(flush);
+    expect(container.textContent).toContain("authenticated:user");
+
+    // The app forgot to sign out of the identity SDK first: the source still
+    // mints a signed-in credential, so signOut must not claim success.
+    let outcome: unknown;
+    await act(async () => {
+      const attemptPromise = operations().signOut();
+      await flush();
+      const socket = onlyLive(harness);
+      const attempt = lastAuthFrame(socket);
+      expect(attempt.credential).toEqual({ kind: "bearer", token: "still-here" });
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "auth",
+        attemptId: attempt.attemptId,
+        authEpoch: 1,
+        ...USER_AUTHENTICATION,
+        credentialTtlMs: 60_000,
+      });
+      outcome = await attemptPromise.catch((error: unknown) => error);
+    });
+    expect(outcome).toBeInstanceOf(AckerDBClientError);
+    expect((outcome as AckerDBClientError).code).toBe("conflict");
+    expect(container.textContent).toContain("authenticated:user@1");
+
+    // After the SDK sign-out, the same call resolves anonymous.
+    signedIn = false;
+    await act(async () => {
+      const attemptPromise = operations().signOut();
+      await flush();
+      const socket = onlyLive(harness);
+      const attempt = lastAuthFrame(socket);
+      expect(attempt.credential).toEqual({ kind: "anonymous" });
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "auth",
+        attemptId: attempt.attemptId,
+        authEpoch: 2,
+        principal: "anonymous",
+      });
+      outcome = await attemptPromise;
+    });
+    expect((outcome as { principal: string }).principal).toBe("anonymous");
     await render(root, <></>);
   });
 });

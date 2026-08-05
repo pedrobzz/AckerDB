@@ -69,7 +69,10 @@ your-app/
   checked for wire representability and frame bounds, not against a declared
   runtime output schema.
 
-The client requires an explicit credential, including for anonymous use:
+The client takes exactly one credential authority: an explicit credential
+(including explicit anonymous use, shown here) or a `credentialSource`
+callback that owns the token lifecycle end to end (see the
+[auth provider quickstart](docs/auth-providers.md)):
 
 ```ts
 import { AckerDBClient } from "@ackerdb/client";

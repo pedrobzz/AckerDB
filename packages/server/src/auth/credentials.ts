@@ -151,14 +151,111 @@ export interface OidcProviderConfig {
   readonly allowPrivateNetworkHttp?: boolean;
   readonly principalKind: "user" | "workload";
   readonly requiredClaims?: readonly string[];
-  readonly claimNames?: readonly string[];
+  /**
+   * Claims copied to `ctx.auth.claims`, or the explicit `"none"`. Verified
+   * claims outside the selection are discarded; like every other enforcement
+   * dimension, discarding everything is a visible declaration, never a
+   * silent default.
+   */
+  readonly claimNames: readonly string[] | "none";
   readonly maxTokenAgeSeconds?: number;
+}
+
+/**
+ * Named provider presets: the product shape of a known identity provider,
+ * resolved into exact configuration at construction. A preset never weakens
+ * verification — it only fills in the fields whose values follow from the
+ * provider's published token shape. `resolveOidcProvider` is exported so the
+ * resolved exact configuration is always inspectable.
+ */
+export interface OidcProviderPreset {
+  readonly preset: "clerk" | "auth0" | "workos" | "betterauth";
+  /** Exact issuer — still matched byte-exactly, still whatever the provider mints. */
+  readonly issuer: string;
+  /** Required for `auth0` (its registered API audience); defaulted elsewhere. */
+  readonly audiences?: readonly string[] | "unchecked";
+  /** Required for `workos`: the AuthKit JWKS URL is per-client. */
+  readonly clientId?: string;
+  readonly tokenType?: string;
+  readonly claimNames?: readonly string[] | "none";
+  readonly principalKind?: "user" | "workload";
+  readonly allowPrivateNetworkHttp?: boolean;
+}
+
+export type OidcProviderEntry = OidcProviderConfig | OidcProviderPreset;
+
+const WORKOS_CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function withoutTrailingSlash(issuer: string): string {
+  return issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;
+}
+
+/** Resolves a preset entry into the exact configuration it stands for; exact entries pass through. */
+export function resolveOidcProvider(entry: OidcProviderEntry): OidcProviderConfig {
+  if (!("preset" in entry)) return entry;
+  const { preset, issuer } = entry;
+  if (typeof issuer !== "string" || issuer.length === 0) {
+    throw new TypeError(`the ${String(preset)} preset requires the exact issuer the provider mints`);
+  }
+  const shared = {
+    issuer,
+    audiences: entry.audiences ?? ("unchecked" as const),
+    principalKind: entry.principalKind ?? ("user" as const),
+    ...(entry.allowPrivateNetworkHttp === undefined
+      ? {}
+      : { allowPrivateNetworkHttp: entry.allowPrivateNetworkHttp }),
+  };
+  switch (preset) {
+    case "clerk":
+      return {
+        ...shared,
+        jwksUri: `${withoutTrailingSlash(issuer)}/.well-known/jwks.json`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "JWT",
+        claimNames: entry.claimNames ?? ["azp", "sid"],
+      };
+    case "auth0":
+      if (entry.audiences === undefined) {
+        throw new TypeError(
+          "the auth0 preset requires audiences: Auth0 mints JWT access tokens only for a registered API audience",
+        );
+      }
+      return {
+        ...shared,
+        audiences: entry.audiences,
+        jwksUri: `${withoutTrailingSlash(issuer)}/.well-known/jwks.json`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "JWT",
+        claimNames: entry.claimNames ?? ["azp", "scope"],
+      };
+    case "workos":
+      if (typeof entry.clientId !== "string" || !WORKOS_CLIENT_ID.test(entry.clientId)) {
+        throw new TypeError("the workos preset requires clientId: the AuthKit JWKS URL is per-client");
+      }
+      return {
+        ...shared,
+        jwksUri: `https://api.workos.com/sso/jwks/${entry.clientId}`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "unchecked",
+        claimNames: entry.claimNames ?? ["sid", "org_id", "role"],
+      };
+    case "betterauth":
+      return {
+        ...shared,
+        jwksUri: `${withoutTrailingSlash(issuer)}/api/auth/jwks`,
+        algorithms: ["EdDSA"],
+        tokenType: entry.tokenType ?? "unchecked",
+        claimNames: entry.claimNames ?? ["email"],
+      };
+    default:
+      throw new TypeError(`unknown oidc provider preset "${String(preset)}"`);
+  }
 }
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface OidcVerifierOptions {
-  readonly providers: readonly OidcProviderConfig[];
+  readonly providers: readonly OidcProviderEntry[];
   readonly fetch?: Fetcher;
   readonly maxTokenBytes?: number;
   readonly jwksTimeoutMs?: number;
@@ -531,7 +628,8 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
   const fetcher: Fetcher = options.fetch ?? ((url, init) => fetch(url, init));
   const providers = new Map<string, CompiledProvider>();
 
-  for (const raw of options.providers) {
+  for (const entry of options.providers) {
+    const raw = resolveOidcProvider(entry);
     // Exact issuer: validated as a well-formed URL, then stored and matched
     // byte-exactly as written — never normalized. The one correct value is
     // whatever the provider actually mints in `iss`.
@@ -579,7 +677,16 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       MAX_CLAIM_NAMES,
       false,
     );
-    const claimNames = boundedStrings(raw.claimNames, "provider claimNames", MAX_CLAIM_NAMES, false);
+    // Claim projection is a visible declaration like every other dimension:
+    // either a non-empty selection or the explicit "none" — silently
+    // discarding every verified claim by default was accidental complexity.
+    if (raw.claimNames === undefined) {
+      throw new TypeError('provider claimNames must be a list of selected claims or the explicit "none"');
+    }
+    const claimNames =
+      raw.claimNames === "none"
+        ? (Object.freeze([]) as readonly string[])
+        : boundedStrings(raw.claimNames, "provider claimNames", MAX_CLAIM_NAMES, true);
     const maxTokenAgeSeconds =
       raw.maxTokenAgeSeconds === undefined
         ? undefined

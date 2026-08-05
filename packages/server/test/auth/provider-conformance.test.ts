@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   createOidcVerifier,
+  resolveOidcProvider,
   type OidcProviderConfig,
   type OidcVerifierOptions,
 } from "../../src/auth/credentials.ts";
@@ -326,6 +327,7 @@ describe("private plaintext boundary", () => {
     algorithms: ["RS256"],
     tokenType: "unchecked",
     principalKind: "user",
+    claimNames: "none",
   } as const;
 
   function build(issuer: string, options: { allow?: boolean; jwksUri?: string } = {}): void {
@@ -376,5 +378,120 @@ describe("private plaintext boundary", () => {
         build("https://issuer.example", { allow, jwksUri: "http://issuer.example/jwks" }),
       ).toThrow(TypeError);
     }
+  });
+});
+
+describe("provider presets", () => {
+  test("each preset resolves to exactly the recipe's exact configuration", () => {
+    expect(
+      resolveOidcProvider({
+        preset: "clerk",
+        issuer: "https://smiling-tiger-42.clerk.accounts.dev",
+      }),
+    ).toEqual({
+      issuer: "https://smiling-tiger-42.clerk.accounts.dev",
+      jwksUri: "https://smiling-tiger-42.clerk.accounts.dev/.well-known/jwks.json",
+      audiences: "unchecked",
+      algorithms: ["RS256"],
+      tokenType: "JWT",
+      principalKind: "user",
+      claimNames: ["azp", "sid"],
+    });
+    expect(
+      resolveOidcProvider({
+        preset: "auth0",
+        issuer: "https://tenant.auth0.com/",
+        audiences: ["https://api.example.com"],
+      }),
+    ).toEqual({
+      issuer: "https://tenant.auth0.com/",
+      jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
+      audiences: ["https://api.example.com"],
+      algorithms: ["RS256"],
+      tokenType: "JWT",
+      principalKind: "user",
+      claimNames: ["azp", "scope"],
+    });
+    expect(
+      resolveOidcProvider({
+        preset: "workos",
+        issuer: "https://api.workos.com",
+        clientId: "client_01HXYZABC",
+      }),
+    ).toEqual({
+      issuer: "https://api.workos.com",
+      jwksUri: "https://api.workos.com/sso/jwks/client_01HXYZABC",
+      audiences: "unchecked",
+      algorithms: ["RS256"],
+      tokenType: "unchecked",
+      principalKind: "user",
+      claimNames: ["sid", "org_id", "role"],
+    });
+    expect(
+      resolveOidcProvider({
+        preset: "betterauth",
+        issuer: "http://localhost:3000",
+      }),
+    ).toEqual({
+      issuer: "http://localhost:3000",
+      jwksUri: "http://localhost:3000/api/auth/jwks",
+      audiences: "unchecked",
+      algorithms: ["EdDSA"],
+      tokenType: "unchecked",
+      principalKind: "user",
+      claimNames: ["email"],
+    });
+  });
+
+  test("a preset entry verifies a real provider-shaped token end to end", async () => {
+    const clerk = PROFILES[0]!;
+    const fixture = await profileFixture(clerk);
+    const verifier = createOidcVerifier({
+      ...fixture.options,
+      providers: [{ preset: "clerk", issuer: clerk.issuer }],
+    });
+    const principal = await verifier.verify(await fixture.mint());
+    expect(principal).toMatchObject({
+      kind: "user",
+      issuer: clerk.issuer,
+      subject: clerk.subject,
+      claims: { azp: clerk.claims.azp, sid: clerk.claims.sid },
+    });
+    await expectRejected(verifier.verify(await fixture.mint({ foreignKey: true })), "unauthenticated");
+  });
+
+  test("presets refuse the fields whose values cannot be defaulted", () => {
+    expect(() =>
+      resolveOidcProvider({ preset: "auth0", issuer: "https://tenant.auth0.com/" }),
+    ).toThrow(TypeError);
+    expect(() =>
+      resolveOidcProvider({ preset: "workos", issuer: "https://api.workos.com" }),
+    ).toThrow(TypeError);
+    expect(() =>
+      resolveOidcProvider({
+        preset: "workos",
+        issuer: "https://api.workos.com",
+        clientId: "bad/../path",
+      }),
+    ).toThrow(TypeError);
+  });
+
+  test("claim projection is always a declaration: omitted claimNames refuses at construction", async () => {
+    const fixture = await profileFixture(PROFILES[0]!);
+    const provider = fixture.options.providers[0]! as OidcProviderConfig;
+    const { claimNames: _dropped, ...withoutClaimNames } = provider;
+    expect(() =>
+      createOidcVerifier({
+        ...fixture.options,
+        providers: [withoutClaimNames as unknown as OidcProviderConfig],
+      }),
+    ).toThrow(TypeError);
+    // The explicit "none" is the empty projection.
+    const none = createOidcVerifier({
+      ...fixture.options,
+      providers: [{ ...provider, claimNames: "none" }],
+    });
+    const principal = await none.verify(await fixture.mint());
+    expect(principal.claims).toEqual({});
   });
 });

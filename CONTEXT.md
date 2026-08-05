@@ -755,8 +755,16 @@ _Avoid_: Canonical issuer, normalized issuer, issuer URL matching
 **Unchecked enforcement** — A provider configuration's explicit declaration,
 per verification dimension, that a check is deliberately not performed. An
 enforcement dimension is always either fully specified or visibly declared
-unchecked; it is never silently absent by default.
+unchecked; it is never silently absent by default. Claim projection follows
+the same rule: a selection or the explicit none, never a silent empty.
 _Avoid_: Optional audience, implicit default, lenient mode
+
+**Provider preset** — A named identity provider's published token shape,
+resolved into exact configuration at startup. A preset fills in only the
+fields whose values follow from what the provider mints, refuses the ones
+only the application can supply, and its resolution is always inspectable.
+It compresses exact configuration; it never replaces or weakens it.
+_Avoid_: Provider plugin, auth integration package, discovery-trusted config
 
 **Private plaintext boundary** — The rule deciding where an identity
 provider may be reached without TLS: loopback hosts by default, where
