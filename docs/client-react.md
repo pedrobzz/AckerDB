@@ -52,6 +52,17 @@ Normal hooks and their public types come from `@ackerdb/client-react`.
 `useChatTransport` and its types come only from `@ackerdb/client-react/ai`, so a
 consumer that never imports that subpath does not resolve AI SDK code.
 
+Vite dev servers should pre-bundle the client's CommonJS-interop
+dependencies, or the first on-demand optimization pass can reload the page
+mid-render and surface as a duplicated-React "Invalid hook call":
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  optimizeDeps: { include: ["eventsource-parser", "msgpackr"] },
+});
+```
+
 ## Provider and configuration lifetime
 
 Mount one provider above every component that uses AckerDB:
@@ -511,12 +522,53 @@ function SessionButton({ token }: { token: string }) {
 
 | Phase | Meaning and payload |
 | --- | --- |
-| `authenticating` | Initial presentation or refresh is in flight; carries the `credential` kind. |
+| `authenticating` | Initial presentation or refresh is in flight; carries the `credential` kind (`"source"` before a credential-source client's first pull). |
 | `unauthenticated` | The server confirmed an anonymous `authentication`. |
-| `authenticated` | The server confirmed a user or workload `authentication`. |
+| `authenticated` | The server confirmed a user or workload `authentication`; bearer descriptors carry `credentialTtlMs`, the server's credential TTL disclosure. |
 | `refresh-required` | The credential was rejected or timed out; carries `error` and blocks reconnect until `refresh(...)`. |
 | `failed` | The client failed permanently; carries `error`. |
 | `closed` | The provider closed the client. |
+
+### Credential source
+
+Instead of a fixed `credential`, the provider configuration may carry a
+`credentialSource` — the application-owned callback producing the current
+explicit credential, including the explicit anonymous credential for
+signed-out state. Exactly one of the two is configured, never both. The
+client owns the whole lifecycle: it pulls the source for the initial connect,
+re-pulls ahead of the server-disclosed credential TTL so the connection never
+degrades in the happy path, and re-pulls after a principal rejection with
+bounded jittered backoff. Concurrent triggers coalesce into one in-flight
+pull.
+
+```tsx
+<AckerDBProvider
+  config={{
+    url: serverUrl,
+    credentialSource: async () => {
+      const token = await getToken(); // the identity SDK's getter
+      return token === null ? { kind: "anonymous" } : { kind: "bearer", token };
+    },
+  }}
+>
+```
+
+In source mode `refresh()` takes no argument and re-invokes the source
+immediately — call it right after the identity SDK completes sign-in.
+`signOut()` also re-invokes the source, so sign out of the identity SDK
+first: the source owns what "signed out" produces. The source callback is a
+captured capability, not part of the provider's configuration identity —
+credentials change by re-pulling, never by client replacement.
+
+### Awaiting principal change
+
+A mounted query the server rejects with `unauthenticated` or `unauthorized`
+is not dead demand: the entry holds it as awaiting principal change and
+re-presents it exactly when the server accepts a different principal —
+never on a timer, because a rejection without a principal change would only
+repeat. After sign-in, previously rejected queries re-demand and deliver
+automatically, so gating them with `skip` until authenticated is an
+optimization, not a correctness requirement.
 
 The client descriptor never exposes the bearer token, selected claims, or
 token ID. A user descriptor contains a durable, branded AckerDB `Identity` plus

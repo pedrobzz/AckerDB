@@ -170,6 +170,39 @@ advertised invalidation feed. AckerDB still validates returned credential eviden
 resolves user `(issuer, subject)` pairs to durable Identities, and enforces the
 declared revocation bound before activation.
 
+### Verifier error contract
+
+A verifier's rejection outcome is part of its contract. For an invalid
+credential, throw the `unauthenticated()` helper exported from
+`@ackerdb/server` (or an `AckerDBError` with code `unauthenticated`): the
+presentation rejects immediately and non-retryably. Anything else a verifier
+throws — a jose error, a network failure, a plain `Error` — is treated as
+verifier *unavailability* and surfaces as retryable `auth_unavailable`, which
+clients keep retrying for tens of seconds. A verifier that lets jose's
+`JWTExpired` escape unmapped therefore turns every bad token into a long
+retry loop instead of an instant rejection:
+
+```ts
+import { unauthenticated, type CredentialVerifier } from "@ackerdb/server";
+import { jwtVerify } from "jose";
+
+const verifier = {
+  revocationBound: { kind: "token-expiration" },
+  subscribeInvalidation: () => () => {},
+  verify: async (token: string) => {
+    try {
+      const { payload } = await jwtVerify(token, keySet, verifyOptions);
+      return evidenceFrom(payload);
+    } catch (cause) {
+      throw unauthenticated(cause);
+    }
+  },
+} satisfies CredentialVerifier;
+```
+
+Reserve non-`unauthenticated` throws for failures where retrying can
+genuinely succeed, such as the verifier's own key service being unreachable.
+
 ## Function access policies
 
 Every query, mutation, procedure, SSE procedure, and event subscription must
@@ -229,18 +262,39 @@ passwords, passkeys, token issuance, or OIDC discovery.
 }
 ```
 
-The issuer string must already equal the canonical HTTPS URL produced by
-`new URL(issuer).href`; for a bare origin this includes the trailing slash.
-Issuer URLs cannot contain credentials, fragments, or queries. JWKS URLs must
-also be HTTPS and cannot contain credentials or fragments. Providers are an
-exact registry and duplicate issuers are rejected.
+The issuer string is an **exact issuer**: it is validated as a well-formed URL
+on a permitted scheme, then stored and matched byte-exactly against the
+token's `iss` — never normalized or rewritten. There is exactly one correct
+value per provider: whatever that provider actually mints, trailing slash or
+not. Issuer strings cannot contain whitespace, control characters,
+credentials, fragments, or queries. JWKS URLs cannot contain credentials or
+fragments. Providers are an exact registry and duplicate issuers are
+rejected. Per-provider recipes with each provider's exact `iss` string live
+in [Auth providers](auth-providers.md).
+
+Both URLs obey the **private plaintext boundary**: HTTPS is accepted
+everywhere, and plaintext `http:` is permitted exactly where it cannot cross
+an untrusted network boundary — loopback hosts (`localhost`, `*.localhost`,
+`127.0.0.0/8`, `[::1]`) and private-network IP literals (RFC 1918,
+link-local, IPv6 ULA and link-local) — identically in every mode. Named
+hosts other than the localhost forms always require HTTPS.
+
+`audiences` is either a non-empty list of accepted `aud` values or the
+explicit literal `"unchecked"`; `tokenType` is either the required JOSE
+`typ` header value or `"unchecked"`. This is **unchecked enforcement**: a
+verification dimension is always either fully specified or visibly declared
+unchecked in the configuration — never silently absent by default. An empty
+`audiences` array stays forbidden. Declare `"unchecked"` only when the
+provider genuinely does not mint the claim or header (see the recipes);
+every dimension left declared stays fully enforced.
 
 An unverified JWT is decoded only to select an already configured issuer. An
 unknown issuer fails before any network request. The selected provider then
 verifies all of the following with `jose`:
 
-- exact issuer, one configured audience, one configured asymmetric algorithm,
-  and the configured JOSE `typ`;
+- exact issuer, one configured audience (unless `"unchecked"`), one
+  configured asymmetric algorithm, and the configured JOSE `typ` (unless
+  `"unchecked"`);
 - required `exp` and non-empty `sub`, plus every `requiredClaims` entry;
 - optional `maxTokenAgeSeconds` (which requires a valid `iat` through the JOSE
   verification path); and
@@ -295,6 +349,16 @@ A successful WebSocket refresh is an ordered auth transition:
 Passing `{ kind: "anonymous" }` to `refreshCredential` signs out through the
 same path. A failed or timed-out refresh closes or auth-blocks the session; the
 old principal is never silently restored.
+
+Every accepted bearer presentation — the `welcome` and each `auth`
+acknowledgement — carries `credentialTtlMs`, the server's **credential TTL
+disclosure**: the remaining validity of the accepted credential as a relative
+duration, computed at frame send. It exists so a client can refresh
+proactively without assuming any credential format (client-side token
+parsing would break the format-opaque `credentialVerifier` contract).
+Anonymous principals disclose nothing. The client's
+[credential source](client-react.md#credential-source) schedules its
+proactive re-pull from this disclosure.
 
 The server owns a hard timer for `expiresAt` and closes a session that is not
 refreshed in time. The built-in OIDC verifier advertises

@@ -117,6 +117,9 @@ client.close();
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
   sessions, HTTP procedures, and SSE.
+- [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
+  Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
+  issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
   receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
