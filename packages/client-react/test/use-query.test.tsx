@@ -867,3 +867,59 @@ describe("same-principal epoch advance", () => {
     client.close();
   });
 });
+
+describe("rejection during an in-flight presentation", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // The Clerk field study's sign-out → sign-in race: the server decides a
+  // policy rejection under the still-accepted anonymous principal while the
+  // bearer presentation is already in flight, so the rejection's arming
+  // sample observes phase "authenticating". Dropping it parked the demand
+  // through the very sign-in that should revive it.
+  test("a rejection decided under the old principal still re-demands when the new one lands", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    socket.welcome(SESSION);
+    const id = socket.framesOf("sub")[0]!.id;
+
+    // The sign-in presentation goes in flight first...
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    expect(client.currentAuthenticationState.phase).toBe("authenticating");
+    // ...then the server's rejection of the still-anonymous demand arrives.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthenticated", retryable: false, message: "sign in first" },
+    });
+    await flush();
+
+    const attempt = socket.framesOf("auth")[0]!;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      principal: "user",
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example", subject: "alice" },
+      credentialTtlMs: 60_000,
+    });
+    await refreshed;
+    await flush();
+    const subs = socket.framesOf("sub");
+    expect(subs).toHaveLength(2);
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subs[1]!.id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["revived"] },
+    });
+    expect(entry.snapshot()).toMatchObject({ status: "success", data: ["revived"] });
+    stopListening();
+    client.close();
+  });
+});

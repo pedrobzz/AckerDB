@@ -176,13 +176,17 @@ export class QueryStoreEntry<
       // Armed one microtask later, when the client's own state cascade has
       // settled: a session-wide credential failure publishes refresh-required
       // by then — there the client keeps this demand and resubscribes it
-      // itself. Only a per-demand policy rejection under a still-accepted
-      // principal leaves dropped demand for this entry to re-present, and
-      // socket events are macrotasks, so nothing can race the sample.
+      // itself, so arming would double demand. Every other phase arms,
+      // including "authenticating": a rejection delivered while a fresh
+      // presentation is in flight was still decided under the previously
+      // accepted principal (which `currentAuthentication` still reports), and
+      // dropping it would park the demand through the very sign-in that
+      // should revive it. Socket events are macrotasks, so nothing can race
+      // the sample.
       queueMicrotask(() => {
         if (this.stopConnectionState === null) return;
         const phase = this.client.currentAuthenticationState.phase;
-        if (phase !== "authenticated" && phase !== "unauthenticated") return;
+        if (phase === "refresh-required" || phase === "failed" || phase === "closed") return;
         this.awaitingPrincipalChange = true;
         this.rejectedUnder = this.client.currentAuthentication;
       });
