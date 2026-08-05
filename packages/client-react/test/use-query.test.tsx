@@ -4,6 +4,7 @@ import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
   PROTOCOL_VERSION,
   type ApplicationError,
+  type Identity,
   type ServerMessage,
   type SubscriptionCursor,
 } from "@ackerdb/core";
@@ -686,5 +687,239 @@ describe("useQuery state transitions", () => {
     expect(captured.error.outcome).toMatchObject({ retryable: false, resource: "subscription" });
     expect(harness.frames("sub")).toHaveLength(0);
     await render(root, <></>);
+  });
+});
+
+describe("awaiting principal change", () => {
+  /** Flushes the arming microtask and the source promise chain. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function alice(authEpoch = 1) {
+    return {
+      descriptor: {
+        principal: "user" as const,
+        identity: 1n as Identity,
+        provenance: { issuer: "https://issuer.example", subject: "alice" },
+        credentialTtlMs: 60_000,
+      },
+      authEpoch,
+    };
+  }
+
+  test("a demand rejected while anonymous re-demands exactly once after sign-in", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    socket.welcome(SESSION);
+    const id = socket.framesOf("sub")[0]!.id;
+
+    // The anonymous principal fails this query's access policy: the client
+    // drops the subscription, and the entry starts awaiting principal change.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthenticated", retryable: false, message: "sign in first" },
+    });
+    await flush();
+    expect(entry.snapshot()).toMatchObject({ status: "rejected" });
+    expect(client.currentConnectionState.phase).toBe("ready");
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Sign-in on the live socket: the accepted user principal differs from
+    // the anonymous one that rejected, so the held demand re-presents.
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    const attempt = socket.framesOf("auth")[0]!;
+    const accepted = alice();
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: accepted.authEpoch,
+      ...accepted.descriptor,
+    });
+    await refreshed;
+    await flush();
+    const subs = socket.framesOf("sub");
+    expect(subs).toHaveLength(2);
+    expect(subs[1]!.args).toEqual({ list: 1n });
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subs[1]!.id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["mine"] },
+    });
+    expect(entry.snapshot()).toMatchObject({ status: "success", data: ["mine"] });
+    stopListening();
+    client.close();
+  });
+
+  test("an unauthorized rejection behaves identically to an unauthenticated one", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    socket.welcome(SESSION);
+    const id = socket.framesOf("sub")[0]!.id;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthorized", retryable: false, message: "not yours" },
+    });
+    await flush();
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    const attempt = socket.framesOf("auth")[0]!;
+    const accepted = alice();
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: accepted.authEpoch,
+      ...accepted.descriptor,
+    });
+    await refreshed;
+    await flush();
+    expect(socket.framesOf("sub")).toHaveLength(2);
+    stopListening();
+    client.close();
+  });
+
+  test("rejections are never retried on a timer, and an unchanged principal never re-demands", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const first = harness.live();
+    first.welcome(SESSION);
+    const id = first.framesOf("sub")[0]!.id;
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthenticated", retryable: false, message: "sign in first" },
+    });
+    await flush();
+
+    // No timer resurrects it.
+    harness.clock.advance(600_000);
+    await flush();
+    expect(harness.frames("sub")).toHaveLength(1);
+
+    // A reconnect accepting the same anonymous principal is not a principal
+    // change: the rejection would only repeat, so the demand stays parked.
+    first.close(4000, "network flake");
+    harness.clock.advance(5_000);
+    const second = harness.live();
+    second.welcome(SESSION);
+    await flush();
+    expect(second.framesOf("sub")).toHaveLength(0);
+    stopListening();
+    client.close();
+  });
+});
+
+describe("same-principal epoch advance", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a same-account re-presentation with changed claims revives parked demand", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config({ credential: { kind: "bearer", token: "viewer" } }));
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    const alice = {
+      principal: "user" as const,
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example", subject: "alice" },
+      credentialTtlMs: 60_000,
+    };
+    socket.welcome(SESSION, alice);
+    const id = socket.framesOf("sub")[0]!.id;
+    // The viewer-role token fails the access policy.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthorized", retryable: false, message: "viewers cannot read this" },
+    });
+    await flush();
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Same subject, same identity — but a new presentation whose claims may
+    // carry a different role. Access policies see claims, so it re-presents.
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "admin" });
+    const attempt = socket.framesOf("auth")[0]!;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...alice,
+    });
+    await refreshed;
+    await flush();
+    expect(socket.framesOf("sub")).toHaveLength(2);
+    stopListening();
+    client.close();
+  });
+});
+
+describe("rejection during an in-flight presentation", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // The Clerk field study's sign-out → sign-in race: the server decides a
+  // policy rejection under the still-accepted anonymous principal while the
+  // bearer presentation is already in flight, so the rejection's arming
+  // sample observes phase "authenticating". Dropping it parked the demand
+  // through the very sign-in that should revive it.
+  test("a rejection decided under the old principal still re-demands when the new one lands", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    socket.welcome(SESSION);
+    const id = socket.framesOf("sub")[0]!.id;
+
+    // The sign-in presentation goes in flight first...
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    expect(client.currentAuthenticationState.phase).toBe("authenticating");
+    // ...then the server's rejection of the still-anonymous demand arrives.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthenticated", retryable: false, message: "sign in first" },
+    });
+    await flush();
+
+    const attempt = socket.framesOf("auth")[0]!;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      principal: "user",
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example", subject: "alice" },
+      credentialTtlMs: 60_000,
+    });
+    await refreshed;
+    await flush();
+    const subs = socket.framesOf("sub");
+    expect(subs).toHaveLength(2);
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subs[1]!.id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["revived"] },
+    });
+    expect(entry.snapshot()).toMatchObject({ status: "success", data: ["revived"] });
+    stopListening();
+    client.close();
   });
 });

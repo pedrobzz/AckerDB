@@ -743,6 +743,57 @@ runtime-wide in-flight budget fails overload explicitly instead of retaining an
 unbounded hidden queue.
 _Avoid_: Serialized handler queue, process-level rejection, unbounded tasks
 
+## External authentication
+
+**Exact issuer** — An OIDC provider's registry key: the byte-exact string a
+verified token's `iss` claim must equal. AckerDB validates that it is a
+well-formed URL on a permitted scheme but never normalizes or rewrites it;
+there is exactly one correct value per provider — whatever that provider
+actually mints.
+_Avoid_: Canonical issuer, normalized issuer, issuer URL matching
+
+**Unchecked enforcement** — A provider configuration's explicit declaration,
+per verification dimension, that a check is deliberately not performed. An
+enforcement dimension is always either fully specified or visibly declared
+unchecked; it is never silently absent by default. Claim projection follows
+the same rule: a selection or the explicit none, never a silent empty.
+_Avoid_: Optional audience, implicit default, lenient mode
+
+**Provider preset** — A named identity provider's published token shape,
+resolved into exact configuration at startup. A preset fills in only the
+fields whose values follow from what the provider mints, refuses the ones
+only the application can supply, and its resolution is always inspectable.
+It compresses exact configuration; it never replaces or weakens it.
+_Avoid_: Provider plugin, auth integration package, discovery-trusted config
+
+**Private plaintext boundary** — The rule deciding where an identity
+provider may be reached without TLS: loopback hosts by default, where
+plaintext cannot cross a network at all; private-network addresses only
+under an explicit per-provider declaration, because private ranges are
+attackable networks; public hosts never, in any mode.
+_Avoid_: Dev-mode HTTP, trusted LAN default, TLS exemption
+
+**Credential source** — The application-owned callback that produces the
+client's current explicit credential on demand, including the explicit
+anonymous credential for signed-out state. The client owns when to ask:
+at construction, ahead of disclosed credential expiry, and after a
+principal rejection. Configured instead of, never alongside, a fixed
+credential.
+_Avoid_: Token callback, auth provider hook, implicit anonymous fallback
+
+**Credential TTL disclosure** — The server's statement, on every accepted
+credential presentation, of how long that credential remains valid, as a
+relative duration. It exists so the client can refresh proactively without
+assuming any credential format; anonymous principals have none.
+_Avoid_: Token expiry parsing, client-side JWT decoding
+
+**Awaiting principal change** — The state of client demand whose
+subscription the server rejected with an authentication or authorization
+outcome while the demand itself persists. Such demand is re-presented
+exactly when the connection's accepted principal changes, and never on a
+timer.
+_Avoid_: Subscription retry loop, skip gating, dead subscription
+
 ## Validation
 
 **Constraint** — A declarative rule that narrows the values admitted by a

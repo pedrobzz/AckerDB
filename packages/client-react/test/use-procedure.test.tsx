@@ -7,6 +7,7 @@ import { decode, parseClientMessage } from "@ackerdb/core";
 import {
   AckerDBClientError,
   type ClientResult,
+  type AckerDBClientOptionsBase,
   type AckerDBWebSocket,
   type ProcedureRef,
 } from "@ackerdb/client";
@@ -90,7 +91,7 @@ interface App {
   readonly base: string;
   /** Every procedure handler the server actually admitted, in order. */
   readonly calls: RecordedCall[];
-  config(overrides?: Partial<AckerDBProviderConfig>): AckerDBProviderConfig;
+  config(overrides?: Partial<AckerDBClientOptionsBase>): AckerDBProviderConfig;
   close(): Promise<void>;
 }
 

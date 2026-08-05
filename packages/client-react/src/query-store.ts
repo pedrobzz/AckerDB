@@ -1,5 +1,7 @@
 import {
   AckerDBClientError,
+  type AckerDBAuthentication,
+  type AckerDBAuthenticationState,
   type AckerDBClient,
   type AckerDBConnectionState,
 } from "@ackerdb/client";
@@ -18,6 +20,34 @@ import {
 } from "./query-observation.ts";
 
 export type { AckerDBQueryState } from "./query-observation.ts";
+
+/**
+ * Whether two server-accepted authentications describe the same principal.
+ * Epochs are compared separately by the caller: they reset per connection, so
+ * shape equality parks demand across reconnects, while a same-connection
+ * epoch advance is a genuinely new presentation whose claims may have changed
+ * even for an identical subject — access policies see the full principal,
+ * claims included, so it must re-present.
+ */
+function samePrincipal(
+  rejected: AckerDBAuthentication | undefined,
+  accepted: AckerDBAuthentication,
+): boolean {
+  if (rejected === undefined) return false;
+  if (rejected.principal === "anonymous" || accepted.principal === "anonymous") {
+    return rejected.principal === accepted.principal;
+  }
+  if (rejected.principal !== accepted.principal) return false;
+  if (
+    rejected.provenance.issuer !== accepted.provenance.issuer ||
+    rejected.provenance.subject !== accepted.provenance.subject
+  ) {
+    return false;
+  }
+  return rejected.principal !== "user" ||
+    accepted.principal !== "user" ||
+    rejected.identity === accepted.identity;
+}
 
 /** What useQuery observes: an immutable snapshot plus a counted listener slot. */
 export type QuerySource<Rows, Error extends ApplicationError = never> =
@@ -42,7 +72,17 @@ export class QueryStoreEntry<
 > extends SharedObservation<AckerDBQueryState<Rows, Error>> {
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
+  private stopAuthenticationState: (() => void) | null = null;
   private lastApplicationError: Error | null = null;
+  /**
+   * Awaiting principal change: the server rejected this demand with an
+   * authentication or authorization outcome while the demand itself persists.
+   * It is re-presented exactly when the accepted principal changes — never on
+   * a timer, because a rejection without a principal change would only repeat.
+   */
+  private awaitingPrincipalChange = false;
+  /** The accepted authentication under which the rejection happened, if any. */
+  private rejectedUnder: AckerDBAuthentication | undefined;
 
   constructor(
     private readonly client: AckerDBClient,
@@ -56,6 +96,9 @@ export class QueryStoreEntry<
   protected startObservation(): void {
     this.stopConnectionState = this.client.subscribeConnectionState((connection) =>
       this.onConnectionState(connection),
+    );
+    this.stopAuthenticationState = this.client.subscribeAuthenticationState((state) =>
+      this.onAuthenticationState(state),
     );
     this.startQuery();
   }
@@ -87,7 +130,11 @@ export class QueryStoreEntry<
     this.stopQuery = null;
     this.stopConnectionState?.();
     this.stopConnectionState = null;
+    this.stopAuthenticationState?.();
+    this.stopAuthenticationState = null;
     this.lastApplicationError = null;
+    this.awaitingPrincipalChange = false;
+    this.rejectedUnder = undefined;
   }
 
   private onApplicationError(error: Error): void {
@@ -125,7 +172,46 @@ export class QueryStoreEntry<
 
   private onError(error: AckerDBClientError): void {
     if (error.kind === "framework") this.lastApplicationError = null;
+    if (error.code === "unauthenticated" || error.code === "unauthorized") {
+      // Armed one microtask later, when the client's own state cascade has
+      // settled: a session-wide credential failure publishes refresh-required
+      // by then — there the client keeps this demand and resubscribes it
+      // itself, so arming would double demand. Every other phase arms,
+      // including "authenticating": a rejection delivered while a fresh
+      // presentation is in flight was still decided under the previously
+      // accepted principal (which `currentAuthentication` still reports), and
+      // dropping it would park the demand through the very sign-in that
+      // should revive it. Socket events are macrotasks, so nothing can race
+      // the sample.
+      queueMicrotask(() => {
+        if (this.stopConnectionState === null) return;
+        const phase = this.client.currentAuthenticationState.phase;
+        if (phase === "refresh-required" || phase === "failed" || phase === "closed") return;
+        this.awaitingPrincipalChange = true;
+        this.rejectedUnder = this.client.currentAuthentication;
+      });
+    }
     this.replace(queryClientError(this.snapshot(), error));
+  }
+
+  private onAuthenticationState(state: AckerDBAuthenticationState): void {
+    if (!this.awaitingPrincipalChange) return;
+    // Only a server-accepted principal can decide differently than the one
+    // that rejected; presentations in flight and blocked states prove nothing.
+    if (state.phase !== "authenticated" && state.phase !== "unauthenticated") return;
+    if (
+      samePrincipal(this.rejectedUnder, state.authentication) &&
+      this.rejectedUnder!.authEpoch === state.authentication.authEpoch
+    ) {
+      return;
+    }
+    this.awaitingPrincipalChange = false;
+    this.rejectedUnder = undefined;
+    // The client already dropped a non-retryably rejected subscription;
+    // releasing first makes the restart safe on every rejection path.
+    this.stopQuery?.();
+    this.stopQuery = null;
+    this.startQuery();
   }
 
   private onConnectionState(connection: AckerDBConnectionState): void {

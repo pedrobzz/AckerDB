@@ -31,11 +31,13 @@ const USER_AUTHENTICATION = {
   principal: "user",
   identity: 1n as Identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 const REFRESHED_USER_AUTHENTICATION = {
   principal: "user",
   identity: USER_AUTHENTICATION.identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 
 function dispatchProcedure<Args extends object, Value>(

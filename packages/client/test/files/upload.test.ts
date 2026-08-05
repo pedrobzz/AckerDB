@@ -197,6 +197,7 @@ describe("AckerDBClient files", () => {
     socket.welcome(client.clientSessionId, {
       principal: "workload",
       provenance: { issuer: "https://issuer.test", subject: "worker" },
+      credentialTtlMs: 60_000,
     });
 
     const first = await client.files.fetch(

@@ -69,7 +69,10 @@ your-app/
   checked for wire representability and frame bounds, not against a declared
   runtime output schema.
 
-The client requires an explicit credential, including for anonymous use:
+The client takes exactly one credential authority: an explicit credential
+(including explicit anonymous use, shown here) or a `credentialSource`
+callback that owns the token lifecycle end to end (see the
+[auth provider quickstart](docs/auth-providers.md)):
 
 ```ts
 import { AckerDBClient } from "@ackerdb/client";
@@ -117,6 +120,9 @@ client.close();
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
   sessions, HTTP procedures, and SSE.
+- [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
+  Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
+  issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
   receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
