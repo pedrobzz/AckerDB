@@ -1,7 +1,7 @@
 // bun scripts/release/publish.ts <npm|beta> [--demo]
 //
 // npm: GitHub CD only. canary publishes X.Y.Z-canary.<run-number>; main
-// publishes X.Y.Z after GitHub environment approval. beta goes only to local Verdaccio
+// publishes X.Y.Z after stable approval. beta goes only to local Verdaccio
 // as X.Y.Z-beta.N and may be published repeatedly for the same target version.
 import {
   appendFileSync,

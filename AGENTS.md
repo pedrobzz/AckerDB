@@ -195,10 +195,10 @@ Historical files in `bench/results/` are not current release evidence.
 
 Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
 Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is
-GitHub-only and uses the reviewer-gated `npm` environment's trusted publisher;
-Pedro approves the environment once before its single job starts. A normal
-stable promotion requires the same source version to exist publicly as a
-canary first.
+GitHub-only and uses the protected-branch-only `npm` environment's trusted
+publisher. Canary delivery starts automatically after merge; stable delivery
+requires Pedro's approval before its publish job. A normal stable promotion
+requires the same source version to exist publicly as a canary first.
 
 Verdaccio at `http://127.0.0.1:4874` is exclusively for repeatable local
 `X.Y.Z-beta.N` builds. Publish one whenever a prepared branch is testable with

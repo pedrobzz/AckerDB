@@ -20,11 +20,14 @@ describe("public repository CI boundaries", () => {
     expect(releaseWorkflow).toContain("node-version: 24.18.0");
   });
 
-  test("publishes only from the human-approved npm environment", () => {
+  test("auto-publishes canaries but requires stable approval", () => {
     expect(releaseWorkflow).toContain("environment: npm");
+    expect(releaseWorkflow).toContain("environment: npm-stable-approval");
+    expect(releaseWorkflow).toContain("if: github.ref_name == 'main'");
+    expect(releaseWorkflow).toContain("needs: approve-stable");
     expect(releaseWorkflow).toContain("workflow_dispatch:");
     expect(publisher).toMatch(/"npm",\s*"publish",\s*tarball/);
-    expect(releaseWorkflow).toContain("after environment approval");
+    expect(releaseWorkflow).toContain("from protected ${{ github.ref_name }}");
   });
 
   test("disables install scripts and quarantines fresh dependency releases", () => {
