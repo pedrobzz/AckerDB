@@ -14,6 +14,13 @@ export {
   type Result,
 } from "./result.ts";
 export type { Identity } from "./identity.ts";
+export type {
+  FileId,
+  FileMetadata,
+  FileState,
+  FileUploadResult,
+  FileUploadSession,
+} from "./files.ts";
 export {
   anyApi,
   getRef,

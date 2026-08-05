@@ -13,6 +13,12 @@ describe("production profile configuration", () => {
       durability: "production",
       telemetry: "enabled",
       statusScope: "ackerdb:status",
+      files: {
+        backend: "filesystem",
+        root: resolve(".ackerdb/files"),
+        publicUrl: "http://127.0.0.1:3211/",
+        maxBytes: 1024 ** 3,
+      },
     });
   });
 
@@ -172,6 +178,73 @@ describe("production profile configuration", () => {
         expect(() => loadConfig(dir, {})).toThrow(
           "hostname must be a non-empty host name or IP address",
         );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("configures one local or generic S3-compatible File backend", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        files: {
+          backend: "filesystem",
+          path: "./blobs",
+          publicUrl: "https://files.example.test",
+          maxBytes: 42,
+        },
+      }));
+      expect(loadConfig(dir, {})).toMatchObject({
+        files: {
+          backend: "filesystem",
+          root: resolve(dir, "blobs"),
+          publicUrl: "https://files.example.test/",
+          maxBytes: 42,
+        },
+      });
+
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        files: {
+          backend: "s3",
+          endpoint: "https://account.r2.cloudflarestorage.com",
+          region: "auto",
+          bucket: "documents",
+          forcePathStyle: true,
+          checksum: "disabled",
+          encryption: { type: "disabled" },
+        },
+      }));
+      expect(loadConfig(dir, {})).toMatchObject({
+        files: {
+          backend: "s3",
+          endpoint: "https://account.r2.cloudflarestorage.com",
+          region: "auto",
+          bucket: "documents",
+          forcePathStyle: true,
+          checksum: "disabled",
+          encryption: { type: "disabled" },
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects malformed File backend configuration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      for (const files of [
+        { backend: "unknown" },
+        { backend: "s3", region: "", bucket: "files" },
+        { backend: "s3", region: "auto", bucket: "" },
+        { backend: "s3", region: "auto", bucket: "files", checksum: "md5" },
+        { backend: "filesystem", maxBytes: 5 * 1024 ** 3 + 1 },
+        { backend: "filesystem", path: "." },
+        { backend: "filesystem", path: ".." },
+      ]) {
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ files }));
+        expect(() => loadConfig(dir, {})).toThrow();
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

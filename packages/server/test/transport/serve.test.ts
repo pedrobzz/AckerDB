@@ -732,7 +732,7 @@ describe("health and protected status", () => {
       value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
     });
     expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
-      "maxRequestBytes + 1 must be a safe integer",
+      "maxRequestBytes or hard File limit + 1 must be a safe integer",
     );
     expect(() => new AckerDBServer({
       limits: { ...limits, maxConnections: 0 },
@@ -1007,12 +1007,6 @@ describe("exposed HTTP procedures", () => {
       resource: "operation",
     });
 
-    const transportRejected = await fetch(`${base}${apiPath("notes.echo")}`, {
-      method: "POST",
-      body: "x".repeat(limits.maxRequestBytes + 2),
-    });
-    expect([400, 413]).toContain(transportRejected.status);
-    expect(await transportRejected.text()).toBe("");
   });
 
   test("decodes UTF-8 split across request chunks without retaining a byte copy", async () => {

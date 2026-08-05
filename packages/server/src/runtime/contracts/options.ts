@@ -14,6 +14,7 @@ import type { Telemetry, TelemetryOptions } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
 import type { DeclaredJob } from "../../jobs/definition.ts";
+import type { RuntimeFilesOptions } from "../../files/namespace.ts";
 
 export interface RuntimeOptions {
   readonly engine: Engine;
@@ -28,6 +29,8 @@ export interface RuntimeOptions {
   readonly hooks?: RuntimeHooks;
   /** Declared jobs, named and ordered by declareJobs(...). */
   readonly jobs?: readonly DeclaredJob[];
+  /** Built-in immutable File storage and delivery configuration. */
+  readonly files?: RuntimeFilesOptions;
   readonly now?: () => number;
   readonly realtime?: RealtimeRuntimeModule;
 }

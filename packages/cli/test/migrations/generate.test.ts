@@ -13,7 +13,7 @@ import {
   newWriteCollector,
   reconcile,
   snapshotOf,
-  withJobsTable,
+  withFrameworkTables,
   type Schema,
 } from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
@@ -55,6 +55,26 @@ function generate() {
 }
 
 describe("generateMigration: scaffold", () => {
+  test("renders File references as branded FileId in migration types", () => {
+    const schema = defineSchema({
+      assets: defineTable({
+        id: v.primaryKey(),
+        file: v.file(),
+        preview: v.file().nullable(),
+      }),
+    });
+    const { typesTs } = generateMigration({
+      number: 1,
+      name: "files",
+      pre: snapshotOf(schema),
+      schema,
+    });
+
+    expect(typesTs).toContain('import type { FileId, Renames } from "@ackerdb/server";');
+    expect(typesTs).toContain("file: FileId");
+    expect(typesTs).toContain("preview: FileId | null");
+  });
+
   test("a type change becomes a typed hole annotated with the NEW row type", () => {
     const { migrationTs } = generate();
     expect(migrationTs).toContain("posts: (row): PostsRow => {");
@@ -249,8 +269,8 @@ describe("generateMigration: meta sidecar", () => {
     expect(meta.number).toBe(3);
     expect(meta.name).toBe("restructure");
     expect(meta.pre).toEqual(snapshotOf(PRE)); // passthrough: real pre comes from the stored snapshot
-    expect(meta.target).toEqual(snapshotOf(withJobsTable(TARGET)));
-    expect(meta.fingerprint).toBe(migrationFingerprint(snapshotOf(withJobsTable(TARGET))));
+    expect(meta.target).toEqual(snapshotOf(withFrameworkTables(TARGET)));
+    expect(meta.fingerprint).toBe(migrationFingerprint(snapshotOf(withFrameworkTables(TARGET))));
   });
 });
 

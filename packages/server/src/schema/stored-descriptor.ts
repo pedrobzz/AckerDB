@@ -13,6 +13,7 @@ const FIELDS = {
   scheduleAt: ["k"],
   bigint: ["k", "min", "max"],
   identity: ["k"],
+  file: ["k"],
   boolean: ["k"],
   bytes: ["k"],
   vector: ["k", "dimensions"],
@@ -136,6 +137,11 @@ function validate(
       }
       if (!Number.isSafeInteger(descriptor["dimensions"]) || (descriptor["dimensions"] as number) <= 0) {
         fail(`${path}.dimensions`, "expected a positive safe integer");
+      }
+      return;
+    case "file":
+      if (role !== "column") {
+        fail(path, "v.file() must be a direct table column");
       }
       return;
     case "string":

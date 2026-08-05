@@ -448,7 +448,7 @@ on success:
 
 ```sh
 acker status [app-dir]
-acker backup <artifact> [app-dir]
+acker backup <artifact> [app-dir] [--metadata-only]
 acker restore <artifact> [app-dir]
 ```
 
@@ -471,8 +471,8 @@ The operator workflow is therefore:
 
 1. send `SIGINT` or `SIGTERM` and wait for `acker start` to finish its bounded
    drain and exit successfully;
-2. run `acker backup`, then retain or copy both the artifact and its adjacent
-   `.manifest.json` file;
+2. run `acker backup`, then retain or copy the artifact, its adjacent
+   `.manifest.json` file, and its adjacent `.files` directory;
 3. rehearse recovery with `acker restore` into a fresh configured database
    directory; and
 4. start the restored application and check `/live`, `/ready`, and authorized
@@ -491,28 +491,42 @@ verified backup. See [migrations.md](migrations.md) for the deploy sequence.
 1. open the source with a full integrity check;
 2. create a transactionally consistent SQLite artifact with `VACUUM INTO`;
 3. fsync and inspect the artifact, then compute bytes and SHA-256;
-4. launch a separate Bun process, restore into a throwaway directory, run full
+4. read every framework File row from that exact SQLite snapshot, stream its
+   immutable object from the configured File store into `<artifact>.files`,
+   and verify its byte size and SHA-256 against the row metadata;
+5. launch a separate Bun process, restore into a throwaway directory, run full
    integrity/schema/terminal-version checks, prove the next commit version,
-   and commit a durable no-op write without changing that terminal version; and
-5. only after that rehearsal succeeds, atomically publish
+   commit a durable no-op write without changing that terminal version, and
+   independently verify every backed-up File; and
+6. only after that rehearsal succeeds, atomically publish
    `<artifact>.manifest.json` and its verification timestamp.
 
-The exact manifest format is version 1 with `sha256`, `bytes`,
+The exact manifest format is version 2 with `sha256`, `bytes`,
 `schemaFingerprint`, decimal-string `commitVersion`, `durability`, and
-`verifiedAt`. A failed verification removes the candidate artifact instead of
-publishing an unverified backup.
+`verifiedAt`, plus a `files` record containing `mode`, File-row `count`, and
+included byte count. A failed verification removes the candidate database and
+File artifacts instead of publishing an unverified backup.
 
-The artifact is the complete SQLite database, including AckerDB's commit state,
+The SQLite artifact includes AckerDB's commit state,
 retained mutation replay ledger, stored Plugin inventory, and all private
 tables. Its schema fingerprint covers both the root schema and those Plugin
 scopes. Restore therefore preserves still-retained mutation request IDs and
 their exact-once replay results; the full engine open also validates the ledger
-counters and stored Plugin layouts before the artifact is accepted.
+counters and stored Plugin layouts before the artifact is accepted. By default,
+the adjacent `.files` directory contains the corresponding immutable File bytes
+under framework File IDs; private physical object keys remain only inside the
+verified database. `--metadata-only` records an explicit `metadata-only` mode
+and omits that directory for operators who protect their File store separately.
 
 `acker restore` validates the exact manifest shape, digest, size, commit version,
 and target App storage layout in a fresh verification process before claiming
 the target. The layout comparison includes the root schema plus every Plugin
 mount, definition ID, and private schema; restore never reconciles either side.
+For an included backup it also verifies every File against the database,
+refuses to replace an existing object key, and restores bytes to the target
+App's configured active File store while the verified database remains staged.
+Only after those bytes are durable does restore publish the canonical database;
+an unpublished failure rolls back the attempted File objects.
 The configured target database directory may be absent or vacant apart from its
 persistent coordination database and exact coordination staging crash residues.
 Its canonical database and SQLite sidecars must be absent, and unrelated
@@ -536,6 +550,63 @@ machine, so callers cannot publish without the full open and commit probe.
 The operator still owns scheduling, retention, encryption, access control,
 off-machine copies, and periodic disaster-recovery drills. AckerDB currently
 provides verified artifacts, not a backup service or point-in-time recovery.
+
+## FileStore maintenance migration
+
+`acker files migrate` moves immutable File bytes between the filesystem and any
+S3-compatible backend while the application is stopped:
+
+```sh
+acker files migrate <target.json> [app-dir]
+```
+
+The target file contains exactly the object accepted by the `files` field in
+`.ackerdb.config.json`; relative filesystem paths resolve from the application
+directory. For example:
+
+```json
+{
+  "backend": "s3",
+  "endpoint": "https://account.r2.cloudflarestorage.com",
+  "region": "auto",
+  "bucket": "documents",
+  "forcePathStyle": true,
+  "checksum": "disabled",
+  "encryption": { "type": "disabled" }
+}
+```
+
+The target must be a different physical store. A filesystem root identifies a
+local store; normalized S3 endpoint, region, and bucket identify an
+S3-compatible store. Path style, checksum, encryption, URL, and size settings
+do not make the same location a different migration target.
+
+The command takes exclusive maintenance ownership of the existing database and
+runs its full integrity check. It streams every `pending` or `active` File to
+the target under the unchanged private object key; File IDs, grants, and
+application references remain database data and do not change. Files already
+in `deleting` state are excluded, and source objects are never removed.
+
+Progress is fsynced to a per-operation journal under
+`.ackerdb/file-store-migrations/`. A retry resumes after the last durable
+checkpoint, but completion is accepted only after AckerDB streams and hashes
+every current live object from the target again. The journal header binds the
+complete ordered live-File manifest—ID, object key, size, and SHA-256—alongside
+the database commit, schema, and both backend identities.
+
+Only after that final verification succeeds and the database closes cleanly
+does AckerDB atomically replace the active `files` object in
+`.ackerdb.config.json`. Copy, verification, database-close, or concurrent
+configuration-change failure leaves the previous FileStore active. The JSON
+success report includes the journal path and copied, already-present, resumed,
+and total object and byte counts.
+
+With telemetry enabled, the command first emits one bounded `file_migration`
+`storage` span with duration, sanitized outcome, verified target byte count,
+and commit correlation on success. Failure also emits one sanitized `failure`
+event; paths, object keys, contents, and error messages are never telemetry.
+The telemetry is drained before the final report, and
+`ACKERDB_TELEMETRY=disabled` removes it exactly.
 
 ## Remaining limitations
 

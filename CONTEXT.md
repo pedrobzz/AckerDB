@@ -336,6 +336,52 @@ connection failure reported as `CacheStoreError` with its original cause. It is
 never converted into a miss or conditional result; callers choose explicitly
 whether to catch it and fail open.
 
+## File storage
+
+**File** — Immutable AckerDB-owned stored bytes, their fixed framework metadata,
+and their immutable optional owner, identified independently of the application
+records that refer to them. Replacing the bytes creates a different File.
+_Avoid_: Attachment, blob row
+
+**File owner** — The durable user identity captured from the File upload
+session's creator, or explicitly supplied by trusted server-side code. Ownership
+is searchable File state but does not itself grant retrieval authority.
+_Avoid_: Uploader metadata, File authorization
+
+**Pending File** — A successfully stored File awaiting its first durable
+application claim. A pending File expires if no application row claims it and
+may be claimed explicitly when it is intentionally standalone.
+_Avoid_: Temporary upload, orphaned File
+
+**File upload session** — Short-lived, constrained authority to store at most
+one File. Failed attempts may retry until one File is stored successfully or
+the session expires.
+_Avoid_: Upload URL, presigned upload
+
+**File grant** — Independently revocable authority to retrieve one File under
+declared access conditions. Revoking a grant does not delete the File.
+_Avoid_: File URL, public file
+
+**Bearer File grant** — A File grant for which possession of its unguessable
+URL is the complete retrieval authority; no user principal is required.
+_Avoid_: Public File grant
+
+**Authenticated File grant** — A File grant that admits any request carrying a
+valid AckerDB user principal without making an application-specific access
+decision.
+_Avoid_: Private File grant
+
+**Validated File grant** — A File grant whose every retrieval must be admitted
+by an application-owned read decision under the request's current principal and
+the grant's typed authorization arguments.
+_Avoid_: Private File, authenticated URL
+
+**File reference** — An application-owned relation from an ordinary typed row
+to a File, declared explicitly by that row's schema. It owns searchable business
+metadata and application relationships instead of extending the File's
+framework metadata.
+_Avoid_: Custom file column, file metadata
+
 **Execution root** — The execution context a runtime subsystem owns and runs
 its work under when that work is performed on its own behalf rather than a
 caller's — e.g. the reactive system re-evaluating subscriptions for

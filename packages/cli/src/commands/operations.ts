@@ -19,18 +19,33 @@ import {
   Engine,
   IncompatibleDatabaseError,
   PRODUCTION_LIMITS,
+  rebindRestoredFileStore,
+  resolveFileStoreBinding,
   restoreVerifiedDatabase,
   Telemetry,
   isAckerDBError,
   type BackupManifest,
-  type DurabilityPolicy,
   type EngineStatus,
   type TelemetryOperation,
   type TelemetryOutcome,
   type TelemetryTraceContext,
 } from "@ackerdb/server";
 import { importApp } from "../app/manifest.ts";
+import { createFileStore } from "../app/start.ts";
 import type { AppConfig } from "../app/config.ts";
+import { fileStoreIdentity } from "../files/identity.ts";
+import {
+  assertRestoreKeysVacant,
+  backupFilesPath,
+  createFilesBackup,
+  createMetadataOnlyFilesBackup,
+  fileRestorePublication,
+  verifyFilesBackup,
+  type BackupFilesManifest,
+} from "./backup-files.ts";
+
+export { backupFilesPath } from "./backup-files.ts";
+export type { BackupFilesManifest } from "./backup-files.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const DECIMAL_BIGINT = /^(?:0|[1-9][0-9]*)$/;
@@ -49,9 +64,9 @@ function operationOutcome(error: unknown): TelemetryOutcome {
   return "internal";
 }
 
-async function observeStorageOperation<T>(
+export async function observeStorageOperation<T>(
   config: AppConfig,
-  operation: Extract<TelemetryOperation, "backup" | "restore">,
+  operation: Extract<TelemetryOperation, "backup" | "restore" | "file_migration">,
   work: () => Promise<T>,
   details: (value: T) => OperationTelemetryDetails,
 ): Promise<T> {
@@ -123,14 +138,14 @@ async function observeStorageOperation<T>(
   return value!;
 }
 
-export interface BackupManifestJson {
-  format: 1;
+export interface VerifiedBackupManifest extends Omit<BackupManifest, "format"> {
+  format: 2;
+  files: BackupFilesManifest;
+}
+
+export interface BackupManifestJson extends Omit<VerifiedBackupManifest, "commitVersion"> {
   sha256: string;
-  bytes: number;
-  schemaFingerprint: string;
   commitVersion: string;
-  durability: DurabilityPolicy;
-  verifiedAt: number;
 }
 
 export interface EngineStatusJson extends Omit<EngineStatus, "commitVersion"> {
@@ -165,7 +180,7 @@ export interface RestoreReport {
 export type FreshProcessVerifier = (
   config: AppConfig,
   artifact: string,
-  manifest: BackupManifest,
+  manifest: VerifiedBackupManifest,
 ) => Promise<void>;
 
 function databasePath(config: AppConfig): string {
@@ -196,11 +211,11 @@ function digest(value: unknown, field: string): string {
   return value;
 }
 
-export function serializeBackupManifest(manifest: BackupManifest): BackupManifestJson {
+export function serializeBackupManifest(manifest: VerifiedBackupManifest): BackupManifestJson {
   return { ...manifest, commitVersion: manifest.commitVersion.toString() };
 }
 
-export function parseBackupManifest(value: unknown): BackupManifest {
+export function parseBackupManifest(value: unknown): VerifiedBackupManifest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("backup manifest must be a JSON object");
   }
@@ -212,6 +227,7 @@ export function parseBackupManifest(value: unknown): BackupManifest {
     "schemaFingerprint",
     "commitVersion",
     "durability",
+    "files",
     "verifiedAt",
   ];
   const actual = Object.keys(record).sort();
@@ -219,25 +235,41 @@ export function parseBackupManifest(value: unknown): BackupManifest {
   if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
     throw new Error("backup manifest has an unsupported shape");
   }
-  if (record.format !== 1) throw new Error("backup manifest format must be 1");
+  if (record.format !== 2) throw new Error("backup manifest format must be 2");
   if (typeof record.commitVersion !== "string" || !DECIMAL_BIGINT.test(record.commitVersion)) {
     throw new Error("backup manifest commitVersion must be a canonical non-negative decimal string");
   }
   if (record.durability !== "production" && record.durability !== "balanced") {
     throw new Error("backup manifest durability must be production or balanced");
   }
+  if (record.files === null || typeof record.files !== "object" || Array.isArray(record.files)) {
+    throw new Error("backup manifest files must be a JSON object");
+  }
+  const files = record.files as Record<string, unknown>;
+  const fileFields = Object.keys(files).sort();
+  if (fileFields.length !== 3 || fileFields[0] !== "bytes" || fileFields[1] !== "count" || fileFields[2] !== "mode") {
+    throw new Error("backup manifest files has an unsupported shape");
+  }
+  if (files.mode !== "included" && files.mode !== "metadata-only") {
+    throw new Error("backup manifest files mode must be included or metadata-only");
+  }
   return {
-    format: 1,
+    format: 2,
     sha256: digest(record.sha256, "sha256"),
     bytes: safeInteger(record.bytes, "bytes"),
     schemaFingerprint: digest(record.schemaFingerprint, "schemaFingerprint"),
     commitVersion: BigInt(record.commitVersion),
     durability: record.durability,
+    files: {
+      mode: files.mode,
+      count: safeInteger(files.count, "files.count"),
+      bytes: safeInteger(files.bytes, "files.bytes"),
+    },
     verifiedAt: safeInteger(record.verifiedAt, "verifiedAt"),
   };
 }
 
-export function readBackupManifest(artifact: string): BackupManifest {
+export function readBackupManifest(artifact: string): VerifiedBackupManifest {
   const path = backupManifestPath(artifact);
   if (!existsSync(path)) throw new Error(`backup manifest not found at ${path}`);
   const metadata = statSync(path);
@@ -276,7 +308,7 @@ function fsyncPath(path: string): void {
   if (failed) throw failure;
 }
 
-function publishManifest(path: string, manifest: BackupManifest): void {
+function publishManifest(path: string, manifest: VerifiedBackupManifest): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${crypto.randomUUID()}`;
   let published = false;
@@ -295,14 +327,24 @@ function publishManifest(path: string, manifest: BackupManifest): void {
     fsyncPath(dirname(path));
   } catch (error) {
     const cleanup: unknown[] = [];
+    let removed = false;
     try {
       rmSync(temporary, { force: true });
+      removed = true;
     } catch (cleanupError) {
       cleanup.push(cleanupError);
     }
     if (published) {
       try {
         rmSync(path, { force: true });
+        removed = true;
+      } catch (cleanupError) {
+        cleanup.push(cleanupError);
+      }
+    }
+    if (removed) {
+      try {
+        fsyncPath(dirname(path));
       } catch (cleanupError) {
         cleanup.push(cleanupError);
       }
@@ -316,6 +358,43 @@ function publishManifest(path: string, manifest: BackupManifest): void {
     throw error;
   }
 }
+
+function databaseManifest(manifest: VerifiedBackupManifest): BackupManifest {
+  return {
+    format: 1,
+    sha256: manifest.sha256,
+    bytes: manifest.bytes,
+    schemaFingerprint: manifest.schemaFingerprint,
+    commitVersion: manifest.commitVersion,
+    durability: manifest.durability,
+    verifiedAt: manifest.verifiedAt,
+  };
+}
+
+function removeBackupCandidates(artifact: string, filesPublished: boolean): readonly unknown[] {
+  const failures: unknown[] = [];
+  let removed = false;
+  for (const candidate of filesPublished
+    ? [artifact, backupFilesPath(artifact)]
+    : [artifact]) {
+    if (!existsSync(candidate)) continue;
+    try {
+      rmSync(candidate, { recursive: candidate !== artifact, force: true });
+      removed = true;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (removed) {
+    try {
+      fsyncPath(dirname(artifact));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  return failures;
+}
+
 
 /** Open and inspect an existing AckerDB database without starting the app server. */
 export async function inspectDatabase(config: AppConfig): Promise<StatusReport> {
@@ -359,17 +438,21 @@ export async function createVerifiedBackup(
   config: AppConfig,
   destination: string,
   verify: FreshProcessVerifier,
+  options: { metadataOnly?: boolean } = {},
 ): Promise<BackupReport> {
   return observeStorageOperation(config, "backup", async () => {
     const source = databasePath(config);
     requireDatabase(source);
     const artifact = resolve(destination);
     const manifestPath = backupManifestPath(artifact);
+    const filesPath = backupFilesPath(artifact);
     if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
     if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
+    if (existsSync(filesPath)) throw new Error(`backup File destination already exists: ${filesPath}`);
 
     const app = await importApp(config);
-    let manifest: BackupManifest | null = null;
+    let manifest: VerifiedBackupManifest | null = null;
+    let filesPublished = false;
     const engine = new Engine(app.schema, source, {
       durability: config.durability,
       integrityCheck: "full",
@@ -377,7 +460,18 @@ export async function createVerifiedBackup(
     let backupFailed = false;
     let backupFailure: unknown;
     try {
-      manifest = engine.backup(artifact);
+      resolveFileStoreBinding(engine, fileStoreIdentity(config.files));
+      const engineManifest = engine.backup(artifact);
+      const fileManifest = options.metadataOnly === true
+        ? await createMetadataOnlyFilesBackup(artifact)
+        : await createFilesBackup(config, artifact, artifact);
+      filesPublished = fileManifest.mode === "included";
+      manifest = {
+        ...engineManifest,
+        format: 2,
+        files: fileManifest,
+        verifiedAt: 0,
+      };
     } catch (error) {
       backupFailed = true;
       backupFailure = error;
@@ -396,11 +490,10 @@ export async function createVerifiedBackup(
       backupFailed = true;
     }
     if (backupFailed) {
-      try {
-        rmSync(artifact, { force: true });
-      } catch (cleanupError) {
+      const cleanup = removeBackupCandidates(artifact, filesPublished);
+      if (cleanup.length > 0) {
         throw new AggregateError(
-          [backupFailure, cleanupError],
+          [backupFailure, ...cleanup],
           `backup failed and candidate artifact cleanup also failed: ${artifact}`,
         );
       }
@@ -413,16 +506,17 @@ export async function createVerifiedBackup(
       manifest = { ...manifest, verifiedAt: Date.now() };
       publishManifest(manifestPath, manifest);
     } catch (error) {
-      try {
-        rmSync(artifact, { force: true });
-      } catch (cleanupError) {
+      const cleanup = removeBackupCandidates(artifact, filesPublished);
+      if (cleanup.length > 0) {
         throw new AggregateError(
-          [error, cleanupError],
+          [error, ...cleanup],
           `backup verification and artifact cleanup both failed: ${artifact}`,
         );
       }
       throw error;
     }
+
+    if (manifest === null) throw new Error("backup completed without a File manifest");
 
     return {
       format: 1,
@@ -432,7 +526,7 @@ export async function createVerifiedBackup(
       manifest: serializeBackupManifest(manifest),
     };
   }, (report) => ({
-    sizeBytes: report.manifest.bytes,
+    sizeBytes: report.manifest.bytes + report.manifest.files.bytes,
     commitId: report.manifest.commitVersion,
   }));
 }
@@ -441,14 +535,15 @@ export async function createVerifiedBackup(
 export async function verifyBackupArtifact(
   config: AppConfig,
   artifact: string,
-  manifest: BackupManifest,
+  manifest: VerifiedBackupManifest,
 ): Promise<void> {
   const temporaryDir = mkdtempSync(join(tmpdir(), "ackerdb-verify-"));
   const restored = join(temporaryDir, "data.db");
   let failed = false;
   let failure: unknown;
   try {
-    await restoreVerifiedDatabase(artifact, restored, manifest, () => importApp(config));
+    await restoreVerifiedDatabase(artifact, restored, databaseManifest(manifest), () => importApp(config));
+    await verifyFilesBackup(artifact, manifest.files, restored);
   } catch (error) {
     failed = true;
     failure = error;
@@ -481,8 +576,29 @@ export async function restoreVerifiedBackup(
     const manifest = readBackupManifest(artifact);
     await verify(config, artifact, manifest);
 
+    const fileStore = await createFileStore(config);
+    if (manifest.files.mode === "included") await assertRestoreKeysVacant(fileStore, artifact);
+    const filePublication = fileRestorePublication(
+      config,
+      artifact,
+      fileStore,
+      artifact,
+      manifest.files.mode,
+    );
+
     const target = databasePath(config);
-    const status = await restoreVerifiedDatabase(artifact, target, manifest, () => importApp(config));
+    const status = await restoreVerifiedDatabase(
+      artifact,
+      target,
+      databaseManifest(manifest),
+      () => importApp(config),
+      {
+        ...filePublication,
+        prepareStagedDatabase: (engine) => {
+          rebindRestoredFileStore(engine, fileStoreIdentity(config.files));
+        },
+      },
+    );
     return {
       format: 1,
       operation: "restore",
@@ -492,7 +608,7 @@ export async function restoreVerifiedBackup(
       status: statusJson(status),
     };
   }, (report) => ({
-    sizeBytes: report.manifest.bytes,
+    sizeBytes: report.manifest.bytes + report.manifest.files.bytes,
     commitId: report.manifest.commitVersion,
   }));
 }

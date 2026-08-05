@@ -41,7 +41,7 @@ import {
   type SchemaRefusal,
   type SchemaSnapshot,
   type TableSnapshot,
-  withJobsTable,
+  withFrameworkTables,
 } from "@ackerdb/server";
 
 /** Raised when a descriptor kind cannot be rendered structurally — a hard stop. */
@@ -112,15 +112,16 @@ function literalTs(value: unknown): string {
  * The render facet of the descriptor seam, co-located CLI-side because it emits
  * TypeScript text (a codegen concern that also owns `GenerateError`): a table
  * keyed by the same descriptor kinds the server seam uses, mapping each to its
- * structural type text. bigint/identity/pk as bigint, int/float/scheduleAt as
- * number, bytes as Uint8Array, jsonb as the codegen convention (`unknown`), enums as
- * string-literal unions, unions as discriminated `{ tag; value }` unions,
- * objects/arrays/nullables recursively.
+ * structural type text. bigint/identity/pk as bigint, File references as FileId,
+ * int/float/scheduleAt as number, bytes as Uint8Array, jsonb as the codegen
+ * convention (`unknown`), enums as string-literal unions, unions as
+ * discriminated `{ tag; value }` unions, objects/arrays/nullables recursively.
  */
 const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   pk: () => "bigint",
   bigint: () => "bigint",
   identity: () => "bigint",
+  file: () => "FileId",
   string: () => "string",
   int: () => "number",
   float: () => "number",
@@ -217,7 +218,7 @@ export function generateMigration(input: GenerateMigrationInput): GeneratedMigra
     columns: renames.columns ?? {},
     variants: renames.variants ?? {},
   };
-  const target = snapshotOf(withJobsTable(input.schema));
+  const target = snapshotOf(withFrameworkTables(input.schema));
 
   const diff = diffSnapshots(applyRenames(pre, normalizedRenames), target);
   const { refusals } = classifySchemaDiff(diff);
@@ -318,7 +319,7 @@ function renderTypes(
 
   const lines: string[] = [TYPES_HEADER];
   lines.push('import { defineMigration as defineMigrationRuntime } from "@ackerdb/server";');
-  lines.push('import type { Renames } from "@ackerdb/server";');
+  lines.push('import type { FileId, Renames } from "@ackerdb/server";');
   lines.push("");
 
   lines.push("/** Rows as they existed BEFORE this migration (the recorded pre-snapshot). */");

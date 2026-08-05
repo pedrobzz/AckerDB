@@ -14,6 +14,7 @@ import {
   probeUniqueIndex,
   reconcile,
   UnsafeSchemaChange,
+  withFrameworkTables,
   type Schema,
 } from "@ackerdb/server";
 
@@ -63,11 +64,15 @@ const baseSchema = () =>
     }).index(["name"]),
   });
 
+const initializationLine = (schema: Schema): string =>
+  `initialized ${Object.keys(withFrameworkTables(schema).tables).length} table(s)`;
+
 describe("reconcile: bootstrap", () => {
   test("fresh database initializes; identical schema is a no-op", () => {
     const path = freshPath();
-    const a = open(baseSchema(), path);
-    expect(a.applied).toEqual(["initialized 2 table(s)"]);
+    const schema = baseSchema();
+    const a = open(schema, path);
+    expect(a.applied).toEqual([initializationLine(schema)]);
     a.engine.close("clean");
     const b = open(baseSchema(), path);
     expect(b.applied).toEqual([]);
@@ -76,8 +81,9 @@ describe("reconcile: bootstrap", () => {
 
   test("reordering column declarations is not a schema change", () => {
     const path = freshPath();
-    const a = open(baseSchema(), path);
-    expect(a.applied).toEqual(["initialized 2 table(s)"]);
+    const schema = baseSchema();
+    const a = open(schema, path);
+    expect(a.applied).toEqual([initializationLine(schema)]);
     const stored = a.engine.loadSnapshot()!;
     a.engine.close("clean");
 

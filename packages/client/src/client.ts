@@ -62,6 +62,10 @@ import {
 } from "./channels/channel.ts";
 import { retryDelay } from "./connection/retry-policy.ts";
 import {
+  AckerDBFilesClient,
+  type AckerDBFiles,
+} from "./files/client.ts";
+import {
   RealtimeManager,
   type AckerDBPeerConnectionFactory,
   type AckerDBRealtime,
@@ -648,6 +652,7 @@ const SYSTEM_RANDOM = (): number => {
 export class AckerDBClient {
   readonly clientSessionId: string;
   readonly scheduler: AckerDBClientScheduler;
+  readonly files: AckerDBFiles;
 
   private readonly httpUrl: string;
   private readonly wsUrl: string;
@@ -778,6 +783,20 @@ export class AckerDBClient {
       clientError: (outcome) => new AckerDBClientError(outcome),
       isClientError: (error): error is AckerDBClientError =>
         error instanceof AckerDBClientError,
+    });
+    this.files = new AckerDBFilesClient({
+      mutation: (ref, args) => this.mutation(ref, args),
+      fetch: (url, init) => this.fetcher(url, init),
+      createFetchControl: (signal) => {
+        const control = this.createFetchController(signal);
+        return {
+          signal: control.controller.signal,
+          release: () => this.releaseFetchController(control),
+        };
+      },
+      readResponse: (response, signal) =>
+        this.readBoundedResponse(response, this.limits.maxFrameBytes, signal, "idempotency"),
+      clientError: (outcome, interruption) => new AckerDBClientError(outcome, interruption),
     });
     parseClientMessage({
       v: PROTOCOL_VERSION,

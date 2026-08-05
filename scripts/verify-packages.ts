@@ -354,6 +354,11 @@ async function main(): Promise<void> {
     if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
       throw new Error("packed @ackerdb/server does not expose ./mcp from ./src/mcp/index.ts");
     }
+    if (serverManifest.exports?.["./files/s3"] !== "./src/files/store/s3.ts") {
+      throw new Error(
+        "packed @ackerdb/server does not expose ./files/s3 from ./src/files/store/s3.ts",
+      );
+    }
     const exactServerDependencies = {
       "@modelcontextprotocol/sdk": "1.30.0",
       "numkong": "7.7.1",
@@ -473,6 +478,11 @@ import {
   procedure,
   v,
 } from "@ackerdb/server";
+import * as serverRoot from "@ackerdb/server";
+import {
+  S3FileStore,
+  type S3FileStoreConfig,
+} from "@ackerdb/server/files/s3";
 import {
   mcp as mcpFromSubpath,
   mcpAuth as mcpAuthFromSubpath,
@@ -481,6 +491,17 @@ import {
 import { cachePlugin, defineCacheStore } from "@ackerdb/cache";
 import { redisCacheStore } from "@ackerdb/cache/redis";
 import { upstashCacheStore } from "@ackerdb/cache/upstash";
+
+if ("S3FileStore" in serverRoot) {
+  throw new Error("the root @ackerdb/server entrypoint eagerly exposes the optional S3 adapter");
+}
+const s3Config = {
+  region: "us-east-1",
+  bucket: "packed-export-probe",
+} satisfies S3FileStoreConfig;
+if (!(new S3FileStore(s3Config) instanceof S3FileStore)) {
+  throw new Error("@ackerdb/server/files/s3 did not construct its public S3 adapter");
+}
 
 if (mcpFromRoot !== mcpFromSubpath) {
   throw new Error("@ackerdb/server/mcp resolves a different mcp implementation");
@@ -623,7 +644,7 @@ await verifyPublicRealtimeSession(createBundledRealtimeEngine);
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PUBLIC_PACKAGES.length} public @ackerdb packages plus ${NATIVE_PACKAGES.length} platform tarballs at ${version}, optional realtime payload excluded from server, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.30.0 with audited transitive security floors, native NumKong exact search${verifyNativeRuntime ? ", and host-resolved WebRTC loading with typed events, audio, procedure, transaction, and cleanup" : ""}, with no server AI production dependency.`,
+      `Packed package gate passed: ${PUBLIC_PACKAGES.length} public @ackerdb packages plus ${NATIVE_PACKAGES.length} platform tarballs at ${version}, optional realtime payload excluded from server, lazy S3 and Cache adapter exports, generated MCP types, Bun runtime, SDK 1.30.0 with audited transitive security floors, native NumKong exact search${verifyNativeRuntime ? ", and host-resolved WebRTC loading with typed events, audio, procedure, transaction, and cleanup" : ""}, with no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

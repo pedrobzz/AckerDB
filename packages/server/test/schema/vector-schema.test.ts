@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { defineSchema, defineTable, snapshotOf, v } from "@ackerdb/server";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 describe("vector schema placement", () => {
   test("retains dimensions on direct required and nullable columns", () => {
-    const snapshot = snapshotOf(withJobsTable(defineSchema({
+    const snapshot = snapshotOf(withFrameworkTables(defineSchema({
       documents: defineTable({
         id: v.primaryKey(),
         embedding: v.vector(1536),

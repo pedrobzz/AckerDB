@@ -42,6 +42,7 @@ const EQUATABLE_KINDS = new Set([
   "float",
   "bigint",
   "identity",
+  "file",
   "scheduleAt",
   "boolean",
   "enum",

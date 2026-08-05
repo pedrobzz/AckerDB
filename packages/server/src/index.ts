@@ -28,7 +28,60 @@ export {
 } from "./plugins/definition.ts";
 export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
-export { type Identity } from "@ackerdb/core";
+export {
+  type FileId,
+  type FileMetadata,
+  type FileState,
+  type FileUploadResult,
+  type FileUploadSession,
+  type Identity,
+} from "@ackerdb/core";
+export {
+  type CreateFileGrantOptions,
+  type CreateFileUploadOptions,
+  type FileDuration,
+  type FileGrant,
+  type FileGrantAccess,
+  type FileGrantDisposition,
+  type FileGrantLifetime,
+  type FileGrantMetadata,
+  type FileGrantMetadataQuery,
+  type FileMetadataQuery,
+  type FileMetadataPredicate,
+  type FileMetadataQueryRow,
+  type FileMutationCapability,
+  type FileProcedureCapability,
+  type FileQueryCapability,
+  type FileRange,
+  type OpenedFile,
+  type OrderedFileMetadataQuery,
+  type StoreFileOptions,
+} from "./files/api.ts";
+export { type RuntimeFilesOptions } from "./files/namespace.ts";
+export {
+  type FileObservabilitySnapshot,
+  type FileTransferOutcome,
+  type FileTransferSnapshot,
+  type FileUsageSnapshot,
+} from "./files/observability.ts";
+export {
+  FileStoreError,
+  LocalFileStore,
+  type FileStore,
+  type FileStoreAttributes,
+  type FileStoreErrorCode,
+  type FileStoreOpenOptions,
+  type FileStoreOpenResult,
+  type FileStoreOptions,
+  type FileStorePutOptions,
+  type FileStorePutResult,
+  type FileStoreRange,
+  type LocalFileStoreConfig,
+  type S3Credentials,
+  type S3FileStoreChecksum,
+  type S3FileStoreConfig,
+  type S3FileStoreEncryption,
+} from "./files/store/index.ts";
 export {
   type Descriptor,
   type Expand,
@@ -43,6 +96,7 @@ export {
   type NullishValidator,
 } from "./validation/validator.ts";
 export {
+  type FileValidator,
   type StringValidator,
   type VectorValidator,
 } from "./validation/primitives.ts";
@@ -74,10 +128,16 @@ export {
   type EngineOptions,
   type EngineStatus,
   type IntegrityReport,
+  type RestorePublicationHook,
   type TablePlan,
   type TagMap,
 } from "./database/engine.ts";
 export { restoreVerifiedDatabase } from "./database/restore.ts";
+export {
+  rebindRestoredFileStore,
+  recordVerifiedFileStoreTransition,
+  resolveFileStoreBinding,
+} from "./files/binding.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
@@ -132,7 +192,8 @@ export {
   type QueryJobsOf,
   type TypedJobOutcome,
 } from "./jobs/api.ts";
-export { JOBS_TABLE, withJobsTable } from "./jobs/table.ts";
+export { JOBS_TABLE } from "./jobs/table.ts";
+export { withFrameworkTables } from "./database/framework-schema.ts";
 export {
   type JobAttemptOutcome,
   type JobAttemptRecord,

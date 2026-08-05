@@ -15,6 +15,7 @@ type RuntimeSamplerState = Pick<
   | "authCaptureBudget"
   | "sseBudget"
   | "telemetry"
+  | "files"
   | "storage"
 >;
 
@@ -78,6 +79,31 @@ export class RuntimeSampler {
       (sum, value) => sum + value,
       0,
     );
+    const fileMetrics: RuntimeMetric[] = [
+      ["runtime.file_pending_count", state.files.pending.count, "gauge"],
+      ["runtime.file_pending_bytes", state.files.pending.bytes, "bytes"],
+      ["runtime.file_active_count", state.files.active.count, "gauge"],
+      ["runtime.file_active_bytes", state.files.active.bytes, "bytes"],
+      ["runtime.file_deleting_count", state.files.deleting.count, "gauge"],
+      ["runtime.file_deleting_bytes", state.files.deleting.bytes, "bytes"],
+      ["runtime.file_cleanup_backlog", state.files.cleanup.backlog, "gauge"],
+      ["runtime.file_cleanup_oldest_age", state.files.cleanup.oldestAgeMs, "milliseconds"],
+      ["runtime.file_cleanup_failures", state.files.cleanup.failures, "count"],
+      ["runtime.file_upload_operations", state.files.upload.operations, "count"],
+      ["runtime.file_upload_bytes", state.files.upload.bytes, "bytes"],
+      ["runtime.file_upload_latency", state.files.upload.latencyMs.average, "milliseconds"],
+      ["runtime.file_upload_latency_max", state.files.upload.latencyMs.max, "milliseconds"],
+      ["runtime.file_download_operations", state.files.download.operations, "count"],
+      ["runtime.file_download_bytes", state.files.download.bytes, "bytes"],
+      ["runtime.file_download_latency", state.files.download.latencyMs.average, "milliseconds"],
+      ["runtime.file_download_latency_max", state.files.download.latencyMs.max, "milliseconds"],
+      ["runtime.file_provider_errors", state.files.providerErrors.total, "count"],
+      ["runtime.file_provider_probe_errors", state.files.providerErrors.probe, "count"],
+      ["runtime.file_provider_put_errors", state.files.providerErrors.put, "count"],
+      ["runtime.file_provider_open_errors", state.files.providerErrors.open, "count"],
+      ["runtime.file_provider_attributes_errors", state.files.providerErrors.attributes, "count"],
+      ["runtime.file_provider_delete_errors", state.files.providerErrors.delete, "count"],
+    ];
     const metrics: readonly RuntimeMetric[] = [
       ["runtime.connections", state.connections, "gauge"],
       ["runtime.operations", state.activeOperations, "gauge"],
@@ -186,9 +212,28 @@ export class RuntimeSampler {
       ["runtime.rss_bytes", process.memoryUsage().rss, "bytes"],
       ["runtime.cpu_cores", cores, "gauge"],
       ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
+      ...fileMetrics,
     ];
     for (const [name, value, unit] of metrics) {
       this.options.telemetry.recordMetric({ name, value, unit });
+    }
+    for (const [outcome, value] of Object.entries(state.files.upload.outcomes)) {
+      if (value === 0) continue;
+      this.options.telemetry.recordMetric({
+        name: "runtime.file_upload_outcomes",
+        value,
+        unit: "count",
+        labels: { outcome: outcome as keyof typeof state.files.upload.outcomes },
+      });
+    }
+    for (const [outcome, value] of Object.entries(state.files.download.outcomes)) {
+      if (value === 0) continue;
+      this.options.telemetry.recordMetric({
+        name: "runtime.file_download_outcomes",
+        value,
+        unit: "count",
+        labels: { outcome: outcome as keyof typeof state.files.download.outcomes },
+      });
     }
     this.options.sampleRealtime();
     this.options.flushDeliveryFailures();

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 import {
   applyRenames,
   classifySchemaDiff,
@@ -25,8 +25,8 @@ function documents(fullText: readonly ("title" | "body")[] = []) {
 
 describe("full-text schema evolution", () => {
   test("adding and dropping targets are shape-safe derived-storage changes", () => {
-    const plain = snapshotOf(withJobsTable(documents()));
-    const searchable = snapshotOf(withJobsTable(documents(["body"])));
+    const plain = snapshotOf(withFrameworkTables(documents()));
+    const searchable = snapshotOf(withFrameworkTables(documents(["body"])));
     const added = diffSnapshots(plain, searchable);
 
     expect(added).toEqual([
@@ -54,21 +54,21 @@ describe("full-text schema evolution", () => {
   test("target order is structural noise", () => {
     expect(
       diffSnapshots(
-        snapshotOf(withJobsTable(documents(["title", "body"]))),
-        snapshotOf(withJobsTable(documents(["body", "title"]))),
+        snapshotOf(withFrameworkTables(documents(["title", "body"]))),
+        snapshotOf(withFrameworkTables(documents(["body", "title"]))),
       ),
     ).toEqual([]);
   });
 
   test("a table rebuild absorbs full-text target changes", () => {
-    const current = snapshotOf(withJobsTable(defineSchema({
+    const current = snapshotOf(withFrameworkTables(defineSchema({
       documents: defineTable({
         id: v.primaryKey(),
         title: v.string(),
         body: v.string(),
       }).fullText(["title"]),
     })));
-    const target = snapshotOf(withJobsTable(defineSchema({
+    const target = snapshotOf(withFrameworkTables(defineSchema({
       documents: defineTable({
         id: v.primaryKey(),
         title: v.string().nullable(),
@@ -84,7 +84,7 @@ describe("full-text schema evolution", () => {
   });
 
   test("column renames carry full-text target identity", () => {
-    const current = snapshotOf(withJobsTable(documents(["body"])));
+    const current = snapshotOf(withFrameworkTables(documents(["body"])));
     const renamed = applyRenames(current, {
       tables: {},
       columns: { documents: { body: "content" } },

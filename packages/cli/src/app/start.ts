@@ -11,10 +11,13 @@ import {
   type App,
   type AppSystemCtx,
   Engine,
+  LocalFileStore,
   PluginRuntime,
   PRODUCTION_LIMITS,
   Registry,
+  resolveFileStoreBinding,
   Runtime,
+  type FileStore,
   type RuntimeOptions,
   assertCredentialVerifier,
   assemblePlugins,
@@ -45,6 +48,7 @@ import {
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
+import { fileStoreIdentity } from "../files/identity.ts";
 
 export interface RunningApp<A extends App = App> {
   server: AckerDBServer;
@@ -166,6 +170,22 @@ function credentialVerifierLoader(
  * cancellation immediately rather than waiting to be torn down.
  */
 const SERVICES_STOPPING = new Error("application is shutting down");
+
+export async function createFileStore(config: AppConfig): Promise<FileStore> {
+  const files = config.files;
+  if (files.backend === "filesystem") {
+    return new LocalFileStore({ root: files.root });
+  }
+  const { S3FileStore } = await import("@ackerdb/server/files/s3");
+  return new S3FileStore({
+    ...(files.endpoint === undefined ? {} : { endpoint: files.endpoint }),
+    region: files.region,
+    bucket: files.bucket,
+    forcePathStyle: files.forcePathStyle,
+    checksum: files.checksum,
+    encryption: files.encryption,
+  });
+}
 
 export class StartupInterruptedError extends Error {
   override readonly name = "StartupInterruptedError";
@@ -315,6 +335,10 @@ export async function startApp<const A extends App = App>(
     ownedEngine = new Engine(app.schema, join(config.dbDir, "data.db"), {
       durability: config.durability,
     });
+    resolveFileStoreBinding(ownedEngine, fileStoreIdentity(config.files));
+    const files = await createFileStore(config);
+    await awaitStartup(files.probe({ signal: startupSignal }));
+    requireStartupOwnership();
 
     // A present chain reports `migrating` distinctly; an empty one reconciles
     // exactly as before. The chain form owns history, the per-step apply, and
@@ -356,6 +380,11 @@ export async function startApp<const A extends App = App>(
       registry,
       pluginRuntime,
       jobs: declaredJobs,
+      files: {
+        store: files,
+        publicUrl: config.files.publicUrl,
+        maxBytes: config.files.maxBytes,
+      },
       ...(verifier === undefined ? {} : { verifier }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,

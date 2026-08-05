@@ -13,6 +13,7 @@ export const TELEMETRY_OPERATIONS = [
   "realtime",
   "backup",
   "restore",
+  "file_migration",
   "lifecycle",
 ] as const;
 export type TelemetryOperation = (typeof TELEMETRY_OPERATIONS)[number];

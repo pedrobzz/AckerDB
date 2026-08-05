@@ -11,7 +11,7 @@ import {
   indexSqlName,
   migrationFingerprint,
   snapshotOf,
- withJobsTable,
+  withFrameworkTables,
 } from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
@@ -92,9 +92,9 @@ export const list = query({
 
 const UNIQUE_LABEL_INDEX = "s_u_b_5_label";
 
-// Engine-visible snapshots: the stored pre and the generated target both carry the jobs table.
-const V1 = snapshotOf(withJobsTable(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) })));
-const V2 = snapshotOf(withJobsTable(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) })));
+// Engine-visible snapshots: stored and generated root schemas carry every framework table.
+const V1 = snapshotOf(withFrameworkTables(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) })));
+const V2 = snapshotOf(withFrameworkTables(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) })));
 
 type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 type Item = { id: bigint; label: string; count: unknown };
