@@ -554,6 +554,13 @@ pull.
 >
 ```
 
+The proactive schedule is an optimization, not the guarantee: an environment
+that stops running timers — a backgrounded browser tab, a suspended host —
+can skip past it entirely. The client therefore records when the accepted
+credential dies and consults that deadline before every dial, so a wake past
+expiry pulls a fresh credential instead of presenting one it can already
+prove is dead. Recovery costs one source pull, not a rejected handshake.
+
 In source mode `refresh()` takes no argument and re-invokes the source
 immediately — call it right after the identity SDK completes sign-in.
 `signOut()` re-invokes the source and resolves only when the server actually

@@ -730,6 +730,8 @@ export class AckerDBClient {
   private sourceRetryAttempt = 0;
   private sourceRetryHandle?: unknown;
   private sourceRefreshHandle?: unknown;
+  /** When the accepted credential dies, in clock time; undefined while anonymous. */
+  private credentialExpiresAtMs?: number;
   /** The credential the current connection's hello presented. */
   private helloCredential?: Credential;
   private socket: AckerDBWebSocket | null = null;
@@ -986,6 +988,9 @@ export class AckerDBClient {
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
     this.credential = nextCredential;
+    // The deadline describes the accepted credential; this one is not
+    // accepted until the server confirms it.
+    this.credentialExpiresAtMs = undefined;
     this.realtimeSessions.authenticationChanged();
     this.authBlocked = false;
     this.blockingError = undefined;
@@ -1143,6 +1148,22 @@ export class AckerDBClient {
     if (this.sourceRetryHandle === undefined) return;
     this.clock.clearTimeout(this.sourceRetryHandle);
     this.sourceRetryHandle = undefined;
+  }
+
+  /**
+   * Records when the accepted credential dies and arms the proactive re-pull.
+   * The absolute deadline outlives the timer deliberately: an environment
+   * that stops running timers (a frozen browser tab, a suspended host) can
+   * skip past the scheduled re-pull entirely, and the dial boundary consults
+   * the deadline instead of trusting that the timer ever fired.
+   */
+  private acceptedCredential(): void {
+    const authentication = this.authentication;
+    this.credentialExpiresAtMs =
+      authentication === undefined || authentication.principal === "anonymous"
+        ? undefined
+        : this.now() + authentication.credentialTtlMs;
+    this.scheduleSourceRefresh();
   }
 
   /**
@@ -1967,6 +1988,20 @@ export class AckerDBClient {
       void this.pullCredentialSource().catch(() => {});
       return;
     }
+    // Nor may it present a credential the server already told us is dead.
+    // Timers are not a durable schedule — a frozen tab or a suspended host
+    // can skip the proactive re-pull entirely — so the recorded deadline,
+    // not the timer, decides whether this credential is still presentable.
+    // Pulling here keeps the wake path free of a doomed handshake and the
+    // `refresh-required` blip it would publish.
+    if (
+      this.credentialSource !== undefined &&
+      this.credentialExpiresAtMs !== undefined &&
+      this.now() >= this.credentialExpiresAtMs
+    ) {
+      void this.pullCredentialSource().catch(() => {});
+      return;
+    }
     // Server admission control is enforced at the one physical dial boundary:
     // no demand path — new work, a credential refresh, or a
     // lifecycle activation — may open a socket before the server's
@@ -2093,7 +2128,7 @@ export class AckerDBClient {
         }
         this.flushState();
         this.startConnectionTimers();
-        this.scheduleSourceRefresh();
+        this.acceptedCredential();
         // Published last: a listener may reenter close(), which must find the
         // connection timers already installed so it can release them.
         this.publishConnectionState();
@@ -2104,7 +2139,7 @@ export class AckerDBClient {
         this.authentication = authenticationFromFrame(frame);
         this.resolveAuth(attempt, this.authentication);
         this.flushState();
-        this.scheduleSourceRefresh();
+        this.acceptedCredential();
         this.publishConnectionState();
         return;
       }

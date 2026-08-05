@@ -325,3 +325,65 @@ describe("credential source", () => {
     fixed.client.close();
   });
 });
+
+describe("frozen environments", () => {
+  // A backgrounded browser tab (or a suspended host) stops running timers:
+  // the proactive re-pull never fires, and the server meanwhile kills the
+  // session whose credential expired. On wake, the client must not present
+  // the credential it can already prove is dead.
+  test("a wake past expiry re-pulls before dialing instead of presenting a dead credential", async () => {
+    let pulls = 0;
+    const harness = createHarness({
+      credentialSource: async () => {
+        pulls += 1;
+        return bearer(`token-${pulls}`);
+      },
+    });
+    await settled();
+    const first = harness.live();
+    first.welcome(SESSION, userDescriptor("alice", 60_000));
+    await settled();
+    expect(pulls).toBe(1);
+
+    // Frozen: wall time passes the credential's whole life with every timer
+    // asleep, so the ~48s proactive re-pull never ran.
+    harness.clock.freeze(90_000);
+    // The server dropped the session when the credential expired; the close
+    // is only observed once the environment wakes.
+    first.close();
+
+    // Waking runs the overdue reconnect work.
+    harness.clock.advance(200);
+    await settled();
+
+    // The wake pulled a fresh credential rather than dialing with the dead
+    // one, so the handshake carries a live token and the connection never
+    // published a rejection.
+    expect(pulls).toBe(2);
+    const second = harness.live();
+    second.open();
+    expect(second.framesOf("hello")[0]!.credential).toEqual(bearer("token-2"));
+    expect(harness.phases).not.toContain("authentication-blocked");
+    second.welcome(SESSION, userDescriptor("alice", 60_000));
+    await settled();
+    expect(harness.client.currentAuthenticationState.phase).toBe("authenticated");
+    harness.client.close();
+  });
+
+  test("a fixed-credential client still dials after a freeze — it has no other recovery", async () => {
+    const harness = createHarness({ credential: { kind: "bearer", token: "fixed" } });
+    const first = harness.live();
+    first.welcome(SESSION, userDescriptor("alice", 60_000));
+    await settled();
+
+    harness.clock.freeze(90_000);
+    first.close();
+    harness.clock.advance(200);
+    await settled();
+
+    const second = harness.live();
+    second.open();
+    expect(second.framesOf("hello")[0]!.credential).toEqual(bearer("fixed"));
+    harness.client.close();
+  });
+});
