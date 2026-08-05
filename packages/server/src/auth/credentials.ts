@@ -135,10 +135,13 @@ export interface CredentialVerifier {
 export type JwtAlgorithm = "RS256" | "PS256" | "ES256" | "EdDSA";
 
 export interface OidcProviderConfig {
+  /** Exact issuer: matched byte-exactly against the token's `iss`, never normalized. */
   readonly issuer: string;
   readonly jwksUri: string | URL;
-  readonly audiences: readonly string[];
+  /** Accepted `aud` values, or the explicit `"unchecked"` enforcement opt-out. */
+  readonly audiences: readonly string[] | "unchecked";
   readonly algorithms: readonly JwtAlgorithm[];
+  /** Required JOSE `typ` header value, or the explicit `"unchecked"` enforcement opt-out. */
   readonly tokenType: string;
   readonly principalKind: "user" | "workload";
   readonly requiredClaims?: readonly string[];
@@ -190,12 +193,46 @@ function nonNegativeNumber(value: number, name: string): number {
   return value;
 }
 
-function httpsUrl(value: string | URL, name: string): URL {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.hash !== "") {
-    throw new TypeError(`${name} must be an HTTPS URL without credentials or a fragment`);
+/**
+ * Private plaintext boundary: plaintext HTTP is permitted exactly where it
+ * cannot cross an untrusted network boundary — loopback and private-network
+ * hosts — and nowhere else, identically in every mode. Hostnames arrive in
+ * WHATWG-canonical form, so IPv4 is dotted-quad and IPv6 is bracketed.
+ */
+function isPrivatePlaintextHost(hostname: string): boolean {
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4 !== null) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return (
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
   }
-  return url;
+  if (host.includes(":")) {
+    if (host === "::1") return true;
+    const firstGroup = host.split(":", 1)[0] ?? "";
+    return /^f[cd]/.test(firstGroup) || /^fe[89ab]/.test(firstGroup);
+  }
+  return false;
+}
+
+function idpUrl(value: string | URL, name: string): URL {
+  const url = new URL(value);
+  if (url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new TypeError(`${name} must not contain credentials or a fragment`);
+  }
+  if (url.protocol === "https:") return url;
+  if (url.protocol === "http:" && isPrivatePlaintextHost(url.hostname)) return url;
+  throw new TypeError(
+    `${name} must be an HTTPS URL, or plaintext HTTP on a loopback or private-network host`,
+  );
 }
 
 function boundedStrings<T extends string>(
@@ -229,7 +266,12 @@ function authUnavailable(cause: unknown): AckerDBError {
   });
 }
 
-function unauthenticated(cause?: unknown): AckerDBError {
+/**
+ * The rejection a `credentialVerifier` must throw for an invalid credential.
+ * Anything else is treated as verifier unavailability and retried as
+ * `auth_unavailable` instead of rejecting the credential.
+ */
+export function unauthenticated(cause?: unknown): AckerDBError {
   return new AckerDBError("unauthenticated", "invalid credential", { cause });
 }
 
@@ -467,15 +509,27 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
   const providers = new Map<string, CompiledProvider>();
 
   for (const raw of options.providers) {
-    const issuerUrl = httpsUrl(raw.issuer, "provider issuer");
+    // Exact issuer: validated as a well-formed URL, then stored and matched
+    // byte-exactly as written — never normalized. The one correct value is
+    // whatever the provider actually mints in `iss`.
+    if (
+      typeof raw.issuer !== "string" ||
+      raw.issuer.length === 0 ||
+      /[\u0000-\u0020\u007f]/.test(raw.issuer)
+    ) {
+      throw new TypeError(
+        "provider issuer must be a non-empty string without whitespace or control characters",
+      );
+    }
+    const issuerUrl = idpUrl(raw.issuer, "provider issuer");
     if (issuerUrl.search !== "") throw new TypeError("provider issuer must not contain a query");
     const issuer = raw.issuer;
-    if (issuerUrl.href !== issuer) {
-      throw new TypeError("provider issuer must already be in its exact canonical URL form");
-    }
     if (providers.has(issuer)) throw new TypeError(`duplicate provider issuer "${issuer}"`);
-    const jwksUri = httpsUrl(raw.jwksUri, "provider jwksUri");
-    const audiences = boundedStrings(raw.audiences, "provider audiences", MAX_AUDIENCES, true);
+    const jwksUri = idpUrl(raw.jwksUri, "provider jwksUri");
+    const audiences =
+      raw.audiences === "unchecked"
+        ? ("unchecked" as const)
+        : boundedStrings(raw.audiences, "provider audiences", MAX_AUDIENCES, true);
     const algorithms = boundedStrings(raw.algorithms, "provider algorithms", MAX_ALGORITHMS, true);
     const allowedAlgorithms: ReadonlySet<string> = new Set<JwtAlgorithm>([
       "RS256",
@@ -523,11 +577,11 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       claimNames,
       verifyOptions: {
         issuer,
-        audience: [...audiences],
         algorithms: [...algorithms],
-        typ: raw.tokenType,
         requiredClaims: ["exp", "sub", ...requiredClaims],
         clockTolerance: clockToleranceSeconds,
+        ...(audiences === "unchecked" ? {} : { audience: [...audiences] }),
+        ...(raw.tokenType === "unchecked" ? {} : { typ: raw.tokenType }),
         ...(maxTokenAgeSeconds === undefined ? {} : { maxTokenAge: maxTokenAgeSeconds }),
       },
     });

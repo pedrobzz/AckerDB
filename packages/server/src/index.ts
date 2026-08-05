@@ -304,6 +304,7 @@ export {
   isPrincipal,
   isVerifiedCredential,
   SYSTEM_PRINCIPAL,
+  unauthenticated,
   verifyClientCredential,
   type AuthenticatedPrincipal,
   type AnonymousPrincipal,
