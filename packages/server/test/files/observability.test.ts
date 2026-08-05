@@ -181,7 +181,7 @@ describe("File observability", () => {
     const base = `http://127.0.0.1:${server.port}`;
 
     const session = await runtime.system.run("test.files.session", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({ contentTypes: ["text/plain"] })));
+      ctx.tx((tx) => tx.files.createUploadSession({ contentTypes: ["text/plain"] })));
     if (!session.ok) throw session.error;
     const upload = await fetch(`${base}${new URL(session.data.url).pathname}`, {
       method: "PUT",
@@ -192,7 +192,7 @@ describe("File observability", () => {
     const grant = await runtime.system.run("test.files.grant", (ctx) =>
       ctx.tx(async (tx) => {
         await tx.files.claim(fileId);
-        return tx.files.createGrant(fileId, {
+        return tx.files.createUrl(fileId, {
           access: { type: "bearer" },
           permanent: true,
         });
@@ -203,7 +203,7 @@ describe("File observability", () => {
     expect((await fetch(`${base}/api/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
 
     const rejectedSession = await runtime.system.run("test.files.rejected-session", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({ contentTypes: ["text/plain"] })));
+      ctx.tx((tx) => tx.files.createUploadSession({ contentTypes: ["text/plain"] })));
     if (!rejectedSession.ok) throw rejectedSession.error;
     expect((await fetch(`${base}${new URL(rejectedSession.data.url).pathname}`, {
       method: "PUT",

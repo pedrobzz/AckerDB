@@ -45,11 +45,12 @@ describe("File references and grants", () => {
   });
 
   test("rolls automatic claims back with the application row", async () => {
-    const [thrownFile, applicationErrorFile] = await runtime.system.run(
+    const [thrownFile, applicationErrorFile, urlFile] = await runtime.system.run(
       "test.files.rollback-stores",
       (ctx) => Promise.all([
         ctx.files.store(new Blob(["throw"]).stream(), { size: 5 }),
         ctx.files.store(new Blob(["error"]).stream(), { size: 5 }),
+        ctx.files.store(new Blob(["url"]).stream(), { size: 3 }),
       ]),
     );
 
@@ -71,17 +72,28 @@ describe("File references and grants", () => {
       error: { kind: "application", code: "document-rejected" },
     });
 
+    await expect(runtime.system.run("test.files.rollback-url", (ctx) =>
+      ctx.tx(async (tx) => {
+        await tx.files.createUrl(urlFile, { permanent: true });
+        throw new Error("later URL handler failure");
+      }),
+    )).rejects.toThrow("later URL handler failure");
+
     const state = await runtime.system.run("test.files.rollback-state", (ctx) =>
       ctx.tx(async (tx) => ({
         documents: await tx.db.documents!.query().collect(),
         thrown: await tx.files.get(thrownFile),
         applicationError: await tx.files.get(applicationErrorFile),
+        url: await tx.files.get(urlFile),
+        urls: await tx.files.grants(urlFile).count(),
       })),
     );
     if (!state.ok) throw state.error;
     expect(state.data.documents).toEqual([]);
     expect(state.data.thrown?.state).toBe("pending");
     expect(state.data.applicationError?.state).toBe("pending");
+    expect(state.data.url?.state).toBe("pending");
+    expect(state.data.urls).toBe(0);
   });
 
   test("claims changed nullable references without deleting old Files or protecting dangling references", async () => {
@@ -135,40 +147,41 @@ describe("File references and grants", () => {
     const result = await runtime.system.run("test.files.query-model", (ctx) =>
       ctx.tx(async (tx) => {
         await tx.files.claim(fileId);
-        return tx.files.query()
-          .where((row) => row.state.eq("active").and(row.owner.isNull()))
-          .orderBy((row) => row.createdAt.asc())
-          .thenBy((row) => row.id.asc())
-          .collect();
+        const matching = tx.files.query()
+          .where((row) => row.state.eq("active").and(row.owner.isNull()));
+        return {
+          files: await matching
+            .orderBy((row) => row.createdAt.asc())
+            .thenBy((row) => row.id.asc())
+            .collect(),
+          bytes: await matching.sum((row) => row.size),
+        };
       }),
     );
     if (!result.ok) throw result.error;
-    expect(result.data.map((file) => file.id)).toContain(fileId);
+    expect(result.data.files.map((file) => file.id)).toContain(fileId);
+    expect(result.data.bytes).toBe(5);
   });
 
-  test("returns the normalized immutable Grant disposition", async () => {
+  test("creates a concise public URL, claims its pending File, and returns honest Grant metadata", async () => {
     const fileId = await runtime.system.run("test.files.grant-store", (ctx) =>
       ctx.files.store(new Blob(["grant"]).stream(), { size: 5 }),
     );
-    const requested: { type: "attachment"; filename: string } = {
-      type: "attachment",
-      filename: "report.pdf",
-    };
     const created = await runtime.system.run("test.files.normalized-grant", (ctx) =>
       ctx.tx(async (tx) => {
-        await tx.files.claim(fileId);
-        return tx.files.createGrant(fileId, {
-          access: { type: "bearer" },
+        const grant = await tx.files.createUrl(fileId, {
           permanent: true,
-          disposition: requested,
+          filename: "report.pdf",
         });
+        return { grant, file: await tx.files.get(fileId) };
       }),
     );
     if (!created.ok) throw created.error;
 
-    requested.filename = "mutated.pdf";
-    expect(Object.isFrozen(created.data.disposition)).toBe(true);
-    expect(created.data.disposition).toEqual({ type: "attachment", filename: "report.pdf" });
+    expect(created.data.file?.state).toBe("active");
+    expect(created.data.grant.access).toBe("bearer");
+    expect(Object.isFrozen(created.data.grant.disposition)).toBe(true);
+    expect(created.data.grant.disposition).toEqual({ type: "attachment", filename: "report.pdf" });
     const listed = await runtime.system.run("test.files.normalized-grant-list", (ctx) =>
       ctx.tx((tx) => tx.files.grants(fileId).collect()),
     );
@@ -184,8 +197,7 @@ describe("File references and grants", () => {
       ctx.tx(async (tx) => {
         await tx.files.claim(fileId);
         for (let index = 0; index < 257; index++) {
-          await tx.files.createGrant(fileId, {
-            access: { type: "bearer" },
+          await tx.files.createUrl(fileId, {
             permanent: true,
           });
         }

@@ -14,12 +14,14 @@ describe("File reference schema", () => {
         id: v.primaryKey(),
         file: v.file(),
         preview: v.file().nullable(),
+        grant: v.fileGrant().nullable(),
       }),
     }));
 
     expect(snapshot.tables.documents!.columns).toMatchObject({
       file: { k: "file" },
       preview: { k: "nullable", inner: { k: "file" } },
+      grant: { k: "nullable", inner: { k: "fileGrant" } },
     });
 
     for (const nested of [
@@ -31,6 +33,9 @@ describe("File reference schema", () => {
         "v.file() may only be stored as a direct column",
       );
     }
+    expect(() => defineTable({ id: v.primaryKey(), nested: v.array(v.fileGrant()) })).toThrow(
+      "v.fileGrant() may only be stored as a direct column",
+    );
   });
 
   test("allows ordinary indexes over direct File-reference columns", () => {
@@ -38,13 +43,16 @@ describe("File reference schema", () => {
       id: v.primaryKey(),
       file: v.file(),
       preview: v.file().nullable(),
+      grant: v.fileGrant(),
     })
       .index(["file"])
-      .index(["preview"]);
+      .index(["preview"])
+      .index(["grant"]);
 
     expect(table.indexes.map((index) => index.columns)).toEqual([
       ["file"],
       ["preview"],
+      ["grant"],
     ]);
   });
 

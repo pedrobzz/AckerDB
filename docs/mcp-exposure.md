@@ -223,8 +223,9 @@ on the endpoint, since it is typed by the tool set. Only `tokens` and
 
 Identical to the HTTP surface: standard JSON compiled per function by
 `compileStandardJsonCodec`, with schemas from `validation/json-schema.ts`. The
-validator mapping (`v.bigint()` and `v.identity()` as canonical decimal
-strings, `v.bytes()` as padded base64, nothing escaped) is specified in
+validator mapping (`v.bigint()`, `v.identity()`, `v.file()`, and
+`v.fileGrant()` as canonical decimal strings, `v.bytes()` as padded base64,
+nothing escaped) is specified in
 `docs/http-exposure.md` under *Wire format* and is not restated here. A
 contract that cannot cross that boundary is a registration error, as it is
 there.

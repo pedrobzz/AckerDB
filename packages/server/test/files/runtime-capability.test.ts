@@ -40,7 +40,7 @@ describe("built-in Files capability", () => {
   test("creates Upload Sessions transactionally while hiding framework tables", async () => {
     const result = await runtime.system.run("test.files.upload-session", (ctx) =>
       ctx.tx(async (tx) => ({
-        session: await tx.files.createUpload({ maxBytes: 42 }),
+        session: await tx.files.createUploadSession({ maxBytes: 42 }),
         applicationTables: Object.keys(tx.db),
       })),
     );

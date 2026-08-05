@@ -215,6 +215,7 @@ type UnexpectedExports = AssertNever<
     | "useChannel"
     | "useConnectionState"
     | "useEvent"
+    | "useFileUpload"
     | "useMutation"
     | "useProcedure"
     | "useQuery"

@@ -153,7 +153,7 @@ const functions = {
       access: "authenticated",
       http: true,
       args: {},
-      handler: (ctx: Ctx) => ctx.files.createUpload({ maxBytes: 64 }),
+      handler: (ctx: Ctx) => ctx.files.createUploadSession({ maxBytes: 64 }),
     }),
     canDownload: query({
       access: "authenticated",
@@ -227,7 +227,7 @@ describe("File HTTP flow", () => {
 
   test("uploads immutable bytes and serves them through a revocable grant", async () => {
     const sessionResult = await runtime.system.run("test.files.create-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({
+      ctx.tx((tx) => tx.files.createUploadSession({
         maxBytes: 64,
         contentTypes: ["text/plain"],
       })),
@@ -251,10 +251,7 @@ describe("File HTTP flow", () => {
       ctx.tx(async (tx) => {
         const pending = await tx.files.get(fileId);
         await tx.db.documents!.insert({ file: fileId });
-        const grant = await tx.files.createGrant(fileId, {
-          access: { type: "bearer" },
-          permanent: true,
-        });
+        const grant = await tx.files.createUrl(fileId, { permanent: true });
         return { pending, active: await tx.files.get(fileId), grant };
       }),
     );
@@ -349,7 +346,7 @@ describe("File HTTP flow", () => {
 
   test("returns typed upload failures and leaves a rejected Upload Session retryable", async () => {
     const created = await runtime.system.run("test.files.create-retryable-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({
+      ctx.tx((tx) => tx.files.createUploadSession({
         maxBytes: 8,
         contentTypes: ["text/plain"],
       })),
@@ -380,7 +377,7 @@ describe("File HTTP flow", () => {
 
   test("requires an exact Content-Length and rejects clean under-delivery", async () => {
     const created = await runtime.system.run("test.files.create-length-required-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload()),
+      ctx.tx((tx) => tx.files.createUploadSession()),
     );
     if (!created.ok) throw created.error;
     const encoder = new TextEncoder();
@@ -447,7 +444,7 @@ describe("File HTTP flow", () => {
 
   test("refuses an Upload Session after its request-start expiry", async () => {
     const created = await runtime.system.run("test.files.create-expiring-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({ expiresIn: 1 })),
+      ctx.tx((tx) => tx.files.createUploadSession({ expiresIn: "1ms" })),
     );
     if (!created.ok) throw created.error;
     await Bun.sleep(2);
@@ -460,7 +457,7 @@ describe("File HTTP flow", () => {
   test("never reuses a physical key that durable cleanup may still delete", async () => {
     const expectedSha256 = createHash("sha256").update("good").digest("hex");
     const created = await runtime.system.run("test.files.create-checksummed-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload({ expectedSha256 })),
+      ctx.tx((tx) => tx.files.createUploadSession({ expectedSha256 })),
     );
     if (!created.ok) throw created.error;
     const sessionPath = new URL(created.data.url).pathname;
@@ -476,7 +473,7 @@ describe("File HTTP flow", () => {
 
   test("a concurrent recovery retry waits for and returns the first committed File", async () => {
     const created = await runtime.system.run("test.files.create-concurrent-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload()),
+      ctx.tx((tx) => tx.files.createUploadSession()),
     );
     if (!created.ok) throw created.error;
     const sessionPath = new URL(created.data.url).pathname;
@@ -497,7 +494,7 @@ describe("File HTTP flow", () => {
 
   test("keeps stalled File transfers out of ordinary HTTP admission", async () => {
     const created = await runtime.system.run("test.files.create-stalled-upload", (ctx) =>
-      ctx.tx((tx) => tx.files.createUpload()),
+      ctx.tx((tx) => tx.files.createUploadSession()),
     );
     if (!created.ok) throw created.error;
     const sessionPath = new URL(created.data.url).pathname;
@@ -674,11 +671,11 @@ describe("File HTTP flow", () => {
     });
     const created = await runtime.system.run("test.files.auth-grants", (ctx) =>
       ctx.tx(async (tx) => ({
-        authenticated: await tx.files.createGrant(fileId, {
+        authenticated: await tx.files.createUrl(fileId, {
           access: { type: "authenticated" },
           permanent: true,
         }),
-        allowed: await tx.files.createGrant(fileId, {
+        allowed: await tx.files.createUrl(fileId, {
           access: {
             type: "validated",
             authorize: anyApi.files.canDownload,
@@ -686,7 +683,7 @@ describe("File HTTP flow", () => {
           },
           permanent: true,
         }),
-        denied: await tx.files.createGrant(fileId, {
+        denied: await tx.files.createUrl(fileId, {
           access: {
             type: "validated",
             authorize: anyApi.files.canDownload,
@@ -694,9 +691,8 @@ describe("File HTTP flow", () => {
           },
           permanent: true,
         }),
-        expiring: await tx.files.createGrant(fileId, {
-          access: { type: "bearer" },
-          expiresIn: 1,
+        expiring: await tx.files.createUrl(fileId, {
+          expiresIn: "1ms",
         }),
       })),
     );
@@ -735,7 +731,7 @@ describe("File HTTP flow", () => {
     await expect(runtime.system.run("test.files.false-permanent", (ctx) =>
       ctx.tx(async (tx) => {
         await tx.files.claim(fileId);
-        return tx.files.createGrant(fileId, {
+        return tx.files.createUrl(fileId, {
           access: { type: "bearer" },
           permanent: false,
         } as never);
@@ -757,27 +753,26 @@ describe("File HTTP flow", () => {
     const [html, svg, png] = stored;
     const result = await runtime.system.run("test.files.inline-grants", (ctx) =>
       ctx.tx(async (tx) => {
-        await tx.files.claim(html);
-        await tx.files.claim(svg);
-        await tx.files.claim(png);
         const rejected: string[] = [];
         for (const fileId of [html, svg]) {
           try {
-            await tx.files.createGrant(fileId, {
-              access: { type: "bearer" },
+            await tx.files.createUrl(fileId, {
               permanent: true,
-              disposition: { type: "inline" },
+              inline: true,
             });
           } catch (error) {
             rejected.push((error as Error).message);
           }
         }
-        const allowed = await tx.files.createGrant(png, {
-          access: { type: "bearer" },
+        const allowed = await tx.files.createUrl(png, {
           permanent: true,
-          disposition: { type: "inline" },
+          inline: true,
         });
-        return { rejected, allowed };
+        return {
+          rejected,
+          allowed,
+          states: await Promise.all([html, svg, png].map((fileId) => tx.files.get(fileId))),
+        };
       }),
     );
     if (!result.ok) throw result.error;
@@ -785,6 +780,7 @@ describe("File HTTP flow", () => {
       expect.stringContaining("inline delivery requires"),
       expect.stringContaining("inline delivery requires"),
     ]);
+    expect(result.data.states.map((file) => file?.state)).toEqual(["pending", "pending", "active"]);
     const response = await fetch(`${base}${new URL(result.data.allowed.url).pathname}`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toBe("inline");

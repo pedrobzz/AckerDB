@@ -32,8 +32,8 @@ export interface JsonSchemaOptions {
   /** Defaults to draft 2020-12, the dialect OpenAPI 3.1 and MCP both speak. */
   readonly target?: JsonSchemaTarget;
   /**
-   * A standard-JSON protocol boundary carries bigint, Identity, FileId, and
-   * bytes losslessly as decimal and base64 strings. A plain runtime validator has no
+   * A standard-JSON protocol boundary carries bigint, Identity, FileId,
+   * FileGrantId, and bytes losslessly as decimal and base64 strings. A plain runtime validator has no
    * such mapping, so those kinds are refused instead of described dishonestly.
    * Defaults to `true`.
    */
@@ -234,6 +234,7 @@ function fragmentSchema(
     case "bigint":
     case "identity":
     case "file":
+    case "fileGrant":
       requireProtocol(emission, where, `v.${validator.kind}()`);
       return emission.mode === "input"
         ? { type: ["integer", "string"], pattern: DECIMAL_PATTERN }

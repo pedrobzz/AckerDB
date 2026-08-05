@@ -110,7 +110,7 @@ export type StandardJsonInput<V extends StandardValidator> =
                     : { readonly tag: K; readonly value: StandardJsonInput<Members[K]> };
               }[keyof Members & string]
               : V extends LiteralValidator<infer Value> ? Value extends bigint ? `${Value}` : Value
-                : V extends { readonly kind: "bigint" | "identity" | "file" } ? number | string
+                : V extends { readonly kind: "bigint" | "identity" | "file" | "fileGrant" } ? number | string
                   : V extends { readonly kind: "bytes" } ? string
                     : V extends StandardValidator<infer Value, string, unknown> ? Value
                       : never;
@@ -134,7 +134,7 @@ export type StandardJsonOutput<V extends StandardValidator> =
                     : { readonly tag: K; readonly value: StandardJsonOutput<Members[K]> };
               }[keyof Members & string]
               : V extends LiteralValidator<infer Value> ? Value extends bigint ? `${Value}` : Value
-                : V extends { readonly kind: "bigint" | "identity" | "file" } ? string
+                : V extends { readonly kind: "bigint" | "identity" | "file" | "fileGrant" } ? string
                   : V extends { readonly kind: "bytes" } ? string
                     : V extends StandardValidator<infer Value, string, unknown> ? Value
                       : never;
@@ -348,6 +348,7 @@ function compileNode(validator: StandardValidator, where: string): ProtocolNode 
     case "bigint":
     case "identity":
     case "file":
+    case "fileGrant":
       return {
         decode(value, path, mode) {
           return mode === "input"
@@ -457,7 +458,7 @@ function compileNode(validator: StandardValidator, where: string): ProtocolNode 
 /**
  * The Standard Schema view over the shared emitter. A plain validator describes
  * only what its runtime values already are; a compiled codec additionally
- * carries bigint, Identity, FileId, and bytes across the JSON boundary.
+ * carries bigint, Identity, FileId, FileGrantId, and bytes across the JSON boundary.
  */
 function standardJsonSchema(
   validator: StandardValidator,

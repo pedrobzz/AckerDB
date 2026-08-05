@@ -15,7 +15,6 @@ import {
   PluginRuntime,
   PRODUCTION_LIMITS,
   Registry,
-  resolveFileStoreBinding,
   Runtime,
   type FileStore,
   type RuntimeOptions,
@@ -38,6 +37,7 @@ import {
   UnsafeSchemaChange,
   validateHistoryPrefix,
 } from "@ackerdb/server";
+import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import type { AppConfig } from "./config.ts";
 import {
   importApp,

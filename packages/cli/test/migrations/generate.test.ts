@@ -13,9 +13,9 @@ import {
   newWriteCollector,
   reconcile,
   snapshotOf,
-  withFrameworkTables,
   type Schema,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { loadConfig } from "../../src/app/config.ts";
 import { generateMigration } from "../../src/migrations/scaffold.ts";
 import { loadMigrationChain } from "../../src/migrations/load.ts";
@@ -61,6 +61,7 @@ describe("generateMigration: scaffold", () => {
         id: v.primaryKey(),
         file: v.file(),
         preview: v.file().nullable(),
+        grant: v.fileGrant(),
       }),
     });
     const { typesTs } = generateMigration({
@@ -70,9 +71,10 @@ describe("generateMigration: scaffold", () => {
       schema,
     });
 
-    expect(typesTs).toContain('import type { FileId, Renames } from "@ackerdb/server";');
+    expect(typesTs).toContain('import type { FileGrantId, FileId, Renames } from "@ackerdb/server";');
     expect(typesTs).toContain("file: FileId");
     expect(typesTs).toContain("preview: FileId | null");
+    expect(typesTs).toContain("grant: FileGrantId");
   });
 
   test("a type change becomes a typed hole annotated with the NEW row type", () => {

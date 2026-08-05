@@ -19,8 +19,6 @@ import {
   Engine,
   IncompatibleDatabaseError,
   PRODUCTION_LIMITS,
-  rebindRestoredFileStore,
-  resolveFileStoreBinding,
   restoreVerifiedDatabase,
   Telemetry,
   isAckerDBError,
@@ -30,6 +28,10 @@ import {
   type TelemetryOutcome,
   type TelemetryTraceContext,
 } from "@ackerdb/server";
+import {
+  rebindRestoredFileStore,
+  resolveFileStoreBinding,
+} from "@ackerdb/server/files/binding";
 import { importApp } from "../app/manifest.ts";
 import { createFileStore } from "../app/start.ts";
 import type { AppConfig } from "../app/config.ts";

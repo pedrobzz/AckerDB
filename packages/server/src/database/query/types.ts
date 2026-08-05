@@ -120,7 +120,7 @@ type ScalarColumn<V, Row, Key extends keyof Row> =
             (Kind extends "int" | "float" | "bigint"
               ? SummableColumn<ComparableValue<V>>
               : object)
-        : Kind extends "file"
+        : Kind extends "file" | "fileGrant"
           ? EquatableColumn<ComparableValue<V>, Row>
           : Kind extends "boolean"
             ? ComparableColumn<ComparableValue<V>, Row>

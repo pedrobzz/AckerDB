@@ -79,7 +79,7 @@ WebSocket session keeps that form unchanged; only this surface is plain JSON.
 
 | Validator | Request | Response |
 | --- | --- | --- |
-| `v.bigint()`, `v.identity()` | canonical decimal string, or a JSON safe integer | canonical decimal string |
+| `v.bigint()`, `v.identity()`, `v.file()`, `v.fileGrant()` | canonical decimal string, or a JSON safe integer | canonical decimal string |
 | `v.bytes()` | canonical padded base64 | canonical padded base64 |
 | `v.literal(1n)` | the literal's decimal string | the literal's decimal string |
 | everything else | itself | itself |

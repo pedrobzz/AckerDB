@@ -359,6 +359,21 @@ async function main(): Promise<void> {
         "packed @ackerdb/server does not expose ./files/s3 from ./src/files/store/s3.ts",
       );
     }
+    if (
+      serverManifest.exports?.["./files/binding"] !== "./src/files/binding.ts"
+    ) {
+      throw new Error(
+        "packed @ackerdb/server does not expose ./files/binding from ./src/files/binding.ts",
+      );
+    }
+    if (
+      serverManifest.exports?.["./database/framework-schema"] !==
+        "./src/database/framework-schema.ts"
+    ) {
+      throw new Error(
+        "packed @ackerdb/server does not expose ./database/framework-schema from its owner",
+      );
+    }
     const exactServerDependencies = {
       "@modelcontextprotocol/sdk": "1.30.0",
       "numkong": "7.7.1",
@@ -466,10 +481,13 @@ void invalidScope;
     }
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
 import {
+  type CreateFileUploadSessionOptions,
+  type CreateFileUrlOptions,
   defineSchema,
   defineTable,
   type DbWriter,
   Engine,
+  type FileGrantId,
   makeDbWriter,
   mcp as mcpFromRoot,
   mcpAuth as mcpAuthFromRoot,
@@ -479,6 +497,12 @@ import {
   v,
 } from "@ackerdb/server";
 import * as serverRoot from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
+import {
+  rebindRestoredFileStore,
+  recordVerifiedFileStoreTransition,
+  resolveFileStoreBinding,
+} from "@ackerdb/server/files/binding";
 import {
   S3FileStore,
   type S3FileStoreConfig,
@@ -495,6 +519,30 @@ import { upstashCacheStore } from "@ackerdb/cache/upstash";
 if ("S3FileStore" in serverRoot) {
   throw new Error("the root @ackerdb/server entrypoint eagerly exposes the optional S3 adapter");
 }
+for (const internal of [
+  "withFrameworkTables",
+  "rebindRestoredFileStore",
+  "recordVerifiedFileStoreTransition",
+  "resolveFileStoreBinding",
+] as const) {
+  if (internal in serverRoot) {
+    throw new Error(
+      "the root @ackerdb/server entrypoint exposes owner-subpath API " + internal,
+    );
+  }
+}
+if (
+  typeof withFrameworkTables !== "function" ||
+  typeof rebindRestoredFileStore !== "function" ||
+  typeof recordVerifiedFileStoreTransition !== "function" ||
+  typeof resolveFileStoreBinding !== "function"
+) {
+  throw new Error("@ackerdb/server owner subpaths did not resolve their functions");
+}
+const uploadOptions = { maxBytes: 1 } satisfies CreateFileUploadSessionOptions;
+const urlOptions = { permanent: true } satisfies CreateFileUrlOptions;
+const grantId = 1n as FileGrantId;
+void [uploadOptions, urlOptions, grantId];
 const s3Config = {
   region: "us-east-1",
   bucket: "packed-export-probe",

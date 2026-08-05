@@ -15,9 +15,9 @@ import {
   LocalFileStore,
   reconcile,
   reconcilePluginStorage,
-  resolveFileStoreBinding,
   type TelemetryRecord,
 } from "@ackerdb/server";
+import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import { importApp } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { fileStoreIdentity } from "../../src/files/identity.ts";

@@ -1,140 +1,284 @@
 # Files
 
-AckerDB Files store immutable bytes behind an application-facing `FileId`.
-Physical object keys stay private. Application tables own business metadata and
-relationships, while independently revocable File grants own download access.
+AckerDB Files give immutable bytes a typed `FileId`. They work locally with no
+configuration: the CLI stores bytes under `.ackerdb/files`, keeps object keys
+private, and defaults to a 1 GiB per-File limit.
 
-## Configure one FileStore
+The common path is deliberately short:
 
-Every deployment has exactly one active backend. The default is a local store
-under `.ackerdb/files` with a 1 GiB per-File limit:
+1. Put a `v.file()` reference in an application table.
+2. Let an authenticated mutation create an Upload Session.
+3. Upload with `client.files.upload()`.
+4. Save the returned `FileId` and create a URL in one mutation.
 
-```json
-{
-  "files": {
-    "backend": "filesystem",
-    "path": "./data/files",
-    "publicUrl": "https://api.example.com",
-    "maxBytes": 1073741824
-  }
-}
-```
+## A complete profile-image example
 
-The generic S3 adapter uses familiar S3 options and works with AWS S3 or a
-compatible service such as R2, MinIO, or Garage when that service implements
-the probed PUT, HEAD, whole-GET, ranged-GET, and DELETE behavior:
-
-```json
-{
-  "files": {
-    "backend": "s3",
-    "endpoint": "https://account.r2.cloudflarestorage.com",
-    "region": "auto",
-    "bucket": "documents",
-    "forcePathStyle": true,
-    "checksum": "disabled",
-    "encryption": { "type": "disabled" },
-    "publicUrl": "https://api.example.com",
-    "maxBytes": 1073741824
-  }
-}
-```
-
-Omit `endpoint` for AWS. `checksum` defaults to `sha256`; encryption defaults
-to `{ "type": "AES256" }` and may instead be `disabled` or `aws:kms` with an
-optional `keyId` and `bucketKeyEnabled`. CLI deployments use the standard AWS
-SDK credential provider chain, including `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, profiles, and workload
-roles. Credentials do not belong in `.ackerdb.config.json`. Programmatic
-`S3FileStore` construction from `@ackerdb/server/files/s3` may provide an
-explicit credential object. The adapter is a separate entrypoint so local-only
-deployments do not load the AWS SDK.
-
-`maxBytes` may be configured from one byte through the initial 5 GiB hard
-ceiling. AckerDB probes the configured store before reporting startup ready.
-
-## Reference Files from application data
-
-Use direct `v.file()` columns. The nullable form is supported; arrays and
-nested File validators are intentionally not. Use a normal join table for a
-collection of Files.
+Keep application metadata and relationships in an ordinary table. They retain
+normal validation, indexes, authorization, and reactivity.
 
 ```ts
 const schema = defineSchema({
-  documents: defineTable({
+  profiles: defineTable({
     id: v.primaryKey(),
-    organizationId: v.bigint(),
-    file: v.file(),
-    preview: v.file().nullable(),
-    title: v.string(),
-  }).index(["organizationId"]),
+    userId: v.identity(),
+    avatar: v.file().nullable(),
+    avatarUrl: v.string().nullable(),
+  }).index(["userId"], { unique: true }),
 });
 ```
 
-This application row is also where custom metadata belongs. It receives the
-ordinary schema validation, indexes, filters, authorization, and reactivity;
-Files do not duplicate those facilities with arbitrary framework columns.
-
-Writing a pending File into a declared `v.file()` column claims it atomically.
-An intentionally standalone File can instead be claimed with
-`ctx.files.claim(fileId)`. Replacing or removing a reference does not
-automatically delete the previous File.
-
-## Upload from a client
-
-An application mutation authorizes the upload and creates its one-use Upload
-Session:
+The first mutation authorizes the upload. The second creates a permanent public
+URL and saves the application row. `createUrl()` automatically claims a pending
+File, and writing it to a declared `v.file()` column does the same, so no
+separate claim step is needed.
 
 ```ts
-export const createUpload = mutation({
+export const createAvatarUpload = mutation({
   access: "authenticated",
-  args: { organizationId: v.bigint() },
-  handler: async (ctx, args) => {
-    // Check membership in args.organizationId here.
-    return ctx.files.createUpload({
-      maxBytes: 100 * 1024 * 1024,
-      contentTypes: ["application/pdf"],
-      expiresIn: "15m",
+  args: {},
+  handler: async (ctx) => {
+    if (ctx.auth.kind !== "user") throw new Error("user required");
+    return ctx.files.createUploadSession({
+      maxBytes: 10 * 1024 * 1024,
+      contentTypes: ["image/jpeg", "image/png", "image/webp"],
     });
+  },
+});
+
+export const saveAvatar = mutation({
+  access: "authenticated",
+  args: { fileId: v.file() },
+  handler: async (ctx, { fileId }) => {
+    if (ctx.auth.kind !== "user") throw new Error("user required");
+    const file = await ctx.files.get(fileId);
+    if (file?.owner !== ctx.auth.identity) throw new Error("File not owned by user");
+
+    const previous = await ctx.db.profiles
+      .query()
+      .where((profile) => profile.userId.eq(ctx.auth.identity))
+      .unique();
+    if (previous?.avatar === fileId && previous.avatarUrl !== null) {
+      return previous.avatarUrl;
+    }
+    const avatar = await ctx.files.createUrl(fileId, {
+      permanent: true,
+      inline: true,
+    });
+
+    if (previous === null) {
+      await ctx.db.profiles.insert({
+        userId: ctx.auth.identity,
+        avatar: fileId,
+        avatarUrl: avatar.url,
+      });
+    } else {
+      await ctx.db.profiles.patch(previous.id, {
+        avatar: fileId,
+        avatarUrl: avatar.url,
+      });
+      // This example gives each profile image exclusive ownership of its File.
+      if (previous.avatar !== null && previous.avatar !== fileId) {
+        await ctx.files.delete(previous.avatar);
+      }
+    }
+
+    return avatar.url;
   },
 });
 ```
 
-The typed helper invokes that mutation and then sends the same raw streaming
-`PUT` protocol used by every client:
+Upload from any typed client:
 
 ```ts
 const uploaded = await client.files.upload({
-  createSession: api.documents.createUpload,
-  args: { organizationId },
+  createSession: api.profiles.createAvatarUpload,
+  args: {},
   file: browserFile,
 });
-
 if (!uploaded.ok) throw uploaded.error;
-const fileId = uploaded.data;
+
+const saved = await client.mutation(api.profiles.saveAvatar, {
+  fileId: uploaded.data,
+});
+if (!saved.ok) throw saved.error;
 ```
 
-The Upload Session creator becomes the immutable File owner. Giving its bearer
-URL to another uploader does not transfer ownership. A raw client may `PUT`
-the bytes to the session URL with an exact `Content-Length`, optionally
-declaring `Content-Type` and `Content-Disposition`; success returns
-`{ "fileId": "..." }`. Browser `Blob` and `File` uploads supply their known
-length automatically. AckerDB deliberately uses one streaming S3 `PutObject`,
-so an unknown-length stream must first be given a length by its producer;
-multipart upload and hidden buffering or temporary staging are not initial
-fallbacks.
+The URL is an ordinary unauthenticated bearer URL, so browser elements work
+without a cookie, proxy, custom header, object URL, or framework component:
 
-Sessions expire after one hour by default and may only shorten that lifetime or
-narrow the deployment byte limit. They may also require a lowercase SHA-256.
-One session commits at most one File. Retrying after a lost success response
-returns the same File identity. Completed uploads remain pending for 24 hours
-until referenced or explicitly claimed, after which durable cleanup removes
-abandoned bytes.
+```tsx
+<img src={profile.avatarUrl} alt="Profile" />
+```
 
-## Work with bytes in trusted backend code
+Anyone who receives that URL can read the File until it is revoked or the File
+is deleted. That is the intended simple choice for profile images and other
+public media. Use an expiring URL for temporary sharing, or an authenticated or
+validated URL for programmatic private downloads.
 
-Procedures, raw HTTP handlers, Services, and system runs can stream bytes.
-Queries and mutations stay metadata-only so slow external I/O never holds the
+## Upload Sessions
+
+An Upload Session is one-use bearer authority for one successful upload. A
+session created under a user or MCP principal captures that principal's durable
+Identity as the immutable File owner, even if someone else receives and uses
+the upload URL. Anonymous, workload, and system creation is unowned unless
+trusted code supplies `owner` explicitly.
+
+```ts
+return ctx.files.createUploadSession({
+  maxBytes: 100 * 1024 * 1024,
+  contentTypes: ["application/pdf"],
+  expectedSha256,
+  expiresIn: "15m",
+});
+```
+
+The deployment owns the maximum size. A session may only narrow that limit and
+may only shorten the default one-hour lifetime. Durations are explicit strings
+such as `"30s"`, `"15m"`, and `"1h"`.
+
+`client.files.upload()` invokes the application mutation and then sends the raw
+streaming `PUT`. It keeps retrying an ambiguous completion against the same
+idempotent session until success, cancellation, or session expiry; a retry after
+a committed upload returns the same `FileId` rather than creating a duplicate.
+The helper routes the Upload Session path through the client's configured
+AckerDB origin, so a React Native device, container, LAN client, or tunnel never
+mistakes the server's `127.0.0.1` for its own device.
+
+A raw client may instead `PUT` bytes to `session.url` with an exact
+`Content-Length` and optional `Content-Disposition`. `Content-Type` is optional
+unless the Upload Session restricts `contentTypes`; then it is required and must
+exactly match one of the declared values. Pass `contentType` explicitly when a
+`BufferSource` or browser `File` does not declare one.
+
+The typed mutation result must be checked before using its Upload Session:
+
+```ts
+const session = await client.mutation(api.documents.createUpload, {
+  organizationId,
+});
+if (!session.ok) throw session.error;
+
+const response = await fetch(session.data.url, {
+  method: "PUT",
+  headers: { "Content-Type": "application/pdf" },
+  body: file,
+});
+if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+```
+
+Success returns `{ "fileId": "..." }`. Browser `Blob` and `File` values already
+have a known length. The initial protocol deliberately uses one streaming S3
+object write rather than multipart upload or hidden temporary buffering.
+
+Completed uploads remain pending for 24 hours. Saving one in a direct
+`v.file()` or `v.file().nullable()` column, or calling `createUrl()`, claims it
+automatically in the same transaction. Use `ctx.files.claim(fileId)` only for an
+intentionally standalone File. Unclaimed pending bytes are durably cleaned up.
+
+Collections use a normal join table. Nested or array File validators and
+arbitrary framework metadata columns are intentionally absent.
+
+## Create URLs
+
+Every URL is an independently revocable durable Grant. Bearer access is the
+default, so a public or shareable URL needs only an explicit lifetime:
+
+```ts
+const temporary = await ctx.files.createUrl(fileId, { expiresIn: "10m" });
+const permanent = await ctx.files.createUrl(fileId, { permanent: true });
+const image = await ctx.files.createUrl(fileId, {
+  permanent: true,
+  inline: true,
+});
+```
+
+`inline: true` is accepted only for images other than SVG, audio, video, and
+PDF. Otherwise delivery defaults to a safe attachment. `filename` optionally
+overrides the attachment name without changing immutable File metadata.
+
+For a URL that accepts any current signed-in AckerDB user:
+
+```ts
+await ctx.files.createUrl(fileId, {
+  access: { type: "authenticated" },
+  expiresIn: "1h",
+});
+```
+
+For organization membership or another application rule, register a read-only
+authorization function. It runs for every retrieval with the request's normal
+principal, and its arguments remain typed:
+
+```ts
+export const canDownload = query({
+  access: "authenticated",
+  args: { organizationId: v.bigint(), fileId: v.file() },
+  handler: async (ctx, args) => {
+    return await isOrganizationMember(ctx, args.organizationId);
+  },
+});
+
+const url = await ctx.files.createUrl(fileId, {
+  access: {
+    type: "validated",
+    authorize: api.files.canDownload,
+    args: { organizationId },
+  },
+  expiresIn: "15m",
+});
+```
+
+Authenticated and validated URLs require the normal `Authorization` header;
+use `client.files.fetch(url)` to stream their `Response` with the client's
+current credential. Plain browser elements cannot attach that header, so use a
+bearer URL when an `<img>`, `<video>`, or `<a>` must load the URL directly.
+
+`ctx.files.revokeGrant(url.id)` revokes one URL idempotently. Grant listings
+expose metadata but never the secret URL, which is returned only at creation
+and stored only as a hash in framework Grant state. An application may
+intentionally persist the returned plaintext URL, as the public-avatar example
+does. Missing, expired, revoked, unauthorized, and invalid URLs all return
+`404 Not Found`.
+
+If application data needs to retain one URL identity for later revocation,
+store it in a direct `v.fileGrant()` or `v.fileGrant().nullable()` column. The
+validator preserves the `FileGrantId` brand across tables and function
+arguments; unlike `v.file()`, writing it has no File-lifecycle side effect.
+
+Downloads proxy through AckerDB and support `GET`, `HEAD`, one byte range,
+`ETag`, SHA-256 `Digest`, `Content-Length`, `Content-Type`, and conditional
+requests. Responses use `Cache-Control: no-store`, and expiration is checked
+when a request begins so an admitted stream may finish normally.
+
+## Query File metadata
+
+`ctx.files.get()` and `ctx.files.query()` are ordinary reactive database reads.
+Metadata contains `id`, lifecycle `state`, optional immutable `owner`, `size`,
+`sha256`, optional untrusted `contentType` and `name`, and `createdAt`. It never
+exposes the physical object key.
+
+```ts
+const page = await ctx.files
+  .query()
+  .where((file) => file.owner.eq(identity))
+  .orderBy((file) => file.createdAt.desc())
+  .paginate({ pageSize: 50 });
+
+const totalBytes = await ctx.files
+  .query()
+  .where((file) => file.owner.eq(identity))
+  .sum((file) => file.size);
+```
+
+The built-in indexes cover creation time, owner plus creation time, and state
+plus creation time. Queries do not silently filter by owner; application code
+owns authorization. Business-specific metadata, filtering, indexes, and quotas
+belong in application tables that reference `FileId`.
+
+## Work with bytes in backend code
+
+Procedures, raw HTTP handlers, Services, and system runs may stream bytes.
+Queries and mutations remain metadata-only so external I/O never holds the
 database writer.
 
 ```ts
@@ -155,90 +299,57 @@ for await (const chunk of opened.body) {
 const small = await ctx.files.bytes(fileId, { maxBytes: 1024 * 1024 });
 ```
 
-`store()` requires the exact `size` before consuming the stream and also
-creates a pending File. `bytes()` rejects from immutable metadata before
-allocating when the File exceeds its explicit memory budget.
+`store()` requires the exact size before consuming the stream and creates a
+pending File. `bytes()` rejects from metadata before allocation when the File
+exceeds the caller's explicit memory budget.
 
-## Query metadata and ownership
+## Configure filesystem or S3-compatible storage
 
-`ctx.files.get()` and `ctx.files.query()` are ordinary reactive database reads.
-Public metadata contains `id`, `state`, optional `owner`, `size`, `sha256`,
-optional untrusted `contentType` and `name`, and `createdAt`. It never exposes
-the object key.
+Each deployment has one active backend. No Files configuration means the local
+filesystem default described above. To choose a different directory:
 
-```ts
-const page = await ctx.files
-  .query()
-  .where((file) => file.owner.eq(identity))
-  .orderBy((file) => file.createdAt.desc())
-  .paginate({ pageSize: 50 });
+```json
+{
+  "files": {
+    "backend": "filesystem",
+    "path": "./data/files",
+    "publicUrl": "https://api.example.com",
+    "maxBytes": 1073741824
+  }
+}
 ```
 
-Initial indexes cover creation time, owner plus creation time, and lifecycle
-state plus creation time. Queries do not silently filter by owner; application
-authorization remains explicit.
+The generic S3 adapter uses familiar S3 options and works with AWS S3 or a
+compatible service such as R2, MinIO, or Garage when it implements the probed
+`PUT`, `HEAD`, whole `GET`, ranged `GET`, and `DELETE` behavior:
 
-## Create revocable URLs
-
-Every download URL is a separate durable grant. Its lifetime must be explicit:
-
-```ts
-const temporary = await ctx.files.createGrant(fileId, {
-  access: { type: "bearer" },
-  expiresIn: "10m",
-});
-
-const permanent = await ctx.files.createGrant(fileId, {
-  access: { type: "bearer" },
-  permanent: true,
-});
+```json
+{
+  "files": {
+    "backend": "s3",
+    "endpoint": "https://account.r2.cloudflarestorage.com",
+    "region": "auto",
+    "bucket": "documents",
+    "forcePathStyle": true,
+    "checksum": "disabled",
+    "encryption": { "type": "disabled" },
+    "publicUrl": "https://api.example.com",
+    "maxBytes": 1073741824
+  }
+}
 ```
 
-A short-lived bearer grant is the initial way to share a File with an agent.
-Single-download consumption is deliberately not part of the initial contract.
+Omit `endpoint` for AWS. `checksum` defaults to `sha256`; encryption defaults
+to `{ "type": "AES256" }` and may instead be `disabled` or `aws:kms` with an
+optional `keyId` and `bucketKeyEnabled`. CLI deployments use the standard AWS
+SDK credential provider chain. Credentials do not belong in
+`.ackerdb.config.json`.
 
-An authenticated grant accepts any current AckerDB user identity:
-
-```ts
-await ctx.files.createGrant(fileId, {
-  access: { type: "authenticated" },
-  expiresIn: "1h",
-});
-```
-
-For organization membership or another business rule, use a registered query.
-It runs on every GET, HEAD, and range request under the request's normal bearer
-principal:
-
-```ts
-export const canDownload = query({
-  access: "authenticated",
-  args: { organizationId: v.bigint(), fileId: v.file() },
-  handler: async (ctx, args) => {
-    return await isOrganizationMember(ctx, args.organizationId);
-  },
-});
-
-const grant = await ctx.files.createGrant(fileId, {
-  access: {
-    type: "validated",
-    authorize: api.files.canDownload,
-    args: { organizationId },
-  },
-  expiresIn: "15m",
-});
-```
-
-Use `ctx.files.revokeGrant(grant.id)` to revoke one URL. Grant listings expose
-metadata but never the secret URL, which is returned only when created and is
-stored only as a hash. Invalid, missing, expired, revoked, and unauthorized
-grant requests all return 404.
-
-Downloads proxy through AckerDB and support GET, HEAD, one byte range, ETag,
-SHA-256 `Digest`, conditional requests, and request-start expiry. Responses use
-`Cache-Control: no-store`. Presentation defaults to attachment plus `nosniff`;
-an explicit inline disposition is accepted only for images other than SVG,
-audio, video, and PDF.
+Programmatic `S3FileStore` construction is available from
+`@ackerdb/server/files/s3`. The separate entrypoint keeps the AWS SDK out of
+local-only runtime imports. `maxBytes` may be configured from one byte through
+the initial 5 GiB hard ceiling, and startup probes the selected store before
+reporting ready.
 
 ## Delete, back up, and migrate
 
@@ -249,9 +360,11 @@ await ctx.db.documents.delete(documentId);
 await ctx.files.delete(fileId);
 ```
 
-Deletion immediately marks the File unavailable and revokes all grants. A
-durable worker retries physical deletion and keeps the File visibly `deleting`
-until the backend confirms it; the metadata row then disappears.
+Deletion immediately makes the File unavailable and revokes all of its Grants.
+A durable worker retries physical deletion and keeps the File visibly
+`deleting` until the backend confirms it; the metadata row then disappears.
+Replacing or removing an application reference never implicitly deletes the
+old File because another row or Grant may still use it.
 
 `acker backup` includes and verifies live File bytes by default.
 `--metadata-only` is explicit and restore then verifies every File against the
@@ -260,6 +373,6 @@ independently restored active store before publishing the database. See
 [FileStore maintenance migration](operations.md#filestore-maintenance-migration)
 for resumable offline backend changes.
 
-Per-user and per-organization quotas remain application-owned indexed data.
-The initial feature also omits direct provider URLs, multipart browser uploads,
-deduplication, automatic reference cascades, and multiple active stores.
+The initial feature intentionally omits direct provider delivery, multipart
+browser uploads, content deduplication, automatic reference cascades, arbitrary
+File metadata columns, single-use downloads, and multiple active stores.

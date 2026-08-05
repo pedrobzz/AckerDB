@@ -41,8 +41,8 @@ import {
   type SchemaRefusal,
   type SchemaSnapshot,
   type TableSnapshot,
-  withFrameworkTables,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 
 /** Raised when a descriptor kind cannot be rendered structurally — a hard stop. */
 export class GenerateError extends Error {}
@@ -113,6 +113,7 @@ function literalTs(value: unknown): string {
  * TypeScript text (a codegen concern that also owns `GenerateError`): a table
  * keyed by the same descriptor kinds the server seam uses, mapping each to its
  * structural type text. bigint/identity/pk as bigint, File references as FileId,
+ * File Grant references as FileGrantId,
  * int/float/scheduleAt as number, bytes as Uint8Array, jsonb as the codegen
  * convention (`unknown`), enums as string-literal unions, unions as
  * discriminated `{ tag; value }` unions, objects/arrays/nullables recursively.
@@ -122,6 +123,7 @@ const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   bigint: () => "bigint",
   identity: () => "bigint",
   file: () => "FileId",
+  fileGrant: () => "FileGrantId",
   string: () => "string",
   int: () => "number",
   float: () => "number",
@@ -319,7 +321,7 @@ function renderTypes(
 
   const lines: string[] = [TYPES_HEADER];
   lines.push('import { defineMigration as defineMigrationRuntime } from "@ackerdb/server";');
-  lines.push('import type { FileId, Renames } from "@ackerdb/server";');
+  lines.push('import type { FileGrantId, FileId, Renames } from "@ackerdb/server";');
   lines.push("");
 
   lines.push("/** Rows as they existed BEFORE this migration (the recorded pre-snapshot). */");

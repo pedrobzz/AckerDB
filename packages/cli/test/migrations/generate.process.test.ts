@@ -11,8 +11,8 @@ import {
   indexSqlName,
   migrationFingerprint,
   snapshotOf,
-  withFrameworkTables,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 

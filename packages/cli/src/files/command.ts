@@ -14,10 +14,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   Engine,
-  recordVerifiedFileStoreTransition,
-  resolveFileStoreBinding,
   type FileStore,
 } from "@ackerdb/server";
+import {
+  recordVerifiedFileStoreTransition,
+  resolveFileStoreBinding,
+} from "@ackerdb/server/files/binding";
 import {
   resolveFilesConfig,
   type AppConfig,

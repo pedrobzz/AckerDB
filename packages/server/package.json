@@ -17,6 +17,8 @@
   ],
   "exports": {
     ".": "./src/index.ts",
+    "./database/framework-schema": "./src/database/framework-schema.ts",
+    "./files/binding": "./src/files/binding.ts",
     "./files/s3": "./src/files/store/s3.ts",
     "./mcp": "./src/mcp/index.ts",
     "./realtime-host": "./src/realtime/host.ts"

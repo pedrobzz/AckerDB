@@ -15,10 +15,10 @@ export {
 } from "./result.ts";
 export type { Identity } from "./identity.ts";
 export type {
+  FileGrantId,
   FileId,
   FileMetadata,
   FileState,
-  FileUploadResult,
   FileUploadSession,
 } from "./files.ts";
 export {

@@ -75,10 +75,10 @@ function assertStoredValidator(
     }
     return;
   }
-  if (validator.kind === "file") {
+  if (validator.kind === "file" || validator.kind === "fileGrant") {
     if (!directColumn) {
       throw new ValidationError(
-        `${where}: v.file() may only be stored as a direct column, optionally nullable`,
+        `${where}: v.${validator.kind}() may only be stored as a direct column, optionally nullable`,
       );
     }
     return;
@@ -108,7 +108,7 @@ function assertStoredValidator(
   }
 }
 
-const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "file", "boolean", "enum", "union", "scheduleAt"]);
+const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "file", "fileGrant", "boolean", "enum", "union", "scheduleAt"]);
 const DIRECT_INDEXABLE = new Set(["int", "bigint", "identity", "enum", "union"]);
 
 export interface IndexOptions {

@@ -54,7 +54,11 @@ over the same public protocol so ordinary callers do not hand-roll the session
 and `fetch()` sequence; it is convenience rather than a second upload path. The
 helper must receive an application-owned mutation and its typed arguments to
 create the session before uploading. It cannot bypass application authorization
-by minting unrestricted sessions directly from the client.
+by minting unrestricted sessions directly from the client. Once a session
+exists, the helper retries an ambiguous transfer with bounded backoff against
+that same idempotent session until it succeeds, the caller cancels, or the
+session expires; it never hides a still-useful session behind an arbitrary
+two-attempt cutoff.
 
 Optional File name and content type are immutable, untrusted declarations
 captured with the bytes. The browser helper defaults them from its `File`, raw
@@ -70,9 +74,10 @@ metadata-only, so a harmless-looking read never allocates the entire object.
 Backend stores use the same automatic owner capture and pending-claim lifecycle
 as client uploads.
 
-An upload session created by a durable user identity captures that identity,
-and its completed File receives it as an immutable owner automatically. Trusted
-server-side creation may explicitly choose an owner or create an unowned File.
+An upload session created by a user or MCP principal captures that principal's
+durable identity, and its completed File receives it as an immutable owner
+automatically. Anonymous, workload, and system creation is unowned unless
+trusted server-side code explicitly chooses an owner.
 Owner is indexed reactive File state for filtering and relationships; it grants
 no retrieval authority by itself, because File grants remain the single access
 model. Transferring the bearer upload URL does not transfer ownership: the
@@ -103,24 +108,35 @@ grants all return `404 Not Found`, and initial grant responses use
 `Cache-Control: no-store`; neither status nor a retained cached response may
 reveal or bypass a grant's current authority.
 
-Grants have three orthogonal access modes: bearer possession, any authenticated
-user principal, or the validated application decision. Any mode may be
+Grants have three orthogonal access modes: bearer possession, a signed-in user
+principal, or the validated application decision. Any mode may be
 permanent or expiring, and creation must explicitly choose `expiresIn` or
 `permanent: true`; there is no lifetime default that can accidentally create a
 permanent URL. Public File metadata exposes only identity, lifecycle
 state, immutable optional owner, byte size, SHA-256, optional untrusted content
 type and name, and creation time; the physical object key is never public.
 
-`ctx.files.createGrant()` accepts a typed `access` union: `bearer`,
-`authenticated`, or `validated` with a registered authorization function and
-typed arguments. The same options contain the explicit lifetime and optional
-attachment or trusted-inline presentation, including a safe filename override.
+`ctx.files.createUrl()` defaults to bearer access because public media and
+ordinary sharing should require only an explicit lifetime. It optionally
+accepts a typed `access` union: `bearer`, `authenticated`, or `validated` with a
+registered authorization function and typed arguments. Top-level `inline` and
+`filename` options control presentation without reproducing HTTP disposition
+objects in the common call. Creating a URL also claims a pending File in the
+same transaction, after its options have been validated.
+
+Bearer URLs are intentionally usable directly in `<img>`, `<video>`, and `<a>`
+elements without cookies, custom headers, an application proxy, or an object
+URL. Possession is authority until revocation, expiry, or File deletion.
+Authenticated and validated URLs remain the private, programmatic path; the
+client's `files.fetch()` attaches its current credential and returns the
+unbuffered `Response`.
 
 File metadata is ordinary reactive AckerDB state exposed through
 `ctx.files.get()` and `ctx.files.query()`. The dedicated capability preserves
 the File module boundary instead of exposing its private framework table through
-`ctx.db`, while retaining normal indexed filtering, pagination, and reactive
-query invalidation. Initial framework indexes are creation time, owner plus
+`ctx.db`, while reusing the normal query DSL for filtering, ordering,
+pagination, aggregates, and reactive invalidation. Initial framework indexes
+are creation time, owner plus
 creation time, and lifecycle state plus creation time. Business-specific access
 paths belong to ordinary application tables rather than an expanding set of
 framework indexes. Queries do not silently restrict results to the current
@@ -136,8 +152,15 @@ Grant creation and revocation are transactional mutation operations; revocation
 is idempotent. Queries may read and paginate non-secret grant metadata, while
 the bearer URL secret is returned only at creation and never recovered by a
 listing. AckerDB persists only a cryptographic hash of the bearer secret, so the
-database cannot reconstruct a working URL after creation. Deleting a File
-revokes every grant in the same transaction.
+framework Grant table cannot reconstruct a working URL after creation.
+Applications may deliberately persist the creation-time plaintext result in their
+own rows when the URL itself is application state, such as a public avatar.
+Deleting a File revokes every grant in the same transaction.
+
+File Grant identities are distinct from File identities. `v.fileGrant()` carries
+that brand through function arguments and direct application-table columns for
+later revocation without casts; unlike `v.file()`, it has no automatic File
+claiming semantics.
 
 Every upload creates an independent File even when another File has the same
 SHA-256. The digest proves content; it does not introduce physical

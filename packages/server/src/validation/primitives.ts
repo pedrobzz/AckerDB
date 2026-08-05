@@ -1,5 +1,5 @@
 /** The scalar `v` validators and the constraint methods chained onto them. */
-import type { FileId, Identity } from "@ackerdb/core";
+import type { FileGrantId, FileId, Identity } from "@ackerdb/core";
 import { ValidationError } from "./error.ts";
 import {
   checkBigintConstraints,
@@ -215,6 +215,16 @@ export function file(): FileValidator {
     check: (value, path) => checkI64(value, path, "FileId (bigint)") as FileId,
     tsType: () => "FileId",
     descriptor: () => ({ k: "file" }),
+  });
+}
+
+export type FileGrantValidator = ChainableValidator<FileGrantId, "fileGrant">;
+
+export function fileGrant(): FileGrantValidator {
+  return makeValidator("fileGrant", {
+    check: (value, path) => checkI64(value, path, "FileGrantId (bigint)") as FileGrantId,
+    tsType: () => "FileGrantId",
+    descriptor: () => ({ k: "fileGrant" }),
   });
 }
 

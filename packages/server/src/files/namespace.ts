@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   getRef,
   stableEncode,
+  type FileGrantId,
   type FileId,
   type FileMetadata,
   type FileUploadSession,
@@ -11,8 +12,8 @@ import type { Principal } from "../auth/credentials.ts";
 import type { QueryMaterializers } from "../database/query/types.ts";
 import { ValidationError } from "../validation/error.ts";
 import type {
-  CreateFileGrantOptions,
-  CreateFileUploadOptions,
+  CreateFileUploadSessionOptions,
+  CreateFileUrlOptions,
   FileDuration,
   FileGrant,
   FileGrantDisposition,
@@ -57,6 +58,10 @@ interface RuntimeQuery {
   first(): Promise<Record<string, unknown> | null>;
   unique(): Promise<Record<string, unknown> | null>;
   count(): Promise<number>;
+  sum(column: (row: never) => unknown): Promise<number | bigint>;
+  avg(column: (row: never) => unknown): Promise<number | null>;
+  min(column: (row: never) => unknown): Promise<unknown | null>;
+  max(column: (row: never) => unknown): Promise<unknown | null>;
   iter(): AsyncIterable<Record<string, unknown>>;
   paginate(options: { cursor?: string | null; pageSize: number }): Promise<{
     items: Record<string, unknown>[];
@@ -74,11 +79,8 @@ export interface RuntimeFilesOptions {
 }
 
 function durationMs(value: FileDuration, path: string): number {
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new ValidationError(`${path} must be a positive integer of milliseconds`);
-    }
-    return value;
+  if (typeof value !== "string") {
+    throw new ValidationError(`${path} must be a positive duration such as "15m"`);
   }
   const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
   if (match === null) {
@@ -116,7 +118,7 @@ function filePublicUrl(value: string | undefined): string {
   return url.href;
 }
 
-function grantFilename(value: unknown): string | null {
+function urlFilename(value: unknown): string | null {
   if (value === undefined) return null;
   if (
     typeof value !== "string" ||
@@ -124,7 +126,7 @@ function grantFilename(value: unknown): string | null {
     value.length > 1_024 ||
     /[\u0000-\u001f\u007f]/.test(value)
   ) {
-    throw new ValidationError("files.createGrant.disposition.filename must contain 1 through 1024 safe characters");
+    throw new ValidationError("files.createUrl.filename must contain 1 through 1024 safe characters");
   }
   return value;
 }
@@ -147,7 +149,9 @@ function fileMetadata(row: Record<string, unknown> | null): FileMetadata | null 
   });
 }
 
-function mappedFileMaterializers(query: RuntimeQuery): QueryMaterializers<FileMetadata> {
+type FileMetadataMaterializers = Omit<FileMetadataQuery, "where" | "orderBy">;
+
+function mappedFileMaterializers(query: RuntimeQuery): FileMetadataMaterializers {
   const map = (row: Record<string, unknown>): FileMetadata => fileMetadata(row)!;
   return {
     collect: async () => (await query.collect()).map(map).filter(Boolean),
@@ -155,6 +159,10 @@ function mappedFileMaterializers(query: RuntimeQuery): QueryMaterializers<FileMe
     first: async () => fileMetadata(await query.first()),
     unique: async () => fileMetadata(await query.unique()),
     count: () => query.count(),
+    sum: ((column: never) => query.sum(column)) as FileMetadataMaterializers["sum"],
+    avg: ((column: never) => query.avg(column)) as FileMetadataMaterializers["avg"],
+    min: ((column: never) => query.min(column)) as FileMetadataMaterializers["min"],
+    max: ((column: never) => query.max(column)) as FileMetadataMaterializers["max"],
     iter: async function* () {
       for await (const row of query.iter()) {
         const metadata = fileMetadata(row);
@@ -169,26 +177,26 @@ function mappedFileMaterializers(query: RuntimeQuery): QueryMaterializers<FileMe
 }
 
 function mappedQuery(query: RuntimeQuery): FileMetadataQuery {
-  const mapped: FileMetadataQuery = {
+  const mapped = {
     ...mappedFileMaterializers(query),
-    where: (predicate) => mappedQuery(query.where(predicate as never)),
-    orderBy: (order) => mappedOrderedQuery(query.orderBy(order as never)),
+    where: (predicate: unknown) => mappedQuery(query.where(predicate as never)),
+    orderBy: (order: unknown) => mappedOrderedQuery(query.orderBy(order as never)),
   };
-  return Object.freeze(mapped);
+  return Object.freeze(mapped) as unknown as FileMetadataQuery;
 }
 
 function mappedOrderedQuery(query: RuntimeQuery): OrderedFileMetadataQuery {
-  const mapped: OrderedFileMetadataQuery = {
+  const mapped = {
     ...mappedFileMaterializers(query),
-    where: (predicate) => mappedOrderedQuery(query.where(predicate as never)),
-    thenBy: (order) => mappedOrderedQuery(query.thenBy(order as never)),
+    where: (predicate: unknown) => mappedOrderedQuery(query.where(predicate as never)),
+    thenBy: (order: unknown) => mappedOrderedQuery(query.thenBy(order as never)),
   };
-  return Object.freeze(mapped);
+  return Object.freeze(mapped) as unknown as OrderedFileMetadataQuery;
 }
 
 function grantMetadata(row: Record<string, unknown>): FileGrantMetadata {
   return Object.freeze({
-    id: row.id as bigint,
+    id: row.id as FileGrantId,
     fileId: row.fileId as FileId,
     access: row.accessType as FileGrantMetadata["access"],
     expiresAt: row.expiresAt as number | null,
@@ -255,11 +263,11 @@ function assertSha256(value: unknown, path: string): string {
 function contentTypes(value: unknown): string | null {
   if (value === undefined) return null;
   if (!Array.isArray(value) || value.length === 0 || value.length > 64) {
-    throw new ValidationError("files.createUpload.contentTypes must contain 1 through 64 values");
+    throw new ValidationError("files.createUploadSession.contentTypes must contain 1 through 64 values");
   }
   const checked = value.map((entry, index) => {
     if (typeof entry !== "string" || entry.length === 0 || entry.length > 255) {
-      throw new ValidationError(`files.createUpload.contentTypes[${index}] must be a media type`);
+      throw new ValidationError(`files.createUploadSession.contentTypes[${index}] must be a media type`);
     }
     return entry;
   });
@@ -320,16 +328,20 @@ export class RuntimeFiles {
     const cleanup = db[FILE_CLEANUP_TABLE]!;
     return Object.freeze({
       ...queryCapability(db),
-      createUpload: async (options: CreateFileUploadOptions = {}): Promise<FileUploadSession> => {
+      createUploadSession: async (
+        options: CreateFileUploadSessionOptions = {},
+      ): Promise<FileUploadSession> => {
         const maxBytes = options.maxBytes ?? this.maxBytes;
         if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > this.maxBytes) {
-          throw new ValidationError(`files.createUpload.maxBytes must be from 1 through ${this.maxBytes}`);
+          throw new ValidationError(
+            `files.createUploadSession.maxBytes must be from 1 through ${this.maxBytes}`,
+          );
         }
         const expiresIn = options.expiresIn === undefined
           ? DEFAULT_UPLOAD_SESSION_MS
-          : durationMs(options.expiresIn, "files.createUpload.expiresIn");
+          : durationMs(options.expiresIn, "files.createUploadSession.expiresIn");
         if (expiresIn > DEFAULT_UPLOAD_SESSION_MS) {
-          throw new ValidationError("files.createUpload.expiresIn cannot exceed one hour");
+          throw new ValidationError("files.createUploadSession.expiresIn cannot exceed one hour");
         }
         const token = secret();
         const owner = Object.hasOwn(options, "owner")
@@ -344,7 +356,7 @@ export class RuntimeFiles {
           contentTypesJson: contentTypes(options.contentTypes),
           expectedSha256: options.expectedSha256 === undefined
             ? null
-            : assertSha256(options.expectedSha256, "files.createUpload.expectedSha256"),
+            : assertSha256(options.expectedSha256, "files.createUploadSession.expectedSha256"),
           expiresAt: timestamp + expiresIn,
           fileId: null,
           attemptToken: null,
@@ -358,56 +370,61 @@ export class RuntimeFiles {
           maxBytes,
         });
       },
-      createGrant: async <Args extends { readonly fileId: FileId }>(
+      createUrl: async <Args extends { readonly fileId: FileId }>(
         fileId: FileId,
-        options: CreateFileGrantOptions<Args>,
+        options: CreateFileUrlOptions<Args>,
       ): Promise<FileGrant> => {
         const file = await files.get(fileId);
-        if (file === null || file.state !== "active") {
-          throw new ValidationError("files.createGrant requires an active File");
+        if (file === null || file.state === "deleting") {
+          throw new ValidationError("files.createUrl requires an existing File");
         }
         const expiring = Object.hasOwn(options, "expiresIn");
         const permanent = Object.hasOwn(options, "permanent");
         if (permanent && options.permanent !== true) {
-          throw new ValidationError("files.createGrant.permanent must be exactly true");
+          throw new ValidationError("files.createUrl.permanent must be exactly true");
         }
         if (expiring === permanent) {
-          throw new ValidationError("files.createGrant requires exactly expiresIn or permanent: true");
+          throw new ValidationError("files.createUrl requires exactly expiresIn or permanent: true");
         }
         const expiresAt = expiring
-          ? timestamp + durationMs(options.expiresIn!, "files.createGrant.expiresIn")
+          ? timestamp + durationMs(options.expiresIn!, "files.createUrl.expiresIn")
           : null;
-        const access = options.access;
+        const access = options.access ?? { type: "bearer" as const };
         if (access.type !== "bearer" && access.type !== "authenticated" && access.type !== "validated") {
-          throw new ValidationError("files.createGrant.access has an unknown type");
+          throw new ValidationError("files.createUrl.access has an unknown type");
         }
-        const disposition = options.disposition ?? { type: "attachment" as const };
-        if (disposition.type !== "attachment" && disposition.type !== "inline") {
-          throw new ValidationError("files.createGrant.disposition has an unknown type");
+        if (options.inline !== undefined && typeof options.inline !== "boolean") {
+          throw new ValidationError("files.createUrl.inline must be a boolean");
         }
-        if (disposition.type === "inline" && !safeInlineContentType(file.contentType)) {
+        const dispositionType = options.inline === true ? "inline" : "attachment";
+        if (dispositionType === "inline" && !safeInlineContentType(file.contentType)) {
           throw new ValidationError(
-            "files.createGrant inline delivery requires a trusted image, video, audio, or PDF File",
+            "files.createUrl inline delivery requires a trusted image, video, audio, or PDF File",
           );
         }
-        const filename = grantFilename(disposition.filename);
+        const filename = urlFilename(options.filename);
         const normalizedDisposition: FileGrantDisposition = Object.freeze(
           filename === null
-            ? { type: disposition.type }
-            : { type: disposition.type, filename },
+            ? { type: dispositionType }
+            : { type: dispositionType, filename },
         );
+        const authorizeAddress = access.type === "validated" ? getRef(access.authorize) : null;
+        const authorizeArgsJson = access.type === "validated" ? stableEncode(access.args) : null;
         const token = secret();
+        if (file.state === "pending") {
+          await files.patch(fileId, { state: "active", pendingExpiresAt: null });
+        }
         const id = await grants.insert({
           fileId,
           secretHash: token.hash,
           accessType: access.type,
-          authorizeAddress: access.type === "validated" ? getRef(access.authorize) : null,
-          authorizeArgsJson: access.type === "validated" ? stableEncode(access.args) : null,
+          authorizeAddress,
+          authorizeArgsJson,
           expiresAt,
           dispositionType: normalizedDisposition.type,
           filename,
           createdAt: timestamp,
-        });
+        }) as FileGrantId;
         markOneTimeResult();
         if (expiresAt !== null) scheduleCleanup(expiresAt);
         return Object.freeze({
@@ -420,7 +437,7 @@ export class RuntimeFiles {
           createdAt: timestamp,
         });
       },
-      revokeGrant: async (grantId: bigint): Promise<void> => {
+      revokeGrant: async (grantId: FileGrantId): Promise<void> => {
         await grants.delete(grantId);
       },
       claim: async (fileId: FileId): Promise<void> => {

@@ -497,7 +497,7 @@ void api.surface.echo;
     expect(types).toContain(
       'export type TypingEventArgs = EventArgsOf<Schema, "typingEvents">;',
     );
-    expect(types).toContain("export type { FileId, Identity };");
+    expect(types).toContain("export type { FileGrantId, FileId, Identity };");
     // no runtime import of @ackerdb/server anywhere in client-facing files
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     for (const file of [types, api]) {

@@ -3,6 +3,9 @@ import type { Identity } from "./identity.ts";
 /** Durable application-facing identity of one immutable stored File. */
 export type FileId = bigint & { readonly __ackerdbFileId: unique symbol };
 
+/** Durable identity of one independently revocable File URL grant. */
+export type FileGrantId = bigint & { readonly __ackerdbFileGrantId: unique symbol };
+
 /** The framework-owned lifecycle state of a File. */
 export type FileState = "pending" | "active" | "deleting";
 
@@ -23,9 +26,4 @@ export interface FileUploadSession {
   readonly url: string;
   readonly expiresAt: number;
   readonly maxBytes: number;
-}
-
-/** Result returned after an upload session commits exactly one File. */
-export interface FileUploadResult {
-  readonly fileId: FileId;
 }

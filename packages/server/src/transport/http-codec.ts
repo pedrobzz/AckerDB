@@ -1,6 +1,7 @@
 /**
  * The wire format of the exposed HTTP surface: standard JSON, derived from the
- * function's own contract. `v.bigint()`, `v.identity()`, and `v.file()` cross as
+ * function's own contract. `v.bigint()`, `v.identity()`, `v.file()`, and
+ * `v.fileGrant()` cross as
  * canonical decimal strings and `v.bytes()` as base64 — exactly what
  * `validation/json-schema.ts` publishes — so a caller obeying the OpenAPI
  * document is understood and a generated client receives what it was promised.

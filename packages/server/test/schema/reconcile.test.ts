@@ -14,9 +14,9 @@ import {
   probeUniqueIndex,
   reconcile,
   UnsafeSchemaChange,
-  withFrameworkTables,
   type Schema,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 const dirs: string[] = [];
 afterEach(() => {

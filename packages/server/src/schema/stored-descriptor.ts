@@ -14,6 +14,7 @@ const FIELDS = {
   bigint: ["k", "min", "max"],
   identity: ["k"],
   file: ["k"],
+  fileGrant: ["k"],
   boolean: ["k"],
   bytes: ["k"],
   vector: ["k", "dimensions"],
@@ -140,8 +141,9 @@ function validate(
       }
       return;
     case "file":
+    case "fileGrant":
       if (role !== "column") {
-        fail(path, "v.file() must be a direct table column");
+        fail(path, `v.${typedKind}() must be a direct table column`);
       }
       return;
     case "string":

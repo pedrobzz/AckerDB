@@ -1,4 +1,5 @@
 import type {
+  FileGrantId,
   FileId,
   FileMetadata,
   FileUploadSession,
@@ -6,14 +7,18 @@ import type {
   QueryRef,
 } from "@ackerdb/core";
 import type {
-  OrderExpression,
-  PredicateExpression,
+  OrderedTableQuery,
   QueryMaterializers,
+  TableQuery,
 } from "../database/query/types.ts";
+import type {
+  NullableValidator,
+  StandardValidator,
+} from "../validation/validator.ts";
 
-export type FileDuration = number | `${number}${"ms" | "s" | "m" | "h" | "d"}`;
+export type FileDuration = `${number}${"ms" | "s" | "m" | "h" | "d"}`;
 
-export interface CreateFileUploadOptions {
+export interface CreateFileUploadSessionOptions {
   readonly maxBytes?: number;
   readonly contentTypes?: readonly string[];
   readonly expectedSha256?: string;
@@ -24,6 +29,7 @@ export interface CreateFileUploadOptions {
 
 type FileGrantAuthorizationArgs = { readonly fileId: FileId };
 
+/** URL access policy: possession, a signed-in user, or an application query decision. */
 export type FileGrantAccess<
   Args extends FileGrantAuthorizationArgs = FileGrantAuthorizationArgs,
 > =
@@ -43,15 +49,16 @@ export type FileGrantDisposition =
   | { readonly type: "attachment"; readonly filename?: string }
   | { readonly type: "inline"; readonly filename?: string };
 
-export type CreateFileGrantOptions<
+export type CreateFileUrlOptions<
   Args extends FileGrantAuthorizationArgs = FileGrantAuthorizationArgs,
 > = FileGrantLifetime & {
-  readonly access: FileGrantAccess<Args>;
-  readonly disposition?: FileGrantDisposition;
+  readonly access?: FileGrantAccess<Args>;
+  readonly inline?: boolean;
+  readonly filename?: string;
 };
 
 export interface FileGrant {
-  readonly id: bigint;
+  readonly id: FileGrantId;
   readonly fileId: FileId;
   readonly url: string;
   readonly access: FileGrantAccess["type"];
@@ -65,46 +72,20 @@ export type FileGrantMetadata = Omit<FileGrant, "url">;
 
 export interface FileGrantMetadataQuery extends QueryMaterializers<FileGrantMetadata> {}
 
-export type FileMetadataPredicate = PredicateExpression<FileMetadata>;
+/** Public projection of the private framework table, expressed through the ordinary query DSL. */
+type FileMetadataColumns = {
+  readonly id: StandardValidator<FileId, "pk">;
+  readonly state: StandardValidator<FileMetadata["state"], "string">;
+  readonly owner: NullableValidator<StandardValidator<Identity, "identity">>;
+  readonly size: StandardValidator<number, "int">;
+  readonly sha256: StandardValidator<string, "string">;
+  readonly contentType: NullableValidator<StandardValidator<string, "string">>;
+  readonly name: NullableValidator<StandardValidator<string, "string">>;
+  readonly createdAt: StandardValidator<number, "float">;
+};
 
-export interface FileMetadataQuery extends QueryMaterializers<FileMetadata> {
-  where(predicate: (row: FileMetadataQueryRow) => FileMetadataPredicate): FileMetadataQuery;
-  orderBy(order: (row: FileMetadataQueryRow) => OrderExpression): OrderedFileMetadataQuery;
-}
-
-export interface OrderedFileMetadataQuery extends QueryMaterializers<FileMetadata> {
-  where(predicate: (row: FileMetadataQueryRow) => FileMetadataPredicate): OrderedFileMetadataQuery;
-  thenBy(order: (row: FileMetadataQueryRow) => OrderExpression): OrderedFileMetadataQuery;
-}
-
-interface Comparable<Value> {
-  eq(value: Value): FileMetadataPredicate;
-  ne(value: Value): FileMetadataPredicate;
-  in(values: readonly Value[]): FileMetadataPredicate;
-  lt(value: Value): FileMetadataPredicate;
-  lte(value: Value): FileMetadataPredicate;
-  gt(value: Value): FileMetadataPredicate;
-  gte(value: Value): FileMetadataPredicate;
-  between(lower: Value, upper: Value): FileMetadataPredicate;
-  asc(): OrderExpression;
-  desc(): OrderExpression;
-}
-
-interface NullableComparable<Value> extends Comparable<Value> {
-  isNull(): FileMetadataPredicate;
-  isNotNull(): FileMetadataPredicate;
-}
-
-export interface FileMetadataQueryRow {
-  readonly id: Comparable<FileId>;
-  readonly state: Comparable<FileMetadata["state"]>;
-  readonly owner: NullableComparable<Identity>;
-  readonly size: Comparable<number>;
-  readonly sha256: Comparable<string>;
-  readonly contentType: NullableComparable<string>;
-  readonly name: NullableComparable<string>;
-  readonly createdAt: Comparable<number>;
-}
+export type FileMetadataQuery = TableQuery<FileMetadataColumns, FileMetadata>;
+export type OrderedFileMetadataQuery = OrderedTableQuery<FileMetadataColumns, FileMetadata>;
 
 export interface FileQueryCapability {
   get(fileId: FileId): Promise<FileMetadata | null>;
@@ -113,12 +94,12 @@ export interface FileQueryCapability {
 }
 
 export interface FileMutationCapability extends FileQueryCapability {
-  createUpload(options?: CreateFileUploadOptions): Promise<FileUploadSession>;
-  createGrant<Args extends FileGrantAuthorizationArgs>(
+  createUploadSession(options?: CreateFileUploadSessionOptions): Promise<FileUploadSession>;
+  createUrl<Args extends FileGrantAuthorizationArgs = FileGrantAuthorizationArgs>(
     fileId: FileId,
-    options: CreateFileGrantOptions<Args>,
+    options: CreateFileUrlOptions<Args>,
   ): Promise<FileGrant>;
-  revokeGrant(grantId: bigint): Promise<void>;
+  revokeGrant(grantId: FileGrantId): Promise<void>;
   claim(fileId: FileId): Promise<void>;
   delete(fileId: FileId): Promise<void>;
 }

@@ -39,8 +39,8 @@ import {
   type SchemaRefusal,
   type SchemaSnapshot,
   type TableChange,
-  withFrameworkTables,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";

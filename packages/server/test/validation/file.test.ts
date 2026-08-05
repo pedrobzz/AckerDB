@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { v, ValidationError, type FileId } from "@ackerdb/server";
+import { v, ValidationError, type FileGrantId, type FileId } from "@ackerdb/server";
 import { argsJsonSchema } from "../../src/validation/json-schema.ts";
 import { compileStandardJsonCodec } from "../../src/validation/standard-schema.ts";
 
@@ -30,5 +30,21 @@ describe("File validator", () => {
     expect(() =>
       v.file()["~standard"].jsonSchema.input({ target: "draft-2020-12" })
     ).toThrow("standard-JSON protocol codec");
+  });
+
+  test("validates File Grant identities through the same lossless scalar boundary", () => {
+    const grantId: FileGrantId = v.fileGrant().check(9n, "grant");
+    const codec = compileStandardJsonCodec(v.fileGrant());
+
+    expect(grantId).toBe(9n as FileGrantId);
+    expect(v.fileGrant().descriptor()).toEqual({ k: "fileGrant" });
+    expect(v.fileGrant().tsType()).toBe("FileGrantId");
+    expect(argsJsonSchema({ grantId: v.fileGrant() }).properties.grantId).toEqual({
+      type: ["integer", "string"],
+      pattern: "^(?:0|-?[1-9][0-9]*)$",
+    });
+    expect(codec.decode("9")).toBe(9n as FileGrantId);
+    expect(codec.encode(grantId)).toBe("9");
+    expect(() => v.fileGrant().check("9", "grant")).toThrow(ValidationError);
   });
 });

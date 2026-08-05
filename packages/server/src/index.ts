@@ -29,26 +29,23 @@ export {
 export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
 export {
+  type FileGrantId,
   type FileId,
   type FileMetadata,
   type FileState,
-  type FileUploadResult,
   type FileUploadSession,
   type Identity,
 } from "@ackerdb/core";
 export {
-  type CreateFileGrantOptions,
-  type CreateFileUploadOptions,
+  type CreateFileUploadSessionOptions,
+  type CreateFileUrlOptions,
   type FileDuration,
   type FileGrant,
   type FileGrantAccess,
-  type FileGrantDisposition,
   type FileGrantLifetime,
   type FileGrantMetadata,
   type FileGrantMetadataQuery,
   type FileMetadataQuery,
-  type FileMetadataPredicate,
-  type FileMetadataQueryRow,
   type FileMutationCapability,
   type FileProcedureCapability,
   type FileQueryCapability,
@@ -66,7 +63,6 @@ export {
 } from "./files/observability.ts";
 export {
   FileStoreError,
-  LocalFileStore,
   type FileStore,
   type FileStoreAttributes,
   type FileStoreErrorCode,
@@ -76,12 +72,17 @@ export {
   type FileStorePutOptions,
   type FileStorePutResult,
   type FileStoreRange,
+} from "./files/store/contract.ts";
+export {
+  LocalFileStore,
   type LocalFileStoreConfig,
+} from "./files/store/local.ts";
+export {
   type S3Credentials,
   type S3FileStoreChecksum,
   type S3FileStoreConfig,
   type S3FileStoreEncryption,
-} from "./files/store/index.ts";
+} from "./files/store/s3-configuration.ts";
 export {
   type Descriptor,
   type Expand,
@@ -133,11 +134,6 @@ export {
   type TagMap,
 } from "./database/engine.ts";
 export { restoreVerifiedDatabase } from "./database/restore.ts";
-export {
-  rebindRestoredFileStore,
-  recordVerifiedFileStoreTransition,
-  resolveFileStoreBinding,
-} from "./files/binding.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
@@ -193,7 +189,6 @@ export {
   type TypedJobOutcome,
 } from "./jobs/api.ts";
 export { JOBS_TABLE } from "./jobs/table.ts";
-export { withFrameworkTables } from "./database/framework-schema.ts";
 export {
   type JobAttemptOutcome,
   type JobAttemptRecord,

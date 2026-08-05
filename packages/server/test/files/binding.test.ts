@@ -8,10 +8,12 @@ import {
   IncompatibleDatabaseError,
   defineSchema,
   reconcile,
+} from "../../src/index.ts";
+import {
   rebindRestoredFileStore,
   recordVerifiedFileStoreTransition,
   resolveFileStoreBinding,
-} from "../../src/index.ts";
+} from "../../src/files/binding.ts";
 
 const directories: string[] = [];
 const schema = defineSchema({});

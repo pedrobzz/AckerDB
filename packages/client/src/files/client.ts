@@ -1,5 +1,6 @@
 import {
   Failure,
+  MAX_RETRY_AFTER_MS,
   Ok,
   parseOutcome,
   type ApplicationError,
@@ -10,6 +11,7 @@ import {
 } from "@ackerdb/core";
 import type {
   AckerDBClientError,
+  AckerDBClientScheduler,
   ClientResult,
 } from "../client.ts";
 
@@ -35,6 +37,12 @@ export interface AckerDBFiles {
   upload<Args, Error extends ApplicationError = never>(
     options: AckerDBFileUploadOptions<Args, Error>,
   ): Promise<ClientResult<FileId, Error>>;
+  /** Fetch a server-issued File grant through the configured server with a streaming body. */
+  fetch(url: string, options?: {
+    readonly signal?: AbortSignal;
+    readonly method?: "GET" | "HEAD";
+    readonly headers?: HeadersInit;
+  }): Promise<Response>;
 }
 
 interface FileFetchControl {
@@ -51,11 +59,42 @@ export interface AckerDBFilesClientPort {
   ): Promise<ClientResult<FileUploadSession, Error>>;
   fetch(url: string, init: RequestInit): Promise<Response>;
   createFetchControl(signal?: AbortSignal): FileFetchControl;
+  authorizationHeaders(): HeadersInit;
+  readonly httpOrigin: string;
+  readonly scheduler: AckerDBClientScheduler;
   readResponse(response: Response, signal: AbortSignal): Promise<string>;
   clientError(outcome: Outcome, interruption?: "suspension"): AckerDBClientError;
 }
 
 const MAX_FILE_ID = (1n << 63n) - 1n;
+const UPLOAD_RETRY_BASE_MS = 250;
+const UPLOAD_RETRY_MAX_MS = 5_000;
+
+function fileRouteUrl(
+  value: string,
+  httpOrigin: string,
+  route: "uploads" | "grants",
+): string {
+  const label = route === "uploads" ? "upload session" : "grant";
+  const shape = route === "uploads" ? "upload" : "grant";
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new TypeError(`File ${label} URL must be an absolute HTTP URL`);
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    !url.pathname.startsWith(`/api/_files/${route}/`)
+  ) {
+    throw new TypeError(`File ${label} URL has an invalid AckerDB ${shape} shape`);
+  }
+  return new URL(url.pathname, httpOrigin).href;
+}
 
 function uploadFailure<Error extends ApplicationError>(
   error: Error | AckerDBClientError,
@@ -182,9 +221,150 @@ async function waitForSession<Error extends ApplicationError>(
   }
 }
 
+function responseRetryAfterMs(response: Response, now: number): number {
+  const header = response.headers.get("retry-after")?.trim();
+  if (header === undefined || header === "" || header.length > 64) return 0;
+  let delayMs: number;
+  if (/^\d+$/.test(header)) {
+    delayMs = Number(header) * 1_000;
+  } else {
+    const at = Date.parse(header);
+    if (!Number.isFinite(at)) return 0;
+    delayMs = Math.max(0, at - now);
+  }
+  return Math.min(Number.isFinite(delayMs) ? delayMs : MAX_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS);
+}
+
+function uploadRetryDelay(
+  failures: number,
+  remainingMs: number,
+  retryAfterMs: number,
+): number {
+  const exponent = Math.min(Math.max(0, failures - 1), 30);
+  const backoff = Math.min(UPLOAD_RETRY_BASE_MS * 2 ** exponent, UPLOAD_RETRY_MAX_MS);
+  return Math.min(Math.max(backoff, retryAfterMs), remainingMs);
+}
+
+function waitForRetry(
+  scheduler: AckerDBClientScheduler,
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const handle = scheduler.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = (): void => {
+      scheduler.clearTimeout(handle);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Transfer response-body ownership to a stream that releases the client lifecycle on termination. */
+function managedStreamingResponse(response: Response, control: FileFetchControl): Response {
+  if (response.body === null) {
+    control.release();
+    return response;
+  }
+  const reader = response.body.getReader();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let finished = false;
+  const release = (): void => {
+    if (finished) return;
+    finished = true;
+    control.signal.removeEventListener("abort", onAbort);
+    control.release();
+  };
+  const onAbort = (): void => {
+    if (finished) return;
+    const reason = control.signal.reason;
+    release();
+    void reader.cancel(reason).catch(() => {});
+    streamController?.error(reason);
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+      control.signal.addEventListener("abort", onAbort, { once: true });
+      if (control.signal.aborted) onAbort();
+    },
+    async pull(controller) {
+      if (finished) return;
+      try {
+        const part = await reader.read();
+        if (finished) return;
+        if (part.done) {
+          release();
+          controller.close();
+        } else {
+          controller.enqueue(part.value);
+        }
+      } catch (error) {
+        if (finished) return;
+        release();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      if (finished) return;
+      try {
+        await reader.cancel(reason);
+      } finally {
+        release();
+      }
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /** Internal implementation behind the constructor-owned public `client.files` capability. */
 export class AckerDBFilesClient implements AckerDBFiles {
   constructor(private readonly port: AckerDBFilesClientPort) {}
+
+  async fetch(
+    url: string,
+    options: {
+      readonly signal?: AbortSignal;
+      readonly method?: "GET" | "HEAD";
+      readonly headers?: HeadersInit;
+    } = {},
+  ): Promise<Response> {
+    if (options.signal?.aborted) throw options.signal.reason;
+    const method = options.method ?? "GET";
+    if (method !== "GET" && method !== "HEAD") {
+      throw new TypeError("File grant fetch method must be GET or HEAD");
+    }
+    const grantUrl = fileRouteUrl(url, this.port.httpOrigin, "grants");
+    const control = this.port.createFetchControl(options.signal);
+    try {
+      const headers = new Headers(options.headers);
+      const authorization = new Headers(this.port.authorizationHeaders()).get("authorization");
+      if (authorization === null) headers.delete("authorization");
+      else headers.set("authorization", authorization);
+      const response = await waitForFetch(
+        Promise.resolve().then(() => this.port.fetch(grantUrl, {
+          method,
+          headers,
+          signal: control.signal,
+          credentials: "omit",
+          redirect: "error",
+        })),
+        control.signal,
+      );
+      return managedStreamingResponse(response, control);
+    } catch (error) {
+      control.release();
+      throw error;
+    }
+  }
 
   async upload<Args, Error extends ApplicationError = never>(
     options: AckerDBFileUploadOptions<Args, Error>,
@@ -211,6 +391,17 @@ export class AckerDBFilesClient implements AckerDBFiles {
       }));
     }
     if (!session.ok) return uploadFailure<Error>(session.error);
+    let uploadUrl: string;
+    try {
+      uploadUrl = fileRouteUrl(session.data.url, this.port.httpOrigin, "uploads");
+    } catch {
+      return uploadFailure<Error>(this.port.clientError({
+        code: "malformed",
+        message: "Upload Session returned an invalid AckerDB upload URL",
+        retryable: false,
+        resource: "operation",
+      }));
+    }
     if (options.signal?.aborted) {
       return uploadFailure<Error>(this.port.clientError({
         code: "unavailable",
@@ -220,13 +411,36 @@ export class AckerDBFilesClient implements AckerDBFiles {
       }));
     }
 
+    const remainingSessionMs = session.data.expiresAt - this.port.scheduler.now();
+    if (!(remainingSessionMs > 0)) {
+      return uploadFailure<Error>(this.port.clientError({
+        code: "unavailable",
+        message: "File upload session expired before sending bytes",
+        retryable: true,
+        resource: "operation",
+      }));
+    }
     const control = this.port.createFetchControl(options.signal);
+    let attempted = false;
     try {
       const headers = uploadHeaders(file, options);
-      for (let attempt = 0; attempt < 2; attempt++) {
+      let failures = 0;
+      for (;;) {
+        if (this.port.scheduler.now() >= session.data.expiresAt) {
+          return uploadFailure<Error>(this.port.clientError({
+            code: attempted ? "indeterminate" : "unavailable",
+            message: attempted
+              ? "File upload completion is unknown after its session expired"
+              : "File upload session expired before sending bytes",
+            retryable: !attempted,
+            resource: attempted ? "idempotency" : "operation",
+          }));
+        }
+        attempted = true;
+        let retryAfterMs = 0;
         try {
           const response = await waitForFetch(
-            Promise.resolve().then(() => this.port.fetch(session.data.url, {
+            Promise.resolve().then(() => this.port.fetch(uploadUrl, {
               method: "PUT",
               headers,
               body: file,
@@ -248,22 +462,22 @@ export class AckerDBFilesClient implements AckerDBFiles {
                 resource: "idempotency",
               }));
             }
-            return uploadFailure<Error>(this.port.clientError(outcome));
+            if (!outcome.retryable) {
+              return uploadFailure<Error>(this.port.clientError(outcome));
+            }
+            retryAfterMs = Math.max(
+              outcome.retryAfterMs ?? 0,
+              responseRetryAfterMs(response, this.port.scheduler.now()),
+            );
           }
-          const text = await this.port.readResponse(response, control.signal);
-          let fileId: FileId;
-          try {
-            fileId = fileIdFromResponse(text);
-          } catch {
-            if (attempt === 0) continue;
-            return uploadFailure<Error>(this.port.clientError({
-              code: "malformed",
-              message: "File upload endpoint returned an invalid success response",
-              retryable: false,
-              resource: "idempotency",
-            }));
+          if (response.ok) {
+            try {
+              const text = await this.port.readResponse(response, control.signal);
+              return Ok<FileId, Error | AckerDBClientError>(fileIdFromResponse(text));
+            } catch {
+              if (control.signal.aborted) throw control.signal.reason;
+            }
           }
-          return Ok<FileId, Error | AckerDBClientError>(fileId);
         } catch {
           if (control.signal.aborted) {
             return uploadFailure<Error>(this.port.clientError(
@@ -276,24 +490,25 @@ export class AckerDBFilesClient implements AckerDBFiles {
               lifecycleInterruption(control.signal),
             ));
           }
-          if (attempt === 0) continue;
         }
+        failures++;
+        const remaining = session.data.expiresAt - this.port.scheduler.now();
+        if (!(remaining > 0)) continue;
+        await waitForRetry(
+          this.port.scheduler,
+          uploadRetryDelay(failures, remaining, retryAfterMs),
+          control.signal,
+        );
       }
-      return uploadFailure<Error>(this.port.clientError({
-        code: "indeterminate",
-        message: "File upload completion is unknown",
-        retryable: false,
-        resource: "idempotency",
-      }));
     } catch {
       return uploadFailure<Error>(this.port.clientError({
-        code: control.signal.aborted ? "indeterminate" : "unavailable",
-        message: control.signal.aborted
+        code: attempted ? "indeterminate" : "unavailable",
+        message: attempted
           ? "File upload completion is unknown"
           : "File upload request failed",
         retryable: false,
-        resource: "idempotency",
-      }));
+        resource: attempted ? "idempotency" : "operation",
+      }, lifecycleInterruption(control.signal)));
     } finally {
       control.release();
     }

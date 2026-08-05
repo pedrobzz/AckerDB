@@ -794,6 +794,16 @@ export class AckerDBClient {
           release: () => this.releaseFetchController(control),
         };
       },
+      authorizationHeaders: () => {
+        this.assertUsable();
+        const headers = new Headers();
+        if (this.credential.kind === "bearer") {
+          headers.set("authorization", `Bearer ${this.credential.token}`);
+        }
+        return headers;
+      },
+      httpOrigin: new URL(this.httpUrl).origin,
+      scheduler: this.scheduler,
       readResponse: (response, signal) =>
         this.readBoundedResponse(response, this.limits.maxFrameBytes, signal, "idempotency"),
       clientError: (outcome, interruption) => new AckerDBClientError(outcome, interruption),

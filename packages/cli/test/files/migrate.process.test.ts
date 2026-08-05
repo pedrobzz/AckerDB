@@ -4,11 +4,13 @@ import { join } from "node:path";
 import {
   Engine,
   LocalFileStore,
-  recordVerifiedFileStoreTransition,
   reconcile,
-  resolveFileStoreBinding,
   type TelemetryRecord,
 } from "@ackerdb/server";
+import {
+  recordVerifiedFileStoreTransition,
+  resolveFileStoreBinding,
+} from "@ackerdb/server/files/binding";
 import { loadConfig } from "../../src/app/config.ts";
 import { importApp } from "../../src/app/manifest.ts";
 import { fileStoreIdentity } from "../../src/files/identity.ts";
