@@ -1,29 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { RuntimeFiles } from "./namespace.ts";
 import {
+  fileDatabase,
+  pendingCleanupRow,
+  storedFileError,
+  type FileDatabase,
+  type FileDatabaseQuery,
+} from "./database.ts";
+import {
   FILE_CLEANUP_TABLE,
   FILE_GRANTS_TABLE,
   FILE_UPLOADS_TABLE,
   FILES_TABLE,
 } from "./tables.ts";
 import { FileStoreError } from "./store/contract.ts";
-
-interface FileQuery {
-  where(predicate: (row: never) => unknown): FileQuery;
-  orderBy(order: (row: never) => unknown): FileQuery;
-  take(count: number): Promise<Record<string, unknown>[]>;
-  first(): Promise<Record<string, unknown> | null>;
-}
-
-interface FileTable {
-  get(id: bigint): Promise<Record<string, unknown> | null>;
-  query(): FileQuery;
-  insert(row: Record<string, unknown>): PromiseLike<bigint>;
-  patch(id: bigint, row: Record<string, unknown>): PromiseLike<void>;
-  delete(id: bigint): PromiseLike<void>;
-}
-
-type FileDatabase = Readonly<Record<string, FileTable>>;
 
 export interface FileCleanupRuntimeOptions {
   readonly files: RuntimeFiles;
@@ -44,69 +34,74 @@ const BATCH_SIZE = 32;
 const LEASE_MS = 60_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
-function stateAndTime(
-  query: FileQuery,
+function stateAndTime<Row>(
+  query: FileDatabaseQuery<Row>,
   state: string,
   field: "expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil",
   time: number,
-): FileQuery {
+): FileDatabaseQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { eq(value: string): unknown; lte(value: number): unknown }>;
     return (row.state!.eq(state) as { and(value: unknown): unknown }).and(row[field]!.lte(time));
   });
 }
 
-function stateOnly(query: FileQuery, state: string): FileQuery {
+function stateOnly<Row>(query: FileDatabaseQuery<Row>, state: string): FileDatabaseQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as { state: { eq(value: string): unknown } };
     return row.state.eq(state);
   });
 }
 
-function timeAtMost(query: FileQuery, field: "expiresAt", time: number): FileQuery {
+function timeAtMost<Row>(
+  query: FileDatabaseQuery<Row>,
+  field: "expiresAt",
+  time: number,
+): FileDatabaseQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { lte(value: number): unknown }>;
     return row[field]!.lte(time);
   });
 }
 
-function notNull(query: FileQuery, field: "expiresAt"): FileQuery {
+function notNull<Row>(query: FileDatabaseQuery<Row>, field: "expiresAt"): FileDatabaseQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { isNotNull(): unknown }>;
     return row[field]!.isNotNull();
   });
 }
 
-function orderedFirst(
-  query: FileQuery,
+function orderedFirst<Row>(
+  query: FileDatabaseQuery<Row>,
   field: "expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil",
-) {
+): Promise<Row | null> {
   return query.orderBy((value) => {
     const row = value as unknown as Record<string, { asc(): unknown }>;
     return row[field]!.asc();
   }).first();
 }
 
+async function firstTime<Row extends object, Field extends keyof Row>(
+  query: FileDatabaseQuery<Row>,
+  field: Field & ("expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil"),
+): Promise<number | null> {
+  const row = await orderedFirst(query, field);
+  if (row === null) return null;
+  const at = row[field];
+  return typeof at === "number" ? at : null;
+}
+
 async function nextCleanupAt(db: FileDatabase): Promise<number | null> {
   const candidates = await Promise.all([
-    orderedFirst(stateOnly(db[FILES_TABLE]!.query(), "pending"), "pendingExpiresAt"),
-    orderedFirst(stateOnly(db[FILE_UPLOADS_TABLE]!.query(), "open"), "expiresAt"),
-    orderedFirst(stateOnly(db[FILE_UPLOADS_TABLE]!.query(), "committed"), "expiresAt"),
-    orderedFirst(notNull(db[FILE_GRANTS_TABLE]!.query(), "expiresAt"), "expiresAt"),
-    orderedFirst(stateOnly(db[FILE_CLEANUP_TABLE]!.query(), "pending"), "runAt"),
-    orderedFirst(stateOnly(db[FILE_CLEANUP_TABLE]!.query(), "running"), "leaseUntil"),
+    firstTime(stateOnly(db[FILES_TABLE].query(), "pending"), "pendingExpiresAt"),
+    firstTime(stateOnly(db[FILE_UPLOADS_TABLE].query(), "open"), "expiresAt"),
+    firstTime(stateOnly(db[FILE_UPLOADS_TABLE].query(), "committed"), "expiresAt"),
+    firstTime(notNull(db[FILE_GRANTS_TABLE].query(), "expiresAt"), "expiresAt"),
+    firstTime(stateOnly(db[FILE_CLEANUP_TABLE].query(), "pending"), "runAt"),
+    firstTime(stateOnly(db[FILE_CLEANUP_TABLE].query(), "running"), "leaseUntil"),
   ]);
-  return candidates.reduce<number | null>((earliest, row, index) => {
-    if (row === null) return earliest;
-    const field = index === 0
-      ? "pendingExpiresAt"
-      : index === 4
-        ? "runAt"
-        : index === 5
-          ? "leaseUntil"
-          : "expiresAt";
-    const at = row[field];
-    return typeof at === "number" && (earliest === null || at < earliest) ? at : earliest;
+  return candidates.reduce<number | null>((earliest, at) => {
+    return at !== null && (earliest === null || at < earliest) ? at : earliest;
   }, null);
 }
 
@@ -189,7 +184,7 @@ export class FileCleanupRuntime {
     const now = this.options.now();
     const recovering = this.recovering;
     const inspection = await this.options.read(this.controller.signal, async (value) => {
-      const db = value as FileDatabase;
+      const db = fileDatabase(value);
       const nextAt = await nextCleanupAt(db);
       if (!recovering) {
         return { needsWrite: nextAt !== null && nextAt <= now, nextAt };
@@ -214,7 +209,7 @@ export class FileCleanupRuntime {
       return;
     }
     const cycle = await this.options.write(this.controller.signal, async (value) => {
-      const db = value as FileDatabase;
+      const db = fileDatabase(value);
       const files = db[FILES_TABLE]!;
       const uploads = db[FILE_UPLOADS_TABLE]!;
       const grants = db[FILE_GRANTS_TABLE]!;
@@ -228,7 +223,7 @@ export class FileCleanupRuntime {
         // for its old wall-clock lease would strand work across a clock change.
         const interruptedCleanup = await stateOnly(cleanup.query(), "running").take(BATCH_SIZE);
         for (const task of interruptedCleanup) {
-          await cleanup.patch(task.id as bigint, {
+          await cleanup.patch(task.id, {
             state: "pending",
             runAt: now,
             leaseToken: null,
@@ -238,7 +233,7 @@ export class FileCleanupRuntime {
         }
         const interruptedStaging = await stateOnly(cleanup.query(), "staging").take(BATCH_SIZE);
         for (const task of interruptedStaging) {
-          await cleanup.patch(task.id as bigint, {
+          await cleanup.patch(task.id, {
             state: "pending",
             runAt: now,
             lastError: "recovering an interrupted backend File store",
@@ -246,25 +241,20 @@ export class FileCleanupRuntime {
         }
         const interruptedUploads = await stateOnly(uploads.query(), "uploading").take(BATCH_SIZE);
         for (const upload of interruptedUploads) {
-          await cleanup.insert({
+          await cleanup.insert(pendingCleanupRow({
             objectKey: upload.objectKey,
             fileId: null,
-            state: "pending",
-            attempt: 0,
-            runAt: now,
-            leaseToken: null,
-            leaseUntil: null,
+            now,
             lastError: "recovering an interrupted upload attempt",
-            createdAt: now,
-          });
+          }));
           if (typeof upload.expiresAt === "number" && upload.expiresAt > now) {
-            await uploads.patch(upload.id as bigint, {
+            await uploads.patch(upload.id, {
               state: "open",
               objectKey: `files/${randomUUID()}`,
               attemptToken: null,
             });
           } else {
-            await uploads.delete(upload.id as bigint);
+            await uploads.delete(upload.id);
           }
         }
         recoveryBatchFull = interruptedCleanup.length === BATCH_SIZE ||
@@ -278,7 +268,7 @@ export class FileCleanupRuntime {
           now,
         ).take(BATCH_SIZE);
         for (const task of expiredLeases) {
-          await cleanup.patch(task.id as bigint, {
+          await cleanup.patch(task.id, {
             state: "pending",
             runAt: now,
             leaseToken: null,
@@ -296,45 +286,40 @@ export class FileCleanupRuntime {
         now,
       ).take(BATCH_SIZE);
       for (const file of pendingFiles) {
-        const fileId = file.id as bigint;
+        const fileId = file.id;
         await files.patch(fileId, { state: "deleting", pendingExpiresAt: null });
-        await cleanup.insert({
+        await cleanup.insert(pendingCleanupRow({
           objectKey: file.objectKey,
           fileId,
-          state: "pending",
-          attempt: 0,
-          runAt: now,
-          leaseToken: null,
-          leaseUntil: null,
+          now,
           lastError: null,
-          createdAt: now,
-        });
+        }));
       }
 
       for (const state of ["open", "committed"]) {
         const expired = await stateAndTime(uploads.query(), state, "expiresAt", now).take(BATCH_SIZE);
         for (const upload of expired) {
-          await uploads.delete(upload.id as bigint);
+          await uploads.delete(upload.id);
         }
       }
 
       const expiredGrants = await timeAtMost(grants.query(), "expiresAt", now).take(BATCH_SIZE);
-      for (const grant of expiredGrants) await grants.delete(grant.id as bigint);
+      for (const grant of expiredGrants) await grants.delete(grant.id);
 
       const due = await stateAndTime(cleanup.query(), "pending", "runAt", now).take(BATCH_SIZE);
       const claimed: CleanupTask[] = [];
       for (const task of due) {
         const leaseToken = randomUUID();
-        await cleanup.patch(task.id as bigint, {
+        await cleanup.patch(task.id, {
           state: "running",
           leaseToken,
           leaseUntil: now + LEASE_MS,
         });
         claimed.push({
-          id: task.id as bigint,
-          objectKey: task.objectKey as string,
-          fileId: task.fileId as bigint | null,
-          attempt: task.attempt as number,
+          id: task.id,
+          objectKey: task.objectKey,
+          fileId: task.fileId,
+          attempt: task.attempt,
           leaseToken,
         });
       }
@@ -368,7 +353,7 @@ export class FileCleanupRuntime {
     }
     try {
       await this.options.write(this.controller.signal, async (value) => {
-        const db = value as FileDatabase;
+        const db = fileDatabase(value);
         const row = await db[FILE_CLEANUP_TABLE]!.get(task.id);
         if (row?.state !== "running" || row.leaseToken !== task.leaseToken) return;
         if (task.fileId !== null) await db[FILES_TABLE]!.delete(task.fileId);
@@ -385,7 +370,7 @@ export class FileCleanupRuntime {
     const delay = Math.min(60 * 60_000, 1_000 * 2 ** Math.min(attempt, 12));
     const runAt = this.options.now() + delay;
     await this.options.write(this.controller.signal, async (value) => {
-      const table = (value as FileDatabase)[FILE_CLEANUP_TABLE]!;
+      const table = (fileDatabase(value))[FILE_CLEANUP_TABLE]!;
       const row = await table.get(task.id);
       if (row?.state !== "running" || row.leaseToken !== task.leaseToken) return;
       await table.patch(task.id, {
@@ -394,7 +379,7 @@ export class FileCleanupRuntime {
         runAt,
         leaseToken: null,
         leaseUntil: null,
-        lastError: error instanceof Error ? error.message.slice(0, 2_048) : String(error).slice(0, 2_048),
+        lastError: storedFileError(error),
       });
     });
     this.arm(runAt);
@@ -406,7 +391,7 @@ export class FileCleanupRuntime {
       return;
     }
     const next = await this.options.read(this.controller.signal, (value) =>
-      nextCleanupAt(value as FileDatabase));
+      nextCleanupAt(fileDatabase(value)));
     if (next !== null) this.arm(next);
   }
 

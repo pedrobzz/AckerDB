@@ -140,6 +140,7 @@ export class Runtime implements RuntimePort {
 
   private readonly now: () => number;
   private readonly files: RuntimeFiles;
+  readonly fileMaxBytes: number;
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
   private readonly pluginRuntime: PluginRuntime | undefined;
@@ -173,6 +174,7 @@ export class Runtime implements RuntimePort {
       options.files,
       new FileObservability(this.engine, this.now),
     );
+    this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
       throw new TypeError("Runtime requires a ready Plugin runtime");
     }

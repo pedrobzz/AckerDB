@@ -3,11 +3,29 @@ import {
   decode,
   isResult,
   type FileId,
+  type Identity,
   type Outcome,
   type OutcomeCode,
 } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
-import { FileStoreError, type FileStore, type FileStoreRange } from "./store/contract.ts";
+import { outcomeFromError } from "../runtime/outcome.ts";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
+import {
+  fileDatabase,
+  pendingCleanupRow,
+  storedFileError,
+  type FileRow,
+} from "./database.ts";
+import {
+  contentDisposition,
+  fileDigest,
+  fileEtag,
+  ifRangeMatches,
+  parseFileRange,
+  preconditionStatus,
+} from "./http-headers.ts";
+import { FileStoreError, type FileStore } from "./store/contract.ts";
+import { safeFileText } from "./text.ts";
 import {
   FILE_CLEANUP_TABLE,
   FILE_GRANTS_TABLE,
@@ -16,15 +34,6 @@ import {
 } from "./tables.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
 import type { FileTransferOutcome } from "./observability.ts";
-
-interface FileTable {
-  get(id: bigint): Promise<Record<string, unknown> | null>;
-  insert(row: Record<string, unknown>): PromiseLike<bigint>;
-  patch(id: bigint, row: Record<string, unknown>): PromiseLike<void>;
-  delete(id: bigint): PromiseLike<void>;
-}
-
-type FileDatabase = Readonly<Record<string, FileTable>>;
 
 export interface FileRequestAuthentication {
   readonly principal: Principal;
@@ -61,18 +70,18 @@ type UploadStart =
       readonly token: string;
       readonly objectKey: string;
       readonly maxBytes: number;
-      readonly owner: unknown;
+      readonly owner: Identity | null;
       readonly contentTypes: readonly string[] | null;
       readonly expectedSha256: string | null;
     };
 
 interface DownloadGrant {
-  readonly accessType: string;
+  readonly accessType: "bearer" | "authenticated" | "validated";
   readonly authorizeAddress: string | null;
   readonly authorizeArgsJson: string | null;
-  readonly dispositionType: string;
+  readonly dispositionType: "attachment" | "inline";
   readonly filename: string | null;
-  readonly file: Record<string, unknown>;
+  readonly file: FileRow;
 }
 
 const utf8 = new TextEncoder();
@@ -81,6 +90,27 @@ const MAX_UPLOAD_RECOVERY_WAIT_MS = 30_000;
 
 function notFound(): Response {
   return new Response(null, { status: 404, headers: { "cache-control": "no-store" } });
+}
+
+function concealedAuthenticationFailure(error: unknown): boolean {
+  return isAckerDBError(error) && (
+    error.code === "unauthenticated" ||
+    error.code === "auth_stale" ||
+    error.code === "unauthorized"
+  );
+}
+
+function fileStoreDownloadFailure(error: unknown): never {
+  if (!(error instanceof FileStoreError)) throw error;
+  throw new AckerDBError(
+    error.code === "invalid_range" || error.code === "invalid_size" ? "internal" : "unavailable",
+    error.code === "cancelled" ? "file transfer was canceled" : "file storage is unavailable",
+    {
+      cause: error,
+      resource: "operation",
+      retryable: error.retryable,
+    },
+  );
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -168,7 +198,7 @@ function uploadName(value: string | null): string | null {
   if (encoded !== undefined) {
     try {
       const name = decodeURIComponent(encoded.trim());
-      return validName(name) ? name : null;
+      return safeFileText(name, 1_024) ? name : null;
     } catch {
       return null;
     }
@@ -176,11 +206,7 @@ function uploadName(value: string | null): string | null {
   const quoted = /(?:^|;)\s*filename\s*=\s*"((?:[^"\\]|\\.)*)"/i.exec(value)?.[1];
   if (quoted === undefined) return null;
   const name = quoted.replace(/\\(.)/g, "$1");
-  return validName(name) ? name : null;
-}
-
-function validName(value: string): boolean {
-  return value.length > 0 && value.length <= 1_024 && !/[\u0000-\u001f\u007f]/.test(value);
+  return safeFileText(name, 1_024) ? name : null;
 }
 
 function parseContentTypes(value: unknown): readonly string[] | null {
@@ -238,137 +264,6 @@ function contentLength(request: Request): number | null {
   if (!/^\d+$/.test(raw)) return Number.NaN;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
-}
-
-function safeAsciiFilename(value: string): string {
-  return value.replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]|["\\]/g, "_").slice(0, 255);
-}
-
-function encodedFilename(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
-    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-}
-
-function contentDisposition(type: string, filename: string | null): string {
-  const disposition = type === "inline" ? "inline" : "attachment";
-  if (filename === null) return disposition;
-  return `${disposition}; filename="${safeAsciiFilename(filename)}"; filename*=UTF-8''${encodedFilename(filename)}`;
-}
-
-function etag(sha256: string): string {
-  return `"${sha256}"`;
-}
-
-function digest(sha256: string): string {
-  return `sha-256=${Buffer.from(sha256, "hex").toString("base64")}`;
-}
-
-function parseRange(value: string | null, size: number): FileStoreRange | null | "invalid" {
-  if (value === null) return null;
-  if (value.includes(",")) return "invalid";
-  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
-  if (match === null || (match[1] === "" && match[2] === "")) return "invalid";
-  if (match[1] === "") {
-    const suffix = Number(match[2]);
-    if (!Number.isSafeInteger(suffix) || suffix <= 0 || size === 0) return "invalid";
-    return { start: Math.max(0, size - suffix), endExclusive: size };
-  }
-  const start = Number(match[1]);
-  const requestedEnd = match[2] === "" ? size - 1 : Number(match[2]);
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(requestedEnd) ||
-    start < 0 ||
-    start >= size ||
-    requestedEnd < start
-  ) return "invalid";
-  return { start, endExclusive: Math.min(size, requestedEnd + 1) };
-}
-
-interface EntityTag {
-  readonly opaque: string;
-  readonly weak: boolean;
-}
-
-function parseEntityTags(value: string): readonly EntityTag[] | "*" | null {
-  if (value.trim() === "*") return "*";
-  const tags: EntityTag[] = [];
-  let offset = 0;
-  while (offset < value.length) {
-    while (value[offset] === " " || value[offset] === "\t") offset++;
-    const weak = value.slice(offset, offset + 2) === "W/";
-    if (weak) offset += 2;
-    if (value[offset] !== '"') return null;
-    offset++;
-    const start = offset;
-    while (offset < value.length && value[offset] !== '"') {
-      const code = value.charCodeAt(offset);
-      if (code === 0x7f || code < 0x21) return null;
-      offset++;
-    }
-    if (offset >= value.length) return null;
-    tags.push({ opaque: value.slice(start, offset), weak });
-    offset++;
-    while (value[offset] === " " || value[offset] === "\t") offset++;
-    if (offset === value.length) return tags;
-    if (value[offset] !== ",") return null;
-    offset++;
-  }
-  return tags.length === 0 ? null : tags;
-}
-
-function strongTagMatches(value: string, expected: EntityTag): boolean {
-  const tags = parseEntityTags(value);
-  return tags === "*" || tags?.some((tag) => !tag.weak && tag.opaque === expected.opaque) === true;
-}
-
-function weakTagMatches(value: string, expected: EntityTag): boolean {
-  const tags = parseEntityTags(value);
-  return tags === "*" || tags?.some((tag) => tag.opaque === expected.opaque) === true;
-}
-
-function httpDate(value: string | null): number | null {
-  if (value === null) return null;
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? null : Math.floor(timestamp / 1_000) * 1_000;
-}
-
-function preconditionStatus(
-  headers: Headers,
-  expected: EntityTag,
-  lastModified: number,
-): 304 | 412 | null {
-  const ifMatch = headers.get("if-match");
-  if (ifMatch !== null && !strongTagMatches(ifMatch, expected)) return 412;
-
-  const ifUnmodifiedSince = httpDate(headers.get("if-unmodified-since"));
-  if (
-    ifMatch === null &&
-    ifUnmodifiedSince !== null &&
-    Math.floor(lastModified / 1_000) * 1_000 > ifUnmodifiedSince
-  ) return 412;
-
-  const ifNoneMatch = headers.get("if-none-match");
-  if (ifNoneMatch !== null && weakTagMatches(ifNoneMatch, expected)) return 304;
-
-  const ifModifiedSince = httpDate(headers.get("if-modified-since"));
-  if (
-    ifNoneMatch === null &&
-    ifModifiedSince !== null &&
-    Math.floor(lastModified / 1_000) * 1_000 <= ifModifiedSince
-  ) return 304;
-  return null;
-}
-
-function ifRangeMatches(value: string | null, expected: EntityTag, lastModified: number): boolean {
-  if (value === null) return true;
-  const tags = parseEntityTags(value);
-  if (tags !== null) {
-    return tags !== "*" && tags.length === 1 && !tags[0]!.weak && tags[0]!.opaque === expected.opaque;
-  }
-  const date = httpDate(value);
-  return date !== null && Math.floor(lastModified / 1_000) * 1_000 <= date;
 }
 
 function callerPrincipal(principal: Principal): boolean {
@@ -522,12 +417,12 @@ export class FileHttpRuntime {
       // client connection: finish or prove the metadata commit under Runtime
       // lifecycle ownership so a disconnect cannot make us delete live bytes.
       const fileId = await this.options.write(this.options.lifecycleSignal(), async (value) => {
-        const db = value as FileDatabase;
+        const db = fileDatabase(value);
         const uploads = db[FILE_UPLOADS_TABLE]!;
         const files = db[FILES_TABLE]!;
         const row = await uploads.get(start.id);
         if (row?.state === "committed" && typeof row.fileId === "bigint") {
-          return row.fileId as FileId;
+          return row.fileId;
         }
         if (row?.state !== "uploading" || row.attemptToken !== start.token) {
           throw new Error("Upload Session attempt no longer owns completion");
@@ -543,7 +438,7 @@ export class FileHttpRuntime {
           name: uploadName(request.headers.get("content-disposition")),
           createdAt: completedAt,
           pendingExpiresAt: completedAt + PENDING_FILE_LIFETIME_MS,
-        }) as FileId;
+        });
         await uploads.patch(start.id, {
           state: "committed",
           fileId,
@@ -587,10 +482,10 @@ export class FileHttpRuntime {
     admittedAt: number,
   ): Promise<UploadStart | null> {
     return this.options.read(signal, async (value) => {
-      const row = await (value as FileDatabase)[FILE_UPLOADS_TABLE]!.get(id);
+      const row = await (fileDatabase(value))[FILE_UPLOADS_TABLE]!.get(id);
       if (row === null || !sameSecret(row.secretHash, secret)) return null;
       if (row.state === "committed" && typeof row.fileId === "bigint") {
-        return { kind: "committed", fileId: row.fileId as FileId } satisfies UploadStart;
+        return { kind: "committed", fileId: row.fileId } satisfies UploadStart;
       }
       if (typeof row.expiresAt !== "number" || row.expiresAt <= admittedAt) return null;
       if (row.state === "uploading") return { kind: "busy" } satisfies UploadStart;
@@ -610,11 +505,11 @@ export class FileHttpRuntime {
     admittedAt: number,
   ): Promise<UploadStart | null> {
     return this.options.write(signal, async (value) => {
-      const uploads = (value as FileDatabase)[FILE_UPLOADS_TABLE]!;
+      const uploads = (fileDatabase(value))[FILE_UPLOADS_TABLE]!;
       const row = await uploads.get(id);
       if (row === null || !sameSecret(row.secretHash, secret)) return null;
       if (row.state === "committed" && typeof row.fileId === "bigint") {
-        return { kind: "committed", fileId: row.fileId as FileId };
+        return { kind: "committed", fileId: row.fileId };
       }
       if (typeof row.expiresAt !== "number" || row.expiresAt <= admittedAt) return null;
       if (row.state === "uploading") return { kind: "busy" };
@@ -624,11 +519,11 @@ export class FileHttpRuntime {
         kind: "upload",
         id,
         token: attemptToken,
-        objectKey: row.objectKey as string,
-        maxBytes: row.maxBytes as number,
+        objectKey: row.objectKey,
+        maxBytes: row.maxBytes,
         owner: row.owner,
         contentTypes: parseContentTypes(row.contentTypesJson),
-        expectedSha256: row.expectedSha256 as string | null,
+        expectedSha256: row.expectedSha256,
       } satisfies UploadStart;
     });
   }
@@ -639,14 +534,14 @@ export class FileHttpRuntime {
     signal: AbortSignal,
   ): Promise<{ readonly kind: "committed"; readonly fileId: FileId } | { readonly kind: "owned" }> {
     return this.options.read(signal, async (value) => {
-      const row = await (value as FileDatabase)[FILE_UPLOADS_TABLE]!.get(start.id);
+      const row = await (fileDatabase(value))[FILE_UPLOADS_TABLE]!.get(start.id);
       if (
         row !== null &&
         sameSecret(row.secretHash, secret) &&
         row.state === "committed" &&
         typeof row.fileId === "bigint"
       ) {
-        return { kind: "committed", fileId: row.fileId as FileId };
+        return { kind: "committed", fileId: row.fileId };
       }
       if (
         row !== null &&
@@ -663,7 +558,7 @@ export class FileHttpRuntime {
 
   private async releaseUpload(start: Extract<UploadStart, { kind: "upload" }>): Promise<void> {
     await this.options.write(this.options.lifecycleSignal(), async (value) => {
-      const uploads = (value as FileDatabase)[FILE_UPLOADS_TABLE]!;
+      const uploads = (fileDatabase(value))[FILE_UPLOADS_TABLE]!;
       const row = await uploads.get(start.id);
       if (row?.state === "uploading" && row.attemptToken === start.token) {
         // Never reuse a physical key after a failed write. A queued deletion
@@ -692,19 +587,12 @@ export class FileHttpRuntime {
       try {
         const now = this.options.now();
         await this.options.write(this.options.lifecycleSignal(), async (value) => {
-          await (value as FileDatabase)[FILE_CLEANUP_TABLE]!.insert({
+          await (fileDatabase(value))[FILE_CLEANUP_TABLE].insert(pendingCleanupRow({
             objectKey,
             fileId: null,
-            state: "pending",
-            attempt: 0,
-            runAt: now,
-            leaseToken: null,
-            leaseUntil: null,
-            lastError: error instanceof Error
-              ? error.message.slice(0, 2_048)
-              : String(error).slice(0, 2_048),
-            createdAt: now,
-          });
+            now,
+            lastError: storedFileError(error),
+          }));
         });
         this.options.files.scheduleCleanupAt(now);
         return true;
@@ -725,8 +613,14 @@ export class FileHttpRuntime {
         streaming = true;
         return this.observeDownloadBody(body, observedAt);
       });
-    } catch {
-      response = notFound();
+    } catch (error) {
+      this.options.files.observability.recordTransfer(
+        "download",
+        outcomeFromError(error).code,
+        0,
+        performance.now() - observedAt,
+      );
+      throw error;
     }
     if (!streaming) {
       this.options.files.observability.recordTransfer(
@@ -749,70 +643,60 @@ export class FileHttpRuntime {
     if (store === undefined) return notFound();
     const startedAt = this.options.now();
     let grant: DownloadGrant | null;
-    try {
-      grant = await this.options.read(input.request.signal, async (value) => {
-        const db = value as FileDatabase;
-        const row = await db[FILE_GRANTS_TABLE]!.get(id);
-        if (
-          row === null ||
-          !sameSecret(row.secretHash, secret) ||
-          typeof row.fileId !== "bigint" ||
-          typeof row.accessType !== "string" ||
-          typeof row.dispositionType !== "string" ||
-          (typeof row.expiresAt === "number" && row.expiresAt <= startedAt)
-        ) return null;
-        const file = await db[FILES_TABLE]!.get(row.fileId);
-        if (file === null || file.state !== "active") return null;
-        return {
-          accessType: row.accessType,
-          authorizeAddress: row.authorizeAddress as string | null,
-          authorizeArgsJson: row.authorizeArgsJson as string | null,
-          dispositionType: row.dispositionType,
-          filename: row.filename as string | null,
-          file,
-        };
-      });
-    } catch {
-      return notFound();
-    }
+    grant = await this.options.read(input.request.signal, async (value) => {
+      const db = fileDatabase(value);
+      const row = await db[FILE_GRANTS_TABLE].get(id);
+      if (
+        row === null ||
+        !sameSecret(row.secretHash, secret) ||
+        row.expiresAt !== null && row.expiresAt <= startedAt
+      ) return null;
+      const file = await db[FILES_TABLE].get(row.fileId);
+      if (file === null || file.state !== "active") return null;
+      return {
+        accessType: row.accessType,
+        authorizeAddress: row.authorizeAddress,
+        authorizeArgsJson: row.authorizeArgsJson,
+        dispositionType: row.dispositionType,
+        filename: row.filename,
+        file,
+      };
+    });
     if (grant === null) return notFound();
 
     if (grant.accessType !== "bearer") {
       let auth: FileRequestAuthentication;
       try {
         auth = await input.authenticate();
-      } catch {
-        return notFound();
+      } catch (error) {
+        if (concealedAuthenticationFailure(error)) return notFound();
+        throw error;
       }
       if (grant.accessType === "authenticated") {
         if (auth.principal.kind !== "user") return notFound();
       } else if (grant.accessType === "validated") {
         if (!callerPrincipal(auth.principal)) return notFound();
         if (grant.authorizeAddress === null || grant.authorizeArgsJson === null) return notFound();
-        try {
-          const decoded = decode(grant.authorizeArgsJson);
-          if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) return notFound();
-          const result = await this.options.authorize(
-            grant.authorizeAddress,
-            { ...(decoded as Record<string, unknown>), fileId: grant.file.id },
-            auth.principal,
-            auth.fairnessKey,
-            auth.signal,
-          );
-          if (!isResult(result) || !result.ok || result.data !== true) return notFound();
-        } catch {
-          return notFound();
-        }
+        const decoded = decode(grant.authorizeArgsJson);
+        if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) return notFound();
+        const result = await this.options.authorize(
+          grant.authorizeAddress,
+          { ...(decoded as Record<string, unknown>), fileId: grant.file.id },
+          auth.principal,
+          auth.fairnessKey,
+          auth.signal,
+        );
+        if (!isResult(result) || !result.ok || result.data !== true) return notFound();
       } else {
         return notFound();
       }
     }
 
-    const size = grant.file.size as number;
-    const sha256 = grant.file.sha256 as string;
-    const createdAt = grant.file.createdAt as number;
+    const size = grant.file.size;
+    const sha256 = grant.file.sha256;
+    const createdAt = grant.file.createdAt;
     const expectedTag = { opaque: sha256, weak: false } as const;
-    const fileEtag = etag(sha256);
+    const responseEtag = fileEtag(sha256);
     const lastModified = new Date(createdAt).toUTCString();
     const condition = preconditionStatus(input.request.headers, expectedTag, createdAt);
     if (condition !== null) {
@@ -820,7 +704,7 @@ export class FileHttpRuntime {
         status: condition,
         headers: {
           "cache-control": "no-store",
-          etag: fileEtag,
+          etag: responseEtag,
           "last-modified": lastModified,
         },
       });
@@ -833,7 +717,7 @@ export class FileHttpRuntime {
       createdAt,
     )
       ? null
-      : parseRange(rangeHeader, size);
+      : parseFileRange(rangeHeader, size);
     if (range === "invalid") {
       return new Response(null, {
         status: 416,
@@ -842,37 +726,43 @@ export class FileHttpRuntime {
     }
 
     try {
-      const filename = grant.filename ?? grant.file.name as string | null;
+      const filename = grant.filename ?? grant.file.name;
       const headers = new Headers({
         "accept-ranges": "bytes",
         "cache-control": "no-store",
         "content-disposition": contentDisposition(grant.dispositionType, filename),
         "content-length": String(range === null ? size : range.endExclusive - range.start),
-        "content-type": grant.file.contentType as string | null ?? "application/octet-stream",
-        digest: digest(sha256),
-        etag: fileEtag,
+        "content-type": grant.file.contentType ?? "application/octet-stream",
+        digest: fileDigest(sha256),
+        etag: responseEtag,
         "last-modified": lastModified,
         "x-content-type-options": "nosniff",
       });
       if (range !== null) headers.set("content-range", `bytes ${range.start}-${range.endExclusive - 1}/${size}`);
       if (input.request.method === "HEAD") {
-        const attributes = await store.attributes(grant.file.objectKey as string, {
+        const attributes = await store.attributes(grant.file.objectKey, {
           signal: input.request.signal,
         });
         if (attributes.size !== size) {
           this.options.files.observability.recordProviderError("attributes");
-          return notFound();
+          throw new AckerDBError("unavailable", "file storage is unavailable", {
+            resource: "operation",
+            retryable: true,
+          });
         }
         return new Response(null, { status: range === null ? 200 : 206, headers });
       }
-      const opened = await store.open(grant.file.objectKey as string, {
+      const opened = await store.open(grant.file.objectKey, {
         ...(range === null ? {} : { range }),
         signal: input.request.signal,
       });
       if (opened.attributes.size !== size) {
         await opened.body.cancel("File Store object size does not match immutable File metadata").catch(() => {});
         this.options.files.observability.recordProviderError("open");
-        return notFound();
+        throw new AckerDBError("unavailable", "file storage is unavailable", {
+          resource: "operation",
+          retryable: true,
+        });
       }
       return new Response(observeBody(opened.body), { status: range === null ? 200 : 206, headers });
     } catch (error) {
@@ -883,7 +773,7 @@ export class FileHttpRuntime {
             : "open",
         );
       }
-      return notFound();
+      fileStoreDownloadFailure(error);
     }
   }
 

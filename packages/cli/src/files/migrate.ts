@@ -5,6 +5,7 @@ import {
   type Engine,
   type FileStore,
 } from "@ackerdb/server";
+import { checkedFileStoreIdentity } from "@ackerdb/server/files/binding";
 import {
   checkpointMigratedFile,
   completeMigrationJournal,
@@ -23,7 +24,6 @@ import {
   type LiveFile,
 } from "./metadata.ts";
 
-const MAX_IDENTITY_LENGTH = 1_024;
 const PROGRESS_CHECKPOINT_CADENCE = 64;
 
 export type FileStoreMigrationStage =
@@ -124,21 +124,6 @@ export interface MigrateFileStoreInput {
   readonly onProgress?: (
     event: FileStoreMigrationProgressEvent,
   ) => void | Promise<void>;
-}
-
-function identity(value: string, path: string): string {
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0 ||
-    value !== value.trim() ||
-    value.length > MAX_IDENTITY_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new TypeError(
-      `${path} must be a non-empty, trimmed description of at most ${MAX_IDENTITY_LENGTH} characters`,
-    );
-  }
-  return value;
 }
 
 async function digestStream(
@@ -315,8 +300,8 @@ export async function migrateFileStore(
   const database = input.engine.path;
   const commitVersion = input.engine.commitVersion().toString();
   const schemaFingerprint = input.engine.schemaFingerprint();
-  const sourceIdentity = identity(input.sourceIdentity, "sourceIdentity");
-  const targetIdentity = identity(input.targetIdentity, "targetIdentity");
+  const sourceIdentity = checkedFileStoreIdentity(input.sourceIdentity, "sourceIdentity");
+  const targetIdentity = checkedFileStoreIdentity(input.targetIdentity, "targetIdentity");
   const resolvedJournalPath = resolve(input.journalPath);
   let progress = emptyMigrationProgress();
   let totals: FileMigrationTotals | null = null;

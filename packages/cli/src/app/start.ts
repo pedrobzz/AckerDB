@@ -203,6 +203,7 @@ export async function startApp<const A extends App = App>(
   const startupSignal = options.signal ?? AbortSignal.any([]);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
+    fileMaxBytes: config.files.maxBytes,
     hostname: config.hostname,
     port: config.port,
     statusScope: config.statusScope,
@@ -335,9 +336,10 @@ export async function startApp<const A extends App = App>(
     ownedEngine = new Engine(app.schema, join(config.dbDir, "data.db"), {
       durability: config.durability,
     });
-    resolveFileStoreBinding(ownedEngine, fileStoreIdentity(config.files));
     const files = await createFileStore(config);
+    const configuredFileStoreIdentity = await fileStoreIdentity(config.files);
     await awaitStartup(files.probe({ signal: startupSignal }));
+    resolveFileStoreBinding(ownedEngine, configuredFileStoreIdentity);
     requireStartupOwnership();
 
     // A present chain reports `migrating` distinctly; an empty one reconciles

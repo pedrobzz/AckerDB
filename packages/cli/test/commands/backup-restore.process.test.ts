@@ -116,7 +116,7 @@ async function seedFile(dir: string): Promise<{ objectKey: string; contents: str
   const app = await importApp(config);
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
   try {
-    resolveFileStoreBinding(engine, fileStoreIdentity(config.files));
+    resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
     engine.writer.query(`INSERT INTO _ackerdb_files (
       id, state, objectKey, owner, size, sha256, contentType, name, createdAt, pendingExpiresAt
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -211,10 +211,11 @@ describe("acker backup, restore, and status", () => {
       join(targetConfig.dbDir, "data.db"),
     );
     try {
-      resolveFileStoreBinding(restoredEngine, fileStoreIdentity(targetConfig.files));
+      resolveFileStoreBinding(restoredEngine, await fileStoreIdentity(targetConfig.files));
+      const sourceIdentity = await fileStoreIdentity(loadConfig(source).files);
       expect(() => resolveFileStoreBinding(
         restoredEngine,
-        fileStoreIdentity(loadConfig(source).files),
+        sourceIdentity,
       )).toThrow();
     } finally {
       restoredEngine.close("clean");

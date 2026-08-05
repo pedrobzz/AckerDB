@@ -199,8 +199,8 @@ export async function migrateActiveFileStore(
       ...targetRaw,
     };
     const targetFiles = resolveFilesConfig(targetDocument, config);
-    const sourceIdentity = fileStoreIdentity(config.files);
-    const targetIdentity = fileStoreIdentity(targetFiles);
+    const sourceIdentity = await fileStoreIdentity(config.files);
+    const targetIdentity = await fileStoreIdentity(targetFiles);
     if (sourceIdentity === targetIdentity) {
       throw new Error("FileStore migration target is the active physical FileStore");
     }

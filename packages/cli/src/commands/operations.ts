@@ -462,7 +462,7 @@ export async function createVerifiedBackup(
     let backupFailed = false;
     let backupFailure: unknown;
     try {
-      resolveFileStoreBinding(engine, fileStoreIdentity(config.files));
+      resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
       const engineManifest = engine.backup(artifact);
       const fileManifest = options.metadataOnly === true
         ? await createMetadataOnlyFilesBackup(artifact)
@@ -579,6 +579,7 @@ export async function restoreVerifiedBackup(
     await verify(config, artifact, manifest);
 
     const fileStore = await createFileStore(config);
+    const configuredFileStoreIdentity = await fileStoreIdentity(config.files);
     if (manifest.files.mode === "included") await assertRestoreKeysVacant(fileStore, artifact);
     const filePublication = fileRestorePublication(
       config,
@@ -597,7 +598,7 @@ export async function restoreVerifiedBackup(
       {
         ...filePublication,
         prepareStagedDatabase: (engine) => {
-          rebindRestoredFileStore(engine, fileStoreIdentity(config.files));
+          rebindRestoredFileStore(engine, configuredFileStoreIdentity);
         },
       },
     );

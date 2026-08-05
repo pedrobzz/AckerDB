@@ -20,7 +20,7 @@ type FileStoreBinding =
       readonly target: string;
     };
 
-function identity(value: string, path: string): string {
+export function checkedFileStoreIdentity(value: string, path: string): string {
   if (
     typeof value !== "string" ||
     value.trim().length === 0 ||
@@ -60,7 +60,11 @@ function parseBinding(value: string): FileStoreBinding {
     typeof record.identity === "string"
   ) {
     try {
-      return { format: 1, state: "stable", identity: identity(record.identity, "stored FileStore") };
+      return {
+        format: 1,
+        state: "stable",
+        identity: checkedFileStoreIdentity(record.identity, "stored FileStore"),
+      };
     } catch (error) {
       throw new CorruptDatabaseError("FileStore binding contains an invalid stable identity", {
         cause: error,
@@ -75,8 +79,8 @@ function parseBinding(value: string): FileStoreBinding {
     typeof record.target === "string"
   ) {
     try {
-      const source = identity(record.source, "stored FileStore transition source");
-      const target = identity(record.target, "stored FileStore transition target");
+      const source = checkedFileStoreIdentity(record.source, "stored FileStore transition source");
+      const target = checkedFileStoreIdentity(record.target, "stored FileStore transition target");
       if (source === target) {
         throw new TypeError("FileStore transition source and target must differ");
       }
@@ -136,7 +140,7 @@ function stable(identityValue: string): FileStoreBinding {
  * crash-interrupted verified transition to the complete config that survived.
  */
 export function resolveFileStoreBinding(engine: Engine, configuredIdentity: string): void {
-  const configured = identity(configuredIdentity, "configured FileStore");
+  const configured = checkedFileStoreIdentity(configuredIdentity, "configured FileStore");
   const binding = readBinding(engine);
   if (binding === null) {
     const filesTable = engine.writer.query(
@@ -175,8 +179,8 @@ export function recordVerifiedFileStoreTransition(
   sourceIdentity: string,
   targetIdentity: string,
 ): void {
-  const source = identity(sourceIdentity, "FileStore transition source");
-  const target = identity(targetIdentity, "FileStore transition target");
+  const source = checkedFileStoreIdentity(sourceIdentity, "FileStore transition source");
+  const target = checkedFileStoreIdentity(targetIdentity, "FileStore transition target");
   if (source === target) throw new TypeError("FileStore transition source and target must differ");
   const binding = readBinding(engine);
   if (binding?.state !== "stable" || binding.identity !== source) {
@@ -189,5 +193,5 @@ export function recordVerifiedFileStoreTransition(
 
 /** Rebind only an isolated restored database whose target bytes are unpublished. */
 export function rebindRestoredFileStore(engine: Engine, targetIdentity: string): void {
-  writeBinding(engine, stable(identity(targetIdentity, "restored FileStore")));
+  writeBinding(engine, stable(checkedFileStoreIdentity(targetIdentity, "restored FileStore")));
 }

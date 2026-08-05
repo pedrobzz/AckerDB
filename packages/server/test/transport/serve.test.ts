@@ -732,7 +732,7 @@ describe("health and protected status", () => {
       value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
     });
     expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
-      "maxRequestBytes or hard File limit + 1 must be a safe integer",
+      "maxRequestBytes or configured File limit + 1 must be a safe integer",
     );
     expect(() => new AckerDBServer({
       limits: { ...limits, maxConnections: 0 },

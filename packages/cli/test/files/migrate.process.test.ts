@@ -50,7 +50,7 @@ async function seedFile(
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
   try {
     reconcile(engine);
-    resolveFileStoreBinding(engine, fileStoreIdentity(config.files));
+    resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
     engine.writer.query(`INSERT INTO _ackerdb_files (
       state, objectKey, owner, size, sha256, contentType, name, createdAt, pendingExpiresAt
     ) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, NULL)`).run(
@@ -159,7 +159,7 @@ describe("acker files migrate", () => {
     const app = await importApp(config);
     const owner = new Engine(app.schema, join(config.dbDir, "data.db"));
     try {
-      resolveFileStoreBinding(owner, fileStoreIdentity(config.files));
+      resolveFileStoreBinding(owner, await fileStoreIdentity(config.files));
       const contender = await runCli(["start", directory]);
       expect(contender.code).toBe(1);
       expect(contender.stderr).toContain("database is already open");
@@ -185,11 +185,11 @@ describe("acker files migrate", () => {
       const engine = new Engine(app.schema, join(sourceConfig.dbDir, "data.db"));
       try {
         reconcile(engine);
-        resolveFileStoreBinding(engine, fileStoreIdentity(sourceConfig.files));
+        resolveFileStoreBinding(engine, await fileStoreIdentity(sourceConfig.files));
         recordVerifiedFileStoreTransition(
           engine,
-          fileStoreIdentity(sourceConfig.files),
-          fileStoreIdentity(resolvedTarget.files),
+          await fileStoreIdentity(sourceConfig.files),
+          await fileStoreIdentity(resolvedTarget.files),
         );
       } finally {
         engine.close("clean");
@@ -210,10 +210,11 @@ describe("acker files migrate", () => {
 
       const recovered = new Engine(app.schema, join(active.dbDir, "data.db"));
       try {
-        resolveFileStoreBinding(recovered, fileStoreIdentity(active.files));
+        resolveFileStoreBinding(recovered, await fileStoreIdentity(active.files));
+        const inactiveIdentity = await fileStoreIdentity(inactive.files);
         expect(() => resolveFileStoreBinding(
           recovered,
-          fileStoreIdentity(inactive.files),
+          inactiveIdentity,
         )).toThrow();
       } finally {
         recovered.close("clean");
@@ -233,7 +234,7 @@ describe("acker files migrate", () => {
     const engine = new Engine(app.schema, join(source.dbDir, "data.db"));
     try {
       reconcile(engine);
-      resolveFileStoreBinding(engine, fileStoreIdentity(source.files));
+      resolveFileStoreBinding(engine, await fileStoreIdentity(source.files));
     } finally {
       engine.close("clean");
     }

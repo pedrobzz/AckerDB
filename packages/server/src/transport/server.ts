@@ -80,7 +80,7 @@ import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
-import { HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
+import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 export type AckerDBStartupPhase =
@@ -96,6 +96,8 @@ export type AckerDBStartupPhase =
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
+  /** Listener ceiling for streaming File PUTs; every session may only narrow it. */
+  readonly fileMaxBytes?: number;
   readonly hostname?: string;
   /** Socket peers permitted to supply a client address through X-Forwarded-For. */
   readonly trustedProxy?: string | readonly string[];
@@ -755,6 +757,14 @@ export class AckerDBServer {
 
   constructor(options: AckerDBServerOptions) {
     this.limits = defineServiceLimits(options.limits);
+    const fileMaxBytes = options.fileMaxBytes ?? DEFAULT_FILE_MAX_BYTES;
+    if (
+      !Number.isSafeInteger(fileMaxBytes) ||
+      fileMaxBytes <= 0 ||
+      fileMaxBytes > HARD_FILE_MAX_BYTES
+    ) {
+      throw new RangeError(`fileMaxBytes must be from 1 through ${HARD_FILE_MAX_BYTES}`);
+    }
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
     this.trustedProxy = options.trustedProxy === undefined
@@ -796,8 +806,11 @@ export class AckerDBServer {
         // Built-in File PUTs stream under their own per-session bound. Every
         // other route still enforces maxRequestBytes while consuming its body.
         maxRequestBodySize: oneByteTransportLimit(
-          Math.max(this.limits.maxRequestBytes, HARD_FILE_MAX_BYTES),
-          "maxRequestBytes or hard File limit",
+          Math.max(
+            this.limits.maxRequestBytes,
+            fileMaxBytes,
+          ),
+          "maxRequestBytes or configured File limit",
         ),
         development: false,
         error: (error) => internalErrorResponse(error),
@@ -1624,6 +1637,7 @@ export function serve(options: ServeOptions): AckerDBServer {
   }
   const server = new AckerDBServer({
     limits: options.runtime.limits,
+    fileMaxBytes: options.runtime.fileMaxBytes,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
     ...(options.trustedProxy === undefined ? {} : { trustedProxy: options.trustedProxy }),

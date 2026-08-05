@@ -584,10 +584,13 @@ directory. For example:
 }
 ```
 
-The target must be a different physical store. A filesystem root identifies a
-local store; normalized S3 endpoint, region, and bucket identify an
-S3-compatible store. Path style, checksum, encryption, URL, and size settings
-do not make the same location a different migration target.
+The target must be a different physical store. A filesystem store carries a
+durable `.ackerdb-store-id` marker in its root; moving the complete directory
+therefore preserves its identity, while an absent, replaced, or incorrectly
+mounted directory fails closed against the database binding. Normalized S3
+endpoint, region, and bucket identify an S3-compatible store. Path style,
+checksum, encryption, URL, and size settings do not make the same location a
+different migration target.
 
 The command takes exclusive maintenance ownership of the existing database and
 runs its full integrity check. It streams every `pending` or `active` File to

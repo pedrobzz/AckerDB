@@ -29,6 +29,7 @@ import { v } from "../../src/validation/v.ts";
 
 class BlockingDeleteStore implements FileStore {
   blockDeletes = false;
+  blockOpens = false;
   blockPuts = false;
   openCalls = 0;
   attributesCalls = 0;
@@ -45,6 +46,8 @@ class BlockingDeleteStore implements FileStore {
   private releasePut: (() => void) | null = null;
   private deleteRelease: Promise<void> = Promise.resolve();
   private putRelease: Promise<void> = Promise.resolve();
+  private releaseOpen: (() => void) | null = null;
+  private openRelease: Promise<void> = Promise.resolve();
 
   constructor(private readonly delegate: FileStore) {}
 
@@ -70,6 +73,16 @@ class BlockingDeleteStore implements FileStore {
     this.releasePut?.();
   }
 
+  blockOpenBodies(): void {
+    this.blockOpens = true;
+    this.openRelease = new Promise((resolve) => (this.releaseOpen = resolve));
+  }
+
+  releaseOpenBodies(): void {
+    this.blockOpens = false;
+    this.releaseOpen?.();
+  }
+
   failNextDeletes(count = 1): void {
     this.failingDeletes = count;
   }
@@ -87,6 +100,20 @@ class BlockingDeleteStore implements FileStore {
     this.openCalls++;
     const opened = await this.delegate.open(key, options);
     const injectedMismatch = this.reportedSizeDelta !== 0 || this.reportedRange !== null;
+    const body = this.blockOpens
+      ? (() => {
+          const reader = opened.body.getReader();
+          return new ReadableStream<Uint8Array>({
+            pull: async (controller) => {
+              await this.openRelease;
+              const result = await reader.read();
+              if (result.done) controller.close();
+              else controller.enqueue(result.value);
+            },
+            cancel: (reason) => reader.cancel(reason),
+          });
+        })()
+      : opened.body;
     return {
       ...opened,
       attributes: {
@@ -107,7 +134,7 @@ class BlockingDeleteStore implements FileStore {
               },
             }),
           }
-        : {}),
+        : { body }),
     };
   }
   async attributes(key: string, options?: FileStoreOptions) {
@@ -334,8 +361,13 @@ describe("File HTTP flow", () => {
     expect(fileStore.openCalls).toBe(opensBeforeHead);
     expect(fileStore.attributesCalls).toBe(attributesBeforeHead + 1);
     fileStore.reportedSizeDelta = 1;
-    expect((await fetch(`${base}${grantPath}`, { method: "HEAD" })).status).toBe(404);
-    expect((await fetch(`${base}${grantPath}`)).status).toBe(404);
+    expect((await fetch(`${base}${grantPath}`, { method: "HEAD" })).status).toBe(503);
+    const unavailable = await fetch(`${base}${grantPath}`);
+    expect(unavailable.status).toBe(503);
+    expect(parseOutcome(await unavailable.json())).toMatchObject({
+      code: "unavailable",
+      retryable: true,
+    });
     fileStore.reportedSizeDelta = 0;
 
     await runtime.system.run("test.files.revoke", (ctx) =>
@@ -722,6 +754,42 @@ describe("File HTTP flow", () => {
     await Bun.sleep(2);
     expect((await fetch(path(created.data.expiring.url))).status).toBe(404);
     expect((await fetch(`${base}/api/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
+  });
+
+  test("reports authenticated transfer saturation as retryable overload", async () => {
+    const fileId = await runtime.system.run("test.files.overload-store", async (ctx) => {
+      const stored = await ctx.files.store(new Blob(["held"]).stream(), { size: 4 });
+      const claimed = await ctx.tx((tx) => tx.files.claim(stored));
+      if (!claimed.ok) throw claimed.error;
+      return stored;
+    });
+    const created = await runtime.system.run("test.files.overload-grant", (ctx) =>
+      ctx.tx((tx) => tx.files.createUrl(fileId, {
+        access: { type: "authenticated" },
+        permanent: true,
+      })),
+    );
+    if (!created.ok) throw created.error;
+    const url = `${base}${new URL(created.data.url).pathname}`;
+    const headers = { authorization: "Bearer user-token" };
+    fileStore.blockOpenBodies();
+
+    const held = Array.from({ length: 16 }, () => fetch(url, { headers }));
+    try {
+      await eventually(async () => fileStore.openCalls === 16);
+      const overloaded = await fetch(url, { headers });
+      expect(overloaded.status).toBe(429);
+      expect(parseOutcome(await overloaded.json())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+      });
+    } finally {
+      fileStore.releaseOpenBodies();
+    }
+    for (const response of await Promise.all(held)) {
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("held");
+    }
   });
 
   test("requires permanent grant intent to be exactly true", async () => {

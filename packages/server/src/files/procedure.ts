@@ -8,18 +8,15 @@ import type {
   OpenedFile,
   StoreFileOptions,
 } from "./api.ts";
+import {
+  fileDatabase,
+  storedFileError,
+  type FileRow,
+} from "./database.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
 import { FILE_CLEANUP_TABLE, FILES_TABLE } from "./tables.ts";
 import { FileStoreError, type FileStoreRange } from "./store/contract.ts";
-
-interface FileTable {
-  get(id: bigint): Promise<Record<string, unknown> | null>;
-  insert(row: Record<string, unknown>): PromiseLike<bigint>;
-  patch(id: bigint, row: Record<string, unknown>): PromiseLike<void>;
-  delete(id: bigint): PromiseLike<void>;
-}
-
-type FileDatabase = Readonly<Record<string, FileTable>>;
+import { checkedFileText } from "./text.ts";
 
 export interface FileProcedureRuntimeOptions {
   readonly files: RuntimeFiles;
@@ -31,14 +28,6 @@ export interface FileProcedureRuntimeOptions {
 
 function owner(principal: Principal): FileMetadata["owner"] {
   return principal.kind === "user" || principal.kind === "mcp" ? principal.identity : null;
-}
-
-function checkedText(value: string | undefined, name: string, max: number): string | null {
-  if (value === undefined) return null;
-  if (value.length === 0 || value.length > max || /[\u0000-\u001f\u007f]/.test(value)) {
-    throw new ValidationError(`${name} must contain 1 through ${max} safe characters`);
-  }
-  return value;
 }
 
 function boundedBody(source: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {
@@ -63,16 +52,16 @@ function boundedBody(source: ReadableStream<Uint8Array>, maxBytes: number): Read
   });
 }
 
-function publicMetadata(row: Record<string, unknown>): FileMetadata {
+function publicMetadata(row: FileRow): FileMetadata {
   return Object.freeze({
-    id: row.id as FileId,
-    state: row.state as FileMetadata["state"],
-    owner: row.owner as FileMetadata["owner"],
-    size: row.size as number,
-    sha256: row.sha256 as string,
-    contentType: row.contentType as string | null,
-    name: row.name as string | null,
-    createdAt: row.createdAt as number,
+    id: row.id,
+    state: row.state,
+    owner: row.owner,
+    size: row.size,
+    sha256: row.sha256,
+    contentType: row.contentType,
+    name: row.name,
+    createdAt: row.createdAt,
   });
 }
 
@@ -121,12 +110,12 @@ export class FileProcedureRuntime {
     if (options.expectedSha256 !== undefined && !/^[0-9a-f]{64}$/.test(options.expectedSha256)) {
       throw new ValidationError("files.store.expectedSha256 must be a lowercase hexadecimal SHA-256 digest");
     }
-    const name = checkedText(options.name, "files.store.name", 1_024);
-    const contentType = checkedText(options.contentType, "files.store.contentType", 255);
+    const name = checkedFileText(options.name, "files.store.name", 1_024);
+    const contentType = checkedFileText(options.contentType, "files.store.contentType", 255);
     const objectKey = `files/${randomUUID()}`;
     const stagedAt = this.options.now();
     const stagingId = await this.options.write(signal, async (value) =>
-      await (value as FileDatabase)[FILE_CLEANUP_TABLE]!.insert({
+      await (fileDatabase(value))[FILE_CLEANUP_TABLE]!.insert({
         objectKey,
         fileId: null,
         state: "staging",
@@ -164,7 +153,7 @@ export class FileProcedureRuntime {
     try {
       const completedAt = this.options.now();
       const fileId = await this.options.write(this.options.lifecycleSignal(), async (value) => {
-        const db = value as FileDatabase;
+        const db = fileDatabase(value);
         const staging = await db[FILE_CLEANUP_TABLE]!.get(stagingId);
         if (staging?.state !== "staging" || staging.objectKey !== objectKey) {
           throw new Error("File staging ownership was lost before metadata commit");
@@ -179,7 +168,7 @@ export class FileProcedureRuntime {
           name,
           createdAt: completedAt,
           pendingExpiresAt: completedAt + PENDING_FILE_LIFETIME_MS,
-        }) as FileId;
+        });
         await db[FILE_CLEANUP_TABLE]!.delete(stagingId);
         return inserted;
       });
@@ -191,9 +180,9 @@ export class FileProcedureRuntime {
     }
   }
 
-  private async row(signal: AbortSignal, fileId: FileId): Promise<Record<string, unknown>> {
+  private async row(signal: AbortSignal, fileId: FileId): Promise<FileRow> {
     const row = await this.options.read(signal, (value) =>
-      (value as FileDatabase)[FILES_TABLE]!.get(fileId));
+      (fileDatabase(value))[FILES_TABLE]!.get(fileId));
     if (row === null || row.state === "deleting") {
       throw new ValidationError("File does not exist");
     }
@@ -208,9 +197,9 @@ export class FileProcedureRuntime {
     const store = this.options.files.store;
     if (store === undefined) throw new ValidationError("file storage is not configured");
     const row = await this.row(signal, fileId);
-    const requestedRange = storeRange(range, row.size as number);
+    const requestedRange = storeRange(range, row.size);
     try {
-      const opened = await store.open(row.objectKey as string, {
+      const opened = await store.open(row.objectKey, {
         ...(requestedRange === undefined ? {} : { range: requestedRange }),
         signal,
       });
@@ -241,14 +230,14 @@ export class FileProcedureRuntime {
       throw new ValidationError("files.bytes.maxBytes must be a non-negative safe integer");
     }
     const row = await this.row(signal, fileId);
-    if ((row.size as number) > maxBytes) {
+    if (row.size > maxBytes) {
       throw new ValidationError(`File has ${row.size} bytes, exceeding maxBytes ${maxBytes}`);
     }
     const store = this.options.files.store;
     if (store === undefined) throw new ValidationError("file storage is not configured");
     let opened: Awaited<ReturnType<typeof store.open>>;
     try {
-      opened = await store.open(row.objectKey as string, { signal });
+      opened = await store.open(row.objectKey, { signal });
     } catch (error) {
       this.observeProviderError(error, "open");
       throw error;
@@ -259,7 +248,7 @@ export class FileProcedureRuntime {
       this.observeProviderError(error, "open");
       throw error;
     }
-    const buffer = new Uint8Array(row.size as number);
+    const buffer = new Uint8Array(row.size);
     let offset = 0;
     const reader = opened.body.getReader();
     try {
@@ -292,15 +281,13 @@ export class FileProcedureRuntime {
     try {
       const now = this.options.now();
       const abandoned = await this.options.write(this.options.lifecycleSignal(), async (value) => {
-        const cleanup = (value as FileDatabase)[FILE_CLEANUP_TABLE]!;
+        const cleanup = (fileDatabase(value))[FILE_CLEANUP_TABLE]!;
         const staging = await cleanup.get(stagingId);
         if (staging?.state !== "staging") return false;
         await cleanup.patch(stagingId, {
           state: "pending",
           runAt: now,
-          lastError: error instanceof Error
-            ? error.message.slice(0, 2_048)
-            : String(error).slice(0, 2_048),
+          lastError: storedFileError(error),
         });
         return true;
       });
