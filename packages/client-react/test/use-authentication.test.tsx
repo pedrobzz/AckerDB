@@ -456,3 +456,78 @@ describe("useAuthentication", () => {
     }).toThrow("useAuthentication requires a <AckerDBProvider> ancestor");
   });
 });
+
+describe("credential-source provider", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("the provider forwards the source; refresh() re-pulls it and signOut() is the source's sign-out", async () => {
+    let signedIn = false;
+    let pulls = 0;
+    const harness = createHarness({
+      ...APP,
+      credentialSource: async () => {
+        pulls += 1;
+        return signedIn
+          ? { kind: "bearer", token: `token-${pulls}` }
+          : { kind: "anonymous" };
+      },
+    });
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(root, app(harness.config()));
+    // The commit's act() already flushed the first pull (Strict Mode's replay
+    // makes it two clients, each pulling once): the source produced the
+    // signed-out anonymous credential and it is being presented.
+    expect(container.textContent).toContain("authenticating:anonymous");
+    expect(pulls).toBeGreaterThanOrEqual(1);
+    await act(flush);
+    onlyLive(harness).welcome(SESSION_ID);
+    await act(flush);
+    expect(container.textContent).toContain("unauthenticated@0");
+
+    // The identity SDK signed in; refresh() re-invokes the source with no
+    // credential handling in the React tree.
+    signedIn = true;
+    let refreshed!: Promise<AckerDBAuthentication>;
+    await act(async () => {
+      refreshed = operations().refresh();
+      await flush();
+    });
+    const socket = onlyLive(harness);
+    const attempt = lastAuthFrame(socket);
+    expect(attempt.credential).toEqual({ kind: "bearer", token: `token-${pulls}` });
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...USER_AUTHENTICATION,
+      credentialTtlMs: 60_000,
+    });
+    await act(flush);
+    expect((await refreshed).principal).toBe("user");
+    expect(container.textContent).toContain("authenticated:user@1");
+
+    // signOut() re-pulls the source too — the SDK signed out, so the source
+    // produces the explicit anonymous credential.
+    signedIn = false;
+    let signedOut!: Promise<AckerDBAuthentication>;
+    await act(async () => {
+      signedOut = operations().signOut();
+      await flush();
+    });
+    const outFrame = lastAuthFrame(onlyLive(harness));
+    expect(outFrame.credential).toEqual({ kind: "anonymous" });
+    onlyLive(harness).receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: outFrame.attemptId,
+      authEpoch: 2,
+      principal: "anonymous",
+    });
+    await act(flush);
+    expect((await signedOut).principal).toBe("anonymous");
+    expect(container.textContent).toContain("unauthenticated@2");
+    await render(root, <></>);
+  });
+});

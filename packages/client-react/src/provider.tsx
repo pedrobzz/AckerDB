@@ -20,23 +20,29 @@ export interface AckerDBProviderProps {
 
 interface AckerDBContextValue {
   readonly client: AckerDBClient | null;
-  /** The rendering configuration's credential kind, known before the client exists. */
-  readonly credential: Credential["kind"];
+  /**
+   * The rendering configuration's credential kind, known before the client
+   * exists. `"source"` when the configuration supplies a credential source
+   * instead of a fixed credential.
+   */
+  readonly credential: Credential["kind"] | "source";
 }
 
 const AckerDBContext = createContext<AckerDBContextValue | null>(null);
 
 // Value identity for the immutable configuration surface: equal values continue
 // the current lifetime, different values close the old client and start a new
-// one. Injected capabilities (clock, random, createWebSocket, fetch, lifecycle)
-// are captured when a lifetime starts and do not participate in identity.
+// one. Injected capabilities (clock, random, createWebSocket, fetch, lifecycle,
+// credentialSource) are captured when a lifetime starts and do not participate
+// in identity — a source-mode lifetime changes credentials by re-pulling, never
+// by client replacement.
 function lifetimeKey(config: AckerDBProviderConfig): string {
   const limits = config.limits;
   const reconnect = config.reconnect;
   return JSON.stringify([
     config.url,
-    config.credential.kind,
-    config.credential.kind === "bearer" ? config.credential.token : "",
+    config.credential?.kind ?? "source",
+    config.credential?.kind === "bearer" ? config.credential.token : "",
     config.clientSessionId ?? null,
     limits
       ? [
@@ -91,7 +97,7 @@ export function AckerDBProvider({ config, children }: AckerDBProviderProps): Rea
   // configuration, so no committed render can pair a new configuration with
   // the previous lifetime's state.
   const client = lifetime !== null && lifetime.key === key ? lifetime.client : null;
-  const credential = config.credential.kind;
+  const credential = config.credential?.kind ?? "source";
   const value = useMemo<AckerDBContextValue>(() => ({ client, credential }), [client, credential]);
   return <AckerDBContext.Provider value={value}>{children}</AckerDBContext.Provider>;
 }
@@ -104,7 +110,7 @@ export function useProviderClient(hook: string): AckerDBClient | null {
 }
 
 /** Module-internal: the configured credential kind for deterministic pre-client snapshots. */
-export function useProviderCredentialKind(hook: string): Credential["kind"] {
+export function useProviderCredentialKind(hook: string): Credential["kind"] | "source" {
   const value = useContext(AckerDBContext);
   if (value === null) throw new Error(`${hook} requires a <AckerDBProvider> ancestor`);
   return value.credential;

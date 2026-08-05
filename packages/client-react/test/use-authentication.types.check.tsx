@@ -84,7 +84,7 @@ void systemAuthentication;
 // --- per-phase payloads -------------------------------------------------------
 
 declare const authenticating: Extract<AckerDBAuthenticationState, { phase: "authenticating" }>;
-authenticating.credential satisfies "anonymous" | "bearer";
+authenticating.credential satisfies "anonymous" | "bearer" | "source";
 // @ts-expect-error only failure phases carry an error
 authenticating.error;
 // @ts-expect-error only confirmed phases carry an authentication
@@ -122,8 +122,9 @@ function Operations(): ReactNode {
   const anonymous: Promise<AckerDBAuthentication> = refresh({ kind: "anonymous" });
   const signedOut: Promise<AckerDBAuthentication> = signOut();
 
-  // @ts-expect-error refresh requires a credential
-  refresh();
+  // The credential-source form: refresh() re-invokes the provider's source.
+  const viaSource: Promise<AckerDBAuthentication> = refresh();
+  void viaSource;
   // @ts-expect-error bearer credentials carry a token
   refresh({ kind: "bearer" });
   // @ts-expect-error only the two protocol credential kinds exist

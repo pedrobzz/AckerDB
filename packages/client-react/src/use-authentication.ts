@@ -10,26 +10,31 @@ import { useProviderClient, useProviderCredentialKind } from "./provider.tsx";
 /**
  * The complete React authentication surface: observable state plus the two
  * protocol-supported operations. `refresh` presents a new credential through
- * the base client's `refreshCredential`; `signOut` presents the anonymous
- * credential, which the ackerdb server classifies as a sign-out — it retires the
- * current auth epoch and transitions the session to the anonymous principal.
- * Both resolve with the server-confirmed authentication and reject with the
- * exact `AckerDBClientError`.
+ * the base client's `refreshCredential`; on a credential-source provider it
+ * takes no argument and re-invokes the source immediately — the "sign-in just
+ * happened" path. `signOut` presents the anonymous credential, which the
+ * ackerdb server classifies as a sign-out; on a credential-source provider it
+ * re-invokes the source instead, so sign out of the identity SDK first — the
+ * source owns what "signed out" produces. Both resolve with the
+ * server-confirmed authentication and reject with the exact
+ * `AckerDBClientError`.
  */
 export interface UseAuthenticationResult {
   readonly state: AckerDBAuthenticationState;
-  readonly refresh: (credential: Credential) => Promise<AckerDBAuthentication>;
+  readonly refresh: (credential?: Credential) => Promise<AckerDBAuthentication>;
   readonly signOut: () => Promise<AckerDBAuthentication>;
 }
 
 // Deterministic snapshots for server rendering and for the commit gap before
 // the provider's effect constructs the client: the configured credential is
 // about to be presented, which is exactly what "authenticating" means.
-const DETACHED_STATES: Readonly<Record<Credential["kind"], AckerDBAuthenticationState>> =
-  Object.freeze({
-    anonymous: Object.freeze({ phase: "authenticating" as const, credential: "anonymous" as const }),
-    bearer: Object.freeze({ phase: "authenticating" as const, credential: "bearer" as const }),
-  });
+const DETACHED_STATES: Readonly<
+  Record<Credential["kind"] | "source", AckerDBAuthenticationState>
+> = Object.freeze({
+  anonymous: Object.freeze({ phase: "authenticating" as const, credential: "anonymous" as const }),
+  bearer: Object.freeze({ phase: "authenticating" as const, credential: "bearer" as const }),
+  source: Object.freeze({ phase: "authenticating" as const, credential: "source" as const }),
+});
 
 const ANONYMOUS_CREDENTIAL: Credential = Object.freeze({ kind: "anonymous" });
 
@@ -76,7 +81,7 @@ export function useAuthentication(): UseAuthenticationResult {
   const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const refresh = useCallback(
-    (credential: Credential): Promise<AckerDBAuthentication> => {
+    (credential?: Credential): Promise<AckerDBAuthentication> => {
       if (client === null) return detachedOperation();
       // A closed or permanently failed client rejects synchronously with the
       // exact error; a React operation surfaces it as the rejection instead.
@@ -88,7 +93,10 @@ export function useAuthentication(): UseAuthenticationResult {
     },
     [client],
   );
-  const signOut = useCallback(() => refresh(ANONYMOUS_CREDENTIAL), [refresh]);
+  const signOut = useCallback(
+    () => (credentialKind === "source" ? refresh() : refresh(ANONYMOUS_CREDENTIAL)),
+    [credentialKind, refresh],
+  );
 
   return useMemo(() => ({ state, refresh, signOut }), [state, refresh, signOut]);
 }

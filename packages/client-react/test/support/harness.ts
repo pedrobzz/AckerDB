@@ -1,6 +1,13 @@
-import type { ClientMessage } from "@ackerdb/core";
+import type { ClientMessage, Credential } from "@ackerdb/core";
+import type { AckerDBClientOptionsBase, AckerDBCredentialSource } from "@ackerdb/client";
 import type { AckerDBProviderConfig } from "@ackerdb/client-react";
 import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+
+/** Flat override surface: the credential-mode XOR is re-derived when the config is built. */
+export type ConfigOverrides = Partial<AckerDBClientOptionsBase> & {
+  readonly credential?: Credential;
+  readonly credentialSource?: AckerDBCredentialSource;
+};
 
 export interface ProviderHarness {
   readonly clock: ManualClock;
@@ -13,7 +20,7 @@ export interface ProviderHarness {
    * config *value*, so calling this inline in a render continues the current
    * lifetime instead of restarting the client.
    */
-  config(overrides?: Partial<AckerDBProviderConfig>): AckerDBProviderConfig;
+  config(overrides?: ConfigOverrides): AckerDBProviderConfig;
   /** The newest socket still open; throws when the client holds none. */
   live(): FakeSocket;
   /** Every socket still open, for suites mounting more than one provider. */
@@ -28,7 +35,7 @@ export interface ProviderHarness {
  * of the app under test differs, so that is all `defaults` carries.
  */
 export function createHarness(
-  defaults: Partial<AckerDBProviderConfig> = {},
+  defaults: ConfigOverrides = {},
   /** Overridden by suites that instrument socket lifecycle, not its frames. */
   createSocket: () => FakeSocket = () => new FakeSocket(),
 ): ProviderHarness {
@@ -38,9 +45,9 @@ export function createHarness(
     clock,
     sockets,
     config(overrides = {}) {
+      const { credential, credentialSource, ...base } = { ...defaults, ...overrides };
       return {
         url: "http://react.test",
-        credential: { kind: "anonymous" },
         clientSessionId: "react-session",
         clock,
         random: () => 0,
@@ -49,8 +56,10 @@ export function createHarness(
           sockets.push(socket);
           return socket;
         },
-        ...defaults,
-        ...overrides,
+        ...base,
+        ...(credentialSource !== undefined
+          ? { credentialSource }
+          : { credential: credential ?? { kind: "anonymous" as const } }),
       };
     },
     live() {
