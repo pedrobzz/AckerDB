@@ -96,8 +96,15 @@ export type AuthenticationDescriptor =
       readonly principal: "user";
       readonly identity: Identity;
       readonly provenance: CredentialProvenance;
+      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
+      readonly credentialTtlMs?: number;
     }
-  | { readonly principal: "workload"; readonly provenance: CredentialProvenance };
+  | {
+      readonly principal: "workload";
+      readonly provenance: CredentialProvenance;
+      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
+      readonly credentialTtlMs?: number;
+    };
 
 export interface Outcome {
   code: OutcomeCode;
@@ -458,6 +465,11 @@ function parseCredentialProvenance(value: unknown): CredentialProvenance {
   return result as unknown as CredentialProvenance;
 }
 
+function parseCredentialTtl(result: ObjectValue): void {
+  if (!Object.hasOwn(result, "credentialTtlMs")) return;
+  nonNegativeInteger(result.credentialTtlMs, "credentialTtlMs");
+}
+
 function parseAuthenticationDescriptor(
   result: ObjectValue,
   frameFields: readonly string[],
@@ -467,7 +479,7 @@ function parseAuthenticationDescriptor(
       exact(result, [...frameFields, "principal"]);
       return;
     case "user":
-      exact(result, [...frameFields, "principal", "identity", "provenance"]);
+      exact(result, [...frameFields, "principal", "identity", "provenance"], ["credentialTtlMs"]);
       if (
         typeof result.identity !== "bigint" ||
         result.identity <= 0n ||
@@ -476,10 +488,12 @@ function parseAuthenticationDescriptor(
         malformed("identity must be a positive signed 64-bit bigint");
       }
       parseCredentialProvenance(result.provenance);
+      parseCredentialTtl(result);
       return;
     case "workload":
-      exact(result, [...frameFields, "principal", "provenance"]);
+      exact(result, [...frameFields, "principal", "provenance"], ["credentialTtlMs"]);
       parseCredentialProvenance(result.provenance);
+      parseCredentialTtl(result);
       return;
     default:
       malformed("unknown client principal kind");

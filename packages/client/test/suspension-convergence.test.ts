@@ -25,7 +25,7 @@ import {
 import {
   AckerDBClient,
   AckerDBClientError,
-  type AckerDBClientOptions,
+  type AckerDBClientOptionsBase,
   type AckerDBLifecyclePort,
   type AckerDBLiveEvent,
   type AckerDBWebSocket,
@@ -947,7 +947,7 @@ interface SuspendableClient {
  */
 function suspendableClient(
   url: string,
-  overrides: Partial<AckerDBClientOptions> = {},
+  overrides: Partial<AckerDBClientOptionsBase> = {},
 ): SuspendableClient {
   let port: AckerDBLifecyclePort | undefined;
   const clientFrames: ClientMessage[] = [];

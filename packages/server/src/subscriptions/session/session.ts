@@ -61,12 +61,16 @@ import {
 } from "./frame.ts";
 import { PendingAuthObservations } from "./observation.ts";
 
-function authenticationDescriptor(principal: ClientPrincipal): AuthenticationDescriptor {
+function authenticationDescriptor(
+  principal: ClientPrincipal,
+  nowMs: number,
+): AuthenticationDescriptor {
   if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
   const provenance = Object.freeze({ issuer: principal.issuer, subject: principal.subject });
+  const credentialTtlMs = Math.max(0, Math.floor(principal.expiresAt - nowMs));
   return principal.kind === "user"
-    ? Object.freeze({ principal: "user", identity: principal.identity, provenance })
-    : Object.freeze({ principal: "workload", provenance });
+    ? Object.freeze({ principal: "user", identity: principal.identity, provenance, credentialTtlMs })
+    : Object.freeze({ principal: "workload", provenance, credentialTtlMs });
 }
 
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
@@ -331,7 +335,7 @@ export class Session {
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
-        ...authenticationDescriptor(principal),
+        ...authenticationDescriptor(principal, this.readNow()),
       });
       if (this.isClosed()) return;
       this.paused = false;
@@ -473,7 +477,7 @@ export class Session {
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
-          ...authenticationDescriptor(result),
+          ...authenticationDescriptor(result, this.readNow()),
         };
         await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;

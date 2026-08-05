@@ -47,11 +47,13 @@ const ALICE_AUTHENTICATION = {
   principal: "user",
   identity: 1n as Identity,
   provenance: { issuer: "https://issuer.example/", subject: "alice" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 const BOB_AUTHENTICATION = {
   principal: "user",
   identity: 2n as Identity,
   provenance: { issuer: "https://issuer.example/", subject: "bob" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 
 const NOW = 1_720_000_000_000;
