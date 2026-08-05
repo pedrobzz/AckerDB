@@ -16,9 +16,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  approve-stable:
+    name: Approve stable
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: npm-stable-approval
+    steps:
+      - run: echo "Stable publication approved" >> "$GITHUB_STEP_SUMMARY"
+
   publish:
     name: Publish ${{ github.ref_name }}
-    if: github.event.created != true
+    needs: approve-stable
+    if: >-
+      always() && github.event.created != true &&
+      (needs.approve-stable.result == 'success' || needs.approve-stable.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: npm
@@ -66,4 +78,4 @@ jobs:
           merge-multiple: true
       - id: publish
         run: bun scripts/release/publish.ts npm
-      - run: echo "Published @ackerdb/*@${{ steps.publish.outputs.version }} after environment approval" >> "$GITHUB_STEP_SUMMARY"
+      - run: echo "Published @ackerdb/*@${{ steps.publish.outputs.version }} from protected ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
