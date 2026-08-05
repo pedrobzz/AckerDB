@@ -821,3 +821,49 @@ describe("awaiting principal change", () => {
     client.close();
   });
 });
+
+describe("same-principal epoch advance", () => {
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a same-account re-presentation with changed claims revives parked demand", async () => {
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config({ credential: { kind: "bearer", token: "viewer" } }));
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const socket = harness.live();
+    const alice = {
+      principal: "user" as const,
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example", subject: "alice" },
+      credentialTtlMs: 60_000,
+    };
+    socket.welcome(SESSION, alice);
+    const id = socket.framesOf("sub")[0]!.id;
+    // The viewer-role token fails the access policy.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "unauthorized", retryable: false, message: "viewers cannot read this" },
+    });
+    await flush();
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Same subject, same identity — but a new presentation whose claims may
+    // carry a different role. Access policies see claims, so it re-presents.
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "admin" });
+    const attempt = socket.framesOf("auth")[0]!;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...alice,
+    });
+    await refreshed;
+    await flush();
+    expect(socket.framesOf("sub")).toHaveLength(2);
+    stopListening();
+    client.close();
+  });
+});

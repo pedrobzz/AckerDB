@@ -124,8 +124,10 @@ mandatory because Auth0 mints it.
 BetterAuth's JWT plugin signs with **EdDSA** by default and hardcodes the
 protected header to `{alg, kid}` — there is no `typ` and no way to configure
 one, so `tokenType` must be `"unchecked"`. Self-hosted locally it is a
-plaintext HTTP issuer, which the private plaintext boundary admits on
-loopback and private-network addresses (your machine's LAN IP included).
+plaintext HTTP issuer: loopback addresses work with no further declaration,
+and reaching it over your machine's LAN IP (testing from a phone) requires
+the provider's explicit `allowPrivateNetworkHttp: true` — plaintext across a
+private network is an interceptable hop, so it is a visible declaration.
 
 ```json
 {

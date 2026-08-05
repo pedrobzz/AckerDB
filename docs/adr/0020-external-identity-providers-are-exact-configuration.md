@@ -37,15 +37,21 @@ unchecked, and everything left declared stays enforced. An empty audience
 list remains forbidden because an empty list silently meaning "no check" is
 the same forgotten-or-chosen ambiguity.
 
-Plaintext HTTP is governed by a topological rule, not a mode switch: it is
-permitted exactly where it cannot cross an untrusted network boundary —
-loopback hosts and private-network IP literals, for both the issuer and the
-JWKS URL, identically in `dev` and production. The rejected alternative, a
-dev-mode-only allowance, couples a security property to a lifecycle flag: it
-blocks the legitimate same-host sidecar in production while still shipping
-plaintext across a hostile network in any dev deployment that faces one. The
-boundary rule states the actual invariant. Named non-localhost hosts require
-HTTPS because their resolution cannot be judged at configuration time.
+Plaintext HTTP is governed by a topological rule plus an explicit
+declaration, not a mode switch. Loopback hosts accept plaintext by default —
+that traffic cannot cross a network at all, and it covers the legitimate
+same-host sidecar in production. Private-network IP literals accept
+plaintext only under the provider's `allowPrivateNetworkHttp: true`: RFC
+1918 does not mean trusted — Wi-Fi, corporate LANs, VPNs, and cloud VPCs are
+attackable, and an on-path peer that rewrites a plaintext JWKS response
+mints accepted tokens — so crossing a private network without TLS is the
+same kind of visible, reviewable declaration as `"unchecked"`. Public hosts
+never accept plaintext, declaration or not. The rejected alternative, a
+dev-mode-only allowance, couples a security property to a lifecycle flag
+instead of stating the invariant; adversarial review of the first cut
+demonstrated that treating private ranges as implicitly safe was the same
+mistake in topological clothing. Named non-localhost hosts require HTTPS
+because their resolution cannot be judged at configuration time.
 
 Finally, the server discloses credential TTL — `credentialTtlMs`, a relative
 duration on every accepted bearer `welcome`/`auth` frame — because the

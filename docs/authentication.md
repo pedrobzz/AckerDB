@@ -273,11 +273,16 @@ rejected. Per-provider recipes with each provider's exact `iss` string live
 in [Auth providers](auth-providers.md).
 
 Both URLs obey the **private plaintext boundary**: HTTPS is accepted
-everywhere, and plaintext `http:` is permitted exactly where it cannot cross
-an untrusted network boundary — loopback hosts (`localhost`, `*.localhost`,
-`127.0.0.0/8`, `[::1]`) and private-network IP literals (RFC 1918,
-link-local, IPv6 ULA and link-local) — identically in every mode. Named
-hosts other than the localhost forms always require HTTPS.
+everywhere, and plaintext `http:` is permitted by default only on loopback
+hosts (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`), where it cannot
+cross a network at all. Private-network IP literals (RFC 1918, link-local,
+IPv6 ULA and link-local) additionally require the provider's explicit
+`allowPrivateNetworkHttp: true` — private ranges are attackable networks
+(Wi-Fi, corporate LAN, VPN, cloud VPC), and an on-path peer that rewrites a
+plaintext JWKS response mints accepted tokens, so crossing them without TLS
+is a visible per-provider declaration, never a default. Public hosts and
+named non-localhost hosts never accept plaintext, declaration or not, in any
+mode.
 
 `audiences` is either a non-empty list of accepted `aud` values or the
 explicit literal `"unchecked"`; `tokenType` is either the required JOSE

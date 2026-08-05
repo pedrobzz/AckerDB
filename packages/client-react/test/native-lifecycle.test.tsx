@@ -52,11 +52,13 @@ const USER_AUTHENTICATION = {
   principal: "user",
   identity: 7n as Identity,
   provenance: { issuer: "https://issuer.example", subject: "user-before" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 const FOREGROUND_AUTHENTICATION = {
   principal: "user",
   identity: USER_AUTHENTICATION.identity,
   provenance: { issuer: "https://issuer.example", subject: "user-after" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 
 const SESSION = "native-lifecycle-session";

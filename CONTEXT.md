@@ -759,10 +759,11 @@ unchecked; it is never silently absent by default.
 _Avoid_: Optional audience, implicit default, lenient mode
 
 **Private plaintext boundary** — The rule deciding where an identity
-provider may be reached without TLS: plaintext is permitted exactly where it
-cannot cross an untrusted network boundary — loopback and private-network
-addresses — and nowhere else, in every mode.
-_Avoid_: Dev-mode HTTP, insecure flag, TLS exemption
+provider may be reached without TLS: loopback hosts by default, where
+plaintext cannot cross a network at all; private-network addresses only
+under an explicit per-provider declaration, because private ranges are
+attackable networks; public hosts never, in any mode.
+_Avoid_: Dev-mode HTTP, trusted LAN default, TLS exemption
 
 **Credential source** — The application-owned callback that produces the
 client's current explicit credential on demand, including the explicit

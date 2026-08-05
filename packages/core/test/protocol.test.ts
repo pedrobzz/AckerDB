@@ -379,6 +379,7 @@ describe("live events and operation results", () => {
       principal: "user",
       identity: 7n as Identity,
       provenance: { issuer: "https://issuer.example", subject: "user-7" },
+      credentialTtlMs: 60_000,
     } satisfies AuthenticatedMessage;
     expect(parseServerMessage(decode(encode(userAuthentication)))).toEqual(userAuthentication);
     expect(
@@ -400,11 +401,28 @@ describe("live events and operation results", () => {
         authEpoch: 0,
         principal: "workload",
         provenance: { issuer: "https://issuer.example", subject: "worker-1" },
+        credentialTtlMs: 30_000,
       }),
     ).toMatchObject({ principal: "workload" });
 
     for (const descriptor of [
       { principal: "user" },
+      // Every accepted bearer presentation discloses its TTL; omission is malformed.
+      {
+        principal: "user",
+        identity: 7n,
+        provenance: { issuer: "https://issuer.example", subject: "user-7" },
+      },
+      {
+        principal: "user",
+        identity: 7n,
+        provenance: { issuer: "https://issuer.example", subject: "user-7" },
+        credentialTtlMs: -1,
+      },
+      {
+        principal: "workload",
+        provenance: { issuer: "https://issuer.example", subject: "worker-1" },
+      },
       {
         principal: "user",
         identity: 0n,

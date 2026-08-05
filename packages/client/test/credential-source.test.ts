@@ -14,12 +14,12 @@ async function settled(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function userDescriptor(subject: string, credentialTtlMs?: number) {
+function userDescriptor(subject: string, credentialTtlMs = 60_000) {
   return {
     principal: "user" as const,
     identity: 1n as Identity,
     provenance: { issuer: "https://issuer.example", subject },
-    ...(credentialTtlMs === undefined ? {} : { credentialTtlMs }),
+    credentialTtlMs,
   };
 }
 
@@ -166,27 +166,147 @@ describe("credential source", () => {
     harness.client.close();
   });
 
-  test("concurrent triggers coalesce onto one in-flight pull", async () => {
+  test("concurrent explicit refreshes share one queued follow-up pull", async () => {
     let pulls = 0;
-    let release!: (credential: Credential) => void;
+    const releases: Array<(credential: Credential) => void> = [];
     const harness = createHarness({
       credentialSource: () => {
         pulls += 1;
+        return new Promise<Credential>((resolve) => {
+          releases.push(resolve);
+        });
+      },
+    });
+    await settled();
+    expect(pulls).toBe(1);
+    // Both explicit refreshes arrive while the initial pull is in flight:
+    // they demand one fresh follow-up between them, never one each and never
+    // a silent join of the possibly-stale in-flight pull.
+    const one = harness.client.refreshCredential();
+    const two = harness.client.refreshCredential();
+    expect(pulls).toBe(1);
+    // The in-flight pull produces the stale pre-sign-in credential and its
+    // presentation settles at the welcome; only then does the shared
+    // follow-up pull the source again.
+    releases[0]!(bearer("stale"));
+    await settled();
+    const socket = harness.live();
+    socket.welcome(SESSION, userDescriptor("alice", 60_000));
+    await settled();
+    expect(pulls).toBe(2);
+    releases[1]!(bearer("fresh"));
+    await settled();
+    const auth = socket.framesOf("auth");
+    expect(auth).toHaveLength(1);
+    expect(auth[0]!.credential).toEqual(bearer("fresh"));
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: auth[0]!.attemptId,
+      authEpoch: 1,
+      ...userDescriptor("alice", 60_000),
+    });
+    expect(await one).toMatchObject({ principal: "user" });
+    expect(await two).toMatchObject({ principal: "user" });
+    expect(pulls).toBe(2);
+    harness.client.close();
+  });
+
+  test("an explicit refresh during an in-flight pull queues one fresh follow-up pull", async () => {
+    let signedIn = false;
+    let pulls = 0;
+    const harness = createHarness({
+      credentialSource: async () => {
+        pulls += 1;
+        return signedIn ? bearer(`token-${pulls}`) : { kind: "anonymous" as const };
+      },
+    });
+    await settled();
+    expect(pulls).toBe(1);
+    // The initial anonymous pull is still awaiting its welcome when the user
+    // signs in. Joining that flight would discard the sign-in forever: an
+    // accepted anonymous principal discloses no TTL, so nothing would ever
+    // re-pull the source.
+    signedIn = true;
+    const refreshed = harness.client.refreshCredential();
+    await settled();
+    expect(pulls).toBe(1);
+    const socket = harness.live();
+    socket.welcome(SESSION);
+    await settled();
+    // The follow-up pulled the fresh bearer and presented it.
+    expect(pulls).toBe(2);
+    const auth = socket.framesOf("auth");
+    expect(auth).toHaveLength(1);
+    expect(auth[0]!.credential).toEqual(bearer("token-2"));
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: auth[0]!.attemptId,
+      authEpoch: 1,
+      ...userDescriptor("alice", 60_000),
+    });
+    expect(await refreshed).toMatchObject({ principal: "user" });
+    harness.client.close();
+  });
+
+  test("a hung source is bounded by the query deadline and retried on the schedule", async () => {
+    let pulls = 0;
+    let hang = true;
+    const harness = createHarness({
+      credentialSource: () => {
+        pulls += 1;
+        return hang
+          ? new Promise<Credential>(() => {})
+          : Promise.resolve(bearer("recovered"));
+      },
+    });
+    await settled();
+    expect(pulls).toBe(1);
+    // The invocation deadline releases the single-flight slot...
+    harness.clock.advance(30_000);
+    await settled();
+    // ...and the bounded retry pulls again.
+    hang = false;
+    harness.clock.advance(100);
+    await settled();
+    expect(pulls).toBe(2);
+    const socket = harness.live();
+    socket.open();
+    expect(socket.framesOf("hello")[0]!.credential).toEqual(bearer("recovered"));
+    harness.client.close();
+  });
+
+  test("resume gates the dial on a fresh pull instead of presenting the retained credential", async () => {
+    let release!: (credential: Credential) => void;
+    let pulls = 0;
+    const harness = createHarness({
+      credentialSource: () => {
+        pulls += 1;
+        if (pulls === 1) return Promise.resolve(bearer("before-suspend"));
         return new Promise<Credential>((resolve) => {
           release = resolve;
         });
       },
     });
     await settled();
-    const one = harness.client.refreshCredential();
-    const two = harness.client.refreshCredential();
-    expect(pulls).toBe(1);
-    release(bearer("only"));
+    const first = harness.live();
+    first.welcome(SESSION, userDescriptor("alice", 60_000));
     await settled();
-    harness.live().welcome(SESSION, userDescriptor("alice", 60_000));
-    expect(await one).toMatchObject({ principal: "user" });
-    expect(await two).toMatchObject({ principal: "user" });
-    expect(pulls).toBe(1);
+    harness.port.suspend();
+    expect(harness.client.currentConnectionState.phase).toBe("suspended");
+
+    harness.port.resume();
+    await settled();
+    // No dial with the retained credential: the account may have changed
+    // while backgrounded, and a stale welcome would flush demand under it.
+    expect(harness.sockets.filter((socket) => !socket.closed)).toHaveLength(0);
+    expect(pulls).toBe(2);
+    release(bearer("after-resume"));
+    await settled();
+    const second = harness.live();
+    second.open();
+    expect(second.framesOf("hello")[0]!.credential).toEqual(bearer("after-resume"));
     harness.client.close();
   });
 

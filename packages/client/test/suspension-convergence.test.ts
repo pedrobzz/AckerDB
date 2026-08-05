@@ -57,6 +57,7 @@ const USER_AUTHENTICATION = {
   principal: "user",
   identity: 1n as Identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 
 function eventCursor(

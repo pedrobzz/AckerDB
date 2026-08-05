@@ -646,8 +646,14 @@ const AUTHENTICATING_SOURCE: AckerDBAuthenticationState = Object.freeze({
 });
 /** Proactive source re-pull lands this far before disclosed expiry when 80% of the TTL cannot. */
 const SOURCE_REFRESH_MARGIN_MS = 5_000;
-/** Floor for the proactive re-pull delay so tiny TTLs cannot hot-loop the source. */
+/**
+ * Floor for the proactive re-pull delay so tiny TTLs cannot hot-loop the
+ * source. A credential whose lifetime is shorter than this cycle degrades to
+ * the reactive refresh path by design.
+ */
 const MIN_SOURCE_REFRESH_DELAY_MS = 1_000;
+/** Platform timer ceiling; longer delays would wrap to ~1 ms and hot-loop the source. */
+const MAX_SOURCE_REFRESH_DELAY_MS = 0x7fff_ffff;
 const CLOSED_AUTHENTICATION_STATE: AckerDBAuthenticationState = Object.freeze({ phase: "closed" });
 
 function authenticationFromFrame(
@@ -657,17 +663,20 @@ function authenticationFromFrame(
     return Object.freeze({ authEpoch: frame.authEpoch, principal: "anonymous" });
   }
   const provenance = Object.freeze({ ...frame.provenance });
-  const ttl =
-    frame.credentialTtlMs === undefined ? {} : { credentialTtlMs: frame.credentialTtlMs };
   return frame.principal === "user"
     ? Object.freeze({
         authEpoch: frame.authEpoch,
         principal: "user",
         identity: frame.identity,
         provenance,
-        ...ttl,
+        credentialTtlMs: frame.credentialTtlMs,
       })
-    : Object.freeze({ authEpoch: frame.authEpoch, principal: "workload", provenance, ...ttl });
+    : Object.freeze({
+        authEpoch: frame.authEpoch,
+        principal: "workload",
+        provenance,
+        credentialTtlMs: frame.credentialTtlMs,
+      });
 }
 
 const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
@@ -716,6 +725,8 @@ export class AckerDBClient {
   private readonly credentialSource?: AckerDBCredentialSource;
   /** Single-flight: concurrent pull triggers coalesce onto this promise. */
   private sourcePull: Promise<AckerDBAuthentication> | null = null;
+  /** One queued fresh pull for explicit refreshes that arrive mid-flight. */
+  private sourceFollowUp: Promise<AckerDBAuthentication> | null = null;
   private sourceRetryAttempt = 0;
   private sourceRetryHandle?: unknown;
   private sourceRefreshHandle?: unknown;
@@ -943,7 +954,7 @@ export class AckerDBClient {
       }
       this.sourceRetryAttempt = 0;
       this.clearSourceRetryTimer();
-      return this.pullCredentialSource();
+      return this.demandFreshPull();
     }
     if (credential === undefined) {
       throw new TypeError("refreshCredential requires a credential unless a credentialSource is configured");
@@ -1009,6 +1020,31 @@ export class AckerDBClient {
     return result;
   }
 
+  /**
+   * An explicit refresh is new demand, not a joinable trigger: a pull already
+   * in flight may have produced the pre-sign-in credential, so joining it
+   * would silently discard the sign-in. One follow-up pull is queued behind
+   * the flight; concurrent explicit refreshes share it.
+   */
+  private demandFreshPull(): Promise<AckerDBAuthentication> {
+    if (this.sourcePull === null) return this.pullCredentialSource();
+    if (this.sourceFollowUp === null) {
+      const follow = this.sourcePull.then(
+        () => {
+          if (this.sourceFollowUp === follow) this.sourceFollowUp = null;
+          return this.pullCredentialSource();
+        },
+        () => {
+          if (this.sourceFollowUp === follow) this.sourceFollowUp = null;
+          return this.pullCredentialSource();
+        },
+      );
+      this.sourceFollowUp = follow;
+      void follow.catch(() => {});
+    }
+    return this.sourceFollowUp;
+  }
+
   /** Single-flight: concurrent triggers — initial, scheduled, rejected, manual — coalesce. */
   private pullCredentialSource(): Promise<AckerDBAuthentication> {
     const existing = this.sourcePull;
@@ -1041,11 +1077,42 @@ export class AckerDBClient {
   private async runSourcePull(): Promise<AckerDBAuthentication> {
     let credential: Credential;
     try {
-      credential = await this.credentialSource!();
+      credential = await this.boundedSourceInvocation();
     } catch {
       throw localError("auth_unavailable", "credential source failed", "connection");
     }
     return this.presentCredential(credential);
+  }
+
+  /**
+   * The source is external code; without a deadline a hung invocation would
+   * occupy the single-flight slot forever and wedge every future refresh.
+   */
+  private boundedSourceInvocation(): Promise<Credential> {
+    return new Promise<Credential>((resolve, reject) => {
+      let settled = false;
+      const handle = this.clock.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("credential source timed out"));
+      }, this.limits.maxQueryAgeMs);
+      Promise.resolve()
+        .then(() => this.credentialSource!())
+        .then(
+          (credential) => {
+            if (settled) return;
+            settled = true;
+            this.clock.clearTimeout(handle);
+            resolve(credential);
+          },
+          (cause: unknown) => {
+            if (settled) return;
+            settled = true;
+            this.clock.clearTimeout(handle);
+            reject(cause instanceof Error ? cause : new Error(String(cause)));
+          },
+        );
+    });
   }
 
   private scheduleSourceRetry(): void {
@@ -1091,10 +1158,9 @@ export class AckerDBClient {
     const authentication = this.authentication;
     if (authentication === undefined || authentication.principal === "anonymous") return;
     const ttl = authentication.credentialTtlMs;
-    if (ttl === undefined) return;
-    const delay = Math.max(
-      MIN_SOURCE_REFRESH_DELAY_MS,
-      Math.min(ttl * 0.8, ttl - SOURCE_REFRESH_MARGIN_MS),
+    const delay = Math.min(
+      MAX_SOURCE_REFRESH_DELAY_MS,
+      Math.max(MIN_SOURCE_REFRESH_DELAY_MS, Math.min(ttl * 0.8, ttl - SOURCE_REFRESH_MARGIN_MS)),
     );
     this.sourceRefreshHandle = this.clock.setTimeout(() => {
       this.sourceRefreshHandle = undefined;
@@ -1670,11 +1736,6 @@ export class AckerDBClient {
     if (this.closed || !this.suspended) return;
     this.suspended = false;
     this.realtimeSessions.resume();
-    // The credential may have expired while backgrounded; a fresh pull beats
-    // dialing with a dead token and eating one rejected handshake.
-    if (this.credentialSource !== undefined && this.credential !== undefined) {
-      void this.pullCredentialSource().catch(() => {});
-    }
     for (const subscription of this.subscriptions.values()) {
       this.armSubscriptionRetry(subscription);
     }
@@ -1695,7 +1756,23 @@ export class AckerDBClient {
       // ordinary reconnect policy (which clears `resuming` again), everything
       // else dials inside this event turn.
       this.resuming = true;
-      this.ensureConnected();
+      if (this.credentialSource !== undefined && this.credential !== undefined) {
+        // The resume dial is gated on a fresh pull: dialing with the retained
+        // credential could welcome a stale principal — expired, signed out,
+        // or a switched account — and flush demand under it before the fresh
+        // credential arrives. Presentation dials on success; the settlement
+        // hook re-ensures connectivity for the paths where it did not — a
+        // failed pull (fall back to the retained credential so an unreachable
+        // identity provider cannot black out public demand; the bounded retry
+        // keeps pulling regardless) and a joined pull that had already
+        // settled without dialing. ensureConnected is a no-op on a live dial.
+        const ensure = (): void => {
+          if (!this.closed && !this.suspended) this.ensureConnected();
+        };
+        void this.pullCredentialSource().then(ensure, ensure);
+      } else {
+        this.ensureConnected();
+      }
     }
     this.publishConnectionState();
   }

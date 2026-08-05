@@ -97,13 +97,13 @@ export type AuthenticationDescriptor =
       readonly identity: Identity;
       readonly provenance: CredentialProvenance;
       /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs?: number;
+      readonly credentialTtlMs: number;
     }
   | {
       readonly principal: "workload";
       readonly provenance: CredentialProvenance;
       /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs?: number;
+      readonly credentialTtlMs: number;
     };
 
 export interface Outcome {
@@ -465,8 +465,8 @@ function parseCredentialProvenance(value: unknown): CredentialProvenance {
   return result as unknown as CredentialProvenance;
 }
 
+// Every accepted bearer presentation discloses its TTL; omission is malformed.
 function parseCredentialTtl(result: ObjectValue): void {
-  if (!Object.hasOwn(result, "credentialTtlMs")) return;
   nonNegativeInteger(result.credentialTtlMs, "credentialTtlMs");
 }
 
@@ -479,7 +479,7 @@ function parseAuthenticationDescriptor(
       exact(result, [...frameFields, "principal"]);
       return;
     case "user":
-      exact(result, [...frameFields, "principal", "identity", "provenance"], ["credentialTtlMs"]);
+      exact(result, [...frameFields, "principal", "identity", "provenance", "credentialTtlMs"]);
       if (
         typeof result.identity !== "bigint" ||
         result.identity <= 0n ||
@@ -491,7 +491,7 @@ function parseAuthenticationDescriptor(
       parseCredentialTtl(result);
       return;
     case "workload":
-      exact(result, [...frameFields, "principal", "provenance"], ["credentialTtlMs"]);
+      exact(result, [...frameFields, "principal", "provenance", "credentialTtlMs"]);
       parseCredentialProvenance(result.provenance);
       parseCredentialTtl(result);
       return;

@@ -297,6 +297,27 @@ describe("exact issuer contract", () => {
       createOidcVerifier({ ...fixture.options, providers: [{ ...provider, audiences: [] }] }),
     ).toThrow(TypeError);
   });
+
+  test("a non-array audience value is rejected, never iterated as characters", async () => {
+    const fixture = await profileFixture(PROFILES[0]!);
+    const provider = fixture.options.providers[0]!;
+    // Unvalidated JSON configuration can supply a plain string; iterating it
+    // would silently turn "api" into the allowlist ["a", "p", "i"].
+    for (const audiences of ["api", { length: 1, 0: "api" }, new Set(["api"])]) {
+      expect(() =>
+        createOidcVerifier({
+          ...fixture.options,
+          providers: [{ ...provider, audiences: audiences as unknown as readonly string[] }],
+        }),
+      ).toThrow(TypeError);
+    }
+    expect(() =>
+      createOidcVerifier({
+        ...fixture.options,
+        providers: [{ ...provider, algorithms: "RS256" as unknown as readonly ["RS256"] }],
+      }),
+    ).toThrow(TypeError);
+  });
 });
 
 describe("private plaintext boundary", () => {
@@ -307,30 +328,53 @@ describe("private plaintext boundary", () => {
     principalKind: "user",
   } as const;
 
-  function build(issuer: string, jwksUri = `${issuer}/jwks`): void {
-    createOidcVerifier({ providers: [{ ...base, issuer, jwksUri }] });
+  function build(issuer: string, options: { allow?: boolean; jwksUri?: string } = {}): void {
+    createOidcVerifier({
+      providers: [
+        {
+          ...base,
+          issuer,
+          jwksUri: options.jwksUri ?? `${issuer}/jwks`,
+          ...(options.allow === undefined ? {} : { allowPrivateNetworkHttp: options.allow }),
+        },
+      ],
+    });
   }
 
-  test("plaintext HTTP is permitted exactly on loopback and private-network hosts", () => {
+  test("loopback plaintext HTTP needs no declaration", () => {
     build("http://localhost:3010");
     build("http://auth.localhost:3010");
     build("http://127.0.0.1:3010");
+    build("http://127.42.0.1:3010");
     build("http://[::1]:3010");
-    build("http://192.168.1.42:3010");
-    build("http://10.0.0.5:3010");
-    build("http://172.16.0.9:3010");
-    build("http://172.31.255.1:3010");
-    build("http://169.254.10.10:3010");
-    build("http://[fd12:3456:789a::1]:3010");
-    build("http://[fe80::1]:3010");
   });
 
-  test("plaintext HTTP on any other host is rejected in every mode", () => {
-    expect(() => build("http://issuer.example")).toThrow(TypeError);
-    expect(() => build("http://8.8.8.8")).toThrow(TypeError);
-    expect(() => build("http://172.32.0.1")).toThrow(TypeError);
-    expect(() => build("http://mymac.local:3010")).toThrow(TypeError);
-    // The rule covers the JWKS fetch too — the actually security-relevant hop.
-    expect(() => build("https://issuer.example", "http://issuer.example/jwks")).toThrow(TypeError);
+  test("private-network plaintext HTTP requires the explicit declaration", () => {
+    const privateHosts = [
+      "http://192.168.1.42:3010",
+      "http://10.0.0.5:3010",
+      "http://172.16.0.9:3010",
+      "http://172.31.255.1:3010",
+      "http://169.254.10.10:3010",
+      "http://[fd12:3456:789a::1]:3010",
+      "http://[fe80::1]:3010",
+    ];
+    for (const issuer of privateHosts) {
+      expect(() => build(issuer)).toThrow(TypeError);
+      build(issuer, { allow: true });
+    }
+  });
+
+  test("public plaintext HTTP is rejected even with the declaration", () => {
+    for (const allow of [undefined, true]) {
+      expect(() => build("http://issuer.example", { allow })).toThrow(TypeError);
+      expect(() => build("http://8.8.8.8", { allow })).toThrow(TypeError);
+      expect(() => build("http://172.32.0.1", { allow })).toThrow(TypeError);
+      expect(() => build("http://mymac.local:3010", { allow })).toThrow(TypeError);
+      // The rule covers the JWKS fetch too — the actually security-relevant hop.
+      expect(() =>
+        build("https://issuer.example", { allow, jwksUri: "http://issuer.example/jwks" }),
+      ).toThrow(TypeError);
+    }
   });
 });

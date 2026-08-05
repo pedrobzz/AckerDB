@@ -143,6 +143,12 @@ export interface OidcProviderConfig {
   readonly algorithms: readonly JwtAlgorithm[];
   /** Required JOSE `typ` header value, or the explicit `"unchecked"` enforcement opt-out. */
   readonly tokenType: string;
+  /**
+   * Explicit declaration that this provider's plaintext HTTP URLs may cross a
+   * private network (RFC 1918, link-local, IPv6 ULA/link-local). Loopback
+   * plaintext needs no declaration; public plaintext is never accepted.
+   */
+  readonly allowPrivateNetworkHttp?: boolean;
   readonly principalKind: "user" | "workload";
   readonly requiredClaims?: readonly string[];
   readonly claimNames?: readonly string[];
@@ -194,21 +200,32 @@ function nonNegativeNumber(value: number, name: string): number {
 }
 
 /**
- * Private plaintext boundary: plaintext HTTP is permitted exactly where it
- * cannot cross an untrusted network boundary — loopback and private-network
- * hosts — and nowhere else, identically in every mode. Hostnames arrive in
- * WHATWG-canonical form, so IPv4 is dotted-quad and IPv6 is bracketed.
+ * Private plaintext boundary: plaintext HTTP is permitted on loopback hosts —
+ * where it cannot cross a network at all — and, only under a provider's
+ * explicit `allowPrivateNetworkHttp` declaration, on private-network IP
+ * literals. Private ranges are attackable networks (Wi-Fi, corporate LAN,
+ * VPN, cloud VPC): an on-path peer that rewrites a plaintext JWKS response
+ * mints accepted tokens, so crossing them without TLS must be a visible,
+ * reviewable configuration decision, never a default. Public hosts never
+ * accept plaintext. Hostnames arrive in WHATWG-canonical form, so IPv4 is
+ * dotted-quad and IPv6 is bracketed.
  */
-function isPrivatePlaintextHost(hostname: string): boolean {
+function isLoopbackHost(hostname: string): boolean {
   const host =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return host === "::1";
+}
+
+function isPrivateNetworkHost(hostname: string): boolean {
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4 !== null) {
     const a = Number(v4[1]);
     const b = Number(v4[2]);
     return (
-      a === 127 ||
       a === 10 ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168) ||
@@ -216,22 +233,25 @@ function isPrivatePlaintextHost(hostname: string): boolean {
     );
   }
   if (host.includes(":")) {
-    if (host === "::1") return true;
     const firstGroup = host.split(":", 1)[0] ?? "";
     return /^f[cd]/.test(firstGroup) || /^fe[89ab]/.test(firstGroup);
   }
   return false;
 }
 
-function idpUrl(value: string | URL, name: string): URL {
+function idpUrl(value: string | URL, name: string, allowPrivateNetworkHttp: boolean): URL {
   const url = new URL(value);
   if (url.username !== "" || url.password !== "" || url.hash !== "") {
     throw new TypeError(`${name} must not contain credentials or a fragment`);
   }
   if (url.protocol === "https:") return url;
-  if (url.protocol === "http:" && isPrivatePlaintextHost(url.hostname)) return url;
+  if (url.protocol === "http:") {
+    if (isLoopbackHost(url.hostname)) return url;
+    if (allowPrivateNetworkHttp && isPrivateNetworkHost(url.hostname)) return url;
+  }
   throw new TypeError(
-    `${name} must be an HTTPS URL, or plaintext HTTP on a loopback or private-network host`,
+    `${name} must be an HTTPS URL, or plaintext HTTP on a loopback host` +
+      ` (private-network hosts additionally require allowPrivateNetworkHttp)`,
   );
 }
 
@@ -245,6 +265,9 @@ function boundedStrings<T extends string>(
     if (required) throw new TypeError(`${name} must not be empty`);
     return Object.freeze([]) as readonly T[];
   }
+  // Unvalidated configuration can hand any value here; a plain string would
+  // iterate as characters and silently become a character-level allowlist.
+  if (!Array.isArray(values)) throw new TypeError(`${name} must be an array of strings`);
   if ((required && values.length === 0) || values.length > max) {
     throw new TypeError(`${name} must contain ${required ? "1" : "0"} through ${max} values`);
   }
@@ -253,7 +276,7 @@ function boundedStrings<T extends string>(
     if (typeof value !== "string" || value.length === 0 || value.length > 256) {
       throw new TypeError(`${name} values must be non-empty strings of at most 256 characters`);
     }
-    unique.add(value);
+    unique.add(value as T);
   }
   if (unique.size !== values.length) throw new TypeError(`${name} must not contain duplicates`);
   return Object.freeze([...values]);
@@ -521,11 +544,15 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
         "provider issuer must be a non-empty string without whitespace or control characters",
       );
     }
-    const issuerUrl = idpUrl(raw.issuer, "provider issuer");
+    if (raw.allowPrivateNetworkHttp !== undefined && typeof raw.allowPrivateNetworkHttp !== "boolean") {
+      throw new TypeError("provider allowPrivateNetworkHttp must be a boolean");
+    }
+    const allowPrivateNetworkHttp = raw.allowPrivateNetworkHttp === true;
+    const issuerUrl = idpUrl(raw.issuer, "provider issuer", allowPrivateNetworkHttp);
     if (issuerUrl.search !== "") throw new TypeError("provider issuer must not contain a query");
     const issuer = raw.issuer;
     if (providers.has(issuer)) throw new TypeError(`duplicate provider issuer "${issuer}"`);
-    const jwksUri = idpUrl(raw.jwksUri, "provider jwksUri");
+    const jwksUri = idpUrl(raw.jwksUri, "provider jwksUri", allowPrivateNetworkHttp);
     const audiences =
       raw.audiences === "unchecked"
         ? ("unchecked" as const)

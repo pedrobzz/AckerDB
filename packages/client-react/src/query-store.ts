@@ -23,9 +23,11 @@ export type { AckerDBQueryState } from "./query-observation.ts";
 
 /**
  * Whether two server-accepted authentications describe the same principal.
- * Auth epochs are deliberately ignored: they reset per connection and advance
- * on same-principal token renewal, neither of which changes what an access
- * policy would decide.
+ * Epochs are compared separately by the caller: they reset per connection, so
+ * shape equality parks demand across reconnects, while a same-connection
+ * epoch advance is a genuinely new presentation whose claims may have changed
+ * even for an identical subject — access policies see the full principal,
+ * claims included, so it must re-present.
  */
 function samePrincipal(
   rejected: AckerDBAuthentication | undefined,
@@ -193,7 +195,12 @@ export class QueryStoreEntry<
     // Only a server-accepted principal can decide differently than the one
     // that rejected; presentations in flight and blocked states prove nothing.
     if (state.phase !== "authenticated" && state.phase !== "unauthenticated") return;
-    if (samePrincipal(this.rejectedUnder, state.authentication)) return;
+    if (
+      samePrincipal(this.rejectedUnder, state.authentication) &&
+      this.rejectedUnder!.authEpoch === state.authentication.authEpoch
+    ) {
+      return;
+    }
     this.awaitingPrincipalChange = false;
     this.rejectedUnder = undefined;
     // The client already dropped a non-retryably rejected subscription;
