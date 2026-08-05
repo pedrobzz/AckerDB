@@ -465,9 +465,9 @@ export class S3FileStore implements FileStore {
     }
     if (operation === "put" && name === "IncompleteBody") {
       return new FileStoreError(
-        "invalid_size",
+        "unavailable",
         operation,
-        "file storage body ended before contentLength",
+        "S3 did not receive the complete file storage body",
         { cause: error },
       );
     }

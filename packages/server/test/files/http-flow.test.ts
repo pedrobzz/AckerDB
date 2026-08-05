@@ -378,7 +378,7 @@ describe("File HTTP flow", () => {
     expect(retried.status).toBe(201);
   });
 
-  test("requires an exact Content-Length for one-pass streaming uploads", async () => {
+  test("requires an exact Content-Length and rejects clean under-delivery", async () => {
     const created = await runtime.system.run("test.files.create-length-required-upload", (ctx) =>
       ctx.tx((tx) => tx.files.createUpload()),
     );
@@ -404,6 +404,34 @@ describe("File HTTP flow", () => {
       retryable: false,
       resource: "idempotency",
     });
+
+    const providerErrors = runtime.status().files.providerErrors.total;
+    const short = await runtime.runFileRequest({
+      request: new Request(`${base}${new URL(created.data.url).pathname}`, {
+        method: "PUT",
+        headers: { "content-length": "7" },
+        body: "short",
+      }),
+      authenticate: () => Promise.reject(new Error("uploads do not authenticate")),
+    });
+    expect(short.status).toBe(400);
+    expect(parseOutcome(await short.json())).toEqual({
+      code: "malformed",
+      message: "uploaded bytes do not match Content-Length",
+      retryable: false,
+      resource: "idempotency",
+    });
+    expect(runtime.status().files.providerErrors.total).toBe(providerErrors);
+
+    const retried = await runtime.runFileRequest({
+      request: new Request(`${base}${new URL(created.data.url).pathname}`, {
+        method: "PUT",
+        headers: { "content-length": "7" },
+        body: "exactly",
+      }),
+      authenticate: () => Promise.reject(new Error("uploads do not authenticate")),
+    });
+    expect(retried.status).toBe(201);
   });
 
   test("invalid bearer upload URLs never enter the database writer", async () => {

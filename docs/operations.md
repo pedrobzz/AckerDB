@@ -527,6 +527,14 @@ refuses to replace an existing object key, and restores bytes to the target
 App's configured active File store while the verified database remains staged.
 Only after those bytes are durable does restore publish the canonical database;
 an unpublished failure rolls back the attempted File objects.
+If the process is killed after an included restore starts copying File objects
+but before database publication, the generic FileStore has no cross-provider
+transaction and some objects may remain. A retry deliberately refuses those
+keys instead of adopting even byte-identical objects: adoption could give two
+databases deletion ownership of the same physical object. Retry against a
+fresh empty FileStore, or empty the failed target only after proving it is
+exclusive and no database was published from that attempt. Metadata-only
+restore does not write File objects and is unaffected.
 The configured target database directory may be absent or vacant apart from its
 persistent coordination database and exact coordination staging crash residues.
 Its canonical database and SQLite sidecars must be absent, and unrelated

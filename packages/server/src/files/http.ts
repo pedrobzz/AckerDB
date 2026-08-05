@@ -503,8 +503,13 @@ export class FileHttpRuntime {
       if (causedByPayloadTooLarge(error)) {
         return uploadError(413, "file exceeds Upload Session maxBytes");
       }
-      if (error instanceof FileStoreError && error.code === "cancelled") {
-        return uploadError(499, "file upload was canceled");
+      if (error instanceof FileStoreError) {
+        if (error.code === "invalid_size") {
+          return uploadError(400, "uploaded bytes do not match Content-Length");
+        }
+        if (error.code === "cancelled") {
+          return uploadError(499, "file upload was canceled");
+        }
       }
       this.options.files.observability.recordProviderError(
         error instanceof FileStoreError ? error.operation : "put",

@@ -13,6 +13,7 @@ interface StoredObject {
 const objects = new Map<string, StoredObject>();
 const putHeaders = new Map<string, Headers>();
 let rejectEncryption = false;
+let rejectCompletePut = false;
 let rejectProbeHead = false;
 let corruptProbeWholeRead = false;
 let corruptProbeRangeRead = false;
@@ -65,6 +66,7 @@ const server = Bun.serve({
       } catch {
         return xmlError("IncompleteBody", 400);
       }
+      if (rejectCompletePut) return xmlError("IncompleteBody", 400);
       objects.set(key, {
         body: new Uint8Array(uploaded),
         lastModified: new Date(),
@@ -203,6 +205,24 @@ describe("S3FileStore contract", () => {
       rejectEncryption = false;
     }
     throw new Error("expected unsupported S3 encryption");
+  });
+
+  test("classifies a provider-reported IncompleteBody as unavailable", async () => {
+    rejectCompletePut = true;
+    try {
+      await new S3FileStore(config).put(
+        `provider-incomplete-${crypto.randomUUID()}`,
+        new Blob(["complete"]).stream(),
+        { contentLength: 8 },
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(FileStoreError);
+      expect((error as FileStoreError).code).toBe("unavailable");
+      return;
+    } finally {
+      rejectCompletePut = false;
+    }
+    throw new Error("expected provider IncompleteBody rejection");
   });
 
   test("sends an exact decoded length and SHA-256 trailer for known-length streams", async () => {
