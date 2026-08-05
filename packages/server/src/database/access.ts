@@ -20,6 +20,15 @@ import { poisonTransaction } from "../runtime/transaction-context.ts";
 import { decode, stableEncode } from "@ackerdb/core";
 import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
 import { hashJobArgs } from "../jobs/identity.ts";
+import { FILES_TABLE } from "../files/tables.ts";
+import {
+  checkpointFileObservability,
+  newFileObservabilityDelta,
+  rollbackFileObservability,
+  stageFileObservability,
+  type FileObservabilityCheckpoint,
+  type FileObservabilityDelta,
+} from "../files/observability.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -50,12 +59,18 @@ export interface WriteCollector {
   events: EventEmit[];
   /** Exact scheduled tables written by this transaction — the scheduler refreshes only these. */
   scheduledTables: Set<string>;
+  /** Earliest post-commit wake requested by transactional File state. */
+  fileCleanupAt: number | null;
+  /** Framework File state staged until the enclosing database COMMIT succeeds. */
+  fileObservability: FileObservabilityDelta;
 }
 
 export interface WriteCollectorCheckpoint {
   readonly keys: number;
   readonly events: number;
   readonly scheduledTables: number;
+  readonly fileCleanupAt: number | null;
+  readonly fileObservability: FileObservabilityCheckpoint;
 }
 
 class JournaledSet<T> extends Set<T> {
@@ -90,6 +105,8 @@ export function checkpointWriteCollector(
     keys: keys.checkpoint(),
     events: writes.events.length,
     scheduledTables: scheduledTables.checkpoint(),
+    fileCleanupAt: writes.fileCleanupAt,
+    fileObservability: checkpointFileObservability(writes.fileObservability),
   };
 }
 
@@ -105,6 +122,8 @@ export function rollbackWriteCollector(
   keys.rollback(checkpoint.keys);
   writes.events.length = checkpoint.events;
   scheduledTables.rollback(checkpoint.scheduledTables);
+  writes.fileCleanupAt = checkpoint.fileCleanupAt;
+  rollbackFileObservability(writes.fileObservability, checkpoint.fileObservability);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +267,48 @@ function observedWriteResult<T>(
   ));
 }
 
+/**
+ * A schema-declared v.file() is the explicit ownership boundary: writing that
+ * row atomically promotes a pending upload. No table scan or inferred bigint
+ * relationship is involved, and deleting/replacing the row never cascades.
+ */
+function claimFileReferences(
+  engine: Engine,
+  writes: WriteCollector,
+  plan: TablePlan,
+  row: Record<string, unknown>,
+): void {
+  const ids = new Set<bigint>();
+  for (const [column, validator] of Object.entries(plan.table.columns)) {
+    const inner = (validator as { readonly inner?: { readonly kind?: string } }).inner;
+    const file = validator.kind === "file" ||
+      (validator.kind === "nullable" && inner?.kind === "file");
+    if (file && typeof row[column] === "bigint") ids.add(row[column] as bigint);
+  }
+  if (ids.size === 0) return;
+
+  const filePlan = engine.rootScope.plan(FILES_TABLE);
+  for (const id of ids) {
+    const raw = engine.statement(
+      engine.writer,
+      `SELECT ${filePlan.readProjection} FROM ${quote(filePlan.name)} WHERE ${quote(filePlan.pk)} = ?`,
+    ).get(id as never) as Record<string, unknown> | null;
+    const file = raw === null ? null : engine.rowFromSql(filePlan, raw);
+    if (file === null || file.state === "deleting") {
+      return poisonTransaction(new ValidationError(
+        `${plan.displayName}: File ${id} does not exist`,
+      ));
+    }
+    if (file.state === "pending") {
+      updateRow(engine, writes, filePlan, {
+        id,
+        oldRow: file,
+        partial: { state: "active", pendingExpiresAt: null },
+      });
+    }
+  }
+}
+
 function updateRow(
   engine: Engine,
   writes: WriteCollector,
@@ -262,6 +323,7 @@ function updateRow(
     throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
   }
   const partial = input.partial as Record<string, unknown>;
+  const changed: Record<string, unknown> = {};
   const sets: string[] = [];
   const params: unknown[] = [];
   const updated: Record<string, unknown> = { ...input.oldRow };
@@ -275,6 +337,7 @@ function updateRow(
     }
     const validator = plan.table.columns[key]!;
     const value = validator.check(partial[key], `${plan.displayName}.patch.${key}`);
+    changed[key] = value;
     updated[key] = value;
     const columnPlan = plan.columns.get(key)!;
     const sqlValues = columnPlan.toSql(value);
@@ -294,9 +357,14 @@ function updateRow(
   } catch (error) {
     wrapUnique(plan.displayName, error);
   }
+  // A patch writes only its declared fields. Revalidating untouched File
+  // columns would turn explicit File deletion into hidden reference
+  // protection and could make an otherwise unrelated row edit impossible.
+  claimFileReferences(engine, writes, plan, changed);
   emitWriteKeys(plan, input.oldRow, writes.keys);
   emitWriteKeys(plan, updated, writes.keys);
   emitFullTextWriteKeys(plan, input.oldRow, updated, writes.keys);
+  stageFileObservability(writes.fileObservability, plan.logicalName, input.oldRow, updated);
   if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
   return { value: undefined, row: updated };
 }
@@ -336,8 +404,10 @@ function writeMethods(
         }
         const id = inserted[plan.pk] as bigint;
         const full = { ...values, [plan.pk]: id };
+        claimFileReferences(engine, writes, plan, full);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, null, full, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, null, full);
         touch();
         return { value: id, row: full };
       });
@@ -376,9 +446,11 @@ function writeMethods(
           wrapUnique(plan.displayName, error);
         }
         const full = { ...values, [plan.pk]: id };
+        claimFileReferences(engine, writes, plan, full);
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, old, full, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, old, full);
         touch();
         return { value: undefined, row: full };
       });
@@ -394,6 +466,7 @@ function writeMethods(
           .run(id as never);
         emitWriteKeys(plan, old, writes.keys);
         emitFullTextWriteKeys(plan, old, null, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, old, null);
         touch();
         return { value: undefined, row: old };
       });
@@ -435,6 +508,7 @@ function writeMethods(
             const row = engine.rowFromSql(plan, raw);
             emitWriteKeys(plan, row, writes.keys);
             emitFullTextWriteKeys(plan, row, null, writes.keys);
+            stageFileObservability(writes.fileObservability, plan.logicalName, row, null);
           }
           if (rawRows.length > 0) touch();
           return rawRows.length;
@@ -723,5 +797,11 @@ export function makeJobsTableWriter(
 }
 
 export function newWriteCollector(): WriteCollector {
-  return { keys: new JournaledSet(), events: [], scheduledTables: new JournaledSet() };
+  return {
+    keys: new JournaledSet(),
+    events: [],
+    scheduledTables: new JournaledSet(),
+    fileCleanupAt: null,
+    fileObservability: newFileObservabilityDelta(),
+  };
 }

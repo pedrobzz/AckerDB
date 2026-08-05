@@ -917,6 +917,53 @@ describe("checkpoint, backup, and restore", () => {
     reopened.close("clean");
   });
 
+  test("runs restore integration before canonical database publication", async () => {
+    const source = fresh();
+    const engine = new Engine(schema, source.database);
+    reconcile(engine);
+    const artifact = join(source.root, "backup.db");
+    const manifest = engine.backup(artifact);
+    engine.close("clean");
+    const target = fresh().database;
+    let rolledBack = false;
+
+    await expect(restoreVerifiedDatabase(
+      artifact,
+      target,
+      manifest,
+      () => app,
+      {
+        prepare: () => {
+          expect(existsSync(target)).toBe(false);
+          throw new Error("File restore failed before publication");
+        },
+        rollback: () => {
+          rolledBack = true;
+        },
+      },
+    )).rejects.toThrow("File restore failed before publication");
+    expect(rolledBack).toBe(true);
+    expect(existsSync(target)).toBe(false);
+
+    const racedTarget = fresh().database;
+    const competitor = "canonical competitor";
+    rolledBack = false;
+    await expect(restoreVerifiedDatabase(
+      artifact,
+      racedTarget,
+      manifest,
+      () => app,
+      {
+        prepare: () => writeFileSync(racedTarget, competitor),
+        rollback: () => {
+          rolledBack = true;
+        },
+      },
+    )).rejects.toThrow("changed before publication");
+    expect(rolledBack).toBe(true);
+    expect(readFileSync(racedTarget, "utf8")).toBe(competitor);
+  });
+
   test("refuses an artifact whose manifest digest no longer matches", async () => {
     const source = fresh();
     const engine = new Engine(schema, source.database);

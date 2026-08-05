@@ -21,7 +21,7 @@ import {
 } from "@ackerdb/server";
 import { commitPlan, planDiff, SchemaPlanner } from "../../src/schema/planner.ts";
 import { constraintDirection } from "../../src/schema/diff.ts";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -57,18 +57,18 @@ describe("constraint-aware schema diff", () => {
       toString: defineTable({ id: v.primaryKey(), constructor: v.string() }),
     });
 
-    expect(diffSnapshots(snapshotOf(withJobsTable(empty)), snapshotOf(withJobsTable(tableOnly)))).toEqual([
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(empty)), snapshotOf(withFrameworkTables(tableOnly)))).toEqual([
       { op: "table-added", table: "toString", kind: "table" },
     ]);
-    expect(diffSnapshots(snapshotOf(withJobsTable(tableOnly)), snapshotOf(withJobsTable(empty)))).toEqual([
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(tableOnly)), snapshotOf(withFrameworkTables(empty)))).toEqual([
       { op: "table-dropped", table: "toString", kind: "table" },
     ]);
-    expect(diffSnapshots(snapshotOf(withJobsTable(tableOnly)), snapshotOf(withJobsTable(withColumn)))[0]).toMatchObject({
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(tableOnly)), snapshotOf(withFrameworkTables(withColumn)))[0]).toMatchObject({
       op: "table-altered",
       table: "toString",
       columns: [{ op: "added", column: "constructor" }],
     });
-    expect(diffSnapshots(snapshotOf(withJobsTable(withColumn)), snapshotOf(withJobsTable(tableOnly)))[0]).toMatchObject({
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(withColumn)), snapshotOf(withFrameworkTables(tableOnly)))[0]).toMatchObject({
       op: "table-altered",
       table: "toString",
       columns: [{ op: "dropped", column: "constructor" }],
@@ -121,7 +121,7 @@ describe("constraint-aware schema diff", () => {
   test("emits a constraint atom only when the whole column is structurally identical", () => {
     const before = defineSchema({ items: defineTable({ id: v.primaryKey(), value: v.array(v.string()) }) });
     const target = defineSchema({ items: defineTable({ id: v.primaryKey(), value: v.array(v.string().min(1)) }) });
-    expect(diffSnapshots(snapshotOf(withJobsTable(before)), snapshotOf(withJobsTable(target)))[0]).toMatchObject({
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(before)), snapshotOf(withFrameworkTables(target)))[0]).toMatchObject({
       op: "table-altered",
       columns: [{ op: "constraints-changed", column: "value", direction: "tighten" }],
     });
@@ -129,7 +129,7 @@ describe("constraint-aware schema diff", () => {
     const mixed = defineSchema({
       items: defineTable({ id: v.primaryKey(), value: v.array(v.int().min(1)) }),
     });
-    expect(diffSnapshots(snapshotOf(withJobsTable(before)), snapshotOf(withJobsTable(mixed)))[0]).toMatchObject({
+    expect(diffSnapshots(snapshotOf(withFrameworkTables(before)), snapshotOf(withFrameworkTables(mixed)))[0]).toMatchObject({
       op: "table-altered",
       columns: [{ op: "type-changed", column: "value" }],
     });
@@ -145,7 +145,7 @@ describe("constraint reconciliation", () => {
 
     const engine = new Engine(target, path);
     expect(reconcile(engine).applied).toEqual(["loosened constraints items.value"]);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target)));
     engine.close("clean");
   });
 
@@ -175,7 +175,7 @@ describe("constraint reconciliation", () => {
 
     const engine = new Engine(target, path);
     const current = engine.loadSnapshot()!;
-    const optimistic = classifySchemaDiff(diffSnapshots(current, snapshotOf(withJobsTable(target)))).optimistic;
+    const optimistic = classifySchemaDiff(diffSnapshots(current, snapshotOf(withFrameworkTables(target)))).optimistic;
     let tableScans = 0;
     const countedWriter = new Proxy(engine.writer, {
       get(database, key) {
@@ -227,7 +227,7 @@ describe("constraint reconciliation", () => {
     await seed(before, path, [{ value: null }, { value: "ok" }]);
     const engine = new Engine(target, path);
     expect(reconcile(engine).applied).toEqual(["tightened constraints items.value"]);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target)));
     engine.close("clean");
   });
 
@@ -240,8 +240,8 @@ describe("constraint reconciliation", () => {
     const path = freshPath();
     await seed(physical, path, [{ value: null }]);
     const engine = new Engine(physical, path);
-    const current = snapshotOf(withJobsTable(recorded));
-    const optimistic = classifySchemaDiff(diffSnapshots(current, snapshotOf(withJobsTable(target)))).optimistic;
+    const current = snapshotOf(withFrameworkTables(recorded));
+    const optimistic = classifySchemaDiff(diffSnapshots(current, snapshotOf(withFrameworkTables(target)))).optimistic;
     expect(() => probeOptimisticChanges(
       engine.writer,
       current,
@@ -258,7 +258,7 @@ describe("constraint reconciliation", () => {
     await seed(before, path, [{ value: "ok" }]);
     const engine = new Engine(target, path);
     const current = engine.loadSnapshot()!;
-    const targetSnapshot = snapshotOf(withJobsTable(target));
+    const targetSnapshot = snapshotOf(withFrameworkTables(target));
     const plan = planDiff(
       { engine, current, planOf: (table) => engine.plan(table) },
       diffSnapshots(current, targetSnapshot),

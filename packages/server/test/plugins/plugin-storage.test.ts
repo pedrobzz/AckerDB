@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 import {
   CorruptDatabaseError,
   defineApp,
@@ -585,10 +585,10 @@ describe("Plugin storage inventory", () => {
       i: { definitionId: "second", schema: entriesV1 },
       IA: { definitionId: "first", schema: entriesV1 },
     } satisfies DesiredPluginMounts;
-    const schema = snapshotOf(entriesV1); // Plugin scopes carry no jobs table
+    const schema = snapshotOf(entriesV1); // Plugin scopes carry no root framework tables
     const expected = createHash("sha256")
       .update(JSON.stringify(canonicalJson({
-        root: snapshotOf(withJobsTable(rootSchema)),
+        root: snapshotOf(withFrameworkTables(rootSchema)),
         plugins: [
           { mount: "IA", definitionId: "first", schema },
           { mount: "i", definitionId: "second", schema },

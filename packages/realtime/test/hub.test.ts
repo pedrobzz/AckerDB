@@ -48,7 +48,7 @@ function procedure(signal: AbortSignal): ProcedureCtx {
     tx: async () => Ok(undefined),
     linkAccount: async () => {},
     unlinkAccount: async () => {},
-  }) as ProcedureCtx;
+  }) as unknown as ProcedureCtx;
 }
 
 function adapter(): RealtimeServerSessionAdapter {

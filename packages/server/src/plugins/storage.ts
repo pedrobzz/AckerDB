@@ -7,7 +7,7 @@ import { diffSnapshots } from "../schema/diff.ts";
 import { planDiff, type SchemaPlan } from "../schema/planner.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 import { snapshotOf, type SchemaSnapshot } from "../schema/snapshot.ts";
-import { withJobsTable } from "../jobs/table.ts";
+import { withFrameworkTables } from "../database/framework-schema.ts";
 import {
   normalizePluginSnapshot,
   pluginPhysicalTableName,
@@ -151,9 +151,9 @@ function planDesired(engine: Engine, desired: DesiredPluginMounts): DesiredMount
 /** Fingerprint the exact storage layout requested by an App without touching storage. */
 export function desiredStorageFingerprint(root: Schema, desired: DesiredPluginMounts): string {
   if (!isSchema(root)) throw new TypeError("root schema must be a AckerDB schema");
-  // The Engine's layout always carries the framework jobs table.
+  // The Engine's layout always carries every framework-owned logical table.
   return storageLayoutFingerprint(
-    snapshotOf(withJobsTable(root)),
+    snapshotOf(withFrameworkTables(root)),
     normalizeDesiredMounts(desired).map((entry) => ({
       mount: entry.mount,
       definitionId: entry.definitionId,

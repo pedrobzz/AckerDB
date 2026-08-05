@@ -24,6 +24,8 @@ import type {
   RuntimeSession,
   RuntimeSessionStore,
 } from "../sessions/store.ts";
+import type { FileCleanupRuntime } from "../../files/cleanup.ts";
+import type { RuntimeFiles } from "../../files/namespace.ts";
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
 const utf8 = new TextEncoder();
@@ -43,6 +45,8 @@ export interface RuntimeControlOptions {
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly sessions: RuntimeSessionStore;
   readonly jobs: RuntimeJobs;
+  readonly fileCleanup: FileCleanupRuntime;
+  readonly files: RuntimeFiles;
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
@@ -218,6 +222,7 @@ export class RuntimeControl {
       realtime: this.options.realtime?.snapshot() ?? null,
       declaredJobs: this.options.jobs.declaredCount,
       jobsArmed: this.options.jobs.armed,
+      files: this.options.files.observability.snapshot(),
       reader: this.options.reads.snapshot(),
       writer: this.options.functions.snapshot(),
       reactive: this.options.reactive.snapshot(),
@@ -241,6 +246,7 @@ export class RuntimeControl {
     this.lifecycle = "draining";
     this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();
+    this.options.fileCleanup.stop();
     this.options.stopSampler();
     this.options.telemetry.recordEvent({
       name: "lifecycle",
@@ -268,6 +274,7 @@ export class RuntimeControl {
       const settled = await Promise.allSettled([
         this.waitForActiveOperations(),
         this.options.functions.drain(),
+        this.options.fileCleanup.drain(),
         reactiveDrain,
         this.options.reads.drain(),
         realtimeDrain,

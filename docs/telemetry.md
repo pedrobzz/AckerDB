@@ -281,9 +281,9 @@ interface TelemetryMetricRecord {
 }
 ```
 
-`TelemetryOperation` is one of `query`, `mutation`, `procedure`, `sse`,
-`transaction`, `scheduled`, `job`, `subscription`, `realtime`, `backup`, `restore`,
-or `lifecycle`. `TELEMETRY_STAGES` is exactly:
+`TelemetryOperation` is one of `query`, `mutation`, `procedure`, `system`,
+`sse`, `transaction`, `scheduled`, `job`, `subscription`, `realtime`, `backup`,
+`restore`, `file_migration`, or `lifecycle`. `TELEMETRY_STAGES` is exactly:
 
 ```text
 admission     auth          policy        configuration signaling
@@ -325,7 +325,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Channel disconnect cleanup | `runtime.channel_disconnect_timeouts` counts optional `onDisconnect` handlers that ignored their cancellation deadline. Membership and connection admission are released before this cleanup finishes. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP value response | The call's own operation (`query`, `mutation`, `procedure`) `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
-| CLI backup and restore | Standalone `acker backup` and `acker restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
+| CLI storage maintenance | Standalone `acker backup`, `acker restore`, and `acker files migrate` commands emit one `backup`/`restore`/`file_migration` `storage` span with duration, sanitized outcome, relevant verified byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
 | Telemetry export | `exporter_degraded` events at the `export` stage; exporter attempts and durations are also metrics/status fields. |
 
 ### Credential verification correlation
@@ -525,6 +525,6 @@ staged record payloads.
   backend-neutral boundary.
 - The default CLI configuration has local safe JSON output but no remote
   exporter. Retained records are in memory and disappear on process loss.
-- CLI backup/restore telemetry is local JSON only. It does not yet share a
+- CLI backup/restore/FileStore-migration telemetry is local JSON only. It does not yet share a
   remote exporter configuration or a persistent trace with the fresh-process
   verification child.

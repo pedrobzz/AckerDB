@@ -3,6 +3,7 @@ import {
   restoreVerifiedLayout,
   type BackupManifest,
   type EngineStatus,
+  type RestorePublicationHook,
 } from "./engine.ts";
 import { desiredPluginMounts, desiredStorageFingerprint } from "../plugins/storage.ts";
 
@@ -16,6 +17,7 @@ export function restoreVerifiedDatabase(
   target: string,
   manifest: BackupManifest,
   loadApp: () => App | Promise<App>,
+  publication?: RestorePublicationHook,
 ): Promise<EngineStatus> {
   return restoreVerifiedLayout(source, target, manifest, async () => {
     const app = await loadApp();
@@ -24,5 +26,5 @@ export function restoreVerifiedDatabase(
       throw new Error("backup schema fingerprint does not match the target App storage layout");
     }
     return app.schema;
-  });
+  }, publication);
 }

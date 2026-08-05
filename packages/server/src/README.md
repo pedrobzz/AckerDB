@@ -9,6 +9,7 @@ modules; do not add new implementation files to this root.
 | `auth/` | Credentials, invalidation, and verifier leases |
 | `channels/` | Typed application-channel declarations, optional rooms, membership, and fan-out |
 | `database/` | SQLite access, engine, durability artifacts, ownership, restore, and reset |
+| `files/` | File identity, durable store binding, lifecycle, transfer, and physical-store adapters |
 | `mcp/` | MCP declarations, scopes, tokens, HTTP handling, content, and wire behavior |
 | `plugins/` | Plugin definitions, dependency assembly, runtime calls, and private storage |
 | `realtime/` | WebRTC declarations, signaling, authenticated peer generations, and typed data planes |

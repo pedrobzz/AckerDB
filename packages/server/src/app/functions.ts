@@ -42,6 +42,11 @@ import type {
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
+import type {
+  FileMutationCapability,
+  FileProcedureCapability,
+  FileQueryCapability,
+} from "../files/api.ts";
 
 export type AuthCtx = Principal;
 
@@ -58,6 +63,8 @@ export type QueryCtx<
   readonly timestamp: number;
   /** Declared jobs, read-only: the reactive builder scoped per definition. */
   readonly jobs: Jobs;
+  /** Reactive metadata reads over framework-owned immutable Files. */
+  readonly files: FileQueryCapability;
 };
 
 export type MutationCtx<
@@ -72,6 +79,8 @@ export type MutationCtx<
   readonly timestamp: number;
   /** Declared jobs: transactional enqueue — the job exists iff this commits. */
   readonly jobs: Jobs;
+  /** Transactional File lifecycle, Upload Session, and File Grant operations. */
+  readonly files: FileMutationCapability;
 };
 
 /** The context inside `ctx.tx(...)`: a mutation's powers, structurally. */
@@ -95,6 +104,8 @@ export type ProcedureCtx<
   readonly abortSignal: AbortSignal;
   /** Declared jobs: enqueue, await, and sanctioned transitions. */
   readonly jobs: Jobs;
+  /** Immutable File byte I/O; database-coupled lifecycle changes stay inside tx. */
+  readonly files: FileProcedureCapability;
   /** Prove and attach another user account using its raw bearer token, not an Authorization header. */
   linkAccount(rawBearerToken: string): Promise<void>;
   /** Remove one exact owned account while retaining the durable application Identity. */

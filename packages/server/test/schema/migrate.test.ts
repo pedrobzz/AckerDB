@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 import {
   applyRenames,
   v,
@@ -52,7 +52,7 @@ async function seed(schema: Schema, path: string, fn: (d: ReturnType<typeof db>)
  * was seeded with (its stored snapshot), `target` is the new declared schema.
  */
 function chain(engine: Engine, migration: Migration, number = 1, name = "m"): MigrationStep[] {
-  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(withJobsTable(engine.schema)), code: "", migration }];
+  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(withFrameworkTables(engine.schema)), code: "", migration }];
 }
 
 /** Reopen `path` under `schema` and run `migration` as a one-step chain. */
@@ -114,7 +114,7 @@ describe("migrate: rebuild transforms", () => {
     );
     expect((await migrated.posts.get(1n)).title).toBe("x_");
     expect((await migrated.posts.get(2n)).title).toBe("valid");
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target)));
     expect(history(engine)).toHaveLength(1);
     engine.close("clean");
   });
@@ -411,7 +411,7 @@ describe("migrate: validation refuses before touching anything", () => {
 
   function assertUntouched(engine: Engine): void {
     // the stored snapshot is still schema A, and the row still holds a string
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a)));
     const row = engine.writer.query("SELECT count FROM posts WHERE id = 1").get() as { count: unknown };
     expect(typeof row.count).toBe("string");
   }
@@ -479,7 +479,7 @@ describe("migrate: transactional integrity", () => {
     });
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow("boom");
     // snapshot unchanged, all rows intact and still strings
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a)));
     const rows = engine.writer.query("SELECT id, count FROM posts ORDER BY id").all() as {
       id: bigint;
       count: unknown;
@@ -508,7 +508,7 @@ describe("migrate: transactional integrity", () => {
     const migration = defineMigration({ tables: { users: () => ({ name: "same" }) } });
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(/UNIQUE/);
     // nothing applied: names intact, the index never became unique
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a)));
     const names = (engine.writer.query("SELECT name FROM users ORDER BY id").all() as { name: string }[]).map(
       (r) => r.name,
     );
@@ -595,7 +595,7 @@ describe("migrate: renames", () => {
       toString: "untouched",
       state: "current",
     });
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target)));
     engine.close("clean");
   });
 
@@ -769,8 +769,8 @@ describe("migrate: renames", () => {
     await reconcile(engine, [{
       number: 1,
       name: "rename_and_tighten",
-      pre: snapshotOf(withJobsTable(before)),
-      target: snapshotOf(withJobsTable(target)),
+      pre: snapshotOf(withFrameworkTables(before)),
+      target: snapshotOf(withFrameworkTables(target)),
       code: "",
       migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
     }]);
@@ -801,12 +801,12 @@ describe("migrate: renames", () => {
     await expect(reconcile(engine, [{
       number: 1,
       name: "rename_and_tighten",
-      pre: snapshotOf(withJobsTable(before)),
-      target: snapshotOf(withJobsTable(target)),
+      pre: snapshotOf(withFrameworkTables(before)),
+      target: snapshotOf(withFrameworkTables(target)),
       code: "",
       migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
     }])).rejects.toThrow("1 existing row(s) violate the target validator");
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(before)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(before)));
     expect(history(engine)).toEqual([]);
     expect(engine.writer.query("SELECT variant FROM _ackerdb_tags WHERE type = 'Body'").all()).toEqual([
       { variant: "legacy" },
@@ -825,7 +825,7 @@ describe("migrate: renames", () => {
     const engine = new Engine(b, path);
     // no rename declared: the drop of logs is refused, the add of auditLogs is not paired to it
     await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toThrow(/refused table\(s\): logs/);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a)));
     engine.close("clean");
   });
 
@@ -963,7 +963,7 @@ describe("migrate: renames", () => {
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(
       /auditLogs\.s_u_b_4_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
     );
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a))); // database untouched
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a))); // database untouched
     expect(engine.writer.query("SELECT COUNT(*) AS n FROM logs").get()).toEqual({ n: 2n });
     engine.close("clean");
   });
@@ -980,7 +980,7 @@ describe("migrate: renames", () => {
     await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { logs: "auditLogs" } } })))).rejects.toThrow(
       /refused table\(s\): auditLogs/,
     );
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a)));
     engine.close("clean");
   });
 
@@ -1004,7 +1004,7 @@ describe("migrate: renames", () => {
     const renamesOnly = defineMigration({ renames: { variants: { Status: { Test: "Foo" } } } });
     const refused = new Engine(b, path);
     await expect(reconcile(refused, chain(refused, renamesOnly))).rejects.toThrow(/refused table\(s\): checks/);
-    expect(refused.loadSnapshot()).toEqual(snapshotOf(withJobsTable(a))); // untouched
+    expect(refused.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a))); // untouched
     refused.close("clean");
 
     const { engine, db: d } = await migrate(
@@ -1077,7 +1077,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
   async function expectRefused(target: Schema, path: string, migration: Migration, pattern: RegExp): Promise<void> {
     const engine = new Engine(target, path);
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(pattern);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(one))); // database untouched
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(one))); // database untouched
     engine.close("clean");
   }
 
@@ -1175,18 +1175,18 @@ describe("migrate: rename validation refuses before touching anything", () => {
     // The chain re-presents migration 1 (already applied) plus the pending rename.
     const engine3 = new Engine(s3, path);
     const steps: MigrationStep[] = [
-      { number: 1, name: "m", pre: snapshotOf(withJobsTable(s1)), target: snapshotOf(withJobsTable(s2)), code: "", migration: defineMigration({}) },
+      { number: 1, name: "m", pre: snapshotOf(withFrameworkTables(s1)), target: snapshotOf(withFrameworkTables(s2)), code: "", migration: defineMigration({}) },
       {
         number: 2,
         name: "retire",
-        pre: snapshotOf(withJobsTable(s2)),
-        target: snapshotOf(withJobsTable(s3)),
+        pre: snapshotOf(withFrameworkTables(s2)),
+        target: snapshotOf(withFrameworkTables(s3)),
         code: "",
         migration: defineMigration({ renames: { variants: { Role: { Live: "Old" } } } }),
       },
     ];
     await expect(reconcile(engine3, steps)).rejects.toThrow(/variant "Role.Old" is a retired variant/);
-    expect(engine3.loadSnapshot()).toEqual(snapshotOf(withJobsTable(s2))); // untouched
+    expect(engine3.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(s2))); // untouched
     engine3.close("clean");
   });
 });
@@ -1204,9 +1204,9 @@ function history(engine: Engine): { number: bigint; name: string; identity: stri
  */
 function buildChain(seed: Schema, stages: { schema: Schema; migration: Migration; name?: string; code?: string }[]): MigrationStep[] {
   const steps: MigrationStep[] = [];
-  let pre = snapshotOf(withJobsTable(seed));
+  let pre = snapshotOf(withFrameworkTables(seed));
   stages.forEach((stage, i) => {
-    const target = snapshotOf(withJobsTable(stage.schema));
+    const target = snapshotOf(withFrameworkTables(stage.schema));
     steps.push({ number: i + 1, name: stage.name ?? `m${i + 1}`, pre, target, code: stage.code ?? "", migration: stage.migration });
     pre = target;
   });
@@ -1313,7 +1313,7 @@ describe("migrate: the chain", () => {
     // step 1 committed + recorded; step 2 fully rolled back; step 3 never attempted
     expect(reached).toEqual([]);
     expect(history(engine).map((r) => Number(r.number))).toEqual([1]);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(s1))); // no `note` column; step-2 schema never saved
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(s1))); // no `note` column; step-2 schema never saved
     const rows = engine.writer.query("SELECT id, qty FROM posts ORDER BY id").all() as { id: bigint; qty: unknown }[];
     expect(rows).toEqual([
       { id: 1n, qty: 1n },
@@ -1337,11 +1337,11 @@ describe("migrate: the chain", () => {
     // same number 1, different target (count: bigint) -> different fingerprint
     const engine = new Engine(edited, path);
     const steps: MigrationStep[] = [
-      { number: 1, name: "m", pre: snapshotOf(withJobsTable(seedS)), target: snapshotOf(withJobsTable(edited)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ count: BigInt(row.count as number) }) } }) },
+      { number: 1, name: "m", pre: snapshotOf(withFrameworkTables(seedS)), target: snapshotOf(withFrameworkTables(edited)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ count: BigInt(row.count as number) }) } }) },
     ];
     await expect(reconcile(engine, steps)).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
     await expect(reconcile(engine, steps)).rejects.toBeInstanceOf(MigrationError);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(applied))); // untouched
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(applied))); // untouched
     engine.close("clean");
   });
 
@@ -1356,7 +1356,7 @@ describe("migrate: the chain", () => {
       await d.posts.insert({ count: "5" });
     });
     const migration = defineMigration({ tables: { posts: (row) => ({ count: Number(row.count) }) } });
-    const step = (code: string): MigrationStep => ({ number: 1, name: "m", pre: snapshotOf(withJobsTable(seedS)), target: snapshotOf(withJobsTable(target)), code, migration });
+    const step = (code: string): MigrationStep => ({ number: 1, name: "m", pre: snapshotOf(withFrameworkTables(seedS)), target: snapshotOf(withFrameworkTables(target)), code, migration });
 
     const first = new Engine(target, path);
     await reconcile(first, [step("A")]);
@@ -1365,7 +1365,7 @@ describe("migrate: the chain", () => {
     const second = new Engine(target, path);
     await expect(reconcile(second, [step("B")])).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
     await expect(reconcile(second, [step("B")])).rejects.toBeInstanceOf(MigrationError);
-    expect(second.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target))); // untouched
+    expect(second.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target))); // untouched
     second.close("clean");
   });
 
@@ -1379,15 +1379,15 @@ describe("migrate: the chain", () => {
       await d.posts.insert({ count: "5" });
     });
     const migration = defineMigration({ tables: { posts: (row) => ({ count: Number(row.count) }) } });
-    const step = (pre: SchemaSnapshot): MigrationStep => ({ number: 1, name: "m", pre, target: snapshotOf(withJobsTable(target)), code: "", migration });
+    const step = (pre: SchemaSnapshot): MigrationStep => ({ number: 1, name: "m", pre, target: snapshotOf(withFrameworkTables(target)), code: "", migration });
 
     const first = new Engine(target, path);
-    await reconcile(first, [step(snapshotOf(withJobsTable(seedS)))]);
+    await reconcile(first, [step(snapshotOf(withFrameworkTables(seedS)))]);
     first.close("clean");
 
     const second = new Engine(target, path);
-    await expect(reconcile(second, [step(snapshotOf(withJobsTable(altPre)))])).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
-    expect(second.loadSnapshot()).toEqual(snapshotOf(withJobsTable(target))); // untouched
+    await expect(reconcile(second, [step(snapshotOf(withFrameworkTables(altPre)))])).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
+    expect(second.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(target))); // untouched
     second.close("clean");
   });
 
@@ -1427,11 +1427,11 @@ describe("migrate: the chain", () => {
     const engine = new Engine(s1, path);
     const parse = defineMigration({ tables: { posts: (row) => ({ v: Number(row.v) }) } });
     const dupNumbers: MigrationStep[] = [
-      { number: 1, name: "a", pre: snapshotOf(withJobsTable(seedS)), target: snapshotOf(withJobsTable(s1)), code: "", migration: parse },
-      { number: 1, name: "b", pre: snapshotOf(withJobsTable(s1)), target: snapshotOf(withJobsTable(s1)), code: "", migration: defineMigration({}) },
+      { number: 1, name: "a", pre: snapshotOf(withFrameworkTables(seedS)), target: snapshotOf(withFrameworkTables(s1)), code: "", migration: parse },
+      { number: 1, name: "b", pre: snapshotOf(withFrameworkTables(s1)), target: snapshotOf(withFrameworkTables(s1)), code: "", migration: defineMigration({}) },
     ];
     await expect(reconcile(engine, dupNumbers)).rejects.toThrow(/numbers must strictly increase/);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(seedS))); // untouched, string still a string
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(seedS))); // untouched, string still a string
     expect(history(engine)).toEqual([]);
     engine.close("clean");
   });
@@ -1479,12 +1479,12 @@ describe("migrate: the chain", () => {
     const engine = new Engine(live, path);
     const { applied } = await reconcile(
       engine,
-      [{ number: 1, name: "parse", pre: snapshotOf(withJobsTable(seedS)), target: snapshotOf(withJobsTable(stepTarget)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+      [{ number: 1, name: "parse", pre: snapshotOf(withFrameworkTables(seedS)), target: snapshotOf(withFrameworkTables(stepTarget)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
     );
     expect(applied).toContain("0001_parse: migrated table posts");
     expect(applied).toContain("added nullable column posts.extra"); // the final hop, unprefixed
     expect(await db(engine).posts.get(1n)).toEqual({ id: 1n, n: 7, extra: null });
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(live)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(live)));
     engine.close("clean");
   });
 
@@ -1501,7 +1501,7 @@ describe("migrate: the chain", () => {
     await expect(
       reconcile(
         engine,
-        [{ number: 1, name: "parse", pre: snapshotOf(withJobsTable(seedS)), target: snapshotOf(withJobsTable(stepTarget)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+        [{ number: 1, name: "parse", pre: snapshotOf(withFrameworkTables(seedS)), target: snapshotOf(withFrameworkTables(stepTarget)), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
       ),
     ).rejects.toThrow(/unsafe schema changes.*acker reset/s);
     // the chain step itself still committed (history records it)
@@ -1533,8 +1533,8 @@ describe("migrate: the chain", () => {
       {
         number: 1,
         name: "summarize",
-        pre: snapshotOf(withJobsTable(preSchema)),
-        target: snapshotOf(withJobsTable(live)),
+        pre: snapshotOf(withFrameworkTables(preSchema)),
+        target: snapshotOf(withFrameworkTables(live)),
         code: "",
         migration: defineMigration({
           tables: {
@@ -1612,8 +1612,8 @@ describe("migrate: the chain", () => {
       {
         number: 1,
         name: "note",
-        pre: snapshotOf(withJobsTable(preSchema)),
-        target: snapshotOf(withJobsTable(live)),
+        pre: snapshotOf(withFrameworkTables(preSchema)),
+        target: snapshotOf(withFrameworkTables(live)),
         code: "",
         migration: defineMigration({
           tables: {
@@ -1648,7 +1648,7 @@ describe("migrate: the chain", () => {
     expect(applied.some((l) => l.startsWith("initialized"))).toBe(true);
     // the chain is stamped vacuously applied — its prefix must hold on reopen
     expect(history(engine).map((r) => Number(r.number))).toEqual([1, 2]);
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(live)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(live)));
     await db(engine).posts.insert({ n: 3, tag: "y" }); // id 1
     engine.close("clean");
 
@@ -1683,8 +1683,8 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
       {
         number: 1,
         name: "retype",
-        pre: snapshotOf(withJobsTable(pre)),
-        target: snapshotOf(withJobsTable(stepTarget)),
+        pre: snapshotOf(withFrameworkTables(pre)),
+        target: snapshotOf(withFrameworkTables(stepTarget)),
         code: "",
         migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
       },
@@ -1727,16 +1727,16 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
       {
         number: 1,
         name: "parse",
-        pre: snapshotOf(withJobsTable(pre1)),
-        target: snapshotOf(withJobsTable(t1)),
+        pre: snapshotOf(withFrameworkTables(pre1)),
+        target: snapshotOf(withFrameworkTables(t1)),
         code: "",
         migration: defineMigration({ tables: { posts: (row) => ({ qty: Number(row.qty) }) } }),
       },
       {
         number: 2,
         name: "label",
-        pre: snapshotOf(withJobsTable(t1)),
-        target: snapshotOf(withJobsTable(t2)),
+        pre: snapshotOf(withFrameworkTables(t1)),
+        target: snapshotOf(withFrameworkTables(t2)),
         code: "",
         migration: defineMigration({ tables: { posts: (row) => ({ ...row, label: `q${row.qty}` }) } }),
       },
@@ -1745,7 +1745,7 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     expect(await d.posts.get(1n)).toEqual({ id: 1n, qty: 5, label: "q5", note: "keep-me" });
     expect(await d.posts.get(2n)).toEqual({ id: 2n, qty: 20, label: "q20", note: "and-me" });
     // the final safe hop is a no-op: the live schema still carries `note`
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(live)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(live)));
     engine.close("clean");
 
     const again = reopen(live, path);
@@ -1779,8 +1779,8 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
         {
           number: 1,
           name: "salvage",
-          pre: snapshotOf(withJobsTable(pre)),
-          target: snapshotOf(withJobsTable(stepTarget)),
+          pre: snapshotOf(withFrameworkTables(pre)),
+          target: snapshotOf(withFrameworkTables(stepTarget)),
           code: "",
           migration: defineMigration({
             tables: {
@@ -1793,11 +1793,11 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     ).rejects.toThrow(/"tag".*not shape-safe drift/);
     await expect(
       reconcile(engine, [
-        { number: 1, name: "salvage", pre: snapshotOf(withJobsTable(pre)), target: snapshotOf(withJobsTable(stepTarget)), code: "", migration: defineMigration({ tables: { dest: (row) => ({ val: Number(row.val) }) } }) },
+        { number: 1, name: "salvage", pre: snapshotOf(withFrameworkTables(pre)), target: snapshotOf(withFrameworkTables(stepTarget)), code: "", migration: defineMigration({ tables: { dest: (row) => ({ val: Number(row.val) }) } }) },
       ]),
     ).rejects.toBeInstanceOf(MigrationError);
     // nothing touched: the DB and its history are untouched, the drifted column intact
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(seedS)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(seedS)));
     expect(history(engine)).toEqual([]);
     engine.close("clean");
   });
@@ -1825,15 +1825,15 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
         {
           number: 1,
           name: "retype",
-          pre: snapshotOf(withJobsTable(pre)),
-          target: snapshotOf(withJobsTable(live)),
+          pre: snapshotOf(withFrameworkTables(pre)),
+          target: snapshotOf(withFrameworkTables(live)),
           code: "",
           migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
         },
       ]),
     ).rejects.toThrow(/"note".*conflicts/);
     // nothing touched: still the seed schema, no history, row still a string
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(seedS)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(seedS)));
     expect(history(engine)).toEqual([]);
     const raw = engine.writer.query("SELECT note FROM items WHERE id = 1").get() as { note: unknown };
     expect(typeof raw.note).toBe("string");
@@ -1865,13 +1865,13 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     await reconcile(engine, [{
       number: 1,
       name: "retype",
-      pre: snapshotOf(withJobsTable(pre)),
-      target: snapshotOf(withJobsTable(live)),
+      pre: snapshotOf(withFrameworkTables(pre)),
+      target: snapshotOf(withFrameworkTables(live)),
       code: "",
       migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
     }]);
     expect(await db(engine).items.get(1n)).toEqual({ id: 1n, qty: 5, note: "kept" });
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withJobsTable(live)));
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(live)));
     engine.close("clean");
   });
 });
@@ -1895,8 +1895,8 @@ describe("migrate: pre-absent target columns default to stored values", () => {
       {
         number: 1,
         name: "retype",
-        pre: snapshotOf(withJobsTable(pre)),
-        target: snapshotOf(withJobsTable(live)),
+        pre: snapshotOf(withFrameworkTables(pre)),
+        target: snapshotOf(withFrameworkTables(live)),
         code: "",
         migration: defineMigration({ tables: { items: transform as never } }),
       },
@@ -1935,8 +1935,8 @@ describe("migrate: pre-absent target columns default to stored values", () => {
       {
         number: 1,
         name: "noop",
-        pre: snapshotOf(withJobsTable(pre)),
-        target: snapshotOf(withJobsTable(same)),
+        pre: snapshotOf(withFrameworkTables(pre)),
+        target: snapshotOf(withFrameworkTables(same)),
         code: "",
         migration: defineMigration({ tables: { items: () => undefined } }),
       },
@@ -1997,8 +1997,8 @@ describe("migrate: pre-absent target columns default to stored values", () => {
       {
         number: 1,
         name: "merge",
-        pre: snapshotOf(withJobsTable(preBoth)),
-        target: snapshotOf(withJobsTable(target)),
+        pre: snapshotOf(withFrameworkTables(preBoth)),
+        target: snapshotOf(withFrameworkTables(target)),
         code: "",
         migration: defineMigration({
           tables: {
@@ -2121,8 +2121,8 @@ describe("migrate: durable transform ordering", () => {
     await reconcile(engine, [{
       number: 1,
       name: "stable-transform-order",
-      pre: snapshotOf(withJobsTable(before)),
-      target: snapshotOf(withJobsTable(target)),
+      pre: snapshotOf(withFrameworkTables(before)),
+      target: snapshotOf(withFrameworkTables(target)),
       code: "",
       migration: defineMigration({
         tables: {

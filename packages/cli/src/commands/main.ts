@@ -9,8 +9,9 @@
  *   acker reset [dir]    delete the local database (dev escape hatch)
  *   acker plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
  *   acker status [dir]   inspect a database as JSON
- *   acker backup <file> [dir]   create and verify a backup
+ *   acker backup <file> [dir] [--metadata-only]   create and verify a backup
  *   acker restore <file> [dir]  verify and restore into a fresh target
+ *   acker files migrate <target.json> [dir]  migrate and switch the active FileStore
  *
  * `acker dev` is a supervisor that never imports user code itself: codegen and
  * the server run as child processes, so every reload sees fresh modules with
@@ -51,6 +52,7 @@ import {
   type PluginPlanWire,
   type PluginStorageConsent,
 } from "../plugins/storage.ts";
+import { migrateActiveFileStore } from "../files/command.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
@@ -103,13 +105,30 @@ function usage(): never {
   acker plugin drop <mount> [app-dir]
   acker reset [app-dir]
   acker status [app-dir]
-  acker backup <artifact> [app-dir]
-  acker restore <artifact> [app-dir]`);
+  acker backup <artifact> [app-dir] [--metadata-only]
+  acker restore <artifact> [app-dir]
+  acker files migrate <target.json> [app-dir]`);
   process.exit(2);
 }
 
 function requireArgumentCount(args: string[], minimum: number, maximum: number): void {
   if (args.length < minimum || args.length > maximum) usage();
+}
+
+function backupArguments(args: string[]): {
+  artifact: string;
+  appDir: string;
+  metadataOnly: boolean;
+} {
+  const metadataOnly = args.filter((argument) => argument === "--metadata-only").length;
+  const positional = args.filter((argument) => argument !== "--metadata-only");
+  if (metadataOnly > 1 || positional.some((argument) => argument.startsWith("--"))) usage();
+  requireArgumentCount(positional, 1, 2);
+  return {
+    artifact: resolve(positional[0]!),
+    appDir: resolve(positional[1] ?? "."),
+    metadataOnly: metadataOnly === 1,
+  };
 }
 
 const verifyInFreshProcess: FreshProcessVerifier = async (config, artifact, manifest) => {
@@ -642,11 +661,12 @@ try {
       break;
     }
     case "backup": {
-      requireArgumentCount(args, 1, 2);
+      const backup = backupArguments(args);
       const report = await createVerifiedBackup(
-        loadConfig(resolve(args[1] ?? ".")),
-        resolve(args[0]!),
+        loadConfig(backup.appDir),
+        backup.artifact,
         verifyInFreshProcess,
+        { metadataOnly: backup.metadataOnly },
       );
       console.log(JSON.stringify(report));
       break;
@@ -657,6 +677,24 @@ try {
         loadConfig(resolve(args[1] ?? ".")),
         resolve(args[0]!),
         verifyInFreshProcess,
+      );
+      console.log(JSON.stringify(report));
+      break;
+    }
+    case "files": {
+      requireArgumentCount(args, 2, 3);
+      if (args[0] !== "migrate") usage();
+      const appDir = resolve(args[2] ?? ".");
+      const report = await migrateActiveFileStore(
+        loadConfig(appDir),
+        resolve(args[1]!),
+        (progress) => {
+          console.error(
+            `[ackerdb] FileStore migration ${progress.state}: ` +
+              `${progress.objects.completed}/${progress.objects.total} objects, ` +
+              `${progress.bytes.completed}/${progress.bytes.total} bytes durably checkpointed`,
+          );
+        },
       );
       console.log(JSON.stringify(report));
       break;

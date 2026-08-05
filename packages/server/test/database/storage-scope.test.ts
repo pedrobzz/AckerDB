@@ -15,7 +15,7 @@ import {
 } from "@ackerdb/server";
 import { diffSnapshots } from "../../src/schema/diff.ts";
 import { planDiff, verifyPlanProbes } from "../../src/schema/planner.ts";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 type StorageScope = ReturnType<Engine["createPluginScope"]>;
 
@@ -138,9 +138,9 @@ describe("Plugin storage scopes", () => {
     createScopePhysical(engine, additiveCurrent);
     const additivePlan = planDiff({
       engine,
-      current: snapshotOf(withJobsTable(additiveBefore)),
+      current: snapshotOf(withFrameworkTables(additiveBefore)),
       planOf: (table) => additiveTarget.plan(table),
-    }, diffSnapshots(snapshotOf(withJobsTable(additiveBefore)), snapshotOf(withJobsTable(additiveAfter))));
+    }, diffSnapshots(snapshotOf(withFrameworkTables(additiveBefore)), snapshotOf(withFrameworkTables(additiveAfter))));
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
       for (const op of additivePlan.ops) op();
@@ -178,9 +178,9 @@ describe("Plugin storage scopes", () => {
     engine.writer.query(`INSERT INTO "${rebuildPhysical}" ("value") VALUES ('kept')`).run();
     const rebuildPlan = planDiff({
       engine,
-      current: snapshotOf(withJobsTable(rebuildBefore)),
+      current: snapshotOf(withFrameworkTables(rebuildBefore)),
       planOf: (table) => rebuildTarget.plan(table),
-    }, diffSnapshots(snapshotOf(withJobsTable(rebuildBefore)), snapshotOf(withJobsTable(rebuildAfter))));
+    }, diffSnapshots(snapshotOf(withFrameworkTables(rebuildBefore)), snapshotOf(withFrameworkTables(rebuildAfter))));
     for (const op of rebuildPlan.ops) op();
     expect(engine.writer.query(`SELECT "value" FROM "${rebuildPhysical}"`).all()).toEqual([{ value: "kept" }]);
 
@@ -197,9 +197,9 @@ describe("Plugin storage scopes", () => {
     engine.writer.exec(`INSERT INTO "${probePhysical}" ("value") VALUES ('same'), ('same')`);
     const probePlan = planDiff({
       engine,
-      current: snapshotOf(withJobsTable(probeBefore)),
+      current: snapshotOf(withFrameworkTables(probeBefore)),
       planOf: (table) => probeTarget.plan(table),
-    }, diffSnapshots(snapshotOf(withJobsTable(probeBefore)), snapshotOf(withJobsTable(probeAfter))));
+    }, diffSnapshots(snapshotOf(withFrameworkTables(probeBefore)), snapshotOf(withFrameworkTables(probeAfter))));
     expect(() => verifyPlanProbes(probePlan)).toThrow("1 duplicate group(s)");
     engine.close("clean");
   });
@@ -227,9 +227,9 @@ describe("Plugin storage scopes", () => {
     const targetScope = engine.createPluginScope("constraints", target);
     const plan = planDiff({
       engine,
-      current: snapshotOf(withJobsTable(before)),
+      current: snapshotOf(withFrameworkTables(before)),
       planOf: (table) => targetScope.plan(table),
-    }, diffSnapshots(snapshotOf(withJobsTable(before)), snapshotOf(withJobsTable(target))));
+    }, diffSnapshots(snapshotOf(withFrameworkTables(before)), snapshotOf(withFrameworkTables(target))));
     expect(() => verifyPlanProbes(plan)).toThrow("1 existing row(s)");
     engine.close("clean");
   });

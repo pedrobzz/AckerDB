@@ -269,11 +269,11 @@ function typesTs(config: AppConfig, schema: Schema): string {
 
   return `${HEADER}
 import type app from "${appImport}";
-import type { AppSchema, EventArgsOf, Identity, RowOf } from "@ackerdb/server";
+import type { AppSchema, EventArgsOf, FileGrantId, FileId, Identity, RowOf } from "@ackerdb/server";
 
 type Schema = AppSchema<typeof app>;
 
-export type { Identity };
+export type { FileGrantId, FileId, Identity };
 
 ${parts.join("\n")}${parts.length > 0 ? "\n" : ""}${rows.join("\n")}${eventArgs.length > 0 ? "\n" : ""}${eventArgs.join("\n")}
 `;

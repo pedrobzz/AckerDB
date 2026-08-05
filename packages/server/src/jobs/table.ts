@@ -62,10 +62,9 @@ export function buildJobsTable(): TableDef {
 }
 
 /**
- * The Engine's schema seam: every root schema carries the jobs table, so
- * storage, migrations, reactivity, and backups treat it exactly like any
- * other table. Adding it to an existing database is an additive shape-safe
- * migration the reconcile pass applies on upgrade.
+ * The jobs facet consumed by `withFrameworkTables`, the sole root-schema
+ * composition point. Adding it to an existing database is an additive,
+ * shape-safe change that reconciliation applies on upgrade.
  */
 export function withJobsTable(schema: Schema): Schema {
   if (Object.hasOwn(schema.tables, JOBS_TABLE)) return schema;

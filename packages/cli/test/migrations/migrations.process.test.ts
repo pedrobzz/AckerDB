@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { AckerDBClient } from "@ackerdb/client";
-import { v, defineSchema, defineTable, migrationFingerprint, snapshotOf, withJobsTable } from "@ackerdb/server";
+import { v, defineSchema, defineTable, migrationFingerprint, snapshotOf } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { loadConfig } from "../../src/app/config.ts";
 import { inspectDatabase, type StatusReport } from "../../src/commands/operations.ts";
 import { makeFixture } from "../support/fixture.ts";
@@ -44,11 +45,11 @@ const schema = defineSchema({
 export default defineApp({ schema });
 `;
 
-// Real chains record engine-visible snapshots, which carry the jobs table.
-const PRE = snapshotOf(withJobsTable(
+// Real chains record engine-visible snapshots, which carry every framework table.
+const PRE = snapshotOf(withFrameworkTables(
   defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) }),
 ));
-const TARGET = snapshotOf(withJobsTable(
+const TARGET = snapshotOf(withFrameworkTables(
   defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) }),
 ));
 

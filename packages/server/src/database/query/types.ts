@@ -120,11 +120,13 @@ type ScalarColumn<V, Row, Key extends keyof Row> =
             (Kind extends "int" | "float" | "bigint"
               ? SummableColumn<ComparableValue<V>>
               : object)
-        : Kind extends "boolean"
-          ? ComparableColumn<ComparableValue<V>, Row>
-          : Kind extends "enum"
-            ? EquatableColumn<ComparableValue<V>, Row>
-            : never
+        : Kind extends "file" | "fileGrant"
+          ? EquatableColumn<ComparableValue<V>, Row>
+          : Kind extends "boolean"
+            ? ComparableColumn<ComparableValue<V>, Row>
+            : Kind extends "enum"
+              ? EquatableColumn<ComparableValue<V>, Row>
+              : never
       : never;
 
 type ColumnReference<V, Row, Key extends keyof Row> = ScalarColumn<V, Row, Key> extends infer Ref

@@ -80,6 +80,7 @@ import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
+import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 export type AckerDBStartupPhase =
@@ -95,6 +96,8 @@ export type AckerDBStartupPhase =
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
+  /** Listener ceiling for streaming File PUTs; every session may only narrow it. */
+  readonly fileMaxBytes?: number;
   readonly hostname?: string;
   /** Socket peers permitted to supply a client address through X-Forwarded-For. */
   readonly trustedProxy?: string | readonly string[];
@@ -138,6 +141,10 @@ export interface AckerDBServerStatus {
   readonly httpFairnessKeys: number;
   readonly httpGlobalRejections: number;
   readonly httpFairShareRejections: number;
+  readonly fileTransfers: number;
+  readonly fileTransferFairnessKeys: number;
+  readonly fileTransferGlobalRejections: number;
+  readonly fileTransferFairShareRejections: number;
   readonly sseAckIngress: number;
   readonly sseAckNoops: number;
   readonly outboundBytes: number;
@@ -159,11 +166,17 @@ const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   // PATCH and DELETE are the realtime session routes; the exposed function
   // surface serves only GET and POST.
-  "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization, idempotency-key, mcp-protocol-version",
+  "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+  "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, mcp-protocol-version, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
   "access-control-expose-headers": [
     ...Object.values(SSE_STREAM_HEADERS),
     ...Object.values(RECEIPT_HEADERS),
+    "accept-ranges",
+    "content-disposition",
+    "content-range",
+    "digest",
+    "etag",
+    "last-modified",
   ].join(", "),
 });
 
@@ -183,6 +196,8 @@ const SSE_HEADERS = Object.freeze({
 });
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+const MAX_FILE_TRANSFERS = 128;
+const MAX_FILE_TRANSFERS_PER_CALLER = 16;
 const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Object.freeze({
   listening: 0,
   codegen: 1,
@@ -371,6 +386,16 @@ interface HttpAdmissionLease {
   release(): void;
 }
 
+interface HttpAdmissionLabels {
+  readonly owner: string;
+  readonly ingress: string;
+}
+
+const HTTP_ADMISSION_LABELS: HttpAdmissionLabels = Object.freeze({
+  owner: "HTTP",
+  ingress: "HTTP ingress",
+});
+
 /** One bounded HTTP slot whose fair-share owner changes after authentication. */
 class HttpAdmission {
   private readonly callers = new Map<string, number>();
@@ -383,11 +408,12 @@ class HttpAdmission {
   constructor(
     private readonly maxOperations: number,
     private readonly maxOperationsPerCaller: number,
+    private readonly labels = HTTP_ADMISSION_LABELS,
   ) {}
 
   admit(fairnessKey: string): HttpAdmissionLease {
     if (!this.accepting) {
-      throw new AckerDBError("draining", "HTTP ingress is draining", {
+      throw new AckerDBError("draining", `${this.labels.ingress} is draining`, {
         retryable: true,
         retryAfterMs: DRAIN_RETRY_AFTER_MS,
         resource: "connection",
@@ -395,7 +421,7 @@ class HttpAdmission {
     }
     if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
       this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
-      throw new AckerDBError("overloaded", "HTTP source capacity is full", {
+      throw new AckerDBError("overloaded", `${this.labels.owner} source capacity is full`, {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -403,7 +429,7 @@ class HttpAdmission {
     }
     if (this.active >= this.maxOperations) {
       this.globalRejections = Math.min(Number.MAX_SAFE_INTEGER, this.globalRejections + 1);
-      throw new AckerDBError("overloaded", "HTTP ingress capacity is full", {
+      throw new AckerDBError("overloaded", `${this.labels.ingress} capacity is full`, {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -419,7 +445,7 @@ class HttpAdmission {
         if (!owned || nextKey === currentKey) return;
         if ((this.callers.get(nextKey) ?? 0) >= this.maxOperationsPerCaller) {
           this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
-          throw new AckerDBError("overloaded", "per-caller HTTP capacity is full", {
+          throw new AckerDBError("overloaded", `per-caller ${this.labels.owner} capacity is full`, {
             retryable: true,
             retryAfterMs: 0,
             resource: "operation",
@@ -709,6 +735,7 @@ export class AckerDBServer {
   private readonly connections = new Set<WsData>();
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
+  private readonly fileAdmission: HttpAdmission;
   private readonly mcpHttp: McpHttpBoundary;
   private readonly openapiInfo: OpenApiInfo | undefined;
   /** The OpenAPI document assembled at activation, or null while it is not served. */
@@ -730,6 +757,14 @@ export class AckerDBServer {
 
   constructor(options: AckerDBServerOptions) {
     this.limits = defineServiceLimits(options.limits);
+    const fileMaxBytes = options.fileMaxBytes ?? DEFAULT_FILE_MAX_BYTES;
+    if (
+      !Number.isSafeInteger(fileMaxBytes) ||
+      fileMaxBytes <= 0 ||
+      fileMaxBytes > HARD_FILE_MAX_BYTES
+    ) {
+      throw new RangeError(`fileMaxBytes must be from 1 through ${HARD_FILE_MAX_BYTES}`);
+    }
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
     this.trustedProxy = options.trustedProxy === undefined
@@ -749,6 +784,11 @@ export class AckerDBServer {
       this.limits.maxOperations,
       this.limits.maxOperationsPerCaller,
     );
+    this.fileAdmission = new HttpAdmission(
+      MAX_FILE_TRANSFERS,
+      MAX_FILE_TRANSFERS_PER_CALLER,
+      { owner: "File transfer", ingress: "File transfer" },
+    );
     this.realtimeHttp = new RealtimeHttpTransport({
       runtime: () => this.requireRuntime(),
       admit: (fairnessKey) => this.httpAdmission.admit(fairnessKey),
@@ -763,9 +803,14 @@ export class AckerDBServer {
       this.listener = Bun.serve<WsData, never>({
         port: options.port,
         hostname: this.hostname,
+        // Built-in File PUTs stream under their own per-session bound. Every
+        // other route still enforces maxRequestBytes while consuming its body.
         maxRequestBodySize: oneByteTransportLimit(
-          this.limits.maxRequestBytes,
-          "maxRequestBytes",
+          Math.max(
+            this.limits.maxRequestBytes,
+            fileMaxBytes,
+          ),
+          "maxRequestBytes or configured File limit",
         ),
         development: false,
         error: (error) => internalErrorResponse(error),
@@ -810,6 +855,7 @@ export class AckerDBServer {
 
   status(): AckerDBServerStatus {
     const http = this.httpAdmission.snapshot();
+    const files = this.fileAdmission.snapshot();
     return Object.freeze({
       state: this.lifecycle,
       startupPhase: this.startup,
@@ -821,6 +867,10 @@ export class AckerDBServer {
       httpFairnessKeys: http.fairnessKeys,
       httpGlobalRejections: http.globalRejections,
       httpFairShareRejections: http.fairShareRejections,
+      fileTransfers: files.active,
+      fileTransferFairnessKeys: files.fairnessKeys,
+      fileTransferGlobalRejections: files.globalRejections,
+      fileTransferFairShareRejections: files.fairShareRejections,
       sseAckIngress: this.sseAckIngress,
       sseAckNoops: this.sseAckNoops,
       outboundBytes: this.outbound.snapshot().bytes,
@@ -972,6 +1022,13 @@ export class AckerDBServer {
         return methodNotAllowed(rawRoute.fn.methods.join(", "));
       }
       return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
+    }
+    if (url.pathname.startsWith("/api/_files/")) {
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+      if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
+        return outcomeError(unavailableWhile(this.lifecycle));
+      }
+      return this.fileCall(request, this.requestSource(request, listener));
     }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
@@ -1240,6 +1297,60 @@ export class AckerDBServer {
     }
   }
 
+  /** File bodies stay streaming while admission and any auth lease own the response. */
+  private async fileCall(request: Request, source: TransportSource): Promise<Response> {
+    const runtime = this.requireRuntime();
+    let admission: HttpAdmissionLease | undefined;
+    let lease: AuthLease | undefined;
+    try {
+      const anonymousKey = callerFairnessKey(ANONYMOUS_PRINCIPAL, source);
+      admission = this.fileAdmission.admit(anonymousKey);
+      const response = await runtime.runFileRequest({
+        request,
+        authenticate: async () => {
+          lease ??= await this.authenticate(request);
+          const fairnessKey = callerFairnessKey(lease.principal, source);
+          admission?.transfer(fairnessKey);
+          return { principal: lease.principal, signal: lease.signal, fairnessKey };
+        },
+      });
+      const headers = new Headers(response.headers);
+      for (const [name, value] of Object.entries(CORS)) {
+        if (!headers.has(name)) headers.set(name, value);
+      }
+      if (response.body === null) {
+        return new Response(null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
+      const streamAdmission = admission;
+      const streamLease = lease;
+      admission = undefined;
+      lease = undefined;
+      const body = ownedStream(response.body, () => {
+        streamLease?.release();
+        streamAdmission.release();
+      });
+      try {
+        return new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      } catch (error) {
+        cancel(body, error);
+        throw error;
+      }
+    } catch (error) {
+      return outcomeError(error);
+    } finally {
+      lease?.release();
+      admission?.release();
+    }
+  }
+
   private async mcp(
     request: Request,
     mcp: McpEndpointDeclaration,
@@ -1429,6 +1540,7 @@ export class AckerDBServer {
       return;
     }
     const http = this.httpAdmission.snapshot();
+    const files = this.fileAdmission.snapshot();
     const metrics = [
       ["runtime.transport_websocket_connections", this.connections.size, "gauge"],
       ["runtime.transport_websocket_pre_hello", this.preHelloConnections(), "gauge"],
@@ -1438,6 +1550,10 @@ export class AckerDBServer {
       ["runtime.transport_http_fairness_keys", http.fairnessKeys, "gauge"],
       ["runtime.transport_http_global_rejections", http.globalRejections, "count"],
       ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
+      ["runtime.files_transfers", files.active, "gauge"],
+      ["runtime.files_transfer_fairness_keys", files.fairnessKeys, "gauge"],
+      ["runtime.files_transfer_global_rejections", files.globalRejections, "count"],
+      ["runtime.files_transfer_fair_share_rejections", files.fairShareRejections, "count"],
       ["runtime.transport_sse_ack_ingress", this.sseAckIngress, "count"],
       ["runtime.transport_sse_ack_noops", this.sseAckNoops, "count"],
     ] as const;
@@ -1470,7 +1586,10 @@ export class AckerDBServer {
       // Receiver credit remains admissible while Runtime closes SSE. Once
       // application ownership settles, close ingress and own every accepted
       // response handoff before stopping the listener.
-      .then(() => this.httpAdmission.closeAndDrain())
+      .then(() => Promise.all([
+        this.httpAdmission.closeAndDrain(),
+        this.fileAdmission.closeAndDrain(),
+      ]))
       .then(async () => {
         // Bun leaves the awaited force-stop pending on active keep-alive/SSE
         // transports unless listener admission is closed first. Both calls stay
@@ -1501,6 +1620,7 @@ export class AckerDBServer {
       if (timeout !== undefined) clearTimeout(timeout);
       this.lifecycle = "failed";
       void this.httpAdmission.closeAndDrain();
+      void this.fileAdmission.closeAndDrain();
       for (const connection of this.connections) connection.socket?.terminate();
       // Initiate the force close but do not await Bun's listener promise: Bun
       // keeps that promise pending for a handler that ignores cancellation,
@@ -1517,6 +1637,7 @@ export function serve(options: ServeOptions): AckerDBServer {
   }
   const server = new AckerDBServer({
     limits: options.runtime.limits,
+    fileMaxBytes: options.runtime.fileMaxBytes,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
     ...(options.trustedProxy === undefined ? {} : { trustedProxy: options.trustedProxy }),

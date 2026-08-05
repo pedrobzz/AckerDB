@@ -52,7 +52,7 @@ function procedure(signal: AbortSignal): ProcedureCtx {
     tx: async () => Ok(undefined),
     linkAccount: async () => {},
     unlinkAccount: async () => {},
-  }) as ProcedureCtx;
+  }) as unknown as ProcedureCtx;
 }
 
 const SESSION_LIMITS = Object.freeze({

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 import {
   classifySchemaDiff,
   defineMigration,
@@ -68,7 +68,7 @@ describe("vector migrations", () => {
     const target = defineSchema({
       documents: defineTable({ id: v.primaryKey(), embedding: v.vector(3) }),
     });
-    const classification = classifySchemaDiff(diffSnapshots(snapshotOf(withJobsTable(before)), snapshotOf(withJobsTable(target))));
+    const classification = classifySchemaDiff(diffSnapshots(snapshotOf(withFrameworkTables(before)), snapshotOf(withFrameworkTables(target))));
     expect(classification.refusals).toMatchObject([
       { table: "documents", column: "embedding", reason: "column-type-changed" },
     ]);
@@ -85,7 +85,7 @@ describe("vector migrations", () => {
       number: 1,
       name: "resize_embedding",
       pre,
-      target: snapshotOf(withJobsTable(target)),
+      target: snapshotOf(withFrameworkTables(target)),
       code: "",
       migration: defineMigration({
         tables: {
@@ -119,9 +119,9 @@ describe("vector migrations", () => {
       documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
     });
 
-    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withJobsTable(empty)), snapshotOf(withJobsTable(required)))).refusals)
+    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withFrameworkTables(empty)), snapshotOf(withFrameworkTables(required)))).refusals)
       .toMatchObject([{ reason: "required-column-added", column: "embedding" }]);
-    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withJobsTable(nullable)), snapshotOf(withJobsTable(required)))).refusals)
+    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withFrameworkTables(nullable)), snapshotOf(withFrameworkTables(required)))).refusals)
       .toMatchObject([{ reason: "column-made-required", column: "embedding" }]);
   });
 });

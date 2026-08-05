@@ -11,7 +11,7 @@ import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { checkDescriptor } from "../../src/schema/descriptor-kinds.ts";
 import { validatorBaseChecksForTest } from "../../src/validation/primitives.ts";
 import { checkShape } from "../../src/validation/composites.ts";
-import { withJobsTable } from "../../src/jobs/table.ts";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 const check = <T>(validator: { check(value: unknown, path: string): T }, value: unknown) =>
   validator.check(value, "value");
@@ -195,7 +195,7 @@ test("schema snapshots retain canonical constraints but exclude descriptions", (
       score: v.float().min(0).nullable(),
     }),
   });
-  const snapshot = snapshotOf(withJobsTable(schema("First description.")));
+  const snapshot = snapshotOf(withFrameworkTables(schema("First description.")));
 
   expect(snapshot.tables.items?.columns).toEqual({
     id: { k: "pk" },
@@ -206,7 +206,7 @@ test("schema snapshots retain canonical constraints but exclude descriptions", (
     },
     score: { k: "nullable", inner: { k: "float", min: 0 } },
   });
-  expect(snapshotOf(withJobsTable(schema("Different description.")))).toEqual(snapshot);
+  expect(snapshotOf(withFrameworkTables(schema("Different description.")))).toEqual(snapshot);
 });
 
 describe("constraint Standard JSON Schema projection", () => {

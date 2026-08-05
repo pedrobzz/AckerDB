@@ -183,7 +183,8 @@ Take a verified backup first. A failed migration rolls back cleanly, but a
 migration that *succeeds and was wrong* is only recoverable from a backup:
 
 1. drain and stop the old release (`SIGINT`/`SIGTERM`, wait for exit);
-2. `acker backup <artifact>` and retain the artifact + manifest
+2. `acker backup <artifact>` and retain the artifact, manifest, and adjacent
+   `.files` directory
    (see [operations.md](operations.md));
 3. start the new release; watch `/ready` through `migrating` to serving;
 4. if the migration refuses, the database is untouched — fix and redeploy.

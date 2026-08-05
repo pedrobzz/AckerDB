@@ -46,7 +46,7 @@ import {
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy, type Identity } from "@ackerdb/core";
 import type { Descriptor } from "../validation/validator.ts";
@@ -66,7 +66,12 @@ import {
 } from "../mcp/token-vault.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
-import { JOBS_TABLE, withJobsTable } from "../jobs/table.ts";
+import { JOBS_TABLE } from "../jobs/table.ts";
+import {
+  FRAMEWORK_TABLES,
+  isFrameworkTable,
+  withFrameworkTables,
+} from "./framework-schema.ts";
 import {
   canonicalSnapshotJson,
   snapshotOf,
@@ -263,6 +268,17 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
+export interface RestorePublicationHook {
+  /** Exact configured subtrees that may already exist beside the target database. */
+  readonly allowedTargetSubtrees?: readonly string[];
+  /** Mutate the isolated verified database before it becomes canonical. */
+  prepareStagedDatabase?(engine: Engine): void | Promise<void>;
+  /** Make external state referenced by the staged database durable. */
+  prepare(status: EngineStatus): void | Promise<void>;
+  /** Remove prepared state when the database was not canonically published. */
+  rollback(): void | Promise<void>;
+}
+
 const ENGINE_SCHEMA_VERSION = 12;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
@@ -436,9 +452,9 @@ function storedName(value: unknown, path: string): string {
   return value;
 }
 
-/** Table names: application identifiers plus the framework jobs table. */
+/** Table names: application identifiers plus framework-owned logical tables. */
 function storedTableName(value: unknown, path: string): string {
-  if (value === JOBS_TABLE) return value;
+  if (isFrameworkTable(value)) return value;
   return storedName(value, path);
 }
 
@@ -1262,9 +1278,9 @@ export class Engine {
     path: string,
     options: EngineOptions = {},
   ) {
-    // Every root schema carries the framework jobs table: storage, migrations,
+    // Every root schema carries framework tables: storage, migrations,
     // reactivity, and backups treat it exactly like an application table.
-    schema = withJobsTable(schema);
+    schema = withFrameworkTables(schema);
     this.schema = schema;
     loadVectorRuntimeForSchema(schema);
     this.durability = options.durability ?? "production";
@@ -1541,9 +1557,9 @@ export class Engine {
         !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
         !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
         !object.name.startsWith(FULL_TEXT_OBJECT_PREFIX) &&
-        // The framework jobs table lives in the logical schema; its shape is
-        // verified against the snapshot like any application table.
-        object.tbl_name !== JOBS_TABLE &&
+        // Framework tables live in the logical schema; their shapes are
+        // verified against the snapshot like application tables.
+        !FRAMEWORK_TABLES.has(object.tbl_name) &&
         !INTERNAL_OBJECT_NAMES.has(object.name),
     );
     if (unknown !== undefined) {
@@ -1562,7 +1578,7 @@ export class Engine {
 
   private verifyInternalState(connection: Database = this.writer): void {
     const unknownMeta = connection
-      .query("SELECT key FROM _ackerdb_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
+      .query("SELECT key FROM _ackerdb_meta WHERE key NOT IN ('engine_schema', 'schema', 'file_store_binding') LIMIT 1")
       .get() as { key: string } | null;
     if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown AckerDB metadata key ${unknownMeta.key}`);
     const stateRows = connection
@@ -2228,19 +2244,25 @@ export class DatabaseRestoreTarget {
   readonly path: string;
   readonly stagingPath: string;
   private readonly ownership: DatabaseOwnership;
+  private readonly allowedTargetSubtrees: readonly string[];
   private manifest: BackupManifest | null = null;
   private restored = false;
   private linked = false;
   private publicationDurable = false;
   private closed = false;
 
-  private constructor(path: string, ownership: DatabaseOwnership) {
+  private constructor(
+    path: string,
+    ownership: DatabaseOwnership,
+    allowedTargetSubtrees: readonly string[],
+  ) {
     this.path = path;
     this.ownership = ownership;
+    this.allowedTargetSubtrees = allowedTargetSubtrees;
     this.stagingPath = `${path}.ackerdb-restore-${randomUUID()}`;
   }
 
-  static acquire(path: string): DatabaseRestoreTarget {
+  static acquire(path: string, allowedTargetSubtrees: readonly string[] = []): DatabaseRestoreTarget {
     if (path === ":memory:") throw new TypeError("restore requires a file-backed database target");
     try {
       if (lstatSync(path).isSymbolicLink()) {
@@ -2261,10 +2283,10 @@ export class DatabaseRestoreTarget {
         ...restoreArtifacts,
         ...telemetryJournalPaths(database).map((artifact) => basename(artifact)),
       ]);
-      assertRestoreTargetFresh(database, allowedArtifacts);
+      assertRestoreTargetFresh(database, allowedArtifacts, allowedTargetSubtrees);
       removeRestoreArtifacts(database);
       removeTelemetryJournalArtifacts(database);
-      return new DatabaseRestoreTarget(database, ownership);
+      return new DatabaseRestoreTarget(database, ownership, allowedTargetSubtrees);
     } catch (error) {
       try {
         ownership.release();
@@ -2278,9 +2300,13 @@ export class DatabaseRestoreTarget {
     }
   }
 
+  get published(): boolean {
+    return this.linked;
+  }
+
   assertVacant(): void {
     this.assertOpen();
-    assertRestoreTargetFresh(this.path, new Set());
+    assertRestoreTargetFresh(this.path, new Set(), this.allowedTargetSubtrees);
   }
 
   restore(source: string, manifest: BackupManifest): void {
@@ -2423,6 +2449,7 @@ export class DatabaseRestoreTarget {
 function assertRestoreTargetFresh(
   path: string,
   allowedEntries: ReadonlySet<string>,
+  allowedTargetSubtrees: readonly string[] = [],
 ): void {
   if (existsSync(path)) {
     throw new Error(`restore requires a fresh target; database already exists: ${path}`);
@@ -2434,15 +2461,49 @@ function assertRestoreTargetFresh(
     );
   }
   const directory = dirname(path);
+  const allowedSubtrees = allowedTargetSubtrees
+    .map(canonicalizeRestoreSubtree)
+    .filter((subtree) => {
+      const fromDirectory = relative(directory, subtree);
+      return fromDirectory !== "" && !isAbsolute(fromDirectory) &&
+        fromDirectory !== ".." && !fromDirectory.startsWith(`..${sep}`);
+    });
   const ownershipEntries = new Set(coordinationDatabaseEntries(path).map((entry) => basename(entry)));
   const unrelated = readdirSync(directory, { withFileTypes: true }).find(
-    (entry) => !ownershipEntries.has(entry.name) && !allowedEntries.has(entry.name),
+    (entry) => !ownershipEntries.has(entry.name) && !allowedEntries.has(entry.name) &&
+      !isAllowedRestoreSubtree(join(directory, entry.name), allowedSubtrees),
   );
   if (unrelated !== undefined) {
     throw new Error(
       `restore requires a vacant target directory; unrelated entry exists: ${join(directory, unrelated.name)}`,
     );
   }
+}
+
+function canonicalizeRestoreSubtree(path: string): string {
+  let existing = resolve(path);
+  const missing: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(canonicalizeDatabasePath(existing), ...missing);
+}
+
+function isAllowedRestoreSubtree(path: string, allowedSubtrees: readonly string[]): boolean {
+  if (allowedSubtrees.includes(path)) return true;
+  const descendant = allowedSubtrees.some((subtree) => {
+    const fromPath = relative(path, subtree);
+    return fromPath !== "" && !isAbsolute(fromPath) &&
+      fromPath !== ".." && !fromPath.startsWith(`..${sep}`);
+  });
+  if (!descendant) return false;
+  const metadata = lstatSync(path);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
+  return readdirSync(path).every((entry) =>
+    isAllowedRestoreSubtree(join(path, entry), allowedSubtrees));
 }
 
 function proveRestoredNextCommit(engine: Engine): void {
@@ -2493,11 +2554,16 @@ export async function restoreVerifiedLayout(
   target: string,
   manifest: BackupManifest,
   loadSchema: () => Schema | Promise<Schema>,
+  publication?: RestorePublicationHook,
 ): Promise<EngineStatus> {
-  const restoreTarget = DatabaseRestoreTarget.acquire(target);
+  const restoreTarget = DatabaseRestoreTarget.acquire(
+    target,
+    publication?.allowedTargetSubtrees ?? [],
+  );
   let failed = false;
   let failure: unknown;
   let status: EngineStatus | undefined;
+  let publicationStarted = false;
   try {
     const schema = await loadSchema();
     if (!isSchema(schema)) throw new TypeError("restore schema loader must return a AckerDB schema");
@@ -2518,6 +2584,7 @@ export async function restoreVerifiedLayout(
         throw new CorruptDatabaseError("restore staging commit version does not match the manifest");
       }
       proveRestoredNextCommit(engine);
+      await publication?.prepareStagedDatabase?.(engine);
     } catch (error) {
       verificationFailed = true;
       verificationFailure = error;
@@ -2534,10 +2601,27 @@ export async function restoreVerifiedLayout(
       throw closeError;
     }
     if (verificationFailed) throw verificationFailure;
+    // External durable state referenced by the restored database must become
+    // valid while the canonical database is still absent. A failure here
+    // leaves the verified SQLite staging artifact unpublished and removable.
+    if (publication !== undefined) {
+      publicationStarted = true;
+      await publication.prepare(status!);
+    }
     restoreTarget.publish();
   } catch (error) {
     failed = true;
     failure = error;
+    if (publicationStarted && !restoreTarget.published) {
+      try {
+        await publication!.rollback();
+      } catch (rollbackError) {
+        failure = new AggregateError(
+          [error, rollbackError],
+          `restore publication preparation and rollback both failed: ${target}`,
+        );
+      }
+    }
   }
   try {
     restoreTarget.close();

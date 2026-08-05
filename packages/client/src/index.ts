@@ -1,5 +1,10 @@
 export * from "./client.ts";
 export type {
+  AckerDBFileUploadBody,
+  AckerDBFileUploadOptions,
+  AckerDBFiles,
+} from "./files/client.ts";
+export type {
   AckerDBChannel,
   AckerDBChannelOn,
   AckerDBChannelOptions,
@@ -31,6 +36,11 @@ export type {
   EventMap,
   EventUnion,
   EventRef,
+  FileGrantId,
+  FileId,
+  FileMetadata,
+  FileState,
+  FileUploadSession,
   FunctionReference,
   Identity,
   MutationRef,

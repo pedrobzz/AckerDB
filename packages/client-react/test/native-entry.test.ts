@@ -41,6 +41,7 @@ describe("index.native entry", () => {
 
   test("shadows only AckerDBProvider; every other export is the shared object", () => {
     expect(nativeEntry.AckerDBProvider).not.toBe(browserEntry.AckerDBProvider);
+    expect(nativeEntry.useFileUpload).toBe(browserEntry.useFileUpload);
     for (const key of Object.keys(browserEntry)) {
       if (key === "AckerDBProvider") continue;
       expect(nativeEntry[key as keyof typeof nativeEntry]).toBe(

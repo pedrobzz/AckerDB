@@ -81,6 +81,10 @@ import {
 } from "../jobs/namespace.ts";
 import type { RuntimeJobs } from "../jobs/runtime.ts";
 import { RuntimeReadExecutor } from "./read.ts";
+import { applicationDatabase, RuntimeFiles } from "../../files/namespace.ts";
+import { FileProcedureRuntime } from "../../files/procedure.ts";
+import { markOneTimeResult } from "../one-time-result.ts";
+import { settleOnAbort } from "../abort.ts";
 
 const releaseNothing = (): void => {};
 
@@ -177,6 +181,8 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly armJobs: () => void;
   /** Lazy: the jobs runner is constructed after this executor. */
   readonly jobs: () => RuntimeJobs;
+  readonly files: RuntimeFiles;
+  readonly fileLifecycleSignal: () => AbortSignal;
   readonly now: () => number;
   readonly hooks?: Pick<RuntimeHooks, "wait">;
 }
@@ -188,7 +194,9 @@ export interface RuntimeFunctionExecutorOptions<C> {
  */
 export class RuntimeFunctionExecutor<C> {
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
+  private readonly fileProcedures: FileProcedureRuntime;
   private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
+  private fileRecoveryBarrier: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: RuntimeFunctionExecutorOptions<C>) {
     this.coordinator = new CommitCoordinator({
@@ -196,6 +204,8 @@ export class RuntimeFunctionExecutor<C> {
       limits: options.limits,
       reservePublication: (bytes) => options.reactive.publication.reserve(bytes),
       afterCommit: (writes, commitVersion) => {
+        options.files.observability.committed(writes.fileObservability);
+        if (writes.fileCleanupAt !== null) options.files.scheduleCleanupAt(writes.fileCleanupAt);
         options.mcp?.publishCommittedInvalidations(writes);
         const analytics = this.analyticsByWrites.get(writes);
         if (analytics !== undefined) {
@@ -205,6 +215,13 @@ export class RuntimeFunctionExecutor<C> {
       },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: options.now,
+    });
+    this.fileProcedures = new FileProcedureRuntime({
+      files: options.files,
+      now: options.now,
+      lifecycleSignal: options.fileLifecycleSignal,
+      read: (signal, work) => this.filesRead(signal, work),
+      write: (signal, work) => this.filesWrite(signal, work),
     });
   }
 
@@ -218,6 +235,50 @@ export class RuntimeFunctionExecutor<C> {
 
   drain(): Promise<void> {
     return this.coordinator.drain();
+  }
+
+  bindFileRecoveryBarrier(barrier: Promise<void>): void {
+    this.fileRecoveryBarrier = barrier;
+  }
+
+  /** One bounded reader snapshot for the framework-owned File HTTP surface. */
+  filesRead<T>(
+    signal: AbortSignal,
+    work: (db: unknown) => T | Promise<T>,
+  ): Promise<T> {
+    return this.options.reads.execute(
+      "query",
+      "system:files",
+      signal,
+      1,
+      null,
+      (execution) => work(makeDbReader(
+        this.options.engine,
+        execution.connection,
+        null,
+        execution.statementObserver,
+      )),
+    );
+  }
+
+  /** One ordinary coordinated writer transaction for framework File state. */
+  filesWrite<T>(
+    signal: AbortSignal,
+    work: (db: unknown) => T | Promise<T>,
+    options: { readonly waitForRecovery?: boolean } = {},
+  ): Promise<T> {
+    return runInInvocationRoot(SYSTEM_PRINCIPAL, () => this.executeWrite(
+      "transaction",
+      "system:files",
+      signal,
+      1,
+      (db, writes) => {
+        const scope = createMutationInvocationScope(this.options.engine.writer, writes);
+        return scope.runRoot((mutationAccess) =>
+          withMutationAccess(mutationAccess, () => work(db)));
+      },
+      options.waitForRecovery ?? true,
+    ));
   }
 
   async resolveIdentity(
@@ -395,6 +456,7 @@ export class RuntimeFunctionExecutor<C> {
         return currentTimestamp();
       },
       jobs: procedureJobsNamespace(this.options.jobs()),
+      files: this.fileProcedures.capability(principal, signal),
       ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
         this.inTransactionTrace(() => this.executeWrite(
@@ -467,11 +529,12 @@ export class RuntimeFunctionExecutor<C> {
       invocation: this.pluginInvocationCapabilities(principal, timestamp),
     }) ?? {};
     return Object.freeze({
-      db,
+      db: applicationDatabase(db),
       auth: principal,
       log: this.options.log,
       timestamp,
       jobs: queryJobsNamespace(this.options.jobs(), db),
+      files: this.options.files.query(db),
       ...plugins,
     }) as QueryCtx;
   }
@@ -494,7 +557,7 @@ export class RuntimeFunctionExecutor<C> {
     }) ?? {};
     return Object.freeze({
       ...extras,
-      db,
+      db: applicationDatabase(db),
       auth: principal,
       analytics,
       log: this.options.log,
@@ -508,6 +571,11 @@ export class RuntimeFunctionExecutor<C> {
           this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
         ),
       ),
+      files: this.options.files.mutation(db, principal, timestamp, (at) => {
+        writes.fileCleanupAt = writes.fileCleanupAt === null
+          ? at
+          : Math.min(writes.fileCleanupAt, at);
+      }, () => markOneTimeResult(writes)),
       ...plugins,
     }) as MutationCtx;
   }
@@ -536,7 +604,11 @@ export class RuntimeFunctionExecutor<C> {
 
   private async commitWrite<T>(
     request: RuntimeCommitRequest<T>,
+    waitForFileRecovery = true,
   ): Promise<CommitResult<T, ReactiveCommit>> {
+    if (waitForFileRecovery) {
+      await settleOnAbort(this.fileRecoveryBarrier, request.admissionSignal);
+    }
     let scheduledTables: ReadonlySet<string> = new Set();
     const result = await this.coordinator.execute({
       operation: request.operation,
@@ -591,6 +663,7 @@ export class RuntimeFunctionExecutor<C> {
     signal: AbortSignal,
     requestBytes: number,
     work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>,
+    waitForFileRecovery = true,
   ): Promise<T> {
     throwIfAborted(signal);
     assertWriterAvailable();
@@ -601,7 +674,7 @@ export class RuntimeFunctionExecutor<C> {
       admissionSignal: signal,
       transactionSignal: signal,
       work,
-    });
+    }, waitForFileRecovery);
     return result.value;
   }
 

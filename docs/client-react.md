@@ -221,6 +221,63 @@ application error. Its `error.kind` separates application errors from AckerDB
 client failures; client failures include `committed` when convergence failed
 after the mutation may have committed.
 
+## Files
+
+`useFileUpload()` returns one stable, provider-owned upload function. Pass it
+the application mutation that authorizes and creates an Upload Session, then
+save the returned `FileId` with an ordinary mutation:
+
+```tsx
+import { useFileUpload, useMutation } from "@ackerdb/client-react";
+import { api } from "./_generated/api";
+
+function AvatarForm({ avatarUrl }: { avatarUrl: string | null }) {
+  const uploadFile = useFileUpload();
+  const saveAvatar = useMutation(api.profiles.saveAvatar);
+
+  async function save(file: File) {
+    const uploaded = await uploadFile({
+      createSession: api.profiles.createAvatarUpload,
+      args: {},
+      file,
+    });
+    if (!uploaded.ok) throw uploaded.error;
+
+    const saved = await saveAvatar({ fileId: uploaded.data });
+    if (!saved.ok) throw saved.error;
+  }
+
+  return (
+    <>
+      <input
+        type="file"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void save(file);
+        }}
+      />
+      {avatarUrl === null ? null : <img src={avatarUrl} alt="Profile" />}
+    </>
+  );
+}
+```
+
+The upload reuses the same `Blob` or `BufferSource` and the same idempotent
+session through ambiguous failures until success, caller cancellation, or
+session expiry. It routes the Upload Session path through the provider's
+configured AckerDB origin, so an on-device React Native client never sends the
+PUT to a server-advertised `127.0.0.1`. Public profile images remain ordinary
+bearer URLs rendered directly by `<img>`; there is no private-image/object-URL
+hook or public client escape hatch. Imperative base-client code can stream a
+server-issued authenticated or validated grant with
+`client.files.fetch(url, { method: "GET", headers: { Range: "bytes=0-1023" }, signal })`.
+The same operation accepts `HEAD` and conditional request headers. The client
+always owns `Authorization`, ignoring a caller-supplied value, and routes the
+grant path through its configured AckerDB server even when `files.publicUrl`
+uses a different origin.
+See [Files](files.md) for server mutations, URL access modes, storage, and
+lifecycle rules.
+
 ## Procedures
 
 `useProcedure(ref)` returns a stable one-shot request function. Procedures are

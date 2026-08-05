@@ -23,6 +23,15 @@ generated embeddings. Its Float32 normalization, direct-column storage rules,
 and exact-search API are documented in [Vectors and exact similarity
 search](vector-search.md).
 
+## File identities
+
+`v.file()` validates a branded `FileId`; `v.fileGrant()` validates the distinct
+`FileGrantId` returned when a download URL is created. Both cross standard JSON
+as decimal strings and may be stored as direct required or nullable columns.
+Only `v.file()` participates in automatic pending-File claiming; storing a
+Grant identity is ordinary application data. See [Files](files.md) for their
+lifecycle and access roles.
+
 ## Constraints and descriptions
 
 Constraints compose before one terminal presence modifier:

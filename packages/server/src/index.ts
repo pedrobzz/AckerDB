@@ -28,7 +28,61 @@ export {
 } from "./plugins/definition.ts";
 export { assemblePlugins } from "./plugins/assembly.ts";
 export { pluginValidator } from "./plugins/validator.ts";
-export { type Identity } from "@ackerdb/core";
+export {
+  type FileGrantId,
+  type FileId,
+  type FileMetadata,
+  type FileState,
+  type FileUploadSession,
+  type Identity,
+} from "@ackerdb/core";
+export {
+  type CreateFileUploadSessionOptions,
+  type CreateFileUrlOptions,
+  type FileDuration,
+  type FileGrant,
+  type FileGrantAccess,
+  type FileGrantLifetime,
+  type FileGrantMetadata,
+  type FileGrantMetadataQuery,
+  type FileMetadataQuery,
+  type FileMutationCapability,
+  type FileProcedureCapability,
+  type FileQueryCapability,
+  type FileRange,
+  type OpenedFile,
+  type OrderedFileMetadataQuery,
+  type StoreFileOptions,
+} from "./files/api.ts";
+export { type RuntimeFilesOptions } from "./files/namespace.ts";
+export {
+  type FileObservabilitySnapshot,
+  type FileTransferOutcome,
+  type FileTransferSnapshot,
+  type FileUsageSnapshot,
+} from "./files/observability.ts";
+export {
+  FileStoreError,
+  type FileStore,
+  type FileStoreAttributes,
+  type FileStoreErrorCode,
+  type FileStoreOpenOptions,
+  type FileStoreOpenResult,
+  type FileStoreOptions,
+  type FileStorePutOptions,
+  type FileStorePutResult,
+  type FileStoreRange,
+} from "./files/store/contract.ts";
+export {
+  LocalFileStore,
+  type LocalFileStoreConfig,
+} from "./files/store/local.ts";
+export {
+  type S3Credentials,
+  type S3FileStoreChecksum,
+  type S3FileStoreConfig,
+  type S3FileStoreEncryption,
+} from "./files/store/s3-configuration.ts";
 export {
   type Descriptor,
   type Expand,
@@ -43,6 +97,7 @@ export {
   type NullishValidator,
 } from "./validation/validator.ts";
 export {
+  type FileValidator,
   type StringValidator,
   type VectorValidator,
 } from "./validation/primitives.ts";
@@ -74,6 +129,7 @@ export {
   type EngineOptions,
   type EngineStatus,
   type IntegrityReport,
+  type RestorePublicationHook,
   type TablePlan,
   type TagMap,
 } from "./database/engine.ts";
@@ -132,7 +188,7 @@ export {
   type QueryJobsOf,
   type TypedJobOutcome,
 } from "./jobs/api.ts";
-export { JOBS_TABLE, withJobsTable } from "./jobs/table.ts";
+export { JOBS_TABLE } from "./jobs/table.ts";
 export {
   type JobAttemptOutcome,
   type JobAttemptRecord,

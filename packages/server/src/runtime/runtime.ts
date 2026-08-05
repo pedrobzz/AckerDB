@@ -99,11 +99,18 @@ import {
 } from "./sessions/store.ts";
 import { RuntimeSessionApplication } from "./sessions/application.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
+import { FileObservability } from "../files/observability.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 import { RuntimeJobs } from "./jobs/runtime.ts";
 import { RuntimeControl } from "./lifecycle/control.ts";
 import { RuntimeQueries } from "./queries/runtime.ts";
 import { RuntimeSystem } from "./system/runtime.ts";
+import { RuntimeFiles } from "../files/namespace.ts";
+import {
+  FileHttpRuntime,
+  type RuntimeFileRequest,
+} from "../files/http.ts";
+import { FileCleanupRuntime } from "../files/cleanup.ts";
 
 /** Package-private transport hook; intentionally absent from the public index. */
 export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
@@ -132,6 +139,10 @@ export class Runtime implements RuntimePort {
   readonly deliveryObserver: DeliveryObserver;
 
   private readonly now: () => number;
+  private readonly files: RuntimeFiles;
+  readonly fileMaxBytes: number;
+  private readonly fileHttp: FileHttpRuntime;
+  private readonly fileCleanup: FileCleanupRuntime;
   private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: AuthInvalidationPublisher;
@@ -159,6 +170,11 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
+    this.files = new RuntimeFiles(
+      options.files,
+      new FileObservability(this.engine, this.now),
+    );
+    this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
       throw new TypeError("Runtime requires a ready Plugin runtime");
     }
@@ -302,6 +318,8 @@ export class Runtime implements RuntimePort {
         : {}),
       armJobs: () => this.jobs.arm(),
       jobs: () => this.jobs,
+      files: this.files,
+      fileLifecycleSignal: () => this.control.shutdownSignal,
       hooks: options.hooks,
       now: this.now,
     });
@@ -312,6 +330,21 @@ export class Runtime implements RuntimePort {
       shutdownSignal: () => this.control.shutdownSignal,
       telemetry: this.telemetry,
       tracing: this.tracing,
+    });
+    this.fileHttp = new FileHttpRuntime({
+      files: this.files,
+      now: this.now,
+      lifecycleSignal: () => this.control.shutdownSignal,
+      read: (signal, work) => this.functions.filesRead(signal, work),
+      write: (signal, work) => this.functions.filesWrite(signal, work),
+      authorize: (address, args, principal, fairnessKey, signal) =>
+        this.queries.execute(address, args, principal, fairnessKey, signal, 1),
+    });
+    this.fileCleanup = new FileCleanupRuntime({
+      files: this.files,
+      now: this.now,
+      read: (signal, work) => this.functions.filesRead(signal, work),
+      write: (signal, work) => this.functions.filesWrite(signal, work, { waitForRecovery: false }),
     });
     this.http = new RuntimeHttp({
       registry: this.registry,
@@ -410,6 +443,8 @@ export class Runtime implements RuntimePort {
       reactive: this.reactive,
       sessions: this.sessionStore,
       jobs: this.jobs,
+      fileCleanup: this.fileCleanup,
+      files: this.files,
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
@@ -443,6 +478,7 @@ export class Runtime implements RuntimePort {
         authCaptureBudget: this.authCaptureBudget.snapshot(),
         sseBudget: this.http.sseBudget.snapshot(),
         telemetry: this.telemetry.snapshot(),
+        files: this.files.observability.snapshot(),
         storage: this.engine.status(),
       }),
       sampleRealtime: () => {
@@ -451,6 +487,7 @@ export class Runtime implements RuntimePort {
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sampler.start();
+    this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
     void this.jobs.activate();
   }
 
@@ -588,6 +625,12 @@ export class Runtime implements RuntimePort {
 
   async runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
     return this.http.runHttpHandler(input);
+  }
+
+  /** Streaming built-in Upload Session and File Grant routes. */
+  runFileRequest(input: RuntimeFileRequest): Promise<Response> {
+    this.control.assertReady();
+    return this.fileHttp.handle(input);
   }
 
   /** The single deep MCP execution path used by every present and future adapter. */

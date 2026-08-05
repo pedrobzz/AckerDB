@@ -132,6 +132,8 @@ const KINDS: Record<string, DescriptorKind> = {
     },
   },
   identity: { sqlType: "INTEGER", check: checkI64 },
+  file: { sqlType: "INTEGER", check: checkI64 },
+  fileGrant: { sqlType: "INTEGER", check: checkI64 },
   boolean: {
     sqlType: "INTEGER",
     encode: (v) => (v ? 1 : 0),

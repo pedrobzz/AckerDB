@@ -215,6 +215,8 @@ const SCALAR_OUTPUT_KINDS = new Set([
   "float",
   "bigint",
   "identity",
+  "file",
+  "fileGrant",
   "boolean",
   "enum",
   "literal",
