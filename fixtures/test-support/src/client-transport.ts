@@ -59,6 +59,24 @@ export class ManualClock implements AckerDBClientClock {
   }
 
   /**
+   * Moves wall time forward while every timer stays asleep: the frozen-tab
+   * and suspended-host case, where a scheduled callback simply does not run
+   * for however long the environment was stopped. Anything that came due
+   * during the freeze becomes due at the wake instant, so the next `advance`
+   * fires it there — a woken browser runs overdue callbacks now, never at
+   * the moment they were originally scheduled for.
+   */
+  freeze(ms: number): void {
+    this.time += ms;
+    // Everything that came due while the environment was stopped is now
+    // simply overdue: a woken browser runs those callbacks at the current
+    // instant, never at the moment they were originally scheduled for.
+    for (const task of this.tasks.values()) {
+      if (task.at < this.time) task.at = this.time;
+    }
+  }
+
+  /**
    * Runs every task due within `ms`, each at its own scheduled instant, so a
    * callback that reads `now()` or schedules more work sees the time it would
    * have seen in real execution. Intervals keep their slot rather than being

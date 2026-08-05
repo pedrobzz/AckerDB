@@ -3,7 +3,11 @@
  * never executed — `bun run typecheck` failing (including an unused
  * @ts-expect-error) is the test.
  */
-import { AckerDBClient } from "@ackerdb/client";
+import {
+  AckerDBClient,
+  type FileId,
+  type FileUploadSession,
+} from "@ackerdb/client";
 import {
   Err,
   Ok,
@@ -52,6 +56,23 @@ const createItem = generatedMutation({
       authorization: authorization.data,
     };
   },
+});
+
+const createFileUpload = generatedMutation({
+  args: { organizationId: v.bigint() },
+  access: "authenticated",
+  handler: (_ctx, args) =>
+    args.organizationId > 0n
+      ? ({
+          url: "https://uploads.ackerdb.test/session",
+          expiresAt: 2_000,
+          maxBytes: 1_024,
+        } satisfies FileUploadSession)
+      : Err(
+          "organization-not-found",
+          { organizationId: args.organizationId },
+          Status.NotFound,
+        ),
 });
 
 const pipeline = generatedProcedure({
@@ -110,6 +131,7 @@ const api = anyApi as unknown as ApiFromModules<{
   generated: {
     authorizationSummary: typeof authorizationSummary;
     createItem: typeof createItem;
+    createFileUpload: typeof createFileUpload;
     pipeline: typeof pipeline;
     findItem: typeof findItem;
     ticker: typeof ticker;
@@ -138,6 +160,40 @@ export async function _generatedClientInference(): Promise<void> {
   const _nestedLabel: string = mutationResult.data.authorization.label;
   // @ts-expect-error the protocol receipt does not replace the application result type
   const _wrongMutationResult: MutationReceipt = mutationResult;
+
+  const fileResult = await client.files.upload({
+    createSession: api.generated.createFileUpload,
+    args: { organizationId: 1n },
+    file: new Uint8Array([1, 2, 3]),
+  });
+  if (fileResult.ok) {
+    const _fileId: FileId = fileResult.data;
+    // @ts-expect-error the helper returns the File identity, not its upload session
+    const _session: FileUploadSession = fileResult.data;
+  } else if (fileResult.error.kind === "application") {
+    const _code: "organization-not-found" = fileResult.error.code;
+    const _organizationId: bigint = fileResult.error.body.organizationId;
+  }
+  client.files.upload({
+    createSession: api.generated.createFileUpload,
+    args: {
+      // @ts-expect-error upload arguments are inferred from the application mutation
+      organizationId: "1",
+    },
+    file: new Uint8Array(),
+  });
+  client.files.upload({
+    // @ts-expect-error the session creator must return FileUploadSession
+    createSession: api.generated.createItem,
+    args: { label: "document" },
+    file: new Uint8Array(),
+  });
+  client.files.upload({
+    // @ts-expect-error the helper requires a typed application MutationRef
+    createSession: "documents.createUpload",
+    args: {},
+    file: new Uint8Array(),
+  });
 
   const procedureResult = await client.procedure(api.generated.pipeline, { label: "procedure" });
   if (!procedureResult.ok) throw procedureResult.error;

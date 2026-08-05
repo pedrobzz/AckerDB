@@ -10,6 +10,7 @@ import type {
   MutationCtx,
   ProcedureCtx,
 } from "./functions.ts";
+import type { AnyJobsNamespace } from "../jobs/api.ts";
 
 const SYSTEM_OPERATION_NAME = /^[A-Za-z][A-Za-z0-9_-]*(?:[.:][A-Za-z][A-Za-z0-9_-]*)*$/;
 const UUID_SEGMENT =
@@ -29,7 +30,8 @@ export function isSystemOperationName(value: unknown): value is string {
 export type SystemTxCtx<
   S extends Schema = Schema,
   Capabilities extends object = Readonly<Record<never, never>>,
-> = Omit<MutationCtx<S, Capabilities>, "auth"> & {
+  Jobs extends object = AnyJobsNamespace,
+> = Omit<MutationCtx<S, Capabilities, Jobs>, "auth"> & {
   readonly auth: SystemPrincipal;
 };
 
@@ -38,10 +40,12 @@ export type SystemCtx<
   S extends Schema = Schema,
   Capabilities extends object = Readonly<Record<never, never>>,
   TransactionCapabilities extends object = Readonly<Record<never, never>>,
-> = Omit<ProcedureCtx<S, Capabilities, TransactionCapabilities>, "auth" | "tx"> & {
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
+> = Omit<ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs>, "auth" | "tx"> & {
   readonly auth: SystemPrincipal;
   tx<R>(
-    fn: (tx: SystemTxCtx<S, TransactionCapabilities>) => R,
+    fn: (tx: SystemTxCtx<S, TransactionCapabilities, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
 

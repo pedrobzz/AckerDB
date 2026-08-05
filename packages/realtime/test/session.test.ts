@@ -48,10 +48,11 @@ function procedure(signal: AbortSignal): ProcedureCtx {
     abortSignal: signal,
     log: noopLogger,
     timestamp: 1,
+    jobs: {},
     tx: async () => Ok(undefined),
     linkAccount: async () => {},
     unlinkAccount: async () => {},
-  }) as ProcedureCtx;
+  }) as unknown as ProcedureCtx;
 }
 
 const SESSION_LIMITS = Object.freeze({

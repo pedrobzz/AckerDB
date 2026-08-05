@@ -10,11 +10,20 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { encode } from "@ackerdb/core";
-import { Engine, reconcile, reconcilePluginStorage, type TelemetryRecord } from "@ackerdb/server";
+import {
+  Engine,
+  LocalFileStore,
+  reconcile,
+  reconcilePluginStorage,
+  type TelemetryRecord,
+} from "@ackerdb/server";
+import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import { importApp } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
+import { fileStoreIdentity } from "../../src/files/identity.ts";
 import { mutationReplayOwner } from "../../../server/src/database/mutation-replay.ts";
 import {
+  backupFilesPath,
   backupManifestPath,
   parseBackupManifest,
   restoreVerifiedBackup,
@@ -94,6 +103,40 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
   }
 }
 
+async function seedFile(dir: string): Promise<{ objectKey: string; contents: string }> {
+  const config = loadConfig(dir);
+  const objectKey = "private-backup-object-key";
+  const contents = "bytes survive the backup boundary";
+  const bytes = new TextEncoder().encode(contents);
+  if (config.files.backend !== "filesystem") throw new Error("test fixture must use local File storage");
+  const store = new LocalFileStore({ root: config.files.root });
+  const stored = await store.put(objectKey, new Blob([bytes]).stream(), {
+    contentLength: bytes.byteLength,
+  });
+  const app = await importApp(config);
+  const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
+  try {
+    resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
+    engine.writer.query(`INSERT INTO _ackerdb_files (
+      id, state, objectKey, owner, size, sha256, contentType, name, createdAt, pendingExpiresAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      41n,
+      "active",
+      objectKey,
+      null,
+      BigInt(stored.size),
+      stored.sha256,
+      "text/plain",
+      "backup.txt",
+      1_700_000_000_000,
+      null,
+    );
+  } finally {
+    engine.close("clean");
+  }
+  return { objectKey, contents };
+}
+
 function appWithPlugin(
   mount: string,
   definitionId: string,
@@ -132,6 +175,198 @@ function telemetryRecords(stdout: string): TelemetryRecord[] {
 }
 
 describe("acker backup, restore, and status", () => {
+  test("backup includes framework File bytes and restore writes them to the active File store", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const artifact = join(source, "backup.db");
+
+    const backup = await runCli(["backup", artifact, source]);
+    expect(backup.code).toBe(0);
+    const backupReport = outputJson<BackupReport>(backup.stdout);
+    expect(backupReport.manifest.files).toEqual({
+      mode: "included",
+      count: 1,
+      bytes: new TextEncoder().encode(file.contents).byteLength,
+    });
+    expect(telemetryRecords(backup.stdout)).toEqual([
+      expect.objectContaining({
+        operation: "backup",
+        sizeBytes: backupReport.manifest.bytes + backupReport.manifest.files.bytes,
+      }),
+    ]);
+    expect(existsSync(backupFilesPath(artifact))).toBe(true);
+
+    const target = fixture();
+    const restored = await runCli(["restore", artifact, target]);
+    expect(restored.code).toBe(0);
+    const targetConfig = loadConfig(target);
+    if (targetConfig.files.backend !== "filesystem") {
+      throw new Error("test fixture must use local File storage");
+    }
+    const opened = await new LocalFileStore({ root: targetConfig.files.root }).open(file.objectKey);
+    expect(await new Response(opened.body).text()).toBe(file.contents);
+    const restoredEngine = new Engine(
+      (await importApp(targetConfig)).schema,
+      join(targetConfig.dbDir, "data.db"),
+    );
+    try {
+      resolveFileStoreBinding(restoredEngine, await fileStoreIdentity(targetConfig.files));
+      const sourceIdentity = await fileStoreIdentity(loadConfig(source).files);
+      expect(() => resolveFileStoreBinding(
+        restoredEngine,
+        sourceIdentity,
+      )).toThrow();
+    } finally {
+      restoredEngine.close("clean");
+    }
+  }, 30_000);
+
+  test("--metadata-only omits bytes but verifies an independently restored File store", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const artifact = join(source, "metadata-only.db");
+
+    const backup = await runCli(["backup", artifact, source, "--metadata-only"]);
+    expect(backup.code).toBe(0);
+    expect(outputJson<BackupReport>(backup.stdout).manifest.files).toEqual({
+      mode: "metadata-only",
+      count: 1,
+      bytes: 0,
+    });
+    expect(existsSync(backupFilesPath(artifact))).toBe(false);
+
+    const target = fixture();
+    const targetConfig = loadConfig(target);
+    if (targetConfig.files.backend !== "filesystem") {
+      throw new Error("test fixture must use local File storage");
+    }
+    const targetStore = new LocalFileStore({ root: targetConfig.files.root });
+    const restoredBytes = new Blob([file.contents]);
+    await targetStore.put(file.objectKey, restoredBytes.stream(), {
+      contentLength: restoredBytes.size,
+    });
+    const restored = await runCli(["restore", artifact, target]);
+    expect(restored.code).toBe(0);
+    expect(await new Response((await targetStore.open(file.objectKey)).body).text()).toBe(
+      file.contents,
+    );
+  }, 30_000);
+
+  test("metadata-only restore refuses missing or corrupt independently restored bytes", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const artifact = join(source, "metadata-only.db");
+    expect((await runCli(["backup", artifact, source, "--metadata-only"])).code).toBe(0);
+
+    const target = fixture();
+    const targetConfig = loadConfig(target);
+    if (targetConfig.files.backend !== "filesystem") {
+      throw new Error("test fixture must use local File storage");
+    }
+    const targetStore = new LocalFileStore({ root: targetConfig.files.root });
+    const corruptBytes = new Blob(["corrupt independently restored bytes"]);
+    await targetStore.put(file.objectKey, corruptBytes.stream(), {
+      contentLength: corruptBytes.size,
+    });
+    const restored = await runCli(["restore", artifact, target]);
+    expect(restored.code).toBe(1);
+    expect(restored.stderr).toContain("independently restored bytes for File 41 do not match");
+    expect(existsSync(join(targetConfig.dbDir, "data.db"))).toBe(false);
+    expect(await new Response((await targetStore.open(file.objectKey)).body).text()).toBe(
+      "corrupt independently restored bytes",
+    );
+  }, 30_000);
+
+  test("restore rejects changed File bytes before creating the target database", async () => {
+    const source = fixture();
+    await seed(source);
+    await seedFile(source);
+    const artifact = join(source, "backup.db");
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
+    writeFileSync(join(backupFilesPath(artifact), "41"), "changed backup File bytes");
+
+    const target = fixture();
+    const restored = await runCli(["restore", artifact, target]);
+    expect(restored.code).toBe(1);
+    expect(restored.stderr).toContain("backup bytes for File 41 do not match its metadata");
+    expect(existsSync(join(target, ".ackerdb"))).toBe(false);
+    expect(existsSync(artifact)).toBe(true);
+    expect(existsSync(backupFilesPath(artifact))).toBe(true);
+  }, 30_000);
+
+  test("backup fails without publishing a partial artifact when File bytes are missing", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const config = loadConfig(source);
+    if (config.files.backend !== "filesystem") throw new Error("test fixture must use local File storage");
+    await new LocalFileStore({ root: config.files.root }).delete(file.objectKey);
+    const artifact = join(source, "backup.db");
+
+    const backup = await runCli(["backup", artifact, source]);
+    expect(backup.code).toBe(1);
+    expect(backup.stderr).toContain("file storage object was not found");
+    expect(existsSync(artifact)).toBe(false);
+    expect(existsSync(backupFilesPath(artifact))).toBe(false);
+    expect(existsSync(backupManifestPath(artifact))).toBe(false);
+    expect(existsSync(join(config.dbDir, "data.db"))).toBe(true);
+  }, 30_000);
+
+  test("backup excludes deleting Files whose physical cleanup may already be complete", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const config = loadConfig(source);
+    if (config.files.backend !== "filesystem") throw new Error("test fixture must use local File storage");
+    const app = await importApp(config);
+    const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
+    try {
+      engine.writer.query("UPDATE _ackerdb_files SET state = 'deleting' WHERE id = 41").run();
+    } finally {
+      engine.close("clean");
+    }
+    await new LocalFileStore({ root: config.files.root }).delete(file.objectKey);
+    const artifact = join(source, "backup.db");
+
+    const backup = await runCli(["backup", artifact, source]);
+    expect(backup.code).toBe(0);
+    expect(outputJson<BackupReport>(backup.stdout).manifest.files).toEqual({
+      mode: "included",
+      count: 0,
+      bytes: 0,
+    });
+  }, 30_000);
+
+  test("restore never replaces an existing target File object", async () => {
+    const source = fixture();
+    await seed(source);
+    const file = await seedFile(source);
+    const artifact = join(source, "backup.db");
+    expect((await runCli(["backup", artifact, source])).code).toBe(0);
+
+    const target = fixture();
+    const targetConfig = loadConfig(target);
+    if (targetConfig.files.backend !== "filesystem") {
+      throw new Error("test fixture must use local File storage");
+    }
+    const targetStore = new LocalFileStore({ root: targetConfig.files.root });
+    const existingBytes = new Blob(["existing target bytes"]);
+    await targetStore.put(file.objectKey, existingBytes.stream(), {
+      contentLength: existingBytes.size,
+    });
+
+    const restored = await runCli(["restore", artifact, target]);
+    expect(restored.code).toBe(1);
+    expect(restored.stderr).toContain("already contains the object for File 41");
+    expect(await new Response((await targetStore.open(file.objectKey)).body).text()).toBe(
+      "existing target bytes",
+    );
+    expect(existsSync(join(targetConfig.dbDir, "data.db"))).toBe(false);
+  }, 30_000);
+
   test("status and backup never create a missing source database", async () => {
     const source = fixture();
     const databaseDir = join(source, ".ackerdb");
@@ -171,7 +406,12 @@ describe("acker backup, restore, and status", () => {
       operation: "backup",
       artifact,
       manifestPath: backupManifestPath(artifact),
-      manifest: { format: 1, commitVersion: "1", durability: "production" },
+      manifest: {
+        format: 2,
+        commitVersion: "1",
+        durability: "production",
+        files: { mode: "included", count: 0, bytes: 0 },
+      },
     });
     expect(existsSync(artifact)).toBe(true);
     expect(existsSync(backupManifestPath(artifact))).toBe(true);
@@ -432,12 +672,13 @@ describe("acker backup, restore, and status", () => {
 
   test("manifest parser rejects non-canonical and lossy values", () => {
     const valid: BackupManifestJson = {
-      format: 1,
+      format: 2,
       sha256: "a".repeat(64),
       bytes: 4096,
       schemaFingerprint: "b".repeat(64),
       commitVersion: "9007199254740993",
       durability: "production",
+      files: { mode: "included", count: 2, bytes: 12_345 },
       verifiedAt: 1,
     };
     expect(parseBackupManifest(valid).commitVersion).toBe(9007199254740993n);

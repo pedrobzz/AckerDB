@@ -17,6 +17,18 @@ import {
 } from "./statement-observation.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
+import { decode, stableEncode } from "@ackerdb/core";
+import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
+import { hashJobArgs } from "../jobs/identity.ts";
+import { FILES_TABLE } from "../files/tables.ts";
+import {
+  checkpointFileObservability,
+  newFileObservabilityDelta,
+  rollbackFileObservability,
+  stageFileObservability,
+  type FileObservabilityCheckpoint,
+  type FileObservabilityDelta,
+} from "../files/observability.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -47,12 +59,18 @@ export interface WriteCollector {
   events: EventEmit[];
   /** Exact scheduled tables written by this transaction — the scheduler refreshes only these. */
   scheduledTables: Set<string>;
+  /** Earliest post-commit wake requested by transactional File state. */
+  fileCleanupAt: number | null;
+  /** Framework File state staged until the enclosing database COMMIT succeeds. */
+  fileObservability: FileObservabilityDelta;
 }
 
 export interface WriteCollectorCheckpoint {
   readonly keys: number;
   readonly events: number;
   readonly scheduledTables: number;
+  readonly fileCleanupAt: number | null;
+  readonly fileObservability: FileObservabilityCheckpoint;
 }
 
 class JournaledSet<T> extends Set<T> {
@@ -87,6 +105,8 @@ export function checkpointWriteCollector(
     keys: keys.checkpoint(),
     events: writes.events.length,
     scheduledTables: scheduledTables.checkpoint(),
+    fileCleanupAt: writes.fileCleanupAt,
+    fileObservability: checkpointFileObservability(writes.fileObservability),
   };
 }
 
@@ -102,6 +122,8 @@ export function rollbackWriteCollector(
   keys.rollback(checkpoint.keys);
   writes.events.length = checkpoint.events;
   scheduledTables.rollback(checkpoint.scheduledTables);
+  writes.fileCleanupAt = checkpoint.fileCleanupAt;
+  rollbackFileObservability(writes.fileObservability, checkpoint.fileObservability);
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +267,48 @@ function observedWriteResult<T>(
   ));
 }
 
+/**
+ * A schema-declared v.file() is the explicit ownership boundary: writing that
+ * row atomically promotes a pending upload. No table scan or inferred bigint
+ * relationship is involved, and deleting/replacing the row never cascades.
+ */
+function claimFileReferences(
+  engine: Engine,
+  writes: WriteCollector,
+  plan: TablePlan,
+  row: Record<string, unknown>,
+): void {
+  const ids = new Set<bigint>();
+  for (const [column, validator] of Object.entries(plan.table.columns)) {
+    const inner = (validator as { readonly inner?: { readonly kind?: string } }).inner;
+    const file = validator.kind === "file" ||
+      (validator.kind === "nullable" && inner?.kind === "file");
+    if (file && typeof row[column] === "bigint") ids.add(row[column] as bigint);
+  }
+  if (ids.size === 0) return;
+
+  const filePlan = engine.rootScope.plan(FILES_TABLE);
+  for (const id of ids) {
+    const raw = engine.statement(
+      engine.writer,
+      `SELECT ${filePlan.readProjection} FROM ${quote(filePlan.name)} WHERE ${quote(filePlan.pk)} = ?`,
+    ).get(id as never) as Record<string, unknown> | null;
+    const file = raw === null ? null : engine.rowFromSql(filePlan, raw);
+    if (file === null || file.state === "deleting") {
+      return poisonTransaction(new ValidationError(
+        `${plan.displayName}: File ${id} does not exist`,
+      ));
+    }
+    if (file.state === "pending") {
+      updateRow(engine, writes, filePlan, {
+        id,
+        oldRow: file,
+        partial: { state: "active", pendingExpiresAt: null },
+      });
+    }
+  }
+}
+
 function updateRow(
   engine: Engine,
   writes: WriteCollector,
@@ -259,6 +323,7 @@ function updateRow(
     throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
   }
   const partial = input.partial as Record<string, unknown>;
+  const changed: Record<string, unknown> = {};
   const sets: string[] = [];
   const params: unknown[] = [];
   const updated: Record<string, unknown> = { ...input.oldRow };
@@ -272,6 +337,7 @@ function updateRow(
     }
     const validator = plan.table.columns[key]!;
     const value = validator.check(partial[key], `${plan.displayName}.patch.${key}`);
+    changed[key] = value;
     updated[key] = value;
     const columnPlan = plan.columns.get(key)!;
     const sqlValues = columnPlan.toSql(value);
@@ -291,9 +357,14 @@ function updateRow(
   } catch (error) {
     wrapUnique(plan.displayName, error);
   }
+  // A patch writes only its declared fields. Revalidating untouched File
+  // columns would turn explicit File deletion into hidden reference
+  // protection and could make an otherwise unrelated row edit impossible.
+  claimFileReferences(engine, writes, plan, changed);
   emitWriteKeys(plan, input.oldRow, writes.keys);
   emitWriteKeys(plan, updated, writes.keys);
   emitFullTextWriteKeys(plan, input.oldRow, updated, writes.keys);
+  stageFileObservability(writes.fileObservability, plan.logicalName, input.oldRow, updated);
   if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
   return { value: undefined, row: updated };
 }
@@ -333,8 +404,10 @@ function writeMethods(
         }
         const id = inserted[plan.pk] as bigint;
         const full = { ...values, [plan.pk]: id };
+        claimFileReferences(engine, writes, plan, full);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, null, full, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, null, full);
         touch();
         return { value: id, row: full };
       });
@@ -373,9 +446,11 @@ function writeMethods(
           wrapUnique(plan.displayName, error);
         }
         const full = { ...values, [plan.pk]: id };
+        claimFileReferences(engine, writes, plan, full);
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, old, full, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, old, full);
         touch();
         return { value: undefined, row: full };
       });
@@ -391,6 +466,7 @@ function writeMethods(
           .run(id as never);
         emitWriteKeys(plan, old, writes.keys);
         emitFullTextWriteKeys(plan, old, null, writes.keys);
+        stageFileObservability(writes.fileObservability, plan.logicalName, old, null);
         touch();
         return { value: undefined, row: old };
       });
@@ -432,6 +508,7 @@ function writeMethods(
             const row = engine.rowFromSql(plan, raw);
             emitWriteKeys(plan, row, writes.keys);
             emitFullTextWriteKeys(plan, row, null, writes.keys);
+            stageFileObservability(writes.fileObservability, plan.logicalName, row, null);
           }
           if (rawRows.length > 0) touch();
           return rawRows.length;
@@ -598,6 +675,75 @@ export function makeDbReader(
   return db;
 }
 
+/**
+ * The application-facing writer over the framework jobs table. The runner owns
+ * the state machine, so its columns are guarded here — the one public write
+ * seam — while scheduling intent stays open: `runAt`, `key`, and `argsJson`
+ * may be patched (a patched `argsJson` recomputes the dedup hash so identity
+ * cannot drift), and rows may be deleted. Inserts go through
+ * `ctx.jobs.enqueue`, the door that computes identity and dedup.
+ */
+function guardedJobsWriter(
+  writer: ReturnType<typeof writeMethods>,
+  getRow: (id: bigint) => Promise<Record<string, unknown> | null>,
+): ReturnType<typeof writeMethods> {
+  const refuse = (op: string): never => {
+    throw new ValidationError(
+      `${JOBS_TABLE}.${op}: jobs are created with ctx.jobs.enqueue and settled by the runner`,
+    );
+  };
+  return {
+    ...writer,
+    insert: () => refuse("insert"),
+    replace: () => refuse("replace"),
+    patch: (id: bigint, partial: unknown) => {
+      if (partial !== null && typeof partial === "object" && !Array.isArray(partial)) {
+        const input = partial as Record<string, unknown>;
+        for (const key of Object.keys(input)) {
+          if (input[key] !== undefined && JOBS_GUARDED_COLUMNS.has(key)) {
+            throw new ValidationError(
+              `${JOBS_TABLE}.patch: "${key}" belongs to the runner's state machine; use the ctx.jobs transitions`,
+            );
+          }
+        }
+        const editsIntent = ["argsJson", "key", "runAt"].some(
+          (column) => input[column] !== undefined,
+        );
+        if (editsIntent) {
+          return makeWriteResult(async () => {
+            // A running row's claim already captured its arguments and gate:
+            // editing them mid-flight would settle old work under a new
+            // identity. Cancel first, then edit.
+            const current = await getRow(id);
+            if (current !== null && (current as { state?: unknown }).state === "running") {
+              throw new ValidationError(
+                `${JOBS_TABLE}.patch: the row is running; cancel it before editing its scheduling intent`,
+              );
+            }
+            let patch = input;
+            if (typeof input["argsJson"] === "string") {
+              // Canonicalize before hashing so an equivalent encoding cannot
+              // fork the dedup identity; a non-decodable payload is refused.
+              let canonical: string;
+              try {
+                canonical = stableEncode(decode(input["argsJson"]));
+              } catch {
+                throw new ValidationError(
+                  `${JOBS_TABLE}.patch: argsJson is not a valid canonical encoding`,
+                );
+              }
+              patch = { ...input, argsJson: canonical, argsHash: hashJobArgs(canonical) };
+            }
+            await writer.patch(id, patch);
+            return { value: undefined, row: await getRow(id) };
+          }) as ReturnType<ReturnType<typeof writeMethods>["patch"]>;
+        }
+      }
+      return writer.patch(id, partial);
+    },
+  };
+}
+
 /** Read-write ctx.db (mutations / procedure transactions). */
 export function makeDbWriter(
   engine: Engine,
@@ -614,20 +760,48 @@ export function makeDbWriter(
     }
     const plan = scope.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
+    const reader = readMethods(engine, engine.writer, null, plan, observer);
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),
-      readMethods(engine, engine.writer, null, plan, observer),
-      writer,
+      reader,
+      name === JOBS_TABLE
+        ? guardedJobsWriter(
+            writer,
+            reader["get"] as (id: bigint) => Promise<Record<string, unknown> | null>,
+          )
+        : writer,
     );
-    const upsertWriter = observer === undefined
-      ? writer
-      : writeMethods(engine, writes, plan);
-    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    if (name !== JOBS_TABLE) {
+      const upsertWriter = observer === undefined
+        ? writer
+        : writeMethods(engine, writes, plan);
+      attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    }
     db[name] = accessor;
   }
   return db;
 }
 
+/**
+ * The runner's unguarded door to the jobs table: full write methods over the
+ * jobs plan, with write keys and commit-wake emitted like any table write.
+ * Framework code only — never handed to an application handler.
+ */
+export function makeJobsTableWriter(
+  engine: Engine,
+  writes: WriteCollector,
+  observer?: DbStatementObserver,
+): ReturnType<typeof writeMethods> & { plan: TablePlan } {
+  const plan = engine.rootScope.plan(JOBS_TABLE);
+  return Object.assign(writeMethods(engine, writes, plan, observer), { plan });
+}
+
 export function newWriteCollector(): WriteCollector {
-  return { keys: new JournaledSet(), events: [], scheduledTables: new JournaledSet() };
+  return {
+    keys: new JournaledSet(),
+    events: [],
+    scheduledTables: new JournaledSet(),
+    fileCleanupAt: null,
+    fileObservability: newFileObservabilityDelta(),
+  };
 }

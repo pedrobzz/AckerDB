@@ -44,6 +44,11 @@ export function listServiceModules(config: AppConfig): ModuleFile[] {
   return listModules(config.servicesDir, "service");
 }
 
+/** Deterministically list job module files (sorted by key). */
+export function listJobModules(config: AppConfig): ModuleFile[] {
+  return listModules(config.jobsDir, "job");
+}
+
 export async function importApp(config: AppConfig): Promise<App> {
   if (!existsSync(config.appPath)) {
     throw new Error(`application manifest not found at ${config.appPath}`);
@@ -80,4 +85,14 @@ export async function importServiceModules(
   config: AppConfig,
 ): Promise<Record<string, Record<string, unknown>>> {
   return importModules(listServiceModules(config));
+}
+
+/**
+ * Import job modules. The serving path and dev reloads call this; codegen
+ * only lists files, so job handler imports stay out of schema tooling.
+ */
+export async function importJobModules(
+  config: AppConfig,
+): Promise<Record<string, Record<string, unknown>>> {
+  return importModules(listJobModules(config));
 }

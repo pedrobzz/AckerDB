@@ -34,6 +34,8 @@ import type {
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { declareJobs, job } from "../../src/jobs/definition.ts";
+import { JOBS_TABLE } from "../../src/jobs/table.ts";
 import type {
   RuntimePublication,
   RuntimePublicationBatch,
@@ -119,17 +121,26 @@ const schema = defineSchema({
       return row.channelId === args.channelId;
     },
   }),
-  reminders: defineTable({
-    id: v.primaryKey(),
-    message: v.string(),
-    attempt: v.int(),
-    at: v.scheduleAt(),
-  }).scheduled("reminders.fire"),
 });
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
+
+const declaredJobs = () => declareJobs({
+  reminders: {
+    fire: job({
+      kind: "mutation",
+      args: { message: v.string(), attempt: v.int() },
+      handler: async (tx: Ctx, args: Ctx) => {
+        scheduledAttempts++;
+        scheduledAttempt = args.attempt;
+        await tx.db.log.insert({ line: `fired:${args.message}` });
+        if (args.message === "fail") throw new Error("scheduled failure");
+      },
+    }),
+  },
+});
 
 let queryGate: Deferred<void> | null = null;
 let queryFailureGate: Deferred<void> | null = null;
@@ -144,6 +155,7 @@ let nestedMutationEntered: Deferred<void> | null = null;
 let nestedMutationRelease: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 let scheduledAttempt: number | null = null;
+let currentTime: number | null = null;
 let mutationResultReads = 0;
 let mutationResultValue: object = {};
 let writeThenErrCalls = 0;
@@ -379,6 +391,15 @@ const functions = {
     }),
   },
   reminders: {
+    pending: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) =>
+        ctx.jobs.reminders.fire
+          .query()
+          .where((row: Ctx) => row.state.eq("pending"))
+          .collect(),
+    }),
     fire: mutation({
       access: "system",
       args: { id: v.bigint(), message: v.string(), attempt: v.int(), at: v.float() },
@@ -393,7 +414,11 @@ const functions = {
       access: "public",
       http: true,
       args: { message: v.string(), attempt: v.int(), at: v.float() },
-      handler: (ctx: Ctx, args: Ctx) => ctx.db.reminders.insert(args),
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.jobs.reminders.fire.enqueue(
+          { message: args.message, attempt: args.attempt },
+          { at: args.at },
+        ),
     }),
   },
   ops: {
@@ -734,6 +759,8 @@ function start(
     registry: new Registry(functions),
     limits: customLimits,
     telemetry,
+    jobs: declaredJobs(),
+    now: () => currentTime ?? Date.now(),
   });
   session = new SessionHarness(runtime, "session-a");
 }
@@ -764,6 +791,7 @@ beforeEach(() => {
   nestedMutationRelease = null;
   scheduledAttempts = 0;
   scheduledAttempt = null;
+  currentTime = null;
   mutationResultReads = 0;
   writeThenErrCalls = 0;
   mutationResultValue = Object.defineProperty({}, "payload", {
@@ -2610,37 +2638,47 @@ describe("direct ingress", () => {
   });
 });
 
-describe("scheduler and lifecycle", () => {
-  test("runs the handler and deletes the due row in one commit", async () => {
+describe("jobs runner and lifecycle", () => {
+  const jobRows = () =>
+    engine.reader
+      .query(`SELECT state, attempt FROM "${JOBS_TABLE}" ORDER BY id`)
+      .all() as { state: string; attempt: number | bigint }[];
+
+  test("runs a due mutation-kind job exactly once in one commit", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     const attempt = Number.MAX_SAFE_INTEGER;
     await session.mutation(1, "reminders.schedule", { message: "ok", attempt, at: dueAt });
-    const materialized: string[] = [];
-    const decodeRow = engine.rowFromSql.bind(engine);
-    engine.rowFromSql = (plan, sqlRow) => {
-      if (plan.name === "reminders") materialized.push(typeof sqlRow["attempt"]);
-      return decodeRow(plan, sqlRow);
-    };
-    expect(await runtime.runScheduled(dueAt)).toBe(1);
+    expect(jobRows()).toMatchObject([{ state: "pending" }]);
+    currentTime = dueAt;
+    await runtime.runJobs();
     expect(scheduledAttempt).toBe(attempt);
-    expect(materialized).toEqual(["number"]);
+    expect(scheduledAttempts).toBe(1);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:ok" }]);
-    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 0n });
+    expect(jobRows()).toMatchObject([{ state: "completed", attempt: 1n }]);
   });
 
-  test("rolls handler writes and deletion back together on failure", async () => {
+  test("rolls handler writes back on failure and records the discarded attempt", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt });
-    await expect(runtime.runScheduled(dueAt)).rejects.toThrow("scheduled failure");
+    currentTime = dueAt;
+    await runtime.runJobs();
+    // The handler's log insert rolled back whole; the failed attempt settled
+    // in its own transaction as discarded (no retry policy declared).
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
-    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 1n });
+    expect(jobRows()).toMatchObject([{ state: "discarded", attempt: 1n }]);
+    const attempts = engine.reader
+      .query(`SELECT attemptsJson FROM "${JOBS_TABLE}"`)
+      .get() as { attemptsJson: string };
+    expect(JSON.parse(attempts.attemptsJson)).toMatchObject([
+      { outcome: "discarded", error: "Error: scheduled failure" },
+    ]);
   });
 
-  test("arms the scheduler for a due row an HTTP mutation committed", async () => {
+  test("arms the runner for a due job an HTTP mutation committed", async () => {
     // Arming belongs to the commit, not to the session that asked for it: a due
-    // row written over HTTP must fire without a WebSocket ever opening.
+    // job enqueued over HTTP must fire without a WebSocket ever opening.
     const response = await runtime.runMutation({
       id: 96,
       address: "reminders.schedule",
@@ -2654,83 +2692,63 @@ describe("scheduler and lifecycle", () => {
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:http" }]);
   });
 
-  test("refreshes only the scheduled tables touched by a commit", async () => {
-    const scheduler = (runtime as unknown as {
-      scheduler: {
-        initialized: boolean;
-        options: {
-          candidates: {
-            nextAt(tables: Iterable<string>): Promise<ReadonlyMap<string, number | null>>;
-          };
-        };
-      };
-    }).scheduler;
-    await eventually(() => scheduler.initialized);
-    const refreshes: string[][] = [];
-    const candidates = scheduler.options.candidates;
-    const nextScheduledAt = candidates.nextAt.bind(candidates);
-    candidates.nextAt = (tables) => {
-      const touched = [...tables];
-      refreshes.push(touched);
-      return nextScheduledAt(touched);
-    };
-
-    const response = await runtime.runMutation({
-      id: 97,
-      address: "reminders.schedule",
-      args: { message: "later", attempt: 1, at: Date.now() + 100_000 },
-      principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
-    });
-
-    expect(response.status).toBe(200);
-    await eventually(() => refreshes.length === 1);
-    expect(refreshes).toEqual([["reminders"]]);
-  });
-
-  test("backs a failing due job off instead of retrying in a hot loop", async () => {
+  test("a poisoned job cannot block other due work", async () => {
     await session.open();
-    await session.mutation(1, "reminders.schedule", {
-      message: "fail",
-      attempt: 1,
-      at: Date.now() - 1,
-    });
-    for (let turn = 0; turn < 20 && scheduledAttempts === 0; turn++) await Bun.sleep(5);
-    expect(scheduledAttempts).toBe(1);
-    await Bun.sleep(50);
-    expect(scheduledAttempts).toBe(1);
+    const dueAt = Date.now() + 100_000;
+    await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt - 10 });
+    await session.mutation(2, "reminders.schedule", { message: "after", attempt: 2, at: dueAt });
+    currentTime = dueAt;
+    await runtime.runJobs();
+    // The earlier-due failing job discarded; the later job still ran.
+    expect(scheduledAttempts).toBe(2);
+    expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:after" }]);
+    expect(jobRows()).toMatchObject([{ state: "discarded" }, { state: "completed" }]);
   });
 
-  test("bounds stale scheduler attempts and rolls each no-op back before version allocation", async () => {
-    await restart(limits({ schedulerBatchSize: 3 }));
-    const scheduler = runtime as unknown as {
-      scheduler: {
-        options: {
-          candidates: {
-            next(now: number): Promise<{
-              table: string;
-              address: string;
-              primaryKey: unknown;
-            } | null>;
-          };
-        };
-      };
+  test("job rows are live: a subscription over the jobs table updates on enqueue and settle", async () => {
+    await session.open();
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 70,
+      ref: "reminders.pending",
+      args: {},
+    }));
+    const pendingRows = (): Ctx => {
+      const last = [...session.publications].reverse().find(
+        (message: Ctx) => message.id === 70 && message.transition !== undefined,
+      ) as Ctx;
+      return last?.transition?.value;
     };
-    let attempts = 0;
-    scheduler.scheduler.options.candidates.next = async () => {
-      attempts++;
-      return { table: "reminders", address: "reminders.fire", primaryKey: 999n };
-    };
+    expect(pendingRows()).toEqual([]);
 
-    expect(await runtime.runScheduled(Date.now())).toBe(0);
-    expect(attempts).toBe(3);
-    expect(scheduledAttempts).toBe(0);
-    expect(engine.commitVersion()).toBe(0n);
-    expect(runtime.status().publication).toMatchObject({
-      items: 0,
-      highWater: 0n,
-      processed: 0,
-    });
+    const dueAt = Date.now() + 100_000;
+    await session.mutation(1, "reminders.schedule", { message: "live", attempt: 1, at: dueAt });
+    await eventually(() => pendingRows()?.length === 1);
+    expect(pendingRows()[0]).toMatchObject({ name: "reminders.fire", state: "pending" });
+
+    currentTime = dueAt;
+    await runtime.runJobs();
+    // Settling flips the row out of pending; the live query converges to empty.
+    await eventually(() => pendingRows()?.length === 0);
+  });
+
+  test("bounds one runner batch at jobs.claimBatchSize", async () => {
+    await restart(limits({ jobs: { maxRunning: 64, claimBatchSize: 3, leaseMs: 60_000 } }));
+    await session.open();
+    const dueAt = Date.now() + 100_000;
+    for (let index = 0; index < 5; index++) {
+      await session.mutation(1 + index, "reminders.schedule", {
+        message: `batch-${index}`,
+        attempt: index,
+        at: dueAt + index,
+      });
+    }
+    currentTime = dueAt + 10_000;
+    await runtime.runJobs();
+    expect(scheduledAttempts).toBe(3);
+    await runtime.runJobs();
+    expect(scheduledAttempts).toBe(5);
   });
 
   test("fails an open SSE immediately and completes Runtime drain", async () => {

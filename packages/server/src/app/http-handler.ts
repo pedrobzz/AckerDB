@@ -9,6 +9,7 @@
 import type { Schema } from "../schema/definition.ts";
 import type { FunctionResult, TxCtx } from "./functions.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
+import type { FileProcedureCapability } from "../files/api.ts";
 
 export const HTTP_HANDLER_METHODS = Object.freeze([
   "GET",
@@ -40,6 +41,8 @@ export type HttpHandlerCtx<
   readonly timestamp: number;
   /** Fires when the caller disconnects or the Runtime shuts down. */
   readonly abortSignal: AbortSignal;
+  /** Immutable File byte I/O for trusted raw HTTP code. */
+  readonly files: FileProcedureCapability;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<R>(
     fn: (tx: TxCtx<S, TransactionCapabilities>) => R,

@@ -40,6 +40,7 @@ import {
   type SchemaSnapshot,
   type TableChange,
 } from "@ackerdb/server";
+import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
@@ -339,7 +340,7 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   if (pending.length > 0) {
     let stale = false;
     try {
-      stale = diffSnapshots(chain.at(-1)!.target, snapshotOf((await importApp(config)).schema)).length > 0;
+      stale = diffSnapshots(chain.at(-1)!.target, snapshotOf(withFrameworkTables((await importApp(config)).schema))).length > 0;
     } catch {
       // The manifest does not even import — nothing to judge staleness against.
     }
@@ -356,7 +357,7 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
     };
   }
   const schema = (await importApp(config)).schema;
-  const target = snapshotOf(schema);
+  const target = snapshotOf(withFrameworkTables(schema));
   const diff = diffSnapshots(state.snapshot, target);
   const { refusals } = classifySchemaDiff(diff);
   const allRefusals = [...refusals, ...probeOptimisticRefusals(config, state.snapshot, target)];

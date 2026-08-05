@@ -39,6 +39,12 @@ pull request's current commit, so an old result cannot authorize a changed
 branch. `Release policy` runs in its own workflow so that label changes
 re-evaluate the policy alone instead of restarting the whole pipeline.
 
+Pedro is the repository's only collaborator. GitHub requires Pedro's approval
+before running workflows from every external contributor's fork, including
+contributors whose earlier work was merged. Outside users may propose pull
+requests, but they cannot spend CI or merge into a protected release branch
+without Pedro's approval.
+
 ## Fast CI
 
 Pull requests into `canary`, and urgent pull requests into `main`, run:
@@ -119,25 +125,26 @@ All twelve packages move in lockstep:
 
 Every merge into `canary` prepares the current source version as
 `X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
-workflow run number. The npm environment waits for Pedro's approval before the
-single delivery job starts, so waiting costs no runner minutes.
+workflow run number. Delivery starts automatically from the protected merge
+commit; merging the pull request is the release authorization.
 
 Every merge into `main` prepares `X.Y.Z` for npm's `latest` dist-tag. Before a
 normal promotion can merge, GitHub verifies that every package already has a
 public canary for that source version. An urgent `hotfix/*` pull request is the
-only stable-first path.
+only stable-first path. Stable delivery additionally waits in the
+`npm-stable-approval` environment for Pedro's approval.
 
-After one environment approval, the delivery workflow packs and publishes in
-dependency order. An existing public package version is skipped only when its
-tarball is byte-identical; a different existing tarball is a hard collision.
-Public delivery never reads from Verdaccio. Release tags are optional manual
-bookkeeping and are not created by a write-capable CI job.
+The delivery workflow packs and publishes in dependency order. An existing
+public package version is skipped only when its tarball is byte-identical; a
+different existing tarball is a hard collision. Public delivery never reads
+from Verdaccio. Release tags are optional manual bookkeeping and are not
+created by a write-capable CI job.
 
 The workflow's manual dispatch exists only to bootstrap or resume delivery from
-the current protected `canary` or `main` commit. It crosses the same `npm`
-environment approval, OIDC, clean-merge, branch, and byte-identity checks as a
-push-triggered delivery. It is not a separate release path and cannot publish a
-topic branch.
+the current protected `canary` or `main` commit. It crosses the same environment,
+OIDC, clean-merge, branch, and byte-identity checks as a push-triggered delivery;
+stable dispatches also require stable approval. It is not a separate release
+path and cannot publish a topic branch.
 
 Native Rust builds remain conditional. When native source changed, delivery
 downloads the five artifacts produced by that pull request. When native source
@@ -146,11 +153,11 @@ when every manifest has the exact current native-source digest. There is no
 unverified local or single-host substitute.
 
 Publication uses npm trusted publishing from `.github/workflows/release.yml`,
-the `pedrobzz/AckerDB` repository, and the reviewer-gated `npm` GitHub
+the `pedrobzz/AckerDB` repository, and the protected-branch-only `npm` GitHub
 environment. The workflow requests an OpenID Connect token and receives no npm
 credential or secret. It restores no release cache and installs with lifecycle
-scripts disabled. The npm account has no access tokens, while trusted
-publishing can deliver all twelve lockstep packages after one GitHub approval.
+scripts disabled. The npm account has no access tokens. Canary publication is
+automatic after merge; stable publication requires the separate approval above.
 
 All twelve package records now exist with that same trusted publisher.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported

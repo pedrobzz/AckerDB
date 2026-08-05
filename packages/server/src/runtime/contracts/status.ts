@@ -15,6 +15,7 @@ import type {
 } from "../../telemetry/telemetry.ts";
 import type { ExecutorSnapshot } from "../executor.ts";
 import type { RuntimeLifecycleState } from "./lifecycle.ts";
+import type { FileObservabilitySnapshot } from "../../files/observability.ts";
 
 interface RuntimeReactiveContext {
   readonly principal: Principal;
@@ -27,8 +28,9 @@ export interface RuntimeStatus {
   readonly activeOperationCallers: number;
   readonly activeSse: number;
   readonly realtime: RealtimeRuntimeSnapshot | null;
-  readonly scheduledHandlers: number;
-  readonly schedulerArmed: boolean;
+  readonly declaredJobs: number;
+  readonly jobsArmed: boolean;
+  readonly files: FileObservabilitySnapshot;
   readonly reader: ExecutorSnapshot;
   readonly writer: ExecutorSnapshot;
   readonly reactive: ReturnType<OrderedReactive<RuntimeReactiveContext>["snapshot"]>;

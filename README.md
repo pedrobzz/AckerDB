@@ -1,7 +1,7 @@
 # AckerDB — The All-in-One Back-End Framework
 
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
-provides typed queries, transactional mutations, procedures, scheduled work,
+provides typed queries, transactional mutations, procedures, durable jobs,
 live query subscriptions, application channels, and WebRTC media sessions
 through Protocol 5.
 
@@ -24,7 +24,7 @@ backups are verified by restoring them before they are accepted.
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
-| `@ackerdb/cli` | `acker dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
+| `@ackerdb/cli` | Application development, code generation, schema operations, backup/restore, status, and FileStore migration commands. |
 
 Install public stable or canary packages from npm with exact versions:
 
@@ -41,7 +41,7 @@ Do not install a host-specific `@ackerdb/realtime-*` package directly.
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # app.ts, functions/, .ackerdb.config.json
+│   ├── server/                 # app.ts, functions/, jobs/, services/, .ackerdb.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
@@ -58,8 +58,9 @@ your-app/
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
-  external work and open explicit `ctx.tx(...)` transactions. Scheduled
-  mutations execute as the local `system` principal.
+  external work and open explicit `ctx.tx(...)` transactions. Durable jobs
+  declared in `jobs/` execute as the local `system` principal with retries,
+  recurrence, dedup, and per-key concurrency (see docs/jobs.md).
 - Direct server-side query/mutation composition preserves the caller's
   immutable principal and still validates arguments and the callee's policy.
   Procedures and SSE procedures exist only at the transport boundary.
@@ -68,7 +69,10 @@ your-app/
   checked for wire representability and frame bounds, not against a declared
   runtime output schema.
 
-The client requires an explicit credential, including for anonymous use:
+The client takes exactly one credential authority: an explicit credential
+(including explicit anonymous use, shown here) or a `credentialSource`
+callback that owns the token lifecycle end to end (see the
+[auth provider quickstart](docs/auth-providers.md)):
 
 ```ts
 import { AckerDBClient } from "@ackerdb/client";
@@ -109,10 +113,16 @@ client.close();
   and the shutdown ordering that lets cleanup still write.
 - [Cache](docs/cache.md) documents disposable Cache semantics, namespaces,
   limits, TTL and conditions, and built-in, Redis, Upstash, or custom stores.
+- [Files](docs/files.md) documents immutable File identity, local and generic
+  S3-compatible stores, typed references, uploads, reactive metadata,
+  revocable bearer/authenticated/validated URLs, deletion, and byte streaming.
 - [Authentication and authorization](docs/authentication.md) documents strict
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
   sessions, HTTP procedures, and SSE.
+- [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
+  Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
+  issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
   receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
@@ -187,8 +197,9 @@ acker plugin reset <mount> [app-dir]
 acker plugin drop <mount> [app-dir]
 acker reset [app-dir]
 acker status [app-dir]
-acker backup <artifact> [app-dir]
+acker backup <artifact> [app-dir] [--metadata-only]
 acker restore <artifact> [app-dir]
+acker files migrate <target.json> [app-dir]
 ```
 
 ## Development and performance

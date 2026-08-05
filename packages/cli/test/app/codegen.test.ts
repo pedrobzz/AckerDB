@@ -4,7 +4,7 @@ import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
 import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
-import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -17,6 +17,7 @@ const fixture = () => {
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
+    "jobs/notes.ts": FIXTURE_JOBS,
   });
   dirs.push(dir);
   return dir;
@@ -83,22 +84,22 @@ describe("codegen", () => {
     expect(server).toContain(
       'type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;',
     );
-    expect(server).toContain("QueryBuilder<Schema, QueryPlugins>");
-    expect(server).toContain("MutationBuilder<Schema, MutationPlugins>");
+    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs>");
+    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs>");
     expect(server).toContain(
-      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>",
+      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
     );
     expect(server).toContain(
       "unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>",
     );
-    expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins>");
-    expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins>");
-    expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins>");
+    expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>");
+    expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins, QueryJobs>");
+    expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins, MutationJobs>");
     expect(server).toContain(
-      "GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>",
+      "GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
     );
     expect(server).toContain(
-      "GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>",
+      "GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
     );
     // second run: identical output, nothing rewritten
     const second = await runCodegen(config);
@@ -182,7 +183,7 @@ export const tuya = service({
 
     const server = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
     expect(server).toContain(
-      "ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins>",
+      "ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
     );
     expect(server).toContain("export type ServiceCtx = GenericServiceContext<SystemCtx>");
     expect(typecheckFixture(dir)).toBe("");
@@ -196,8 +197,8 @@ export const tuya = service({
     const registry = new Registry(modules);
     expect([...registry.functions.keys()].sort()).toEqual([
       "admin.users.count",
+      "messages.enqueueNote",
       "messages.list",
-      "messages.runJob",
       "messages.send",
       "messages.tail",
     ]);
@@ -496,7 +497,7 @@ void api.surface.echo;
     expect(types).toContain(
       'export type TypingEventArgs = EventArgsOf<Schema, "typingEvents">;',
     );
-    expect(types).toContain("export type { Identity };");
+    expect(types).toContain("export type { FileGrantId, FileId, Identity };");
     // no runtime import of @ackerdb/server anywhere in client-facing files
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     for (const file of [types, api]) {

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LiveEvent, Outcome, SubscriptionTransition } from "@ackerdb/core";
 import type { CredentialVerifier } from "../packages/server/src/auth/credentials.ts";
-import { mutation, procedure } from "../packages/server/src/app/functions.ts";
+import { procedure } from "../packages/server/src/app/functions.ts";
 import { Registry } from "../packages/server/src/app/registry.ts";
 import { Engine } from "../packages/server/src/database/engine.ts";
 import { makeDbWriter, newWriteCollector } from "../packages/server/src/database/access.ts";
@@ -39,7 +39,6 @@ const QUERY_ARGUMENT_ITEMS = 1_000;
 const HTTP_REJECTIONS_PER_TRIAL = 100;
 const HTTP_REJECTION_CONCURRENCY = 10;
 const HTTP_BODY_BYTES = 64 * 1024;
-const SCHEDULED_TABLES = 100;
 const SCHEDULER_REARMS_PER_TRIAL = 100;
 const UPSERTS_PER_TRIAL = 1_000;
 
@@ -271,24 +270,26 @@ async function httpAuthReject(): Promise<void> {
 
 async function schedulerRearm(): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-t1-scheduler-"));
-  const schema = defineSchema(Object.fromEntries(
-    Array.from({ length: SCHEDULED_TABLES }, (_, index) => [
-      `jobs_${index}`,
-      defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled("jobs.fire"),
-    ]),
-  ));
-  const functions = {
-    jobs: {
-      fire: mutation({
-        access: "system",
-        args: { id: v.bigint(), at: v.float() },
-        handler: () => {},
-      }),
-    },
-  };
+  const schema = defineSchema({
+    anchor: defineTable({ id: v.primaryKey(), at: v.float() }),
+  });
+  const { declareJobs, job } = await import("../packages/server/src/jobs/definition.ts");
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const runtime = new Runtime({ engine, registry: new Registry(functions), telemetry: false });
+  const runtime = new Runtime({
+    engine,
+    registry: new Registry({}),
+    telemetry: false,
+    jobs: declareJobs({
+      jobs: {
+        fire: job({
+          kind: "mutation",
+          args: {},
+          handler: () => {},
+        }),
+      },
+    }),
+  });
   const reader = engine.reader as unknown as { query(sql: string): unknown };
   const originalQuery = reader.query.bind(engine.reader);
   let minimumQueries = 0;
@@ -308,14 +309,11 @@ async function schedulerRearm(): Promise<void> {
     }
   };
   await waitForSchedulerRead();
-  const { scheduler } = runtime as unknown as {
-    scheduler: { arm(touchedTables?: ReadonlySet<string>): void };
-  };
   const trial = async (): Promise<number> => {
     minimumQueries = 0;
     const startedAt = performance.now();
     for (let index = 0; index < SCHEDULER_REARMS_PER_TRIAL; index++) {
-      scheduler.arm(new Set(["jobs_0"]));
+      runtime.jobs.arm();
       await waitForSchedulerRead();
     }
     return performance.now() - startedAt;
@@ -328,8 +326,6 @@ async function schedulerRearm(): Promise<void> {
         .stdout.toString().trim(),
       operation: "scheduler-rearm",
       load: {
-        scheduledTables: SCHEDULED_TABLES,
-        touchedTablesPerCommit: 1,
         rearmsPerTrial: SCHEDULER_REARMS_PER_TRIAL,
         measuredTrials: MEASURED_TRIALS,
       },

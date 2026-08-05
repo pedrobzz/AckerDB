@@ -1,10 +1,17 @@
-import type { SubscriptionCursor } from "@ackerdb/core";
+import type { Credential, SubscriptionCursor } from "@ackerdb/core";
 import {
   AckerDBClient,
-  type AckerDBClientOptions,
+  type AckerDBClientOptionsBase,
+  type AckerDBCredentialSource,
   type AckerDBLifecyclePort,
 } from "@ackerdb/client";
 import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+
+/** Flat override surface: the credential-mode XOR is re-derived when the client is built. */
+export type HarnessOverrides = Partial<AckerDBClientOptionsBase> & {
+  readonly credential?: Credential;
+  readonly credentialSource?: AckerDBCredentialSource;
+};
 
 export interface ClientHarness {
   readonly client: AckerDBClient;
@@ -29,15 +36,15 @@ export interface ClientHarness {
  * protocol suites all need exactly this, and differ only in the options they
  * override and the frames they then drive through it.
  */
-export function createHarness(overrides: Partial<AckerDBClientOptions> = {}): ClientHarness {
+export function createHarness(overrides: HarnessOverrides = {}): ClientHarness {
   const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
   const sockets: FakeSocket[] = [];
   let port: AckerDBLifecyclePort | undefined;
   let stops = 0;
   let failDials = 0;
+  const { credential, credentialSource, ...base } = overrides;
   const client = new AckerDBClient({
     url: "http://ackerdb.test",
-    credential: { kind: "anonymous" },
     clientSessionId: "test-session",
     clock,
     random: () => 0,
@@ -56,7 +63,10 @@ export function createHarness(overrides: Partial<AckerDBClientOptions> = {}): Cl
         stops++;
       };
     },
-    ...overrides,
+    ...base,
+    ...(credentialSource !== undefined
+      ? { credentialSource }
+      : { credential: credential ?? { kind: "anonymous" as const } }),
   });
   const phases: string[] = [];
   client.subscribeConnectionState((state) => phases.push(state.phase));

@@ -15,6 +15,8 @@ export const BUILTIN_CONTEXT_FIELDS: ReadonlySet<string> = new Set([
   "analytics",
   "auth",
   "db",
+  "files",
+  "jobs",
   "linkAccount",
   "log",
   "mount",

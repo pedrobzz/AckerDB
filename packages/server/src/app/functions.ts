@@ -41,6 +41,12 @@ import type {
   AnalyticsTracker,
   ApplicationLogger,
 } from "../telemetry/application-signals/types.ts";
+import type { AnyJobsNamespace } from "../jobs/api.ts";
+import type {
+  FileMutationCapability,
+  FileProcedureCapability,
+  FileQueryCapability,
+} from "../files/api.ts";
 
 export type AuthCtx = Principal;
 
@@ -49,47 +55,64 @@ type EmptyContextCapabilities = Readonly<Record<never, never>>;
 export type QueryCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
 > = InvocationContext & Capabilities & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
   readonly log: ApplicationLogger;
   readonly timestamp: number;
+  /** Declared jobs, read-only: the reactive builder scoped per definition. */
+  readonly jobs: Jobs;
+  /** Reactive metadata reads over framework-owned immutable Files. */
+  readonly files: FileQueryCapability;
 };
 
 export type MutationCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
 > = InvocationContext & Capabilities & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
   readonly analytics: AnalyticsTracker;
   readonly log: ApplicationLogger;
   readonly timestamp: number;
+  /** Declared jobs: transactional enqueue — the job exists iff this commits. */
+  readonly jobs: Jobs;
+  /** Transactional File lifecycle, Upload Session, and File Grant operations. */
+  readonly files: FileMutationCapability;
 };
 
 /** The context inside `ctx.tx(...)`: a mutation's powers, structurally. */
 export type TxCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
-> = MutationCtx<S, Capabilities>;
+  Jobs extends object = AnyJobsNamespace,
+> = MutationCtx<S, Capabilities, Jobs>;
 
 export type ProcedureCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
 > = InvocationContext & Capabilities & {
   readonly auth: AuthCtx;
   readonly log: ApplicationLogger;
   readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;
+  /** Declared jobs: enqueue, await, and sanctioned transitions. */
+  readonly jobs: Jobs;
+  /** Immutable File byte I/O; database-coupled lifecycle changes stay inside tx. */
+  readonly files: FileProcedureCapability;
   /** Prove and attach another user account using its raw bearer token, not an Authorization header. */
   linkAccount(rawBearerToken: string): Promise<void>;
   /** Remove one exact owned account while retaining the durable application Identity. */
   unlinkAccount(account: ExternalAccount): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<R>(
-    fn: (tx: TxCtx<S, TransactionCapabilities>) => R,
+    fn: (tx: TxCtx<S, TransactionCapabilities, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
 
@@ -111,7 +134,9 @@ export type SseCtx<
   S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
-> = ProcedureCtx<S, Capabilities, TransactionCapabilities>;
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
+> = ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>;
 
 /** Args as the caller provides them: only optional/nullish keys may be omitted. */
 export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
@@ -590,9 +615,10 @@ export function sseProcedure<
 export type QueryBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities>>,
+  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -604,16 +630,17 @@ export type QueryBuilder<
   DefinitionReturn<Definition>
 > &
   ((
-    ctx: QueryCtx<S, Capabilities>,
+    ctx: QueryCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
 export type MutationBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities>>,
+  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -625,7 +652,7 @@ export type MutationBuilder<
   DefinitionReturn<Definition>
 > &
   ((
-    ctx: MutationCtx<S, Capabilities>,
+    ctx: MutationCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
@@ -633,11 +660,13 @@ export type ProcedureBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
 > = <
   A extends ObjectShape,
   const Definition extends FunctionDef<
     A,
-    ProcedureCtx<S, Capabilities, TransactionCapabilities>
+    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
   >,
 >(
   def: { readonly args: A } &
@@ -650,7 +679,7 @@ export type ProcedureBuilder<
   DefinitionReturn<Definition>
 > &
   ((
-    ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities>,
+    ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
@@ -658,15 +687,17 @@ export type SseBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
+  Jobs extends object = AnyJobsNamespace,
+  TxJobs extends object = AnyJobsNamespace,
 > = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: ExposureDef & {
   readonly args: A;
   readonly yields: Y;
   readonly access: AccessPolicy<
-    SseCtx<S, Capabilities, TransactionCapabilities>,
+    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     Expand<InferShape<A>>
   >;
   readonly handler: (
-    ctx: SseCtx<S, Capabilities, TransactionCapabilities>,
+    ctx: SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<InferShape<A>>,
   ) => SseSource<InferValidator<Y>> | Promise<SseSource<InferValidator<Y>>>;
 }) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;

@@ -124,16 +124,13 @@ describe("defineTable", () => {
     );
   });
 
-  test("scheduled tables need scheduleAt and vice versa", () => {
+  test("v.scheduleAt() is framework-internal", () => {
     expect(() =>
       defineTable({ id: v.primaryKey(), at: v.scheduleAt() }),
-    ).not.toThrow(); // defineTable alone is fine...
+    ).not.toThrow(); // defineTable alone is fine (the framework jobs table uses it)...
     expect(() =>
       defineSchema({ jobs: defineTable({ id: v.primaryKey(), at: v.scheduleAt() }) }),
-    ).toThrow("no .scheduled"); // ...but the schema demands the handler
-    expect(() => defineTable(pkCols()).scheduled("jobs.run")).toThrow("requires a v.scheduleAt()");
-    const ok = defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled("jobs.run");
-    expect(ok.scheduledHandler).toBe("jobs.run");
+    ).toThrow("framework-internal"); // ...but application schemas refuse it
     expect(() =>
       defineTable({ id: v.primaryKey(), a: v.scheduleAt(), b: v.scheduleAt() }),
     ).toThrow("at most one");
@@ -145,7 +142,6 @@ describe("defineTable", () => {
     expect(() => defineEventTable(pkCols(), subscription).fullText(["name"])).toThrow(
       "event tables never persist rows",
     );
-    expect(() => defineEventTable(pkCols(), subscription).scheduled("x.y")).toThrow("cannot be scheduled");
     expect(() =>
       defineEventTable({ id: v.primaryKey(), at: v.scheduleAt() }, subscription),
     ).toThrow("event tables cannot");

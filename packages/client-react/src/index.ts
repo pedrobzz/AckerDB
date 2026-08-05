@@ -8,6 +8,7 @@ export {
 } from "./use-channel.ts";
 export { useConnectionState } from "./use-connection-state.ts";
 export { useEvent } from "./use-event.ts";
+export { useFileUpload, type AckerDBFileUpload } from "./use-file-upload.ts";
 export { useMutation } from "./use-mutation.ts";
 export { useProcedure, type AckerDBProcedure } from "./use-procedure.ts";
 export { skip, useQuery } from "./use-query.ts";

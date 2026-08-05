@@ -816,10 +816,12 @@ describe("Session Protocol-2 ownership", () => {
       principal: "user",
       identity: 1n as Identity,
       provenance: { issuer: "https://issuer.example/", subject: "second" },
+      credentialTtlMs: 60_000,
     });
     expect(Object.keys(accepted).sort()).toEqual([
       "attemptId",
       "authEpoch",
+      "credentialTtlMs",
       "identity",
       "principal",
       "provenance",

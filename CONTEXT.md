@@ -336,6 +336,52 @@ connection failure reported as `CacheStoreError` with its original cause. It is
 never converted into a miss or conditional result; callers choose explicitly
 whether to catch it and fail open.
 
+## File storage
+
+**File** — Immutable AckerDB-owned stored bytes, their fixed framework metadata,
+and their immutable optional owner, identified independently of the application
+records that refer to them. Replacing the bytes creates a different File.
+_Avoid_: Attachment, blob row
+
+**File owner** — The durable user identity captured from the File upload
+session's creator, or explicitly supplied by trusted server-side code. Ownership
+is searchable File state but does not itself grant retrieval authority.
+_Avoid_: Uploader metadata, File authorization
+
+**Pending File** — A successfully stored File awaiting its first durable
+application claim. A pending File expires if no application row claims it and
+may be claimed explicitly when it is intentionally standalone.
+_Avoid_: Temporary upload, orphaned File
+
+**File upload session** — Short-lived, constrained authority to store at most
+one File. Failed attempts may retry until one File is stored successfully or
+the session expires.
+_Avoid_: Upload URL, presigned upload
+
+**File grant** — Independently revocable authority to retrieve one File under
+declared access conditions. Revoking a grant does not delete the File.
+_Avoid_: File URL, public file
+
+**Bearer File grant** — A File grant for which possession of its unguessable
+URL is the complete retrieval authority; no user principal is required.
+_Avoid_: Public File grant
+
+**Authenticated File grant** — A File grant that admits any request carrying a
+valid AckerDB user principal without making an application-specific access
+decision.
+_Avoid_: Private File grant
+
+**Validated File grant** — A File grant whose every retrieval must be admitted
+by an application-owned read decision under the request's current principal and
+the grant's typed authorization arguments.
+_Avoid_: Private File, authenticated URL
+
+**File reference** — An application-owned relation from an ordinary typed row
+to a File, declared explicitly by that row's schema. It owns searchable business
+metadata and application relationships instead of extending the File's
+framework metadata.
+_Avoid_: Custom file column, file metadata
+
 **Execution root** — The execution context a runtime subsystem owns and runs
 its work under when that work is performed on its own behalf rather than a
 caller's — e.g. the reactive system re-evaluating subscriptions for
@@ -696,6 +742,57 @@ Synchronous throws and rejected promises fail only that generation. A
 runtime-wide in-flight budget fails overload explicitly instead of retaining an
 unbounded hidden queue.
 _Avoid_: Serialized handler queue, process-level rejection, unbounded tasks
+
+## External authentication
+
+**Exact issuer** — An OIDC provider's registry key: the byte-exact string a
+verified token's `iss` claim must equal. AckerDB validates that it is a
+well-formed URL on a permitted scheme but never normalizes or rewrites it;
+there is exactly one correct value per provider — whatever that provider
+actually mints.
+_Avoid_: Canonical issuer, normalized issuer, issuer URL matching
+
+**Unchecked enforcement** — A provider configuration's explicit declaration,
+per verification dimension, that a check is deliberately not performed. An
+enforcement dimension is always either fully specified or visibly declared
+unchecked; it is never silently absent by default. Claim projection follows
+the same rule: a selection or the explicit none, never a silent empty.
+_Avoid_: Optional audience, implicit default, lenient mode
+
+**Provider preset** — A named identity provider's published token shape,
+resolved into exact configuration at startup. A preset fills in only the
+fields whose values follow from what the provider mints, refuses the ones
+only the application can supply, and its resolution is always inspectable.
+It compresses exact configuration; it never replaces or weakens it.
+_Avoid_: Provider plugin, auth integration package, discovery-trusted config
+
+**Private plaintext boundary** — The rule deciding where an identity
+provider may be reached without TLS: loopback hosts by default, where
+plaintext cannot cross a network at all; private-network addresses only
+under an explicit per-provider declaration, because private ranges are
+attackable networks; public hosts never, in any mode.
+_Avoid_: Dev-mode HTTP, trusted LAN default, TLS exemption
+
+**Credential source** — The application-owned callback that produces the
+client's current explicit credential on demand, including the explicit
+anonymous credential for signed-out state. The client owns when to ask:
+at construction, ahead of disclosed credential expiry, and after a
+principal rejection. Configured instead of, never alongside, a fixed
+credential.
+_Avoid_: Token callback, auth provider hook, implicit anonymous fallback
+
+**Credential TTL disclosure** — The server's statement, on every accepted
+credential presentation, of how long that credential remains valid, as a
+relative duration. It exists so the client can refresh proactively without
+assuming any credential format; anonymous principals have none.
+_Avoid_: Token expiry parsing, client-side JWT decoding
+
+**Awaiting principal change** — The state of client demand whose
+subscription the server rejected with an authentication or authorization
+outcome while the demand itself persists. Such demand is re-presented
+exactly when the connection's accepted principal changes, and never on a
+timer.
+_Avoid_: Subscription retry loop, skip gating, dead subscription
 
 ## Validation
 

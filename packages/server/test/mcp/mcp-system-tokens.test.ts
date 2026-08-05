@@ -37,6 +37,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { declareJobs, job } from "../../src/jobs/definition.ts";
 import type {
   RuntimePublication,
   RuntimeRequest,
@@ -53,16 +54,7 @@ const action = v.enum("SystemMcpTokenAction", [
 ]);
 
 const schema = defineSchema({
-  tokenJobs: defineTable({
-    id: v.primaryKey(),
-    action,
-    identity: v.identity(),
-    name: v.string().nullable(),
-    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: v.array(v.string()),
-    tokenId: v.string().nullable(),
-    at: v.scheduleAt(),
-  }).scheduled("systemTokens.run"),
+  audit: defineTable({ id: v.primaryKey(), line: v.string() }),
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
@@ -130,48 +122,62 @@ const queue = typedMutation({
   },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "user") throw new Error("expected external user");
-    return ctx.db.tokenJobs.insert({ ...args, identity: ctx.auth.identity });
+    return (ctx.jobs as Record<string, Record<string, {
+      enqueue(input: unknown, options: { at: number }): Promise<unknown>;
+    }>>)["systemTokens"]!["run"]!.enqueue({
+      action: args.action,
+      name: args.name,
+      metadata: args.metadata,
+      scopes: args.scopes,
+      tokenId: args.tokenId,
+      identity: ctx.auth.identity,
+    }, { at: args.at });
   },
 });
 
-const run = typedMutation({
-  access: "system",
-  args: {
-    id: v.bigint(),
-    action,
-    identity: v.identity(),
-    name: v.string().nullable(),
-    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: v.array(v.string()),
-    tokenId: v.string().nullable(),
-    at: v.int(),
-  },
-  handler: (ctx, args) => {
-    switch (args.action) {
-      case "create_agent":
-        systemResult = agentAuth.systemTokens.create(ctx, args.identity, {
-          name: args.name ?? "",
-          metadata: args.metadata,
-        });
-        return;
-      case "create_scoped":
-        systemResult = scopedAuth.systemTokens.create(ctx, args.identity, {
-          name: args.name ?? "",
-          metadata: args.metadata,
-          scopes: args.scopes as readonly NonNullable<typeof scopedAuth.scopes._type>[],
-        });
-        return;
-      case "list_agent":
-        systemResult = agentAuth.systemTokens.list(ctx, args.identity);
-        return;
-      case "revoke_agent":
-        agentAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
-        systemResult = null;
-        return;
-      case "revoke_operations":
-        operationsAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
-        systemResult = null;
-    }
+let systemRunCount = 0;
+const declaredJobs = () => declareJobs({
+  systemTokens: {
+    run: job({
+      kind: "mutation",
+      args: {
+        action,
+        identity: v.identity(),
+        name: v.string().nullable(),
+        metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+        scopes: v.array(v.string()),
+        tokenId: v.string().nullable(),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      handler: (ctx: any, args: any) => {
+        systemRunCount++;
+        switch (args.action) {
+          case "create_agent":
+            systemResult = agentAuth.systemTokens.create(ctx, args.identity, {
+              name: args.name ?? "",
+              metadata: args.metadata,
+            });
+            return;
+          case "create_scoped":
+            systemResult = scopedAuth.systemTokens.create(ctx, args.identity, {
+              name: args.name ?? "",
+              metadata: args.metadata,
+              scopes: args.scopes as readonly NonNullable<typeof scopedAuth.scopes._type>[],
+            });
+            return;
+          case "list_agent":
+            systemResult = agentAuth.systemTokens.list(ctx, args.identity);
+            return;
+          case "revoke_agent":
+            agentAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+            systemResult = null;
+            return;
+          case "revoke_operations":
+            operationsAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+            systemResult = null;
+        }
+      },
+    }),
   },
 });
 
@@ -190,13 +196,36 @@ const listOwned = typedQuery({
 const modules = {
   mcp: { agentMcp, operationsMcp, scopedMcp },
   ownerTokens: { listOwned },
-  systemTokens: { attempt, attemptFromMcp, queue, run },
+  systemTokens: { attempt, attemptFromMcp, queue },
 };
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 
+let jobsClock: number | null = null;
+
+/** Drive the runner at `at` and report how many system runs it performed. */
+async function runJobsAt(runtime: Runtime, at: number): Promise<number> {
+  const before = systemRunCount;
+  jobsClock = at;
+  try {
+    await runtime.runJobs();
+  } finally {
+    jobsClock = null;
+  }
+  return systemRunCount - before;
+}
+
+/** The most recent job row: discarded failures record their error here. */
+function lastJobRow(engine: Engine): { state: string; attemptsJson: string } {
+  return engine.reader
+    .query('SELECT state, attemptsJson FROM "_ackerdb_jobs" ORDER BY id DESC LIMIT 1')
+    .get() as { state: string; attemptsJson: string };
+}
+
 afterEach(async () => {
   systemResult = null;
+  systemRunCount = 0;
+  jobsClock = null;
   while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
@@ -210,6 +239,8 @@ function fixture(): { engine: Engine; runtime: Runtime } {
     engine,
     registry: new Registry(modules),
     telemetry: false,
+    jobs: declaredJobs(),
+    now: () => jobsClock ?? Date.now(),
     limits: {
       ...PRODUCTION_LIMITS,
       mcp: { ...PRODUCTION_LIMITS.mcp, maxTokensPerIdentity: 2 },
@@ -306,7 +337,7 @@ async function createSystemAgentToken(
   id: number,
 ): Promise<{ readonly id: string; readonly token: string }> {
   const at = await queueJob(runtime, owner, id, "create_agent", { name: "Backend Codex" });
-  expect(await runtime.runScheduled(at)).toBe(1);
+  expect(await runJobsAt(runtime, at)).toBe(1);
   return systemResult as { readonly id: string; readonly token: string };
 }
 
@@ -322,7 +353,7 @@ describe("system-managed MCP integration tokens", () => {
       name: "Backend Codex",
       metadata: { integration: "codex", generation: 1n },
     });
-    expect(await runtime.runScheduled(createAt)).toBe(1);
+    expect(await runJobsAt(runtime, createAt)).toBe(1);
     const created = systemResult as {
       readonly id: string;
       readonly token: string;
@@ -337,7 +368,7 @@ describe("system-managed MCP integration tokens", () => {
     });
     expect(created).not.toHaveProperty("expiresAt");
     expect(created.token).toMatch(/^ackerdb_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
-    expect(await runtime.runScheduled(createAt)).toBe(0);
+    expect(await runJobsAt(runtime, createAt)).toBe(0);
     await runtime.subscribe(bobSession, request(subscribeMessage(90)));
     expect(publications.at(-1)).toMatchObject({
       transition: { kind: "reset", value: [{ id: created.id }] },
@@ -356,7 +387,7 @@ describe("system-managed MCP integration tokens", () => {
     expect(await runtime.authenticateMcpToken("agent", created.token, "system-created"))
       .toMatchObject({ identity: bob.identity, tokenId: created.id, scopes: [] });
     const listAt = await queueJob(runtime, bobSession, 102, "list_agent");
-    expect(await runtime.runScheduled(listAt)).toBe(1);
+    expect(await runJobsAt(runtime, listAt)).toBe(1);
     const listed = systemResult as readonly Record<string, unknown>[];
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ id: created.id, name: "Backend Codex" });
@@ -366,7 +397,7 @@ describe("system-managed MCP integration tokens", () => {
     const revokeAt = await queueJob(runtime, bobSession, 103, "revoke_agent", {
       tokenId: created.id,
     });
-    expect(await runtime.runScheduled(revokeAt)).toBe(1);
+    expect(await runJobsAt(runtime, revokeAt)).toBe(1);
     expect(publications.at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
     await expect(runtime.authenticateMcpToken("agent", created.token, "system-revoked"))
       .rejects.toMatchObject({ code: "unauthenticated" });
@@ -434,9 +465,10 @@ describe("system-managed MCP integration tokens", () => {
       "revoke_operations",
       { tokenId: endpointToken.id },
     );
-    await expect(endpoint.runtime.runScheduled(wrongEndpointAt)).rejects.toMatchObject({
-      code: "not_found",
-    });
+    // The failed attempt settles as discarded; the runner never wedges.
+    expect(await runJobsAt(endpoint.runtime, wrongEndpointAt)).toBe(1);
+    expect(lastJobRow(endpoint.engine)).toMatchObject({ state: "discarded" });
+    expect(lastJobRow(endpoint.engine).attemptsJson).toContain("not_found");
     expect(await endpoint.runtime.authenticateMcpToken(
       "agent",
       endpointToken.token,
@@ -454,9 +486,9 @@ describe("system-managed MCP integration tokens", () => {
     const wrongIdentityAt = await queueJob(identity.runtime, aliceSession, 127, "revoke_agent", {
       tokenId: identityToken.id,
     });
-    await expect(identity.runtime.runScheduled(wrongIdentityAt)).rejects.toMatchObject({
-      code: "not_found",
-    });
+    expect(await runJobsAt(identity.runtime, wrongIdentityAt)).toBe(1);
+    expect(lastJobRow(identity.engine)).toMatchObject({ state: "discarded" });
+    expect(lastJobRow(identity.engine).attemptsJson).toContain("not_found");
     expect(await identity.runtime.authenticateMcpToken(
       "agent",
       identityToken.token,
@@ -473,7 +505,9 @@ describe("system-managed MCP integration tokens", () => {
       name: "Invalid scope",
       scopes: ["orders.create"],
     });
-    await expect(runtime.runScheduled(at)).rejects.toMatchObject({ code: "validation" });
+    expect(await runJobsAt(runtime, at)).toBe(1);
+    expect(lastJobRow(engine)).toMatchObject({ state: "discarded" });
+    expect(lastJobRow(engine).attemptsJson).toContain("validation");
     expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
       .toEqual({ count: 0n });
   });

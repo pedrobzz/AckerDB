@@ -3,7 +3,6 @@
  * A schema is validated eagerly — every rule violation throws at definition
  * time with a message naming the table/column/index at fault.
  */
-import type { FunctionReference, RegisteredFunction } from "@ackerdb/core";
 import { ValidationError } from "../validation/error.ts";
 import {
   baseValidator,
@@ -76,6 +75,14 @@ function assertStoredValidator(
     }
     return;
   }
+  if (validator.kind === "file" || validator.kind === "fileGrant") {
+    if (!directColumn) {
+      throw new ValidationError(
+        `${where}: v.${validator.kind}() may only be stored as a direct column, optionally nullable`,
+      );
+    }
+    return;
+  }
   if (validator.kind === "array") {
     assertStoredValidator(
       (validator as unknown as { readonly element: Validator<unknown, string> }).element,
@@ -101,7 +108,7 @@ function assertStoredValidator(
   }
 }
 
-const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "boolean", "enum", "union", "scheduleAt"]);
+const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "file", "fileGrant", "boolean", "enum", "union", "scheduleAt"]);
 const DIRECT_INDEXABLE = new Set(["int", "bigint", "identity", "enum", "union"]);
 
 export interface IndexOptions {
@@ -115,12 +122,6 @@ export interface IndexDef {
   readonly unique: boolean;
   readonly algorithm: "btree" | "direct";
 }
-
-/** A mutation to run atomically with deletion when a scheduled row comes due. */
-export type ScheduledHandler =
-  | FunctionReference<"mutation">
-  | RegisteredFunction<"mutation", unknown, unknown>
-  | string;
 
 export interface EventSubscriptionDefinition<
   Cols extends ObjectShape,
@@ -181,7 +182,6 @@ export class TableDef<
   readonly kind: Kind;
   readonly indexes: IndexDef[] = [];
   readonly fullTextColumns: string[] = [];
-  scheduledHandler: ScheduledHandler | null = null;
   readonly eventSubscription: RuntimeEventSubscriptionDefinition | null;
   /** Type-only carrier used by EventArgsOf. */
   readonly _eventArgsType?: EventArgs;
@@ -345,20 +345,6 @@ export class TableDef<
     }
     this.fullTextColumns.push(...columns);
     return this as unknown as TableDef<Cols, Ixs, Kind, EventArgs, C>;
-  }
-
-  scheduled(handler: ScheduledHandler): this {
-    if (this.kind === "event") {
-      throw new ValidationError("event tables cannot be scheduled");
-    }
-    if (this.scheduleAtColumn === null) {
-      throw new ValidationError(".scheduled(...) requires a v.scheduleAt() column");
-    }
-    if (this.scheduledHandler !== null) {
-      throw new ValidationError("table already has a scheduled handler");
-    }
-    this.scheduledHandler = handler;
-    return this;
   }
 }
 
@@ -529,9 +515,9 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     if (!isTableDef(table)) {
       throw new ValidationError(`table "${tableName}" is not a defineTable(...) result`);
     }
-    if (table.scheduleAtColumn !== null && table.scheduledHandler === null) {
+    if (table.scheduleAtColumn !== null) {
       throw new ValidationError(
-        `table "${tableName}" has a v.scheduleAt() column but no .scheduled(handler)`,
+        `table "${tableName}": v.scheduleAt() is framework-internal; durable work is declared as a job in jobs/`,
       );
     }
     claimTypeName(rowTypeName(tableName), `table "${tableName}"`);

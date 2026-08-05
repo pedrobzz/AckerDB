@@ -62,6 +62,10 @@ import {
 } from "./channels/channel.ts";
 import { retryDelay } from "./connection/retry-policy.ts";
 import {
+  AckerDBFilesClient,
+  type AckerDBFiles,
+} from "./files/client.ts";
+import {
   RealtimeManager,
   type AckerDBPeerConnectionFactory,
   type AckerDBRealtime,
@@ -142,11 +146,18 @@ export interface AckerDBLifecyclePort {
  */
 export type AckerDBLifecycleSource = (port: AckerDBLifecyclePort) => () => void;
 
-export interface AckerDBClientOptions {
+/**
+ * Credential source: the application-owned callback producing the client's
+ * current explicit credential on demand — including the explicit anonymous
+ * credential for signed-out state. The client owns when to ask: at
+ * construction, ahead of disclosed credential expiry, and after a principal
+ * rejection.
+ */
+export type AckerDBCredentialSource = () => Promise<Credential>;
+
+export interface AckerDBClientOptionsBase {
   /** Server base URL, for example `http://127.0.0.1:3211`. */
   readonly url: string;
-  /** Every connection starts with this explicit anonymous or bearer credential. */
-  readonly credential: Credential;
   /** Stable for this logical client across every reconnect. Generated once when omitted. */
   readonly clientSessionId?: string;
   readonly limits?: Partial<AckerDBClientLimits>;
@@ -162,6 +173,25 @@ export interface AckerDBClientOptions {
   readonly fetch?: AckerDBFetch;
   readonly lifecycle?: AckerDBLifecycleSource;
 }
+
+/**
+ * Exactly one of `credential` or `credentialSource` — enforced at the type
+ * level and again at construction. A fixed credential starts every connection
+ * as-is; a credential source is pulled for the initial connect, re-pulled
+ * ahead of the server-disclosed credential TTL, and re-pulled after a
+ * principal rejection with bounded jittered backoff.
+ */
+export type AckerDBClientOptions =
+  | (AckerDBClientOptionsBase & {
+      /** Every connection starts with this explicit anonymous or bearer credential. */
+      readonly credential: Credential;
+      readonly credentialSource?: undefined;
+    })
+  | (AckerDBClientOptionsBase & {
+      readonly credential?: undefined;
+      /** The application-owned callback producing the current explicit credential. */
+      readonly credentialSource: AckerDBCredentialSource;
+    });
 
 /** Server-confirmed, secret-free principal descriptor for one auth epoch. */
 export type AckerDBAuthentication = AuthenticationDescriptor & { readonly authEpoch: number };
@@ -202,7 +232,11 @@ export type AckerDBConnectionState =
  * - `closed`: the client was closed.
  */
 export type AckerDBAuthenticationState =
-  | { readonly phase: "authenticating"; readonly credential: Credential["kind"] }
+  | {
+      readonly phase: "authenticating";
+      /** `"source"`: a credential-source client that has not yet produced its first credential. */
+      readonly credential: Credential["kind"] | "source";
+    }
   | {
       readonly phase: "unauthenticated";
       readonly authentication: Extract<AckerDBAuthentication, { principal: "anonymous" }>;
@@ -606,6 +640,20 @@ const AUTHENTICATING_BEARER: AckerDBAuthenticationState = Object.freeze({
   phase: "authenticating",
   credential: "bearer",
 });
+const AUTHENTICATING_SOURCE: AckerDBAuthenticationState = Object.freeze({
+  phase: "authenticating",
+  credential: "source",
+});
+/** Proactive source re-pull lands this far before disclosed expiry when 80% of the TTL cannot. */
+const SOURCE_REFRESH_MARGIN_MS = 5_000;
+/**
+ * Floor for the proactive re-pull delay so tiny TTLs cannot hot-loop the
+ * source. A credential whose lifetime is shorter than this cycle degrades to
+ * the reactive refresh path by design.
+ */
+const MIN_SOURCE_REFRESH_DELAY_MS = 1_000;
+/** Platform timer ceiling; longer delays would wrap to ~1 ms and hot-loop the source. */
+const MAX_SOURCE_REFRESH_DELAY_MS = 0x7fff_ffff;
 const CLOSED_AUTHENTICATION_STATE: AckerDBAuthenticationState = Object.freeze({ phase: "closed" });
 
 function authenticationFromFrame(
@@ -621,8 +669,14 @@ function authenticationFromFrame(
         principal: "user",
         identity: frame.identity,
         provenance,
+        credentialTtlMs: frame.credentialTtlMs,
       })
-    : Object.freeze({ authEpoch: frame.authEpoch, principal: "workload", provenance });
+    : Object.freeze({
+        authEpoch: frame.authEpoch,
+        principal: "workload",
+        provenance,
+        credentialTtlMs: frame.credentialTtlMs,
+      });
 }
 
 const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
@@ -648,6 +702,7 @@ const SYSTEM_RANDOM = (): number => {
 export class AckerDBClient {
   readonly clientSessionId: string;
   readonly scheduler: AckerDBClientScheduler;
+  readonly files: AckerDBFiles;
 
   private readonly httpUrl: string;
   private readonly wsUrl: string;
@@ -665,7 +720,18 @@ export class AckerDBClient {
   private readonly realtimeSessions: RealtimeManager;
   private readonly subscriptionRetries: SubscriptionRetryScheduler;
 
-  private credential: Credential;
+  /** Undefined only on a credential-source client before its first successful pull. */
+  private credential?: Credential;
+  private readonly credentialSource?: AckerDBCredentialSource;
+  /** Single-flight: concurrent pull triggers coalesce onto this promise. */
+  private sourcePull: Promise<AckerDBAuthentication> | null = null;
+  /** One queued fresh pull for explicit refreshes that arrive mid-flight. */
+  private sourceFollowUp: Promise<AckerDBAuthentication> | null = null;
+  private sourceRetryAttempt = 0;
+  private sourceRetryHandle?: unknown;
+  private sourceRefreshHandle?: unknown;
+  /** When the accepted credential dies, in clock time; undefined while anonymous. */
+  private credentialExpiresAtMs?: number;
   /** The credential the current connection's hello presented. */
   private helloCredential?: Credential;
   private socket: AckerDBWebSocket | null = null;
@@ -727,9 +793,17 @@ export class AckerDBClient {
     this.random = options.random ?? SYSTEM_RANDOM;
     this.createWebSocket = options.createWebSocket ?? SYSTEM_SOCKET_FACTORY;
     this.fetcher = options.fetch ?? SYSTEM_FETCH;
-    this.credential = freezeCredential(options.credential);
+    if ((options.credential === undefined) === (options.credentialSource === undefined)) {
+      throw new TypeError("exactly one of credential or credentialSource is required");
+    }
+    this.credentialSource = options.credentialSource;
+    if (options.credential !== undefined) this.credential = freezeCredential(options.credential);
     this.authenticationState =
-      this.credential.kind === "anonymous" ? AUTHENTICATING_ANONYMOUS : AUTHENTICATING_BEARER;
+      this.credential === undefined
+        ? AUTHENTICATING_SOURCE
+        : this.credential.kind === "anonymous"
+          ? AUTHENTICATING_ANONYMOUS
+          : AUTHENTICATING_BEARER;
     this.limits = Object.freeze({ ...ACKERDB_CLIENT_LIMITS, ...options.limits });
     this.reconnect = Object.freeze({ ...ACKERDB_RECONNECT_DEFAULTS, ...options.reconnect });
     for (const [name, value] of Object.entries(this.limits)) positiveInteger(value, name);
@@ -779,12 +853,41 @@ export class AckerDBClient {
       isClientError: (error): error is AckerDBClientError =>
         error instanceof AckerDBClientError,
     });
-    parseClientMessage({
-      v: PROTOCOL_VERSION,
-      t: "hello",
-      clientSessionId: this.clientSessionId,
-      credential: this.credential,
+    this.files = new AckerDBFilesClient({
+      mutation: (ref, args) => this.mutation(ref, args),
+      fetch: (url, init) => this.fetcher(url, init),
+      createFetchControl: (signal) => {
+        const control = this.createFetchController(signal);
+        return {
+          signal: control.controller.signal,
+          release: () => this.releaseFetchController(control),
+        };
+      },
+      authorizationHeaders: () => {
+        this.assertUsable();
+        const headers = new Headers();
+        // A credential-source client has no credential until its first pull.
+        if (this.credential?.kind === "bearer") {
+          headers.set("authorization", `Bearer ${this.credential.token}`);
+        }
+        return headers;
+      },
+      httpOrigin: new URL(this.httpUrl).origin,
+      scheduler: this.scheduler,
+      readResponse: (response, signal) =>
+        this.readBoundedResponse(response, this.limits.maxFrameBytes, signal, "idempotency"),
+      clientError: (outcome, interruption) => new AckerDBClientError(outcome, interruption),
     });
+    // A credential-source client validates each pulled credential when it is
+    // presented; a fixed credential is validated here, before any dial.
+    if (this.credential !== undefined) {
+      parseClientMessage({
+        v: PROTOCOL_VERSION,
+        t: "hello",
+        clientSessionId: this.clientSessionId,
+        credential: this.credential,
+      });
+    }
     // Registered last: a lifecycle source that notifies synchronously (a
     // platform that is already backgrounded) must observe a fully constructed
     // client, and a constructor failure must not leave an observer behind.
@@ -835,8 +938,35 @@ export class AckerDBClient {
    * anonymous credential is the protocol's sign-out. Single-flight: a call
    * with the credential already in flight joins that attempt; a different
    * credential supersedes it with an `auth_stale` rejection.
+   *
+   * A credential-source client owns its credential: `refreshCredential()`
+   * takes no argument there and re-invokes the source immediately — the
+   * "sign-in just happened" path.
    */
-  refreshCredential(credential: Credential): Promise<AckerDBAuthentication> {
+  refreshCredential(credential?: Credential): Promise<AckerDBAuthentication> {
+    if (this.closed) throw localError("unavailable", "client is closed", "connection");
+    if (this.permanentFailure) {
+      throw localError("unavailable", "client stopped after a protocol failure", "connection");
+    }
+    if (this.credentialSource !== undefined) {
+      if (credential !== undefined) {
+        throw new TypeError(
+          "a credential-source client owns its credential; refreshCredential() re-invokes the source",
+        );
+      }
+      this.sourceRetryAttempt = 0;
+      this.clearSourceRetryTimer();
+      return this.demandFreshPull();
+    }
+    if (credential === undefined) {
+      throw new TypeError("refreshCredential requires a credential unless a credentialSource is configured");
+    }
+    return this.presentCredential(credential);
+  }
+
+  private presentCredential(credential: Credential): Promise<AckerDBAuthentication> {
+    // Re-checked here: a source pull resolves asynchronously and may land on a
+    // client that closed or failed while the source was working.
     if (this.closed) throw localError("unavailable", "client is closed", "connection");
     if (this.permanentFailure) {
       throw localError("unavailable", "client stopped after a protocol failure", "connection");
@@ -858,6 +988,9 @@ export class AckerDBClient {
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
     this.credential = nextCredential;
+    // The deadline describes the accepted credential; this one is not
+    // accepted until the server confirms it.
+    this.credentialExpiresAtMs = undefined;
     this.realtimeSessions.authenticationChanged();
     this.authBlocked = false;
     this.blockingError = undefined;
@@ -890,6 +1023,176 @@ export class AckerDBClient {
     // installed attempt and its expiry timer so it can release them.
     this.publishConnectionState();
     return result;
+  }
+
+  /**
+   * An explicit refresh is new demand, not a joinable trigger: a pull already
+   * in flight may have produced the pre-sign-in credential, so joining it
+   * would silently discard the sign-in. One follow-up pull is queued behind
+   * the flight; concurrent explicit refreshes share it.
+   */
+  private demandFreshPull(): Promise<AckerDBAuthentication> {
+    if (this.sourcePull === null) return this.pullCredentialSource();
+    if (this.sourceFollowUp === null) {
+      const follow = this.sourcePull.then(
+        () => {
+          if (this.sourceFollowUp === follow) this.sourceFollowUp = null;
+          return this.pullCredentialSource();
+        },
+        () => {
+          if (this.sourceFollowUp === follow) this.sourceFollowUp = null;
+          return this.pullCredentialSource();
+        },
+      );
+      this.sourceFollowUp = follow;
+      void follow.catch(() => {});
+    }
+    return this.sourceFollowUp;
+  }
+
+  /** Single-flight: concurrent triggers — initial, scheduled, rejected, manual — coalesce. */
+  private pullCredentialSource(): Promise<AckerDBAuthentication> {
+    const existing = this.sourcePull;
+    if (existing !== null) return existing;
+    this.clearSourceRetryTimer();
+    // The single-flight slot is released before the retry is scheduled, so a
+    // firing retry always starts a fresh pull instead of joining a dead one.
+    const tracked: Promise<AckerDBAuthentication> = this.runSourcePull().then(
+      (authentication) => {
+        if (this.sourcePull === tracked) this.sourcePull = null;
+        this.sourceRetryAttempt = 0;
+        return authentication;
+      },
+      (error: unknown) => {
+        if (this.sourcePull === tracked) this.sourcePull = null;
+        // The source failed, or the server rejected what it produced: bounded
+        // jittered backoff prevents a tight client-to-provider loop around a
+        // persistently bad credential.
+        if (!this.closed && !this.permanentFailure) this.scheduleSourceRetry();
+        throw error;
+      },
+    );
+    this.sourcePull = tracked;
+    // Internal triggers do not await the pull; their rejection is already
+    // handled by the scheduled retry, so it must not surface as unhandled.
+    void tracked.catch(() => {});
+    return tracked;
+  }
+
+  private async runSourcePull(): Promise<AckerDBAuthentication> {
+    let credential: Credential;
+    try {
+      credential = await this.boundedSourceInvocation();
+    } catch {
+      throw localError("auth_unavailable", "credential source failed", "connection");
+    }
+    return this.presentCredential(credential);
+  }
+
+  /**
+   * The source is external code; without a deadline a hung invocation would
+   * occupy the single-flight slot forever and wedge every future refresh.
+   */
+  private boundedSourceInvocation(): Promise<Credential> {
+    return new Promise<Credential>((resolve, reject) => {
+      let settled = false;
+      const handle = this.clock.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("credential source timed out"));
+      }, this.limits.maxQueryAgeMs);
+      Promise.resolve()
+        .then(() => this.credentialSource!())
+        .then(
+          (credential) => {
+            if (settled) return;
+            settled = true;
+            this.clock.clearTimeout(handle);
+            resolve(credential);
+          },
+          (cause: unknown) => {
+            if (settled) return;
+            settled = true;
+            this.clock.clearTimeout(handle);
+            reject(cause instanceof Error ? cause : new Error(String(cause)));
+          },
+        );
+    });
+  }
+
+  private scheduleSourceRetry(): void {
+    if (
+      this.credentialSource === undefined ||
+      this.sourceRetryHandle !== undefined ||
+      this.closed ||
+      this.permanentFailure ||
+      this.suspended
+    ) {
+      return;
+    }
+    let delay: number;
+    try {
+      delay = retryDelay(this.reconnect, this.sourceRetryAttempt, 0, this.random, MAX_RETRY_AFTER_MS);
+    } catch {
+      this.failPermanently(localError("internal", "client random source is invalid", "connection"));
+      return;
+    }
+    this.sourceRetryAttempt++;
+    this.sourceRetryHandle = this.clock.setTimeout(() => {
+      this.sourceRetryHandle = undefined;
+      void this.pullCredentialSource().catch(() => {});
+    }, delay);
+  }
+
+  private clearSourceRetryTimer(): void {
+    if (this.sourceRetryHandle === undefined) return;
+    this.clock.clearTimeout(this.sourceRetryHandle);
+    this.sourceRetryHandle = undefined;
+  }
+
+  /**
+   * Records when the accepted credential dies and arms the proactive re-pull.
+   * The absolute deadline outlives the timer deliberately: an environment
+   * that stops running timers (a frozen browser tab, a suspended host) can
+   * skip past the scheduled re-pull entirely, and the dial boundary consults
+   * the deadline instead of trusting that the timer ever fired.
+   */
+  private acceptedCredential(): void {
+    const authentication = this.authentication;
+    this.credentialExpiresAtMs =
+      authentication === undefined || authentication.principal === "anonymous"
+        ? undefined
+        : this.now() + authentication.credentialTtlMs;
+    this.scheduleSourceRefresh();
+  }
+
+  /**
+   * Arms the proactive re-pull from the server's credential TTL disclosure:
+   * ~80% of the TTL, clamped to land at least the margin before expiry and
+   * floored so tiny TTLs cannot hot-loop the source. Anonymous principals
+   * disclose no TTL and arm nothing — the next sign-in arrives by
+   * `refreshCredential()`.
+   */
+  private scheduleSourceRefresh(): void {
+    this.clearSourceRefreshTimer();
+    if (this.credentialSource === undefined || this.suspended) return;
+    const authentication = this.authentication;
+    if (authentication === undefined || authentication.principal === "anonymous") return;
+    const ttl = authentication.credentialTtlMs;
+    const delay = Math.min(
+      MAX_SOURCE_REFRESH_DELAY_MS,
+      Math.max(MIN_SOURCE_REFRESH_DELAY_MS, Math.min(ttl * 0.8, ttl - SOURCE_REFRESH_MARGIN_MS)),
+    );
+    this.sourceRefreshHandle = this.clock.setTimeout(() => {
+      this.sourceRefreshHandle = undefined;
+      void this.pullCredentialSource().catch(() => {});
+    }, delay);
+  }
+
+  private clearSourceRefreshTimer(): void {
+    if (this.sourceRefreshHandle === undefined) return;
+    this.clock.clearTimeout(this.sourceRefreshHandle);
+    this.sourceRefreshHandle = undefined;
   }
 
   subscribe<A, Data = unknown, Error extends ApplicationError = never>(
@@ -1303,6 +1606,8 @@ export class AckerDBClient {
     }
     this.clearReconnectTimer();
     this.clearConnectionTimers();
+    this.clearSourceRetryTimer();
+    this.clearSourceRefreshTimer();
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(localError("unavailable", "client closed", "connection"));
@@ -1374,6 +1679,10 @@ export class AckerDBClient {
     this.realtimeSessions.suspend();
     this.resuming = false;
     this.clearReconnectTimer();
+    // Background timers cannot be trusted to fire; resume pulls the source
+    // fresh instead of re-arming these.
+    this.clearSourceRetryTimer();
+    this.clearSourceRefreshTimer();
     for (const subscription of this.subscriptions.values()) {
       this.subscriptionRetries.pause(subscription.retry);
     }
@@ -1468,7 +1777,23 @@ export class AckerDBClient {
       // ordinary reconnect policy (which clears `resuming` again), everything
       // else dials inside this event turn.
       this.resuming = true;
-      this.ensureConnected();
+      if (this.credentialSource !== undefined && this.credential !== undefined) {
+        // The resume dial is gated on a fresh pull: dialing with the retained
+        // credential could welcome a stale principal — expired, signed out,
+        // or a switched account — and flush demand under it before the fresh
+        // credential arrives. Presentation dials on success; the settlement
+        // hook re-ensures connectivity for the paths where it did not — a
+        // failed pull (fall back to the retained credential so an unreachable
+        // identity provider cannot black out public demand; the bounded retry
+        // keeps pulling regardless) and a joined pull that had already
+        // settled without dialing. ensureConnected is a no-op on a live dial.
+        const ensure = (): void => {
+          if (!this.closed && !this.suspended) this.ensureConnected();
+        };
+        void this.pullCredentialSource().then(ensure, ensure);
+      } else {
+        this.ensureConnected();
+      }
     }
     this.publishConnectionState();
   }
@@ -1491,6 +1816,8 @@ export class AckerDBClient {
       CLIENT_CLOSE_CODE.authenticationFailed,
       "authentication timed out",
     );
+    this.clearSourceRefreshTimer();
+    this.scheduleSourceRetry();
     this.publishConnectionState();
   }
 
@@ -1636,9 +1963,9 @@ export class AckerDBClient {
     // withholds operations until the presented credential is confirmed.
     const pending = this.authAttempt;
     if (pending !== undefined || !this.ready) {
-      return (pending?.credential ?? this.credential).kind === "anonymous"
-        ? AUTHENTICATING_ANONYMOUS
-        : AUTHENTICATING_BEARER;
+      const presenting = pending?.credential ?? this.credential;
+      if (presenting === undefined) return AUTHENTICATING_SOURCE;
+      return presenting.kind === "anonymous" ? AUTHENTICATING_ANONYMOUS : AUTHENTICATING_BEARER;
     }
     const authentication = this.authentication!;
     if (authentication.principal === "anonymous") {
@@ -1653,6 +1980,26 @@ export class AckerDBClient {
 
   private ensureConnected(): void {
     if (this.closed || this.permanentFailure || this.authBlocked || this.suspended || this.socket) {
+      return;
+    }
+    // A credential-source client cannot dial before its first pull produced
+    // the hello credential; the pull's presentation re-enters here.
+    if (this.credential === undefined) {
+      void this.pullCredentialSource().catch(() => {});
+      return;
+    }
+    // Nor may it present a credential the server already told us is dead.
+    // Timers are not a durable schedule — a frozen tab or a suspended host
+    // can skip the proactive re-pull entirely — so the recorded deadline,
+    // not the timer, decides whether this credential is still presentable.
+    // Pulling here keeps the wake path free of a doomed handshake and the
+    // `refresh-required` blip it would publish.
+    if (
+      this.credentialSource !== undefined &&
+      this.credentialExpiresAtMs !== undefined &&
+      this.now() >= this.credentialExpiresAtMs
+    ) {
+      void this.pullCredentialSource().catch(() => {});
       return;
     }
     // Server admission control is enforced at the one physical dial boundary:
@@ -1682,14 +2029,17 @@ export class AckerDBClient {
 
   private handleOpen(socket: AckerDBWebSocket): void {
     if (this.socket !== socket || this.closed) return;
+    // ensureConnected never dials without a credential; a socket cannot open
+    // ahead of the first source pull.
+    const credential = this.credential!;
     this.socketOpen = true;
-    this.helloCredential = this.credential;
+    this.helloCredential = credential;
     try {
       this.sendFrame({
         v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: this.clientSessionId,
-        credential: this.credential,
+        credential,
       });
     } catch (error) {
       this.failPermanently(error instanceof AckerDBClientError ? error : this.protocolError(error));
@@ -1778,6 +2128,7 @@ export class AckerDBClient {
         }
         this.flushState();
         this.startConnectionTimers();
+        this.acceptedCredential();
         // Published last: a listener may reenter close(), which must find the
         // connection timers already installed so it can release them.
         this.publishConnectionState();
@@ -1788,6 +2139,7 @@ export class AckerDBClient {
         this.authentication = authenticationFromFrame(frame);
         this.resolveAuth(attempt, this.authentication);
         this.flushState();
+        this.acceptedCredential();
         this.publishConnectionState();
         return;
       }
@@ -2251,6 +2603,10 @@ export class AckerDBClient {
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.channels.failAll(error);
     this.realtimeSessions.authenticationBlocked(error);
+    // Awaiting a new credential is the source's job when one is configured:
+    // the bounded backoff pulls it instead of waiting for application code.
+    this.clearSourceRefreshTimer();
+    this.scheduleSourceRetry();
     this.publishConnectionState();
   }
 
@@ -2719,7 +3075,7 @@ export class AckerDBClient {
   }
 
   private httpHeaders(): Record<string, string> {
-    return this.credential.kind === "bearer"
+    return this.credential?.kind === "bearer"
       ? { "content-type": "application/json", authorization: `Bearer ${this.credential.token}` }
       : { "content-type": "application/json" };
   }

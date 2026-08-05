@@ -52,6 +52,17 @@ Normal hooks and their public types come from `@ackerdb/client-react`.
 `useChatTransport` and its types come only from `@ackerdb/client-react/ai`, so a
 consumer that never imports that subpath does not resolve AI SDK code.
 
+Vite dev servers should pre-bundle the client's CommonJS-interop
+dependencies, or the first on-demand optimization pass can reload the page
+mid-render and surface as a duplicated-React "Invalid hook call":
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  optimizeDeps: { include: ["eventsource-parser", "msgpackr"] },
+});
+```
+
 ## Provider and configuration lifetime
 
 Mount one provider above every component that uses AckerDB:
@@ -74,7 +85,8 @@ export function Root() {
 }
 ```
 
-`url` and an explicit `credential` are required. A bearer configuration is
+`url` is required, along with exactly one of an explicit `credential` or a
+[`credentialSource`](#credential-source) callback. A bearer configuration is
 `{ kind: "bearer", token }`. Optional configuration includes
 `clientSessionId`, partial `limits`, partial `reconnect` settings, and injected
 `clock`, `random`, `createWebSocket`, `createPeerConnection`, `fetch`, or
@@ -220,6 +232,63 @@ Mutations have no caller abort option. The promise resolves to
 application error. Its `error.kind` separates application errors from AckerDB
 client failures; client failures include `committed` when convergence failed
 after the mutation may have committed.
+
+## Files
+
+`useFileUpload()` returns one stable, provider-owned upload function. Pass it
+the application mutation that authorizes and creates an Upload Session, then
+save the returned `FileId` with an ordinary mutation:
+
+```tsx
+import { useFileUpload, useMutation } from "@ackerdb/client-react";
+import { api } from "./_generated/api";
+
+function AvatarForm({ avatarUrl }: { avatarUrl: string | null }) {
+  const uploadFile = useFileUpload();
+  const saveAvatar = useMutation(api.profiles.saveAvatar);
+
+  async function save(file: File) {
+    const uploaded = await uploadFile({
+      createSession: api.profiles.createAvatarUpload,
+      args: {},
+      file,
+    });
+    if (!uploaded.ok) throw uploaded.error;
+
+    const saved = await saveAvatar({ fileId: uploaded.data });
+    if (!saved.ok) throw saved.error;
+  }
+
+  return (
+    <>
+      <input
+        type="file"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void save(file);
+        }}
+      />
+      {avatarUrl === null ? null : <img src={avatarUrl} alt="Profile" />}
+    </>
+  );
+}
+```
+
+The upload reuses the same `Blob` or `BufferSource` and the same idempotent
+session through ambiguous failures until success, caller cancellation, or
+session expiry. It routes the Upload Session path through the provider's
+configured AckerDB origin, so an on-device React Native client never sends the
+PUT to a server-advertised `127.0.0.1`. Public profile images remain ordinary
+bearer URLs rendered directly by `<img>`; there is no private-image/object-URL
+hook or public client escape hatch. Imperative base-client code can stream a
+server-issued authenticated or validated grant with
+`client.files.fetch(url, { method: "GET", headers: { Range: "bytes=0-1023" }, signal })`.
+The same operation accepts `HEAD` and conditional request headers. The client
+always owns `Authorization`, ignoring a caller-supplied value, and routes the
+grant path through its configured AckerDB server even when `files.publicUrl`
+uses a different origin.
+See [Files](files.md) for server mutations, URL access modes, storage, and
+lifecycle rules.
 
 ## Procedures
 
@@ -454,12 +523,63 @@ function SessionButton({ token }: { token: string }) {
 
 | Phase | Meaning and payload |
 | --- | --- |
-| `authenticating` | Initial presentation or refresh is in flight; carries the `credential` kind. |
+| `authenticating` | Initial presentation or refresh is in flight; carries the `credential` kind (`"source"` before a credential-source client's first pull). |
 | `unauthenticated` | The server confirmed an anonymous `authentication`. |
-| `authenticated` | The server confirmed a user or workload `authentication`. |
+| `authenticated` | The server confirmed a user or workload `authentication`; bearer descriptors carry `credentialTtlMs`, the server's credential TTL disclosure. |
 | `refresh-required` | The credential was rejected or timed out; carries `error` and blocks reconnect until `refresh(...)`. |
 | `failed` | The client failed permanently; carries `error`. |
 | `closed` | The provider closed the client. |
+
+### Credential source
+
+Instead of a fixed `credential`, the provider configuration may carry a
+`credentialSource` — the application-owned callback producing the current
+explicit credential, including the explicit anonymous credential for
+signed-out state. Exactly one of the two is configured, never both. The
+client owns the whole lifecycle: it pulls the source for the initial connect,
+re-pulls ahead of the server-disclosed credential TTL so the connection never
+degrades in the happy path, and re-pulls after a principal rejection with
+bounded jittered backoff. Concurrent triggers coalesce into one in-flight
+pull.
+
+```tsx
+<AckerDBProvider
+  config={{
+    url: serverUrl,
+    credentialSource: async () => {
+      const token = await getToken(); // the identity SDK's getter
+      return token === null ? { kind: "anonymous" } : { kind: "bearer", token };
+    },
+  }}
+>
+```
+
+The proactive schedule is an optimization, not the guarantee: an environment
+that stops running timers — a backgrounded browser tab, a suspended host —
+can skip past it entirely. The client therefore records when the accepted
+credential dies and consults that deadline before every dial, so a wake past
+expiry pulls a fresh credential instead of presenting one it can already
+prove is dead. Recovery costs one source pull, not a rejected handshake.
+
+In source mode `refresh()` takes no argument and re-invokes the source
+immediately — call it right after the identity SDK completes sign-in.
+`signOut()` re-invokes the source and resolves only when the server actually
+confirmed the anonymous principal; if the source still produces a signed-in
+credential it rejects with `conflict` — sign out of the identity SDK first,
+then call it. The operation never claims a sign-out it cannot perform. The
+source callback is a captured capability, not part of the provider's
+configuration identity — credentials change by re-pulling, never by client
+replacement.
+
+### Awaiting principal change
+
+A mounted query the server rejects with `unauthenticated` or `unauthorized`
+is not dead demand: the entry holds it as awaiting principal change and
+re-presents it exactly when the server accepts a different principal —
+never on a timer, because a rejection without a principal change would only
+repeat. After sign-in, previously rejected queries re-demand and deliver
+automatically, so gating them with `skip` until authenticated is an
+optimization, not a correctness requirement.
 
 The client descriptor never exposes the bearer token, selected claims, or
 token ID. A user descriptor contains a durable, branded AckerDB `Identity` plus

@@ -135,21 +135,127 @@ export interface CredentialVerifier {
 export type JwtAlgorithm = "RS256" | "PS256" | "ES256" | "EdDSA";
 
 export interface OidcProviderConfig {
+  /** Exact issuer: matched byte-exactly against the token's `iss`, never normalized. */
   readonly issuer: string;
   readonly jwksUri: string | URL;
-  readonly audiences: readonly string[];
+  /** Accepted `aud` values, or the explicit `"unchecked"` enforcement opt-out. */
+  readonly audiences: readonly string[] | "unchecked";
   readonly algorithms: readonly JwtAlgorithm[];
+  /** Required JOSE `typ` header value, or the explicit `"unchecked"` enforcement opt-out. */
   readonly tokenType: string;
+  /**
+   * Explicit declaration that this provider's plaintext HTTP URLs may cross a
+   * private network (RFC 1918, link-local, IPv6 ULA/link-local). Loopback
+   * plaintext needs no declaration; public plaintext is never accepted.
+   */
+  readonly allowPrivateNetworkHttp?: boolean;
   readonly principalKind: "user" | "workload";
   readonly requiredClaims?: readonly string[];
-  readonly claimNames?: readonly string[];
+  /**
+   * Claims copied to `ctx.auth.claims`, or the explicit `"none"`. Verified
+   * claims outside the selection are discarded; like every other enforcement
+   * dimension, discarding everything is a visible declaration, never a
+   * silent default.
+   */
+  readonly claimNames: readonly string[] | "none";
   readonly maxTokenAgeSeconds?: number;
+}
+
+/**
+ * Named provider presets: the product shape of a known identity provider,
+ * resolved into exact configuration at construction. A preset never weakens
+ * verification — it only fills in the fields whose values follow from the
+ * provider's published token shape. `resolveOidcProvider` is exported so the
+ * resolved exact configuration is always inspectable.
+ */
+export interface OidcProviderPreset {
+  readonly preset: "clerk" | "auth0" | "workos" | "betterauth";
+  /** Exact issuer — still matched byte-exactly, still whatever the provider mints. */
+  readonly issuer: string;
+  /** Required for `auth0` (its registered API audience); defaulted elsewhere. */
+  readonly audiences?: readonly string[] | "unchecked";
+  /** Required for `workos`: the AuthKit JWKS URL is per-client. */
+  readonly clientId?: string;
+  readonly tokenType?: string;
+  readonly claimNames?: readonly string[] | "none";
+  readonly principalKind?: "user" | "workload";
+  readonly allowPrivateNetworkHttp?: boolean;
+}
+
+export type OidcProviderEntry = OidcProviderConfig | OidcProviderPreset;
+
+const WORKOS_CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function withoutTrailingSlash(issuer: string): string {
+  return issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;
+}
+
+/** Resolves a preset entry into the exact configuration it stands for; exact entries pass through. */
+export function resolveOidcProvider(entry: OidcProviderEntry): OidcProviderConfig {
+  if (!("preset" in entry)) return entry;
+  const { preset, issuer } = entry;
+  if (typeof issuer !== "string" || issuer.length === 0) {
+    throw new TypeError(`the ${String(preset)} preset requires the exact issuer the provider mints`);
+  }
+  const shared = {
+    issuer,
+    audiences: entry.audiences ?? ("unchecked" as const),
+    principalKind: entry.principalKind ?? ("user" as const),
+    ...(entry.allowPrivateNetworkHttp === undefined
+      ? {}
+      : { allowPrivateNetworkHttp: entry.allowPrivateNetworkHttp }),
+  };
+  switch (preset) {
+    case "clerk":
+      return {
+        ...shared,
+        jwksUri: `${withoutTrailingSlash(issuer)}/.well-known/jwks.json`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "JWT",
+        claimNames: entry.claimNames ?? ["azp", "sid"],
+      };
+    case "auth0":
+      if (entry.audiences === undefined) {
+        throw new TypeError(
+          "the auth0 preset requires audiences: Auth0 mints JWT access tokens only for a registered API audience",
+        );
+      }
+      return {
+        ...shared,
+        audiences: entry.audiences,
+        jwksUri: `${withoutTrailingSlash(issuer)}/.well-known/jwks.json`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "JWT",
+        claimNames: entry.claimNames ?? ["azp", "scope"],
+      };
+    case "workos":
+      if (typeof entry.clientId !== "string" || !WORKOS_CLIENT_ID.test(entry.clientId)) {
+        throw new TypeError("the workos preset requires clientId: the AuthKit JWKS URL is per-client");
+      }
+      return {
+        ...shared,
+        jwksUri: `https://api.workos.com/sso/jwks/${entry.clientId}`,
+        algorithms: ["RS256"],
+        tokenType: entry.tokenType ?? "unchecked",
+        claimNames: entry.claimNames ?? ["sid", "org_id", "role"],
+      };
+    case "betterauth":
+      return {
+        ...shared,
+        jwksUri: `${withoutTrailingSlash(issuer)}/api/auth/jwks`,
+        algorithms: ["EdDSA"],
+        tokenType: entry.tokenType ?? "unchecked",
+        claimNames: entry.claimNames ?? ["email"],
+      };
+    default:
+      throw new TypeError(`unknown oidc provider preset "${String(preset)}"`);
+  }
 }
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface OidcVerifierOptions {
-  readonly providers: readonly OidcProviderConfig[];
+  readonly providers: readonly OidcProviderEntry[];
   readonly fetch?: Fetcher;
   readonly maxTokenBytes?: number;
   readonly jwksTimeoutMs?: number;
@@ -190,12 +296,60 @@ function nonNegativeNumber(value: number, name: string): number {
   return value;
 }
 
-function httpsUrl(value: string | URL, name: string): URL {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.hash !== "") {
-    throw new TypeError(`${name} must be an HTTPS URL without credentials or a fragment`);
+/**
+ * Private plaintext boundary: plaintext HTTP is permitted on loopback hosts —
+ * where it cannot cross a network at all — and, only under a provider's
+ * explicit `allowPrivateNetworkHttp` declaration, on private-network IP
+ * literals. Private ranges are attackable networks (Wi-Fi, corporate LAN,
+ * VPN, cloud VPC): an on-path peer that rewrites a plaintext JWKS response
+ * mints accepted tokens, so crossing them without TLS must be a visible,
+ * reviewable configuration decision, never a default. Public hosts never
+ * accept plaintext. Hostnames arrive in WHATWG-canonical form, so IPv4 is
+ * dotted-quad and IPv6 is bracketed.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return host === "::1";
+}
+
+function isPrivateNetworkHost(hostname: string): boolean {
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4 !== null) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
   }
-  return url;
+  if (host.includes(":")) {
+    const firstGroup = host.split(":", 1)[0] ?? "";
+    return /^f[cd]/.test(firstGroup) || /^fe[89ab]/.test(firstGroup);
+  }
+  return false;
+}
+
+function idpUrl(value: string | URL, name: string, allowPrivateNetworkHttp: boolean): URL {
+  const url = new URL(value);
+  if (url.username !== "" || url.password !== "" || url.hash !== "") {
+    throw new TypeError(`${name} must not contain credentials or a fragment`);
+  }
+  if (url.protocol === "https:") return url;
+  if (url.protocol === "http:") {
+    if (isLoopbackHost(url.hostname)) return url;
+    if (allowPrivateNetworkHttp && isPrivateNetworkHost(url.hostname)) return url;
+  }
+  throw new TypeError(
+    `${name} must be an HTTPS URL, or plaintext HTTP on a loopback host` +
+      ` (private-network hosts additionally require allowPrivateNetworkHttp)`,
+  );
 }
 
 function boundedStrings<T extends string>(
@@ -208,6 +362,9 @@ function boundedStrings<T extends string>(
     if (required) throw new TypeError(`${name} must not be empty`);
     return Object.freeze([]) as readonly T[];
   }
+  // Unvalidated configuration can hand any value here; a plain string would
+  // iterate as characters and silently become a character-level allowlist.
+  if (!Array.isArray(values)) throw new TypeError(`${name} must be an array of strings`);
   if ((required && values.length === 0) || values.length > max) {
     throw new TypeError(`${name} must contain ${required ? "1" : "0"} through ${max} values`);
   }
@@ -216,7 +373,7 @@ function boundedStrings<T extends string>(
     if (typeof value !== "string" || value.length === 0 || value.length > 256) {
       throw new TypeError(`${name} values must be non-empty strings of at most 256 characters`);
     }
-    unique.add(value);
+    unique.add(value as T);
   }
   if (unique.size !== values.length) throw new TypeError(`${name} must not contain duplicates`);
   return Object.freeze([...values]);
@@ -229,7 +386,12 @@ function authUnavailable(cause: unknown): AckerDBError {
   });
 }
 
-function unauthenticated(cause?: unknown): AckerDBError {
+/**
+ * The rejection a `credentialVerifier` must throw for an invalid credential.
+ * Anything else is treated as verifier unavailability and retried as
+ * `auth_unavailable` instead of rejecting the credential.
+ */
+export function unauthenticated(cause?: unknown): AckerDBError {
   return new AckerDBError("unauthenticated", "invalid credential", { cause });
 }
 
@@ -466,16 +628,33 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
   const fetcher: Fetcher = options.fetch ?? ((url, init) => fetch(url, init));
   const providers = new Map<string, CompiledProvider>();
 
-  for (const raw of options.providers) {
-    const issuerUrl = httpsUrl(raw.issuer, "provider issuer");
+  for (const entry of options.providers) {
+    const raw = resolveOidcProvider(entry);
+    // Exact issuer: validated as a well-formed URL, then stored and matched
+    // byte-exactly as written — never normalized. The one correct value is
+    // whatever the provider actually mints in `iss`.
+    if (
+      typeof raw.issuer !== "string" ||
+      raw.issuer.length === 0 ||
+      /[\u0000-\u0020\u007f]/.test(raw.issuer)
+    ) {
+      throw new TypeError(
+        "provider issuer must be a non-empty string without whitespace or control characters",
+      );
+    }
+    if (raw.allowPrivateNetworkHttp !== undefined && typeof raw.allowPrivateNetworkHttp !== "boolean") {
+      throw new TypeError("provider allowPrivateNetworkHttp must be a boolean");
+    }
+    const allowPrivateNetworkHttp = raw.allowPrivateNetworkHttp === true;
+    const issuerUrl = idpUrl(raw.issuer, "provider issuer", allowPrivateNetworkHttp);
     if (issuerUrl.search !== "") throw new TypeError("provider issuer must not contain a query");
     const issuer = raw.issuer;
-    if (issuerUrl.href !== issuer) {
-      throw new TypeError("provider issuer must already be in its exact canonical URL form");
-    }
     if (providers.has(issuer)) throw new TypeError(`duplicate provider issuer "${issuer}"`);
-    const jwksUri = httpsUrl(raw.jwksUri, "provider jwksUri");
-    const audiences = boundedStrings(raw.audiences, "provider audiences", MAX_AUDIENCES, true);
+    const jwksUri = idpUrl(raw.jwksUri, "provider jwksUri", allowPrivateNetworkHttp);
+    const audiences =
+      raw.audiences === "unchecked"
+        ? ("unchecked" as const)
+        : boundedStrings(raw.audiences, "provider audiences", MAX_AUDIENCES, true);
     const algorithms = boundedStrings(raw.algorithms, "provider algorithms", MAX_ALGORITHMS, true);
     const allowedAlgorithms: ReadonlySet<string> = new Set<JwtAlgorithm>([
       "RS256",
@@ -498,7 +677,16 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       MAX_CLAIM_NAMES,
       false,
     );
-    const claimNames = boundedStrings(raw.claimNames, "provider claimNames", MAX_CLAIM_NAMES, false);
+    // Claim projection is a visible declaration like every other dimension:
+    // either a non-empty selection or the explicit "none" — silently
+    // discarding every verified claim by default was accidental complexity.
+    if (raw.claimNames === undefined) {
+      throw new TypeError('provider claimNames must be a list of selected claims or the explicit "none"');
+    }
+    const claimNames =
+      raw.claimNames === "none"
+        ? (Object.freeze([]) as readonly string[])
+        : boundedStrings(raw.claimNames, "provider claimNames", MAX_CLAIM_NAMES, true);
     const maxTokenAgeSeconds =
       raw.maxTokenAgeSeconds === undefined
         ? undefined
@@ -523,11 +711,11 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       claimNames,
       verifyOptions: {
         issuer,
-        audience: [...audiences],
         algorithms: [...algorithms],
-        typ: raw.tokenType,
         requiredClaims: ["exp", "sub", ...requiredClaims],
         clockTolerance: clockToleranceSeconds,
+        ...(audiences === "unchecked" ? {} : { audience: [...audiences] }),
+        ...(raw.tokenType === "unchecked" ? {} : { typ: raw.tokenType }),
         ...(maxTokenAgeSeconds === undefined ? {} : { maxTokenAge: maxTokenAgeSeconds }),
       },
     });

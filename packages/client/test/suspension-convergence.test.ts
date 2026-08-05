@@ -25,7 +25,7 @@ import {
 import {
   AckerDBClient,
   AckerDBClientError,
-  type AckerDBClientOptions,
+  type AckerDBClientOptionsBase,
   type AckerDBLifecyclePort,
   type AckerDBLiveEvent,
   type AckerDBWebSocket,
@@ -57,6 +57,7 @@ const USER_AUTHENTICATION = {
   principal: "user",
   identity: 1n as Identity,
   provenance: { issuer: "https://issuer.example", subject: "user-1" },
+  credentialTtlMs: 60_000,
 } satisfies AuthenticationDescriptor;
 
 function eventCursor(
@@ -947,7 +948,7 @@ interface SuspendableClient {
  */
 function suspendableClient(
   url: string,
-  overrides: Partial<AckerDBClientOptions> = {},
+  overrides: Partial<AckerDBClientOptionsBase> = {},
 ): SuspendableClient {
   let port: AckerDBLifecyclePort | undefined;
   const clientFrames: ClientMessage[] = [];

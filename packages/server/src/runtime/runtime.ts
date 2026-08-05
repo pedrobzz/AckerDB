@@ -99,12 +99,18 @@ import {
 } from "./sessions/store.ts";
 import { RuntimeSessionApplication } from "./sessions/application.ts";
 import { RuntimeSampler } from "./telemetry/sampler.ts";
+import { FileObservability } from "../files/observability.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
-import { RuntimeScheduledCandidates } from "./scheduler/candidate.ts";
-import { RuntimeScheduler } from "./scheduler/runtime.ts";
+import { RuntimeJobs } from "./jobs/runtime.ts";
 import { RuntimeControl } from "./lifecycle/control.ts";
 import { RuntimeQueries } from "./queries/runtime.ts";
 import { RuntimeSystem } from "./system/runtime.ts";
+import { RuntimeFiles } from "../files/namespace.ts";
+import {
+  FileHttpRuntime,
+  type RuntimeFileRequest,
+} from "../files/http.ts";
+import { FileCleanupRuntime } from "../files/cleanup.ts";
 
 /** Package-private transport hook; intentionally absent from the public index. */
 export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
@@ -133,6 +139,10 @@ export class Runtime implements RuntimePort {
   readonly deliveryObserver: DeliveryObserver;
 
   private readonly now: () => number;
+  private readonly files: RuntimeFiles;
+  readonly fileMaxBytes: number;
+  private readonly fileHttp: FileHttpRuntime;
+  private readonly fileCleanup: FileCleanupRuntime;
   private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: AuthInvalidationPublisher;
@@ -140,7 +150,7 @@ export class Runtime implements RuntimePort {
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   private readonly queries: RuntimeQueries;
   private readonly mcp: RuntimeMcp;
-  private readonly scheduler: RuntimeScheduler;
+  readonly jobs: RuntimeJobs;
   private readonly sessionStore: RuntimeSessionStore;
   private readonly sessionApplication: RuntimeSessionApplication;
   private readonly authCaptureBudget: OutboundBudget;
@@ -160,6 +170,11 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
+    this.files = new RuntimeFiles(
+      options.files,
+      new FileObservability(this.engine, this.now),
+    );
+    this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
       throw new TypeError("Runtime requires a ready Plugin runtime");
     }
@@ -206,7 +221,6 @@ export class Runtime implements RuntimePort {
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
-    const scheduled = options.registry.resolveScheduled(options.engine.schema);
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
@@ -264,12 +278,6 @@ export class Runtime implements RuntimePort {
       telemetryEnabled: this.telemetry.enabled,
       tracing: this.tracing,
     });
-    const schedulerCandidates = new RuntimeScheduledCandidates({
-      scheduled,
-      engine: this.engine,
-      reads: this.reads,
-      tracing: this.tracing,
-    });
     this.reactive = new OrderedReactive<RuntimeReactiveContext>({
       limits: this.limits,
       initialVersion: this.engine.commitVersion(),
@@ -308,7 +316,10 @@ export class Runtime implements RuntimePort {
             },
           }
         : {}),
-      armScheduler: (touchedTables) => this.scheduler.arm(touchedTables),
+      armJobs: () => this.jobs.arm(),
+      jobs: () => this.jobs,
+      files: this.files,
+      fileLifecycleSignal: () => this.control.shutdownSignal,
       hooks: options.hooks,
       now: this.now,
     });
@@ -319,6 +330,21 @@ export class Runtime implements RuntimePort {
       shutdownSignal: () => this.control.shutdownSignal,
       telemetry: this.telemetry,
       tracing: this.tracing,
+    });
+    this.fileHttp = new FileHttpRuntime({
+      files: this.files,
+      now: this.now,
+      lifecycleSignal: () => this.control.shutdownSignal,
+      read: (signal, work) => this.functions.filesRead(signal, work),
+      write: (signal, work) => this.functions.filesWrite(signal, work),
+      authorize: (address, args, principal, fairnessKey, signal) =>
+        this.queries.execute(address, args, principal, fairnessKey, signal, 1),
+    });
+    this.fileCleanup = new FileCleanupRuntime({
+      files: this.files,
+      now: this.now,
+      read: (signal, work) => this.functions.filesRead(signal, work),
+      write: (signal, work) => this.functions.filesWrite(signal, work, { waitForRecovery: false }),
     });
     this.http = new RuntimeHttp({
       registry: this.registry,
@@ -350,19 +376,6 @@ export class Runtime implements RuntimePort {
         this.control.admittedRequestBytes(request, receivedBytes),
       publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
     });
-    this.scheduler = new RuntimeScheduler({
-      candidates: schedulerCandidates,
-      scheduled,
-      batchSize: this.limits.schedulerBatchSize,
-      operations: this.operations,
-      telemetry: this.telemetry,
-      signal: () => this.control.shutdownSignal,
-      now: this.now,
-      isReady: () => this.control.isReady,
-      assertReady: () => this.control.assertReady(),
-      executeMutation: (candidate, now, signal) =>
-        this.functions.executeScheduledMutation(candidate, now, signal),
-    });
     const authCaptureControlReserve = Math.min(
       this.limits.maxFrameBytes,
       this.limits.webSocket.maxBytes - 1,
@@ -393,6 +406,26 @@ export class Runtime implements RuntimePort {
           unit: "gauge",
         }),
     });
+    this.system = new RuntimeSystem({
+      functions: this.functions,
+      operations: this.operations,
+      telemetry: this.telemetry,
+      tracing: this.tracing,
+      invalidations: this.immediateProcedureInvalidations,
+      signal: (signal) => this.control.systemSignal(signal),
+      now: this.now,
+    });
+    this.jobs = new RuntimeJobs({
+      declared: options.jobs ?? [],
+      executor: this.functions,
+      reads: this.reads,
+      system: this.system,
+      telemetry: this.telemetry,
+      limits: this.limits.jobs,
+      now: this.now,
+      signal: () => this.control.shutdownSignal,
+      isReady: () => this.control.isReady,
+    });
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
@@ -409,21 +442,14 @@ export class Runtime implements RuntimePort {
       functions: this.functions,
       reactive: this.reactive,
       sessions: this.sessionStore,
-      scheduler: this.scheduler,
+      jobs: this.jobs,
+      fileCleanup: this.fileCleanup,
+      files: this.files,
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
       stopSampler: () => this.sampler.stop(),
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.system = new RuntimeSystem({
-      functions: this.functions,
-      operations: this.operations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      invalidations: this.immediateProcedureInvalidations,
-      signal: (signal) => this.control.systemSignal(signal),
-      now: this.now,
     });
     this.sessionApplication = new RuntimeSessionApplication({
       engine: this.engine,
@@ -452,6 +478,7 @@ export class Runtime implements RuntimePort {
         authCaptureBudget: this.authCaptureBudget.snapshot(),
         sseBudget: this.http.sseBudget.snapshot(),
         telemetry: this.telemetry.snapshot(),
+        files: this.files.observability.snapshot(),
         storage: this.engine.status(),
       }),
       sampleRealtime: () => {
@@ -460,7 +487,8 @@ export class Runtime implements RuntimePort {
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sampler.start();
-    this.scheduler.arm();
+    this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
+    void this.jobs.activate();
   }
 
   get state(): RuntimeLifecycleState {
@@ -599,6 +627,12 @@ export class Runtime implements RuntimePort {
     return this.http.runHttpHandler(input);
   }
 
+  /** Streaming built-in Upload Session and File Grant routes. */
+  runFileRequest(input: RuntimeFileRequest): Promise<Response> {
+    this.control.assertReady();
+    return this.fileHttp.handle(input);
+  }
+
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
     return this.mcp.runTool(request);
@@ -627,8 +661,9 @@ export class Runtime implements RuntimePort {
     return this.http.sseSnapshot(streamId);
   }
 
-  runScheduled(now = this.readNow()): Promise<number> {
-    return this.scheduler.run(now);
+  /** Drive one runner batch now — deterministic tests advance work this way. */
+  runJobs(): Promise<void> {
+    return this.jobs.run();
   }
 
   status(): RuntimeStatus {

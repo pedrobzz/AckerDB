@@ -170,6 +170,39 @@ advertised invalidation feed. AckerDB still validates returned credential eviden
 resolves user `(issuer, subject)` pairs to durable Identities, and enforces the
 declared revocation bound before activation.
 
+### Verifier error contract
+
+A verifier's rejection outcome is part of its contract. For an invalid
+credential, throw the `unauthenticated()` helper exported from
+`@ackerdb/server` (or an `AckerDBError` with code `unauthenticated`): the
+presentation rejects immediately and non-retryably. Anything else a verifier
+throws — a jose error, a network failure, a plain `Error` — is treated as
+verifier *unavailability* and surfaces as retryable `auth_unavailable`, which
+clients keep retrying for tens of seconds. A verifier that lets jose's
+`JWTExpired` escape unmapped therefore turns every bad token into a long
+retry loop instead of an instant rejection:
+
+```ts
+import { unauthenticated, type CredentialVerifier } from "@ackerdb/server";
+import { jwtVerify } from "jose";
+
+const verifier = {
+  revocationBound: { kind: "token-expiration" },
+  subscribeInvalidation: () => () => {},
+  verify: async (token: string) => {
+    try {
+      const { payload } = await jwtVerify(token, keySet, verifyOptions);
+      return evidenceFrom(payload);
+    } catch (cause) {
+      throw unauthenticated(cause);
+    }
+  },
+} satisfies CredentialVerifier;
+```
+
+Reserve non-`unauthenticated` throws for failures where retrying can
+genuinely succeed, such as the verifier's own key service being unreachable.
+
 ## Function access policies
 
 Every query, mutation, procedure, SSE procedure, and event subscription must
@@ -194,6 +227,17 @@ validation and policy too.
 The CLI reads OIDC configuration from `.ackerdb.config.json` and passes it to
 `createOidcVerifier`. AckerDB is a relying party only: it does not implement login,
 passwords, passkeys, token issuance, or OIDC discovery.
+
+A provider entry is either the full field-by-field configuration below or a
+**provider preset** — `{ "preset": "clerk" | "auth0" | "workos" |
+"betterauth", "issuer": "…", … }` — the provider's published token shape
+resolved into exact configuration at startup. Presets never weaken
+verification: they fill in only the fields whose values follow from what the
+provider mints, refuse the ones that cannot be defaulted (Auth0's API
+audience, WorkOS's client ID), accept the same overrides as the full form,
+and `resolveOidcProvider` (exported from `@ackerdb/server`) returns the exact
+configuration any preset stands for. Per-provider recipes and the resolved
+form of each preset live in [Auth providers](auth-providers.md).
 
 ```json
 {
@@ -229,27 +273,57 @@ passwords, passkeys, token issuance, or OIDC discovery.
 }
 ```
 
-The issuer string must already equal the canonical HTTPS URL produced by
-`new URL(issuer).href`; for a bare origin this includes the trailing slash.
-Issuer URLs cannot contain credentials, fragments, or queries. JWKS URLs must
-also be HTTPS and cannot contain credentials or fragments. Providers are an
-exact registry and duplicate issuers are rejected.
+The issuer string is an **exact issuer**: it is validated as a well-formed URL
+on a permitted scheme, then stored and matched byte-exactly against the
+token's `iss` — never normalized or rewritten. There is exactly one correct
+value per provider: whatever that provider actually mints, trailing slash or
+not. Issuer strings cannot contain whitespace, control characters,
+credentials, fragments, or queries. JWKS URLs cannot contain credentials or
+fragments. Providers are an exact registry and duplicate issuers are
+rejected. Per-provider recipes with each provider's exact `iss` string live
+in [Auth providers](auth-providers.md).
+
+Both URLs obey the **private plaintext boundary**: HTTPS is accepted
+everywhere, and plaintext `http:` is permitted by default only on loopback
+hosts (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`), where it cannot
+cross a network at all. Private-network IP literals (RFC 1918, link-local,
+IPv6 ULA and link-local) additionally require the provider's explicit
+`allowPrivateNetworkHttp: true` — private ranges are attackable networks
+(Wi-Fi, corporate LAN, VPN, cloud VPC), and an on-path peer that rewrites a
+plaintext JWKS response mints accepted tokens, so crossing them without TLS
+is a visible per-provider declaration, never a default. Public hosts and
+named non-localhost hosts never accept plaintext, declaration or not, in any
+mode.
+
+`audiences` is either a non-empty list of accepted `aud` values or the
+explicit literal `"unchecked"`; `tokenType` is either the required JOSE
+`typ` header value or `"unchecked"`. This is **unchecked enforcement**: a
+verification dimension is always either fully specified or visibly declared
+unchecked in the configuration — never silently absent by default. An empty
+`audiences` array stays forbidden. Declare `"unchecked"` only when the
+provider genuinely does not mint the claim or header (see the recipes);
+every dimension left declared stays fully enforced.
 
 An unverified JWT is decoded only to select an already configured issuer. An
 unknown issuer fails before any network request. The selected provider then
 verifies all of the following with `jose`:
 
-- exact issuer, one configured audience, one configured asymmetric algorithm,
-  and the configured JOSE `typ`;
+- exact issuer, one configured audience (unless `"unchecked"`), one
+  configured asymmetric algorithm, and the configured JOSE `typ` (unless
+  `"unchecked"`);
 - required `exp` and non-empty `sub`, plus every `requiredClaims` entry;
 - optional `maxTokenAgeSeconds` (which requires a valid `iat` through the JOSE
   verification path); and
 - `jti` as a string when present.
 
-Only names in `claimNames` are copied to `ctx.auth.claims`. Omitting
-`claimNames` produces an empty claims object even though the token was fully
-verified. In particular, a workload provider used for `GET /status` must select
-the `scope` claim.
+Claim projection is a declaration like every other dimension: `claimNames`
+is required and is either a non-empty list of claims to copy to
+`ctx.auth.claims` or the explicit `"none"` for the empty projection. Verified
+claims outside the selection are discarded — that stays deliberate claim
+minimization, but discarding everything is now a visible choice instead of a
+silent default a newcomer discovers when every claim-based policy fails. In
+particular, a workload provider used for `GET /status` must select the
+`scope` claim.
 
 Supported algorithms are `RS256`, `PS256`, `ES256`, and `EdDSA`. The verifier
 does not accept an algorithm merely because the token requests it. `tokenType`
@@ -295,6 +369,16 @@ A successful WebSocket refresh is an ordered auth transition:
 Passing `{ kind: "anonymous" }` to `refreshCredential` signs out through the
 same path. A failed or timed-out refresh closes or auth-blocks the session; the
 old principal is never silently restored.
+
+Every accepted bearer presentation — the `welcome` and each `auth`
+acknowledgement — carries `credentialTtlMs`, the server's **credential TTL
+disclosure**: the remaining validity of the accepted credential as a relative
+duration, computed at frame send. It exists so a client can refresh
+proactively without assuming any credential format (client-side token
+parsing would break the format-opaque `credentialVerifier` contract).
+Anonymous principals disclose nothing. The client's
+[credential source](client-react.md#credential-source) schedules its
+proactive re-pull from this disclosure.
 
 The server owns a hard timer for `expiresAt` and closes a session that is not
 refreshed in time. The built-in OIDC verifier advertises

@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { defineSchema, defineTable, snapshotOf, v } from "@ackerdb/server";
+import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
 describe("schema snapshots", () => {
   test("records version 2 and sorted full-text targets on every table", () => {
-    const snapshot = snapshotOf(
+    const snapshot = snapshotOf(withFrameworkTables(
       defineSchema({
         documents: defineTable({
           id: v.primaryKey(),
@@ -15,7 +16,7 @@ describe("schema snapshots", () => {
           value: v.string(),
         }),
       }),
-    );
+    ));
 
     expect(snapshot.version).toBe(2);
     expect(snapshot.tables.documents!.fullText).toEqual(["aa", "z"]);
@@ -33,7 +34,7 @@ describe("schema snapshots", () => {
         .index(["z"]),
     });
 
-    expect(snapshotOf(schema).tables.entries!.indexes.map((index) => index.name)).toEqual([
+    expect(snapshotOf(withFrameworkTables(schema)).tables.entries!.indexes.map((index) => index.name)).toEqual([
       "s_n_b_1_z",
       "s_n_b_2_aa",
     ]);

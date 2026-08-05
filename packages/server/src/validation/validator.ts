@@ -63,7 +63,7 @@ export type InferValidatorInput<V> = V extends Validator<unknown, string, infer 
  * recipe (`RowShape<{...validators...}>`, `Omit<...> & {...}`). Every public
  * boundary (rows, inserts, patches, args, narrowed rows) goes through this,
  * so hovers read like hand-written object types. Scalars, bigints (incl.
- * the branded Identity) and bytes pass through untouched.
+ * branded identities such as Identity, FileId, and FileGrantId) and bytes pass through untouched.
  */
 export type Expand<T> = T extends bigint | string | number | boolean | null | undefined | Uint8Array
   ? T

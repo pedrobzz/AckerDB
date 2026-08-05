@@ -11,10 +11,12 @@ import {
   type App,
   type AppSystemCtx,
   Engine,
+  LocalFileStore,
   PluginRuntime,
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
+  type FileStore,
   type RuntimeOptions,
   assertCredentialVerifier,
   assemblePlugins,
@@ -29,16 +31,24 @@ import {
   reconcilePluginStorage,
   reconcile,
   declareServices,
+  declareJobs,
   ServiceError,
   ServiceRuntime,
   UnsafeSchemaChange,
   validateHistoryPrefix,
 } from "@ackerdb/server";
+import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import type { AppConfig } from "./config.ts";
-import { importApp, importFunctionModules, importServiceModules } from "./manifest.ts";
+import {
+  importApp,
+  importFunctionModules,
+  importJobModules,
+  importServiceModules,
+} from "./manifest.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
+import { fileStoreIdentity } from "../files/identity.ts";
 
 export interface RunningApp<A extends App = App> {
   server: AckerDBServer;
@@ -161,6 +171,22 @@ function credentialVerifierLoader(
  */
 const SERVICES_STOPPING = new Error("application is shutting down");
 
+export async function createFileStore(config: AppConfig): Promise<FileStore> {
+  const files = config.files;
+  if (files.backend === "filesystem") {
+    return new LocalFileStore({ root: files.root });
+  }
+  const { S3FileStore } = await import("@ackerdb/server/files/s3");
+  return new S3FileStore({
+    ...(files.endpoint === undefined ? {} : { endpoint: files.endpoint }),
+    region: files.region,
+    bucket: files.bucket,
+    forcePathStyle: files.forcePathStyle,
+    checksum: files.checksum,
+    encryption: files.encryption,
+  });
+}
+
 export class StartupInterruptedError extends Error {
   override readonly name = "StartupInterruptedError";
 
@@ -177,6 +203,7 @@ export async function startApp<const A extends App = App>(
   const startupSignal = options.signal ?? AbortSignal.any([]);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
+    fileMaxBytes: config.files.maxBytes,
     hostname: config.hostname,
     port: config.port,
     statusScope: config.statusScope,
@@ -309,6 +336,11 @@ export async function startApp<const A extends App = App>(
     ownedEngine = new Engine(app.schema, join(config.dbDir, "data.db"), {
       durability: config.durability,
     });
+    const files = await createFileStore(config);
+    const configuredFileStoreIdentity = await fileStoreIdentity(config.files);
+    await awaitStartup(files.probe({ signal: startupSignal }));
+    resolveFileStoreBinding(ownedEngine, configuredFileStoreIdentity);
+    requireStartupOwnership();
 
     // A present chain reports `migrating` distinctly; an empty one reconciles
     // exactly as before. The chain form owns history, the per-step apply, and
@@ -321,13 +353,15 @@ export async function startApp<const A extends App = App>(
     // not schema migration. Load them only after durable schema work commits so
     // unrelated runtime configuration cannot block a pending migration.
     server.advanceStartup("loading-runtime");
-    const [verifier, modules, serviceModules] = await awaitStartup(Promise.all([
+    const [verifier, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
       importFunctionModules(config),
       importServiceModules(config),
+      importJobModules(config),
     ]));
     requireStartupOwnership();
     const declaredServices = declareServices(serviceModules);
+    const declaredJobs = declareJobs(jobModules);
 
     const assembly = assemblePlugins(app.plugins);
     const pluginStorage = reconcilePluginStorage(ownedEngine, desiredPluginMounts(app));
@@ -347,6 +381,12 @@ export async function startApp<const A extends App = App>(
       engine: ownedEngine,
       registry,
       pluginRuntime,
+      jobs: declaredJobs,
+      files: {
+        store: files,
+        publicUrl: config.files.publicUrl,
+        maxBytes: config.files.maxBytes,
+      },
       ...(verifier === undefined ? {} : { verifier }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,

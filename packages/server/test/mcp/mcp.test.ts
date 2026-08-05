@@ -833,8 +833,12 @@ describe("public stateless MCP endpoint", () => {
         params: { name: "write_note", arguments: { body: "x".repeat(1_024) } },
       }),
     });
-    // Bun rejects a declared over-limit body before AckerDB allocates or parses it.
-    expect(oversized.status).toBe(413);
+    // File uploads raise Bun's listener-wide ceiling, but this route still
+    // rejects its own declared length before allocating or parsing it.
+    expect(oversized.status).toBe(429);
+    expect(await oversized.json()).toMatchObject({
+      error: { message: "request exceeds maxRequestBytes" },
+    });
     expect(handlerCalls).toBe(0);
   });
 
