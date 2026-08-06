@@ -233,4 +233,40 @@ describe("TelemetryJournal", () => {
     await journal.drain();
     journal.store.close();
   });
+
+  test("counts retention holes a consumer crosses as evicted", async () => {
+    const journal = createJournal({ now: () => NOW, retention: { debug: DAY_MS } });
+    // Interleave rows the per-class clock expires among retained ones, so the
+    // holes sit BETWEEN retained ids — not before MIN(id).
+    expect(journal.append(timestamped(1n, "info", NOW))).toBe(true);
+    expect(journal.append(timestamped(2n, "debug", NOW - 2 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(3n, "info", NOW))).toBe(true);
+    expect(journal.append(timestamped(4n, "debug", NOW - 2 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(5n, "info", NOW))).toBe(true);
+    await journal.flush();
+    expect(journal.store.snapshot().expiredRecords.debug).toBe(2);
+
+    const batch = journal.consumerBatch("exporter", 10);
+    expect(batch.records.map((entry) => entry.id)).toEqual([1n, 3n, 5n]);
+    expect(batch.consumer.evictedRecords).toBe(0);
+    // Advancing across ids 2 and 4 without exporting or skipping them is
+    // retention loss, and the exporter's accounting must say so.
+    const advanced = journal.advanceConsumer("exporter", 5n, { exportedRecords: 3 });
+    expect(advanced.evictedRecords).toBe(2);
+    expect(advanced.exportedRecords).toBe(3);
+
+    // A trailing hole before the next retained id is crossed the same way.
+    expect(journal.append(timestamped(6n, "debug", NOW - 2 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(7n, "info", NOW))).toBe(true);
+    await journal.flush();
+    const next = journal.consumerBatch("exporter", 10);
+    expect(next.records.map((entry) => entry.id)).toEqual([7n]);
+    expect(journal.advanceConsumer("exporter", 7n, { exportedRecords: 1 })).toMatchObject({
+      evictedRecords: 3,
+      exportedRecords: 4,
+    });
+
+    await journal.drain();
+    journal.store.close();
+  });
 });

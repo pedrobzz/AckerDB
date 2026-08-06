@@ -406,18 +406,30 @@ export class TelemetryJournal {
     validateConsumerName(name);
     return this.withStorage(() => {
       this.ensureConsumer(name);
+      const previous = this.consumerSnapshot(name);
+      const accounted = (advance.exportedRecords ?? 0) +
+        (advance.skippedUnsupported ?? 0) +
+        (advance.skippedIdentity ?? 0);
+      // Cursor-aware loss accounting: every id crossed by this advance was
+      // exported, skipped, or no longer in storage. Per-class retention
+      // deletes arbitrary rows, so holes between retained records are
+      // evictions too — not only the prefix before MIN(id).
+      const crossed = cursor > previous.cursor ? Number(cursor - previous.cursor) : 0;
+      const evicted = Math.max(crossed - accounted, 0);
       this.database.query(`
         UPDATE _ackerdb_telemetry_consumers
         SET cursor = ?,
             exported_records = exported_records + ?,
             skipped_unsupported = skipped_unsupported + ?,
-            skipped_identity = skipped_identity + ?
+            skipped_identity = skipped_identity + ?,
+            evicted_records = evicted_records + ?
         WHERE name = ?
       `).run(
         cursor,
         advance.exportedRecords ?? 0,
         advance.skippedUnsupported ?? 0,
         advance.skippedIdentity ?? 0,
+        evicted,
         name,
       );
       return this.consumerSnapshot(name);
