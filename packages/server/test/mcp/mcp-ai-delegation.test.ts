@@ -161,6 +161,14 @@ const freeAuthenticated = typedProcedure({
   handler: (ctx) => principalResult("free_authenticated", ctx.auth),
 });
 
+const internalStatus = typedProcedure({
+  description: "Private in-app tool fixture.",
+  access: "public",
+  args: {},
+  returns: principalOutput,
+  handler: (ctx) => principalResult("internal_status", ctx.auth),
+});
+
 function modelFor(calls: readonly ModelCall[]): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: async () => ({
@@ -277,6 +285,18 @@ const runLocal = typedProcedure({
       case "scope_free": {
         const tools = scopeFreeMcp.aiTools(ctx);
         return { names: Object.keys(tools), events: [] };
+      }
+      case "internal_unscoped": {
+        // An unscoped delegation is still LOCAL: private tools are exactly
+        // the in-app surface it must reach.
+        const tools = internalMcp.aiTools(ctx);
+        return {
+          names: Object.keys(tools).sort(),
+          events: await runModel(tools, [
+            { id: "internal-auth", name: "internal_authenticated" },
+            { id: "internal", name: "internal_status" },
+          ]),
+        };
       }
       case "scope_free_include": {
         const tools = scopeFreeMcp.aiTools(ctx, { includeUnavailable: true });
@@ -405,16 +425,27 @@ const scopeFreeMcp = typedMcp({
     free_public: { fn: freePublic, access: "public" },
   },
 });
+// Private tools are the in-app-only surface: reachable exclusively through
+// local delegation, whatever the size of the delegated grant.
+const internalMcp = typedMcp({
+  name: "internal",
+  private: true,
+  tools: {
+    internal_authenticated: { fn: freeAuthenticated, access: "authenticated", private: true },
+    internal_status: { fn: internalStatus, access: "public", private: true },
+  },
+});
 
 const modules = {
   app: { runLocal },
-  mcp: { aliasMcp, otherMcp, scopeFreeMcp, scopedMcp },
+  mcp: { aliasMcp, internalMcp, otherMcp, scopeFreeMcp, scopedMcp },
   tools: {
     adminOrders,
     authenticatedStatus,
     delegate,
     freeAuthenticated,
     freePublic,
+    internalStatus,
     otherProtected,
     otherPublic,
     publicStatus,
@@ -605,6 +636,26 @@ describe("MCP identity-preserving local delegation", () => {
       fetch.mockRestore();
       authenticate.mockRestore();
     }
+  });
+
+  test("an unscoped delegation reaches private tools as a local caller", async () => {
+    // Locality is the delegation itself, not the size of its grant: an
+    // aiTools set with no scopes must still list AND execute private tools.
+    expect(await callProcedure(user(), "internal_unscoped")).toEqual({
+      names: ["internal_authenticated", "internal_status"],
+      events: [
+        {
+          type: "tool-result",
+          name: "internal_authenticated",
+          output: { tool: "free_authenticated", kind: "user", identity: "41" },
+        },
+        {
+          type: "tool-result",
+          name: "internal_status",
+          output: { tool: "internal_status", kind: "user", identity: "41" },
+        },
+      ],
+    });
   });
 
   test("does not let anonymous scopes manufacture Identity or protected authority", async () => {

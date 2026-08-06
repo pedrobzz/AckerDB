@@ -72,6 +72,8 @@ export class RuntimeMcp {
    * Resolve one callable tool without trusting discovery or revealing
    * inaccessible names. `localGrant` is an explicit same-process delegation
    * from `aiTools`; remote callers authorize on their own Identity grant.
+   * Locality is the presence of a delegation, never the size of its grant:
+   * an unscoped `aiTools` set must still reach private tools.
    */
   authorizeTool(
     mcp: string,
@@ -80,7 +82,7 @@ export class RuntimeMcp {
     localGrant?: readonly string[],
   ): RuntimeMcpToolAuthorization {
     const tool = this.options.registry.mcpTool(mcp, name);
-    const local = localGrant !== undefined && localGrant.length > 0;
+    const local = localGrant !== undefined;
     if (
       tool !== undefined &&
       !(tool.private && !local) &&
