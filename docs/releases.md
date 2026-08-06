@@ -25,7 +25,7 @@ hotfix/*     ──urgent pull request──────────────
   every merge still publishes a distinct `X.Y.Z-canary.N`. Declare a version
   step only when the work releases a new source version: run
   `bun run release:prepare <level>` after the branch is based on the current
-  target. The command updates all twelve package manifests, their exact
+  target. The command updates all thirteen package manifests, their exact
   workspace interdependencies, the generated native loader, and `bun.lock`,
   then creates the release-intent commit.
 - A `hotfix/*` pull request into `main` always declares exactly one `major`,
@@ -117,11 +117,16 @@ evidence.
 
 ## Public npm delivery
 
-All twelve packages move in lockstep:
+All thirteen packages move in lockstep:
 
-- seven user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
-  `client`, `client-react`, and `cli`;
+- eight user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
+  `client`, `client-react`, `cli`, and `studio`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
+
+`@ackerdb/studio` ships a prebuilt SPA bundle in `dist/`, which is git-ignored
+and built at release time: `release:prepare` proves the bundle builds, every
+publish path builds it before packing, and `verify-packages` asserts the
+packed dist exists and opens.
 
 Every merge into `canary` prepares the current source version as
 `X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
@@ -159,7 +164,9 @@ credential or secret. It restores no release cache and installs with lifecycle
 scripts disabled. The npm account has no access tokens. Canary publication is
 automatic after merge; stable publication requires the separate approval above.
 
-All twelve package records now exist with that same trusted publisher.
+Every published package record exists with that same trusted publisher; a
+newly added package (such as `@ackerdb/studio`) gains its record on its first
+protected publication.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported
 local public-publishing command. The local bootstrap session was removed, CI
 has no npm token or secret, and every future public release comes from the
@@ -189,7 +196,7 @@ bun run publish:beta       # publish the next local beta
 bun run publish:beta:demo  # publish it, repin matching demo packages, reinstall
 ```
 
-The publisher accepts a dirty topic branch, assembles the exact twelve-package
+The publisher accepts a dirty topic branch, assembles the exact thirteen-package
 set, chooses the next registry-backed beta number, and restores every release
 manifest and generated native evidence byte-for-byte even after a failed
 publication. It can reuse a matching native artifact set from Verdaccio or

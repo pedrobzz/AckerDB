@@ -18,6 +18,7 @@ import {
   WEBRTC_LOADER_REPOSITORY_PATH,
   writeWebRtcLoader,
 } from "../../packages/realtime/native/webrtc/generate-loader.ts";
+import { buildStudioDist } from "./studio-dist.ts";
 
 const LEVELS = ["patch", "minor", "major"] as const;
 const level = process.argv[2] as (typeof LEVELS)[number] | undefined;
@@ -31,6 +32,14 @@ if (branch === null || branch === "main" || branch === "canary") {
 }
 if (tryGit("rev-parse", "-q", "--verify", "MERGE_HEAD")) {
   fail("a merge is in progress — conclude or abort it before preparing a version");
+}
+
+// The declared version must be publishable: prove the Studio bundle builds
+// before any manifest moves, so a broken SPA fails here and not at publish.
+try {
+  buildStudioDist();
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
 }
 
 const sources = new Map<string, string>();

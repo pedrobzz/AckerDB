@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { NATIVE_PACKAGES, PACKAGES, PUBLIC_PACKAGES } from "./lib.ts";
 import { FSL_LICENSE, NATIVE_LICENSE } from "./release/package-license.ts";
+import { buildStudioDist } from "./release/studio-dist.ts";
 import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
@@ -251,6 +252,34 @@ function assertServerExcludesRealtimeRuntime(serverDirectory: string): void {
   }
 }
 
+/**
+ * The published Studio must open: the launcher entry resolves, the prebuilt
+ * `dist/index.html` shipped, and every asset that page loads shipped with it.
+ */
+function assertStudioOpens(studioDirectory: string): void {
+  const manifest = readManifest(join(studioDirectory, "package.json"));
+  if (manifest.exports?.["."] !== "./src/server.ts") {
+    throw new Error("packed @ackerdb/studio does not expose its launcher from ./src/server.ts");
+  }
+  if (!existsSync(join(studioDirectory, "src/server.ts"))) {
+    throw new Error("packed @ackerdb/studio is missing its launcher src/server.ts");
+  }
+  const indexPath = join(studioDirectory, "dist/index.html");
+  if (!existsSync(indexPath)) {
+    throw new Error("packed @ackerdb/studio is missing its prebuilt dist/index.html");
+  }
+  const html = readFileSync(indexPath, "utf8");
+  const assets = [...html.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((match) => match[1]!);
+  if (assets.length === 0) {
+    throw new Error("packed @ackerdb/studio dist/index.html references no bundled assets");
+  }
+  for (const asset of assets) {
+    if (!existsSync(join(studioDirectory, "dist", asset))) {
+      throw new Error(`packed @ackerdb/studio dist/index.html references missing asset /${asset}`);
+    }
+  }
+}
+
 function assertPackagedLicenses(consumerDirectory: string): void {
   const nativePackages = new Set<string>(NATIVE_PACKAGES);
   for (const pkg of PACKAGES) {
@@ -278,6 +307,9 @@ function assertPackagedLicenses(consumerDirectory: string): void {
 }
 
 async function main(): Promise<void> {
+  // dist/ is git-ignored and built at release time; the gate packs what a
+  // release would, so it builds the same bundle before packing.
+  buildStudioDist();
   const packed = await createPackedConsumer("ackerdb-packed-consumer");
   const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
@@ -338,6 +370,8 @@ async function main(): Promise<void> {
         }
       }
     }
+
+    assertStudioOpens(join(consumerDir, "node_modules/@ackerdb/studio"));
 
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
