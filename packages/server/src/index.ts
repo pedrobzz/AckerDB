@@ -228,6 +228,7 @@ export {
   scanKey,
 } from "./database/keys.ts";
 export { VectorRuntimeUnavailableError } from "./database/query/vector-runtime.ts";
+export { MAX_PAGE_SIZE } from "./database/query/query.ts";
 export type {
   DbReader,
   DbWriter,

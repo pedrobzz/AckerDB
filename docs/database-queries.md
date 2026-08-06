@@ -147,6 +147,12 @@ Pagination cursors are opaque, versioned encodings of the complete ordering
 tuple. Pass `nextCursor` back unchanged. AckerDB validates its arity, nullability,
 and value types against the query order and rejects malformed cursors.
 
+Client-supplied page sizes flow into `paginate` unchanged, so the framework
+enforces a rows cap per page: `pageSize` may not exceed `MAX_PAGE_SIZE`
+(256). Byte budgets stay with the subscription layer, which already caps
+every delivered result. On the client, `usePaginatedQuery` keeps a window of
+these pages live — each page is an ordinary query subscription.
+
 ## Transparent indexes
 
 Declare indexes structurally, without public names:

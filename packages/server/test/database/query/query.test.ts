@@ -11,6 +11,7 @@ import {
   makeDbReader,
   newWriteCollector,
   ixKey,
+  MAX_PAGE_SIZE,
   v,
 } from "@ackerdb/server";
 import { compilePredicates } from "../../../src/database/query/predicate.ts";
@@ -283,6 +284,16 @@ describe("table query", () => {
     const incompatible = Buffer.from(JSON.stringify(payload)).toString("base64url");
     await expect(query.paginate({ pageSize: 2, cursor: incompatible })).rejects.toThrow(
       "incompatible with rank",
+    );
+  });
+
+  test("enforces the server page-rows cap", async () => {
+    await db.documents.insert({ tenantId: 1n, status: "active", score: 1, label: "a", rank: null });
+    const query = db.documents.query();
+    const full = await query.paginate({ pageSize: MAX_PAGE_SIZE });
+    expect(full.items).toHaveLength(1);
+    await expect(query.paginate({ pageSize: MAX_PAGE_SIZE + 1 })).rejects.toThrow(
+      `pageSize must be at most ${MAX_PAGE_SIZE}`,
     );
   });
 

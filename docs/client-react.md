@@ -195,6 +195,63 @@ authoritative resume, checkpoint, reset, or update. `skip` is a symbol, not an
 empty argument object; switching between `skip` and real arguments cleanly
 disables or starts demand.
 
+## Reactive cursor pagination
+
+`usePaginatedQuery(ref, args, options?)` turns a cursor-paginated query — one
+declaring `{ cursor, pageSize }` arguments and returning `paginate()`'s
+`{ items, nextCursor }` page — into a live window. Each loaded page is an
+ordinary shared live subscription, so a write that lands inside the window
+re-delivers the affected page; `loadMore()` extends the window from the last
+page's `nextCursor` until `exhausted`.
+
+```tsx
+import { skip, usePaginatedQuery } from "@ackerdb/client-react";
+import { api } from "./_generated/api";
+
+function LogList({ level }: { level: string | null }) {
+  const logs = usePaginatedQuery(
+    api.logs.list,
+    level === null ? skip : { level },
+    { pageSize: 50 },
+  );
+
+  if (logs.status !== "success") return <LogListFallback state={logs} />;
+  return (
+    <>
+      <ul>{logs.items.map((row) => <li key={row.id}>{row.message}</li>)}</ul>
+      {logs.exhausted
+        ? null
+        : <button onClick={logs.loadMore} disabled={logs.loadingMore}>More</button>}
+    </>
+  );
+}
+```
+
+The state union mirrors `useQuery` with `items` as the flattened window plus
+`loadMore` (always present, a no-op unless the window can grow),
+`loadingMore`, and `exhausted`. `pageSize` defaults to 25 rows and the server
+independently caps one page's rows (`MAX_PAGE_SIZE`, 256). Pages chain by
+cursor: when a delivery moves a page's `nextCursor`, the pages behind it are
+resubscribed from the new boundary, and the flattened window briefly
+truncates to the proven prefix instead of ever showing overlap or gaps.
+Transport unavailability keeps the whole window as explicitly stale `items`,
+exactly like `useQuery`'s stale data.
+
+The server function is an ordinary query — pagination needs no special kind:
+
+```ts
+export const list = query({
+  args: { level: v.string(), cursor: v.string().nullable(), pageSize: v.int() },
+  access: "authenticated",
+  handler: async (ctx, args) =>
+    await ctx.db.logs
+      .query()
+      .where((row) => row.level.eq(args.level))
+      .orderBy((row) => row.id.desc())
+      .paginate({ cursor: args.cursor, pageSize: args.pageSize }),
+});
+```
+
 ## Mutations
 
 `useMutation(ref)` returns a stable typed async function:
