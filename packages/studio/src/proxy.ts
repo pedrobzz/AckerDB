@@ -61,10 +61,21 @@ export async function proxyHttp(request: Request, target: URL): Promise<Response
   });
 }
 
+/**
+ * Hard per-socket bound on client frames held while the upstream connects: a
+ * slow or unreachable app server plus a chatty client must cost a bounded
+ * buffer, then a typed 1013 close — never unbounded memory per connection.
+ */
+export const MAX_BUFFERED_UPSTREAM_BYTES = 1_048_576;
+
+/** A CONNECTING upstream gets this long before the bridge closes with 1011. */
+export const UPSTREAM_CONNECT_DEADLINE_MS = 15_000;
+
 export interface ProxiedSocketData {
   readonly upstream: WebSocket;
   /** Client frames sent while the upstream socket is still connecting. */
   readonly buffered: (string | Uint8Array)[];
+  bufferedBytes: number;
 }
 
 /** 1005/1006 are reserved close statuses a close frame may not carry. */
@@ -94,7 +105,7 @@ export function proxyWebSocket(
     protocols === null ? [] : protocols.split(",").map((name) => name.trim()),
   );
   upstream.binaryType = "arraybuffer";
-  const data: ProxiedSocketData = { upstream, buffered: [] };
+  const data: ProxiedSocketData = { upstream, buffered: [], bufferedBytes: 0 };
   if (server.upgrade(request, { data })) return undefined;
   upstream.close();
   return new Response("expected a WebSocket upgrade", { status: 400 });
@@ -105,25 +116,60 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
     const { upstream, buffered } = ws.data;
     const flush = () => {
       while (buffered.length > 0) upstream.send(buffered.shift()!);
+      ws.data.bufferedBytes = 0;
     };
-    upstream.onopen = flush;
+    // A connect that never resolves must not hold the bridge (and its
+    // buffer) open past the deadline.
+    const deadline = setTimeout(() => {
+      if (upstream.readyState === WebSocket.CONNECTING) {
+        upstream.close();
+        forwardClose(ws, 1011, "app server connect timed out");
+      }
+    }, UPSTREAM_CONNECT_DEADLINE_MS);
+    deadline.unref?.();
+    upstream.onopen = () => {
+      clearTimeout(deadline);
+      flush();
+    };
     upstream.onmessage = (event) => {
       ws.send(
         typeof event.data === "string" ? event.data : new Uint8Array(event.data as ArrayBuffer),
       );
     };
-    upstream.onclose = (event) => forwardClose(ws, event.code, event.reason);
-    upstream.onerror = () => forwardClose(ws, 1011, "app server unreachable");
+    upstream.onclose = (event) => {
+      clearTimeout(deadline);
+      forwardClose(ws, event.code, event.reason);
+    };
+    upstream.onerror = () => {
+      clearTimeout(deadline);
+      forwardClose(ws, 1011, "app server unreachable");
+    };
     if (upstream.readyState === WebSocket.OPEN) flush();
   },
   message(ws, message) {
-    const { upstream, buffered } = ws.data;
+    const { upstream } = ws.data;
     const frame = typeof message === "string" ? message : new Uint8Array(message);
-    if (upstream.readyState === WebSocket.OPEN) upstream.send(frame);
-    else if (upstream.readyState === WebSocket.CONNECTING) buffered.push(frame);
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(frame);
+      return;
+    }
+    if (upstream.readyState !== WebSocket.CONNECTING) return;
+    ws.data.bufferedBytes += typeof frame === "string"
+      ? Buffer.byteLength(frame)
+      : frame.byteLength;
+    if (ws.data.bufferedBytes > MAX_BUFFERED_UPSTREAM_BYTES) {
+      ws.data.buffered.length = 0;
+      ws.data.bufferedBytes = 0;
+      upstream.close();
+      forwardClose(ws, 1013, "app server connect backlog exceeded");
+      return;
+    }
+    ws.data.buffered.push(frame);
   },
   close(ws) {
-    const { upstream } = ws.data;
+    const { upstream, buffered } = ws.data;
+    buffered.length = 0;
+    ws.data.bufferedBytes = 0;
     if (
       upstream.readyState === WebSocket.OPEN ||
       upstream.readyState === WebSocket.CONNECTING

@@ -1,8 +1,10 @@
 import { afterEach, beforeAll, afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "bun";
+import { MAX_BUFFERED_UPSTREAM_BYTES } from "../src/proxy.ts";
 import { startStudio, type RunningStudio } from "../src/server.ts";
 
 const INDEX_HTML = "<!doctype html><html><body>studio-index</body></html>";
@@ -188,4 +190,33 @@ test("closes a proxied WebSocket when the app server is unreachable", async () =
     socket.onclose = (event) => resolve({ code: event.code });
   });
   expect(closed.code).toBe(1011);
+});
+
+test("bounds the bytes buffered while the upstream is still connecting", async () => {
+  // A listener that accepts and never answers keeps the upstream CONNECTING,
+  // so every client frame lands in the proxy's buffer.
+  const sockets: Socket[] = [];
+  const stalled = createServer((socket) => void sockets.push(socket));
+  await new Promise<void>((resolve) => stalled.listen(0, "127.0.0.1", resolve));
+  const stalledPort = (stalled.address() as AddressInfo).port;
+  try {
+    const { url } = studio({ target: `http://127.0.0.1:${stalledPort}` });
+    const socket = new WebSocket(new URL("/ws", url).href.replace("http:", "ws:"));
+    const closed = new Promise<{ code: number }>((resolve) => {
+      socket.onclose = (event) => resolve({ code: event.code });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => reject(new Error("studio websocket failed to open"));
+    });
+    const chunk = new Uint8Array(256 * 1024);
+    for (let sent = 0; sent < MAX_BUFFERED_UPSTREAM_BYTES + chunk.byteLength; sent += chunk.byteLength) {
+      socket.send(chunk);
+    }
+    // A slow app server must cost a bounded buffer, then a typed close.
+    expect((await closed).code).toBe(1013);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    stalled.close();
+  }
 });
