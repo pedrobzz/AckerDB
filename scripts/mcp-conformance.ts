@@ -12,11 +12,10 @@ import {
   Runtime,
   serve,
   procedure,
-  type McpAuthBuilder,
   type McpBuilder,
   type ProcedureBuilder,
 } from "@ackerdb/server";
-import { mcp, mcpAuth, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
+import { mcp, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
 const SCENARIOS = [
@@ -45,9 +44,7 @@ const schema = defineSchema({
   }),
 });
 const typedMcp = mcp as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const conformanceAuth = typedMcpAuth({ name: "conformance" });
 
 const simpleText = typedProcedure({
   description: "Return the official conformance suite's simple text fixture.",
@@ -129,7 +126,6 @@ const errorHandling = typedProcedure({
 
 const conformanceMcp = typedMcp({
   name: "conformance",
-  auth: conformanceAuth,
   instructions: "MCP protocol conformance fixtures for AckerDB release verification.",
   tools: {
     test_audio_content: { fn: audioContent, access: "public" },
