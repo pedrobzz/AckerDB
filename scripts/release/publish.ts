@@ -35,6 +35,7 @@ import {
 } from "../../packages/realtime/native/webrtc/evidence.ts";
 import { WEBRTC_TARGETS } from "../../packages/realtime/native/webrtc/provenance.ts";
 import { ensureNativeArtifacts } from "./native-artifacts.ts";
+import { buildStudioDist } from "./studio-dist.ts";
 import {
   assertStableVersion,
   nextBetaVersion,
@@ -291,6 +292,9 @@ try {
   await ensureNativeArtifacts(
     mode === "beta" ? [LOCAL_REGISTRY, PUBLIC_REGISTRY] : [PUBLIC_REGISTRY],
   );
+  // The Studio dist is git-ignored and built at release time; the packed
+  // @ackerdb/studio tarball must always carry a bundle built from this tree.
+  buildStudioDist();
   for (const pkg of PACKAGES) {
     await Bun.write(pkgJsonPath(pkg), retargetManifest(sources.get(pkg)!, version));
   }

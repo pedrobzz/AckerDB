@@ -7,6 +7,7 @@ export const PUBLIC_PACKAGES = [
   "client",
   "client-react",
   "cli",
+  "studio",
 ] as const;
 
 export const NATIVE_PACKAGES = [
@@ -26,6 +27,7 @@ export const PACKAGES = [
   "client",
   "client-react",
   "cli",
+  "studio",
 ] as const;
 
 type BunLock = {
