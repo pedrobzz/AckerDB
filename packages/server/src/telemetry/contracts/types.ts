@@ -179,11 +179,22 @@ export interface TelemetryScheduler {
   clearTimeout(handle: unknown): void;
 }
 
+/**
+ * Durable capture of every observable record, independent of the in-memory
+ * retention and export sampling decisions. A sink failure never escapes into
+ * the recording path.
+ */
+export interface TelemetryDurableSink {
+  span?(record: TelemetrySpanRecord): void;
+  event?(record: TelemetryEventRecord): void;
+}
+
 export interface TelemetryOptions {
   readonly enabled?: boolean;
   readonly limits?: Partial<TelemetryLimits>;
   readonly exporter?: TelemetryExporter;
   readonly localSink?: ((safeJsonLine: string) => void) | false;
+  readonly durableSink?: TelemetryDurableSink;
   readonly now?: () => number;
   readonly scheduler?: TelemetryScheduler;
 }

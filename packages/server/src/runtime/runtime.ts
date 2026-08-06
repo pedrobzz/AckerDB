@@ -237,6 +237,11 @@ export class Runtime implements RuntimePort {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
             },
+            // Framework events become durable journal rows; the closures bind
+            // lazily because the read-model owners construct after telemetry.
+            durableSink: {
+              event: (record) => this.applicationSignals.framework(record),
+            },
           });
     this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
     this.deliveryTelemetry = new RuntimeDeliveryTelemetry(

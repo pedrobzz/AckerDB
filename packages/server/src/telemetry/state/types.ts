@@ -2,6 +2,7 @@ import type { TelemetryLimits } from "../../runtime/limits.ts";
 import type { TraceJournal } from "../journal.ts";
 import type { TelemetryAggregation } from "../aggregation/series.ts";
 import type {
+  TelemetryDurableSink,
   TelemetryExporter,
   TelemetryScheduler,
 } from "../contracts/types.ts";
@@ -49,6 +50,7 @@ export interface TelemetryState {
   readonly scheduler: TelemetryScheduler;
   readonly exporter?: TelemetryExporter;
   readonly localSink?: (safeJsonLine: string) => void;
+  readonly durableSink?: TelemetryDurableSink;
   readonly metricSeries: Set<string>;
   readonly aggregation: TelemetryAggregation;
   publicTraceIndex: Map<string, MutableTraceRetention>;

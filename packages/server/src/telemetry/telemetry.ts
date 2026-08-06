@@ -47,6 +47,7 @@ export type {
   TelemetryAggregateSeries,
   TelemetryAggregateSnapshot,
   TelemetryDropSnapshot,
+  TelemetryDurableSink,
   TelemetryEventInput,
   TelemetryEventRecord,
   TelemetryExportSnapshot,

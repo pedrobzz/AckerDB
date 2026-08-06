@@ -778,6 +778,36 @@ describe("Runtime telemetry acceptance", () => {
     expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({ state: "failed" });
   });
 
+  test("journals framework failure events durably with source framework", async () => {
+    const app = harness({
+      enabled: true,
+      localSink: false,
+      limits: telemetryLimits,
+    });
+    const session = await app.openSession("framework-event-durability");
+
+    await expect(app.mutation(
+      session.context,
+      725_000_001,
+      "items.fail",
+      { room: 1n, body: "x" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+    await app.runtime.telemetryJournal.flush();
+
+    const frameworkRecords = (await app.runtime.telemetryJournal.readBatch(0n, 64))
+      .flatMap((record) => record.kind === "log" && record.source === "framework"
+        ? [record]
+        : []);
+    const failure = frameworkRecords.find((record) => record.message === "failure");
+    expect(failure).toMatchObject({
+      level: "error",
+      source: "framework",
+      functionKind: "framework",
+    });
+    expect(failure?.metadata).toMatchObject({ operation: "mutation" });
+    expect(encode(failure)).not.toContain(PRIVATE_FAILURE);
+  });
+
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {
     const app = harness(false);
     const session = await app.openSession("application-log-contexts");

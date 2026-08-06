@@ -367,6 +367,7 @@ export {
   type TelemetryLocalSinkDropSnapshot,
   type TelemetryLocalSinkSnapshot,
   type TelemetryMetricInput,
+  type TelemetryDurableSink,
   type TelemetryMetricLabels,
   type TelemetryMetricRecord,
   type TelemetryMetricUnit,

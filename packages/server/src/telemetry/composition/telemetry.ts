@@ -213,6 +213,7 @@ export class Telemetry {
       scheduler,
       exporter: options.exporter,
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
+      durableSink: options.durableSink,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
       publicTraceIndex: new Map(),
@@ -721,6 +722,14 @@ export class Telemetry {
           ? input.errorClass
           : undefined,
     });
+    const sink = state.durableSink;
+    if (sink?.event !== undefined) {
+      try {
+        sink.event(record);
+      } catch {
+        // Durable capture must never poison the recording path.
+      }
+    }
     if (
       state.limits.slowOperationMs > 0 &&
       record.traceId &&
