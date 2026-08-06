@@ -353,6 +353,15 @@ export interface CompiledPredicate {
   readonly params: readonly unknown[];
 }
 
+const SQL_COMPARISON: Readonly<Record<ComparisonOperator, string>> = {
+  eq: "=",
+  ne: "<>",
+  lt: "<",
+  lte: "<=",
+  gt: ">",
+  gte: ">=",
+};
+
 /** Compile one predicate tree while appending parameters in SQL placeholder order. */
 function compilePredicateSql(
   node: PredicateNode,
@@ -361,18 +370,9 @@ function compilePredicateSql(
   path: string,
 ): string {
   switch (node.kind) {
-    case "comparison": {
+    case "comparison":
       params.push(node.value);
-      const operator = {
-        eq: "=",
-        ne: "<>",
-        lt: "<",
-        lte: "<=",
-        gt: ">",
-        gte: ">=",
-      }[node.op];
-      return `${quote(node.column)} ${operator} ?`;
-    }
+      return `${quote(node.column)} ${SQL_COMPARISON[node.op]} ?`;
     case "in": {
       if (node.values.length === 0) return "0";
       if (node.values.length > parameterLimit - params.length) {
@@ -393,18 +393,9 @@ function compilePredicateSql(
       return `${quote(node.column)} BETWEEN ? AND ?`;
     case "null":
       return `${quote(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`;
-    case "json": {
+    case "json":
       params.push(node.path, node.value);
-      const operator = {
-        eq: "=",
-        ne: "<>",
-        lt: "<",
-        lte: "<=",
-        gt: ">",
-        gte: ">=",
-      }[node.op];
-      return `${quote(node.column)} ->> ? ${operator} ?`;
-    }
+      return `${quote(node.column)} ->> ? ${SQL_COMPARISON[node.op]} ?`;
     case "jsonNull":
       params.push(node.path);
       return `${quote(node.column)} ->> ? IS ${node.isNull ? "" : "NOT "}NULL`;
