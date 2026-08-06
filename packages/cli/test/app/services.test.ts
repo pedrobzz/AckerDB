@@ -129,7 +129,10 @@ export const tcl = service({
     const journal = new TelemetryJournal({
       store: new TelemetryStore({ path: join(dir, ".ackerdb", "data.db.telemetry") }),
     });
-    expect(journal.readBatch(0n, 10).filter((entry) => entry.kind === "log").map((entry) => ({
+    // Framework events are durable journal rows too; services assert app logs.
+    expect(journal.readBatch(0n, 64).flatMap((entry) =>
+      entry.kind === "log" && entry.source === "app" ? [entry] : []
+    ).map((entry) => ({
       message: entry.message,
       metadata: entry.metadata,
       functionAddress: entry.functionAddress,
