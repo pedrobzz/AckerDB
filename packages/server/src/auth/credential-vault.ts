@@ -86,6 +86,12 @@ export type CreatedCredential = CredentialDescriptor & {
   readonly token: string;
 };
 
+/** One credential a revocation removed, with the lineage row it held. */
+export interface RevokedCredential {
+  readonly tokenId: string;
+  readonly parentIdentity: Identity | null;
+}
+
 /** What authentication proves: the child Identity, its lineage, and its stored grant. */
 export interface AuthenticatedCredential {
   readonly identity: Identity;
@@ -369,21 +375,25 @@ export class CredentialVault {
     if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
   }
 
-  /** Replace the stored grant. Returns true when the grant changed at all. */
+  /**
+   * Replace the stored grant. Returns the credential's own Identity and
+   * whether the grant changed at all — a change bounds every descendant at
+   * use, so the caller re-authorizes the whole subtree.
+   */
   updateScopes(
     parentIdentity: Identity | null,
     tokenId: string,
     value: unknown,
     vocabulary: readonly string[] | undefined,
     now: number,
-  ): boolean {
+  ): { readonly changed: boolean; readonly identity: Identity } {
     if (parentIdentity !== null) validateIdentity(parentIdentity);
     validateTokenId(tokenId);
     const scopes = normalizeGrantAgainstVocabulary(vocabulary, value, "credential scopes");
     const stored = this.writer.query(
-      `SELECT scopes FROM _ackerdb_credentials
+      `SELECT identity, scopes FROM _ackerdb_credentials
         WHERE token_id = ? AND parent_identity IS ?`,
-    ).get(tokenId, parentIdentity) as Pick<StoredCredentialRow, "scopes"> | null;
+    ).get(tokenId, parentIdentity) as Pick<StoredCredentialRow, "identity" | "scopes"> | null;
     if (stored === null) throw new AckerDBError("not_found", "credential not found");
     const previous = storedScopes(stored.scopes);
     const result = this.writer.query(
@@ -392,17 +402,53 @@ export class CredentialVault {
         WHERE token_id = ? AND parent_identity IS ?`,
     ).run(encode(scopes), now, tokenId, parentIdentity);
     if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
-    return previous.length !== scopes.length ||
-      previous.some((scope, index) => scopes[index] !== scope);
+    return {
+      changed: previous.length !== scopes.length ||
+        previous.some((scope, index) => scopes[index] !== scope),
+      identity: stored.identity as Identity,
+    };
   }
 
-  revoke(parentIdentity: Identity | null, tokenId: string): void {
+  /**
+   * Revoke one credential and its whole descendant subtree in the caller's
+   * transaction: delegated authority never outlives its source, and no
+   * credential survives owned by a deleted Identity that could no longer
+   * administer it. Returns every removed credential for invalidation.
+   */
+  revoke(parentIdentity: Identity | null, tokenId: string): readonly RevokedCredential[] {
     if (parentIdentity !== null) validateIdentity(parentIdentity);
     validateTokenId(tokenId);
-    const result = this.writer.query(
-      "DELETE FROM _ackerdb_credentials WHERE token_id = ? AND parent_identity IS ?",
-    ).run(tokenId, parentIdentity);
-    if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
+    const rows = this.writer.query(
+      `WITH RECURSIVE subtree(identity) AS (
+        SELECT identity FROM _ackerdb_credentials WHERE token_id = ? AND parent_identity IS ?
+        UNION ALL
+        SELECT c.identity FROM _ackerdb_credentials c
+          JOIN subtree s ON c.parent_identity = s.identity
+      )
+      DELETE FROM _ackerdb_credentials
+      WHERE identity IN (SELECT identity FROM subtree)
+      RETURNING token_id, parent_identity`,
+    ).all(tokenId, parentIdentity) as Pick<StoredCredentialRow, "token_id" | "parent_identity">[];
+    if (rows.length === 0) throw new AckerDBError("not_found", "credential not found");
+    return Object.freeze(rows.map((row) => Object.freeze({
+      tokenId: row.token_id,
+      parentIdentity: row.parent_identity === null ? null : row.parent_identity as Identity,
+    })));
+  }
+
+  /** Every token id delegated (transitively) by an Identity, in creation order. */
+  descendantTokenIds(connection: Database, identity: Identity): readonly string[] {
+    validateIdentity(identity);
+    const rows = connection.query(
+      `WITH RECURSIVE subtree(identity, token_id, creation_seq) AS (
+        SELECT identity, token_id, creation_seq FROM _ackerdb_credentials WHERE parent_identity = ?
+        UNION ALL
+        SELECT c.identity, c.token_id, c.creation_seq FROM _ackerdb_credentials c
+          JOIN subtree s ON c.parent_identity = s.identity
+      )
+      SELECT token_id FROM subtree ORDER BY creation_seq`,
+    ).all(identity) as Pick<StoredCredentialRow, "token_id">[];
+    return Object.freeze(rows.map((row) => row.token_id));
   }
 
   authenticate(

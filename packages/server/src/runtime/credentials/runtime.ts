@@ -89,11 +89,19 @@ export class RuntimeCredentials {
       return this.resolveIdentityGrant(identity, account);
     }
     const scopes = await this.options.reads().submit(
-      (connection) => this.options.engine[credentialVaultOwner].effectiveScopes(
-        connection,
-        identity,
-        (ancestor) => this.resolveIdentityGrant(ancestor, null),
-      ),
+      (connection) => {
+        const vault = this.options.engine[credentialVaultOwner];
+        // Fail closed: a revoked credential's Identity must never fall back
+        // to the application's identity grant as if it were an external root.
+        if (vault.identityForToken(connection, account.subject) !== identity) {
+          throw unauthenticated();
+        }
+        return vault.effectiveScopes(
+          connection,
+          identity,
+          (ancestor) => this.resolveIdentityGrant(ancestor, null),
+        );
+      },
       {
         operation: "procedure",
         bytes: 1,

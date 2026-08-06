@@ -30,6 +30,7 @@ import {
   type CredentialDescriptor,
   type CredentialLimits,
   type CredentialUpdateInput,
+  type RevokedCredential,
 } from "./credential-vault.ts";
 import { CREDENTIAL_ISSUER } from "./credential-token.ts";
 import { issueChildScopes } from "./child-credentials.ts";
@@ -179,6 +180,20 @@ function ownerKey(parentIdentity: Identity | null): string {
   return `internal:credentials:${stableEncode([parentIdentity])}`;
 }
 
+/**
+ * A revocation removes a whole delegation subtree: every removed credential
+ * invalidates its live holders, and every owner's descriptor list changed.
+ */
+function stageRevokedSubtree(
+  writes: WriteCollector,
+  revoked: readonly RevokedCredential[],
+): void {
+  for (const credential of revoked) {
+    writes.keys.add(ownerKey(credential.parentIdentity));
+    stageCredentialInvalidation(writes, credential.tokenId);
+  }
+}
+
 function createCredentialOperations(): CredentialOperations {
   return Object.freeze({
     create(
@@ -240,7 +255,8 @@ function createCredentialOperations(): CredentialOperations {
         owner.principal.scopes,
         normalizeGrantAgainstVocabulary(owner.vocabulary, scopes, "credential scopes"),
       );
-      const changed = owner.engine[credentialVaultOwner].updateScopes(
+      const vault = owner.engine[credentialVaultOwner];
+      const updated = vault.updateScopes(
         owner.principal.identity,
         tokenId,
         scopes,
@@ -250,16 +266,24 @@ function createCredentialOperations(): CredentialOperations {
       owner.writes!.keys.add(ownerKey(owner.principal.identity));
       // Any grant change re-authorizes live holders: narrowing must revoke
       // authority immediately, and widening is only visible after re-auth.
-      if (changed) stageCredentialInvalidation(owner.writes!, tokenId);
+      // The grant bounds every descendant at use, so the whole delegation
+      // subtree re-authorizes with it.
+      if (updated.changed) {
+        stageCredentialInvalidation(owner.writes!, tokenId);
+        for (const descendant of vault.descendantTokenIds(owner.connection, updated.identity)) {
+          stageCredentialInvalidation(owner.writes!, descendant);
+        }
+      }
     },
     revoke(
       ctx: WriteContext,
       tokenId: string,
     ): void {
       const owner = ownerCapability(ctx, true);
-      owner.engine[credentialVaultOwner].revoke(owner.principal.identity, tokenId);
-      owner.writes!.keys.add(ownerKey(owner.principal.identity));
-      stageCredentialInvalidation(owner.writes!, tokenId);
+      stageRevokedSubtree(
+        owner.writes!,
+        owner.engine[credentialVaultOwner].revoke(owner.principal.identity, tokenId),
+      );
     },
   });
 }
@@ -297,9 +321,10 @@ function createSystemCredentialOperations(): SystemCredentialOperations {
       tokenId: string,
     ): void {
       const system = systemCapability(ctx, true);
-      system.engine[credentialVaultOwner].revoke(parentIdentity, tokenId);
-      system.writes!.keys.add(ownerKey(parentIdentity));
-      stageCredentialInvalidation(system.writes!, tokenId);
+      stageRevokedSubtree(
+        system.writes!,
+        system.engine[credentialVaultOwner].revoke(parentIdentity, tokenId),
+      );
     },
   });
 }
