@@ -21,6 +21,7 @@ import {
 } from "@ackerdb/core";
 import { invokeFunction } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
+import type { Principal } from "../../auth/credentials.ts";
 import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
 import type { Engine } from "../../database/engine.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
@@ -297,7 +298,7 @@ export class RuntimeSessionApplication {
           sessionId: context.clientSessionId,
           requestId: message.mutationRequestId,
           issuedAt: message.issuedAt,
-          principalFingerprint: digest(context.principal),
+          principalFingerprint: digest(replayOwner(context.principal)),
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
@@ -482,6 +483,20 @@ function requiredPublication(
 
 function digest(value: unknown): string {
   return createHash("sha256").update(stableEncode(value)).digest("base64url");
+}
+
+/**
+ * The replay owner is the authority holder, not the bearer token: volatile
+ * token metadata (expiry, claims, scope snapshots) must not turn a retried
+ * mutation into an idempotency conflict, and a non-expiring vault credential
+ * has no finite expiry to wire-encode.
+ */
+function replayOwner(principal: Principal): unknown {
+  if (principal.kind === "user") return { kind: "user", identity: principal.identity };
+  if (principal.kind === "workload") {
+    return { kind: "workload", issuer: principal.issuer, subject: principal.subject };
+  }
+  return { kind: principal.kind };
 }
 
 function convergenceError(message: string): AckerDBError {
