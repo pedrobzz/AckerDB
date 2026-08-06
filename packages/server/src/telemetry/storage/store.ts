@@ -43,6 +43,14 @@ export interface TelemetryStoreSnapshot {
 
 const DEFAULT_MAX_EXPIRED_ROWS_PER_PASS = 256;
 
+/** Guard for the storage substrate's limit and budget options. */
+export function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
 /**
  * The single `<db>.telemetry` SQLite home for every observable kind — the
  * application database never carries telemetry, and telemetry loss is never
@@ -65,11 +73,10 @@ export class TelemetryStore {
   constructor(options: TelemetryStoreOptions) {
     this.path = options.path;
     this.retention = resolveTelemetryRetention(options.retention);
-    const budget = options.maxExpiredRowsPerPass ?? DEFAULT_MAX_EXPIRED_ROWS_PER_PASS;
-    if (!Number.isSafeInteger(budget) || budget <= 0) {
-      throw new RangeError("telemetry store maxExpiredRowsPerPass must be a positive integer");
-    }
-    this.maxExpiredRowsPerPass = budget;
+    this.maxExpiredRowsPerPass = positiveInteger(
+      options.maxExpiredRowsPerPass ?? DEFAULT_MAX_EXPIRED_ROWS_PER_PASS,
+      "telemetry store maxExpiredRowsPerPass",
+    );
     this.now = options.now ?? Date.now;
     const expired = {} as Record<TelemetryRetentionClass, number>;
     for (const retentionClass of TELEMETRY_RETENTION_CLASSES) expired[retentionClass] = 0;

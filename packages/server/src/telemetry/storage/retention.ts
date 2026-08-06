@@ -1,4 +1,5 @@
-const DAY_MS = 86_400_000;
+/** One day of milliseconds — the bucket every daily accounting shares. */
+export const DAY_MS = 86_400_000;
 
 /**
  * The retention clocks observable data expires on. Error groups are

@@ -1,6 +1,7 @@
 import type { Database, Statement } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
-import type { TelemetryStore } from "../storage/store.ts";
+import { DAY_MS } from "../storage/retention.ts";
+import { positiveInteger, type TelemetryStore } from "../storage/store.ts";
 import type {
   ApplicationLogLevel,
   TelemetryJournalEntry,
@@ -74,19 +75,12 @@ interface QueuedRecord {
   readonly bytes: number;
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer`);
-  return value;
-}
-
 const LOG_LEVELS: readonly ApplicationLogLevel[] = Object.freeze([
   "debug",
   "info",
   "warn",
   "error",
 ]);
-
-const DAY_MS = 86_400_000;
 
 export class TelemetryJournal {
   readonly store: TelemetryStore;

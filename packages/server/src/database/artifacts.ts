@@ -43,11 +43,14 @@ export function canonicalDatabasePaths(path: string): readonly string[] {
   return Object.freeze([path, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${path}${suffix}`)]);
 }
 
-/** Framework-owned application-signal storage, intentionally outside backups. */
-export function telemetryJournalPath(path: string): string {
+/**
+ * The `<db>.telemetry` sidecar that homes the whole TelemetryStore — every
+ * observable kind, not just the journal. Intentionally outside backups.
+ */
+export function telemetryStorePath(path: string): string {
   return `${path}.telemetry`;
 }
 
-export function telemetryJournalPaths(path: string): readonly string[] {
-  return canonicalDatabasePaths(telemetryJournalPath(path));
+export function telemetryStorePaths(path: string): readonly string[] {
+  return canonicalDatabasePaths(telemetryStorePath(path));
 }

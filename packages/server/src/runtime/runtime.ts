@@ -39,7 +39,7 @@ import {
 import type { DeliveryObserver } from "../subscriptions/delivery/observation.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { telemetryJournalPath } from "../database/artifacts.ts";
+import { telemetryStorePath } from "../database/artifacts.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
@@ -312,7 +312,7 @@ export class Runtime implements RuntimePort {
         : new TelemetryStore({
             path: this.engine.path === ":memory:"
               ? ":memory:"
-              : telemetryJournalPath(this.engine.path),
+              : telemetryStorePath(this.engine.path),
             now: this.now,
             ...options.telemetryStore,
           });

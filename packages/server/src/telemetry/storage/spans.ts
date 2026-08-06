@@ -1,6 +1,6 @@
 import type { Database, Statement } from "bun:sqlite";
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
-import type { TelemetryStore } from "./store.ts";
+import { positiveInteger, type TelemetryStore } from "./store.ts";
 
 export interface TelemetrySpanStoreLimits {
   readonly maxQueuedRecords: number;
@@ -30,13 +30,6 @@ const DEFAULT_LIMITS: TelemetrySpanStoreLimits = Object.freeze({
   maxBatchRecords: 512,
   maxStoredRecords: 500_000,
 });
-
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive integer`);
-  }
-  return value;
-}
 
 const HOUR_MS = 3_600_000;
 

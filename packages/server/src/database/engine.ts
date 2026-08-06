@@ -89,7 +89,7 @@ import {
   initializationArtifactPaths,
   restoreArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
-  telemetryJournalPaths,
+  telemetryStorePaths,
 } from "./artifacts.ts";
 import { loadVectorRuntimeForSchema } from "./query/vector-runtime.ts";
 import {
@@ -1031,7 +1031,7 @@ function removeRestoreArtifacts(path: string): boolean {
 }
 
 function removeTelemetryJournalArtifacts(path: string): boolean {
-  const artifacts = telemetryJournalPaths(path).filter((artifact) => existsSync(artifact));
+  const artifacts = telemetryStorePaths(path).filter((artifact) => existsSync(artifact));
   for (const artifact of artifacts) rmSync(artifact, { force: true });
   if (artifacts.length > 0) fsyncPath(dirname(path));
   return artifacts.length > 0;
@@ -2281,7 +2281,7 @@ export class DatabaseRestoreTarget {
       );
       const allowedArtifacts = new Set([
         ...restoreArtifacts,
-        ...telemetryJournalPaths(database).map((artifact) => basename(artifact)),
+        ...telemetryStorePaths(database).map((artifact) => basename(artifact)),
       ]);
       assertRestoreTargetFresh(database, allowedArtifacts, allowedTargetSubtrees);
       removeRestoreArtifacts(database);
