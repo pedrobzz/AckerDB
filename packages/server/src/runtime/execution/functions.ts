@@ -105,7 +105,7 @@ export interface JobsWriteSurface {
   savepoint(): { rollback(): void; release(): void };
   /**
    * Run a mutation-kind job handler under a system-principal mutation context
-   * with the same bindings (MCP token vault, analytics attribution) a
+   * with the same bindings (credential vault, analytics attribution) a
    * registered mutation would have.
    */
   runMutationHandler<T>(
