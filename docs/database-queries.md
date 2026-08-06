@@ -46,6 +46,53 @@ Queries support `collect`, `take`, `first`, `unique`, `count`, `iter`, and
 keyset `paginate`. `unique` returns `null` for no row and rejects more than one
 row. Filtering, limiting, counting, and pagination stay in SQLite.
 
+## Serializable filters
+
+Clients describe filters as data — the closed vocabulary is `eq`, `neq`,
+`gt`, `gte`, `lt`, `lte`, `anyOf`, `noneOf` under nested `all`/`any` groups
+(OR is part of the contract). The server validates an expression against the
+table's *declared* filterable fields and returns failures as data, so a UI
+can render them inline instead of catching exceptions:
+
+```ts
+const logFields = filterableFields(schema.tables.logs, {
+  level: true,
+  fn: { column: "functionAddress" },
+  metadata: true, // a jsonb column: filtered by path, e.g. "metadata.userId"
+});
+
+export const list = query({
+  args: {
+    filter: v.jsonb<FilterExpression>(),
+    cursor: v.string().nullable(),
+    pageSize: v.int(),
+  },
+  access: "authenticated",
+  handler: async (ctx, args) => {
+    const validation = logFields.validate(args.filter);
+    if (!validation.ok) {
+      return Err("logs.invalidFilter", { issues: validation.errors }, Status.BadRequest);
+    }
+    return await ctx.db.logs.query().where(validation.filter).paginate({
+      cursor: args.cursor,
+      pageSize: args.pageSize,
+    });
+  },
+});
+```
+
+A validated filter passes straight to `.where(filter)` on the table that
+declared it and composes with everything else — further `.where` callbacks,
+ordering, cursor pagination, aggregates, and reactive dependency recording.
+Fields on `jsonb`/`object` columns are addressed by path
+(`metadata.<key>[.<key>...]`) and evaluate with JSON1's `->>`, the path bound
+as a parameter; every other value crosses the column's validator before
+SQLite sees it. `eq`/`neq` against `null` are presence tests (a missing JSON
+key reads as SQL NULL), `anyOf: []` matches nothing, `noneOf: []` and
+`all: []` match everything, and expressions are bounded by
+`MAX_FILTER_DEPTH` nesting and `MAX_FILTER_CLAUSES` clauses — exceeding
+either is a validation issue, not an exception.
+
 ## Scalar aggregates
 
 `sum`, `avg`, `min`, and `max` aggregate the filtered set inside SQLite —
@@ -99,6 +146,12 @@ non-null value ascending and follows it descending.
 Pagination cursors are opaque, versioned encodings of the complete ordering
 tuple. Pass `nextCursor` back unchanged. AckerDB validates its arity, nullability,
 and value types against the query order and rejects malformed cursors.
+
+Client-supplied page sizes flow into `paginate` unchanged, so the framework
+enforces a rows cap per page: `pageSize` may not exceed `MAX_PAGE_SIZE`
+(256). Byte budgets stay with the subscription layer, which already caps
+every delivered result. On the client, `usePaginatedQuery` keeps a window of
+these pages live — each page is an ordinary query subscription.
 
 ## Transparent indexes
 

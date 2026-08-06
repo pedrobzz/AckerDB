@@ -15,6 +15,18 @@ export {
 } from "./result.ts";
 export type { Identity } from "./identity.ts";
 export type {
+  FilterAllGroup,
+  FilterAnyGroup,
+  FilterComparison,
+  FilterComparisonOperator,
+  FilterExpression,
+  FilterIssue,
+  FilterMembership,
+  FilterMembershipOperator,
+  FilterOperator,
+  FilterValue,
+} from "./filters.ts";
+export type {
   FileGrantId,
   FileId,
   FileMetadata,

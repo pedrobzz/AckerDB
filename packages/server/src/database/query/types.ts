@@ -23,6 +23,7 @@ import type {
   TableIndexes,
   TableKind,
 } from "../../schema/definition.ts";
+import type { TableFilter } from "./filter.ts";
 
 type BaseValidator<V> = V extends NullableValidator<infer Inner> ? Inner : V;
 type IsNullable<V> = V extends Validator<unknown, "nullable"> ? true : false;
@@ -178,6 +179,8 @@ export interface AggregateMaterializers<C extends ObjectShape> {
 
 export interface TableQuery<C extends ObjectShape, Row = RowShape<C>>
   extends QueryMaterializers<Row>, AggregateMaterializers<C> {
+  /** A validated serializable filter narrows rows without changing their type. */
+  where(filter: TableFilter<C>): TableQuery<C, Row>;
   where<Expression extends PredicateExpression<unknown, RowShape<C>>>(
     predicate: (row: QueryRow<C>) => Expression,
   ): TableQuery<C, Row & NarrowedRow<Expression>>;
@@ -186,6 +189,8 @@ export interface TableQuery<C extends ObjectShape, Row = RowShape<C>>
 
 export interface OrderedTableQuery<C extends ObjectShape, Row = RowShape<C>>
   extends QueryMaterializers<Row>, AggregateMaterializers<C> {
+  /** A validated serializable filter narrows rows without changing their type. */
+  where(filter: TableFilter<C>): OrderedTableQuery<C, Row>;
   where<Expression extends PredicateExpression<unknown, RowShape<C>>>(
     predicate: (row: QueryRow<C>) => Expression,
   ): OrderedTableQuery<C, Row & NarrowedRow<Expression>>;

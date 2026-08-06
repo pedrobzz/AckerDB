@@ -260,6 +260,7 @@ export {
   scanKey,
 } from "./database/keys.ts";
 export { VectorRuntimeUnavailableError } from "./database/query/vector-runtime.ts";
+export { MAX_PAGE_SIZE } from "./database/query/query.ts";
 export type {
   DbReader,
   DbWriter,
@@ -279,6 +280,20 @@ export type {
   FullTextQuery,
   WriteResult,
 } from "./database/query/types.ts";
+export {
+  filterableFields,
+  MAX_FILTER_CLAUSES,
+  MAX_FILTER_DEPTH,
+  type FilterFieldDeclaration,
+  type FilterValidation,
+  type FilterableFields,
+  type TableFilter,
+} from "./database/query/filter.ts";
+export type {
+  FilterExpression,
+  FilterIssue,
+  FilterValue,
+} from "@ackerdb/core";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
 export {
   probeOptimisticChanges,

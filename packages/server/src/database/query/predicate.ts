@@ -5,13 +5,17 @@ import { baseValidator } from "../../validation/validator.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
-type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
+export type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
 
+/** JSON-path nodes carry a complete JSON1 path (`$."key"...`) bound as a parameter. */
 export type PredicateNode =
   | { readonly kind: "comparison"; readonly column: string; readonly op: ComparisonOperator; readonly value: unknown }
   | { readonly kind: "in"; readonly column: string; readonly values: readonly unknown[] }
   | { readonly kind: "between"; readonly column: string; readonly lower: unknown; readonly upper: unknown }
   | { readonly kind: "null"; readonly column: string; readonly isNull: boolean }
+  | { readonly kind: "json"; readonly column: string; readonly path: string; readonly op: ComparisonOperator; readonly value: string | number }
+  | { readonly kind: "jsonNull"; readonly column: string; readonly path: string; readonly isNull: boolean }
+  | { readonly kind: "jsonIn"; readonly column: string; readonly path: string; readonly values: readonly (string | number)[] }
   | { readonly kind: "and" | "or"; readonly left: PredicateNode; readonly right: PredicateNode }
   | { readonly kind: "not"; readonly expression: PredicateNode };
 
@@ -35,7 +39,7 @@ interface ColumnReferenceMeta {
 const predicates = new WeakMap<object, PredicateMeta>();
 const orders = new WeakMap<object, OrderMeta>();
 const columnReferences = new WeakMap<object, ColumnReferenceMeta>();
-const EQUATABLE_KINDS = new Set([
+export const EQUATABLE_KINDS: ReadonlySet<string> = new Set([
   "pk",
   "string",
   "int",
@@ -58,7 +62,7 @@ const ORDERABLE_KINDS = new Set([
   "scheduleAt",
   "boolean",
 ]);
-const ORDERED_KINDS = new Set([
+export const ORDERED_KINDS: ReadonlySet<string> = new Set([
   "pk",
   "string",
   "int",
@@ -389,6 +393,37 @@ function compilePredicateSql(
       return `${quote(node.column)} BETWEEN ? AND ?`;
     case "null":
       return `${quote(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`;
+    case "json": {
+      params.push(node.path, node.value);
+      const operator = {
+        eq: "=",
+        ne: "<>",
+        lt: "<",
+        lte: "<=",
+        gt: ">",
+        gte: ">=",
+      }[node.op];
+      return `${quote(node.column)} ->> ? ${operator} ?`;
+    }
+    case "jsonNull":
+      params.push(node.path);
+      return `${quote(node.column)} ->> ? IS ${node.isNull ? "" : "NOT "}NULL`;
+    case "jsonIn": {
+      if (node.values.length === 0) return "0";
+      if (node.values.length + 1 > parameterLimit - params.length) {
+        throw new ValidationError(
+          `${path}: statement requires at least ${params.length + node.values.length + 1} parameters; SQLite supports at most ${parameterLimit}`,
+        );
+      }
+      params.push(node.path);
+      let placeholders = "";
+      for (const value of node.values) {
+        if (placeholders !== "") placeholders += ", ";
+        placeholders += "?";
+        params.push(value);
+      }
+      return `${quote(node.column)} ->> ? IN (${placeholders})`;
+    }
     case "not":
       return `NOT (${compilePredicateSql(node.expression, params, parameterLimit, path)})`;
     case "and":

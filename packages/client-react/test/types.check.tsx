@@ -218,6 +218,7 @@ type UnexpectedExports = AssertNever<
     | "useFileUpload"
     | "useMutation"
     | "useProcedure"
+    | "usePaginatedQuery"
     | "useQuery"
     | "useQueryProcedure"
     | "useRealtime"

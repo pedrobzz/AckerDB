@@ -20,8 +20,18 @@ import {
   type PredicateNode,
   type QueryOrder,
 } from "./predicate.ts";
+import { filterPredicate, tableFilterMeta } from "./filter.ts";
 
 const quote = (name: string): string => `"${name}"`;
+
+/**
+ * Server-enforced rows cap per page (#193). Client-supplied page sizes flow
+ * into `paginate` unchanged, so the framework bounds one page's row count
+ * here — the same 256-row bound `deleteMany` puts on one statement. Byte
+ * budgets stay with the subscription layer (`maxFrameBytes`,
+ * `maxSharedResultBytes`), which already caps every delivered result.
+ */
+export const MAX_PAGE_SIZE = 256;
 
 interface QueryState {
   readonly predicates: readonly PredicateNode[];
@@ -211,11 +221,15 @@ class TableQueryRuntime {
   }
 
   where(callback: unknown): TableQueryRuntime {
-    const predicate = resolvePredicate(
-      this.plan.environment,
-      callback,
-      `${this.plan.displayName}.query.where`,
-    );
+    const filter = tableFilterMeta(callback);
+    const predicate = filter !== undefined
+      ? filterPredicate(this.plan, filter)
+      : resolvePredicate(
+          this.plan.environment,
+          callback,
+          `${this.plan.displayName}.query.where`,
+        );
+    if (predicate === null) return this;
     return this.next({
       ...this.state,
       predicates: [...this.state.predicates, predicate],
@@ -550,6 +564,11 @@ class TableQueryRuntime {
     ) {
       throw new ValidationError(
         `${this.plan.displayName}.query.paginate: pageSize must be a positive safe integer`,
+      );
+    }
+    if (options.pageSize > MAX_PAGE_SIZE) {
+      throw new ValidationError(
+        `${this.plan.displayName}.query.paginate: pageSize must be at most ${MAX_PAGE_SIZE}`,
       );
     }
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
