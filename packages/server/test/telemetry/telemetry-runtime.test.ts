@@ -806,6 +806,28 @@ describe("Runtime telemetry acceptance", () => {
     });
     expect(failure?.metadata).toMatchObject({ operation: "mutation" });
     expect(encode(failure)).not.toContain(PRIVATE_FAILURE);
+
+    await app.runtime.telemetrySpans.flush();
+    const spanRows = app.runtime.telemetryStore.database.query(`
+      SELECT trace_id AS traceId, outcome
+      FROM _ackerdb_telemetry_spans
+      WHERE function_address = 'items.fail'
+      ORDER BY id
+    `).all() as { readonly traceId: string; readonly outcome: string }[];
+    expect(spanRows.length).toBeGreaterThan(0);
+    expect(spanRows.some((row) => row.outcome !== "ok")).toBe(true);
+    const summary = app.runtime.telemetryStore.database.query(`
+      SELECT root_function AS rootFunction, span_count AS spanCount, error_count AS errorCount
+      FROM _ackerdb_telemetry_traces
+      WHERE trace_id = ?
+    `).get(spanRows[0]!.traceId) as {
+      readonly rootFunction: string;
+      readonly spanCount: bigint;
+      readonly errorCount: bigint;
+    };
+    expect(summary.rootFunction).toBe("items.fail");
+    expect(summary.spanCount).toBeGreaterThan(0n);
+    expect(summary.errorCount).toBeGreaterThan(0n);
   });
 
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {

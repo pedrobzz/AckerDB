@@ -58,6 +58,7 @@ import {
 } from "../telemetry/application-signals/journal.ts";
 import { TelemetryStore } from "../telemetry/storage/store.ts";
 import { TelemetryFlushInvalidation } from "../telemetry/storage/invalidation.ts";
+import { TelemetrySpanStore } from "../telemetry/storage/spans.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import {
   TelemetryJournalExporters,
@@ -133,6 +134,7 @@ export class Runtime implements RuntimePort {
   readonly telemetry: Telemetry;
   readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
+  readonly telemetrySpans: TelemetrySpanStore;
   /** Studio's reactive `_studio.*` reads subscribe here for flush invalidation. */
   readonly telemetryInvalidation = new TelemetryFlushInvalidation();
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
@@ -237,9 +239,11 @@ export class Runtime implements RuntimePort {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
             },
-            // Framework events become durable journal rows; the closures bind
-            // lazily because the read-model owners construct after telemetry.
+            // Framework events become durable journal rows and every span
+            // persists durably; the closures bind lazily because the
+            // read-model owners construct after telemetry.
             durableSink: {
+              span: (record) => void this.telemetrySpans.append(record),
               event: (record) => this.applicationSignals.framework(record),
             },
           });
@@ -288,6 +292,8 @@ export class Runtime implements RuntimePort {
       throw new TypeError("Runtime requires a ready telemetry journal");
     }
     this.telemetryJournal.onPersist(() => this.telemetryInvalidation.notify());
+    this.telemetrySpans = new TelemetrySpanStore({ store: this.telemetryStore });
+    this.telemetrySpans.onPersist(() => this.telemetryInvalidation.notify());
     this.applicationSignals = new ApplicationSignals(
       this.telemetryJournal,
       this.now,
@@ -461,6 +467,7 @@ export class Runtime implements RuntimePort {
       telemetry: this.telemetry,
       telemetryStore: this.telemetryStore,
       telemetryJournal: this.telemetryJournal,
+      telemetrySpans: this.telemetrySpans,
       ...(this.telemetryExporters === undefined
         ? {}
         : { telemetryExporters: this.telemetryExporters }),

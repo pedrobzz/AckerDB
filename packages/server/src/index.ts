@@ -409,6 +409,13 @@ export {
   type TelemetryInvalidationListener,
 } from "./telemetry/storage/invalidation.ts";
 export {
+  TelemetrySpanStore,
+  decodeSpanPayload,
+  type TelemetrySpanStoreLimits,
+  type TelemetrySpanStoreOptions,
+  type TelemetrySpanStoreSnapshot,
+} from "./telemetry/storage/spans.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,
