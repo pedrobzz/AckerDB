@@ -1,6 +1,11 @@
-import { Database } from "bun:sqlite";
+import type { Database, Statement } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
-import type { TelemetryJournalEntry, TelemetryJournalRecord } from "./types.ts";
+import type { TelemetryStore } from "../storage/store.ts";
+import type {
+  ApplicationLogLevel,
+  TelemetryJournalEntry,
+  TelemetryJournalRecord,
+} from "./types.ts";
 
 export interface TelemetryJournalLimits {
   readonly maxQueuedRecords: number;
@@ -12,7 +17,8 @@ export interface TelemetryJournalLimits {
 }
 
 export interface TelemetryJournalOptions {
-  readonly path: string;
+  /** The shared telemetry sidecar this journal homes its tables in. */
+  readonly store: TelemetryStore;
   readonly limits?: Partial<TelemetryJournalLimits>;
 }
 
@@ -73,10 +79,19 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
+const LOG_LEVELS: readonly ApplicationLogLevel[] = Object.freeze([
+  "debug",
+  "info",
+  "warn",
+  "error",
+]);
+
 export class TelemetryJournal {
-  readonly path: string;
+  readonly store: TelemetryStore;
   readonly limits: TelemetryJournalLimits;
   private readonly database: Database;
+  private readonly deleteExpiredLog: Statement;
+  private readonly deleteExpiredAnalytics: Statement;
   private readonly queue: QueuedRecord[] = [];
   private queuedBytes = 0;
   private persistedRecords = 0;
@@ -98,7 +113,7 @@ export class TelemetryJournal {
   private failure: unknown;
 
   constructor(options: TelemetryJournalOptions) {
-    this.path = options.path;
+    this.store = options.store;
     this.limits = Object.freeze({
       maxQueuedRecords: positiveInteger(
         options.limits?.maxQueuedRecords ?? DEFAULT_LIMITS.maxQueuedRecords,
@@ -125,50 +140,44 @@ export class TelemetryJournal {
         "telemetry journal maxStoredBytes",
       ),
     });
-    this.database = new Database(options.path, {
-      create: true,
-      safeIntegers: true,
-      strict: true,
+    this.database = this.store.database;
+    this.store.register({
+      name: "application-signals",
+      initialize: (database) => {
+        createJournalSchema(database);
+        return [
+          ...LOG_LEVELS.map((level) => Object.freeze({
+            retention: level,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.expire(this.deleteExpiredLog, [level, cutoffMs, limit]),
+          })),
+          Object.freeze({
+            retention: "analytics" as const,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.expire(this.deleteExpiredAnalytics, [cutoffMs, limit]),
+          }),
+        ];
+      },
     });
-    this.database.exec("PRAGMA journal_mode = WAL");
-    this.database.exec("PRAGMA synchronous = NORMAL");
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_journal (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        process_generation TEXT NOT NULL,
-        sequence INTEGER NOT NULL,
-        timestamp REAL NOT NULL,
-        kind TEXT NOT NULL,
-        payload_bytes INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        UNIQUE(process_generation, sequence)
+    this.deleteExpiredLog = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_journal
+      WHERE id IN (
+        SELECT id FROM _ackerdb_telemetry_journal
+        WHERE kind = 'log' AND level = ? AND timestamp < ?
+        ORDER BY timestamp
+        LIMIT ?
       )
+      RETURNING payload_bytes AS bytes
     `);
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        stored_records INTEGER NOT NULL,
-        stored_bytes INTEGER NOT NULL,
-        evicted_records INTEGER NOT NULL,
-        last_record_id INTEGER NOT NULL
+    this.deleteExpiredAnalytics = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_journal
+      WHERE id IN (
+        SELECT id FROM _ackerdb_telemetry_journal
+        WHERE kind = 'analytics' AND level IS NULL AND timestamp < ?
+        ORDER BY timestamp
+        LIMIT ?
       )
-    `);
-    this.database.query(`
-      INSERT OR IGNORE INTO _ackerdb_telemetry_state (
-        singleton, stored_records, stored_bytes, evicted_records, last_record_id
-      ) VALUES (1, 0, 0, 0, 0)
-    `).run();
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_consumers (
-        name TEXT PRIMARY KEY,
-        cursor INTEGER NOT NULL,
-        exported_records INTEGER NOT NULL,
-        skipped_unsupported INTEGER NOT NULL,
-        skipped_identity INTEGER NOT NULL,
-        evicted_records INTEGER NOT NULL,
-        failures INTEGER NOT NULL,
-        timed_out INTEGER NOT NULL
-      )
+      RETURNING payload_bytes AS bytes
     `);
     const retained = this.database.query(`
       SELECT COUNT(*) AS records, COALESCE(SUM(payload_bytes), 0) AS bytes
@@ -183,7 +192,16 @@ export class TelemetryJournal {
     this.storedBytes = Number(retained.bytes);
     this.evictedRecords = Number(state.evictedRecords);
     this.lastRecordId = state.lastRecordId;
+    this.store.maintain();
     this.enforceRetention();
+  }
+
+  /** Bounded per-class expiry; the caller's transaction owns durability. */
+  private expire(statement: Statement, parameters: readonly (string | number)[]): number {
+    const rows = statement.all(...parameters) as { readonly bytes: bigint }[];
+    for (const row of rows) this.storedBytes -= Number(row.bytes);
+    this.storedRecords -= rows.length;
+    return rows.length;
   }
 
   append(record: TelemetryJournalRecord): boolean {
@@ -249,8 +267,8 @@ export class TelemetryJournal {
   private persist(batch: readonly QueuedRecord[]): void {
     const insert = this.database.query(`
       INSERT INTO _ackerdb_telemetry_journal (
-        process_generation, sequence, timestamp, kind, payload_bytes, payload
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        process_generation, sequence, timestamp, kind, level, payload_bytes, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const before = {
       storedRecords: this.storedRecords,
@@ -266,6 +284,7 @@ export class TelemetryJournal {
             item.record.sequence,
             item.record.timestamp,
             item.record.kind,
+            item.record.kind === "log" ? item.record.level : null,
             item.bytes,
             item.encoded,
           );
@@ -273,6 +292,7 @@ export class TelemetryJournal {
           this.storedRecords++;
           this.storedBytes += item.bytes;
         }
+        this.store.maintain();
         this.enforceRetention();
       })();
     } catch (error) {
@@ -534,17 +554,68 @@ export class TelemetryJournal {
   async drain(): Promise<void> {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "draining";
-    try {
-      await this.flush();
-    } finally {
-      try {
-        this.database.close(false);
-      } catch (error) {
-        if (this.failure === undefined) throw error;
-      }
-    }
+    await this.flush();
     this.state = "stopped";
   }
+}
+
+function createJournalSchema(database: Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      process_generation TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      timestamp REAL NOT NULL,
+      kind TEXT NOT NULL,
+      level TEXT,
+      payload_bytes INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      UNIQUE(process_generation, sequence)
+    )
+  `);
+  const level = database.query(`
+    SELECT COUNT(*) AS present
+    FROM pragma_table_info('_ackerdb_telemetry_journal')
+    WHERE name = 'level'
+  `).get() as { readonly present: bigint };
+  if (Number(level.present) === 0) {
+    database.exec("ALTER TABLE _ackerdb_telemetry_journal ADD COLUMN level TEXT");
+    database.exec(`
+      UPDATE _ackerdb_telemetry_journal
+      SET level = json_extract(payload, '$.level')
+      WHERE kind = 'log'
+    `);
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_retention
+    ON _ackerdb_telemetry_journal (kind, level, timestamp)
+  `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      stored_records INTEGER NOT NULL,
+      stored_bytes INTEGER NOT NULL,
+      evicted_records INTEGER NOT NULL,
+      last_record_id INTEGER NOT NULL
+    )
+  `);
+  database.query(`
+    INSERT OR IGNORE INTO _ackerdb_telemetry_state (
+      singleton, stored_records, stored_bytes, evicted_records, last_record_id
+    ) VALUES (1, 0, 0, 0, 0)
+  `).run();
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_consumers (
+      name TEXT PRIMARY KEY,
+      cursor INTEGER NOT NULL,
+      exported_records INTEGER NOT NULL,
+      skipped_unsupported INTEGER NOT NULL,
+      skipped_identity INTEGER NOT NULL,
+      evicted_records INTEGER NOT NULL,
+      failures INTEGER NOT NULL,
+      timed_out INTEGER NOT NULL
+    )
+  `);
 }
 
 function validateConsumerName(name: string): void {

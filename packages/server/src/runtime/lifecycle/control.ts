@@ -7,6 +7,7 @@ import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
 import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";
+import type { TelemetryStore } from "../../telemetry/storage/store.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { RuntimeStatus } from "../contracts/status.ts";
 import type { RuntimeLifecycleState } from "../contracts/lifecycle.ts";
@@ -34,9 +35,11 @@ export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
   readonly telemetry: Telemetry;
+  readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
   readonly telemetryExporters?: TelemetryJournalExporters;
   readonly ownsTelemetry: boolean;
+  readonly ownsTelemetryStore: boolean;
   readonly ownsTelemetryJournal: boolean;
   readonly pluginRuntime?: PluginRuntime;
   readonly realtime?: RealtimeRuntime;
@@ -231,6 +234,7 @@ export class RuntimeControl {
       sseBudget: this.options.sseBudget.snapshot(),
       telemetry: this.options.telemetry.snapshot(),
       telemetryAggregates: this.options.telemetry.aggregateSnapshot(),
+      telemetryStore: this.options.telemetryStore.snapshot(),
       telemetryJournal: this.options.telemetryJournal.snapshot(),
       telemetryExporters: this.options.telemetryExporters?.snapshot() ?? null,
       storage: this.options.engine.status(),
@@ -307,6 +311,7 @@ export class RuntimeControl {
       } else {
         await this.options.telemetryJournal.flush();
       }
+      if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
         : this.options.telemetry.flush();
@@ -359,6 +364,13 @@ export class RuntimeControl {
           }
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
+        }
+        if (this.options.ownsTelemetryStore) {
+          try {
+            this.options.telemetryStore.close();
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
         }
         if (this.options.ownsTelemetry) {
           try {

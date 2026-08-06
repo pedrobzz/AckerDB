@@ -11,6 +11,7 @@ import type {
   TelemetryJournalOptions,
 } from "../../telemetry/application-signals/journal.ts";
 import type { Telemetry, TelemetryOptions } from "../../telemetry/telemetry.ts";
+import type { TelemetryStore, TelemetryStoreOptions } from "../../telemetry/storage/store.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
 import type { DeclaredJob } from "../../jobs/definition.ts";
@@ -33,7 +34,9 @@ export interface RuntimeOptions {
   readonly scopes?: readonly string[];
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
-  readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
+  /** The `<db>.telemetry` sidecar home and its per-class retention clocks. */
+  readonly telemetryStore?: TelemetryStore | Omit<TelemetryStoreOptions, "path" | "now">;
+  readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "store">;
   readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;
   readonly hooks?: RuntimeHooks;
   /** Declared jobs, named and ordered by declareJobs(...). */
