@@ -147,6 +147,9 @@ function predicateBranches(node: PredicateNode): Branch[] {
       return node.isNull ? exactValueBranch(node.column, null) : [[]];
     case "between":
     case "not":
+    case "json":
+    case "jsonNull":
+    case "jsonIn":
       return [[]];
     case "and":
       return andBranches(predicateBranches(node.left), predicateBranches(node.right));

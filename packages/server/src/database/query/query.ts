@@ -20,6 +20,7 @@ import {
   type PredicateNode,
   type QueryOrder,
 } from "./predicate.ts";
+import { filterPredicate, tableFilterMeta } from "./filter.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -211,11 +212,15 @@ class TableQueryRuntime {
   }
 
   where(callback: unknown): TableQueryRuntime {
-    const predicate = resolvePredicate(
-      this.plan.environment,
-      callback,
-      `${this.plan.displayName}.query.where`,
-    );
+    const filter = tableFilterMeta(callback);
+    const predicate = filter !== undefined
+      ? filterPredicate(this.plan, filter)
+      : resolvePredicate(
+          this.plan.environment,
+          callback,
+          `${this.plan.displayName}.query.where`,
+        );
+    if (predicate === null) return this;
     return this.next({
       ...this.state,
       predicates: [...this.state.predicates, predicate],
