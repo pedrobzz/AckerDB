@@ -410,7 +410,6 @@ export {
 } from "./telemetry/storage/invalidation.ts";
 export {
   TelemetrySpanStore,
-  decodeSpanPayload,
   type TelemetrySpanStoreLimits,
   type TelemetrySpanStoreOptions,
   type TelemetrySpanStoreSnapshot,

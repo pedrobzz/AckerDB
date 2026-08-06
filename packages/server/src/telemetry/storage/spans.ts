@@ -40,23 +40,6 @@ function positiveInteger(value: number, name: string): number {
 
 const HOUR_MS = 3_600_000;
 
-interface SpanPayload {
-  readonly statement?: string;
-  readonly resource?: string;
-  readonly sizeBytes?: number;
-  readonly rowCount?: number;
-  readonly resultCount?: number;
-  readonly replayed?: boolean;
-  readonly dependencyCount?: number;
-  readonly postCommit?: boolean;
-  readonly requestId?: string;
-  readonly connectionId?: string;
-  readonly mutationId?: string;
-  readonly commitId?: string;
-  readonly subscriptionId?: string;
-  readonly links?: TelemetrySpanRecord["links"];
-}
-
 function spanPayload(record: TelemetrySpanRecord): string {
   const payload: Record<string, unknown> = {};
   if (record.statement !== undefined) payload.statement = record.statement;
@@ -74,10 +57,6 @@ function spanPayload(record: TelemetrySpanRecord): string {
   if (record.subscriptionId !== undefined) payload.subscriptionId = record.subscriptionId;
   if (record.links !== undefined) payload.links = record.links;
   return JSON.stringify(payload);
-}
-
-export function decodeSpanPayload(payload: string): SpanPayload {
-  return JSON.parse(payload) as SpanPayload;
 }
 
 /**
