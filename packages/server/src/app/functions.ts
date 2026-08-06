@@ -35,6 +35,10 @@ import {
   type AccessPolicy,
   type InvocationContext,
 } from "./access.ts";
+import {
+  normalizeScopeRequirement,
+  type ScopeRequirement,
+} from "../auth/access-policy.ts";
 import type { Schema } from "../schema/definition.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
 import type {
@@ -293,11 +297,20 @@ interface ExposureDef {
 type FunctionDef<
   A extends ObjectShape,
   Ctx extends InvocationContext,
+  Scope extends string = string,
 > = ExposureDef & {
   readonly args: A;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  /**
+   * Scope requirement drawn from the application vocabulary. Combines with
+   * `access: "authenticated"` or a policy callback; `"public"` contradicts it
+   * and `"system"` bypasses it, so both are registration errors. Generated
+   * server modules bind `Scope` to `AppScope<App>`, making an undeclared
+   * scope a compile error.
+   */
+  readonly scopes?: ScopeRequirement<Scope>;
   readonly handler: FunctionHandler<A, Ctx>;
 };
 
@@ -367,6 +380,7 @@ export interface Invocable<
   readonly kind: K;
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly scopes?: ScopeRequirement<string>;
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
@@ -479,6 +493,27 @@ function exposureFields(def: ExposureDef): ExposureDef {
   };
 }
 
+/**
+ * Validate a declared scope requirement once, at registration. Requiring
+ * scopes on a `"public"` function contradicts the declaration (anonymous
+ * callers can never hold a scope); on a `"system"` function it is dead
+ * configuration (system bypasses scopes). Both are registration errors.
+ */
+function scopeFields(
+  kind: string,
+  def: { readonly access: unknown; readonly scopes?: ScopeRequirement<string> },
+): { readonly scopes?: ScopeRequirement<string> } {
+  if (def.scopes === undefined) return {};
+  normalizeScopeRequirement(def.scopes, `${kind} scopes`);
+  if (def.access === "public" || def.access === "system") {
+    throw new TypeError(
+      `${kind} scopes cannot combine with access "${String(def.access)}"` +
+        ` — use "authenticated" or a policy callback`,
+    );
+  }
+  return { scopes: def.scopes };
+}
+
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
   if (!isValidator(yields)) {
     throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
@@ -510,6 +545,7 @@ function register<K extends string>(kind: K) {
     validateArgsShape(def.args);
     validateOutputDeclarations(def as never);
     const exposure = exposureFields(def);
+    const scoped = scopeFields(kind, def);
 
     const callable =
       kind === "query" || kind === "mutation" || kind === "procedure"
@@ -524,6 +560,7 @@ function register<K extends string>(kind: K) {
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
       ...exposure,
+      ...scoped,
       access: def.access,
       handler: def.handler,
     }) as unknown as Registered<
@@ -569,10 +606,12 @@ interface SseDef<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
+  Scope extends string = string,
 > extends ExposureDef {
   readonly args: A;
   readonly yields: Y;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly scopes?: ScopeRequirement<Scope>;
   readonly handler: (
     ctx: Ctx,
     args: Expand<InferShape<A>>,
@@ -595,6 +634,7 @@ export function sseProcedure<
   validateArgsShape(def.args);
   validateYields(def.yields);
   const exposure = exposureFields(def);
+  const scoped = scopeFields("sse", def);
 
   const callable = () => {
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
@@ -605,6 +645,7 @@ export function sseProcedure<
     args: def.args,
     yields: def.yields,
     ...exposure,
+    ...scoped,
     access: def.access,
     handler: def.handler,
   }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema>;
@@ -612,13 +653,20 @@ export function sseProcedure<
   return registered;
 }
 
+/**
+ * Codegen binds `Scope` to the app's declared vocabulary (`AppScope<App>`),
+ * so `scopes: { anyOf: ["notes:read"] }` type-checks against `defineApp`'s
+ * declaration and an undeclared scope is a compile error. The schema-agnostic
+ * constructors keep the `string` default.
+ */
 export type QueryBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>>,
+  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -638,9 +686,10 @@ export type MutationBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>>,
+  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -662,11 +711,13 @@ export type ProcedureBuilder<
   TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
   const Definition extends FunctionDef<
     A,
-    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
+    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    Scope
   >,
 >(
   def: { readonly args: A } &
@@ -689,6 +740,7 @@ export type SseBuilder<
   TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: ExposureDef & {
   readonly args: A;
   readonly yields: Y;
@@ -696,6 +748,7 @@ export type SseBuilder<
     SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     Expand<InferShape<A>>
   >;
+  readonly scopes?: ScopeRequirement<Scope>;
   readonly handler: (
     ctx: SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<InferShape<A>>,

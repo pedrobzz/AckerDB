@@ -119,6 +119,28 @@ describe("production profile configuration", () => {
     }
   });
 
+  test("resolves an application scope resolver relative to the app directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        scopeResolver: "./auth/scope-resolver.ts",
+      }));
+
+      expect(loadConfig(dir, {})).toMatchObject({
+        scopeResolver: resolve(dir, "auth/scope-resolver.ts"),
+      });
+
+      for (const scopeResolver of ["", 42, null]) {
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ scopeResolver }));
+        expect(() => loadConfig(dir, {})).toThrow(
+          "scopeResolver must be a non-empty module path",
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects competing or malformed custom authentication configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {

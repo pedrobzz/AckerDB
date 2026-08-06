@@ -24,15 +24,17 @@ import {
   type AnyRegisteredRealtime,
 } from "../realtime/definition.ts";
 import {
-  isMcpAuthProvider,
   isMcpDeclaration,
   isRegisteredMcpTool,
-  type AnyMcpAuthProvider,
   type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
-import { isMcpToolAuthorized } from "../mcp/scopes.ts";
+import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
+import {
+  checkRequirementAgainstVocabulary,
+  normalizeScopeRequirement,
+} from "../auth/access-policy.ts";
 import {
   ACKERDB_RESERVED_API_PREFIX,
   exposedHttpKind,
@@ -44,7 +46,7 @@ import {
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
 
-type ServerOnlyExport = AnyMcpDeclaration | AnyMcpAuthProvider;
+type ServerOnlyExport = AnyMcpDeclaration;
 
 interface ModuleExport {
   readonly address: string;
@@ -212,11 +214,6 @@ export class Registry {
     }
 
     for (const { address, value } of moduleExports) {
-      if (!isMcpAuthProvider(value)) continue;
-      this.serverOnly.set(address, value);
-    }
-
-    for (const { address, value } of moduleExports) {
       if (
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
@@ -226,6 +223,39 @@ export class Registry {
       ) {
         throw new Error(`unknown server-only export at "${address}"`);
       }
+    }
+  }
+
+  /**
+   * Load-time cross-check where the App manifest meets the Registry: every
+   * scope a function requires must exist in the application vocabulary.
+   * Registered functions are module-level constants that exist before
+   * `defineApp` is evaluated, so the check runs here, not at registration.
+   */
+  checkScopeRequirements(vocabulary: readonly string[] | undefined): void {
+    for (const [address, fn] of this.functions) {
+      if (fn.scopes === undefined) continue;
+      if (vocabulary === undefined) {
+        throw new TypeError(
+          `function "${address}" declares scopes but the application declares no scope vocabulary`,
+        );
+      }
+      checkRequirementAgainstVocabulary(
+        normalizeScopeRequirement(fn.scopes, `function "${address}" scopes`),
+        vocabulary,
+        `function "${address}"`,
+      );
+    }
+    for (const tool of this.mcpTools.values()) {
+      const policy = tool.accessPolicy;
+      if (policy.kind !== "anyOf" && policy.kind !== "allOf") continue;
+      const where = `MCP "${tool.mcp.name}" tool "${tool.name}"`;
+      if (vocabulary === undefined) {
+        throw new TypeError(
+          `${where} requires scopes but the application declares no scope vocabulary`,
+        );
+      }
+      checkRequirementAgainstVocabulary(policy, vocabulary, where);
     }
   }
 

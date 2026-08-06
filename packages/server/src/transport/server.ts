@@ -53,7 +53,7 @@ import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
-import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
+import { credentialTokenFromAuthorization } from "../auth/credential-token.ts";
 import {
   McpHttpBoundary,
   type McpHttpOptions,
@@ -71,9 +71,9 @@ import {
   CAPTURE_DELIVERY_OBSERVER,
   type Runtime,
 } from "../runtime/runtime.ts";
+import type { CredentialLease } from "../runtime/credentials/runtime.ts";
 import type {
   HttpMutationReceipt,
-  McpCredentialLease,
   RuntimeHttpResponder,
 } from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
@@ -1138,6 +1138,7 @@ export class AckerDBServer {
       credential,
       verifier: runtime.credentialVerifier,
       resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
+      ...(runtime.resolveScopes === undefined ? {} : { resolveScopes: runtime.resolveScopes }),
       ...(signal === undefined ? {} : { signal }),
       revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
@@ -1359,7 +1360,7 @@ export class AckerDBServer {
   ): Promise<Response> {
     const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
-    let credentialLease: McpCredentialLease | undefined;
+    let credentialLease: CredentialLease | undefined;
     let principal: Principal = ANONYMOUS_PRINCIPAL;
     try {
       if (this.lifecycle !== "ready" || runtime.state !== "ready") {
@@ -1371,10 +1372,9 @@ export class AckerDBServer {
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
       );
-      const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
+      const credential = credentialTokenFromAuthorization(request.headers.get("authorization"));
       if (credential !== null) {
-        credentialLease = await runtime.acquireMcpTokenLease(
-          mcp.auth.name,
+        credentialLease = await runtime.acquireCredentialLease(
           credential,
           callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
           request.signal,

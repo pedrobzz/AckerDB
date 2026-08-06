@@ -9,9 +9,7 @@ import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpBuilder,
-  type McpAuthBuilder,
   type McpAiContext,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -29,8 +27,6 @@ const schema = defineSchema({
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const agentAuth = typedMcpAuth({ name: "agent" });
 
 type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 
@@ -176,7 +172,6 @@ const encodingCancellation = typedProcedure({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   path: "/mcp",
   tools: {
     active_transaction: { fn: activeTransaction, access: "public" },

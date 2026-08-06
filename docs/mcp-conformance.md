@@ -65,7 +65,7 @@ temporary consumer. It verifies:
 - `@ackerdb/server/mcp` resolves and executes under Bun;
 - `@ackerdb/cache`, `@ackerdb/cache/redis`, and `@ackerdb/cache/upstash` resolve and
   construct without opening external connections;
-- packaged `acker codegen` emits schema-bound `mcp` and `mcpAuth` builders,
+- packaged `acker codegen` emits the schema-bound, vocabulary-typed `mcp` builder,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
 - `@ackerdb/server` pins `@modelcontextprotocol/sdk` to `1.30.0`. The clean

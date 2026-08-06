@@ -6,24 +6,26 @@ import {
   verifyBearerCredential,
   type CredentialVerifier,
   type PrincipalInvalidation,
+  type UserPrincipal,
 } from "../../src/auth/credentials.ts";
+import { credentials } from "../../src/auth/credential-context.ts";
+import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { mcp as mcpDeclaration, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp as mcpDeclaration } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { v } from "../../src/validation/v.ts";
 import { serve } from "../../src/transport/server.ts";
 import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
-  agentAuth,
   agentMcp,
   cleanupMcpTokenFixtures,
   databasePath,
   fixture,
+  FIXTURE_SCOPES,
   mutationMessage,
   queryMessage,
   request,
   retainedOwnerContext,
-  scopedAuth,
   scopedMcp,
   session,
   subscribeMessage,
@@ -58,9 +60,20 @@ async function listedToolNames(response: Response): Promise<readonly string[]> {
   return body.result.tools.map(({ name }) => name).sort();
 }
 
-describe("Identity-bound MCP owner tokens", () => {
+interface CreatedValue {
+  readonly id: string;
+  readonly identity: bigint;
+  readonly token: string;
+  readonly name: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly scopes: readonly string[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+describe("Identity credentials", () => {
   test("creates one-time secrets in an ordinary mutation without persisting replayable plaintext", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-mcp-token-create-"));
+    const { engine, runtime } = fixture(databasePath("ackerdb-credential-create-"));
     const alice = await user(runtime, "alice");
     const aliceSession = session(alice, "alice-session");
     await runtime.openSession(aliceSession);
@@ -70,30 +83,25 @@ describe("Identity-bound MCP owner tokens", () => {
       metadata: { device: "mac", sequence: 1n },
     });
     const first = await runtime.mutation(aliceSession, request(firstMessage));
-    const created = first.value as {
-      readonly id: string;
-      readonly token: string;
-      readonly mcp: string;
-      readonly name: string;
-      readonly metadata: Readonly<Record<string, unknown>>;
-      readonly createdAt: number;
-      readonly updatedAt: number;
-    };
+    const created = first.value as CreatedValue;
     expect(created).toMatchObject({
-      mcp: "agent",
       name: "Laptop",
       metadata: { device: "mac", sequence: 1n },
+      scopes: [],
     });
-    expect(created.token).toMatch(/^ackerdb_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+    expect(created.token).toMatch(/^ackerdb_credential\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
     expect(created.token.split(".")[1]).toBe(created.id);
     expect(created).not.toHaveProperty("expiresAt");
+    // The credential IS an Identity — a fresh child of its issuer.
+    expect(created.identity).toBeGreaterThan(0n);
+    expect(created.identity).not.toBe(alice.identity);
 
     const stored = engine.writer.query(
-      "SELECT token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _ackerdb_mcp_tokens",
+      "SELECT token_id, identity, parent_identity, secret_digest, name, metadata, scopes, created_at, updated_at FROM _ackerdb_credentials",
     ).get() as {
       token_id: string;
       identity: bigint;
-      mcp: string;
+      parent_identity: bigint;
       secret_digest: Uint8Array;
       name: string;
       metadata: string;
@@ -104,32 +112,36 @@ describe("Identity-bound MCP owner tokens", () => {
     const secret = created.token.split(".")[2]!;
     expect(stored).toMatchObject({
       token_id: created.id,
-      identity: alice.identity,
-      mcp: "agent",
+      identity: created.identity,
+      parent_identity: alice.identity,
       name: "Laptop",
       scopes: "[]",
     });
     expect(Buffer.from(stored.secret_digest).toString("hex")).toBe(
       createHash("sha256").update(secret).digest("hex"),
     );
-    const storedText = JSON.stringify({ ...stored, identity: stored.identity.toString() });
+    const storedText = JSON.stringify({
+      ...stored,
+      identity: stored.identity.toString(),
+      parent_identity: stored.parent_identity.toString(),
+    });
     expect(storedText).not.toContain(created.token);
     expect(storedText).not.toContain(secret);
     expect(
       engine.writer.query("SELECT result_disposition, result, result_bytes FROM _ackerdb_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
-    expect(() => agentAuth.tokens.create(retainedOwnerContext()!, {
+    expect(() => credentials.create(retainedOwnerContext()!, {
       name: "Escaped context",
       metadata: {},
-    })).toThrow("MCP token operations require a AckerDB invocation context");
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    })).toThrow("credential operations require a AckerDB invocation context");
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 1n });
 
     await expect(runtime.mutation(aliceSession, request(firstMessage))).rejects.toMatchObject({
       code: "conflict",
       message: "mutation committed, but its one-time result is no longer available",
     });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 1n });
 
     const second = await runtime.mutation(aliceSession, request(mutationMessage(2, "2", {
@@ -139,9 +151,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect((second.value as { token: string }).token).not.toBe(created.token);
     const listed = await runtime.query(aliceSession, request(queryMessage(3))) as readonly Record<string, unknown>[];
     expect(listed.map(({ name }) => name)).toEqual(["Laptop", "Desktop"]);
-    expect(listed.every((token) =>
-      !("token" in token) && !("expiresAt" in token) && !("scopes" in token)
-    )).toBe(true);
+    expect(listed.every((token) => !("token" in token) && !("expiresAt" in token))).toBe(true);
     expect(encode(listed)).not.toContain(secret);
 
     const bob = await user(runtime, "bob");
@@ -162,8 +172,8 @@ describe("Identity-bound MCP owner tokens", () => {
     })))).rejects.toMatchObject({ code: "overloaded" });
   });
 
-  test("reactively edits and revokes only the owner's endpoint-bound descriptor", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-mcp-token-lifecycle-"));
+  test("reactively edits and revokes only the owner's descriptors", async () => {
+    const { engine, runtime } = fixture(databasePath("ackerdb-credential-lifecycle-"));
     const alice = await user(runtime, "lifecycle-alice");
     const publications: SessionApplicationMessage[] = [];
     const aliceSession = session(alice, "lifecycle-alice-session", publications);
@@ -180,16 +190,16 @@ describe("Identity-bound MCP owner tokens", () => {
     const created = (await runtime.mutation(aliceSession, request(mutationMessage(101, "101", {
       name: "Laptop",
       metadata: { device: "mac" },
-    })))).value as { readonly id: string; readonly token: string };
+    })))).value as CreatedValue;
     expect(lifecycleTransitions()).toHaveLength(2);
     expect(lifecycleTransitions().at(-1)).toMatchObject({
       transition: { kind: "update", value: [{ id: created.id, name: "Laptop" }] },
     });
 
     const before = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _ackerdb_mcp_tokens WHERE token_id = ?",
+      "SELECT secret_digest, scopes FROM _ackerdb_credentials WHERE token_id = ?",
     ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
-    const active = await runtime.authenticateMcpToken("agent", created.token, "before-edit");
+    const active = await runtime.authenticateCredential(created.token, "before-edit");
 
     await runtime.mutation(aliceSession, request(mutationMessage(
       102,
@@ -217,19 +227,21 @@ describe("Identity-bound MCP owner tokens", () => {
     });
 
     const after = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _ackerdb_mcp_tokens WHERE token_id = ?",
+      "SELECT secret_digest, scopes FROM _ackerdb_credentials WHERE token_id = ?",
     ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
     expect(Buffer.from(after.secret_digest)).toEqual(Buffer.from(before.secret_digest));
     expect(after.scopes).toBe(before.scopes);
-    expect(await runtime.authenticateMcpToken("agent", created.token, "after-edit"))
-      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+    expect(await runtime.authenticateCredential(created.token, "after-edit"))
+      .toMatchObject({ identity: created.identity, tokenId: created.id });
     const activeResult = await runtime.runMcpTool({
       id: "active-through-descriptor-edit",
       authorization: runtime.authorizeMcpTool("agent", "write_owned_record", active),
       args: { value: "still-active" },
       principal: active,
     });
-    expect(activeResult.structuredContent).toMatchObject({ principal: `mcp:${alice.identity}` });
+    expect(activeResult.structuredContent).toMatchObject({
+      principal: `user:${created.identity}`,
+    });
 
     for (const [id, args, ref] of [
       [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.mcp.maxMetadataBytes) } }, "tokens.updateAgentTokenMetadata"],
@@ -245,15 +257,9 @@ describe("Identity-bound MCP owner tokens", () => {
     const bobSession = session(bob, "lifecycle-bob-session");
     await runtime.openSession(bobSession);
     expect(await runtime.query(bobSession, request(queryMessage(107)))).toEqual([]);
-    expect(await runtime.query(
-      aliceSession,
-      request(queryMessage(108, "tokens.listOperationsTokens")),
-    )).toEqual([]);
     for (const [id, context, args, ref] of [
       [109, bobSession, { id: created.id, name: "Stolen" }, "tokens.renameAgentToken"],
       [110, bobSession, { id: created.id }, "tokens.revokeAgentToken"],
-      [111, aliceSession, { id: created.id, name: "Wrong endpoint" }, "tokens.renameOperationsToken"],
-      [112, aliceSession, { id: created.id }, "tokens.revokeOperationsToken"],
     ] as const) {
       await expect(runtime.mutation(context, request(mutationMessage(id, String(id), args, ref))))
         .rejects.toMatchObject({ code: "not_found" });
@@ -269,8 +275,8 @@ describe("Identity-bound MCP owner tokens", () => {
       metadata: { device: "mac", color: "blue", generation: 2n },
     }]);
     expect(unchanged[0]).not.toHaveProperty("token");
-    expect(await runtime.authenticateMcpToken("agent", created.token, "after-isolation-checks"))
-      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+    expect(await runtime.authenticateCredential(created.token, "after-isolation-checks"))
+      .toMatchObject({ identity: created.identity, tokenId: created.id });
 
     await runtime.mutation(aliceSession, request(mutationMessage(
       114,
@@ -280,7 +286,7 @@ describe("Identity-bound MCP owner tokens", () => {
     )));
     expect(lifecycleTransitions()).toHaveLength(5);
     expect(lifecycleTransitions().at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
-    await expect(runtime.authenticateMcpToken("agent", created.token, "after-revoke"))
+    await expect(runtime.authenticateCredential(created.token, "after-revoke"))
       .rejects.toMatchObject({ code: "unauthenticated" });
 
     const server = serve({ runtime, port: 0 });
@@ -296,26 +302,13 @@ describe("Identity-bound MCP owner tokens", () => {
   });
 
   test("stores exact immutable grants and enforces explicit authenticated, any-of, and all-of policy", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-mcp-token-scopes-"));
-    const alice = await user(runtime, "scoped-alice");
+    const { engine, runtime } = fixture(databasePath("ackerdb-credential-scopes-"));
+    const alice = await user(runtime, "scoped-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
 
-    expect(scopedAuth.scopes.values).toEqual(["orders.all", "orders.get", "reports.all"]);
-    expect(Object.isFrozen(scopedAuth.scopes.values)).toBe(true);
-    expect(scopedAuth.scopes.check("orders.get", "scope")).toBe("orders.get");
-    expect(() => scopedAuth.scopes.check("orders.create", "scope")).toThrow(
-      "expected one of",
-    );
-    // Scope vocabulary validation belongs to the provider now, not the endpoint.
-    expect(() => mcpAuth({ name: "empty_scopes", scopes: [] } as never)).toThrow(
-      "non-empty array",
-    );
-    expect(() => mcpAuth({ name: "duplicate_scopes", scopes: ["read", "read"] } as never))
-      .toThrow("duplicate");
-    expect(() => mcpAuth({ name: "null_scopes", scopes: null } as never)).toThrow(
-      "non-empty array",
-    );
+    // Tool access requirements share the one structural shape every
+    // function's `scopes` uses; malformed policies fail at declaration.
     const policyProbe = query({
       description: "Runtime validation cannot be bypassed by a cast.",
       access: "public",
@@ -323,35 +316,17 @@ describe("Identity-bound MCP owner tokens", () => {
       returns: v.object({}),
       handler: () => ({}),
     });
-    const invalidEndpoint = (name: string, scopes: unknown, access: unknown) => mcpDeclaration({
+    const invalidEndpoint = (name: string, access: unknown) => mcpDeclaration({
       name,
-      auth: mcpAuth({
-        name,
-        ...(scopes === undefined ? {} : { scopes }),
-      } as never),
       path: `/${name}`,
       tools: { runtime_policy: { fn: policyProbe, access } },
     } as never);
-    expect(() => invalidEndpoint(
-      "runtime_invalid_scope",
-      ["orders.get"],
-      { anyOf: ["orders.create"] },
-    )).toThrow("undeclared scope");
-    expect(() => invalidEndpoint(
-      "runtime_ambiguous_scope",
-      ["orders.get"],
-      ["orders.get"],
-    )).toThrow("must be public, authenticated");
-    expect(() => invalidEndpoint(
-      "runtime_empty_scope_policy",
-      ["orders.get"],
-      { allOf: [] },
-    )).toThrow("at least one scope");
-    expect(() => invalidEndpoint(
-      "runtime_scope_free_policy",
-      undefined,
-      { anyOf: ["orders.get"] },
-    )).toThrow("declares none");
+    expect(() => invalidEndpoint("runtime_ambiguous_scope", ["orders.get"]))
+      .toThrow("must be public, authenticated");
+    expect(() => invalidEndpoint("runtime_empty_scope_policy", { allOf: [] }))
+      .toThrow("non-empty array of unique scope strings");
+    expect(() => invalidEndpoint("runtime_two_kinds", { anyOf: ["a"], allOf: ["b"] }))
+      .toThrow("exactly one of anyOf or allOf");
 
     await expect(runtime.mutation(aliceSession, request(mutationMessage(
       19,
@@ -359,7 +334,7 @@ describe("Identity-bound MCP owner tokens", () => {
       { name: "No null sentinel", scopes: null },
       "tokens.createScopedToken",
     )))).rejects.toMatchObject({ code: "validation" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 0n });
 
     const created = (await runtime.mutation(aliceSession, request(mutationMessage(
@@ -367,20 +342,14 @@ describe("Identity-bound MCP owner tokens", () => {
       "20",
       { name: "Least privilege", scopes: ["orders.get"] },
       "tokens.createScopedToken",
-    )))).value as {
-      readonly id: string;
-      readonly token: string;
-      readonly scopes: readonly string[];
-    };
+    )))).value as CreatedValue;
     expect(created.scopes).toEqual(["orders.get"]);
     expect(Object.isFrozen(created.scopes)).toBe(true);
-    const principal = await runtime.authenticateMcpToken(
-      "scoped",
-      created.token,
-      "scope-auth",
-    );
+    const principal = await runtime.authenticateCredential(created.token, "scope-auth") as UserPrincipal;
     expect(principal.scopes).toEqual(["orders.get"]);
     expect(Object.isFrozen(principal.scopes)).toBe(true);
+    expect(principal.issuer).toBe(CREDENTIAL_ISSUER);
+    expect(principal.subject).toBe(created.id);
 
     const invoke = (tool: string, current = principal) => runtime.runMcpTool({
       id: `scope-${tool}`,
@@ -439,11 +408,10 @@ describe("Identity-bound MCP owner tokens", () => {
       request(queryMessage(22, "tokens.listScopedTokens")),
     ) as readonly [{ readonly scopes: readonly string[] }];
     expect(listed[0].scopes).toEqual(["orders.get", "reports.all"]);
-    const expanded = await runtime.authenticateMcpToken(
-      "scoped",
+    const expanded = await runtime.authenticateCredential(
       created.token,
       "scope-auth-expanded",
-    );
+    ) as UserPrincipal;
     expect(await invoke("read_reports", expanded)).toMatchObject({
       structuredContent: { status: "reports" },
     });
@@ -477,11 +445,10 @@ describe("Identity-bound MCP owner tokens", () => {
       { id: created.id, scopes: [] },
       "tokens.updateScopedToken",
     )));
-    const emptyPrincipal = await runtime.authenticateMcpToken(
-      "scoped",
+    const emptyPrincipal = await runtime.authenticateCredential(
       created.token,
       "scope-auth-empty",
-    );
+    ) as UserPrincipal;
     expect(emptyPrincipal.scopes).toEqual([]);
     expect(await invoke("authenticated_status", emptyPrincipal)).toMatchObject({
       structuredContent: { status: "authenticated" },
@@ -490,21 +457,23 @@ describe("Identity-bound MCP owner tokens", () => {
       code: "unauthorized",
     });
     expect(engine.reader.query(
-      "SELECT scopes FROM _ackerdb_mcp_tokens WHERE token_id = ?",
+      "SELECT scopes FROM _ackerdb_credentials WHERE token_id = ?",
     ).get(created.id)).toEqual({ scopes: "[]" });
+    // A grant persisted outside the vocabulary can never authorize anything:
+    // the intersection with the issuer's declared grant drops it.
     engine.writer.query(
-      "UPDATE _ackerdb_mcp_tokens SET scopes = ? WHERE token_id = ?",
+      "UPDATE _ackerdb_credentials SET scopes = ? WHERE token_id = ?",
     ).run(encode(["orders.create"]), created.id);
-    await expect(runtime.authenticateMcpToken(
-      "scoped",
+    const undeclared = await runtime.authenticateCredential(
       created.token,
       "scope-auth-undeclared-persisted",
-    )).rejects.toMatchObject({ code: "unauthenticated" });
+    ) as UserPrincipal;
+    expect(undeclared.scopes).toEqual([]);
   });
 
   test("filters discovery and reauthorizes every HTTP call against the current exact grant", async () => {
-    const { runtime } = fixture(databasePath("ackerdb-mcp-discovery-"));
-    const alice = await user(runtime, "discovery-alice");
+    const { runtime } = fixture(databasePath("ackerdb-credential-discovery-"));
+    const alice = await user(runtime, "discovery-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "discovery-alice-session");
     await runtime.openSession(aliceSession);
     const created = (await runtime.mutation(aliceSession, request(mutationMessage(
@@ -512,7 +481,7 @@ describe("Identity-bound MCP owner tokens", () => {
       "30",
       { name: "Least privilege", scopes: ["orders.get"] },
       "tokens.createScopedToken",
-    )))).value as { readonly id: string; readonly token: string };
+    )))).value as CreatedValue;
 
     const server = serve({ runtime, port: 0 });
     trackCleanup(async () => server.drain());
@@ -598,7 +567,7 @@ describe("Identity-bound MCP owner tokens", () => {
     });
     expect(malformedBatch.status).toBe(400);
 
-    const invalidToken = `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
+    const invalidToken = `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`;
     const invalid = await rpc(base, scopedMcp.path, "tools/list", {}, invalidToken);
     expect(invalid.status).toBe(401);
     expect(invalid.headers.get("www-authenticate")).toBe(
@@ -670,7 +639,7 @@ describe("Identity-bound MCP owner tokens", () => {
   });
 
   test("preserves same-timestamp creation order across restart", async () => {
-    const path = databasePath("ackerdb-mcp-token-order-");
+    const path = databasePath("ackerdb-credential-order-");
     const timestamp = Date.now();
     const now = () => timestamp;
     const first = fixture(path, undefined, {}, { now });
@@ -687,12 +656,12 @@ describe("Identity-bound MCP owner tokens", () => {
     )).value as { readonly id: string };
     const firstId = "z".repeat(22);
     const secondId = "A".repeat(22);
-    first.engine.writer.query("UPDATE _ackerdb_mcp_tokens SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _ackerdb_credentials SET token_id = ? WHERE token_id = ?")
       .run(firstId, firstCreated.id);
-    first.engine.writer.query("UPDATE _ackerdb_mcp_tokens SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _ackerdb_credentials SET token_id = ? WHERE token_id = ?")
       .run(secondId, secondCreated.id);
     expect(first.engine.reader.query(
-      "SELECT creation_seq, token_id FROM _ackerdb_mcp_tokens ORDER BY creation_seq",
+      "SELECT creation_seq, token_id FROM _ackerdb_credentials ORDER BY creation_seq",
     ).all()).toEqual([
       { creation_seq: 1n, token_id: firstId },
       { creation_seq: 2n, token_id: secondId },
@@ -714,8 +683,8 @@ describe("Identity-bound MCP owner tokens", () => {
     ]);
   });
 
-  test("survives restart, authenticates only its bound endpoint, and cannot self-administer", async () => {
-    const path = databasePath("ackerdb-mcp-token-auth-");
+  test("survives restart as a first-class identity with bounded delegation", async () => {
+    const path = databasePath("ackerdb-credential-auth-");
     const verifierCalls: string[] = [];
     const permissiveVerifier: CredentialVerifier = {
       revocationBound: { kind: "token-expiration" },
@@ -740,39 +709,41 @@ describe("Identity-bound MCP owner tokens", () => {
     const created = (await first.runtime.mutation(
       firstSession,
       request(mutationMessage(1, "10", { name: "Codex", metadata: { host: "codex" } })),
-    )).value as { readonly token: string; readonly id: string };
+    )).value as CreatedValue;
     const secondCreated = (await first.runtime.mutation(
       firstSession,
       request(mutationMessage(2, "11", { name: "Claude", metadata: { host: "claude" } })),
-    )).value as { readonly token: string; readonly id: string };
+    )).value as CreatedValue;
     await first.close();
 
     const second = fixture(path, permissiveVerifier);
     const secondAlice = await user(second.runtime, "alice");
     expect(secondAlice.identity).toBe(firstAlice.identity);
-    const principal = await second.runtime.authenticateMcpToken(
-      "agent",
+    const principal = await second.runtime.authenticateCredential(
       created.token,
-      "test-mcp-auth",
+      "test-credential-auth",
     );
     expect(principal).toEqual({
-      kind: "mcp",
-      identity: firstAlice.identity,
-      mcp: "agent",
-      tokenId: created.id,
+      kind: "user",
+      identity: created.identity as never,
       scopes: [],
+      issuer: CREDENTIAL_ISSUER,
+      subject: created.id,
+      claims: {},
+      expiresAt: Number.POSITIVE_INFINITY,
+      tokenId: created.id,
     });
-    expect(await second.runtime.authenticateMcpToken(
-      "agent",
+    expect(await second.runtime.authenticateCredential(
       secondCreated.token,
-      "test-second-mcp-auth",
-    )).toEqual({
-      kind: "mcp",
-      identity: firstAlice.identity,
-      mcp: "agent",
+      "test-second-credential-auth",
+    )).toMatchObject({
+      kind: "user",
+      identity: secondCreated.identity,
       tokenId: secondCreated.id,
       scopes: [],
     });
+    // Credentials are not endpoint-bound: an unknown tool on another endpoint
+    // is a not-found, not a provider mismatch.
     await expect(second.runtime.runMcpTool({
       id: "wrong-endpoint",
       authorization: second.runtime.authorizeMcpTool(
@@ -782,14 +753,13 @@ describe("Identity-bound MCP owner tokens", () => {
       ),
       args: { value: "forbidden" },
       principal,
-    })).rejects.toMatchObject({ code: "unauthorized" });
-    await expect(second.runtime.runProcedure({
-      id: 1,
-      address: "security.normalProcedure",
-      args: {},
-      principal,
-      respond: () => new Response(),
-    })).rejects.toMatchObject({ code: "unauthorized" });
+    })).rejects.toMatchObject({ code: "not_found" });
+    // Agents are first-class users: the client API and ordinary
+    // authenticated functions serve them like any other identity.
+    const agentSession = session(principal as UserPrincipal, "agent-session");
+    await second.runtime.openSession(agentSession);
+    expect(await second.runtime.query(agentSession, request(queryMessage(50)))).toEqual([]);
+    // A vault credential can never fall through to an application verifier.
     await expect(verifyBearerCredential(created.token, permissiveVerifier)).rejects.toMatchObject({
       code: "unauthenticated",
     });
@@ -806,7 +776,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(await called.json()).toMatchObject({
       result: {
         structuredContent: {
-          principal: `mcp:${firstAlice.identity}`,
+          principal: `user:${created.identity}`,
           record: "ackerdb://records/1",
           tokenId: created.id,
         },
@@ -818,17 +788,19 @@ describe("Identity-bound MCP owner tokens", () => {
     }, secondCreated.token);
     expect(secondCalled.status).toBe(200);
     expect(second.engine.reader.query("SELECT owner, value FROM records ORDER BY id").all()).toEqual([
-      { owner: firstAlice.identity, value: "delegated-codex" },
-      { owner: firstAlice.identity, value: "delegated-claude" },
+      { owner: created.identity, value: "delegated-codex" },
+      { owner: secondCreated.identity, value: "delegated-claude" },
     ]);
 
-    for (const [endpoint, token] of [
-      ["/operations/mcp", created.token],
-      ["/agent/mcp", `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`],
-      ["/agent/mcp", "ackerdb_mcp.bad"],
-      ["/agent/mcp", "external-provider-token"],
+    // The same credential works on every endpoint; only tools gate access.
+    const crossEndpoint = await rpc(base, "/operations/mcp", "ping", {}, created.token);
+    expect(crossEndpoint.status).toBe(200);
+    for (const token of [
+      `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`,
+      "ackerdb_credential.bad",
+      "external-provider-token",
     ] as const) {
-      const rejected = await rpc(base, endpoint, "ping", {}, token);
+      const rejected = await rpc(base, "/agent/mcp", "ping", {}, token);
       expect(rejected.status).toBe(401);
     }
     expect(verifierCalls).toEqual([]);
@@ -838,7 +810,7 @@ describe("Identity-bound MCP owner tokens", () => {
       arguments: {},
     }, created.token);
     expect(await selfAdmin.json()).toMatchObject({ result: { isError: true } });
-    expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 2n });
 
     const anonymous = await rpc(base, "/agent/mcp", "tools/call", {

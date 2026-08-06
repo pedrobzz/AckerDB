@@ -804,6 +804,7 @@ describe("Runtime telemetry acceptance", () => {
     const app = harness(false);
     const principal = Object.freeze({
       kind: "user",
+      scopes: Object.freeze([]),
       identity: 42n as Identity,
       issuer: "https://identity.test",
       subject: "private-subject",

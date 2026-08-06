@@ -509,12 +509,6 @@ export class RuntimeHttp {
   }
 
   private claim(request: RuntimeExternalRequest, kind: ExposedHttpKind): ClaimedHttpRequest {
-    if (request.principal.kind === "mcp") {
-      throw new AckerDBError(
-        "unauthorized",
-        "MCP credentials cannot call AckerDB application functions",
-      );
-    }
     const provenance = claimHttpRequestProvenance(request);
     return {
       requestBytes: this.options.admittedRequestBytes(

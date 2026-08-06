@@ -29,10 +29,12 @@ import {
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpBuilder,
-  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
+import {
+  credentials,
+  systemCredentials,
+} from "../../src/auth/credential-context.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -45,12 +47,12 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 
-const action = v.enum("SystemMcpTokenAction", [
+const action = v.enum("SystemCredentialAction", [
   "create_agent",
   "create_scoped",
   "list_agent",
   "revoke_agent",
-  "revoke_operations",
+  "revoke_missing",
 ]);
 
 const schema = defineSchema({
@@ -61,13 +63,7 @@ const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const agentAuth = typedMcpAuth({ name: "agent" });
-const operationsAuth = typedMcpAuth({ name: "operations" });
-const scopedAuth = typedMcpAuth({
-  name: "scoped",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
-});
+const VOCABULARY = ["orders.all", "orders.get", "reports.all"] as const;
 
 let systemResult: unknown = null;
 
@@ -75,8 +71,10 @@ async function attemptSystemAdministration(
   ctx: ProcedureCtx<typeof schema>,
 ): Promise<{ readonly status: string }> {
   const done = await ctx.tx((tx) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    agentAuth.systemTokens.list(tx, ctx.auth.identity);
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
+    systemCredentials.list(tx, ctx.auth.identity);
     return { status: "unexpected" };
   });
   if (!done.ok) throw new Error("system administration unexpectedly failed");
@@ -93,20 +91,7 @@ const attemptFromMcp = typedProcedure({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   tools: { attempt_system_administration: { fn: attemptFromMcp } },
-});
-const operationsMcp = typedMcp({
-  name: "operations",
-  auth: operationsAuth,
-  path: "/operations/mcp",
-  tools: {},
-});
-const scopedMcp = typedMcp({
-  name: "scoped",
-  auth: scopedAuth,
-  path: "/scoped/mcp",
-  tools: {},
 });
 
 /** Backend-only fixture: an external user can queue work only for its own Identity. */
@@ -153,27 +138,27 @@ const declaredJobs = () => declareJobs({
         systemRunCount++;
         switch (args.action) {
           case "create_agent":
-            systemResult = agentAuth.systemTokens.create(ctx, args.identity, {
+            systemResult = systemCredentials.create(ctx, args.identity, {
               name: args.name ?? "",
               metadata: args.metadata,
             });
             return;
           case "create_scoped":
-            systemResult = scopedAuth.systemTokens.create(ctx, args.identity, {
+            systemResult = systemCredentials.create(ctx, args.identity, {
               name: args.name ?? "",
               metadata: args.metadata,
-              scopes: args.scopes as readonly NonNullable<typeof scopedAuth.scopes._type>[],
+              scopes: args.scopes as readonly string[],
             });
             return;
           case "list_agent":
-            systemResult = agentAuth.systemTokens.list(ctx, args.identity);
+            systemResult = systemCredentials.list(ctx, args.identity);
             return;
           case "revoke_agent":
-            agentAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+            systemCredentials.revoke(ctx, args.identity, args.tokenId ?? "");
             systemResult = null;
             return;
-          case "revoke_operations":
-            operationsAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+          case "revoke_missing":
+            systemCredentials.revoke(ctx, args.identity, "Q".repeat(22));
             systemResult = null;
         }
       },
@@ -184,17 +169,17 @@ const declaredJobs = () => declareJobs({
 const attempt = typedMutation({
   access: "public",
   args: { identity: v.identity() },
-  handler: (ctx, args) => agentAuth.systemTokens.list(ctx, args.identity),
+  handler: (ctx, args) => systemCredentials.list(ctx, args.identity),
 });
 
 const listOwned = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => agentAuth.tokens.list(ctx),
+  handler: (ctx) => credentials.list(ctx),
 });
 
 const modules = {
-  mcp: { agentMcp, operationsMcp, scopedMcp },
+  mcp: { agentMcp },
   ownerTokens: { listOwned },
   systemTokens: { attempt, attemptFromMcp, queue },
 };
@@ -239,6 +224,7 @@ function fixture(): { engine: Engine; runtime: Runtime } {
     engine,
     registry: new Registry(modules),
     telemetry: false,
+    scopes: VOCABULARY,
     jobs: declaredJobs(),
     now: () => jobsClock ?? Date.now(),
     limits: {
@@ -257,6 +243,7 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   const identity = await runtime.resolveIdentity({ issuer: "https://issuer.test/", subject });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject,
@@ -335,10 +322,10 @@ async function createSystemAgentToken(
   runtime: Runtime,
   owner: SessionRuntimeContext,
   id: number,
-): Promise<{ readonly id: string; readonly token: string }> {
+): Promise<{ readonly id: string; readonly identity: bigint; readonly token: string }> {
   const at = await queueJob(runtime, owner, id, "create_agent", { name: "Backend Codex" });
   expect(await runJobsAt(runtime, at)).toBe(1);
-  return systemResult as { readonly id: string; readonly token: string };
+  return systemResult as { readonly id: string; readonly identity: bigint; readonly token: string };
 }
 
 describe("system-managed MCP integration tokens", () => {
@@ -356,18 +343,17 @@ describe("system-managed MCP integration tokens", () => {
     expect(await runJobsAt(runtime, createAt)).toBe(1);
     const created = systemResult as {
       readonly id: string;
+      readonly identity: bigint;
       readonly token: string;
-      readonly mcp: string;
       readonly name: string;
       readonly metadata: Readonly<Record<string, unknown>>;
     };
     expect(created).toMatchObject({
-      mcp: "agent",
       name: "Backend Codex",
       metadata: { integration: "codex", generation: 1n },
     });
     expect(created).not.toHaveProperty("expiresAt");
-    expect(created.token).toMatch(/^ackerdb_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+    expect(created.token).toMatch(/^ackerdb_credential\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
     expect(await runJobsAt(runtime, createAt)).toBe(0);
     await runtime.subscribe(bobSession, request(subscribeMessage(90)));
     expect(publications.at(-1)).toMatchObject({
@@ -376,16 +362,16 @@ describe("system-managed MCP integration tokens", () => {
 
     const secret = created.token.split(".")[2]!;
     const stored = engine.reader.query(
-      "SELECT identity, mcp, secret_digest FROM _ackerdb_mcp_tokens WHERE token_id = ?",
-    ).get(created.id) as { identity: bigint; mcp: string; secret_digest: Uint8Array };
-    expect(stored.identity).toBe(bob.identity);
-    expect(stored.mcp).toBe("agent");
+      "SELECT identity, parent_identity, secret_digest FROM _ackerdb_credentials WHERE token_id = ?",
+    ).get(created.id) as { identity: bigint; parent_identity: bigint; secret_digest: Uint8Array };
+    expect(stored.identity).toBe(created.identity);
+    expect(stored.parent_identity).toBe(bob.identity);
     expect(Buffer.from(stored.secret_digest).toString("hex")).toBe(
       createHash("sha256").update(secret).digest("hex"),
     );
 
-    expect(await runtime.authenticateMcpToken("agent", created.token, "system-created"))
-      .toMatchObject({ identity: bob.identity, tokenId: created.id, scopes: [] });
+    expect(await runtime.authenticateCredential(created.token, "system-created"))
+      .toMatchObject({ identity: created.identity, tokenId: created.id, scopes: [] });
     const listAt = await queueJob(runtime, bobSession, 102, "list_agent");
     expect(await runJobsAt(runtime, listAt)).toBe(1);
     const listed = systemResult as readonly Record<string, unknown>[];
@@ -399,7 +385,7 @@ describe("system-managed MCP integration tokens", () => {
     });
     expect(await runJobsAt(runtime, revokeAt)).toBe(1);
     expect(publications.at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
-    await expect(runtime.authenticateMcpToken("agent", created.token, "system-revoked"))
+    await expect(runtime.authenticateCredential(created.token, "system-revoked"))
       .rejects.toMatchObject({ code: "unauthenticated" });
   });
 
@@ -409,7 +395,7 @@ describe("system-managed MCP integration tokens", () => {
     const bobSession = session(bob, "target-bob-session");
     await runtime.openSession(bobSession);
     const created = await createSystemAgentToken(runtime, bobSession, 111);
-    const delegated = await runtime.authenticateMcpToken("agent", created.token, "delegated");
+    const delegated = await runtime.authenticateCredential(created.token, "delegated");
 
     const alice = await user(runtime, "attacker-alice");
     const aliceSession = session(alice, "attacker-alice-session");
@@ -448,32 +434,31 @@ describe("system-managed MCP integration tokens", () => {
       args: {},
       principal: delegated,
     })).rejects.toMatchObject({ code: "unauthorized" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 1n });
   });
 
-  test("keeps system revocation bound to both endpoint and Identity", async () => {
+  test("keeps system revocation bound to the exact credential and Identity", async () => {
     const endpoint = fixture();
     const endpointOwner = await user(endpoint.runtime, "endpoint-owner");
     const endpointSession = session(endpointOwner, "endpoint-owner-session");
     await endpoint.runtime.openSession(endpointSession);
     const endpointToken = await createSystemAgentToken(endpoint.runtime, endpointSession, 121);
-    const wrongEndpointAt = await queueJob(
+    const wrongTokenAt = await queueJob(
       endpoint.runtime,
       endpointSession,
       122,
-      "revoke_operations",
-      { tokenId: endpointToken.id },
+      "revoke_missing",
+      {},
     );
     // The failed attempt settles as discarded; the runner never wedges.
-    expect(await runJobsAt(endpoint.runtime, wrongEndpointAt)).toBe(1);
+    expect(await runJobsAt(endpoint.runtime, wrongTokenAt)).toBe(1);
     expect(lastJobRow(endpoint.engine)).toMatchObject({ state: "discarded" });
     expect(lastJobRow(endpoint.engine).attemptsJson).toContain("not_found");
-    expect(await endpoint.runtime.authenticateMcpToken(
-      "agent",
+    expect(await endpoint.runtime.authenticateCredential(
       endpointToken.token,
-      "wrong-endpoint",
-    )).toMatchObject({ identity: endpointOwner.identity, tokenId: endpointToken.id });
+      "wrong-token",
+    )).toMatchObject({ identity: endpointToken.identity, tokenId: endpointToken.id });
 
     const identity = fixture();
     const bob = await user(identity.runtime, "identity-owner-bob");
@@ -489,11 +474,10 @@ describe("system-managed MCP integration tokens", () => {
     expect(await runJobsAt(identity.runtime, wrongIdentityAt)).toBe(1);
     expect(lastJobRow(identity.engine)).toMatchObject({ state: "discarded" });
     expect(lastJobRow(identity.engine).attemptsJson).toContain("not_found");
-    expect(await identity.runtime.authenticateMcpToken(
-      "agent",
+    expect(await identity.runtime.authenticateCredential(
       identityToken.token,
       "wrong-identity",
-    )).toMatchObject({ identity: bob.identity, tokenId: identityToken.id });
+    )).toMatchObject({ identity: identityToken.identity, tokenId: identityToken.id });
   });
 
   test("validates exact declared scopes before system create mutates storage", async () => {
@@ -508,7 +492,7 @@ describe("system-managed MCP integration tokens", () => {
     expect(await runJobsAt(runtime, at)).toBe(1);
     expect(lastJobRow(engine)).toMatchObject({ state: "discarded" });
     expect(lastJobRow(engine).attemptsJson).toContain("validation");
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 0n });
   });
 });

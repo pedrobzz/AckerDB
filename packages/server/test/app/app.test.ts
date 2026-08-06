@@ -23,7 +23,8 @@ describe("defineApp", () => {
     expect(app.plugins).toEqual({});
     expect(Object.isFrozen(app.plugins)).toBe(true);
     expect(isApp(app)).toBe(true);
-    expect(Object.keys(app)).toEqual(["schema", "plugins"]);
+    expect(Object.keys(app)).toEqual(["schema", "plugins", "scopes"]);
+    expect(app.scopes).toBeUndefined();
     expect(Object.isFrozen(app)).toBe(true);
     expect(Reflect.set(app, "schema", defineSchema({}))).toBe(false);
     expect(app.schema).toBe(schema);
