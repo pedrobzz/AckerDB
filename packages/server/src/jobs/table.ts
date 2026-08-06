@@ -21,6 +21,7 @@ export const JOBS_GUARDED_COLUMNS: ReadonlySet<string> = new Set([
   "argsHash",
   "attempt",
   "attemptsJson",
+  "stepsJson",
   "outputJson",
   "leaseToken",
   "leaseUntil",
@@ -47,6 +48,13 @@ export function buildJobsTable(): TableDef {
     attempt: v.int(),
     /** JSON attempt history: startedAt, settledAt, outcome, error, durationMs. */
     attemptsJson: v.string(),
+    /**
+     * The step journal (ADR-0022): completed steps' identities and recorded
+     * results, replayed on resume so an attempt re-runs only unrecorded work.
+     * Nullable so adding it to an existing database stays shape-safe; null
+     * reads as an empty journal. It lives and dies with its row.
+     */
+    stepsJson: v.string().nullable(),
     /** Canonical-encoded settle outcome, kept for dedup-window reads. */
     outputJson: v.string().nullable(),
     /** Owner token of the running attempt; a settle with a stale token discards itself. */

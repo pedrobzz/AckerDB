@@ -418,6 +418,7 @@ export class Runtime implements RuntimePort {
     this.jobs = new RuntimeJobs({
       declared: options.jobs ?? [],
       executor: this.functions,
+      registry: this.registry,
       reads: this.reads,
       system: this.system,
       telemetry: this.telemetry,
