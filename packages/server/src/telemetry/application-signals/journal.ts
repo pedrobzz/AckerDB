@@ -86,12 +86,16 @@ const LOG_LEVELS: readonly ApplicationLogLevel[] = Object.freeze([
   "error",
 ]);
 
+const DAY_MS = 86_400_000;
+
 export class TelemetryJournal {
   readonly store: TelemetryStore;
   readonly limits: TelemetryJournalLimits;
   private readonly database: Database;
   private readonly deleteExpiredLog: Statement;
   private readonly deleteExpiredAnalytics: Statement;
+  private readonly deleteExpiredRollups: Statement;
+  private readonly upsertAnalyticsRollup: Statement;
   private readonly queue: QueuedRecord[] = [];
   private queuedBytes = 0;
   private persistedRecords = 0;
@@ -156,6 +160,11 @@ export class TelemetryJournal {
             deleteExpired: (cutoffMs: number, limit: number) =>
               this.expire(this.deleteExpiredAnalytics, [cutoffMs, limit]),
           }),
+          Object.freeze({
+            retention: "rollups" as const,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.deleteExpiredRollups.all(cutoffMs, limit).length,
+          }),
         ];
       },
     });
@@ -178,6 +187,28 @@ export class TelemetryJournal {
         LIMIT ?
       )
       RETURNING payload_bytes AS bytes
+    `);
+    this.deleteExpiredRollups = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_analytics_rollup
+      WHERE rowid IN (
+        SELECT rowid FROM _ackerdb_telemetry_analytics_rollup
+        WHERE day < ?
+        LIMIT ?
+      )
+      RETURNING rowid
+    `);
+    // Exact recompute of one (day, event) bucket from raw rows — count and
+    // count-distinct-Identity stay honest under retroactive retention and
+    // eviction, and the rollup doubles as the distinct-event-name registry.
+    this.upsertAnalyticsRollup = this.database.query(`
+      INSERT INTO _ackerdb_telemetry_analytics_rollup (day, event, count, uniques)
+      SELECT ?1, ?2, COUNT(*), COUNT(DISTINCT identity)
+      FROM _ackerdb_telemetry_journal
+      WHERE kind = 'analytics' AND event = ?2
+        AND timestamp >= ?1 AND timestamp < ?1 + ${DAY_MS}
+      ON CONFLICT(day, event) DO UPDATE SET
+        count = excluded.count,
+        uniques = excluded.uniques
     `);
     const retained = this.database.query(`
       SELECT COUNT(*) AS records, COALESCE(SUM(payload_bytes), 0) AS bytes
@@ -280,8 +311,13 @@ export class TelemetryJournal {
     };
     try {
       this.database.transaction(() => {
+        const touchedBuckets = new Map<string, { readonly day: number; readonly event: string }>();
         for (const item of batch) {
           const record = item.record;
+          if (record.kind === "analytics") {
+            const day = Math.floor(record.timestamp / DAY_MS) * DAY_MS;
+            touchedBuckets.set(`${day}\0${record.event}`, { day, event: record.event });
+          }
           const inserted = insert.run(
             record.processGeneration,
             record.sequence,
@@ -301,6 +337,9 @@ export class TelemetryJournal {
           this.lastRecordId = inserted.lastInsertRowid as bigint;
           this.storedRecords++;
           this.storedBytes += item.bytes;
+        }
+        for (const bucket of touchedBuckets.values()) {
+          this.upsertAnalyticsRollup.run(bucket.day, bucket.event);
         }
         this.store.maintain();
         this.enforceRetention();
@@ -651,6 +690,15 @@ function createJournalSchema(database: Database): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_identity
     ON _ackerdb_telemetry_journal (identity, timestamp) WHERE identity IS NOT NULL
+  `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_analytics_rollup (
+      day INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      uniques INTEGER NOT NULL,
+      PRIMARY KEY (day, event)
+    )
   `);
   database.exec(`
     CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
