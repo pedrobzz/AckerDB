@@ -416,6 +416,18 @@ export {
   type TelemetrySpanStoreSnapshot,
 } from "./telemetry/storage/spans.ts";
 export {
+  ERROR_FINGERPRINT_ALGO_VERSION,
+  fingerprintError,
+  parameterizeErrorMessage,
+  type FingerprintedError,
+} from "./telemetry/errors/fingerprint.ts";
+export {
+  TelemetryErrorStore,
+  type TelemetryErrorIngest,
+  type TelemetryErrorStoreOptions,
+  type TelemetryErrorStoreSnapshot,
+} from "./telemetry/errors/store.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,
