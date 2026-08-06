@@ -4,7 +4,21 @@ export {
   type App,
   type AppPluginCapabilities,
   type AppSchema,
+  type AppScope,
 } from "./app/definition.ts";
+export {
+  isScopeGrant,
+  principalScopes,
+  RESERVED_SCOPE_PREFIXES,
+  validateScopeVocabulary,
+  type NormalizedScopeRequirement,
+  type ScopeRequirement,
+  type ScopeValues,
+} from "./auth/access-policy.ts";
+export {
+  effectiveChildScopes,
+  issueChildScopes,
+} from "./auth/child-credentials.ts";
 export {
   definePluginContract,
   pluginMutation,
@@ -322,6 +336,7 @@ export {
   type Principal,
   type PrincipalInvalidation,
   type RevocationBound,
+  type ScopeResolver,
   type SystemPrincipal,
   type UserPrincipal,
   type VerifiedCredential,

@@ -7,6 +7,7 @@ import {
   type CredentialVerifier,
   type IdentityResolver,
   type PrincipalInvalidation,
+  type ScopeResolver,
 } from "./credentials.ts";
 import {
   subscribeAuthInvalidation,
@@ -32,6 +33,7 @@ export interface AcquireAuthLeaseOptions {
   readonly credential: Credential;
   readonly verifier?: CredentialVerifier;
   readonly resolveIdentity: IdentityResolver;
+  readonly resolveScopes?: ScopeResolver;
   readonly signal?: AbortSignal;
   readonly revocationDeadlineMs: number;
   readonly clock?: AuthLeaseClock;
@@ -150,6 +152,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
       undefined,
       options.resolveIdentity,
       () => clock.now(),
+      options.resolveScopes,
     );
     throw new Error("unreachable credential verification result");
   }
@@ -265,6 +268,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         verifier,
         (account) => options.resolveIdentity(account, controller.signal),
         () => clock.now(),
+        options.resolveScopes,
       ),
       interrupted,
     ]);

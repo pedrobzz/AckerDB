@@ -2,20 +2,29 @@ import type { Principal } from "../auth/credentials.ts";
 import type { EnumValidator } from "../validation/composites.ts";
 import { v } from "../validation/v.ts";
 import { AckerDBError } from "../shared/errors.ts";
+import {
+  isScopeGrant,
+  isScopeValue,
+  MAX_APP_SCOPES,
+  MAX_SCOPE_BYTES,
+  type ScopeRequirement,
+} from "../auth/access-policy.ts";
 
-export const MAX_MCP_SCOPES = 128;
-export const MAX_MCP_SCOPE_BYTES = 256;
+export const MAX_MCP_SCOPES = MAX_APP_SCOPES;
+export const MAX_MCP_SCOPE_BYTES = MAX_SCOPE_BYTES;
 
 export type McpScopeValues = readonly [string, ...string[]];
 export type McpScopeDescriptor<Scope extends string = string> = EnumValidator<Scope>;
 
+/**
+ * The MCP tool policy is the general access shape: the built-in levels plus
+ * the shared `ScopeRequirement` every function may declare. Unification with
+ * Identity scopes deletes nothing here yet — it makes this an alias.
+ */
 export type McpToolAccessPolicy<Scope extends string = never> =
   | "public"
   | "authenticated"
-  | ([Scope] extends [never]
-    ? never
-    : { readonly anyOf: readonly [Scope, ...Scope[]] }
-      | { readonly allOf: readonly [Scope, ...Scope[]] });
+  | ([Scope] extends [never] ? never : ScopeRequirement<Scope>);
 
 export type NormalizedMcpToolAccessPolicy =
   | Readonly<{ kind: "public" }>
@@ -23,25 +32,7 @@ export type NormalizedMcpToolAccessPolicy =
   | Readonly<{ kind: "anyOf"; scopes: readonly string[] }>
   | Readonly<{ kind: "allOf"; scopes: readonly string[] }>;
 
-const utf8 = new TextEncoder();
 const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
-
-function validScopeValue(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.trim() !== "" &&
-    utf8.encode(value).byteLength <= MAX_MCP_SCOPE_BYTES
-  );
-}
-
-export function isMcpScopeGrant(value: unknown): value is readonly string[] {
-  return (
-    Array.isArray(value) &&
-    value.length <= MAX_MCP_SCOPES &&
-    value.every(validScopeValue) &&
-    new Set(value).size === value.length
-  );
-}
 
 /** Build the one validator descriptor used by declaration types and every runtime scope check. */
 export function createMcpScopeDescriptor(
@@ -55,7 +46,7 @@ export function createMcpScopeDescriptor(
   if (value.length > MAX_MCP_SCOPES) {
     throw new TypeError(`MCP scopes must contain at most ${MAX_MCP_SCOPES} values`);
   }
-  if (value.some((scope) => !validScopeValue(scope))) {
+  if (value.some((scope) => !isScopeValue(scope))) {
     throw new TypeError(
       `each MCP scope must be a non-empty string of at most ${MAX_MCP_SCOPE_BYTES} UTF-8 bytes`,
     );
