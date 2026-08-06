@@ -226,6 +226,22 @@ describe("TelemetryJournal", () => {
     const second = encode(timestamped(2n, "info", NOW - DAY_MS));
     insert.run("legacy", 1, NOW - DAY_MS, "log", "info", Buffer.byteLength(first), first);
     insert.run("legacy", 2, NOW - DAY_MS, "log", "info", Buffer.byteLength(second), second);
+    // A pre-upgrade exporter that had delivered id 1 but not id 2.
+    legacy.exec(`
+      CREATE TABLE _ackerdb_telemetry_consumers (
+        name TEXT PRIMARY KEY,
+        cursor INTEGER NOT NULL,
+        exported_records INTEGER NOT NULL,
+        skipped_unsupported INTEGER NOT NULL,
+        skipped_identity INTEGER NOT NULL,
+        evicted_records INTEGER NOT NULL,
+        failures INTEGER NOT NULL,
+        timed_out INTEGER NOT NULL
+      )
+    `);
+    legacy.query(`
+      INSERT INTO _ackerdb_telemetry_consumers VALUES ('exporter', 1, 1, 0, 0, 0, 0, 0)
+    `).run();
     legacy.close(false);
 
     const journal = createJournal({ path, now: () => NOW });
@@ -236,6 +252,19 @@ describe("TelemetryJournal", () => {
     const entries = journal.readBatch(0n, 10);
     expect(entries.map((entry) => entry.sequence)).toEqual([3n]);
     expect(entries[0]!.id).toBe(3n);
+
+    // The stored cursor observes the upgrade drop as eviction, never id
+    // reuse: id 2 (dropped, undelivered) counts; id 1 (delivered) does not.
+    const batch = journal.consumerBatch("exporter", 10);
+    expect(batch.records.map((entry) => entry.id)).toEqual([3n]);
+    expect(batch.consumer.evictedRecords).toBe(1);
+    // Advancing over the delivered interval adds nothing on top: the
+    // upgrade-drop and cursor-interval mechanisms are one accounting model.
+    expect(journal.advanceConsumer("exporter", 3n, { exportedRecords: 1 })).toMatchObject({
+      evictedRecords: 1,
+      exportedRecords: 2,
+    });
+
     await journal.drain();
     journal.store.close();
   });
