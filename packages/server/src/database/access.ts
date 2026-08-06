@@ -720,6 +720,19 @@ function guardedJobsWriter(
                 `${JOBS_TABLE}.patch: the row is running; cancel it before editing its scheduling intent`,
               );
             }
+            // A non-empty step journal binds the row to the arguments its
+            // recorded steps ran with: replaying old results against new args
+            // would produce a mixed run that never existed. An unreadable
+            // journal counts as non-empty — fail closed. Fresh args mean a
+            // fresh row: delete and enqueue.
+            if (input["argsJson"] !== undefined && current !== null) {
+              const journal = (current as { stepsJson?: unknown }).stepsJson;
+              if (typeof journal === "string" && journal.trim() !== "" && journal.trim() !== "[]") {
+                throw new ValidationError(
+                  `${JOBS_TABLE}.patch: the step journal binds this row to its original arguments; delete the row and enqueue fresh`,
+                );
+              }
+            }
             let patch = input;
             if (typeof input["argsJson"] === "string") {
               // Canonicalize before hashing so an equivalent encoding cannot

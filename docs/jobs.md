@@ -155,23 +155,34 @@ export const renewSubscription = job({
   are inline steps: the closure's return value is the journaled result and
   must be wire-representable. Inline mutations get the same atomic
   journal-plus-writes commit.
-- `step.sleep(name, durationMs)` settles the attempt back to pending with a
-  future due time and **no attempt increment** — sleeping is not failing, and
-  retry budget stays untouched. Awaiters resolve with
-  `{ ok: false, state: "pending", nextRetryAt }` at the suspend; `reschedule`
-  moves the wake time.
+- `step.sleep(name, durationMs)` suspends in **one writer transaction**:
+  journal entry, pending state, wake time, lease release, and **no attempt
+  increment** — sleeping is not failing, retry budget stays untouched, and no
+  crash window exists between "recorded" and "suspended". Awaiters resolve
+  with `{ ok: false, state: "pending", nextRetryAt }` at the suspend. The
+  thrown signal only unwinds the handler; code that catches it is a stale
+  attempt with cancel's semantics — transactional steps refuse outright, a
+  procedure closure may still run but can never record, and the late settle
+  is discarded. On replay a recorded sleep is satisfied by being claimed at
+  all: the row's due time is the single authority, so `reschedule` genuinely
+  moves the wake in either direction.
 
 **The name is a contract: same name, same meaning.** Renaming a step means
 "run it again for in-flight runs" — safe only for idempotent steps. A
 breaking change versions the job, not the step: declare the new shape as a
 new definition beside the old one, drain old runs (observable through the
-reactive rows), then delete the old definition. Three mismatches refuse
-instead of guessing, settling the run as discarded with a typed error and
-**without consulting the retry policy** — retrying into unchanged code cannot
-fix code: a duplicate name in one run, a kind change under a name, and a
-changed args hash under a `step.run` name. The args-hash check doubles as the
-determinism tripwire: replayed args derive entirely from journaled state, so
-a difference proves code drift or nondeterminism outside steps.
+reactive rows), then delete the old definition. Step refusals settle the run
+as discarded with a typed error and **without consulting the retry policy** —
+retrying into unchanged code cannot fix code: a duplicate name in one run, a
+kind change under a name, a changed args hash under a `step.run` name, an
+unreadable journal (fail closed — the bytes stay on the row as evidence,
+never replayed as if empty), and a journal past its finite bounds (1,000
+steps / 1 MiB — record smaller results or use child jobs). The args-hash
+check doubles as the determinism tripwire: replayed args derive entirely
+from journaled state, so a difference proves code drift or nondeterminism
+outside steps. A non-empty journal also binds the row to its original
+arguments: patching `argsJson` refuses, because old step results under new
+args would be a run that never existed — delete the row and enqueue fresh.
 
 The operator `retry` verb **resumes** from the journal — that is its only
 meaning. A poisoned journal's remedy is deleting the row and enqueueing

@@ -48,9 +48,18 @@ from journaled state and can differ only through drift or nondeterminism.
 
 Resume is the only meaning of retry. The operator verb replays the journal;
 a poisoned journal's remedy is deleting the row and enqueueing fresh through
-the doors that already exist. `step.sleep(name, ms)` settles the attempt
-back to pending with a future due time and no attempt increment — sleeping
-is not failing — reusing the runner's scheduling machinery whole. Retry
+the doors that already exist. `step.sleep(name, ms)` settles the attempt in
+one writer transaction — journal entry, pending state, wake time, lease
+release, and no attempt increment, so no crash window can turn a suspension
+into a failed attempt — and the thrown signal only unwinds the handler:
+catching it leaves a stale attempt with cancel's semantics, whose step calls
+refuse on the lease and whose late settle is discarded. A recorded sleep is
+satisfied by being claimed at all — the row's due time is the single
+authority, which is what lets `reschedule` genuinely move a wake. The
+journal itself is finite (bounded steps and bytes), fails closed when
+unreadable (typed refusal, bytes preserved), and binds the row to its
+original arguments — `argsJson` refuses to change over a non-empty journal.
+Retry
 policy stays job-level only: with a journal, retrying the attempt re-executes
 exactly the failed step, and per-step backoff shaping is one conditional in
 the policy callback the author already has. Everything effectful in a

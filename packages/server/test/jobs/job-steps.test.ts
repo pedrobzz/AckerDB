@@ -20,6 +20,7 @@ import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.
 import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts";
 import { JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";
+import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -481,5 +482,173 @@ describe("step.sleep", () => {
     expect(await resumed).toEqual({ ok: true, value: { before: 1, after: 1 } });
     expect(before).toBe(1); // replayed from the journal
     expect(jobRows()[0]).toMatchObject({ state: "completed", attempt: 1n });
+  });
+
+  test("a handler that swallows the sleep signal is a stale attempt", async () => {
+    clock = 10_000_000;
+    let leaked: string | null = null;
+    start(
+      declareJobs({
+        flows: {
+          swallower: job({
+            args: {},
+            handler: async (ctx: Ctx) => {
+              try {
+                await ctx.step.sleep("pause", 60_000);
+              } catch {
+                // The suspend already committed; this attempt is over. Any
+                // further step call must refuse, and the late settle must be
+                // discarded on the stale lease.
+                try {
+                  await ctx.step.procedure("after", async () => "leaked effect");
+                } catch (error: Ctx) {
+                  leaked = error.code;
+                }
+                return { escaped: true };
+              }
+              const after = await ctx.step.procedure("after", async () => "ran");
+              return { after };
+            },
+          }),
+        },
+      }),
+    );
+
+    const handle = await runtime.jobs.enqueue("flows.swallower", {});
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await wait).toMatchObject({ ok: false, state: "pending", nextRetryAt: 10_060_000 });
+    // The waiter resolved at the suspend; let the zombie attempt run out.
+    while (runtime.jobs.runningCount > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The swallowed signal changed nothing: still suspended, nothing leaked,
+    // the zombie's "completed" settle was discarded.
+    expect(leaked ?? "never-refused").toBe("unavailable");
+    expect(jobRows()[0]).toMatchObject({ state: "pending", runAt: 10_060_000, attempt: 0n });
+
+    // At the wake the run replays; the recorded sleep is satisfied, so the
+    // same catch-happy code proceeds normally.
+    clock = 10_060_000;
+    const resumed = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await resumed).toEqual({ ok: true, value: { after: "ran" } });
+  });
+
+  test("reschedule moves a sleeping run's wake: the row's due time is the authority", async () => {
+    clock = 11_000_000;
+    let after = 0;
+    start(
+      declareJobs({
+        flows: {
+          patient: job({
+            args: {},
+            handler: async (ctx: Ctx) => {
+              await ctx.step.sleep("wait-out", 60_000);
+              await ctx.step.procedure("after", async () => ++after);
+              return after;
+            },
+          }),
+        },
+      }),
+    );
+
+    const handle = await runtime.jobs.enqueue("flows.patient", {});
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await wait).toMatchObject({ ok: false, state: "pending", nextRetryAt: 11_060_000 });
+
+    // An operator moves the wake earlier; the journaled wakeAt does not
+    // override the row's due time.
+    await runtime.jobs.reschedule(handle.id, 11_010_000);
+    clock = 11_010_000;
+    const resumed = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await resumed).toEqual({ ok: true, value: 1 });
+    expect(jobRows()[0]).toMatchObject({ state: "completed" });
+  });
+});
+
+describe("journal integrity", () => {
+  test("an unreadable journal refuses instead of replaying from nothing", async () => {
+    clock = 12_000_000;
+    let externalCalls = 0;
+    start(
+      declareJobs({
+        flows: {
+          careful: job({
+            args: {},
+            retry: { attempts: 5, backoff: "fixed", delayMs: 1_000 },
+            handler: async (ctx: Ctx) => {
+              await ctx.step.procedure("charge", async () => ++externalCalls);
+              throw new Error("later step fails");
+            },
+          }),
+        },
+      }),
+    );
+    const handle = await runtime.jobs.enqueue("flows.careful", {});
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await wait).toMatchObject({ ok: false, state: "pending" });
+    expect(externalCalls).toBe(1);
+
+    // Simulated corruption of durable state.
+    engine.writer.exec(`UPDATE "${JOBS_TABLE}" SET stepsJson = '{broken' WHERE id = ${handle.id}`);
+
+    clock = 12_001_000;
+    const corrupted = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    // Fail closed: discarded with typed evidence — never a replay that
+    // re-charges, and never a retry into the same unreadable journal.
+    expect(await corrupted).toMatchObject({ ok: false, state: "discarded", nextRetryAt: null });
+    expect(externalCalls).toBe(1);
+    const row = jobRows()[0]!;
+    expect(row.stepsJson).toBe("{broken"); // the bytes are preserved evidence
+    const history = JSON.parse(row.attemptsJson) as Array<{ error: string | null }>;
+    expect(history.at(-1)!.error).toContain("journal");
+  });
+
+  test("a non-empty journal binds the row to its original arguments", async () => {
+    clock = 13_000_000;
+    const surgery = mutation({
+      access: "public",
+      http: true,
+      args: { id: v.bigint(), argsJson: v.string() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db[JOBS_TABLE].patch(args.id, { argsJson: args.argsJson });
+        return "ok";
+      },
+    });
+    start(
+      declareJobs({
+        flows: {
+          bound: job({
+            args: { input: v.string() },
+            handler: async (ctx: Ctx, args: Ctx) => {
+              await ctx.step.procedure("record-input", async () => args.input);
+              await ctx.step.sleep("hold", 60_000);
+              return args.input;
+            },
+          }),
+        },
+      }),
+      { admin: { surgery } },
+    );
+
+    const handle = await runtime.jobs.enqueue("flows.bound", { input: "original" });
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await wait).toMatchObject({ ok: false, state: "pending" });
+
+    const patched = await runtime.runMutation({
+      id: 1,
+      address: "admin.surgery",
+      args: { id: handle.id, argsJson: '{"input":"replaced"}' },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: Ctx) => new Response(body, { status }),
+    });
+    expect(patched.status).not.toBe(200);
+    expect(await patched.text()).toContain("binds this row to its original arguments");
   });
 });

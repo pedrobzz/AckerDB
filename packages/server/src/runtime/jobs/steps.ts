@@ -6,10 +6,18 @@
  *
  * Step identity is the name, and the name is a contract: same name, same
  * meaning. Strictness is applied exactly where it is free of false
- * positives — a duplicate name in one run, a kind change under a name, or a
- * changed args hash under a `step.run` name refuses with a typed mismatch
- * that discards the run without consulting the retry policy, because
- * retrying into unchanged code cannot fix code.
+ * positives — a duplicate name in one run, a kind change under a name, a
+ * changed args hash under a `step.run` name, an unreadable journal, or a
+ * journal past its finite bounds refuses with a typed error that discards
+ * the run without consulting the retry policy, because retrying into
+ * unchanged code cannot fix code.
+ *
+ * `step.sleep` settles the attempt in ONE writer transaction — journal
+ * entry, pending state, wake time, attempt decrement, and lease release
+ * commit together, so no crash window can turn a suspension into a failed
+ * attempt. The thrown signal only unwinds the handler: a handler that
+ * catches it is a stale attempt with cancel's semantics — its later step
+ * calls refuse on the lease check and its late settle is discarded.
  */
 import {
   Failure,
@@ -28,10 +36,21 @@ import type { Registry } from "../../app/registry.ts";
 import type { JobStep } from "../../jobs/definition.ts";
 import type { JobsExecutor, JobRow } from "./runtime.ts";
 
+/**
+ * Finite journal bounds, per the everything-finite contract: a run may not
+ * grow its journal without limit inside the serialized writer. Exceeding
+ * either refuses the run; the remedy is fewer/smaller steps or child jobs.
+ */
+export const MAX_JOURNAL_STEPS = 1_000;
+export const MAX_JOURNAL_BYTES = 1_048_576;
+
+const STEP_KINDS = ["run", "query", "mutation", "procedure", "sleep"] as const;
+type StepKind = (typeof STEP_KINDS)[number];
+
 /** One journaled step: identity, what recorded it, and the recorded outcome. */
 interface StepJournalEntry {
   readonly name: string;
-  readonly kind: "run" | "query" | "mutation" | "procedure" | "sleep";
+  readonly kind: StepKind;
   /** `run` only: the callee's address and registered kind at record time. */
   readonly ref?: string;
   readonly calleeKind?: string;
@@ -39,35 +58,55 @@ interface StepJournalEntry {
   readonly argsHash?: string;
   /** Canonical-encoded recorded outcome; absent for sleep. */
   readonly result?: string;
-  /** `sleep` only: the absolute wake time scheduled at first encounter. */
+  /** `sleep` only: the wake time scheduled at first encounter (observability). */
   readonly wakeAt?: number;
   readonly completedAt: number;
 }
 
 /**
- * A journal/code mismatch: settles the run as discarded with this typed
- * error in its attempt history. The retry policy is never consulted.
+ * A typed step refusal: the run settles as discarded with this error in its
+ * attempt history, and the retry policy is never consulted.
  */
-export class StepMismatchError extends AckerDBError {
+export class StepRefusalError extends AckerDBError {
   constructor(step: string, detail: string) {
     super("conflict", `step "${step}": ${detail}`);
-    this.name = "StepMismatchError";
+    this.name = "StepRefusalError";
   }
 }
 
-/** Thrown by `step.sleep`: the runner settles the attempt back to pending. */
+/** Thrown by `step.sleep` after its atomic settle, purely to unwind the handler. */
 export class JobSleepSignal {
   constructor(readonly wakeAt: number) {}
 }
 
+function isStepJournalEntry(value: unknown): value is StepJournalEntry {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { name?: unknown }).name === "string" &&
+    (value as { name: string }).name.length > 0 &&
+    STEP_KINDS.includes((value as { kind?: unknown }).kind as StepKind)
+  );
+}
+
+/**
+ * Parse a journal, failing CLOSED: an unreadable or malformed journal is
+ * preserved evidence of corruption, never an empty journal — replaying every
+ * "unrecorded" step against durable state that said otherwise is exactly the
+ * silent duplication the corruption rules forbid.
+ */
 export function parseStepJournal(stepsJson: string | null): StepJournalEntry[] {
   if (stepsJson === null) return [];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(stepsJson) as unknown;
-    return Array.isArray(parsed) ? (parsed as StepJournalEntry[]) : [];
+    parsed = JSON.parse(stepsJson);
   } catch {
-    return [];
+    throw new StepRefusalError("journal", "stepsJson is not readable JSON; the bytes are preserved on the row");
   }
+  if (!Array.isArray(parsed) || !parsed.every(isStepJournalEntry)) {
+    throw new StepRefusalError("journal", "stepsJson is not a valid step journal; the bytes are preserved on the row");
+  }
+  return parsed;
 }
 
 /** Encode a step's Result for the journal; wire representability is enforced here. */
@@ -94,16 +133,26 @@ export interface JobStepsOptions {
   readonly registry: Pick<Registry, "get">;
   readonly signal: AbortSignal;
   readonly now: () => number;
+  /** Post-commit notification that this run suspended until `wakeAt`. */
+  readonly onSlept: (wakeAt: number) => void;
 }
 
 /** The `ctx.step` implementation for one dispatched attempt. */
 export class JobSteps {
   private readonly entries = new Map<string, StepJournalEntry>();
   private readonly seen = new Set<string>();
+  /** A journal that failed validation; surfaced on first step use, lazily. */
+  private corruption: StepRefusalError | null = null;
 
   constructor(private readonly options: JobStepsOptions) {
-    for (const entry of parseStepJournal(options.stepsJson)) {
-      this.entries.set(entry.name, entry);
+    try {
+      for (const entry of parseStepJournal(options.stepsJson)) {
+        this.entries.set(entry.name, entry);
+      }
+    } catch (error) {
+      // A handler that uses no steps never cares; one that does refuses
+      // before executing anything against the unreadable journal.
+      this.corruption = error as StepRefusalError;
     }
   }
 
@@ -246,14 +295,32 @@ export class JobSteps {
       );
     }
     const prior = this.claim(name, "sleep", () => null);
-    if (prior !== null) {
-      // Satisfied once its scheduled wake has passed; woken early, the run
-      // honestly sleeps the remainder.
-      if (prior.wakeAt! <= this.options.now()) return;
-      throw new JobSleepSignal(prior.wakeAt!);
-    }
+    // A recorded sleep is satisfied by being claimed at all: a pending row
+    // runs only when due, so the row's due time — the journaled wake, or an
+    // operator's reschedule/retry — is the single authority. Replay never
+    // re-suspends.
+    if (prior !== null) return;
+
     const wakeAt = this.options.now() + durationMs;
-    await this.append({ name, kind: "sleep", wakeAt, completedAt: this.options.now() });
+    // One writer transaction: journal entry, pending state, wake time,
+    // attempt decrement (sleeping is not failing), and lease release commit
+    // together — no crash window between "recorded" and "suspended".
+    await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
+      await this.appendIn(surface, {
+        name,
+        kind: "sleep",
+        wakeAt,
+        completedAt: this.options.now(),
+      });
+      await surface.jobs.patch(this.options.id, {
+        state: "pending",
+        runAt: wakeAt,
+        attempt: this.options.attempt - 1,
+        leaseToken: null,
+        leaseUntil: null,
+      });
+    });
+    this.options.onSlept(wakeAt);
     throw new JobSleepSignal(wakeAt);
   }
 
@@ -262,51 +329,67 @@ export class JobSteps {
   /**
    * Resolve one named step against the journal: a recorded entry answers, a
    * mismatch refuses, an unrecorded name executes. Every resolution also
-   * guards the in-run duplicate.
+   * guards the in-run duplicate and surfaces a corrupt journal.
    */
   private claim(
     name: string,
-    kind: StepJournalEntry["kind"],
+    kind: StepKind,
     check: (entry: StepJournalEntry) => string | null,
   ): StepJournalEntry | null {
+    if (this.corruption !== null) throw this.corruption;
     if (typeof name !== "string" || name.length === 0) {
       throw new AckerDBError("validation", "step names must be non-empty strings");
     }
     if (this.seen.has(name)) {
-      throw new StepMismatchError(name, "duplicate step name in one run — names are identities");
+      throw new StepRefusalError(name, "duplicate step name in one run — names are identities");
     }
     this.seen.add(name);
     const entry = this.entries.get(name);
     if (entry === undefined) return null;
     if (entry.kind !== kind) {
-      throw new StepMismatchError(name, `journaled as ${entry.kind}, code says ${kind}`);
+      throw new StepRefusalError(name, `journaled as ${entry.kind}, code says ${kind}`);
     }
     const detail = check(entry);
-    if (detail !== null) throw new StepMismatchError(name, detail);
+    if (detail !== null) throw new StepRefusalError(name, detail);
     return entry;
   }
 
-  /** Append one entry in its own transaction (procedure steps, sleep). */
+  /** Append one entry in its own transaction (procedure steps). */
   private async append(entry: StepJournalEntry): Promise<void> {
     await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
       await this.appendIn(surface, entry);
     });
   }
 
-  /** Append one entry inside an already-owned transaction. */
+  /** Append one entry inside an already-owned transaction, within finite bounds. */
   private async appendIn(
-    surface: { readonly jobs: { byId(id: bigint): JobRow | null; patch(id: bigint, partial: Record<string, unknown>): Promise<void> } },
+    surface: {
+      readonly jobs: {
+        byId(id: bigint): JobRow | null;
+        patch(id: bigint, partial: Record<string, unknown>): Promise<void>;
+      };
+    },
     entry: StepJournalEntry,
   ): Promise<void> {
     const row = surface.jobs.byId(this.options.id);
     this.assertOwned(row);
     const journal = parseStepJournal(row!.stepsJson);
     journal.push(entry);
-    await surface.jobs.patch(this.options.id, { stepsJson: JSON.stringify(journal) });
+    if (journal.length > MAX_JOURNAL_STEPS) {
+      throw new StepRefusalError(entry.name, `the journal is full (${MAX_JOURNAL_STEPS} steps)`);
+    }
+    const encoded = JSON.stringify(journal);
+    if (encoded.length > MAX_JOURNAL_BYTES) {
+      throw new StepRefusalError(
+        entry.name,
+        `the journal exceeds ${MAX_JOURNAL_BYTES} bytes; record smaller results or use child jobs`,
+      );
+    }
+    await surface.jobs.patch(this.options.id, { stepsJson: encoded });
     this.entries.set(entry.name, entry);
   }
 
-  /** A canceled, reclaimed, or deleted row must not gain journal entries. */
+  /** A canceled, reclaimed, deleted, or suspended row must not gain journal entries. */
   private assertOwned(row: JobRow | null): void {
     if (row === null || row.state !== "running" || row.leaseToken !== this.options.leaseToken) {
       throw new AckerDBError("unavailable", "job attempt was superseded; its steps may not record");
