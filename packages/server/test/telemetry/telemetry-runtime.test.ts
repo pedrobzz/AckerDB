@@ -13,6 +13,7 @@ import {
 } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
+  DEFAULT_TELEMETRY_RETENTION,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -340,7 +341,7 @@ class RuntimeHarness {
 
   constructor(
     telemetry: RuntimeOptions["telemetry"],
-    options: Pick<RuntimeOptions, "now" | "telemetryExporters"> = {},
+    options: Pick<RuntimeOptions, "now" | "telemetryExporters" | "telemetryStore"> = {},
   ) {
     reconcile(this.engine);
     this.runtime = new Runtime({
@@ -415,7 +416,7 @@ const harnesses = new Set<RuntimeHarness>();
 
 function harness(
   telemetry: RuntimeOptions["telemetry"],
-  options?: Pick<RuntimeOptions, "now" | "telemetryExporters">,
+  options?: Pick<RuntimeOptions, "now" | "telemetryExporters" | "telemetryStore">,
 ): RuntimeHarness {
   const created = new RuntimeHarness(telemetry, options);
   harnesses.add(created);
@@ -728,6 +729,28 @@ describe("Runtime telemetry acceptance", () => {
       truncatedRecords: 1,
       malformedRecords: 1,
       oversizedRecords: 0,
+    });
+  });
+
+  test("homes telemetry retention in start options and reports it read-only in status", async () => {
+    const dayMs = 86_400_000;
+    const app = harness(false, {
+      telemetryStore: { retention: { debug: dayMs }, maxExpiredRowsPerPass: 64 },
+    });
+
+    expect(app.runtime.telemetryStore.path).toBe(`${app.engine.path}.telemetry`);
+    expect(app.runtime.telemetryJournal.store).toBe(app.runtime.telemetryStore);
+    expect(app.runtime.status().telemetryStore).toEqual({
+      retention: { ...DEFAULT_TELEMETRY_RETENTION, debug: dayMs },
+      expiredRecords: {
+        debug: 0,
+        info: 0,
+        warn: 0,
+        error: 0,
+        spans: 0,
+        analytics: 0,
+        rollups: 0,
+      },
     });
   });
 

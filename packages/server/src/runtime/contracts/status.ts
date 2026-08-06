@@ -9,6 +9,7 @@ import type {
 import type {
   TelemetryJournalSnapshot,
 } from "../../telemetry/application-signals/journal.ts";
+import type { TelemetryStoreSnapshot } from "../../telemetry/storage/store.ts";
 import type {
   TelemetryAggregateSnapshot,
   TelemetrySnapshot,
@@ -41,6 +42,7 @@ export interface RuntimeStatus {
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly telemetry: TelemetrySnapshot;
   readonly telemetryAggregates: TelemetryAggregateSnapshot;
+  readonly telemetryStore: TelemetryStoreSnapshot;
   readonly telemetryJournal: TelemetryJournalSnapshot;
   readonly telemetryExporters: TelemetryExportersSnapshot | null;
   readonly storage: ReturnType<Engine["status"]>;

@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { encode } from "@ackerdb/core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   TelemetryJournal,
+  TelemetryStore,
+  type ApplicationLogLevel,
   type ApplicationLogRecord,
+  type TelemetryJournalLimits,
+  type TelemetryJournalRecord,
+  type TelemetryRetentionTtls,
 } from "@ackerdb/server";
+
+const DAY_MS = 86_400_000;
+const NOW = 1_700_000_000_000;
 
 const directories = new Set<string>();
 
@@ -18,6 +28,20 @@ function journalPath(): string {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-journal-"));
   directories.add(directory);
   return join(directory, "telemetry.db");
+}
+
+function createJournal(options: {
+  readonly path?: string;
+  readonly limits?: Partial<TelemetryJournalLimits>;
+  readonly retention?: Partial<TelemetryRetentionTtls>;
+  readonly now?: () => number;
+} = {}): TelemetryJournal {
+  const store = new TelemetryStore({
+    path: options.path ?? journalPath(),
+    now: options.now ?? (() => 0),
+    retention: options.retention,
+  });
+  return new TelemetryJournal({ store, limits: options.limits });
 }
 
 function record(sequence: bigint, message = `log-${sequence}`): ApplicationLogRecord {
@@ -35,28 +59,40 @@ function record(sequence: bigint, message = `log-${sequence}`): ApplicationLogRe
   });
 }
 
+function timestamped(
+  sequence: bigint,
+  level: ApplicationLogLevel,
+  timestamp: number,
+): ApplicationLogRecord {
+  return Object.freeze({ ...record(sequence, `${level}-${sequence}`), level, timestamp });
+}
+
+function analytics(sequence: bigint, timestamp: number): TelemetryJournalRecord {
+  return Object.freeze({
+    kind: "analytics",
+    processGeneration: "journal-test-generation",
+    sequence,
+    timestamp,
+    event: `event-${sequence}`,
+    truncated: false,
+    malformed: false,
+    functionAddress: "tests.track",
+    functionKind: "mutation",
+  });
+}
+
 describe("TelemetryJournal", () => {
   test("recovers retained records and evicts the oldest first", async () => {
     const path = journalPath();
-    const first = new TelemetryJournal({
-      path,
-      limits: {
-        maxStoredRecords: 3,
-        maxStoredBytes: 64 * 1_024,
-      },
-    });
+    const limits = { maxStoredRecords: 3, maxStoredBytes: 64 * 1_024 };
+    const first = createJournal({ path, limits });
     for (let sequence = 1n; sequence <= 5n; sequence++) {
       expect(first.append(record(sequence))).toBe(true);
     }
     await first.drain();
+    first.store.close();
 
-    const recovered = new TelemetryJournal({
-      path,
-      limits: {
-        maxStoredRecords: 3,
-        maxStoredBytes: 64 * 1_024,
-      },
-    });
+    const recovered = createJournal({ path, limits });
     expect(recovered.readBatch(0n, 10).map((entry) => entry.sequence)).toEqual([3n, 4n, 5n]);
     expect(recovered.snapshot()).toMatchObject({
       state: "ready",
@@ -64,11 +100,11 @@ describe("TelemetryJournal", () => {
       evictedRecords: 2,
     });
     await recovered.drain();
+    recovered.store.close();
   });
 
   test("drops oversized and saturated records with bounded accounting", async () => {
-    const journal = new TelemetryJournal({
-      path: journalPath(),
+    const journal = createJournal({
       limits: {
         maxRecordBytes: 256,
         maxQueuedRecords: 1,
@@ -86,10 +122,11 @@ describe("TelemetryJournal", () => {
       saturatedRecords: 1,
     });
     await journal.drain();
+    journal.store.close();
   });
 
   test("contains persistence failures and reports the journal unhealthy", async () => {
-    const journal = new TelemetryJournal({ path: journalPath() });
+    const journal = createJournal();
     const observed: unknown[] = [];
     journal.onFailure((error) => observed.push(error));
 
@@ -104,10 +141,7 @@ describe("TelemetryJournal", () => {
   });
 
   test("counts every in-flight batch lost across concurrent flush failures", async () => {
-    const journal = new TelemetryJournal({
-      path: journalPath(),
-      limits: { maxBatchRecords: 1 },
-    });
+    const journal = createJournal({ limits: { maxBatchRecords: 1 } });
     expect(journal.append(record(1n))).toBe(true);
     await journal.flush();
 
@@ -121,5 +155,82 @@ describe("TelemetryJournal", () => {
       droppedRecords: 2,
       storedRecords: 1,
     });
+  });
+
+  test("expires stored rows per level and kind on flush with the current clocks", async () => {
+    const journal = createJournal({ now: () => NOW });
+    expect(journal.append(timestamped(1n, "debug", NOW - 4 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(2n, "info", NOW - 15 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(3n, "error", NOW - 15 * DAY_MS))).toBe(true);
+    expect(journal.append(analytics(4n, NOW - 15 * DAY_MS))).toBe(true);
+    expect(journal.append(timestamped(5n, "debug", NOW - DAY_MS))).toBe(true);
+    await journal.flush();
+
+    expect(journal.readBatch(0n, 10).map((entry) => entry.sequence)).toEqual([3n, 4n, 5n]);
+    expect(journal.snapshot()).toMatchObject({ storedRecords: 3 });
+    expect(journal.store.snapshot().expiredRecords).toMatchObject({
+      debug: 1,
+      info: 1,
+      warn: 0,
+      error: 0,
+      analytics: 0,
+    });
+    await journal.drain();
+    journal.store.close();
+  });
+
+  test("applies a shortened clock to already-stored rows at the next open", async () => {
+    const path = journalPath();
+    const first = createJournal({ path, now: () => NOW });
+    expect(first.append(timestamped(1n, "debug", NOW - 2 * DAY_MS))).toBe(true);
+    expect(first.append(timestamped(2n, "error", NOW - 2 * DAY_MS))).toBe(true);
+    await first.drain();
+    expect(first.snapshot().storedRecords).toBe(2);
+    first.store.close();
+
+    const shortened = createJournal({
+      path,
+      now: () => NOW,
+      retention: { debug: DAY_MS },
+    });
+    expect(shortened.readBatch(0n, 10).map((entry) => entry.sequence)).toEqual([2n]);
+    expect(shortened.snapshot()).toMatchObject({ storedRecords: 1 });
+    expect(shortened.store.snapshot().expiredRecords.debug).toBe(1);
+    await shortened.drain();
+    shortened.store.close();
+  });
+
+  test("backfills the level column for a journal created before retention", async () => {
+    const path = journalPath();
+    const legacy = new Database(path, { create: true, safeIntegers: true, strict: true });
+    legacy.exec(`
+      CREATE TABLE _ackerdb_telemetry_journal (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        process_generation TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        timestamp REAL NOT NULL,
+        kind TEXT NOT NULL,
+        payload_bytes INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        UNIQUE(process_generation, sequence)
+      )
+    `);
+    const insert = legacy.query(`
+      INSERT INTO _ackerdb_telemetry_journal (
+        process_generation, sequence, timestamp, kind, payload_bytes, payload
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const expired = encode(timestamped(1n, "debug", NOW - 10 * DAY_MS));
+    const retained = encode(timestamped(2n, "info", NOW - DAY_MS));
+    insert.run("legacy", 1, NOW - 10 * DAY_MS, "log", Buffer.byteLength(expired), expired);
+    insert.run("legacy", 2, NOW - DAY_MS, "log", Buffer.byteLength(retained), retained);
+    legacy.close(false);
+
+    const journal = createJournal({ path, now: () => NOW });
+    expect(journal.readBatch(0n, 10).map((entry) => entry.sequence)).toEqual([2n]);
+    expect(journal.snapshot()).toMatchObject({ storedRecords: 1 });
+    expect(journal.store.snapshot().expiredRecords.debug).toBe(1);
+    await journal.drain();
+    journal.store.close();
   });
 });

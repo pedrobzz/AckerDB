@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   TelemetryJournal,
   TelemetryJournalExporters,
+  TelemetryStore,
   type Identity,
   type TelemetryJournalRecord,
   type TelemetrySignalExporter,
@@ -21,7 +22,8 @@ afterEach(() => {
 function journal(limits?: ConstructorParameters<typeof TelemetryJournal>[0]["limits"]): TelemetryJournal {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-exporters-"));
   directories.add(directory);
-  return new TelemetryJournal({ path: join(directory, "telemetry.db"), limits });
+  const store = new TelemetryStore({ path: join(directory, "telemetry.db"), now: () => 0 });
+  return new TelemetryJournal({ store, limits });
 }
 
 function log(sequence: bigint, message: string): TelemetryJournalRecord {
@@ -199,7 +201,7 @@ describe("TelemetryJournalExporters", () => {
     const storage = journal();
     storage.append(log(1n, "corrupt me"));
     await storage.flush();
-    const corruption = new Database(storage.path);
+    const corruption = new Database(storage.store.path);
     corruption.query(
       "UPDATE _ackerdb_telemetry_journal SET payload = ? WHERE id = 1",
     ).run("not a wire value");

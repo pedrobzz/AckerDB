@@ -56,6 +56,7 @@ import { ApplicationSignals } from "../telemetry/application-signals/application
 import {
   TelemetryJournal,
 } from "../telemetry/application-signals/journal.ts";
+import { TelemetryStore } from "../telemetry/storage/store.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import {
   TelemetryJournalExporters,
@@ -129,6 +130,7 @@ export class Runtime implements RuntimePort {
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
+  readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
   readonly log: ApplicationLogger;
@@ -247,13 +249,31 @@ export class Runtime implements RuntimePort {
       admit: (session, fairnessKey, sessionOrder) =>
         this.control.admit(session, fairnessKey, sessionOrder),
     });
+    if (
+      options.telemetryJournal instanceof TelemetryJournal &&
+      options.telemetryStore instanceof TelemetryStore &&
+      options.telemetryJournal.store !== options.telemetryStore
+    ) {
+      throw new TypeError("Runtime telemetryJournal must live in the provided telemetryStore");
+    }
+    const ownsTelemetryStore = !(options.telemetryStore instanceof TelemetryStore) &&
+      !(options.telemetryJournal instanceof TelemetryJournal);
+    this.telemetryStore = options.telemetryJournal instanceof TelemetryJournal
+      ? options.telemetryJournal.store
+      : options.telemetryStore instanceof TelemetryStore
+        ? options.telemetryStore
+        : new TelemetryStore({
+            path: this.engine.path === ":memory:"
+              ? ":memory:"
+              : telemetryJournalPath(this.engine.path),
+            now: this.now,
+            ...options.telemetryStore,
+          });
     const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
     this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
       ? options.telemetryJournal
       : new TelemetryJournal({
-          path: this.engine.path === ":memory:"
-            ? ":memory:"
-            : telemetryJournalPath(this.engine.path),
+          store: this.telemetryStore,
           ...options.telemetryJournal,
         });
     if (this.telemetryJournal.snapshot().state !== "ready") {
@@ -430,11 +450,13 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       engine: this.engine,
       telemetry: this.telemetry,
+      telemetryStore: this.telemetryStore,
       telemetryJournal: this.telemetryJournal,
       ...(this.telemetryExporters === undefined
         ? {}
         : { telemetryExporters: this.telemetryExporters }),
       ownsTelemetry,
+      ownsTelemetryStore,
       ownsTelemetryJournal,
       ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
       ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
