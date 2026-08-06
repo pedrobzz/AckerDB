@@ -1138,6 +1138,7 @@ export class AckerDBServer {
       credential,
       verifier: runtime.credentialVerifier,
       resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
+      ...(runtime.resolveScopes === undefined ? {} : { resolveScopes: runtime.resolveScopes }),
       ...(signal === undefined ? {} : { signal }),
       revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });

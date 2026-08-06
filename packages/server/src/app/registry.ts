@@ -34,6 +34,10 @@ import {
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/scopes.ts";
 import {
+  checkRequirementAgainstVocabulary,
+  normalizeScopeRequirement,
+} from "../auth/access-policy.ts";
+import {
   ACKERDB_RESERVED_API_PREFIX,
   exposedHttpKind,
   isAckerDBHttpRoute,
@@ -226,6 +230,28 @@ export class Registry {
       ) {
         throw new Error(`unknown server-only export at "${address}"`);
       }
+    }
+  }
+
+  /**
+   * Load-time cross-check where the App manifest meets the Registry: every
+   * scope a function requires must exist in the application vocabulary.
+   * Registered functions are module-level constants that exist before
+   * `defineApp` is evaluated, so the check runs here, not at registration.
+   */
+  checkScopeRequirements(vocabulary: readonly string[] | undefined): void {
+    for (const [address, fn] of this.functions) {
+      if (fn.scopes === undefined) continue;
+      if (vocabulary === undefined) {
+        throw new TypeError(
+          `function "${address}" declares scopes but the application declares no scope vocabulary`,
+        );
+      }
+      checkRequirementAgainstVocabulary(
+        normalizeScopeRequirement(fn.scopes, `function "${address}" scopes`),
+        vocabulary,
+        `function "${address}"`,
+      );
     }
   }
 

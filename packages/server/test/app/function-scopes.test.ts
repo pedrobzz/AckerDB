@@ -4,6 +4,7 @@ import { defineApp } from "../../src/app/definition.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { invokeFunction } from "../../src/app/invocation.ts";
+import { Registry } from "../../src/app/registry.ts";
 import { v } from "../../src/validation/v.ts";
 import {
   ANONYMOUS_PRINCIPAL,
@@ -110,6 +111,37 @@ describe("function scope declarations", () => {
       scopes: ["notes:read"] as never,
       handler: () => null,
     })).toThrow(TypeError);
+  });
+});
+
+describe("registry vocabulary cross-check", () => {
+  function registryWith(fn: unknown) {
+    return new Registry({ notes: { list: fn as never } });
+  }
+  const scoped = query({
+    args: {},
+    access: "authenticated",
+    scopes: { anyOf: ["notes:read"] },
+    handler: () => null,
+  });
+
+  test("passes when every requirement draws from the vocabulary", () => {
+    expect(() => registryWith(scoped).checkScopeRequirements(["notes:read"])).not.toThrow();
+  });
+
+  test("an unscoped registry passes without a vocabulary", () => {
+    const plain = query({ args: {}, access: "public", handler: () => null });
+    expect(() => registryWith(plain).checkScopeRequirements(undefined)).not.toThrow();
+  });
+
+  test("rejects an undeclared scope, naming the function", () => {
+    expect(() => registryWith(scoped).checkScopeRequirements(["other:read"]))
+      .toThrow(/function "notes\.list" requires undeclared scope "notes:read"/);
+  });
+
+  test("rejects requirements when the application declares no vocabulary", () => {
+    expect(() => registryWith(scoped).checkScopeRequirements(undefined))
+      .toThrow(/declares no scope vocabulary/);
   });
 });
 

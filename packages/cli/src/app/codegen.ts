@@ -101,6 +101,7 @@ import {
 import type {
   AppPluginCapabilities,
   AppSchema,
+  AppScope,
   ChannelBuilder,
   DbReader,
   DbWriter,
@@ -130,6 +131,8 @@ import type {
 import type app from "${appImport}";
 ${jobImports.join("\n")}${jobImports.length > 0 ? "\n" : ""}
 export type Schema = AppSchema<typeof app>;
+/** The declared scope vocabulary; \`never\` when the app declares none. */
+export type Scope = AppScope<typeof app>;
 type QueryPlugins = AppPluginCapabilities<typeof app, "query">;
 type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;
 type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;
@@ -137,12 +140,12 @@ ${jobsType("QueryJobs", "QueryJobsOf")}
 ${jobsType("MutationJobs", "MutationJobsOf")}
 ${jobsType("ProcedureJobs", "ProcedureJobsOf")}
 
-export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins, QueryJobs>;
+export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
 export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins, MutationJobs>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
 export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
 export const job = jobGeneric as JobBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;

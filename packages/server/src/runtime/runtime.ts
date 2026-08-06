@@ -20,6 +20,7 @@ import {
   type ExternalAccount,
   type McpPrincipal,
   type Principal,
+  type ScopeResolver,
 } from "../auth/credentials.ts";
 import {
   AuthInvalidationBoundary,
@@ -127,6 +128,8 @@ export class Runtime implements RuntimePort {
   readonly engine: Engine;
   readonly registry: Registry;
   readonly credentialVerifier: CredentialVerifier | undefined;
+  /** Scope grants ride the same re-verification: an auth-epoch change re-reads them. */
+  readonly resolveScopes?: ScopeResolver;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
   readonly telemetryJournal: TelemetryJournal;
@@ -221,6 +224,12 @@ export class Runtime implements RuntimePort {
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
+    if (options.resolveScopes !== undefined) {
+      if (typeof options.resolveScopes !== "function") {
+        throw new TypeError("Runtime resolveScopes must be a function");
+      }
+      this.resolveScopes = options.resolveScopes;
+    }
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry

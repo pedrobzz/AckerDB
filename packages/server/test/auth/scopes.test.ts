@@ -20,6 +20,8 @@ import {
   verifyClientCredential,
   type UserPrincipal,
 } from "../../src/auth/credentials.ts";
+import { acquireAuthLease } from "../../src/auth/lease.ts";
+import type { PrincipalInvalidation } from "../../src/auth/credentials.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 
 function user(scopes: readonly string[] = []): UserPrincipal {
@@ -214,6 +216,31 @@ describe("credential scope resolution", () => {
       Date.now,
       () => ["a", "a"],
     )).rejects.toMatchObject({ code: "auth_unavailable" });
+  });
+
+  test("a lease carries the resolved grant and fails closed on account invalidation", async () => {
+    let listener: ((invalidation: PrincipalInvalidation) => void) | undefined;
+    const invalidatingVerifier = {
+      ...verifier,
+      revocationBound: { kind: "invalidation" as const, deadlineMs: 1_000 },
+      subscribeInvalidation: (l: (invalidation: PrincipalInvalidation) => void) => {
+        listener = l;
+        return () => {};
+      },
+    };
+    const lease = await acquireAuthLease({
+      credential: bearer,
+      verifier: invalidatingVerifier,
+      resolveIdentity,
+      resolveScopes: () => ["notes:read"],
+      revocationDeadlineMs: 1_000,
+    });
+    expect((lease.principal as UserPrincipal).scopes).toEqual(["notes:read"]);
+    // A grant change published through the generic auth-invalidation path
+    // cancels the lease; the next verification re-reads the resolver.
+    listener!({ issuer: "https://issuer.example/", subject: "user-7" });
+    expect(lease.signal.aborted).toBe(true);
+    lease.release();
   });
 
   test("a resolver rejection fails closed as auth_unavailable", async () => {

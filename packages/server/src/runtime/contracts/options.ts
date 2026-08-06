@@ -1,4 +1,4 @@
-import type { CredentialVerifier } from "../../auth/credentials.ts";
+import type { CredentialVerifier, ScopeResolver } from "../../auth/credentials.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { Engine } from "../../database/engine.ts";
 import type { PluginRuntime } from "../../plugins/runtime.ts";
@@ -22,6 +22,13 @@ export interface RuntimeOptions {
   /** A started Plugin graph bound to this Engine's reconciled private scopes. */
   readonly pluginRuntime?: PluginRuntime;
   readonly verifier?: CredentialVerifier;
+  /**
+   * Resolves the scope grant an Identity holds, re-read on every credential
+   * verification and auth-epoch transition. Publish an account invalidation
+   * (through the verifier's invalidation channel) when a grant changes so
+   * live sessions re-authorize immediately.
+   */
+  readonly resolveScopes?: ScopeResolver;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;

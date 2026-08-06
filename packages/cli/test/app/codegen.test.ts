@@ -84,15 +84,16 @@ describe("codegen", () => {
     expect(server).toContain(
       'type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;',
     );
-    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs>");
-    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs>");
+    expect(server).toContain("export type Scope = AppScope<typeof app>;");
+    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>");
+    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>");
     expect(server).toContain(
-      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
+      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>",
     );
     expect(server).toContain(
       "unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>",
     );
-    expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>");
+    expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>");
     expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins, QueryJobs>");
     expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins, MutationJobs>");
     expect(server).toContain(
