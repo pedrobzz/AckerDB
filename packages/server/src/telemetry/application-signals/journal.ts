@@ -267,8 +267,10 @@ export class TelemetryJournal {
   private persist(batch: readonly QueuedRecord[]): void {
     const insert = this.database.query(`
       INSERT INTO _ackerdb_telemetry_journal (
-        process_generation, sequence, timestamp, kind, level, payload_bytes, payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        process_generation, sequence, timestamp, kind, level, source,
+        function_address, trace_id, span_id, request_id, event, identity,
+        payload_bytes, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const before = {
       storedRecords: this.storedRecords,
@@ -279,12 +281,20 @@ export class TelemetryJournal {
     try {
       this.database.transaction(() => {
         for (const item of batch) {
+          const record = item.record;
           const inserted = insert.run(
-            item.record.processGeneration,
-            item.record.sequence,
-            item.record.timestamp,
-            item.record.kind,
-            item.record.kind === "log" ? item.record.level : null,
+            record.processGeneration,
+            record.sequence,
+            record.timestamp,
+            record.kind,
+            record.kind === "log" ? record.level : null,
+            record.kind === "log" ? record.source : null,
+            record.functionAddress,
+            record.traceId ?? null,
+            record.spanId ?? null,
+            record.requestId ?? null,
+            record.kind === "analytics" ? record.event : null,
+            record.kind === "analytics" ? record.identity ?? null : null,
             item.bytes,
             item.encoded,
           );
@@ -559,7 +569,7 @@ export class TelemetryJournal {
   }
 }
 
-function createJournalSchema(database: Database): void {
+function createJournalTable(database: Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_journal (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -568,27 +578,79 @@ function createJournalSchema(database: Database): void {
       timestamp REAL NOT NULL,
       kind TEXT NOT NULL,
       level TEXT,
+      source TEXT,
+      function_address TEXT,
+      trace_id TEXT,
+      span_id TEXT,
+      request_id TEXT,
+      event TEXT,
+      identity INTEGER,
       payload_bytes INTEGER NOT NULL,
       payload TEXT NOT NULL,
       UNIQUE(process_generation, sequence)
     )
   `);
-  const level = database.query(`
+}
+
+function createJournalSchema(database: Database): void {
+  const hasSource = database.query(`
     SELECT COUNT(*) AS present
     FROM pragma_table_info('_ackerdb_telemetry_journal')
-    WHERE name = 'level'
+    WHERE name = 'source'
   `).get() as { readonly present: bigint };
-  if (Number(level.present) === 0) {
-    database.exec("ALTER TABLE _ackerdb_telemetry_journal ADD COLUMN level TEXT");
-    database.exec(`
-      UPDATE _ackerdb_telemetry_journal
-      SET level = json_extract(payload, '$.level')
-      WHERE kind = 'log'
-    `);
+  const hasJournal = database.query(`
+    SELECT COUNT(*) AS present FROM pragma_table_info('_ackerdb_telemetry_journal')
+  `).get() as { readonly present: bigint };
+  let reclaimedRecords = 0n;
+  if (hasJournal.present > 0n && hasSource.present === 0n) {
+    // The read-model upgrade recreates the journal with promoted columns and
+    // drops the short-TTL rows it held. Record ids stay monotone so a stored
+    // consumer cursor observes the drop as eviction, never as id reuse.
+    const previous = database.query(`
+      SELECT COUNT(*) AS records, COALESCE(MAX(id), 0) AS lastId
+      FROM _ackerdb_telemetry_journal
+    `).get() as { readonly records: bigint; readonly lastId: bigint };
+    const hasState = database.query(`
+      SELECT COUNT(*) AS present FROM pragma_table_info('_ackerdb_telemetry_state')
+    `).get() as { readonly present: bigint };
+    const state = hasState.present > 0n
+      ? database.query(`
+          SELECT last_record_id AS lastRecordId FROM _ackerdb_telemetry_state WHERE singleton = 1
+        `).get() as { readonly lastRecordId: bigint } | null
+      : null;
+    const lastId = state !== null && state.lastRecordId > previous.lastId
+      ? state.lastRecordId
+      : previous.lastId;
+    database.exec("DROP TABLE _ackerdb_telemetry_journal");
+    createJournalTable(database);
+    if (lastId > 0n) {
+      database.query(
+        "INSERT INTO sqlite_sequence (name, seq) VALUES ('_ackerdb_telemetry_journal', ?)",
+      ).run(lastId);
+    }
+    reclaimedRecords = previous.records;
+  } else {
+    createJournalTable(database);
   }
   database.exec(`
     CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_retention
     ON _ackerdb_telemetry_journal (kind, level, timestamp)
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_trace
+    ON _ackerdb_telemetry_journal (trace_id, id) WHERE trace_id IS NOT NULL
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_level
+    ON _ackerdb_telemetry_journal (level, id) WHERE kind = 'log'
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_event
+    ON _ackerdb_telemetry_journal (event, timestamp) WHERE kind = 'analytics'
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_identity
+    ON _ackerdb_telemetry_journal (identity, timestamp) WHERE identity IS NOT NULL
   `);
   database.exec(`
     CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
@@ -604,6 +666,13 @@ function createJournalSchema(database: Database): void {
       singleton, stored_records, stored_bytes, evicted_records, last_record_id
     ) VALUES (1, 0, 0, 0, 0)
   `).run();
+  if (reclaimedRecords > 0n) {
+    database.query(`
+      UPDATE _ackerdb_telemetry_state
+      SET evicted_records = evicted_records + ?
+      WHERE singleton = 1
+    `).run(reclaimedRecords);
+  }
   database.exec(`
     CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_consumers (
       name TEXT PRIMARY KEY,

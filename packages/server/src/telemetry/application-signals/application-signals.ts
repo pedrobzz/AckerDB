@@ -101,6 +101,7 @@ export class ApplicationSignals {
           sequence,
           timestamp,
           level,
+          source: "app",
           message: preparedMessage.message,
           ...(preparedMetadata.metadata === undefined
             ? {}

@@ -762,6 +762,7 @@ describe("Runtime telemetry acceptance", () => {
       sequence: 1n,
       timestamp: Date.now(),
       level: "error" as const,
+      source: "app" as const,
       message: "duplicate",
       truncated: false,
       malformed: false,

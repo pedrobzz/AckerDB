@@ -417,6 +417,7 @@ export type {
   AnalyticsEventRecord,
   ApplicationLogLevel,
   ApplicationLogRecord,
+  ApplicationLogSource,
   TelemetryJournalEntry,
   TelemetryJournalRecord,
 } from "./telemetry/application-signals/types.ts";
