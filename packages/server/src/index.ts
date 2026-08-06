@@ -402,6 +402,12 @@ export {
   type TelemetryStoreSnapshot,
 } from "./telemetry/storage/store.ts";
 export {
+  TELEMETRY_JOURNAL_DEPENDENCY_KEY,
+  TelemetryFlushInvalidation,
+  type TelemetryFlushInvalidationOptions,
+  type TelemetryInvalidationListener,
+} from "./telemetry/storage/invalidation.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,

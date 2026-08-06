@@ -53,7 +53,8 @@ export interface RuntimeControlOptions {
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
-  readonly stopSampler: () => void;
+  /** Stops the sampler and every other periodic telemetry emitter at drain start. */
+  readonly stopPeriodicTelemetry: () => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -251,7 +252,7 @@ export class RuntimeControl {
     this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
-    this.options.stopSampler();
+    this.options.stopPeriodicTelemetry();
     this.options.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",

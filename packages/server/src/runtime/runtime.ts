@@ -57,6 +57,7 @@ import {
   TelemetryJournal,
 } from "../telemetry/application-signals/journal.ts";
 import { TelemetryStore } from "../telemetry/storage/store.ts";
+import { TelemetryFlushInvalidation } from "../telemetry/storage/invalidation.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import {
   TelemetryJournalExporters,
@@ -132,6 +133,8 @@ export class Runtime implements RuntimePort {
   readonly telemetry: Telemetry;
   readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
+  /** Studio's reactive `_studio.*` reads subscribe here for flush invalidation. */
+  readonly telemetryInvalidation = new TelemetryFlushInvalidation();
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
   readonly log: ApplicationLogger;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
@@ -279,6 +282,7 @@ export class Runtime implements RuntimePort {
     if (this.telemetryJournal.snapshot().state !== "ready") {
       throw new TypeError("Runtime requires a ready telemetry journal");
     }
+    this.telemetryJournal.onPersist(() => this.telemetryInvalidation.notify());
     this.applicationSignals = new ApplicationSignals(
       this.telemetryJournal,
       this.now,
@@ -470,7 +474,10 @@ export class Runtime implements RuntimePort {
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
-      stopSampler: () => this.sampler.stop(),
+      stopPeriodicTelemetry: () => {
+        this.sampler.stop();
+        this.telemetryInvalidation.stop();
+      },
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sessionApplication = new RuntimeSessionApplication({
