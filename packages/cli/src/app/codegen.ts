@@ -204,18 +204,24 @@ function apiTs(config: AppConfig, schema: Schema, modules: ModuleFile[]): string
       `    ${t}: EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
   );
 
+  const moduleTree = renderTree(root, "  ");
   return `${HEADER}
 import { anyApi } from "@ackerdb/core";
-import type { ApiFromModules, EventRef } from "@ackerdb/core";
+import type { ApiFromModules, EventRef, InternalFromModules } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
 export const api = anyApi as unknown as ApiFromModules<{
-${renderTree(root, "  ")}
+${moduleTree}
 }> & {
   events: {
 ${eventLines.join("\n")}${eventLines.length > 0 ? "\n" : ""}  };
 };
 
 export const events = api.events;
+
+/** Functions declared \`internal: true\`: server-side references with no client address. */
+export const internal = anyApi as unknown as InternalFromModules<{
+${moduleTree}
+}>;
 `;
 }
 

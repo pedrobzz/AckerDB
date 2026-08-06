@@ -309,6 +309,15 @@ export class Registry {
     return this.functions.get(address);
   }
 
+  /**
+   * The transport's lookup: internal functions have no wire address, so a
+   * remote call to one resolves exactly as a name that never existed.
+   */
+  remote(address: string): AnyRegistered | undefined {
+    const fn = this.functions.get(address);
+    return fn?.internal === true ? undefined : fn;
+  }
+
   getChannel(address: string): AnyRegisteredChannel | undefined {
     return this.channels.get(address);
   }

@@ -267,8 +267,23 @@ export interface RegisteredServerOnly {
   readonly isAckerDBServerOnly: true;
 }
 
+/**
+ * Marker carried by a function declared `internal: true`: a registered
+ * function with no client-facing address. `ApiFromModules` erases these keys;
+ * `InternalFromModules` keeps exactly them.
+ */
+export interface RegisteredInternal {
+  readonly internal: true;
+}
+
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
 type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Error : never;
+
+type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
+  ? Kd extends "query" | "mutation" | "procedure"
+    ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
+    : FunctionReference<Kd, A, R>
+  : never;
 
 /**
  * Maps a record of module namespaces (arbitrarily nested) to the typed `api`
@@ -276,7 +291,7 @@ type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Er
  * Convex); other exports produce unusable branches, not errors.
  */
 export type ApiFromModules<T> = {
-  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
+  [K in keyof T as T[K] extends RegisteredServerOnly | RegisteredInternal ? never : K]:
   T[K] extends RegisteredChannelContract<
     infer A,
     infer Room,
@@ -306,4 +321,24 @@ export type ApiFromModules<T> = {
       ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
       : FunctionReference<Kd, A, R>
     : ApiFromModules<T[K]>;
+};
+
+/**
+ * The complement of `ApiFromModules`'s internal erasure: only functions
+ * declared `internal: true`, as the same typed references. Consumed by
+ * server-side callers — steps, composition — through the generated
+ * `internal.*` tree; never by clients.
+ */
+export type InternalFromModules<T> = {
+  [K in keyof T as T[K] extends RegisteredInternal
+    ? K
+    : T[K] extends
+        | RegisteredServerOnly
+        | RegisteredFunction
+        | RegisteredChannelContract
+        | RegisteredRealtimeContract
+      ? never
+      : K]: T[K] extends RegisteredInternal
+    ? FunctionRefOf<T[K]>
+    : InternalFromModules<T[K]>;
 };

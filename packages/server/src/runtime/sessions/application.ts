@@ -52,7 +52,7 @@ interface FinishedRuntimeMutation {
 
 export interface RuntimeSessionApplicationOptions {
   readonly engine: Pick<Engine, "durability">;
-  readonly registry: Pick<Registry, "get">;
+  readonly registry: Pick<Registry, "get" | "remote">;
   readonly store: RuntimeSessionStore;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly queries: RuntimeQueries;
@@ -450,7 +450,7 @@ export class RuntimeSessionApplication {
   }
 
   private expect(address: string, kind: "mutation" | "procedure") {
-    const fn = this.options.registry.get(address);
+    const fn = this.options.registry.remote(address);
     if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);
     if (fn.kind !== kind) {
       throw new AckerDBError("validation", `"${address}" is a ${fn.kind}, expected a ${kind}`);

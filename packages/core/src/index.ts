@@ -53,7 +53,9 @@ export {
   type RegisteredChannelContract,
   type RegisteredRealtimeContract,
   type RegisteredServerOnly,
+  type RegisteredInternal,
   type ApiFromModules,
+  type InternalFromModules,
 } from "./refs.ts";
 export * from "./protocol.ts";
 export * from "./sse.ts";

@@ -295,11 +295,55 @@ type FunctionDef<
   Ctx extends InvocationContext,
 > = ExposureDef & {
   readonly args: A;
+  /**
+   * Declares a function with no client-facing address: erased from the
+   * generated `api` tree, published on `internal.*`, and treated by every
+   * transport exactly as a name that never existed. Only the literal `true`
+   * — a computed boolean cannot silently widen a function into the client
+   * surface. Orthogonal to `access`, which is still declared and enforced
+   * for server-side callers.
+   */
+  readonly internal?: true;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
   readonly handler: FunctionHandler<A, Ctx>;
 };
+
+/** Carries a declaration's `internal: true` onto the registered type for erasure. */
+type InternalMarkOf<Definition> = Definition extends { readonly internal: true }
+  ? { readonly internal: true }
+  : unknown;
+
+/**
+ * The one interpreter of `internal`: exactly `true` or absent, and never
+ * combined with HTTP exposure on the same declaration — one declaration must
+ * not both erase its client address and claim an HTTP path.
+ */
+export function internalDeclaration(
+  def: { readonly internal?: unknown; readonly http?: unknown },
+  where: string,
+): boolean {
+  if (def.internal === undefined) return false;
+  if (def.internal !== true) {
+    throw new TypeError(`${where} internal must be the literal true or absent`);
+  }
+  if (httpExposure(def.http, `${where} http`) !== null) {
+    throw new TypeError(
+      `${where} declares internal: true and HTTP exposure — an internal function has no client-facing address`,
+    );
+  }
+  return true;
+}
+
+/** Startup refusal for kinds that exist only at the transport boundary. */
+export function refuseInternalDeclaration(def: object, what: string): void {
+  if ((def as { readonly internal?: unknown }).internal !== undefined) {
+    throw new TypeError(
+      `${what} cannot declare internal — it exists only at the transport boundary, so an internal one would be callable by nobody`,
+    );
+  }
+}
 
 type DefinitionReturn<Definition extends { readonly handler: Function }> =
   Definition["handler"] extends (...args: never[]) => infer HandlerReturn
@@ -388,6 +432,8 @@ export interface Registered<
   H = R,
 > extends Invocable<K, A, Ctx, R, H>, ExposureDef {
   readonly isAckerDB: true;
+  /** Present exactly when the declaration wrote `internal: true`. */
+  readonly internal?: true;
 }
 
 export type RegisteredQuery<
@@ -503,12 +549,13 @@ function register<K extends string>(kind: K) {
     Ctx,
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
-  > => {
+  > & InternalMarkOf<Definition> => {
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
     validateArgsShape(def.args);
     validateOutputDeclarations(def as never);
+    const internal = internalDeclaration(def, kind);
     const exposure = exposureFields(def);
 
     const callable =
@@ -521,6 +568,7 @@ function register<K extends string>(kind: K) {
       isAckerDB: true as const,
       kind,
       args: def.args,
+      ...(internal ? { internal: true as const } : {}),
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
       ...exposure,
@@ -532,7 +580,7 @@ function register<K extends string>(kind: K) {
       Ctx,
       ResultOfDefinition<Definition>,
       DefinitionReturn<Definition>
-    >;
+    > & InternalMarkOf<Definition>;
     compileInvocation(registered);
     return registered;
   };
@@ -555,6 +603,7 @@ function registerCallable<K extends string>(kind: K) {
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
   > &
+    InternalMarkOf<Definition> &
     ((
       ctx: Ctx,
       args: Expand<ArgsInput<A>>,
@@ -589,6 +638,7 @@ export function sseProcedure<
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
 >(def: SseDef<A, Y, Ctx>): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> {
+  refuseInternalDeclaration(def, "an sseProcedure");
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
@@ -629,6 +679,7 @@ export type QueryBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  InternalMarkOf<Definition> &
   ((
     ctx: QueryCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -651,6 +702,7 @@ export type MutationBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  InternalMarkOf<Definition> &
   ((
     ctx: MutationCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -678,6 +730,7 @@ export type ProcedureBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  InternalMarkOf<Definition> &
   ((
     ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<ArgsInput<A>>,

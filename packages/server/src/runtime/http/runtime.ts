@@ -570,7 +570,7 @@ export class RuntimeHttp {
     address: string,
     kind: "mutation" | "procedure" | "sse",
   ): AnyRegistered {
-    const fn = this.options.registry.get(address);
+    const fn = this.options.registry.remote(address);
     if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);
     if (fn.kind !== kind) {
       throw new AckerDBError("validation", `"${address}" is a ${fn.kind}, expected a ${kind}`);
