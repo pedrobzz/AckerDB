@@ -261,7 +261,36 @@ resolution and semver-gated regressions, escalation forecasting, ML
 similarity grouping, and browser source-map ingestion (client-side capture is
 a separate conditional feature).
 
-## 10. Web analytics (client-side)
+## 10. Web analytics (client-side, cookieless)
 
-Pending — a further research pass on privacy-first, cookieless web analytics
-is in flight; its findings will be folded in here.
+**The pattern.** A privacy-first web-analytics product feels complete with a
+small ungated core: five KPIs — pageviews, unique visitors, sessions, bounce
+rate, and **median** (not mean) session duration — plus four breakdowns
+(pages, categorized referrers, geo, device/browser) and a custom-events table
+with property distributions. Funnels, goals, web vitals, and error views are
+add-ons even in the commercial products.
+
+- Cookieless capture is unglamorous: a localStorage anonymous UUID plus a
+  sessionStorage session id with a 30-minute rolling window — no
+  fingerprinting. Privacy hardening happens server-side: optional
+  daily-salted hashing of the anonymous id, and geo resolved from the IP
+  before the IP itself is hashed, so raw IPs are never stored.
+- The browser script always captures SPA-aware page views plus a
+  **page-exit beacon** carrying time-on-page, scroll depth, and interaction
+  count — the exit beacon is what makes bounce rate and session duration
+  honest. Error capture, web vitals, and outbound-link tracking are opt-in
+  and default off. Reference bundle size: ~37 KB raw / ~11 KB gzipped, with
+  batched send queues, retry, and sendBeacon on unload.
+- Storage is one wide raw events table and a single materialized rollup;
+  sessions, bounce, and first-touch attribution are computed at query time
+  (`argMin`-style first-touch) — there is no session table. The product's
+  own single-node mode is just "in-process buffer + batch insert", which
+  maps directly onto SQLite.
+
+**What Studio takes.** The five-KPI + four-breakdown core as the minimal
+web-analytics scope inside Analytics; a client-generated session id with
+query-time session aggregation (at most one daily rollup at our scale, on
+the existing aggregation series); and for client-side capture, page views +
+page-exit always-on with errors/vitals opt-in, riding the existing client
+connection, with explicit identification mapping onto AckerDB's durable
+Identity — no anonymous-to-identified merge machinery needed server-side.
