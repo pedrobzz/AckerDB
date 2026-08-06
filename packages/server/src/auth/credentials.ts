@@ -9,8 +9,11 @@ import {
 import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
-import { hasMcpTokenPrefix } from "../mcp/credential.ts";
 import { isScopeGrant } from "./access-policy.ts";
+import {
+  hasCredentialTokenPrefix,
+  VAULT_CREDENTIAL_AUTHORITY,
+} from "./credential-token.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -49,22 +52,12 @@ export interface UserPrincipal extends ExternalPrincipal {
   readonly scopes: readonly string[];
 }
 
-/** Non-expiring delegated MCP authority bound directly to one durable Identity and endpoint. */
-export interface McpPrincipal {
-  readonly kind: "mcp";
-  readonly identity: Identity;
-  readonly mcp: string;
-  readonly tokenId: string;
-  readonly scopes: readonly string[];
-}
-
 export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
 export type AuthenticatedPrincipal = UserPrincipal | WorkloadPrincipal;
 export type ClientPrincipal = AnonymousPrincipal | AuthenticatedPrincipal;
 export type Principal =
   | AnonymousPrincipal
   | UserPrincipal
-  | McpPrincipal
   | WorkloadPrincipal
   | SystemPrincipal;
 export type IdentityResolver = (
@@ -73,11 +66,14 @@ export type IdentityResolver = (
 ) => Promise<Identity>;
 /**
  * Resolves the scope grant an Identity holds, drawn from the application
- * vocabulary. Absent resolver = every principal carries the empty grant.
+ * vocabulary. `account` is the verified external account at credential
+ * verification, and null when the framework re-derives an issuer's grant for
+ * the child-credential intersection. Absent resolver = every principal
+ * carries the empty grant.
  */
 export type ScopeResolver = (
   identity: Identity,
-  account: ExternalAccount,
+  account: ExternalAccount | null,
 ) => readonly string[] | Promise<readonly string[]>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
@@ -93,7 +89,10 @@ function isExternalPrincipal(value: unknown): value is ExternalPrincipal & { kin
     typeof principal.subject === "string" &&
     principal.subject.length > 0 &&
     typeof principal.expiresAt === "number" &&
-    Number.isFinite(principal.expiresAt) &&
+    // Vault-issued credentials never expire: POSITIVE_INFINITY is the one
+    // sanctioned non-finite expiry, revoked by invalidation instead of time.
+    (Number.isFinite(principal.expiresAt) ||
+      principal.expiresAt === Number.POSITIVE_INFINITY) &&
     typeof principal.claims === "object" &&
     principal.claims !== null &&
     (principal.tokenId === null || typeof principal.tokenId === "string")
@@ -104,17 +103,6 @@ export function isPrincipal(value: unknown): value is Principal {
   if (typeof value !== "object" || value === null || !("kind" in value)) return false;
   const principal = value as Partial<Principal>;
   if (principal.kind === "anonymous" || principal.kind === "system") return !("identity" in value);
-  if (principal.kind === "mcp") {
-    return (
-      typeof principal.identity === "bigint" &&
-      principal.identity > 0n &&
-      typeof principal.mcp === "string" &&
-      principal.mcp.length > 0 &&
-      typeof principal.tokenId === "string" &&
-      principal.tokenId.length > 0 &&
-      isScopeGrant(principal.scopes)
-    );
-  }
   if (!isExternalPrincipal(value)) return false;
   const identity = (value as { readonly identity?: unknown }).identity;
   return principal.kind === "workload"
@@ -489,9 +477,15 @@ export async function verifyBearerCredential(
   verifier: CredentialVerifier | undefined,
   now: () => number = Date.now,
 ): Promise<VerifiedCredential> {
-  // MCP credentials have a separate Engine-backed authority path and can never
-  // fall through to a custom OIDC/external credential verifier.
-  if (hasMcpTokenPrefix(rawBearerToken)) throw unauthenticated();
+  // Vault credentials are Engine-backed authority: only the Runtime's
+  // composed verifier may answer them, never a custom application verifier.
+  if (
+    hasCredentialTokenPrefix(rawBearerToken) &&
+    (verifier as { [VAULT_CREDENTIAL_AUTHORITY]?: boolean } | undefined)
+      ?.[VAULT_CREDENTIAL_AUTHORITY] !== true
+  ) {
+    throw unauthenticated();
+  }
   let credential: Credential;
   try {
     credential = parseCredential({ kind: "bearer", token: rawBearerToken });

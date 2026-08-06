@@ -134,11 +134,45 @@ export function checkRequirementAgainstVocabulary(
   }
 }
 
+/** Validate a stored or requested grant completely against the declared vocabulary. */
+export function normalizeGrantAgainstVocabulary(
+  vocabulary: readonly string[] | undefined,
+  value: unknown,
+  where: string,
+): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new AckerDBError("validation", `${where} must be an array`);
+  }
+  if (value.length === 0) return EMPTY_SCOPES;
+  if (vocabulary === undefined) {
+    throw new AckerDBError(
+      "validation",
+      `${where} names scopes but the application declares no scope vocabulary`,
+    );
+  }
+  if (value.length > vocabulary.length) {
+    throw new AckerDBError("validation", `${where} contains too many values`);
+  }
+  const requested = new Set<string>();
+  for (const scope of value) {
+    if (typeof scope !== "string" || !vocabulary.includes(scope)) {
+      throw new AckerDBError(
+        "validation",
+        `${where} contains undeclared scope ${JSON.stringify(scope)}`,
+      );
+    }
+    if (requested.has(scope)) {
+      throw new AckerDBError("validation", `${where} must not contain duplicate values`);
+    }
+    requested.add(scope);
+  }
+  // Declaration order: grants compare and render identically however requested.
+  return Object.freeze(vocabulary.filter((scope) => requested.has(scope)));
+}
+
 /** The grant a principal carries. Anonymous and system principals hold none. */
 export function principalScopes(principal: Principal): readonly string[] {
-  return principal.kind === "user" || principal.kind === "mcp"
-    ? principal.scopes
-    : EMPTY_SCOPES;
+  return principal.kind === "user" ? principal.scopes : EMPTY_SCOPES;
 }
 
 export function isScopeAuthorized(

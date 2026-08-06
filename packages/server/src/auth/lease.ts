@@ -219,6 +219,8 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   };
 
   const scheduleExpiry = (verified: AuthenticatedPrincipal): void => {
+    // Vault credentials never expire; invalidation revokes them instead.
+    if (!Number.isFinite(verified.expiresAt)) return;
     try {
       const now = clock.now();
       if (!Number.isFinite(now)) throw new RangeError("auth lease clock must return finite milliseconds");

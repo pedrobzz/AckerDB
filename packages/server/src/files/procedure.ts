@@ -27,7 +27,7 @@ export interface FileProcedureRuntimeOptions {
 }
 
 function owner(principal: Principal): FileMetadata["owner"] {
-  return principal.kind === "user" || principal.kind === "mcp" ? principal.identity : null;
+  return principal.kind === "user" ? principal.identity : null;
 }
 
 function boundedBody(source: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {

@@ -29,6 +29,8 @@ export interface RuntimeOptions {
    * live sessions re-authorize immediately.
    */
   readonly resolveScopes?: ScopeResolver;
+  /** The application scope vocabulary (defineApp({ scopes })); undefined when none. */
+  readonly scopes?: readonly string[];
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;

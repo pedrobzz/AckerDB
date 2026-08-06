@@ -91,7 +91,6 @@ import {
   httpHandler as httpHandlerGeneric,
   job as jobGeneric,
   realtime as realtimeGeneric,
-  mcpAuth as mcpAuthGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -110,7 +109,6 @@ import type {
   JobBuilder,
   JobCtx as GenericJobCtx,
   JobTxCtx as GenericJobTxCtx,
-  McpAuthBuilder,
   McpBuilder,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
@@ -149,8 +147,7 @@ export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedureP
 export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
 export const job = jobGeneric as JobBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export const mcp = mcpGeneric as McpBuilder<Schema>;
-export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
+export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;
 
 export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins, QueryJobs>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins, MutationJobs>;

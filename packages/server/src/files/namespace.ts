@@ -97,7 +97,7 @@ function filePublicUrl(value: string | undefined): string {
 }
 
 function principalIdentity(principal: Principal): Identity | null {
-  return principal.kind === "user" || principal.kind === "mcp" ? principal.identity : null;
+  return principal.kind === "user" ? principal.identity : null;
 }
 
 function fileMetadata(row: FileRow | null): FileMetadata | null {

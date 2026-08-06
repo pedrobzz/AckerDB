@@ -18,10 +18,14 @@ import {
   SYSTEM_PRINCIPAL,
   type CredentialVerifier,
   type ExternalAccount,
-  type McpPrincipal,
   type Principal,
   type ScopeResolver,
 } from "../auth/credentials.ts";
+import { CREDENTIAL_ISSUER, parseCredentialToken, type ParsedCredentialToken } from "../auth/credential-token.ts";
+import {
+  RuntimeCredentials,
+  type CredentialLease,
+} from "./credentials/runtime.ts";
 import {
   AuthInvalidationBoundary,
   type AuthInvalidationPublisher,
@@ -40,7 +44,6 @@ import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
 import type { McpCallToolResult } from "../mcp/content.ts";
-import type { ParsedMcpToken } from "../mcp/credential.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import {
   PluginRuntime,
@@ -73,7 +76,6 @@ import {
 import type { RuntimeLifecycleState } from "./contracts/lifecycle.ts";
 import type { RuntimeOptions } from "./contracts/options.ts";
 import type {
-  McpCredentialLease,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
   RuntimeMcpToolRequest,
@@ -128,8 +130,6 @@ export class Runtime implements RuntimePort {
   readonly engine: Engine;
   readonly registry: Registry;
   readonly credentialVerifier: CredentialVerifier | undefined;
-  /** Scope grants ride the same re-verification: an auth-epoch change re-reads them. */
-  readonly resolveScopes?: ScopeResolver;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
   readonly telemetryJournal: TelemetryJournal;
@@ -147,6 +147,7 @@ export class Runtime implements RuntimePort {
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
   private readonly pluginRuntime: PluginRuntime | undefined;
+  private readonly credentials: RuntimeCredentials;
   private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: AuthInvalidationPublisher;
   private readonly reads: RuntimeReadExecutor;
@@ -221,15 +222,26 @@ export class Runtime implements RuntimePort {
     if (options.verifier !== undefined) {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
-    this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    if (options.resolveScopes !== undefined && typeof options.resolveScopes !== "function") {
+      throw new TypeError("Runtime resolveScopes must be a function");
+    }
+    // The Runtime's one credential authority: vault credentials compose with
+    // the application verifier, and both invalidate through one boundary.
+    this.credentials = new RuntimeCredentials({
+      engine: this.engine,
+      reads: () => this.reads,
+      now: this.now,
+      assertReady: () => this.control.assertReady(),
+      operationSignal: (signal) => this.control.operationSignal(signal),
+      ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
+      ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
+      ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
+      subscribeInvalidation: (listener) => this.authInvalidation.subscribeDirect(listener),
+      revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
+    });
+    this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
-    if (options.resolveScopes !== undefined) {
-      if (typeof options.resolveScopes !== "function") {
-        throw new TypeError("Runtime resolveScopes must be a function");
-      }
-      this.resolveScopes = options.resolveScopes;
-    }
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
@@ -306,22 +318,15 @@ export class Runtime implements RuntimePort {
       log: this.log,
       pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
+      ...(options.scopes === undefined ? {} : { scopes: options.scopes }),
+      publishCredentialInvalidations: (accounts) => {
+        for (const account of accounts) this.authInvalidation.publishAccount(account);
+      },
       ...(hasMcpCapabilities
         ? {
             mcp: {
-              bindTokenContext: (context, principal, connection, reads, writes, work) =>
-                this.mcp.bindTokenContext(
-                  context,
-                  principal,
-                  connection,
-                  reads,
-                  writes,
-                  work,
-                ),
               bindAiContext: (context, fairnessKey, requestBytes) =>
                 this.mcp.bindAiContext(context, fairnessKey, requestBytes),
-              publishCommittedInvalidations: (writes) =>
-                this.mcp.publishCommittedInvalidations(writes),
             },
           }
         : {}),
@@ -372,14 +377,12 @@ export class Runtime implements RuntimePort {
       now: this.now,
     });
     this.mcp = new RuntimeMcp({
-      engine: this.engine,
       registry: this.registry,
-      limits: this.limits,
+      ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
       reads: this.reads,
       functions: this.functions,
       operations: this.operations,
       now: this.now,
-      assertReady: () => this.control.assertReady(),
       operationSignal: (signal) => this.control.operationSignal(signal),
       admittedRequestBytes: (request, receivedBytes) =>
         this.control.admittedRequestBytes(request, receivedBytes),
@@ -517,6 +520,11 @@ export class Runtime implements RuntimePort {
     account: ExternalAccount,
     signal?: AbortSignal,
   ): Promise<Identity> {
+    // A vault credential is already an Identity; it is resolved from the
+    // vault, never provisioned as an external account.
+    if (account.issuer === CREDENTIAL_ISSUER) {
+      return this.credentials.identityFor(account, signal);
+    }
     const requestBytes = this.control.admittedRequestBytes(account);
     const operationSignal = this.control.operationSignal(signal);
     const fairnessKey = externalAccountFairnessKey(account);
@@ -535,24 +543,30 @@ export class Runtime implements RuntimePort {
     );
   }
 
-  /** Resolve one endpoint-bound MCP bearer without consulting external identity providers. */
-  async authenticateMcpToken(
-    mcp: string,
+  /** Scope grants ride the same re-verification: an auth-epoch change re-reads them. */
+  readonly resolveScopes: ScopeResolver = (identity, account) =>
+    this.credentials.resolveScopes(identity, account);
+
+  /** Authenticate one raw vault credential into its full first-class principal. */
+  async authenticateCredential(
     rawToken: string,
     fairnessKey: string,
     signal?: AbortSignal,
-  ): Promise<McpPrincipal> {
-    return this.mcp.authenticateToken(mcp, rawToken, fairnessKey, signal);
+  ): Promise<Principal> {
+    const parsed = parseCredentialToken(rawToken);
+    if (parsed === null) {
+      throw new AckerDBError("unauthenticated", "invalid credential");
+    }
+    return this.credentials.authenticate(parsed, fairnessKey, signal);
   }
 
-  /** Own one exact non-expiring MCP credential from verification through HTTP completion. */
-  async acquireMcpTokenLease(
-    mcp: string,
-    parsed: ParsedMcpToken,
+  /** Own one exact non-expiring identity credential from verification through HTTP completion. */
+  async acquireCredentialLease(
+    parsed: ParsedCredentialToken,
     fairnessKey: string,
     signal?: AbortSignal,
-  ): Promise<McpCredentialLease> {
-    return this.mcp.acquireTokenLease(mcp, parsed, fairnessKey, signal);
+  ): Promise<CredentialLease> {
+    return this.credentials.acquireLease(parsed, fairnessKey, signal);
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {

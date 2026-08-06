@@ -2,6 +2,7 @@ import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.j
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
+import { credentials } from "../../src/auth/credential-context.ts";
 import { v } from "../../src/validation/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { serve } from "../../src/transport/server.ts";
@@ -17,7 +18,6 @@ import {
   session,
   trackCleanup,
   typedMcp,
-  typedMcpAuth,
   typedMutation,
   typedProcedure,
   typedQuery,
@@ -92,7 +92,7 @@ function releaseGates(): void {
 const createOwnershipToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => ownershipAuth.tokens.create(ctx, {
+  handler: (ctx, args) => credentials.create(ctx, {
     name: args.name,
     metadata: {},
   }),
@@ -123,7 +123,9 @@ const insertOwnershipRecord = typedMutation({
   access: "authenticated",
   args: { value: v.string() },
   handler: (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     ctx.analytics.track("ownership record inserted");
     return ctx.db.records.insert({ owner: ctx.auth.identity, value: args.value });
   },
@@ -157,10 +159,8 @@ const nestedOwnershipWrite = typedProcedure({
   },
 });
 
-const ownershipAuth = typedMcpAuth({ name: "ownership" });
 const ownershipMcp = typedMcp({
   name: "ownership",
-  auth: ownershipAuth,
   path: "/ownership/mcp",
   tools: {
     hold_ownership: { fn: holdOwnership, access: "public" },
@@ -314,7 +314,7 @@ afterEach(async () => {
 });
 
 describe("MCP Runtime ownership", () => {
-  test("shares HTTP and Runtime admission fairly by durable Identity", async () => {
+  test("shares HTTP and Runtime admission fairly by credential Identity", async () => {
     const value = startHarness(2, 1);
     const [aliceOne, aliceTwo] = await tokens(value, "alice", ["Alice one", "Alice two"]);
     const [bob] = await tokens(value, "bob", ["Bob"]);
@@ -337,25 +337,26 @@ describe("MCP Runtime ownership", () => {
     expect((await heldBob).status).toBe(200);
     await eventually(() => value.runtime.status().activeOperations === 1);
     expect((await rpc(value, "ping_ownership", {}, carol)).status).toBe(200);
-    const sameIdentity = await rpc(value, "ping_ownership", {}, aliceTwo);
-    expect(sameIdentity.status).toBe(429);
+    // The same credential shares one fairness bucket; a sibling credential of
+    // the same owner is its own first-class Identity with its own bucket.
+    const sameCredential = await rpc(value, "ping_ownership", {}, aliceOne);
+    expect(sameCredential.status).toBe(429);
+    const siblingCredential = await rpc(value, "ping_ownership", {}, aliceTwo);
+    expect(siblingCredential.status).toBe(200);
 
     aliceGate.release();
     expect((await heldAlice).status).toBe(200);
     await expectIdle(value);
 
-    const alicePrincipalOne = await value.runtime.authenticateMcpToken(
-      ownershipMcp.name,
+    const alicePrincipalOne = await value.runtime.authenticateCredential(
       aliceOne!,
       "authenticate-alice-one",
     );
-    const alicePrincipalTwo = await value.runtime.authenticateMcpToken(
-      ownershipMcp.name,
+    const alicePrincipalTwo = await value.runtime.authenticateCredential(
       aliceTwo!,
       "authenticate-alice-two",
     );
-    const bobPrincipal = await value.runtime.authenticateMcpToken(
-      ownershipMcp.name,
+    const bobPrincipal = await value.runtime.authenticateCredential(
       bob!,
       "authenticate-bob",
     );
@@ -363,11 +364,14 @@ describe("MCP Runtime ownership", () => {
       family: "test",
       address: "one",
     });
+    // Transport-independent: the same credential owns one key everywhere.
+    expect(callerFairnessKey(alicePrincipalOne, { family: "other", address: "two" }))
+      .toBe(aliceKeyOne);
     const aliceKeyTwo = callerFairnessKey(alicePrincipalTwo, {
       family: "other",
       address: "two",
     });
-    expect(aliceKeyOne).toBe(aliceKeyTwo);
+    expect(aliceKeyTwo).not.toBe(aliceKeyOne);
     const directGate = gate("direct-alice");
     const direct = value.runtime.runMcpTool({
       id: "direct-held",
@@ -386,11 +390,11 @@ describe("MCP Runtime ownership", () => {
       authorization: value.runtime.authorizeMcpTool(
         ownershipMcp.name,
         "ping_ownership",
-        alicePrincipalTwo,
+        alicePrincipalOne,
       ),
       args: {},
-      principal: alicePrincipalTwo,
-      fairnessKey: aliceKeyTwo,
+      principal: alicePrincipalOne,
+      fairnessKey: aliceKeyOne,
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     await expect(value.runtime.runMcpTool({
       id: "direct-cold",
@@ -402,7 +406,7 @@ describe("MCP Runtime ownership", () => {
       args: {},
       principal: bobPrincipal,
       fairnessKey: callerFairnessKey(bobPrincipal, { family: "test", address: "bob" }),
-    })).resolves.toMatchObject({ structuredContent: { kind: "mcp" } });
+    })).resolves.toMatchObject({ structuredContent: { kind: "user" } });
     directGate.release();
     await direct;
     await expectIdle(value);
@@ -423,11 +427,9 @@ describe("MCP Runtime ownership", () => {
       },
     });
     const [token] = await tokens(value, "nested", ["Nested"]);
-    const principal = await value.runtime.authenticateMcpToken(
-      ownershipMcp.name,
-      token!,
-      "nested-analytics",
-    );
+    const principal = await value.runtime.authenticateCredential(token!, "nested-analytics") as {
+      readonly identity: bigint;
+    };
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
       value: "private-nested-value",
@@ -602,7 +604,7 @@ describe("MCP Runtime ownership", () => {
       result: { structuredContent: { kind: "anonymous" } },
     });
     expect(await authenticatedResponse.json()).toMatchObject({
-      result: { structuredContent: { kind: "mcp" } },
+      result: { structuredContent: { kind: "user" } },
     });
     expect(value.server.state).toBe("stopped");
     expect(value.runtime.state).toBe("stopped");

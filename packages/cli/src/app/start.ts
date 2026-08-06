@@ -431,6 +431,7 @@ export async function startApp<const A extends App = App>(
       },
       ...(verifier === undefined ? {} : { verifier }),
       ...(resolveScopes === undefined ? {} : { resolveScopes }),
+      ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
       ...(options.telemetryJournal === undefined

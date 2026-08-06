@@ -24,15 +24,13 @@ import {
   type AnyRegisteredRealtime,
 } from "../realtime/definition.ts";
 import {
-  isMcpAuthProvider,
   isMcpDeclaration,
   isRegisteredMcpTool,
-  type AnyMcpAuthProvider,
   type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
-import { isMcpToolAuthorized } from "../mcp/scopes.ts";
+import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
 import {
   checkRequirementAgainstVocabulary,
   normalizeScopeRequirement,
@@ -48,7 +46,7 @@ import {
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
 
-type ServerOnlyExport = AnyMcpDeclaration | AnyMcpAuthProvider;
+type ServerOnlyExport = AnyMcpDeclaration;
 
 interface ModuleExport {
   readonly address: string;
@@ -216,11 +214,6 @@ export class Registry {
     }
 
     for (const { address, value } of moduleExports) {
-      if (!isMcpAuthProvider(value)) continue;
-      this.serverOnly.set(address, value);
-    }
-
-    for (const { address, value } of moduleExports) {
       if (
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
@@ -252,6 +245,17 @@ export class Registry {
         vocabulary,
         `function "${address}"`,
       );
+    }
+    for (const tool of this.mcpTools.values()) {
+      const policy = tool.accessPolicy;
+      if (policy.kind !== "anyOf" && policy.kind !== "allOf") continue;
+      const where = `MCP "${tool.mcp.name}" tool "${tool.name}"`;
+      if (vocabulary === undefined) {
+        throw new TypeError(
+          `${where} requires scopes but the application declares no scope vocabulary`,
+        );
+      }
+      checkRequirementAgainstVocabulary(policy, vocabulary, where);
     }
   }
 

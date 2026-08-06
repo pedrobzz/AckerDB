@@ -40,6 +40,11 @@ import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { McpAiContext } from "../../mcp/ai.ts";
 import {
+  takeCredentialInvalidations,
+  withCredentialContext,
+} from "../../auth/credential-context.ts";
+import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
+import {
   PluginRuntime,
   type PluginInvocationCapabilities,
   type PluginReadExecution,
@@ -136,20 +141,11 @@ export interface RuntimeMutationCommitRequest {
 }
 
 export interface RuntimeFunctionMcpCapabilities {
-  bindTokenContext<T extends object, R>(
-    context: T,
-    principal: Principal,
-    connection: Database,
-    reads: ReadRecorder | null,
-    writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>>;
   bindAiContext(
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): () => void;
-  publishCommittedInvalidations(writes: WriteCollector): void;
 }
 
 interface RuntimeCommitRequest<T> {
@@ -176,6 +172,10 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly log: ApplicationLogger;
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
+  /** The application scope vocabulary; undefined when the app declares none. */
+  readonly scopes?: readonly string[];
+  /** Committed credential revocations and grant changes, onto the generic auth-invalidation path. */
+  readonly publishCredentialInvalidations: (accounts: readonly ExternalAccount[]) => void;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
   /** Commit-wake: fired when a transaction touched the jobs table. */
   readonly armJobs: () => void;
@@ -206,7 +206,10 @@ export class RuntimeFunctionExecutor<C> {
       afterCommit: (writes, commitVersion) => {
         options.files.observability.committed(writes.fileObservability);
         if (writes.fileCleanupAt !== null) options.files.scheduleCleanupAt(writes.fileCleanupAt);
-        options.mcp?.publishCommittedInvalidations(writes);
+        const credentialInvalidations = takeCredentialInvalidations(writes);
+        if (credentialInvalidations.length > 0) {
+          options.publishCredentialInvalidations(credentialInvalidations);
+        }
         const analytics = this.analyticsByWrites.get(writes);
         if (analytics !== undefined) {
           this.analyticsByWrites.delete(writes);
@@ -227,6 +230,27 @@ export class RuntimeFunctionExecutor<C> {
 
   snapshot() {
     return this.coordinator.snapshot();
+  }
+
+  /** Expose `credentials` operations to exactly one active invocation context. */
+  private bindCredentialContext<T extends object, R>(
+    context: T,
+    principal: Principal,
+    connection: Database,
+    reads: ReadRecorder | null,
+    writes: WriteCollector | null,
+    work: (ctx: T) => R | Promise<R>,
+  ): Promise<Awaited<R>> {
+    return withCredentialContext(context, {
+      engine: this.options.engine,
+      connection,
+      principal,
+      reads,
+      writes,
+      limits: this.options.limits.mcp,
+      vocabulary: this.options.scopes,
+      now: this.options.now,
+    }, work);
   }
 
   close(): void {
@@ -325,16 +349,14 @@ export class RuntimeFunctionExecutor<C> {
     );
     const timestamp = this.readNow();
     const context = this.hostQueryContext(db, principal, timestamp, execution);
-    return this.options.mcp !== undefined
-      ? this.options.mcp.bindTokenContext(
-          context,
-          principal,
-          execution.connection,
-          execution.reads,
-          null,
-          (ctx) => invokeFunction(fn, ctx, args),
-        )
-      : invokeFunction(fn, context, args);
+    return this.bindCredentialContext(
+      context,
+      principal,
+      execution.connection,
+      execution.reads,
+      null,
+      (ctx) => invokeFunction(fn, ctx, args),
+    );
   }
 
   commitMutation(
@@ -379,16 +401,14 @@ export class RuntimeFunctionExecutor<C> {
               timestamp,
             }) as TxCtx;
             try {
-              return await (this.options.mcp !== undefined
-                ? this.options.mcp.bindTokenContext(
-                    context,
-                    principal,
-                    this.options.engine.writer,
-                    null,
-                    writes,
-                    work,
-                  )
-                : work(context));
+              return await this.bindCredentialContext(
+                context,
+                principal,
+                this.options.engine.writer,
+                null,
+                writes,
+                work,
+              );
             } catch (error) {
               return poisonCurrentInvocation(error);
             }
@@ -475,16 +495,14 @@ export class RuntimeFunctionExecutor<C> {
             return scope.runRoot((mutationAccess) =>
               withMutationAccess(mutationAccess, async () => {
                 try {
-                  const value = await (this.options.mcp !== undefined
-                    ? this.options.mcp.bindTokenContext(
-                        context,
-                        principal,
-                        this.options.engine.writer,
-                        null,
-                        writes,
-                        work,
-                      )
-                    : work(context));
+                  const value = await this.bindCredentialContext(
+                    context,
+                    principal,
+                    this.options.engine.writer,
+                    null,
+                    writes,
+                    work,
+                  );
                   return isResult(value) ? value : Ok(value);
                 } catch (error) {
                   return poisonCurrentInvocation(error);
@@ -589,16 +607,14 @@ export class RuntimeFunctionExecutor<C> {
       const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
-        this.options.mcp !== undefined
-          ? this.options.mcp.bindTokenContext(
-              invocation,
-              principal,
-              this.options.engine.writer,
-              null,
-              writes,
-              (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
-            )
-          : invokeFunction(fn, invocation, args, { mutationAccess }));
+        this.bindCredentialContext(
+          invocation,
+          principal,
+          this.options.engine.writer,
+          null,
+          writes,
+          (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
+        ));
     };
   }
 
@@ -732,16 +748,14 @@ export class RuntimeFunctionExecutor<C> {
               { functionAddress: jobAddress, functionKind: "job" },
               { attempt },
             ) as MutationCtx & { readonly attempt: number };
-            return this.options.mcp !== undefined
-              ? await this.options.mcp.bindTokenContext(
-                  context,
-                  SYSTEM_PRINCIPAL,
-                  this.options.engine.writer,
-                  null,
-                  writes,
-                  run,
-                )
-              : await run(context);
+            return await this.bindCredentialContext(
+              context,
+              SYSTEM_PRINCIPAL,
+              this.options.engine.writer,
+              null,
+              writes,
+              run,
+            );
           },
         };
         const scope = createMutationInvocationScope(this.options.engine.writer, writes);
@@ -820,6 +834,11 @@ export class RuntimeFunctionExecutor<C> {
       this.options.credentialVerifier,
       this.options.now,
     );
+    if (account.issuer === CREDENTIAL_ISSUER) {
+      // A vault credential is already a first-class Identity; aliasing it
+      // onto another Identity would give one credential two authorities.
+      throw new AckerDBError("validation", "credential tokens cannot be linked as external accounts");
+    }
     throwIfAborted(signal);
     await this.coordinator.transactFramework({
       fairnessKey,

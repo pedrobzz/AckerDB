@@ -218,7 +218,7 @@ export const tuya = service({
       "app.ts": FIXTURE_APP,
       "functions/agent.ts": `
 import { v } from "@ackerdb/server";
-import { mcp, mcpAuth, query } from "../_generated/server.ts";
+import { mcp, query } from "../_generated/server.ts";
 
 export const echo = query({
   description: "Echo text.",
@@ -227,10 +227,8 @@ export const echo = query({
   returns: v.object({ text: v.string() }),
   handler: (_ctx, args) => ({ text: args.text }),
 });
-export const agentAuth = mcpAuth({ name: "agent" });
 export const agentMcp = mcp({
   name: "agent",
-  auth: agentAuth,
   tools: { echo_text: { fn: echo, access: "public" } },
 });
 `,
@@ -243,17 +241,14 @@ export const agentMcp = mcp({
     expect(generatedServer).toContain('import type app from "../app.ts";');
     expect(generatedServer).toContain("export type Schema = AppSchema<typeof app>;");
     expect(generatedServer).toContain("mcp as mcpGeneric");
-    expect(generatedServer).toContain("mcpAuth as mcpAuthGeneric");
-    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema>;");
-    expect(generatedServer).toContain("export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;");
+    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;");
 
     const registry = new Registry(await importFunctionModules(config));
-    // The tool is an ordinary function and keeps its address; the endpoint and
-    // its auth provider are the only server-only exports.
+    // The tool is an ordinary function and keeps its address; the endpoint is
+    // the only server-only export.
     expect([...registry.functions.keys()]).toEqual(["agent.echo"]);
     expect([...registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
-      "agent.agentAuth",
     ]);
   });
 
