@@ -61,6 +61,9 @@ import {
   TelemetryJournal,
 } from "../telemetry/application-signals/journal.ts";
 import { TelemetryStore } from "../telemetry/storage/store.ts";
+import { TelemetryFlushInvalidation } from "../telemetry/storage/invalidation.ts";
+import { TelemetrySpanStore } from "../telemetry/storage/spans.ts";
+import { TelemetryErrorStore } from "../telemetry/errors/store.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import {
   TelemetryJournalExporters,
@@ -135,6 +138,10 @@ export class Runtime implements RuntimePort {
   readonly telemetry: Telemetry;
   readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
+  readonly telemetrySpans: TelemetrySpanStore;
+  readonly telemetryErrors: TelemetryErrorStore;
+  /** Studio's reactive `_studio.*` reads subscribe here for flush invalidation. */
+  readonly telemetryInvalidation = new TelemetryFlushInvalidation();
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
   readonly log: ApplicationLogger;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
@@ -255,6 +262,13 @@ export class Runtime implements RuntimePort {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
             },
+            // Framework events become durable journal rows and every span
+            // persists durably; the closures bind lazily because the
+            // read-model owners construct after telemetry.
+            durableSink: {
+              span: (record) => void this.telemetrySpans.append(record),
+              event: (record) => this.applicationSignals.framework(record),
+            },
           });
     this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
     this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
@@ -269,6 +283,18 @@ export class Runtime implements RuntimePort {
       assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
       admit: (session, fairnessKey, sessionOrder) =>
         this.control.admit(session, fairnessKey, sessionOrder),
+      captureError: (error, functionName, traceId) => {
+        try {
+          this.telemetryErrors.ingest({
+            error,
+            timestampMs: this.now(),
+            ...(functionName === undefined ? {} : { functionAddress: functionName }),
+            ...(traceId === undefined ? {} : { traceId }),
+          });
+        } catch {
+          // Error capture is diagnostic; the failing operation owns the outcome.
+        }
+      },
     });
     if (
       options.telemetryJournal instanceof TelemetryJournal &&
@@ -300,6 +326,10 @@ export class Runtime implements RuntimePort {
     if (this.telemetryJournal.snapshot().state !== "ready") {
       throw new TypeError("Runtime requires a ready telemetry journal");
     }
+    this.telemetryJournal.onPersist(() => this.telemetryInvalidation.notify());
+    this.telemetrySpans = new TelemetrySpanStore({ store: this.telemetryStore });
+    this.telemetrySpans.onPersist(() => this.telemetryInvalidation.notify());
+    this.telemetryErrors = new TelemetryErrorStore({ store: this.telemetryStore });
     this.applicationSignals = new ApplicationSignals(
       this.telemetryJournal,
       this.now,
@@ -464,6 +494,7 @@ export class Runtime implements RuntimePort {
       telemetry: this.telemetry,
       telemetryStore: this.telemetryStore,
       telemetryJournal: this.telemetryJournal,
+      telemetrySpans: this.telemetrySpans,
       ...(this.telemetryExporters === undefined
         ? {}
         : { telemetryExporters: this.telemetryExporters }),
@@ -482,7 +513,10 @@ export class Runtime implements RuntimePort {
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
-      stopSampler: () => this.sampler.stop(),
+      stopPeriodicTelemetry: () => {
+        this.sampler.stop();
+        this.telemetryInvalidation.stop();
+      },
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sessionApplication = new RuntimeSessionApplication({

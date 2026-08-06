@@ -2,9 +2,11 @@ import type { ClaimedHttpTrace } from "../../telemetry/external-trace.ts";
 import { finishClaimedHttpTrace } from "../../telemetry/external-trace.ts";
 import {
   FINISH_OPERATION_TRACE,
+  OPERATION_TRACE_CONTEXT,
   RECORD_OPERATION_SPAN,
   type Telemetry,
   type TelemetryOperation,
+  type TelemetryOutcome,
 } from "../../telemetry/telemetry.ts";
 import { isValidationError } from "../../validation/error.ts";
 import { AckerDBError } from "../../shared/errors.ts";
@@ -13,6 +15,7 @@ import { outcomeFromError } from "../outcome.ts";
 import type {
   RuntimeTraceBridge,
   RuntimeTraceIdentifiers,
+  RuntimeTraceScope,
 } from "../telemetry/trace-bridge.ts";
 
 export type RuntimeOperationOutcome<T> =
@@ -56,6 +59,17 @@ interface RuntimeOperationCapabilities<Session extends RuntimeOperationSession> 
     fairnessKey?: string,
     sessionOrder?: SessionOperationOrder,
   ) => OperationAdmission;
+  /** Error-group ingest for unhandled failures; expected outcomes never join. */
+  readonly captureError?: (
+    error: unknown,
+    functionName: string | undefined,
+    traceId: string | undefined,
+  ) => void;
+}
+
+/** Unhandled failures group; expected outcomes stay error rates in Traces. */
+function isUnhandledFailure(outcome: TelemetryOutcome): boolean {
+  return outcome === "internal" || outcome === "application_error";
 }
 
 export function transportError(error: unknown): unknown {
@@ -67,6 +81,11 @@ export function transportError(error: unknown): unknown {
 /** Owns admission, trace lifetime, cancellation, and finalization for every runtime operation. */
 export class RuntimeOperationRunner<Session extends RuntimeOperationSession> {
   constructor(private readonly capabilities: RuntimeOperationCapabilities<Session>) {}
+
+  private traceId(scope: RuntimeTraceScope | undefined): string | undefined {
+    if (scope === undefined) return undefined;
+    return this.capabilities.telemetry[OPERATION_TRACE_CONTEXT](scope.trace, 0)?.traceId;
+  }
 
   run<T, R = T>(
     session: Session | null,
@@ -120,8 +139,11 @@ export class RuntimeOperationRunner<Session extends RuntimeOperationSession> {
       }
     } catch (error) {
       const safeError = transportError(error);
+      const outcome: TelemetryOutcome = outcomeFromError(safeError).code;
+      if (isUnhandledFailure(outcome)) {
+        this.capabilities.captureError?.(safeError, functionName, this.traceId(observedScope));
+      }
       if (observedScope !== undefined) {
-        const outcome = outcomeFromError(safeError).code;
         telemetry[RECORD_OPERATION_SPAN](observedScope.trace, 0, 0, {
           operation,
           stage: "admission",
@@ -176,8 +198,11 @@ export class RuntimeOperationRunner<Session extends RuntimeOperationSession> {
         },
         (error): RuntimeOperationOutcome<T> => {
           const safeError = transportError(error);
+          const outcome: TelemetryOutcome = outcomeFromError(safeError).code;
+          if (isUnhandledFailure(outcome)) {
+            this.capabilities.captureError?.(safeError, functionName, this.traceId(observedScope));
+          }
           if (observedScope !== undefined) {
-            const outcome = outcomeFromError(safeError).code;
             if (synthesizeHandler && observedScope.invocations === 0) {
               tracing.span({
                 stage: "handler",

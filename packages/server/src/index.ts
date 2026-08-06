@@ -414,6 +414,7 @@ export {
   type TelemetryLocalSinkDropSnapshot,
   type TelemetryLocalSinkSnapshot,
   type TelemetryMetricInput,
+  type TelemetryDurableSink,
   type TelemetryMetricLabels,
   type TelemetryMetricRecord,
   type TelemetryMetricUnit,
@@ -449,6 +450,30 @@ export {
   type TelemetryStoreSnapshot,
 } from "./telemetry/storage/store.ts";
 export {
+  TELEMETRY_JOURNAL_DEPENDENCY_KEY,
+  TelemetryFlushInvalidation,
+  type TelemetryFlushInvalidationOptions,
+  type TelemetryInvalidationListener,
+} from "./telemetry/storage/invalidation.ts";
+export {
+  TelemetrySpanStore,
+  type TelemetrySpanStoreLimits,
+  type TelemetrySpanStoreOptions,
+  type TelemetrySpanStoreSnapshot,
+} from "./telemetry/storage/spans.ts";
+export {
+  ERROR_FINGERPRINT_ALGO_VERSION,
+  fingerprintError,
+  parameterizeErrorMessage,
+  type FingerprintedError,
+} from "./telemetry/errors/fingerprint.ts";
+export {
+  TelemetryErrorStore,
+  type TelemetryErrorIngest,
+  type TelemetryErrorStoreOptions,
+  type TelemetryErrorStoreSnapshot,
+} from "./telemetry/errors/store.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,
@@ -464,6 +489,7 @@ export type {
   AnalyticsEventRecord,
   ApplicationLogLevel,
   ApplicationLogRecord,
+  ApplicationLogSource,
   TelemetryJournalEntry,
   TelemetryJournalRecord,
 } from "./telemetry/application-signals/types.ts";

@@ -762,6 +762,7 @@ describe("Runtime telemetry acceptance", () => {
       sequence: 1n,
       timestamp: Date.now(),
       level: "error" as const,
+      source: "app" as const,
       message: "duplicate",
       truncated: false,
       malformed: false,
@@ -775,6 +776,116 @@ describe("Runtime telemetry acceptance", () => {
 
     expect(app.runtime.state).not.toBe("ready");
     expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({ state: "failed" });
+  });
+
+  test("journals framework failure events durably with source framework", async () => {
+    const app = harness({
+      enabled: true,
+      localSink: false,
+      limits: telemetryLimits,
+    });
+    const session = await app.openSession("framework-event-durability");
+
+    await expect(app.mutation(
+      session.context,
+      725_000_001,
+      "items.fail",
+      { room: 1n, body: "x" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+    await app.runtime.telemetryJournal.flush();
+
+    const frameworkRecords = (await app.runtime.telemetryJournal.readBatch(0n, 64))
+      .flatMap((record) => record.kind === "log" && record.source === "framework"
+        ? [record]
+        : []);
+    const failure = frameworkRecords.find((record) => record.message === "failure");
+    expect(failure).toMatchObject({
+      level: "error",
+      source: "framework",
+      functionKind: "framework",
+    });
+    expect(failure?.metadata).toMatchObject({ operation: "mutation" });
+    expect(encode(failure)).not.toContain(PRIVATE_FAILURE);
+
+    await app.runtime.telemetrySpans.flush();
+    const spanRows = app.runtime.telemetryStore.database.query(`
+      SELECT trace_id AS traceId, outcome
+      FROM _ackerdb_telemetry_spans
+      WHERE function_address = 'items.fail'
+      ORDER BY id
+    `).all() as { readonly traceId: string; readonly outcome: string }[];
+    expect(spanRows.length).toBeGreaterThan(0);
+    expect(spanRows.some((row) => row.outcome !== "ok")).toBe(true);
+    const summary = app.runtime.telemetryStore.database.query(`
+      SELECT root_function AS rootFunction, span_count AS spanCount, error_count AS errorCount
+      FROM _ackerdb_telemetry_traces
+      WHERE trace_id = ?
+    `).get(spanRows[0]!.traceId) as {
+      readonly rootFunction: string;
+      readonly spanCount: bigint;
+      readonly errorCount: bigint;
+    };
+    expect(summary.rootFunction).toBe("items.fail");
+    expect(summary.spanCount).toBeGreaterThan(0n);
+    expect(summary.errorCount).toBeGreaterThan(0n);
+  });
+
+  test("groups unhandled failures at the operation runner funnel", async () => {
+    const app = harness({
+      enabled: true,
+      localSink: false,
+      limits: telemetryLimits,
+    });
+    const session = await app.openSession("error-grouping");
+
+    // A validation failure is an expected outcome — it never joins a group.
+    await expect(app.mutation(
+      session.context,
+      726_000_001,
+      "items.fail",
+      { room: "not-a-bigint", body: 42 },
+    )).rejects.toBeDefined();
+    expect(app.runtime.telemetryErrors.snapshot().ingestedErrors).toBe(0);
+
+    await expect(app.mutation(
+      session.context,
+      726_000_002,
+      "items.fail",
+      { room: 1n, body: "first" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+    await expect(app.mutation(
+      session.context,
+      726_000_003,
+      "items.fail",
+      { room: 2n, body: "second" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+
+    expect(app.runtime.telemetryErrors.snapshot()).toMatchObject({
+      ingestedErrors: 2,
+      droppedErrors: 0,
+    });
+    const groups = app.runtime.telemetryStore.database.query(`
+      SELECT name, message, times_seen AS timesSeen, status, sample_trace_id AS sampleTraceId
+      FROM _ackerdb_telemetry_error_groups
+    `).all() as {
+      readonly name: string;
+      readonly message: string;
+      readonly timesSeen: bigint;
+      readonly status: string;
+      readonly sampleTraceId: string | null;
+    }[];
+    // One group despite two distinct messages: in-app frames define the key.
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ name: "Error", timesSeen: 2n, status: "unresolved" });
+    expect(groups[0]!.sampleTraceId).not.toBeNull();
+    const occurrences = app.runtime.telemetryStore.database.query(`
+      SELECT function_address AS functionAddress, trace_id AS traceId
+      FROM _ackerdb_telemetry_error_occurrences
+      ORDER BY id
+    `).all() as { readonly functionAddress: string; readonly traceId: string | null }[];
+    expect(occurrences).toHaveLength(2);
+    expect(occurrences.every((row) => row.functionAddress === "items.fail")).toBe(true);
+    expect(occurrences.every((row) => row.traceId !== null)).toBe(true);
   });
 
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {

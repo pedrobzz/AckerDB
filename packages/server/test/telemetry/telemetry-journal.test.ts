@@ -51,6 +51,7 @@ function record(sequence: bigint, message = `log-${sequence}`): ApplicationLogRe
     sequence,
     timestamp: Number(sequence),
     level: "info",
+    source: "app",
     message,
     truncated: false,
     malformed: false,
@@ -200,7 +201,7 @@ describe("TelemetryJournal", () => {
     shortened.store.close();
   });
 
-  test("backfills the level column for a journal created before retention", async () => {
+  test("recreates a pre-read-model journal, dropping rows while ids stay monotone", async () => {
     const path = journalPath();
     const legacy = new Database(path, { create: true, safeIntegers: true, strict: true });
     legacy.exec(`
@@ -210,6 +211,7 @@ describe("TelemetryJournal", () => {
         sequence INTEGER NOT NULL,
         timestamp REAL NOT NULL,
         kind TEXT NOT NULL,
+        level TEXT,
         payload_bytes INTEGER NOT NULL,
         payload TEXT NOT NULL,
         UNIQUE(process_generation, sequence)
@@ -217,19 +219,74 @@ describe("TelemetryJournal", () => {
     `);
     const insert = legacy.query(`
       INSERT INTO _ackerdb_telemetry_journal (
-        process_generation, sequence, timestamp, kind, payload_bytes, payload
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        process_generation, sequence, timestamp, kind, level, payload_bytes, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-    const expired = encode(timestamped(1n, "debug", NOW - 10 * DAY_MS));
-    const retained = encode(timestamped(2n, "info", NOW - DAY_MS));
-    insert.run("legacy", 1, NOW - 10 * DAY_MS, "log", Buffer.byteLength(expired), expired);
-    insert.run("legacy", 2, NOW - DAY_MS, "log", Buffer.byteLength(retained), retained);
+    const first = encode(timestamped(1n, "info", NOW - DAY_MS));
+    const second = encode(timestamped(2n, "info", NOW - DAY_MS));
+    insert.run("legacy", 1, NOW - DAY_MS, "log", "info", Buffer.byteLength(first), first);
+    insert.run("legacy", 2, NOW - DAY_MS, "log", "info", Buffer.byteLength(second), second);
     legacy.close(false);
 
     const journal = createJournal({ path, now: () => NOW });
-    expect(journal.readBatch(0n, 10).map((entry) => entry.sequence)).toEqual([2n]);
-    expect(journal.snapshot()).toMatchObject({ storedRecords: 1 });
-    expect(journal.store.snapshot().expiredRecords.debug).toBe(1);
+    expect(journal.readBatch(0n, 10)).toEqual([]);
+    expect(journal.snapshot()).toMatchObject({ storedRecords: 0, evictedRecords: 2 });
+    expect(journal.append(timestamped(3n, "info", NOW - DAY_MS))).toBe(true);
+    await journal.flush();
+    const entries = journal.readBatch(0n, 10);
+    expect(entries.map((entry) => entry.sequence)).toEqual([3n]);
+    expect(entries[0]!.id).toBe(3n);
+    await journal.drain();
+    journal.store.close();
+  });
+
+  test("persists promoted read-model columns for logs and analytics", async () => {
+    const journal = createJournal({ now: () => NOW });
+    expect(journal.append(Object.freeze({
+      ...timestamped(1n, "info", NOW - DAY_MS),
+      source: "framework" as const,
+      traceId: "trace-1",
+      spanId: "span-1",
+      requestId: "request-1",
+    }))).toBe(true);
+    expect(journal.append(Object.freeze({
+      ...analytics(2n, NOW - DAY_MS),
+      identity: 7n as never,
+      traceId: "trace-2",
+    }))).toBe(true);
+    await journal.flush();
+
+    const rows = journal.store.database.query(`
+      SELECT kind, level, source, function_address AS functionAddress,
+             trace_id AS traceId, span_id AS spanId, request_id AS requestId,
+             event, identity
+      FROM _ackerdb_telemetry_journal
+      ORDER BY id
+    `).all();
+    expect(rows).toEqual([
+      {
+        kind: "log",
+        level: "info",
+        source: "framework",
+        functionAddress: "tests.log",
+        traceId: "trace-1",
+        spanId: "span-1",
+        requestId: "request-1",
+        event: null,
+        identity: null,
+      },
+      {
+        kind: "analytics",
+        level: null,
+        source: null,
+        functionAddress: "tests.track",
+        traceId: "trace-2",
+        spanId: null,
+        requestId: null,
+        event: "event-2",
+        identity: 7n,
+      },
+    ]);
     await journal.drain();
     journal.store.close();
   });

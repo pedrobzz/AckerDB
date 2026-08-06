@@ -8,6 +8,7 @@ import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
 import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";
 import type { TelemetryStore } from "../../telemetry/storage/store.ts";
+import type { TelemetrySpanStore } from "../../telemetry/storage/spans.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { RuntimeStatus } from "../contracts/status.ts";
 import type { RuntimeLifecycleState } from "../contracts/lifecycle.ts";
@@ -37,6 +38,7 @@ export interface RuntimeControlOptions {
   readonly telemetry: Telemetry;
   readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
+  readonly telemetrySpans: TelemetrySpanStore;
   readonly telemetryExporters?: TelemetryJournalExporters;
   readonly ownsTelemetry: boolean;
   readonly ownsTelemetryStore: boolean;
@@ -53,7 +55,8 @@ export interface RuntimeControlOptions {
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
-  readonly stopSampler: () => void;
+  /** Stops the sampler and every other periodic telemetry emitter at drain start. */
+  readonly stopPeriodicTelemetry: () => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -236,6 +239,7 @@ export class RuntimeControl {
       telemetryAggregates: this.options.telemetry.aggregateSnapshot(),
       telemetryStore: this.options.telemetryStore.snapshot(),
       telemetryJournal: this.options.telemetryJournal.snapshot(),
+      telemetrySpans: this.options.telemetrySpans.snapshot(),
       telemetryExporters: this.options.telemetryExporters?.snapshot() ?? null,
       storage: this.options.engine.status(),
     });
@@ -251,7 +255,7 @@ export class RuntimeControl {
     this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
-    this.options.stopSampler();
+    this.options.stopPeriodicTelemetry();
     this.options.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",
@@ -311,6 +315,7 @@ export class RuntimeControl {
       } else {
         await this.options.telemetryJournal.flush();
       }
+      await this.options.telemetrySpans.drain();
       if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
@@ -362,6 +367,11 @@ export class RuntimeControl {
           } else {
             await this.options.telemetryJournal.flush();
           }
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        try {
+          await this.options.telemetrySpans.drain();
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }

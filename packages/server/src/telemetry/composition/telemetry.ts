@@ -213,6 +213,7 @@ export class Telemetry {
       scheduler,
       exporter: options.exporter,
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
+      durableSink: options.durableSink,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
       publicTraceIndex: new Map(),
@@ -566,6 +567,34 @@ export class Telemetry {
         safeResults,
         safeDependencies,
       );
+      // Every span persists durably (#194 — no sampling); only the durable
+      // sink pays the id materialization this fast path otherwise avoids.
+      if (state.durableSink?.span !== undefined) {
+        this.emitDurableSpan(state, {
+          timestampMs,
+          context: handle.context(
+            node === NO_SLOT ? handle.childNode(parentNode) : node,
+            safeRequestId,
+            safeConnectionId,
+            safeMutationId,
+            safeCommitId,
+            safeSubscriptionId,
+          ),
+          operation,
+          stage,
+          outcome,
+          function: safeFunction,
+          statement: safeStatement,
+          resource,
+          durationMs,
+          sizeBytes: safeSize,
+          rowCount: safeRows,
+          resultCount: safeResults,
+          replayed,
+          dependencyCount: safeDependencies,
+          postCommit,
+        });
+      }
       return true;
     }
     const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
@@ -650,11 +679,22 @@ export class Telemetry {
     return this.recordAggregatedSpan(state, span, associatedTrace);
   }
 
+  private emitDurableSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
+    const sink = state.durableSink;
+    if (sink?.span === undefined) return;
+    try {
+      sink.span(materializeSpan(span));
+    } catch {
+      // Durable capture must never poison the recording path.
+    }
+  }
+
   private recordAggregatedSpan(
     state: TelemetryState,
     span: SanitizedTelemetrySpan,
     associatedTrace?: MutableTraceRetention,
   ): boolean {
+    this.emitDurableSpan(state, span);
     const retain = span.durationMs >= state.limits.slowOperationMs || span.outcome !== "ok";
     if (state.limits.slowOperationMs === 0) return this.retain(materializeSpan(span), true);
 
@@ -721,6 +761,14 @@ export class Telemetry {
           ? input.errorClass
           : undefined,
     });
+    const sink = state.durableSink;
+    if (sink?.event !== undefined) {
+      try {
+        sink.event(record);
+      } catch {
+        // Durable capture must never poison the recording path.
+      }
+    }
     if (
       state.limits.slowOperationMs > 0 &&
       record.traceId &&

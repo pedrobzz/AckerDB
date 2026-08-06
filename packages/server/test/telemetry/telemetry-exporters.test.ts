@@ -33,6 +33,7 @@ function log(sequence: bigint, message: string): TelemetryJournalRecord {
     sequence,
     timestamp: Number(sequence),
     level: "info",
+    source: "app",
     message,
     truncated: false,
     malformed: false,
