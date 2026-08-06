@@ -46,22 +46,44 @@ export const MAX_JOURNAL_BYTES = 1_048_576;
 
 const STEP_KINDS = ["run", "query", "mutation", "procedure", "sleep"] as const;
 type StepKind = (typeof STEP_KINDS)[number];
+const CALLEE_KINDS = ["query", "mutation", "procedure"] as const;
 
-/** One journaled step: identity, what recorded it, and the recorded outcome. */
-interface StepJournalEntry {
+interface StepEntryBase {
   readonly name: string;
-  readonly kind: StepKind;
-  /** `run` only: the callee's address and registered kind at record time. */
-  readonly ref?: string;
-  readonly calleeKind?: string;
-  /** `run` only: hash of the canonical args encoding — the determinism tripwire. */
-  readonly argsHash?: string;
-  /** Canonical-encoded recorded outcome; absent for sleep. */
-  readonly result?: string;
-  /** `sleep` only: the wake time scheduled at first encounter (observability). */
-  readonly wakeAt?: number;
   readonly completedAt: number;
 }
+
+/** A `step.run` record: the callee's identity pins replay to unchanged code. */
+interface RunStepEntry extends StepEntryBase {
+  readonly kind: "run";
+  readonly ref: string;
+  readonly calleeKind: (typeof CALLEE_KINDS)[number];
+  /** Hash of the canonical args encoding — the determinism tripwire. */
+  readonly argsHash: string;
+  readonly result: string;
+}
+
+/** An inline closure's record: the canonical-encoded return value. */
+interface InlineStepEntry extends StepEntryBase {
+  readonly kind: "query" | "mutation" | "procedure";
+  readonly result: string;
+}
+
+/** A sleep's record: the wake scheduled at first encounter (observability). */
+interface SleepStepEntry extends StepEntryBase {
+  readonly kind: "sleep";
+  readonly wakeAt: number;
+}
+
+/** One journaled step, discriminated by kind: no field is ever optional. */
+type StepJournalEntry = RunStepEntry | InlineStepEntry | SleepStepEntry;
+
+/** The entry shape a step kind claims from the journal. */
+type EntryOf<K extends StepKind> = K extends "run"
+  ? RunStepEntry
+  : K extends "sleep"
+    ? SleepStepEntry
+    : InlineStepEntry;
 
 /**
  * A typed step refusal: the run settles as discarded with this error in its
@@ -80,20 +102,36 @@ export class JobSleepSignal {
 }
 
 function isStepJournalEntry(value: unknown): value is StepJournalEntry {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { name?: unknown }).name === "string" &&
-    (value as { name: string }).name.length > 0 &&
-    STEP_KINDS.includes((value as { kind?: unknown }).kind as StepKind)
-  );
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.name !== "string" || entry.name.length === 0) return false;
+  if (typeof entry.completedAt !== "number" || !Number.isFinite(entry.completedAt)) return false;
+  switch (entry.kind) {
+    case "run":
+      return (
+        typeof entry.ref === "string" &&
+        entry.ref.length > 0 &&
+        CALLEE_KINDS.includes(entry.calleeKind as never) &&
+        typeof entry.argsHash === "string" &&
+        entry.argsHash.length > 0 &&
+        typeof entry.result === "string"
+      );
+    case "query":
+    case "mutation":
+    case "procedure":
+      return typeof entry.result === "string";
+    case "sleep":
+      return typeof entry.wakeAt === "number" && Number.isFinite(entry.wakeAt);
+    default:
+      return false;
+  }
 }
 
 /**
- * Parse a journal, failing CLOSED: an unreadable or malformed journal is
- * preserved evidence of corruption, never an empty journal — replaying every
- * "unrecorded" step against durable state that said otherwise is exactly the
- * silent duplication the corruption rules forbid.
+ * Parse a journal, failing CLOSED: an unreadable, malformed, or ambiguous
+ * journal is preserved evidence of corruption, never an empty journal —
+ * replaying "unrecorded" steps against durable state that said otherwise is
+ * exactly the silent duplication the corruption rules forbid.
  */
 export function parseStepJournal(stepsJson: string | null): StepJournalEntry[] {
   if (stepsJson === null) return [];
@@ -105,6 +143,13 @@ export function parseStepJournal(stepsJson: string | null): StepJournalEntry[] {
   }
   if (!Array.isArray(parsed) || !parsed.every(isStepJournalEntry)) {
     throw new StepRefusalError("journal", "stepsJson is not a valid step journal; the bytes are preserved on the row");
+  }
+  const names = new Set<string>();
+  for (const entry of parsed) {
+    if (names.has(entry.name)) {
+      throw new StepRefusalError(entry.name, "the journal records this name twice; an ambiguous entry must not replay");
+    }
+    names.add(entry.name);
   }
   return parsed;
 }
@@ -202,13 +247,13 @@ export class JobSteps {
       }
       return null;
     });
-    if (prior !== null) return restoreResult(prior.result!);
+    if (prior !== null) return restoreResult(prior.result);
 
     const record = (value: Result<unknown, unknown>): StepJournalEntry => ({
       name,
       kind: "run",
       ref: address,
-      calleeKind: fn.kind,
+      calleeKind: fn.kind as RunStepEntry["calleeKind"],
       argsHash,
       result: encodeResult(value),
       completedAt: this.options.now(),
@@ -254,7 +299,7 @@ export class JobSteps {
     fn: (tx: never) => unknown,
   ): Promise<unknown> {
     const prior = this.claim(name, kind, () => null);
-    if (prior !== null) return decode(prior.result!);
+    if (prior !== null) return decode(prior.result);
     return await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
       this.assertOwned(surface.jobs.byId(this.options.id));
       const value = await surface.runMutationHandler(
@@ -274,7 +319,7 @@ export class JobSteps {
 
   private async inlineProcedure(name: string, fn: () => unknown): Promise<unknown> {
     const prior = this.claim(name, "procedure", () => null);
-    if (prior !== null) return decode(prior.result!);
+    if (prior !== null) return decode(prior.result);
     const value = await fn();
     await this.append({
       name,
@@ -331,11 +376,11 @@ export class JobSteps {
    * mismatch refuses, an unrecorded name executes. Every resolution also
    * guards the in-run duplicate and surfaces a corrupt journal.
    */
-  private claim(
+  private claim<K extends StepKind>(
     name: string,
-    kind: StepKind,
-    check: (entry: StepJournalEntry) => string | null,
-  ): StepJournalEntry | null {
+    kind: K,
+    check: (entry: EntryOf<K>) => string | null,
+  ): EntryOf<K> | null {
     if (this.corruption !== null) throw this.corruption;
     if (typeof name !== "string" || name.length === 0) {
       throw new AckerDBError("validation", "step names must be non-empty strings");
@@ -349,9 +394,10 @@ export class JobSteps {
     if (entry.kind !== kind) {
       throw new StepRefusalError(name, `journaled as ${entry.kind}, code says ${kind}`);
     }
-    const detail = check(entry);
+    const narrowed = entry as EntryOf<K>;
+    const detail = check(narrowed);
     if (detail !== null) throw new StepRefusalError(name, detail);
-    return entry;
+    return narrowed;
   }
 
   /** Append one entry in its own transaction (procedure steps). */

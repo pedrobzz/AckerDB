@@ -609,6 +609,39 @@ describe("journal integrity", () => {
     expect(history.at(-1)!.error).toContain("journal");
   });
 
+  test("an impossible entry — readable JSON, invalid shape — also refuses", async () => {
+    clock = 12_500_000;
+    let externalCalls = 0;
+    start(
+      declareJobs({
+        flows: {
+          strict: job({
+            args: {},
+            retry: { attempts: 5, backoff: "fixed", delayMs: 1_000 },
+            handler: async (ctx: Ctx) => {
+              await ctx.step.procedure("charge", async () => ++externalCalls);
+              throw new Error("later step fails");
+            },
+          }),
+        },
+      }),
+    );
+    const handle = await runtime.jobs.enqueue("flows.strict", {});
+    const wait = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await wait).toMatchObject({ ok: false, state: "pending" });
+
+    // A run entry with no recorded result can never replay unambiguously.
+    engine.writer.exec(
+      `UPDATE "${JOBS_TABLE}" SET stepsJson = '[{"name":"charge","kind":"run","completedAt":1}]' WHERE id = ${handle.id}`,
+    );
+    clock = 12_501_000;
+    const refused = runtime.jobs.wait(handle.id);
+    await runtime.runJobs();
+    expect(await refused).toMatchObject({ ok: false, state: "discarded", nextRetryAt: null });
+    expect(externalCalls).toBe(1);
+  });
+
   test("a non-empty journal binds the row to its original arguments", async () => {
     clock = 13_000_000;
     const surgery = mutation({
