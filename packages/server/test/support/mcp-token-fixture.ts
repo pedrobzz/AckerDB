@@ -361,6 +361,7 @@ export async function user(runtime: Runtime, subject: string): Promise<UserPrinc
   const identity = await runtime.resolveIdentity({ issuer: "https://issuer.test/", subject });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject,

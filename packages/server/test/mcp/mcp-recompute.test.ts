@@ -157,6 +157,7 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject,

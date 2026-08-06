@@ -475,6 +475,7 @@ afterEach(async () => {
 function user(identity = 41n as Identity): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject: `user-${identity}`,

@@ -10,7 +10,7 @@ import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { hasMcpTokenPrefix } from "../mcp/credential.ts";
-import { isMcpScopeGrant } from "../mcp/scopes.ts";
+import { isScopeGrant } from "./access-policy.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -45,6 +45,8 @@ export interface WorkloadPrincipal extends ExternalPrincipal {
 export interface UserPrincipal extends ExternalPrincipal {
   readonly kind: "user";
   readonly identity: Identity;
+  /** The Identity's scope grant from the application vocabulary; empty when none. */
+  readonly scopes: readonly string[];
 }
 
 /** Non-expiring delegated MCP authority bound directly to one durable Identity and endpoint. */
@@ -69,6 +71,14 @@ export type IdentityResolver = (
   account: ExternalAccount,
   signal?: AbortSignal,
 ) => Promise<Identity>;
+/**
+ * Resolves the scope grant an Identity holds, drawn from the application
+ * vocabulary. Absent resolver = every principal carries the empty grant.
+ */
+export type ScopeResolver = (
+  identity: Identity,
+  account: ExternalAccount,
+) => readonly string[] | Promise<readonly string[]>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
 export const SYSTEM_PRINCIPAL: SystemPrincipal = Object.freeze({ kind: "system" });
@@ -102,14 +112,16 @@ export function isPrincipal(value: unknown): value is Principal {
       principal.mcp.length > 0 &&
       typeof principal.tokenId === "string" &&
       principal.tokenId.length > 0 &&
-      isMcpScopeGrant(principal.scopes)
+      isScopeGrant(principal.scopes)
     );
   }
   if (!isExternalPrincipal(value)) return false;
   const identity = (value as { readonly identity?: unknown }).identity;
   return principal.kind === "workload"
     ? !("identity" in value)
-    : typeof identity === "bigint" && identity > 0n;
+    : typeof identity === "bigint" &&
+      identity > 0n &&
+      isScopeGrant((value as { readonly scopes?: unknown }).scopes);
 }
 
 export function isVerifiedCredential(value: unknown): value is VerifiedCredential {
@@ -524,12 +536,15 @@ export async function verifyUserBearerCredential(
   return verified;
 }
 
+const EMPTY_SCOPE_GRANT: readonly string[] = Object.freeze([]);
+
 /** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
 export async function verifyClientCredential(
   credential: Credential,
   verifier: CredentialVerifier | undefined,
   resolveIdentity: IdentityResolver,
   now: () => number = Date.now,
+  resolveScopes?: ScopeResolver,
 ): Promise<ClientPrincipal> {
   if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
   const verified = await verifyBearerCredential(credential.token, verifier, now);
@@ -543,18 +558,33 @@ export async function verifyClientCredential(
       tokenId: verified.tokenId,
     });
   }
+  const account = Object.freeze({
+    issuer: verified.issuer,
+    subject: verified.subject,
+  });
   let identity: Identity;
   try {
-    identity = await resolveIdentity(Object.freeze({
-      issuer: verified.issuer,
-      subject: verified.subject,
-    }));
+    identity = await resolveIdentity(account);
   } catch (error) {
     if (isAckerDBError(error)) throw error;
     throw authUnavailable(error);
   }
   if (typeof identity !== "bigint" || identity <= 0n) {
     throw authUnavailable(new Error("identity resolver returned an invalid Identity"));
+  }
+  let scopes: readonly string[] = EMPTY_SCOPE_GRANT;
+  if (resolveScopes !== undefined) {
+    let resolved: readonly string[];
+    try {
+      resolved = await resolveScopes(identity, account);
+    } catch (error) {
+      if (isAckerDBError(error)) throw error;
+      throw authUnavailable(error);
+    }
+    if (!isScopeGrant(resolved)) {
+      throw authUnavailable(new Error("scope resolver returned an invalid scope grant"));
+    }
+    scopes = Object.freeze([...resolved]);
   }
   const resolvedAt = now();
   if (!Number.isFinite(resolvedAt)) {
@@ -564,6 +594,7 @@ export async function verifyClientCredential(
   return Object.freeze({
     kind: "user",
     identity,
+    scopes,
     issuer: verified.issuer,
     subject: verified.subject,
     claims: verified.claims,

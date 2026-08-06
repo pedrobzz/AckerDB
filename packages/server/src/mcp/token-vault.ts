@@ -4,8 +4,8 @@ import { decode, encode, type Identity } from "@ackerdb/core";
 import { CorruptDatabaseError, AckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { MCP_TOKEN_PREFIX, type ParsedMcpToken } from "./credential.ts";
+import { isScopeGrant } from "../auth/access-policy.ts";
 import {
-  isMcpScopeGrant,
   normalizeMcpScopeGrant,
   type McpScopeDescriptor,
 } from "./scopes.ts";
@@ -160,7 +160,7 @@ function storedScopes(encoded: string): readonly string[] {
   } catch {
     throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid");
   }
-  if (!isMcpScopeGrant(value)) {
+  if (!isScopeGrant(value)) {
     throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid");
   }
   return Object.freeze([...value]);

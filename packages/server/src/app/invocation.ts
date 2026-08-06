@@ -21,6 +21,12 @@ import type {
   Invocable,
 } from "./functions.ts";
 import type { AccessPolicy, InvocationContext } from "./access.ts";
+import {
+  enforceScopeRequirement,
+  normalizeScopeRequirement,
+  type NormalizedScopeRequirement,
+  type ScopeRequirement,
+} from "../auth/access-policy.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import {
@@ -111,6 +117,8 @@ export interface InvocationOptions<Ctx, Args> {
 export interface AuthorizationDefinition<A extends ObjectShape, Ctx extends InvocationContext> {
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  /** Scope requirement enforced after `access` at the one dispatch choke point. */
+  readonly scopes?: ScopeRequirement<string>;
 }
 
 export interface AuthorizedInvocation<Ctx, Args> {
@@ -184,7 +192,7 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-function compileAccess<Ctx extends InvocationContext, Args>(
+function compileBaseAccess<Ctx extends InvocationContext, Args>(
   access: AccessPolicy<Ctx, Args>,
 ): AccessEnforcer<Ctx, Args> {
   if (access === "public") return () => {};
@@ -206,6 +214,29 @@ function compileAccess<Ctx extends InvocationContext, Args>(
       throw new AckerDBError("unauthorized", "access denied", { cause: error });
     }
     if (!allowed) throw denied(ctx.auth);
+  };
+}
+
+/**
+ * The one dispatch choke point for authorization: the base access policy
+ * first, then the declared scope requirement against the caller's grant.
+ * Every entry — client call, HTTP, MCP tool, nested server-side call —
+ * reaches the handler only through this enforcer.
+ */
+function compileAccess<Ctx extends InvocationContext, Args>(
+  access: AccessPolicy<Ctx, Args>,
+  scopes: ScopeRequirement<string> | undefined,
+): AccessEnforcer<Ctx, Args> {
+  const base = compileBaseAccess(access);
+  if (scopes === undefined) return base;
+  const requirement: NormalizedScopeRequirement = normalizeScopeRequirement(scopes, "scopes");
+  return (ctx, args) => {
+    const result = base(ctx, args);
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).then(() =>
+        enforceScopeRequirement(requirement, ctx.auth));
+    }
+    enforceScopeRequirement(requirement, ctx.auth);
   };
 }
 
@@ -234,7 +265,7 @@ function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   decoder?: InvocationArgsDecoder<Expand<InferShape<A>>>,
 ): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
   const shape = definition.args;
-  const enforceAccess = compileAccess(definition.access);
+  const enforceAccess = compileAccess(definition.access, definition.scopes);
   const decode = decoder ?? (
     compileShape(shape) as InvocationArgsDecoder<Expand<InferShape<A>>>
   );
