@@ -389,6 +389,19 @@ export {
   type TelemetryJournalSnapshot,
 } from "./telemetry/application-signals/journal.ts";
 export {
+  DEFAULT_TELEMETRY_RETENTION,
+  resolveTelemetryRetention,
+  type TelemetryRetentionClass,
+  type TelemetryRetentionTtls,
+} from "./telemetry/storage/retention.ts";
+export {
+  TelemetryStore,
+  type TelemetryExpirableSet,
+  type TelemetryStoredKind,
+  type TelemetryStoreOptions,
+  type TelemetryStoreSnapshot,
+} from "./telemetry/storage/store.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,
