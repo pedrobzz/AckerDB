@@ -309,9 +309,11 @@ it; membership in a tools record is not itself a client-visible property and
 does not filter codegen. A function may legitimately be a client query, an
 HTTP route, and a tool at once — that reuse is the point.
 
-Unrelated and pre-existing: `codegen.ts` performs no access filtering at all,
-so `accessPolicy: "system"` functions are already emitted to the client type
-surface today. Tracked separately; this change neither causes nor fixes it.
+A tools record may also name a function declared `internal: true`
+(ADR-0021): the endpoint is its own declaration with its own authentication,
+so naming the function there is the explicit, reviewable re-exposure. The
+function stays erased from the generated `api` tree and unreachable at any
+wire address; the tool is the only external door.
 
 ## Breaking changes
 
