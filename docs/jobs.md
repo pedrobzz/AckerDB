@@ -297,8 +297,14 @@ Retention stamps `deleteAfter` at settle: a terminal Job and the run its
 outcome is read from expire together after the definition's `retention`
 (default 7 days, `"forever"` to keep), extended automatically by any longer
 dedupe window. Settled runs of a Job that is still alive expire on the plain
-`retention`, so a long retry chain cannot grow history without bound. Deleting
-a Job deletes its runs.
+`retention`, so a long retry chain cannot grow history without bound. A Job's
+latest run is never swept as history — it is the run its outcome is read from,
+and it leaves with its Job. Deleting a Job deletes its runs.
+
+The sweep itself rides the runner: it runs when the runner runs, at most once a
+minute. A stamp is a promise about when a row *may* go, not a timer that wakes
+an idle process to delete it — an application with no job activity spends
+nothing, and its expired rows are collected on the next wake.
 
 Clients never see either table implicitly. Expose exactly what they need
 through your own queries with explicit `access` — fail-closed, like every
