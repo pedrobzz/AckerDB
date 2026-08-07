@@ -15,7 +15,10 @@ concurrency:
 jobs:
   changes:
     name: Select affected work
-    if: github.event.pull_request.draft == false && (github.base_ref == 'canary' || github.head_ref != 'canary')
+    # A promotion (`canary` → `main`) selects work too, but only so `Benchmark`
+    # can read `performance`: everything else was already proven on the way into
+    # `canary`, and `Fast CI` stays skipped there as before.
+    if: github.event.pull_request.draft == false && (github.base_ref == 'canary' || github.base_ref == 'main' || github.head_ref != 'canary')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -93,8 +96,39 @@ jobs:
       - name: Lint workflows
         if: needs.changes.outputs.workflows == 'true'
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
-      - name: Measure base and head
-        if: needs.changes.outputs.performance == 'true'
+
+  # The benchmark gates the release, not the road to it. A merge into `canary`
+  # publishes a prerelease nobody depends on; a promotion to `main` ships. So it
+  # runs on the promotion only, where base is `main` and head is `canary` — which
+  # makes the comparison the whole release delta rather than one pull request's
+  # slice, the only measurement that sees what twenty merges did together. Every
+  # pull request into `canary` stops paying for it.
+  #
+  # `always()` with the prerequisite gate below mirrors Fast CI: a required check
+  # must report a conclusion even when it has nothing to measure, or a promotion
+  # touching no performance-relevant input would sit pending forever.
+  benchmark:
+    name: Benchmark
+    if: always()
+    needs: [changes, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Validate prerequisite jobs
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          NATIVE: ${{ needs.native.result }}
+        run: |
+          case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
+          case "$NATIVE" in success|skipped) ;; *) exit 1 ;; esac
+      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+        uses: ./.github/actions/bun-workspace
+      - name: Measure the release delta
+        if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
         env:
           BENCH_EXECUTION_HOST: github-hosted
           BENCH_TELEMETRY_PROFILES: ${{ needs.changes.outputs.telemetry == 'true' && 'enabled,exporter,disabled' || 'disabled' }}
@@ -104,9 +138,9 @@ jobs:
           "${{ github.event.pull_request.head.sha }}"
           benchmark-results
       - name: Write the benchmark reasoning input
-        if: needs.changes.outputs.performance == 'true'
+        if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
         run: bun bench/report.ts benchmark-results/base.json benchmark-results/head.json | tee benchmark-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
-      - if: needs.changes.outputs.performance == 'true'
+      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ackerdb-benchmark-${{ github.event.pull_request.head.sha }}
