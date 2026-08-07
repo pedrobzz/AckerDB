@@ -35,7 +35,7 @@ import type {
 } from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { declareJobs, job } from "../../src/jobs/definition.ts";
-import { JOBS_TABLE } from "../../src/jobs/table.ts";
+import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import type {
   RuntimePublication,
   RuntimePublicationBatch,
@@ -2641,8 +2641,8 @@ describe("direct ingress", () => {
 describe("jobs runner and lifecycle", () => {
   const jobRows = () =>
     engine.reader
-      .query(`SELECT state, attempt FROM "${JOBS_TABLE}" ORDER BY id`)
-      .all() as { state: string; attempt: number | bigint }[];
+      .query(`SELECT state, runCount FROM "${JOBS_TABLE}" ORDER BY id`)
+      .all() as { state: string; runCount: number | bigint }[];
 
   test("runs a due mutation-kind job exactly once in one commit", async () => {
     await session.open();
@@ -2655,25 +2655,22 @@ describe("jobs runner and lifecycle", () => {
     expect(scheduledAttempt).toBe(attempt);
     expect(scheduledAttempts).toBe(1);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:ok" }]);
-    expect(jobRows()).toMatchObject([{ state: "completed", attempt: 1n }]);
+    expect(jobRows()).toMatchObject([{ state: "completed", runCount: 1n }]);
   });
 
-  test("rolls handler writes back on failure and records the discarded attempt", async () => {
+  test("rolls handler writes back on failure and records the failed run", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt });
     currentTime = dueAt;
     await runtime.runJobs();
-    // The handler's log insert rolled back whole; the failed attempt settled
-    // in its own transaction as discarded (no retry policy declared).
+    // The handler's log insert rolled back whole; the failed run settled in the
+    // same transaction and failed the Job (no retry policy declared).
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
-    expect(jobRows()).toMatchObject([{ state: "discarded", attempt: 1n }]);
-    const attempts = engine.reader
-      .query(`SELECT attemptsJson FROM "${JOBS_TABLE}"`)
-      .get() as { attemptsJson: string };
-    expect(JSON.parse(attempts.attemptsJson)).toMatchObject([
-      { outcome: "discarded", error: "Error: scheduled failure" },
-    ]);
+    expect(jobRows()).toMatchObject([{ state: "failed", runCount: 1n }]);
+    expect(
+      engine.reader.query(`SELECT number, state, errorText FROM "${JOB_RUNS_TABLE}"`).all(),
+    ).toMatchObject([{ number: 1n, state: "failed", errorText: "Error: scheduled failure" }]);
   });
 
   test("arms the runner for a due job an HTTP mutation committed", async () => {
@@ -2699,10 +2696,10 @@ describe("jobs runner and lifecycle", () => {
     await session.mutation(2, "reminders.schedule", { message: "after", attempt: 2, at: dueAt });
     currentTime = dueAt;
     await runtime.runJobs();
-    // The earlier-due failing job discarded; the later job still ran.
+    // The earlier-due failing job failed; the later job still ran.
     expect(scheduledAttempts).toBe(2);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:after" }]);
-    expect(jobRows()).toMatchObject([{ state: "discarded" }, { state: "completed" }]);
+    expect(jobRows()).toMatchObject([{ state: "failed" }, { state: "completed" }]);
   });
 
   test("job rows are live: a subscription over the jobs table updates on enqueue and settle", async () => {

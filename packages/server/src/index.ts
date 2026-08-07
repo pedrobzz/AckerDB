@@ -177,7 +177,10 @@ export {
   type JobRepeatConfig,
   type JobRetry,
   type JobRetryConfig,
+  type JobRunState,
+  type JobRunTrigger,
   type JobState,
+  type JobTrigger,
   type JobTxCtx,
   type JobWindow,
 } from "./jobs/definition.ts";
@@ -191,14 +194,13 @@ export {
   type QueryJobsOf,
   type TypedJobOutcome,
 } from "./jobs/api.ts";
-export { JOBS_TABLE } from "./jobs/table.ts";
+export { JOB_RUNS_TABLE, JOBS_TABLE } from "./jobs/table.ts";
 export {
   type JobAttemptOutcome,
-  type JobAttemptRecord,
   type JobEnqueueOptions,
   type JobHandle,
-  type JobRow,
 } from "./runtime/jobs/runtime.ts";
+export { type JobRow, type JobRunRow } from "./runtime/jobs/store.ts";
 export {
   ServiceError,
   ServiceRuntime,
@@ -276,6 +278,11 @@ export {
   type RowTransform,
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
+export {
+  advanceFrameworkSnapshot,
+  pendingFrameworkMigrations,
+  type FrameworkMigration,
+} from "./schema/migrations/framework.ts";
 export {
   applyRenames,
   renameRoutes,

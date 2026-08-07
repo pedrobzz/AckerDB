@@ -95,7 +95,7 @@ export const TELEMETRY_EVENT_NAMES = [
   "job_claimed",
   "job_settled",
   "job_retried",
-  "job_discarded",
+  "job_failed",
   "job_canceled",
   "job_slept",
   "job_failure",

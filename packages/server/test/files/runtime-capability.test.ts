@@ -55,7 +55,7 @@ describe("built-in Files capability", () => {
         expiresAt: NOW + 60 * 60 * 1_000,
         maxBytes: 42,
       },
-      applicationTables: ["documents", "_ackerdb_jobs"],
+      applicationTables: ["documents", "_ackerdb_jobs", "_ackerdb_job_runs"],
     });
   });
 });

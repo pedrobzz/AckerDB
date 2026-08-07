@@ -1,13 +1,14 @@
 /**
  * Durable jobs: background work an application enqueues from its own
- * functions and AckerDB executes, retries, repeats, and retains as rows in the
- * framework-owned `_ackerdb_jobs` table.
+ * functions and AckerDB executes, retries, repeats, and retains — as one Job
+ * row in `_ackerdb_jobs` plus one `_ackerdb_job_runs` row per handler
+ * execution.
  *
  * A Job is not a Service: a Service is a long-lived external resource with its
  * own lifecycle (ADR-0016); a Job is a unit of work with a durable row, an
  * envelope (claim → run → settle), and a policy. It is also not a function
  * module export: no client can address a job, and jobs reach clients only
- * through user-authored functions over the jobs table.
+ * through user-authored functions over the jobs tables.
  */
 import type { FunctionReference, Result } from "@ackerdb/core";
 import { brand, hasBrand } from "../shared/identity.ts";
@@ -38,11 +39,36 @@ function assertOnlyKeys(
 
 type EmptyContextCapabilities = Readonly<Record<never, never>>;
 
-export const JOB_STATES = ["pending", "running", "completed", "discarded", "canceled"] as const;
+/** A Job's own state. `retrying` is non-terminal: its next run is scheduled. */
+export const JOB_STATES = [
+  "pending",
+  "running",
+  "retrying",
+  "completed",
+  "failed",
+  "canceled",
+] as const;
 export type JobState = (typeof JOB_STATES)[number];
 
-/** Milliseconds to wait before attempt `attempt + 1`, or null to discard. */
-export type JobRetry = (attempt: number, error: unknown) => number | null;
+/** What admitted a Job. */
+export const JOB_TRIGGERS = ["enqueue", "repeat", "run_again"] as const;
+export type JobTrigger = (typeof JOB_TRIGGERS)[number];
+
+/** One Job run's state; `running` is the only non-terminal one. */
+export const JOB_RUN_STATES = ["running", "completed", "failed", "canceled"] as const;
+export type JobRunState = (typeof JOB_RUN_STATES)[number];
+
+/** Why a Job run exists. */
+export const JOB_RUN_TRIGGERS = [
+  "initial",
+  "automatic_retry",
+  "manual_retry",
+  "force",
+] as const;
+export type JobRunTrigger = (typeof JOB_RUN_TRIGGERS)[number];
+
+/** Milliseconds to wait before run `runNumber + 1`, or null to fail the Job. */
+export type JobRetry = (runNumber: number, error: unknown) => number | null;
 
 /** The next occurrence after `lastScheduledAt`, or null to end the recurrence. */
 export type JobRepeat = (lastScheduledAt: number, now: number) => number | null;
@@ -61,10 +87,10 @@ export type JobRepeatConfig =
 export type JobWindow = number | "forever";
 
 export interface JobDedupe {
-  /** Extend dedup past success: calls inside the window return the recorded result. */
+  /** Extend dedupe past success: calls inside the window return the recorded result. */
   readonly completed?: JobWindow;
-  /** Extend dedup past exhaustion: calls inside the window return the recorded failure. */
-  readonly discarded?: JobWindow;
+  /** Extend dedupe past exhaustion: calls inside the window return the recorded failure. */
+  readonly failed?: JobWindow;
 }
 
 /** The transaction powers of a mutation-kind job handler. */
@@ -74,8 +100,8 @@ export type JobTxCtx<
   TxJobs extends object = AnyJobsNamespace,
 > = Omit<MutationCtx<S, Capabilities, TxJobs>, "auth"> & {
   readonly auth: SystemPrincipal;
-  /** 1-based attempt number of this execution. */
-  readonly attempt: number;
+  /** 1-based number of this Job run. */
+  readonly runNumber: number;
 };
 
 /** Per-step options on `step.run`; the default journal identity is the callee's address. */
@@ -93,7 +119,7 @@ export type JobStepQueryCtx<
   readonly auth: SystemPrincipal;
   readonly log: ApplicationLogger;
   readonly timestamp: number;
-  readonly attempt: number;
+  readonly runNumber: number;
   /** Declared jobs, read-only: the reactive builder scoped per definition. */
   readonly jobs: TxJobs;
 };
@@ -114,7 +140,7 @@ export interface JobStep<
    * The journaled variant of server-side composition: invoke a registered
    * query, mutation, or procedure and record its typed Result. A mutation
    * callee commits atomically with its journal entry; a returned `Err` is a
-   * recorded value, and only a throw fails the attempt.
+   * recorded value, and only a throw fails the run.
    */
   run<K extends "query" | "mutation" | "procedure", A, D, E>(
     ref: FunctionReference<K, A, D, E>,
@@ -134,9 +160,9 @@ export interface JobStep<
   /** An inline external-work step: at-least-once, journaled on completion. */
   procedure<R>(name: string, fn: () => R | PromiseLike<R>): Promise<Awaited<R>>;
   /**
-   * Suspend the run until `durationMs` from first encounter: the attempt
-   * settles back to pending with a future due time and no attempt increment —
-   * sleeping is not failing, and retry budget stays untouched.
+   * Suspend the run until `durationMs` from first encounter: the Job goes back
+   * to pending with a future due time and the run stays open, so the same run
+   * resumes — sleeping is not failing, and the retry budget stays untouched.
    */
   sleep(name: string, durationMs: number): Promise<void>;
 }
@@ -153,8 +179,8 @@ export type JobCtx<
   "auth" | "tx" | "linkAccount" | "unlinkAccount"
 > & {
   readonly auth: SystemPrincipal;
-  /** 1-based attempt number of this execution. */
-  readonly attempt: number;
+  /** 1-based number of this Job run. */
+  readonly runNumber: number;
   /** Fires on cancel, shutdown, or lease expiry: stop cooperatively. */
   readonly abortSignal: AbortSignal;
   /** Durable steps: using them is the opt-in; a handler with no steps is untouched. */
@@ -197,13 +223,13 @@ interface JobDefinitionBase<A extends ObjectShape> {
   readonly concurrency?: number;
   /** Partition key derived from args; concurrency then applies per (job, key). */
   readonly key?: (args: Expand<InferShape<A>>) => string | number | bigint;
-  /** Retry policy: config sugar or (attempt, error) => delayMs | null. */
+  /** Retry policy: config sugar or (runNumber, error) => delayMs | null. */
   readonly retry?: JobRetry | JobRetryConfig;
   /** Recurrence: config sugar or (lastScheduledAt, now) => timestamp | null. */
   readonly repeat?: JobRepeat | JobRepeatConfig;
-  /** Deduplicate live rows by canonical args; windows extend past settle. */
+  /** Deduplicate live Jobs by canonical args; windows extend past settle. */
   readonly dedupe?: JobDedupe | "inflight";
-  /** How long terminal rows stay queryable. Default: 7 days. */
+  /** How long a terminal Job and its runs stay queryable. Default: 7 days. */
   readonly retention?: JobWindow;
 }
 
@@ -233,7 +259,7 @@ export interface Job<A extends ObjectShape = ObjectShape, R = unknown> {
   readonly key: ((args: never) => string | number | bigint) | null;
   readonly retry: JobRetry;
   readonly repeat: JobRepeat | null;
-  readonly dedupe: { readonly completed: JobWindow; readonly discarded: JobWindow } | null;
+  readonly dedupe: { readonly completed: JobWindow; readonly failed: JobWindow } | null;
   readonly retention: JobWindow;
   readonly handler: (ctx: never, args: never) => unknown;
   /** Phantom carriers for generated typing. */
@@ -247,7 +273,7 @@ export type AnyJob = Job<any, any>;
 
 export const DEFAULT_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
-/** No retries unless declared: the first failed attempt discards the job. */
+/** No retries unless declared: the first failed run fails the Job. */
 const NO_RETRY: JobRetry = () => null;
 
 function normalizeWindow(value: unknown, where: string): JobWindow {
@@ -273,9 +299,9 @@ function normalizeRetry(retry: JobRetry | JobRetryConfig | undefined): JobRetry 
   if (!Number.isFinite(delayMs) || delayMs < 0) {
     throw new TypeError("job retry delayMs must be a non-negative number");
   }
-  return (attempt) => {
-    if (attempt >= attempts) return null;
-    return backoff === "fixed" ? delayMs : delayMs * 2 ** (attempt - 1);
+  return (runNumber) => {
+    if (runNumber >= attempts) return null;
+    return backoff === "fixed" ? delayMs : delayMs * 2 ** (runNumber - 1);
   };
 }
 
@@ -319,18 +345,18 @@ function normalizeDedupe(
   dedupe: JobDedupe | "inflight" | undefined,
 ): Job["dedupe"] {
   if (dedupe === undefined) return null;
-  if (dedupe === "inflight") return Object.freeze({ completed: 0, discarded: 0 });
+  if (dedupe === "inflight") return Object.freeze({ completed: 0, failed: 0 });
   if (typeof dedupe !== "object" || dedupe === null) {
-    throw new TypeError('job dedupe must be "inflight" or { completed?, discarded? }');
+    throw new TypeError('job dedupe must be "inflight" or { completed?, failed? }');
   }
-  assertOnlyKeys(dedupe, ["completed", "discarded"], "job dedupe");
+  assertOnlyKeys(dedupe, ["completed", "failed"], "job dedupe");
   return Object.freeze({
     completed: dedupe.completed === undefined
       ? 0
       : normalizeWindow(dedupe.completed, "job dedupe completed"),
-    discarded: dedupe.discarded === undefined
+    failed: dedupe.failed === undefined
       ? 0
-      : normalizeWindow(dedupe.discarded, "job dedupe discarded"),
+      : normalizeWindow(dedupe.failed, "job dedupe failed"),
   });
 }
 

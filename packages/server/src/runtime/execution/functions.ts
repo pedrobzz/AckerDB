@@ -73,7 +73,14 @@ import { createMutationInvocationScope } from "../mutation-scope.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
 import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
-import { JobsStore, dueJobStats, nextDueJobAt, readJobRow } from "../jobs/store.ts";
+import {
+  JobRunsStore,
+  JobsStore,
+  dueJobStats,
+  nextDueJobAt,
+  readJobRow,
+  readJobRunRow,
+} from "../jobs/store.ts";
 import {
   mutationJobsNamespace,
   procedureJobsNamespace,
@@ -91,11 +98,12 @@ const releaseNothing = (): void => {};
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
   readonly jobs: JobsStore;
+  readonly runs: JobRunsStore;
   /**
    * A savepoint over the open transaction plus its write collector: the
    * mutation-kind envelope runs the handler inside one, so a failed handler
    * rolls back its writes while the same transaction still records the
-   * failed attempt.
+   * failed run.
    */
   savepoint(): { rollback(): void; release(): void };
   /**
@@ -105,8 +113,8 @@ export interface JobsWriteSurface {
    */
   runMutationHandler<T>(
     jobAddress: string,
-    attempt: number,
-    run: (ctx: MutationCtx & { readonly attempt: number }) => T | Promise<T>,
+    runNumber: number,
+    run: (ctx: MutationCtx & { readonly runNumber: number }) => T | Promise<T>,
   ): Promise<T>;
 }
 
@@ -695,12 +703,12 @@ export class RuntimeFunctionExecutor<C> {
       signal,
       1,
       (db, writes) => {
+        const observer = this.options.telemetry.enabled
+          ? this.options.tracing.observeStatement
+          : undefined;
         const surface: JobsWriteSurface = {
-          jobs: new JobsStore(
-            this.options.engine,
-            writes,
-            this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
-          ),
+          jobs: new JobsStore(this.options.engine, writes, observer),
+          runs: new JobRunsStore(this.options.engine, writes, observer),
           savepoint: () => {
             const checkpoint = checkpointWriteCollector(writes);
             this.options.engine.writer.exec("SAVEPOINT ackerdb_job_handler");
@@ -720,8 +728,8 @@ export class RuntimeFunctionExecutor<C> {
               },
             };
           },
-          runMutationHandler: async (jobAddress, attempt, run) => {
-            // The attempt is part of the context object itself: capability
+          runMutationHandler: async (jobAddress, runNumber, run) => {
+            // The run number is part of the context object itself: capability
             // bindings key off the exact frozen identity, so no caller may
             // spread a bound context into a copy.
             const context = this.hostMutationContext(
@@ -730,8 +738,8 @@ export class RuntimeFunctionExecutor<C> {
               this.readNow(),
               writes,
               { functionAddress: jobAddress, functionKind: "job" },
-              { attempt },
-            ) as MutationCtx & { readonly attempt: number };
+              { runNumber },
+            ) as MutationCtx & { readonly runNumber: number };
             return this.options.mcp !== undefined
               ? await this.options.mcp.bindTokenContext(
                   context,
@@ -756,6 +764,10 @@ export class RuntimeFunctionExecutor<C> {
 
   readJobRow(connection: Database, id: bigint) {
     return readJobRow(this.options.engine, connection, id);
+  }
+
+  readJobRunRow(connection: Database, jobId: bigint, number: number) {
+    return readJobRunRow(this.options.engine, connection, jobId, number);
   }
 
   nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = []) {
