@@ -14,7 +14,7 @@ import {
 import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import {
-  cleanupMcpTokenFixtures,
+  cleanupCredentialFixtures,
   databasePath,
   fixture,
   FIXTURE_SCOPES,
@@ -23,8 +23,8 @@ import {
   session,
   trackCleanup,
   user,
-  type McpTokenFixture,
-} from "../support/mcp-token-fixture.ts";
+  type CredentialFixture,
+} from "../support/credential-fixture.ts";
 
 interface CreatedToken {
   readonly id: string;
@@ -32,10 +32,10 @@ interface CreatedToken {
 }
 
 afterEach(async () => {
-  await cleanupMcpTokenFixtures();
+  await cleanupCredentialFixtures();
 });
 
-function start(): McpTokenFixture {
+function start(): CredentialFixture {
   const value = fixture(databasePath("ackerdb-credential-lineage-"));
   trackCleanup(value.close);
   return value;

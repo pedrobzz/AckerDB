@@ -10,7 +10,7 @@ import type { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 import {
-  cleanupMcpTokenFixtures,
+  cleanupCredentialFixtures,
   databasePath,
   fixture,
   mutationMessage,
@@ -22,7 +22,7 @@ import {
   typedProcedure,
   typedQuery,
   user,
-} from "../support/mcp-token-fixture.ts";
+} from "../support/credential-fixture.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const MCP_PROTOCOL_VERSION = "2025-11-25";
@@ -309,7 +309,7 @@ async function expectIdle(value: Harness): Promise<void> {
 
 afterEach(async () => {
   releaseGates();
-  await cleanupMcpTokenFixtures();
+  await cleanupCredentialFixtures();
   gates.clear();
 });
 

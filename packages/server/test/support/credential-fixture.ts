@@ -288,13 +288,13 @@ const modules = {
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 
-export interface McpTokenFixture {
+export interface CredentialFixture {
   readonly engine: Engine;
   readonly runtime: Runtime;
   close(): Promise<void>;
 }
 
-export interface McpTokenFixtureOptions {
+export interface CredentialFixtureOptions {
   readonly limits?: ServiceLimits;
   readonly now?: RuntimeOptions["now"];
   readonly telemetry?: RuntimeOptions["telemetry"];
@@ -311,8 +311,8 @@ export function fixture(
   path: string,
   verifier?: CredentialVerifier,
   extraModules: Record<string, Record<string, unknown>> = {},
-  options: McpTokenFixtureOptions = {},
-): McpTokenFixture {
+  options: CredentialFixtureOptions = {},
+): CredentialFixture {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
@@ -345,7 +345,7 @@ export function trackCleanup(cleanup: () => Promise<void>): void {
   cleanups.push(cleanup);
 }
 
-export async function cleanupMcpTokenFixtures(): Promise<void> {
+export async function cleanupCredentialFixtures(): Promise<void> {
   escapedOwnerContext = null;
   while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });

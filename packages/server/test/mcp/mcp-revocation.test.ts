@@ -4,7 +4,7 @@ import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { serve } from "../../src/transport/server.ts";
 import { credentials } from "../../src/auth/credential-context.ts";
 import {
-  cleanupMcpTokenFixtures,
+  cleanupCredentialFixtures,
   databasePath,
   fixture,
   FIXTURE_SCOPES,
@@ -16,7 +16,7 @@ import {
   typedMcp,
   typedProcedure,
   user,
-} from "../support/mcp-token-fixture.ts";
+} from "../support/credential-fixture.ts";
 import { deferred, within, type Deferred } from "ackerdb-test-support/async";
 
 interface ToolGate {
@@ -308,7 +308,7 @@ async function createScopedToken(
 afterEach(async () => {
   for (const gate of gates.values()) gate.release.resolve();
   gates.clear();
-  await cleanupMcpTokenFixtures();
+  await cleanupCredentialFixtures();
 });
 
 describe("bounded live MCP credential invalidation", () => {

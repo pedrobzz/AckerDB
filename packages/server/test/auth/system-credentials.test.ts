@@ -220,7 +220,7 @@ afterEach(async () => {
 });
 
 function fixture(): { engine: Engine; runtime: Runtime } {
-  const directory = mkdtempSync(join(tmpdir(), "ackerdb-system-mcp-token-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-system-credentials-"));
   directories.push(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -332,7 +332,7 @@ async function createSystemAgentToken(
   return systemResult as { readonly id: string; readonly identity: bigint; readonly token: string };
 }
 
-describe("system-managed MCP integration tokens", () => {
+describe("system-managed identity credentials", () => {
   test("creates, lists, authenticates, and revokes once through scheduled system authority", async () => {
     const { engine, runtime } = fixture();
     const bob = await user(runtime, "backend-managed-bob");

@@ -18,7 +18,7 @@ import { serve } from "../../src/transport/server.ts";
 import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
   agentMcp,
-  cleanupMcpTokenFixtures,
+  cleanupCredentialFixtures,
   databasePath,
   fixture,
   FIXTURE_SCOPES,
@@ -31,9 +31,9 @@ import {
   subscribeMessage,
   trackCleanup,
   user,
-} from "../support/mcp-token-fixture.ts";
+} from "../support/credential-fixture.ts";
 
-afterEach(cleanupMcpTokenFixtures);
+afterEach(cleanupCredentialFixtures);
 
 function mcpHeaders(token?: string): Record<string, string> {
   return {

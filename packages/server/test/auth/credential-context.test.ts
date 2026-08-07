@@ -24,7 +24,7 @@ import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session/contract.ts";
-import { mutationMessage, queryMessage, request } from "../support/mcp-token-fixture.ts";
+import { mutationMessage, queryMessage, request } from "../support/credential-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 const schema = defineSchema({});
@@ -79,7 +79,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   return { runtime, session };
 }
 
-describe("zero-MCP Runtime context", () => {
+describe("credential operations without an MCP endpoint", () => {
   test("binds credential operations everywhere while denying anonymous administration", async () => {
     const { runtime, session } = noMcpRuntime();
     await runtime.openSession(session);
