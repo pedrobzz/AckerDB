@@ -627,18 +627,15 @@ export class TelemetryJournal {
    * One synchronous terminal append — the structurally LAST durable record,
    * written after the queue drains and before the sidecar closes. Bypasses
    * the queue and the ready-state gate deliberately: the drain that stopped
-   * this journal is exactly what made the terminal outcome known.
+   * this journal is exactly what made the terminal outcome known. A terminal
+   * row that cannot be written fails LOUD: accounting marks the journal
+   * failed and the error escapes to reject the drain — a clean resolution
+   * with zero terminal rows is not a mode.
    */
-  appendFinal(record: TelemetryJournalRecord): boolean {
-    let encoded: string;
+  appendFinal(record: TelemetryJournalRecord): void {
     try {
-      encoded = encode(record);
-    } catch {
-      this.droppedRecords++;
-      return false;
-    }
-    const bytes = Buffer.byteLength(encoded);
-    try {
+      const encoded = encode(record);
+      const bytes = Buffer.byteLength(encoded);
       this.database.transaction(() => {
         const inserted = this.database
           .query(INSERT_JOURNAL_ROW)
@@ -653,10 +650,11 @@ export class TelemetryJournal {
         `).run(this.storedRecords, this.storedBytes, this.lastRecordId);
       })();
       this.persistedRecords++;
-      return true;
-    } catch {
+    } catch (error) {
       this.droppedRecords++;
-      return false;
+      this.failure ??= error;
+      this.state = "failed";
+      throw error;
     }
   }
 }

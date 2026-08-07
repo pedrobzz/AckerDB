@@ -78,8 +78,10 @@ export class RuntimeControl {
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
-  /** Telemetry finalization runs exactly once, whichever path reaches it first. */
-  private telemetryFinalized = false;
+  /** The one shared finalization every drain path awaits — never re-run. */
+  private finalization: Promise<unknown[]> | null = null;
+  /** The first registered terminal failure; the deadline registers synchronously. */
+  private terminalFailure: unknown;
 
   constructor(private readonly options: RuntimeControlOptions) {
     this.releaseTelemetryJournalFailure = options.telemetryJournal.onFailure((error) => {
@@ -329,6 +331,9 @@ export class RuntimeControl {
     const deadline = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
         deadlineReached = true;
+        // Synchronous: an in-flight finalization that has not yet frozen its
+        // terminal outcome must see this deadline as the failure.
+        this.registerTerminalFailure(deadlineError);
         this.shutdownController.abort(deadlineError);
         void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
@@ -345,9 +350,19 @@ export class RuntimeControl {
         deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
-        // A clean-path finalization already wrote the terminal row before
-        // its errors surfaced here; finalize is once-only and then inert.
-        const cleanupErrors = await this.finalizeTelemetry(error, deadlineAtMs);
+        // Awaits the SAME shared finalization: the drain never settles while
+        // the owning finalizer is active, and this failure was registered
+        // synchronously before the finalizer could freeze its outcome. The
+        // shared errors may include the very failure that reached us — and
+        // the shutdown deadline is one cause however many steps it expired —
+        // so keep each cause once.
+        const isDeadline = (candidate: unknown): boolean =>
+          candidate instanceof AckerDBError && candidate.code === "deadline_exceeded";
+        const finalizationErrors = await this.finalizeTelemetry(error, deadlineAtMs);
+        const cleanupErrors = finalizationErrors.filter((cleanup) =>
+          cleanup !== error &&
+          !(error instanceof AggregateError && error.errors.includes(cleanup)) &&
+          !(isDeadline(cleanup) && isDeadline(error)));
         if (cleanupErrors.length === 0) throw error;
         throw new AggregateError(
           [error, ...cleanupErrors],
@@ -359,25 +374,44 @@ export class RuntimeControl {
   }
 
   /**
+   * Register one failure and share the single finalization. Every drain path
+   * — clean, core-shutdown failure, deadline — registers its failure
+   * synchronously and awaits the SAME promise, so the drain never settles
+   * while the owning finalizer is still active, and a deadline expiring
+   * mid-finalization flips the terminal outcome instead of racing it.
+   */
+  private finalizeTelemetry(failure: unknown, deadlineAtMs: number): Promise<unknown[]> {
+    this.registerTerminalFailure(failure);
+    this.finalization ??= this.runFinalization(deadlineAtMs);
+    return this.finalization;
+  }
+
+  private registerTerminalFailure(failure: unknown): void {
+    if (failure !== undefined && this.terminalFailure === undefined) {
+      this.terminalFailure = failure;
+    }
+  }
+
+  /**
    * One telemetry finalization for every drain outcome. All fallible durable
-   * flushing runs FIRST; only then is the terminal lifecycle outcome known —
-   * exactly one `stopped`/`failed` event, recorded into the exporter stream
+   * flushing runs FIRST, each step bounded by the shutdown deadline so a
+   * hung flush cannot hold the terminal write (or the caller's drain)
+   * hostage; only then is the terminal lifecycle outcome frozen — read and
+   * written in ONE synchronous stretch, so an expiring deadline either
+   * registered its failure before the freeze or arrives too late to matter.
+   * Exactly one `stopped`/`failed` event: recorded into the exporter stream
    * and appended synchronously into the journal as the structurally LAST
    * durable record before the sidecar closes. Errors are collected, never
-   * thrown. Store-close and export-flush failures after the terminal append
-   * still reject the drain but cannot flip the durable row — nothing can be
-   * written into a sidecar that failed to close.
+   * thrown. Failures discovered after the freeze — a terminal append that
+   * cannot write, store-close, export-flush — still reject the drain and
+   * surface in accounting, but cannot flip the durable row: nothing can be
+   * written into a sidecar that already failed.
    */
-  private async finalizeTelemetry(
-    failure: unknown,
-    deadlineAtMs: number,
-  ): Promise<unknown[]> {
-    if (this.telemetryFinalized) return [];
-    this.telemetryFinalized = true;
+  private async runFinalization(deadlineAtMs: number): Promise<unknown[]> {
     const errors: unknown[] = [];
     const attempt = async (work: () => unknown): Promise<void> => {
       try {
-        await work();
+        await this.boundedBy(work(), deadlineAtMs);
       } catch (error) {
         errors.push(error);
       }
@@ -390,7 +424,8 @@ export class RuntimeControl {
       ? this.options.telemetryJournal.drain()
       : this.options.telemetryJournal.flush());
     await attempt(() => this.options.telemetrySpans.drain());
-    const terminal = failure ?? errors[0];
+    // FREEZE: synchronous from here through the terminal append.
+    const terminal = this.terminalFailure ?? errors[0];
     const outcome = terminal === undefined
       ? { lifecycleState: "stopped" as const }
       : {
@@ -398,22 +433,54 @@ export class RuntimeControl {
           outcome: outcomeFromError(terminal).code,
           errorClass: terminal instanceof Error ? terminal.name : "UnknownError",
         };
-    // Exporter-stream parity first (the detached sink makes this
-    // non-durable), then the terminal row itself.
-    await attempt(() => this.options.telemetry.recordEvent({
-      name: "lifecycle",
-      level: outcome.lifecycleState === "stopped" ? "info" : "error",
-      operation: "lifecycle",
-      ...outcome,
-    }));
+    try {
+      // Exporter-stream parity; the detached sink makes this non-durable.
+      this.options.telemetry.recordEvent({
+        name: "lifecycle",
+        level: outcome.lifecycleState === "stopped" ? "info" : "error",
+        operation: "lifecycle",
+        ...outcome,
+      });
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.options.appendTerminalLifecycle(outcome);
+    } catch (error) {
+      errors.push(error);
+    }
     await attempt(() => this.options.ownsTelemetry
       ? this.options.telemetry.drain(deadlineAtMs)
       : this.options.telemetry.flush());
-    await attempt(() => this.options.appendTerminalLifecycle(outcome));
     await attempt(() => {
       if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
     });
     return errors;
+  }
+
+  /** Bound one finalization step by the shutdown deadline. */
+  private boundedBy<T>(work: T | Promise<T>, deadlineAtMs: number): Promise<T> {
+    if (!(work instanceof Promise)) return Promise.resolve(work);
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new AckerDBError(
+          "deadline_exceeded",
+          "telemetry finalization exceeded the shutdown deadline",
+          { resource: "operation" },
+        ));
+      }, Math.max(0, deadlineAtMs - Date.now()));
+      timer.unref?.();
+      work.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   private waitForActiveOperations(): Promise<void> {

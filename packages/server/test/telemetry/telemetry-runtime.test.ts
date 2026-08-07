@@ -2417,6 +2417,53 @@ describe("Runtime telemetry acceptance", () => {
     },
   );
 
+  test("a finalization blocked past the deadline still writes one failed terminal row", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    let release!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The span flush hangs far past the shutdown deadline: the deadline
+    // must both bound the drain AND own the terminal outcome — the stalled
+    // finalizer must never later persist `stopped` on a failed Runtime.
+    const drainSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(() => stalled);
+    await expect(app.runtime.drain(Date.now() + 100)).rejects.toThrow();
+    // drain settled only after the finalization finished: the terminal row
+    // is already durable and readable, exactly once, and it says failed.
+    const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
+    const lifecycle = lifecycleStates(entries);
+    expect(lifecycle.filter((state) => state === "failed")).toHaveLength(1);
+    expect(lifecycle).not.toContain("stopped");
+    const last = entries.at(-1)! as { metadata?: { lifecycleState?: string; outcome?: string } };
+    expect(last.metadata?.lifecycleState).toBe("failed");
+    expect(last.metadata?.outcome).toBe("deadline_exceeded");
+    release();
+    drainSpy.mockRestore();
+    store.close();
+  });
+
+  test("a failing terminal append rejects the drain and surfaces in accounting", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    // The sidecar dies between the queue flushes and the terminal append: a
+    // terminal row that could not be written must never let the drain
+    // resolve clean with zero terminal rows and no explanation.
+    const drainSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(async () => {
+        store.close();
+      });
+    await expect(app.runtime.drain()).rejects.toThrow();
+    drainSpy.mockRestore();
+    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({
+      state: "failed",
+      droppedRecords: 1,
+    });
+  });
+
   test("a record landing mid-drain is durably flushed or cleanly bypasses the sink", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const app = harness(telemetry);

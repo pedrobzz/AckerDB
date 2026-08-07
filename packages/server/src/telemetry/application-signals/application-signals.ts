@@ -93,14 +93,12 @@ export class ApplicationSignals {
   /**
    * The terminal lifecycle row: appended synchronously after the journal
    * drained, as the structurally last durable record before the sidecar
-   * closes.
+   * closes. Unlike the recording path, the terminal write fails LOUD — a
+   * failure here escapes so the drain rejects instead of resolving clean
+   * with zero terminal rows.
    */
   frameworkFinal(record: TelemetryEventRecord): void {
-    try {
-      this.journal.appendFinal(this.frameworkRecord(record));
-    } catch {
-      // Durable framework capture must never escape into the shutdown path.
-    }
+    this.journal.appendFinal(this.frameworkRecord(record));
   }
 
   private frameworkRecord(record: TelemetryEventRecord): TelemetryJournalRecord {
