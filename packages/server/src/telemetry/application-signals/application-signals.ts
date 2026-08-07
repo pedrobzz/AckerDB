@@ -5,6 +5,7 @@ import type {
   ApplicationLogger,
   ApplicationLogCallContext,
   ApplicationLogLevel,
+  TelemetryJournalRecord,
 } from "./types.ts";
 import type { TelemetryJournal } from "./journal.ts";
 import {
@@ -83,40 +84,57 @@ export class ApplicationSignals {
    */
   framework(record: TelemetryEventRecord): void {
     try {
-      const sequence = ++this.sequence;
-      const metadata: Record<string, TelemetryValue> = {};
-      if (record.operation !== undefined) metadata.operation = record.operation;
-      if (record.stage !== undefined) metadata.stage = record.stage;
-      if (record.outcome !== undefined) metadata.outcome = record.outcome;
-      if (record.resource !== undefined) metadata.resource = record.resource;
-      if (record.lifecycleState !== undefined) metadata.lifecycleState = record.lifecycleState;
-      if (record.errorClass !== undefined) metadata.errorClass = record.errorClass;
-      if (record.connectionId !== undefined) metadata.connectionId = record.connectionId;
-      if (record.mutationId !== undefined) metadata.mutationId = record.mutationId;
-      if (record.commitId !== undefined) metadata.commitId = record.commitId;
-      if (record.subscriptionId !== undefined) metadata.subscriptionId = record.subscriptionId;
-      this.journal.append(Object.freeze({
-        kind: "log",
-        processGeneration: this.processGeneration,
-        sequence,
-        timestamp: record.timestampMs,
-        level: record.level,
-        source: "framework",
-        message: record.name,
-        ...(Object.keys(metadata).length === 0
-          ? {}
-          : { metadata: Object.freeze(metadata) }),
-        truncated: false,
-        malformed: false,
-        functionAddress: record.function ?? "framework",
-        functionKind: "framework",
-        ...(record.traceId === undefined ? {} : { traceId: record.traceId }),
-        ...(record.spanId === undefined ? {} : { spanId: record.spanId }),
-        ...(record.requestId === undefined ? {} : { requestId: record.requestId }),
-      }));
+      this.journal.append(this.frameworkRecord(record));
     } catch {
       // Durable framework capture must never escape into the recording path.
     }
+  }
+
+  /**
+   * The terminal lifecycle row: appended synchronously after the journal
+   * drained, as the structurally last durable record before the sidecar
+   * closes.
+   */
+  frameworkFinal(record: TelemetryEventRecord): void {
+    try {
+      this.journal.appendFinal(this.frameworkRecord(record));
+    } catch {
+      // Durable framework capture must never escape into the shutdown path.
+    }
+  }
+
+  private frameworkRecord(record: TelemetryEventRecord): TelemetryJournalRecord {
+    const sequence = ++this.sequence;
+    const metadata: Record<string, TelemetryValue> = {};
+    if (record.operation !== undefined) metadata.operation = record.operation;
+    if (record.stage !== undefined) metadata.stage = record.stage;
+    if (record.outcome !== undefined) metadata.outcome = record.outcome;
+    if (record.resource !== undefined) metadata.resource = record.resource;
+    if (record.lifecycleState !== undefined) metadata.lifecycleState = record.lifecycleState;
+    if (record.errorClass !== undefined) metadata.errorClass = record.errorClass;
+    if (record.connectionId !== undefined) metadata.connectionId = record.connectionId;
+    if (record.mutationId !== undefined) metadata.mutationId = record.mutationId;
+    if (record.commitId !== undefined) metadata.commitId = record.commitId;
+    if (record.subscriptionId !== undefined) metadata.subscriptionId = record.subscriptionId;
+    return Object.freeze({
+      kind: "log" as const,
+      processGeneration: this.processGeneration,
+      sequence,
+      timestamp: record.timestampMs,
+      level: record.level,
+      source: "framework" as const,
+      message: record.name,
+      ...(Object.keys(metadata).length === 0
+        ? {}
+        : { metadata: Object.freeze(metadata) }),
+      truncated: false,
+      malformed: false,
+      functionAddress: record.function ?? "framework",
+      functionKind: "framework" as const,
+      ...(record.traceId === undefined ? {} : { traceId: record.traceId }),
+      ...(record.spanId === undefined ? {} : { spanId: record.spanId }),
+      ...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+    }) as TelemetryJournalRecord;
   }
 
   commitAnalytics(events: readonly AnalyticsEventRecord[], commitVersion: bigint): void {

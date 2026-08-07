@@ -59,6 +59,12 @@ export interface RuntimeControlOptions {
   readonly stopPeriodicTelemetry: () => void;
   /** Releases the durable-sink lease before the read-model store closes. */
   readonly releaseDurableSink: () => void;
+  /** Appends the terminal lifecycle row synchronously — the last durable record. */
+  readonly appendTerminalLifecycle: (record: {
+    readonly lifecycleState: "stopped" | "failed";
+    readonly outcome?: ReturnType<typeof outcomeFromError>["code"];
+    readonly errorClass?: string;
+  }) => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -72,6 +78,8 @@ export class RuntimeControl {
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
+  /** Telemetry finalization runs exactly once, whichever path reaches it first. */
+  private telemetryFinalized = false;
 
   constructor(private readonly options: RuntimeControlOptions) {
     this.releaseTelemetryJournalFailure = options.telemetryJournal.onFailure((error) => {
@@ -305,28 +313,11 @@ export class RuntimeControl {
     const shutdownWork = coreShutdown.then(async () => {
       if (deadlineReached) return;
       this.options.flushDeliveryFailures();
-      this.options.telemetry.recordEvent({
-        name: "lifecycle",
-        level: "info",
-        operation: "lifecycle",
-        lifecycleState: "stopped",
-      });
-      // The final lifecycle event above is the last record that needs
-      // durable capture: release the sink BEFORE the queue drains flip the
-      // stores out of "ready", so a record landing mid-flush cleanly
-      // bypasses the sink instead of being accepted and silently dropped.
-      this.options.releaseDurableSink();
-      await this.options.telemetryExporters?.drain();
-      if (this.options.ownsTelemetryJournal) {
-        await this.options.telemetryJournal.drain();
-      } else {
-        await this.options.telemetryJournal.flush();
+      const errors = await this.finalizeTelemetry(undefined, deadlineAtMs);
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Runtime telemetry finalization failed");
       }
-      await this.options.telemetrySpans.drain();
-      if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
-      return this.options.ownsTelemetry
-        ? this.options.telemetry.drain(deadlineAtMs)
-        : this.options.telemetry.flush();
     });
 
     const deadlineError = new AckerDBError(
@@ -354,55 +345,9 @@ export class RuntimeControl {
         deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
-        this.options.telemetry.recordEvent({
-          name: "lifecycle",
-          level: "error",
-          operation: "lifecycle",
-          lifecycleState: "failed",
-          outcome: outcomeFromError(error).code,
-          errorClass: error instanceof Error ? error.name : "UnknownError",
-        });
-        const cleanupErrors: unknown[] = [];
-        // Same order as the clean path: the "failed" lifecycle event above
-        // is the last durable record; release before the cleanup drains.
-        try {
-          this.options.releaseDurableSink();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          await this.options.telemetryExporters?.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (this.options.ownsTelemetryJournal) {
-            await this.options.telemetryJournal.drain();
-          } else {
-            await this.options.telemetryJournal.flush();
-          }
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          await this.options.telemetrySpans.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        if (this.options.ownsTelemetryStore) {
-          try {
-            this.options.telemetryStore.close();
-          } catch (cleanupError) {
-            cleanupErrors.push(cleanupError);
-          }
-        }
-        if (this.options.ownsTelemetry) {
-          try {
-            await this.options.telemetry.drain(deadlineAtMs);
-          } catch (cleanupError) {
-            cleanupErrors.push(cleanupError);
-          }
-        }
+        // A clean-path finalization already wrote the terminal row before
+        // its errors surfaced here; finalize is once-only and then inert.
+        const cleanupErrors = await this.finalizeTelemetry(error, deadlineAtMs);
         if (cleanupErrors.length === 0) throw error;
         throw new AggregateError(
           [error, ...cleanupErrors],
@@ -411,6 +356,64 @@ export class RuntimeControl {
       },
     );
     return this.drainPromise;
+  }
+
+  /**
+   * One telemetry finalization for every drain outcome. All fallible durable
+   * flushing runs FIRST; only then is the terminal lifecycle outcome known —
+   * exactly one `stopped`/`failed` event, recorded into the exporter stream
+   * and appended synchronously into the journal as the structurally LAST
+   * durable record before the sidecar closes. Errors are collected, never
+   * thrown. Store-close and export-flush failures after the terminal append
+   * still reject the drain but cannot flip the durable row — nothing can be
+   * written into a sidecar that failed to close.
+   */
+  private async finalizeTelemetry(
+    failure: unknown,
+    deadlineAtMs: number,
+  ): Promise<unknown[]> {
+    if (this.telemetryFinalized) return [];
+    this.telemetryFinalized = true;
+    const errors: unknown[] = [];
+    const attempt = async (work: () => unknown): Promise<void> => {
+      try {
+        await work();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    // Ordinary concurrent records bypass cleanly while the queues flush:
+    // never accepted by Telemetry yet dropped by a not-ready store.
+    await attempt(() => this.options.releaseDurableSink());
+    await attempt(() => this.options.telemetryExporters?.drain());
+    await attempt(() => this.options.ownsTelemetryJournal
+      ? this.options.telemetryJournal.drain()
+      : this.options.telemetryJournal.flush());
+    await attempt(() => this.options.telemetrySpans.drain());
+    const terminal = failure ?? errors[0];
+    const outcome = terminal === undefined
+      ? { lifecycleState: "stopped" as const }
+      : {
+          lifecycleState: "failed" as const,
+          outcome: outcomeFromError(terminal).code,
+          errorClass: terminal instanceof Error ? terminal.name : "UnknownError",
+        };
+    // Exporter-stream parity first (the detached sink makes this
+    // non-durable), then the terminal row itself.
+    await attempt(() => this.options.telemetry.recordEvent({
+      name: "lifecycle",
+      level: outcome.lifecycleState === "stopped" ? "info" : "error",
+      operation: "lifecycle",
+      ...outcome,
+    }));
+    await attempt(() => this.options.ownsTelemetry
+      ? this.options.telemetry.drain(deadlineAtMs)
+      : this.options.telemetry.flush());
+    await attempt(() => this.options.appendTerminalLifecycle(outcome));
+    await attempt(() => {
+      if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
+    });
+    return errors;
   }
 
   private waitForActiveOperations(): Promise<void> {

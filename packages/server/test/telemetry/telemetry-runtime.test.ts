@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { declareJobs, job } from "../../src/jobs/definition.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -416,6 +416,19 @@ class RuntimeHarness {
 }
 
 const harnesses = new Set<RuntimeHarness>();
+
+/** The lifecycle states of every durable framework lifecycle row, in id order. */
+function lifecycleStates(
+  entries: ReturnType<RuntimeHarness["runtime"]["telemetryJournal"]["readBatch"]>,
+): readonly string[] {
+  return entries
+    .filter((entry) => entry.kind === "log" &&
+      entry.source === "framework" &&
+      entry.message === "lifecycle")
+    .map((entry) => String(
+      (entry as { metadata?: { lifecycleState?: unknown } }).metadata?.lifecycleState,
+    ));
+}
 
 function harness(
   telemetry: RuntimeOptions["telemetry"],
@@ -2326,6 +2339,83 @@ describe("Runtime telemetry acceptance", () => {
     })).toBe(true);
     expect(app.runtime.telemetrySpans.snapshot()).toEqual(drained);
   });
+
+  test("the terminal lifecycle row is stopped, durably last, exactly once", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    const session = await app.openSession("telemetry-terminal-clean");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 970_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    }))).toEqual([]);
+    await app.runtime.drain();
+
+    const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
+    const lifecycle = lifecycleStates(entries);
+    expect(lifecycle.filter((state) => state === "stopped")).toHaveLength(1);
+    expect(lifecycle).not.toContain("failed");
+    // The terminal row is structurally the LAST durable record.
+    const last = entries.at(-1)!;
+    expect(last).toMatchObject({ kind: "log", message: "lifecycle" });
+    expect((last as { metadata?: { lifecycleState?: string } }).metadata?.lifecycleState)
+      .toBe("stopped");
+
+    // The lease released exactly once: a NEW sink attached by a later owner
+    // survives the repeated drain's release backstop.
+    const captured: unknown[] = [];
+    const detach = telemetry.attachDurableSink({ span: (record) => void captured.push(record) });
+    await app.runtime.drain();
+    expect(telemetry.recordSpan({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "items.list",
+      durationMs: 1,
+      context: {
+        traceId: "0193a0e2-1111-7000-8000-000000000012",
+        spanId: "0193a0e2-2222-7000-8000-000000000012",
+      },
+    })).toBe(true);
+    expect(captured).toHaveLength(1);
+    detach();
+    store.close();
+  });
+
+  test.each([
+    ["exporter", (app: RuntimeHarness) => app.runtime.telemetryExporters!],
+    ["journal", (app: RuntimeHarness) => app.runtime.telemetryJournal],
+    ["spans", (app: RuntimeHarness) => app.runtime.telemetrySpans],
+  ] as const)(
+    "a failing %s drain leaves failed as the last durable lifecycle row",
+    async (_kind, target) => {
+      const telemetry = new Telemetry({ localSink: false });
+      const store = new TelemetryStore({ path: ":memory:" });
+      const app = harness(telemetry, {
+        telemetryStore: store,
+        telemetryExporters: {
+          exporters: [{ name: "noop", signals: ["log"], export: () => {} }],
+        },
+      });
+      const drainSpy = spyOn(target(app), "drain").mockRejectedValueOnce(
+        new Error("finalization flush failed"),
+      );
+      await expect(app.runtime.drain()).rejects.toThrow("finalization flush failed");
+      drainSpy.mockRestore();
+
+      const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
+      const lifecycle = lifecycleStates(entries);
+      expect(lifecycle.filter((state) => state === "failed")).toHaveLength(1);
+      expect(lifecycle).not.toContain("stopped");
+      const last = entries.at(-1)!;
+      expect((last as { metadata?: { lifecycleState?: string } }).metadata?.lifecycleState)
+        .toBe("failed");
+      store.close();
+    },
+  );
 
   test("a record landing mid-drain is durably flushed or cleanly bypasses the sink", async () => {
     const telemetry = new Telemetry({ localSink: false });

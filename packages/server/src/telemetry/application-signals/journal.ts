@@ -82,6 +82,37 @@ const LOG_LEVELS: readonly ApplicationLogLevel[] = Object.freeze([
   "error",
 ]);
 
+const INSERT_JOURNAL_ROW = `
+  INSERT INTO _ackerdb_telemetry_journal (
+    process_generation, sequence, timestamp, kind, level, source,
+    function_address, trace_id, span_id, request_id, event, identity,
+    payload_bytes, payload
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+function journalRowValues(
+  record: TelemetryJournalRecord,
+  bytes: number,
+  encoded: string,
+): readonly (string | number | bigint | null)[] {
+  return [
+    record.processGeneration,
+    record.sequence,
+    record.timestamp,
+    record.kind,
+    record.kind === "log" ? record.level : null,
+    record.kind === "log" ? record.source ?? null : null,
+    record.functionAddress,
+    record.traceId ?? null,
+    record.spanId ?? null,
+    record.requestId ?? null,
+    record.kind === "analytics" ? record.event : null,
+    record.kind === "analytics" ? record.identity ?? null : null,
+    bytes,
+    encoded,
+  ];
+}
+
 export class TelemetryJournal {
   readonly store: TelemetryStore;
   readonly limits: TelemetryJournalLimits;
@@ -290,13 +321,7 @@ export class TelemetryJournal {
   }
 
   private persist(batch: readonly QueuedRecord[]): void {
-    const insert = this.database.query(`
-      INSERT INTO _ackerdb_telemetry_journal (
-        process_generation, sequence, timestamp, kind, level, source,
-        function_address, trace_id, span_id, request_id, event, identity,
-        payload_bytes, payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const insert = this.database.query(INSERT_JOURNAL_ROW);
     const before = {
       storedRecords: this.storedRecords,
       storedBytes: this.storedBytes,
@@ -312,22 +337,7 @@ export class TelemetryJournal {
             const day = Math.floor(record.timestamp / DAY_MS) * DAY_MS;
             touchedBuckets.set(`${day}\0${record.event}`, { day, event: record.event });
           }
-          const inserted = insert.run(
-            record.processGeneration,
-            record.sequence,
-            record.timestamp,
-            record.kind,
-            record.kind === "log" ? record.level : null,
-            record.kind === "log" ? record.source : null,
-            record.functionAddress,
-            record.traceId ?? null,
-            record.spanId ?? null,
-            record.requestId ?? null,
-            record.kind === "analytics" ? record.event : null,
-            record.kind === "analytics" ? record.identity ?? null : null,
-            item.bytes,
-            item.encoded,
-          );
+          const inserted = insert.run(...journalRowValues(record, item.bytes, item.encoded));
           this.lastRecordId = inserted.lastInsertRowid as bigint;
           this.storedRecords++;
           this.storedBytes += item.bytes;
@@ -611,6 +621,43 @@ export class TelemetryJournal {
     if (this.state === "ready") this.state = "draining";
     await this.flush();
     this.state = "stopped";
+  }
+
+  /**
+   * One synchronous terminal append — the structurally LAST durable record,
+   * written after the queue drains and before the sidecar closes. Bypasses
+   * the queue and the ready-state gate deliberately: the drain that stopped
+   * this journal is exactly what made the terminal outcome known.
+   */
+  appendFinal(record: TelemetryJournalRecord): boolean {
+    let encoded: string;
+    try {
+      encoded = encode(record);
+    } catch {
+      this.droppedRecords++;
+      return false;
+    }
+    const bytes = Buffer.byteLength(encoded);
+    try {
+      this.database.transaction(() => {
+        const inserted = this.database
+          .query(INSERT_JOURNAL_ROW)
+          .run(...journalRowValues(record, bytes, encoded));
+        this.lastRecordId = inserted.lastInsertRowid as bigint;
+        this.storedRecords++;
+        this.storedBytes += bytes;
+        this.database.query(`
+          UPDATE _ackerdb_telemetry_state
+          SET stored_records = ?, stored_bytes = ?, last_record_id = ?
+          WHERE singleton = 1
+        `).run(this.storedRecords, this.storedBytes, this.lastRecordId);
+      })();
+      this.persistedRecords++;
+      return true;
+    } catch {
+      this.droppedRecords++;
+      return false;
+    }
   }
 }
 

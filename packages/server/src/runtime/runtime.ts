@@ -536,6 +536,20 @@ export class Runtime implements RuntimePort {
           this.telemetryInvalidation.stop();
         },
         releaseDurableSink: () => this.detachDurableSink(),
+        appendTerminalLifecycle: (record) => {
+          // Disabled telemetry records no lifecycle stream at all; a lone
+          // terminal row would claim a history that was never captured.
+          if (!this.telemetry.enabled) return;
+          this.applicationSignals.frameworkFinal(Object.freeze({
+            schemaVersion: 1,
+            kind: "event",
+            timestampMs: this.now(),
+            name: "lifecycle",
+            level: record.lifecycleState === "stopped" ? "info" : "error",
+            operation: "lifecycle",
+            ...record,
+          }));
+        },
         flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
       });
       this.sessionApplication = new RuntimeSessionApplication({
