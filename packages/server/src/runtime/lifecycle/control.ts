@@ -311,6 +311,11 @@ export class RuntimeControl {
         operation: "lifecycle",
         lifecycleState: "stopped",
       });
+      // The final lifecycle event above is the last record that needs
+      // durable capture: release the sink BEFORE the queue drains flip the
+      // stores out of "ready", so a record landing mid-flush cleanly
+      // bypasses the sink instead of being accepted and silently dropped.
+      this.options.releaseDurableSink();
       await this.options.telemetryExporters?.drain();
       if (this.options.ownsTelemetryJournal) {
         await this.options.telemetryJournal.drain();
@@ -318,9 +323,6 @@ export class RuntimeControl {
         await this.options.telemetryJournal.flush();
       }
       await this.options.telemetrySpans.drain();
-      // The stores stop accepting writes here: recording on a caller-owned
-      // Telemetry after this point must be a clean non-durable no-op.
-      this.options.releaseDurableSink();
       if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
@@ -361,6 +363,13 @@ export class RuntimeControl {
           errorClass: error instanceof Error ? error.name : "UnknownError",
         });
         const cleanupErrors: unknown[] = [];
+        // Same order as the clean path: the "failed" lifecycle event above
+        // is the last durable record; release before the cleanup drains.
+        try {
+          this.options.releaseDurableSink();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
         try {
           await this.options.telemetryExporters?.drain();
         } catch (cleanupError) {
@@ -377,11 +386,6 @@ export class RuntimeControl {
         }
         try {
           await this.options.telemetrySpans.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          this.options.releaseDurableSink();
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }

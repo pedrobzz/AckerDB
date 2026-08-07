@@ -2327,6 +2327,66 @@ describe("Runtime telemetry acceptance", () => {
     expect(app.runtime.telemetrySpans.snapshot()).toEqual(drained);
   });
 
+  test("a record landing mid-drain is durably flushed or cleanly bypasses the sink", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const app = harness(telemetry);
+    const session = await app.openSession("telemetry-mid-drain");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 960_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    }))).toEqual([]);
+    await app.runtime.telemetry.flush();
+    await app.runtime.telemetrySpans.flush();
+    await app.runtime.telemetryJournal.flush();
+
+    // Fire from inside the drain-time flushes: the journal persists the
+    // final lifecycle event while already draining, and the span store
+    // persists its tail while already draining — records arriving in those
+    // windows must never be accepted by Telemetry yet dropped by a
+    // not-ready store.
+    const stopJournalListener = app.runtime.telemetryJournal.onPersist(() => {
+      telemetry.recordEvent({
+        name: "lifecycle",
+        level: "info",
+        operation: "lifecycle",
+      });
+    });
+    const stopSpanListener = app.runtime.telemetrySpans.onPersist(() => {
+      telemetry.recordSpan({
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        functionName: "items.list",
+        durationMs: 1,
+        context: {
+          traceId: "0193a0e2-1111-7000-8000-000000000010",
+          spanId: "0193a0e2-2222-7000-8000-000000000010",
+        },
+      });
+    });
+    // A span queued at drain time makes the span store persist mid-drain.
+    telemetry.recordSpan({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "items.list",
+      durationMs: 1,
+      context: {
+        traceId: "0193a0e2-1111-7000-8000-000000000011",
+        spanId: "0193a0e2-2222-7000-8000-000000000011",
+      },
+    });
+    await app.runtime.drain();
+    stopJournalListener();
+    stopSpanListener();
+
+    expect(app.runtime.telemetryJournal.snapshot().droppedRecords).toBe(0);
+    expect(app.runtime.telemetrySpans.snapshot().droppedRecords).toBe(0);
+  });
+
   test("one injected Telemetry serves two sequential Runtimes", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const first = harness(telemetry);
