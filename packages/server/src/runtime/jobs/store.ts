@@ -127,11 +127,16 @@ export class JobsStore extends TableStore<JobRow> {
     )[0] ?? null;
   }
 
-  /** The newest settled Job of one identity in the given state, if any. */
+  /**
+   * The newest settled Job of one identity in the given state, if any. The id
+   * breaks a tie: two Jobs of one identity really can settle in the same
+   * millisecond — a repeat minted at settle can fail immediately — and "newest"
+   * has to mean one row, not whichever the index happened to reach first.
+   */
   newestSettledFor(name: string, argsHash: string, state: JobState): JobRow | null {
     return this.select(
       `${quote("name")} = ? AND ${quote("argsHash")} = ? AND ${quote("state")} = ?`,
-      ` ORDER BY ${quote("settledAt")} DESC`,
+      ` ORDER BY ${quote("settledAt")} DESC, ${quote("id")} DESC`,
       1,
       [name, argsHash, state],
     )[0] ?? null;

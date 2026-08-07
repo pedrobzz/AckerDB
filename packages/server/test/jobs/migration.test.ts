@@ -513,6 +513,78 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     upgraded.close("clean");
   });
 
+  test("an application migration may not emit into a framework-owned table", async () => {
+    const path = seedLegacy([]);
+    const engine = new Engine(application, path);
+    const stored = engine.loadSnapshot()!;
+    engine.writer.query('INSERT INTO "log" (line) VALUES (?)').run("seed");
+    // A forged Job row would be a job nothing admitted: no validated
+    // arguments, no computed identity, no dedupe. The emit is refused.
+    await expect(reconcile(engine, [{
+      number: 1,
+      name: "forge",
+      pre: stored,
+      target: stored,
+      code: "",
+      migration: defineMigration({
+        tables: {
+          log: (row, ctx) => {
+            ctx.insert(JOBS_TABLE, {
+              name: "work.fake",
+              argsJson: "{}",
+              argsHash: "forged",
+              key: null,
+              state: "pending",
+              trigger: "enqueue",
+              parentJobId: null,
+              scheduledAt: 0,
+              nextRunAt: 0,
+              runCount: 0,
+              nextRunTrigger: null,
+              stepsJson: "[]",
+              enqueuedAt: 0,
+              settledAt: null,
+              deleteAfter: null,
+            });
+            return row;
+          },
+        },
+      }),
+    }])).rejects.toThrow(/framework-owned/);
+    engine.close("clean");
+
+    const upgraded = await upgrade(path);
+    expect(jobRows(upgraded)).toHaveLength(0);
+    upgraded.close("clean");
+  });
+
+  test("a malformed attempt keeps its position instead of renumbering the rest", async () => {
+    const path = seedLegacy([{
+      name: "work.dented",
+      state: "completed",
+      runAt: 3_000,
+      attempt: 3,
+      attemptsJson: JSON.stringify([
+        attempt(1_000, 1_100, "failed", "Error: one"),
+        { garbage: true },
+        attempt(3_000, 3_100, "completed"),
+      ]),
+      outputJson: '"done"',
+      enqueuedAt: 1_000,
+      settledAt: 3_100,
+    }]);
+    const engine = await upgrade(path);
+    // Attempt 3 stays run 3, so the Job's recorded output lands on the run
+    // that produced it rather than on a renumbered neighbour.
+    expect(runRows(engine).map((run) => [run["number"], run["state"], run["outputJson"]])).toEqual([
+      [1n, "failed", null],
+      [2n, "failed", null],
+      [3n, "completed", '"done"'],
+    ]);
+    expect(runRows(engine)[1]!["errorText"]).toContain("unreadable");
+    engine.close("clean");
+  });
+
   test("the runner picks a migrated Job up where the old model left it", async () => {
     const clock = 100_000;
     const path = seedLegacy([{

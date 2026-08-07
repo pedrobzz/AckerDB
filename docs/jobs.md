@@ -226,9 +226,12 @@ While a Job for the same (job, args) is live — pending, running, or retrying �
 enqueue resolves to it: two calls, one execution, one outcome for every
 awaiter. A `completed` or `failed` window extends this past settle: calls
 inside the window return the outcome recorded on the Job's latest run without
-executing anything. **A dedupe hit writes nothing at all** — no run row, no
-touched timestamp, no counter — because no handler ran. `forceRunAgain`
-replaces the outcome a hit receives; `delete` removes it.
+executing anything. **A dedupe hit stores nothing** — no Job row, no run row,
+no touched timestamp, not even a primary key it then gives back — because no
+handler ran. It still takes the writer turn that makes checking and inserting
+one atomic step, so the engine's global commit counter advances exactly as it
+would for any transaction that turns out to write nothing.
+`forceRunAgain` replaces the outcome a hit receives; `delete` removes it.
 
 ## Concurrency
 

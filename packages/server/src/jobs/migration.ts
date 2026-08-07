@@ -60,7 +60,13 @@ const JOB_STATE_OF_OLD_STATE: Record<string, string> = {
   canceled: "canceled",
 };
 
-function readAttempts(value: unknown): StoredAttempt[] {
+/**
+ * The recorded attempts, position preserved. A malformed entry becomes a hole
+ * rather than disappearing: attempt `i` is run `i`, and compacting the array
+ * would renumber every attempt after the damaged one — including the last,
+ * which is where a completed Job's output belongs.
+ */
+function readAttempts(value: unknown): (StoredAttempt | undefined)[] {
   if (typeof value !== "string") return [];
   let parsed: unknown;
   try {
@@ -69,12 +75,14 @@ function readAttempts(value: unknown): StoredAttempt[] {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  return parsed.filter((entry): entry is StoredAttempt =>
+  return parsed.map((entry) =>
     typeof entry === "object" &&
     entry !== null &&
     Number.isFinite((entry as StoredAttempt).startedAt) &&
     Number.isFinite((entry as StoredAttempt).settledAt) &&
-    typeof (entry as StoredAttempt).outcome === "string");
+    typeof (entry as StoredAttempt).outcome === "string"
+      ? (entry as StoredAttempt)
+      : undefined);
 }
 
 const finite = (value: unknown, fallback: number): number =>

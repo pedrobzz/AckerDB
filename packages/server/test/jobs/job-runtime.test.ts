@@ -387,14 +387,53 @@ describe("dedupe and memoization", () => {
     clock = 5_600_000;
     const hit = await runtime.jobs.enqueue("work.once", { key: "k" });
     expect(hit).toEqual({ id: first.id, deduped: true });
-    // A dedupe hit executes no handler, so it records nothing: not a run, not
-    // a touched timestamp, not a counter, and not even a primary key it later
-    // gave back.
+    // A dedupe hit executes no handler, so it stores nothing: not a Job row,
+    // not a run, not a touched timestamp, and not even a primary key it later
+    // gave back. (It still takes the writer turn that makes the check and the
+    // insert one atomic step, so the engine's global commit counter advances
+    // as it does for any transaction that writes nothing.)
     expect(snapshotOf(jobRows())).toBe(jobsBefore);
     expect(snapshotOf(runRows())).toBe(runsBefore);
     expect(jobKeysIssued()).toBe(keysBefore);
     // ...and the hit still answers with the memoized outcome.
     expect(await runtime.jobs.wait(hit.id)).toEqual({ ok: true, value: "done:k" });
+  });
+
+  test("two settles in one millisecond resolve to the newer outcome, not the luckier row", async () => {
+    clock = 5_800_000;
+    let runs = 0;
+    start(declareJobs({
+      work: {
+        beat: job({
+          args: {},
+          // A recurrence due the instant it is minted: the successor settles
+          // in the same millisecond as the occurrence that created it.
+          repeat: () => (runs >= 2 ? null : clock),
+          dedupe: { completed: "forever", failed: "forever" },
+          handler: async () => {
+            if (++runs === 1) return "first";
+            throw new Error("second fails");
+          },
+        }),
+      },
+    }));
+    await runtime.jobs.activate();
+    await Bun.sleep(5);
+
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    const settled = jobRows().filter((row) => row.state === "completed" || row.state === "failed");
+    expect(settled.map((row) => row.state)).toEqual(["completed", "failed"]);
+    expect(settled.every((row) => row.deleteAfter === null)).toBe(true);
+
+    // "Newest" has to mean one row: the later Job, not whichever the index
+    // reached first.
+    const hit = await runtime.jobs.enqueue("work.beat", {});
+    expect(hit.deduped).toBe(true);
+    expect(hit.id).toBe(settled.at(-1)!.id);
+    expect(await runtime.jobs.wait(hit.id)).toMatchObject({ ok: false, state: "failed" });
   });
 
   test("a completed window memoizes, and expiry releases a fresh run", async () => {

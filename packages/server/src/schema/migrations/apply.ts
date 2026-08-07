@@ -231,7 +231,7 @@ export async function applyStep(
     }
     persistTagMaps(writer, stepTags);
     for (const op of plan.ops) op();
-    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf);
+    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf, owner);
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
       // in which case the rebuilt tmp simply becomes the (empty) new table.
@@ -649,6 +649,7 @@ async function runTransforms(
   rebuilt: Set<string>,
   identityRebuilt: Set<string>,
   driftOf: Map<string, DriftColumn[]>,
+  owner: StepOwner,
 ): Promise<Map<string, string>> {
   const { engine, pre, stored, target, renames, targetPlans, oldTags } = scope;
   const writer = engine.writer;
@@ -706,6 +707,13 @@ async function runTransforms(
     before: buildBefore(engine, pre, stored, oldTags),
     insert(table, row) {
       if (!targetPlans.has(table)) throw new ValidationError(`migration insert: unknown table "${table}"`);
+      // The same ownership rule the entries carry: an emit is a write, and a
+      // forged `_ackerdb_jobs` row would be a job nothing admitted.
+      if (owner === "application" && isFrameworkTable(table)) {
+        throw new MigrationError(
+          `migration insert: "${table}" is framework-owned; the framework writes its own tables`,
+        );
+      }
       const validated = checkRow(table, target.tables[table]!, row, "insert"); // eager: error locality stays here
       if (!tmpOf.has(table)) {
         spoolInsert.run(table, encode(validated));

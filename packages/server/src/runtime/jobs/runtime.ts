@@ -1113,7 +1113,15 @@ export class RuntimeJobs {
       const job = store.newestSettledFor(name, argsHash, state);
       if (job === null || job.settledAt === null) continue;
       if (window !== "forever" && job.settledAt + window <= now) continue;
-      if (best === null || job.settledAt > best.settledAt!) best = job;
+      // The same total order the per-state read uses: settle time, then id.
+      // The same total order the per-state read uses: settle time, then id.
+      if (
+        best === null ||
+        job.settledAt > best.settledAt! ||
+        (job.settledAt === best.settledAt && job.id > best.id)
+      ) {
+        best = job;
+      }
     }
     return best;
   }
