@@ -97,6 +97,7 @@ export const TELEMETRY_EVENT_NAMES = [
   "job_retried",
   "job_discarded",
   "job_canceled",
+  "job_slept",
   "job_failure",
 ] as const;
 export type TelemetryEventName = (typeof TELEMETRY_EVENT_NAMES)[number];

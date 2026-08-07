@@ -9,12 +9,15 @@
  * module export: no client can address a job, and jobs reach clients only
  * through user-authored functions over the jobs table.
  */
+import type { FunctionReference, Result } from "@ackerdb/core";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { Schema } from "../schema/definition.ts";
+import type { DbReader } from "../database/query/types.ts";
 import type { ObjectShape, InferShape, InferInputShape } from "../validation/composites.ts";
 import type { Expand } from "../validation/validator.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
+import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import type { AnyJobsNamespace } from "./api.ts";
 import type { SystemPrincipal } from "../auth/credentials.ts";
 import { cronNext, parseCronExpression } from "./cron.ts";
@@ -75,6 +78,69 @@ export type JobTxCtx<
   readonly attempt: number;
 };
 
+/** Per-step options on `step.run`; the default journal identity is the callee's address. */
+export interface JobStepOptions {
+  /** Overrides the journal identity — required when one run calls a ref twice. */
+  readonly name?: string;
+}
+
+/** The read powers of an inline `step.query` closure: the snapshot, read-only. */
+export type JobStepQueryCtx<
+  S extends Schema = Schema,
+  TxJobs extends object = AnyJobsNamespace,
+> = {
+  readonly db: DbReader<S>;
+  readonly auth: SystemPrincipal;
+  readonly log: ApplicationLogger;
+  readonly timestamp: number;
+  readonly attempt: number;
+  /** Declared jobs, read-only: the reactive builder scoped per definition. */
+  readonly jobs: TxJobs;
+};
+
+/**
+ * Durable steps (ADR-0022): named, journaled units of work inside a
+ * procedure-kind job handler. A completed step's recorded result stands in
+ * for re-execution when the run resumes. The name is a contract — same name,
+ * same meaning — and everything effectful in a step-using handler belongs
+ * inside a step.
+ */
+export interface JobStep<
+  S extends Schema = Schema,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+  TxJobs extends object = AnyJobsNamespace,
+> {
+  /**
+   * The journaled variant of server-side composition: invoke a registered
+   * query, mutation, or procedure and record its typed Result. A mutation
+   * callee commits atomically with its journal entry; a returned `Err` is a
+   * recorded value, and only a throw fails the attempt.
+   */
+  run<K extends "query" | "mutation" | "procedure", A, D, E>(
+    ref: FunctionReference<K, A, D, E>,
+    args: A,
+    options?: JobStepOptions,
+  ): Promise<Result<D, E>>;
+  /** An inline read step: the closure's return value is the journaled result. */
+  query<R>(
+    name: string,
+    fn: (tx: JobStepQueryCtx<S, TxJobs>) => R | PromiseLike<R>,
+  ): Promise<Awaited<R>>;
+  /** An inline write step: one writer transaction, journal entry included — exactly-once. */
+  mutation<R>(
+    name: string,
+    fn: (tx: JobTxCtx<S, TransactionCapabilities, TxJobs>) => R | PromiseLike<R>,
+  ): Promise<Awaited<R>>;
+  /** An inline external-work step: at-least-once, journaled on completion. */
+  procedure<R>(name: string, fn: () => R | PromiseLike<R>): Promise<Awaited<R>>;
+  /**
+   * Suspend the run until `durationMs` from first encounter: the attempt
+   * settles back to pending with a future due time and no attempt increment —
+   * sleeping is not failing, and retry budget stays untouched.
+   */
+  sleep(name: string, durationMs: number): Promise<void>;
+}
+
 /** The powers of a procedure-kind job handler: external work plus explicit tx. */
 export type JobCtx<
   S extends Schema = Schema,
@@ -91,6 +157,8 @@ export type JobCtx<
   readonly attempt: number;
   /** Fires on cancel, shutdown, or lease expiry: stop cooperatively. */
   readonly abortSignal: AbortSignal;
+  /** Durable steps: using them is the opt-in; a handler with no steps is untouched. */
+  readonly step: JobStep<S, TransactionCapabilities, TxJobs>;
   tx<R>(
     fn: (tx: JobTxCtx<S, TransactionCapabilities, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;

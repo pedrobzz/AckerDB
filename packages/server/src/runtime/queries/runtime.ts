@@ -29,7 +29,7 @@ interface QueryExecution {
 }
 
 export interface RuntimeQueriesOptions {
-  readonly registry: Pick<Registry, "get">;
+  readonly registry: Pick<Registry, "get" | "remote">;
   readonly reads: RuntimeReadExecutor;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly shutdownSignal: () => AbortSignal;
@@ -148,7 +148,7 @@ export class RuntimeQueries {
   }
 
   private expect(address: string) {
-    const fn = this.options.registry.get(address);
+    const fn = this.options.registry.remote(address);
     if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);
     if (fn.kind !== "query") {
       throw new AckerDBError("validation", `"${address}" is a ${fn.kind}, expected a query`);

@@ -336,6 +336,29 @@ connection failure reported as `CacheStoreError` with its original cause. It is
 never converted into a miss or conditional result; callers choose explicitly
 whether to catch it and fail open.
 
+**Internal function** — A registered query, mutation, or procedure addressable
+only by server-side callers. It keeps its full contract — validation, access
+policy, typed results — but has no client-facing address: generated client
+surfaces erase it, and a remote call finds no function at all. Deliberate
+re-exposure is its own declaration.
+_Avoid_: Private function, hidden function, system function
+
+## Durable jobs
+
+**Step** — One named, journaled unit of work inside a procedure-kind job
+handler. A completed step's recorded result stands in for re-execution when
+the run resumes, so an attempt re-runs only work the journal has not
+recorded. The name carries the author's promise that the same name means the
+same meaning.
+_Avoid_: Sub-job, child job, workflow task
+
+**Step journal** — The durable per-run record of each completed step's
+identity and result. Resuming replays the handler against it: a recorded
+entry answers instead of executing, and a mismatch between journal and code
+refuses with a typed outcome rather than guessing. The journal lives and dies
+with its job row.
+_Avoid_: Event log, workflow state, checkpoint
+
 ## File storage
 
 **File** — Immutable AckerDB-owned stored bytes, their fixed framework metadata,

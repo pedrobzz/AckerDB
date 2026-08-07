@@ -109,6 +109,88 @@ repeat: { cron: "0 12 * * *", tz: "America/Sao_Paulo" },
   the sugar coalesces longer outages to one occurrence. A repeating job with
   no args mints its first occurrence at startup.
 
+## Durable steps
+
+Steps give a procedure-kind job memory across attempts (ADR-0022). Each
+completed step's identity and result are recorded in the row's step journal;
+a resumed attempt replays the handler, recorded steps answer instead of
+executing, and the first unrecorded step runs. Using `ctx.step` is the
+opt-in — a handler with no steps is untouched, and mutation-kind jobs exclude
+it by construction: their single writer transaction *is* one atomic step.
+
+```ts
+export const renewSubscription = job({
+  args: { subscriptionId: v.bigint() },
+  retry: { attempts: 5, backoff: "exponential" },
+  handler: async (ctx, args) => {
+    const sub = await ctx.step.run(internal.subscriptions.get, { id: args.subscriptionId });
+    if (!sub.ok || sub.data === null) return null;
+
+    // A registered procedure as a step — reused by the dunning flow too.
+    const payment = await ctx.step.run(internal.billing.payInvoice, { invoiceId: sub.data.invoiceId });
+    if (!payment.ok) return { failed: payment.error };
+
+    await ctx.step.sleep("settlement-window", 60_000);
+
+    // Inline steps capture scope instead of taking args; the name is the identity.
+    const receipt = await ctx.step.procedure("send-receipt", async () =>
+      await email.send(sub.data.email, renderReceipt(payment.data)));
+    await ctx.step.mutation("record", async (tx) => {
+      await tx.db.subscriptions.patch(args.subscriptionId, { renewedAt: ctx.timestamp });
+    });
+    return { receiptId: receipt.id };
+  },
+});
+```
+
+- `step.run(ref, args, { name? })` invokes a registered query, mutation, or
+  procedure — `internal.*` or `api.*` — and records its typed Result. Kind
+  comes from the reference; the journal identity defaults to the callee's
+  address (`name` disambiguates two calls to one ref). A query or mutation
+  callee commits atomically with its journal entry in one writer
+  transaction — exactly-once; a procedure callee is at-least-once, journaled
+  on completion. A returned `Err` is a recorded value handed back to the
+  handler; only a throw fails the attempt.
+- `step.query(name, fn)` / `step.mutation(name, fn)` / `step.procedure(name, fn)`
+  are inline steps: the closure's return value is the journaled result and
+  must be wire-representable. Inline mutations get the same atomic
+  journal-plus-writes commit.
+- `step.sleep(name, durationMs)` suspends in **one writer transaction**:
+  journal entry, pending state, wake time, lease release, and **no attempt
+  increment** — sleeping is not failing, retry budget stays untouched, and no
+  crash window exists between "recorded" and "suspended". Awaiters resolve
+  with `{ ok: false, state: "pending", nextRetryAt }` at the suspend. The
+  thrown signal only unwinds the handler; code that catches it is a stale
+  attempt with cancel's semantics — transactional steps refuse outright, a
+  procedure closure may still run but can never record, and the late settle
+  is discarded. On replay a recorded sleep is satisfied by being claimed at
+  all: the row's due time is the single authority, so `reschedule` genuinely
+  moves the wake in either direction.
+
+**The name is a contract: same name, same meaning.** Renaming a step means
+"run it again for in-flight runs" — safe only for idempotent steps. A
+breaking change versions the job, not the step: declare the new shape as a
+new definition beside the old one, drain old runs (observable through the
+reactive rows), then delete the old definition. Step refusals settle the run
+as discarded with a typed error and **without consulting the retry policy** —
+retrying into unchanged code cannot fix code: a duplicate name in one run, a
+kind change under a name, a changed args hash under a `step.run` name, an
+unreadable journal (fail closed — the bytes stay on the row as evidence,
+never replayed as if empty), and a journal past its finite bounds (1,000
+steps / 1 MiB — record smaller results or use child jobs). The args-hash
+check doubles as the determinism tripwire: replayed args derive entirely
+from journaled state, so a difference proves code drift or nondeterminism
+outside steps. A non-empty journal also binds the row to its original
+arguments: patching `argsJson` refuses, because old step results under new
+args would be a run that never existed — delete the row and enqueue fresh.
+
+The operator `retry` verb **resumes** from the journal — that is its only
+meaning. A poisoned journal's remedy is deleting the row and enqueueing
+fresh; the journal lives and dies with its row, through deletion and
+retention alike. In a step-using handler, everything effectful belongs
+inside a step — including child-job enqueues, which wrapped in a
+`step.mutation` commit transactionally with their journal entry.
+
 ## Deduplication and memoization
 
 Dedup is opt-in and keyed on the canonical encoding of the validated args.
@@ -179,7 +261,7 @@ table.
 ## Operations
 
 Job state transitions emit telemetry events (`job_claimed`, `job_settled`,
-`job_retried`, `job_discarded`, `job_canceled`) under the `job` operation, and
+`job_retried`, `job_discarded`, `job_canceled`, `job_slept`) under the `job` operation, and
 the runner reports `jobs.running`, `jobs.due_backlog`, and
 `jobs.oldest_due_age_ms` gauges — the last is the one that catches a starved
 runner; `/status` reports `declaredJobs` and `jobsArmed`. The

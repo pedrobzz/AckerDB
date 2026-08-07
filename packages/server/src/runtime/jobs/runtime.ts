@@ -26,6 +26,8 @@ import type { Telemetry } from "../../telemetry/telemetry.ts";
 import { DEFAULT_JOB_RETENTION_MS, type AnyJob, type DeclaredJob, type JobState } from "../../jobs/definition.ts";
 import { hashJobArgs } from "../../jobs/identity.ts";
 import type { JobsWriteSurface } from "../execution/functions.ts";
+import type { Registry } from "../../app/registry.ts";
+import { JobSleepSignal, JobSteps, StepRefusalError } from "./steps.ts";
 import type { JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { Database } from "bun:sqlite";
@@ -56,6 +58,7 @@ export interface JobRow {
   readonly runAt: number;
   readonly attempt: number;
   readonly attemptsJson: string;
+  readonly stepsJson: string | null;
   readonly outputJson: string | null;
   readonly leaseToken: string | null;
   readonly leaseUntil: number | null;
@@ -102,6 +105,7 @@ export interface RuntimeJobsLimits {
 export interface RuntimeJobsOptions {
   readonly declared: readonly DeclaredJob[];
   readonly executor: JobsExecutor;
+  readonly registry: Pick<Registry, "get">;
   readonly reads: RuntimeReadExecutor;
   readonly system: SystemRunner;
   readonly telemetry: Telemetry;
@@ -115,6 +119,7 @@ interface ClaimedRow {
   readonly id: bigint;
   readonly name: string;
   readonly argsJson: string;
+  readonly stepsJson: string | null;
   readonly attempt: number;
   readonly leaseToken: string;
 }
@@ -122,7 +127,7 @@ interface ClaimedRow {
 interface Notification {
   readonly id: bigint;
   readonly outcome: JobAttemptOutcome;
-  readonly event: "settled" | "retried" | "discarded" | "canceled";
+  readonly event: "settled" | "retried" | "discarded" | "canceled" | "slept";
   readonly errorCode?: OutcomeCode;
 }
 
@@ -525,6 +530,7 @@ export class RuntimeJobs {
               id: row.id,
               name: row.name,
               argsJson: row.argsJson,
+              stepsJson: row.stepsJson,
               attempt,
               leaseToken,
             },
@@ -603,11 +609,39 @@ export class RuntimeJobs {
       });
       return;
     }
+    const steps = new JobSteps({
+      id: claimed.id,
+      jobName: claimed.name,
+      attempt: claimed.attempt,
+      leaseToken: claimed.leaseToken,
+      stepsJson: claimed.stepsJson,
+      executor: this.options.executor,
+      registry: this.options.registry,
+      signal: controller.signal,
+      now: this.options.now,
+      // The suspend itself committed inside step.sleep's own transaction;
+      // this is the post-commit notification to waiters and telemetry.
+      onSlept: (wakeAt) =>
+        this.deliver([{
+          id: claimed.id,
+          event: "slept",
+          outcome: {
+            ok: false,
+            state: "pending",
+            error: new AckerDBError("unavailable", "job is sleeping; the run resumes at its wake time"),
+            nextRetryAt: wakeAt,
+          },
+        }]),
+    });
     void this.options.system
       .run(
         `jobs.${claimed.name}`,
         async (ctx: SystemCtx) => {
-          const context = Object.freeze({ ...ctx, attempt: claimed.attempt });
+          const context = Object.freeze({
+            ...ctx,
+            attempt: claimed.attempt,
+            step: steps.surface(ctx),
+          });
           return await definition.handler(context as never, args as never);
         },
         { signal: controller.signal },
@@ -621,7 +655,12 @@ export class RuntimeJobs {
                 { ok: true, value: isResult(value) ? value.data : value },
                 startedAt,
               ),
-        (error) => this.settle(claimed, { ok: false, error }, startedAt),
+        (error) =>
+          // A sleep already settled atomically inside step.sleep; the signal
+          // only unwound the handler. Anything else settles as a failure.
+          error instanceof JobSleepSignal
+            ? undefined
+            : this.settle(claimed, { ok: false, error }, startedAt),
       )
       .finally(() => {
         this.activeRuns--;
@@ -693,7 +732,10 @@ export class RuntimeJobs {
     const definition = this.definitions.get(row.name);
     const now = this.options.now();
     let delay: number | null = null;
-    if (definition !== undefined) {
+    // A step refusal — journal/code mismatch, corrupt journal, or exhausted
+    // journal bounds — discards without consulting the retry policy:
+    // retrying into unchanged code cannot fix code (ADR-0022).
+    if (definition !== undefined && !(error instanceof StepRefusalError)) {
       try {
         delay = definition.retry(row.attempt, error);
       } catch {
@@ -854,6 +896,7 @@ export class RuntimeJobs {
       runAt: row.runAt,
       attempt: 0,
       attemptsJson: "[]",
+      stepsJson: "[]",
       outputJson: null,
       leaseToken: null,
       leaseUntil: null,
@@ -975,7 +1018,11 @@ export class RuntimeJobs {
     for (const notification of notifications) {
       this.event(
         notification.event,
-        notification.event === "settled" ? "info" : notification.event === "retried" ? "warn" : "error",
+        notification.event === "settled" || notification.event === "slept"
+          ? "info"
+          : notification.event === "retried"
+            ? "warn"
+            : "error",
         notification.errorCode ?? "ok",
       );
       this.notifyDirect(notification.id, notification.outcome);
@@ -1025,7 +1072,7 @@ export class RuntimeJobs {
   }
 
   private event(
-    name: "claimed" | "settled" | "retried" | "discarded" | "canceled" | "failure",
+    name: "claimed" | "settled" | "retried" | "discarded" | "canceled" | "slept" | "failure",
     level: "info" | "warn" | "error",
     outcome: OutcomeCode | "ok" = "ok",
   ): void {

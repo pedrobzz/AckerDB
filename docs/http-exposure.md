@@ -163,6 +163,10 @@ export const purge = mutation({
 });
 ```
 
+`internal: true` and `http` on one declaration is a startup refusal: an
+internal function has no client-facing address, and one declaration must not
+both erase it and claim an HTTP path (ADR-0021).
+
 - `http?: boolean | { openapi: boolean }` — absent or `false` means not
   reachable over HTTP and absent from OpenAPI. `true` is shorthand for
   `{ openapi: true }`. Because `openapi` only exists inside an exposed
