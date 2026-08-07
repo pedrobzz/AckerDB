@@ -144,7 +144,8 @@ export const renewSubscription = job({
 ```
 
 - `step.run(ref, args, { name? })` invokes a registered query, mutation, or
-  procedure — `internal.*` or `api.*` — and records its typed Result. Kind
+  procedure from any API path — the example's `internal.*` binding comes from
+  `defineApp({ apiPaths: ["internal"] })` — and records its typed Result. Kind
   comes from the reference; the journal identity defaults to the callee's
   address (`name` disambiguates two calls to one ref). A query or mutation
   callee commits atomically with its journal entry in one writer

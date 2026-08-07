@@ -3,11 +3,18 @@
  * registered functions. Addresses derive from module paths + export names,
  * exactly mirroring what codegen puts on the generated `api` object.
  */
-import { getRef } from "@ackerdb/core";
+import {
+  DEFAULT_API_PATH,
+  EVENTS_NAMESPACE,
+  getRef,
+  httpPathForAddress,
+} from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import {
+  apiPath,
   httpExposure,
   isRegisteredFunction,
+  refuseApiPathDeclaration,
   type AnyRegistered,
 } from "./functions.ts";
 import {
@@ -34,9 +41,9 @@ import {
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/scopes.ts";
 import {
-  ACKERDB_RESERVED_API_PREFIX,
   exposedHttpKind,
   isAckerDBHttpRoute,
+  RESERVED_MARKER,
   type ExposedHttpKind,
 } from "../transport/http-surface.ts";
 import {
@@ -70,11 +77,6 @@ export interface HttpHandlerRoute {
   readonly fn: AnyRegisteredHttpHandler;
 }
 
-/** Address segments become path segments: "messages.list" -> "/api/messages/list". */
-function httpPathForAddress(address: string): string {
-  return `/api/${address.replaceAll(".", "/")}`;
-}
-
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
   /** HTTP-exposed functions keyed by the path they own. */
@@ -92,15 +94,33 @@ export class Registry {
   private readonly mcpByPath = new Map<string, AnyMcpDeclaration>();
   private readonly toolsByMcp = new Map<AnyMcpDeclaration, readonly AnyRegisteredMcpTool[]>();
   private readonly addressByObject = new Map<object, string>();
+  /** Every group this registry may publish: the manifest's, plus the default. */
+  private readonly declaredApiPaths: ReadonlySet<string>;
 
-  /** `modules` is keyed by dot path: functions/messages.ts -> "messages". */
-  constructor(modules: Record<string, Record<string, unknown>>) {
+  /**
+   * `modules` is keyed by dot path: functions/messages.ts -> "messages".
+   *
+   * `declaredApiPaths` is the manifest's `apiPaths`. A function published in a
+   * group not named there is a startup refusal: code generation reads the
+   * manifest alone, so an undeclared group is a live route whose binding
+   * nobody can import, and a misspelled one is invisible in exactly the same
+   * way. Omitting the argument declares no group beyond the default rather
+   * than waiving the rule — the check has no off switch.
+   */
+  constructor(
+    modules: Record<string, Record<string, unknown>>,
+    declaredApiPaths: readonly string[] = [],
+  ) {
+    this.declaredApiPaths = new Set([DEFAULT_API_PATH, ...declaredApiPaths]);
     const moduleExports: ModuleExport[] = [];
     for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>
       a.localeCompare(b))) {
-      if (modulePath === "events" || modulePath.startsWith("events.")) {
+      if (
+        modulePath === EVENTS_NAMESPACE ||
+        modulePath.startsWith(`${EVENTS_NAMESPACE}.`)
+      ) {
         throw new Error(
-          `function module "${modulePath}": the "events" namespace is reserved for event-table references`,
+          `function module "${modulePath}": the "${EVENTS_NAMESPACE}" namespace is reserved for event-table references`,
         );
       }
       for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
@@ -125,14 +145,19 @@ export class Registry {
       this.httpHandlersByAddress.set(address, registered);
     }
 
+    // The socket kinds' refusal is re-applied here for the same reason every
+    // other field is re-read: the builder is bypassable, and a hand-built
+    // export carrying `apiPath` would otherwise have it silently ignored.
     for (const { address, value } of moduleExports) {
       if (!isRegisteredChannel(value)) continue;
+      refuseApiPathDeclaration(value, `channel "${address}"`);
       this.registerAddress(address, value);
       this.channels.set(address, value);
     }
 
     for (const { address, value } of moduleExports) {
       if (!isRegisteredRealtime(value)) continue;
+      refuseApiPathDeclaration(value, `realtime declaration "${address}"`);
       this.registerAddress(address, value);
       this.realtime.set(address, value);
     }
@@ -176,6 +201,10 @@ export class Registry {
     // Exposed paths are claimed after every MCP path, so the single collision
     // check below covers both declaration orders.
     for (const [address, fn] of this.functions) {
+      // Every function's group is checked, exposed or not: a group decides the
+      // generated binding as well as the HTTP root, and a function with no
+      // binding is as broken as one with no route.
+      const group = this.groupOf(fn.apiPath, address, "function");
       const exposure = httpExposure(fn.http, `function "${address}" http`);
       if (exposure === null) continue;
       // The kind is narrowed once, at load: an exposure no method serves is a
@@ -187,7 +216,7 @@ export class Registry {
           `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
         );
       }
-      const path = this.claimApplicationHttpPath(address, "HTTP-exposed function");
+      const path = this.claimApplicationHttpPath(group, address, "HTTP-exposed function");
       // The codec is compiled here, once: a contract that cannot cross the
       // surface's standard-JSON boundary fails the load, never a caller.
       const exposed = Object.freeze({
@@ -207,7 +236,8 @@ export class Registry {
     // with an exposed one — both derive from addresses, and addresses are
     // unique by construction.
     for (const [address, fn] of this.httpHandlersByAddress) {
-      const path = this.claimApplicationHttpPath(address, "http handler");
+      const group = this.groupOf(fn.apiPath, address, "http handler");
+      const path = this.claimApplicationHttpPath(group, address, "http handler");
       this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
     }
 
@@ -229,12 +259,32 @@ export class Registry {
     }
   }
 
-  /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
-  private claimApplicationHttpPath(address: string, label: string): string {
-    const path = httpPathForAddress(address);
-    if (isAckerDBHttpRoute(path)) {
+  /**
+   * The one interpreter of a registered value's group. It is re-read, never
+   * trusted: an untyped export meets the same shape rule the builder applies,
+   * so a malformed group is a registration error rather than a route at
+   * `/undefined/...` or `/_admin/...`.
+   */
+  private groupOf(value: unknown, address: string, label: string): string {
+    const group = apiPath(value, `${label} "${address}" apiPath`);
+    if (!this.declaredApiPaths.has(group)) {
       throw new Error(
-        `${label} "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
+        `${label} "${address}" declares apiPath "${group}", which the application manifest does not list in apiPaths`,
+      );
+    }
+    return group;
+  }
+
+  /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
+  private claimApplicationHttpPath(group: string, address: string, label: string): string {
+    const path = httpPathForAddress(group, address);
+    // `_` marks a name as the framework's own. The group carries that rule
+    // already; this is the module namespace directly under it — the `/api/_`
+    // reservation, stated for every group rather than the default alone.
+    // Deeper segments are the application's, as they always were.
+    if (isAckerDBHttpRoute(path) || address.startsWith(RESERVED_MARKER)) {
+      throw new Error(
+        `${label} "${address}" claims AckerDB-owned path "${path}"; "${RESERVED_MARKER}" is reserved to AckerDB`,
       );
     }
     const mcp = this.mcpByPath.get(path);
@@ -305,17 +355,13 @@ export class Registry {
     return this.mcpTools.get(this.mcpToolKey(mcp, tool));
   }
 
+  /**
+   * Every registered function is addressable, in-process and remotely alike:
+   * the group it is published in decides where it answers, and `access` alone
+   * decides who it answers.
+   */
   get(address: string): AnyRegistered | undefined {
     return this.functions.get(address);
-  }
-
-  /**
-   * The transport's lookup: internal functions have no wire address, so a
-   * remote call to one resolves exactly as a name that never existed.
-   */
-  remote(address: string): AnyRegistered | undefined {
-    const fn = this.functions.get(address);
-    return fn?.internal === true ? undefined : fn;
   }
 
   getChannel(address: string): AnyRegisteredChannel | undefined {

@@ -26,6 +26,7 @@ import {
   type UnionValidator,
   type Validator,
 } from "@ackerdb/server";
+import { EVENTS_NAMESPACE } from "@ackerdb/core";
 import { importApp, listFunctionModules, listJobModules, type ModuleFile } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
@@ -168,11 +169,24 @@ interface ModuleTreeNode {
   alias?: string;
 }
 
-function apiTs(config: AppConfig, schema: Schema, modules: ModuleFile[]): string {
+/**
+ * Every name `api.ts` needs for itself carries the reserved `_`, which an API
+ * path may never begin with. A group's name is written straight into
+ * `export const <name>`, so reserving the prefix makes collision with a
+ * generated import, the module type, or a module alias unrepresentable rather
+ * than a list to keep in step. The two names left unprefixed — `api` and
+ * `events` — are the surface, and the manifest refuses both.
+ */
+function apiTs(
+  config: AppConfig,
+  apiPaths: readonly string[],
+  schema: Schema,
+  modules: ModuleFile[],
+): string {
   const imports: string[] = [];
   const root: ModuleTreeNode = { children: new Map() };
   for (const module of modules) {
-    const alias = `m_${module.segments.join("_")}`;
+    const alias = `_m_${module.segments.join("_")}`;
     imports.push(
       `import type * as ${alias} from "${relImport(config.generatedDir, module.file)}";`,
     );
@@ -201,27 +215,34 @@ function apiTs(config: AppConfig, schema: Schema, modules: ModuleFile[]): string
     .sort();
   const eventLines = eventTables.map(
     (t) =>
-      `    ${t}: EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
+      `    ${t}: _EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
+  );
+
+  // One binding per group the manifest declares, each a reference builder that
+  // knows its own root. The addresses are identical — the socket names every
+  // function by its dotted address — so only the type a binding selects and
+  // the HTTP root its references resolve to differ.
+  const groups = apiPaths.map(
+    (path) =>
+      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, served under \`/${path}/\`. */\n` +
+      `export const ${path} = _apiGroup(${JSON.stringify(path)}) as unknown as _ApiFromModules<_Modules, ${JSON.stringify(path)}>;\n`,
   );
 
   return `${HEADER}
-import { anyApi } from "@ackerdb/core";
-import type { ApiFromModules, EventRef, InternalFromModules } from "@ackerdb/core";
+import { anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
+import type { ApiFromModules as _ApiFromModules, EventRef as _EventRef } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
-type Modules = {
+type _Modules = {
 ${renderTree(root, "  ")}
 };
 
-export const api = anyApi as unknown as ApiFromModules<Modules> & {
-  events: {
+export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {
+  ${EVENTS_NAMESPACE}: {
 ${eventLines.join("\n")}${eventLines.length > 0 ? "\n" : ""}  };
 };
 
-export const events = api.events;
-
-/** Functions declared \`internal: true\`: server-side references with no client address. */
-export const internal = anyApi as unknown as InternalFromModules<Modules>;
-`;
+export const ${EVENTS_NAMESPACE} = api.${EVENTS_NAMESPACE};
+${groups.join("")}`;
 }
 
 function typesTs(config: AppConfig, schema: Schema): string {
@@ -300,9 +321,9 @@ export async function runCodegen(config: AppConfig): Promise<CodegenResult> {
   // makes fresh projects codegen in one pass.
   emit("server.ts", serverTs(config, listJobModules(config)));
 
-  const schema = (await importApp(config)).schema;
+  const app = await importApp(config);
   const modules = listFunctionModules(config);
-  emit("api.ts", apiTs(config, schema, modules));
-  emit("types.ts", typesTs(config, schema));
+  emit("api.ts", apiTs(config, app.apiPaths, app.schema, modules));
+  emit("types.ts", typesTs(config, app.schema));
   return { written };
 }

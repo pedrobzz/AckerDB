@@ -330,7 +330,7 @@ When telemetry is enabled, current automatic span coverage is:
 
 ### Credential verification correlation
 
-For an exposed function's `/api/<module>/<fn>` (a query's `GET` as well as its
+For an exposed function's `/<apiPath>/<module>/<fn>` (a query's `GET` as well as its
 `POST`, and a stream's `POST`), Serve opens one tail-decision trace before
 request parsing. Every call is identified immediately—its path names the
 function and the listener assigns the request ID from its own monotonic

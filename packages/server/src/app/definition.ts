@@ -6,6 +6,8 @@ import {
   type PluginMounts,
 } from "../plugins/assembly.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
+import { DEFAULT_API_PATH } from "@ackerdb/core";
+import { apiPath } from "./functions.ts";
 
 const APP_IDENTITY = Symbol.for("@ackerdb/server/App/v1");
 
@@ -17,6 +19,8 @@ export interface App<
 > {
   readonly schema: S;
   readonly plugins: Readonly<Plugins>;
+  /** Groups beyond `"api"` that this application publishes functions in. */
+  readonly apiPaths: readonly string[];
 }
 
 export interface AppDefinition<
@@ -25,6 +29,13 @@ export interface AppDefinition<
 > {
   readonly schema: S;
   readonly plugins?: Plugins;
+  /**
+   * The API paths this application publishes beyond the default `"api"`. Code
+   * generation reads only this manifest — never the function modules, which
+   * import what it writes — so a group earns its `internal.*` binding by being
+   * named here once.
+   */
+  readonly apiPaths?: readonly string[];
 }
 
 /** The application's exact root schema, as consumed by host code generation. */
@@ -48,6 +59,36 @@ export type AppPluginCapabilities<
     >;
 };
 
+/**
+ * The extra groups, validated exactly as a declaration's own `apiPath` is and
+ * sorted like every other list code generation reads, so reordering `app.ts`
+ * never rewrites a generated file. `"api"` is not listed: every application
+ * publishes it, and naming it would offer a way to leave it out.
+ */
+function declaredApiPaths(value: unknown): readonly string[] {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) {
+    throw new TypeError("application apiPaths must be an array of group names");
+  }
+  const declared = new Set<string>();
+  for (const entry of value) {
+    // `apiPath` refuses every name a binding cannot be, `events` included.
+    // Only `"api"` is legal on a declaration yet illegal here, because every
+    // application publishes it and listing it would offer a way to leave it out.
+    const path = apiPath(entry, "application apiPaths entry");
+    if (path === DEFAULT_API_PATH) {
+      throw new TypeError(
+        `application apiPaths must not list "${DEFAULT_API_PATH}" — every application publishes it`,
+      );
+    }
+    if (declared.has(path)) {
+      throw new TypeError(`application apiPaths repeats "${path}"`);
+    }
+    declared.add(path);
+  }
+  return Object.freeze([...declared].sort());
+}
+
 export function defineApp<
   const S extends Schema,
   const Plugins extends PluginMounts = EmptyPluginMounts,
@@ -62,7 +103,7 @@ export function defineApp<
     throw new TypeError("application definition must be a plain object");
   }
   for (const option of Object.keys(definition)) {
-    if (option !== "schema" && option !== "plugins") {
+    if (option !== "schema" && option !== "plugins" && option !== "apiPaths") {
       throw new TypeError(`unknown application option "${option}"`);
     }
   }
@@ -72,7 +113,11 @@ export function defineApp<
   const plugins = assemblePlugins(
     definition.plugins === undefined ? {} : definition.plugins,
   ).mounts as Readonly<Plugins>;
-  const app = { schema: definition.schema, plugins };
+  const app = {
+    schema: definition.schema,
+    plugins,
+    apiPaths: declaredApiPaths(definition.apiPaths),
+  };
   brand(app, APP_IDENTITY);
   return Object.freeze(app);
 }

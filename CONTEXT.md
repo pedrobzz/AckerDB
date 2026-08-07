@@ -460,13 +460,6 @@ connection failure reported as `CacheStoreError` with its original cause. It is
 never converted into a miss or conditional result; callers choose explicitly
 whether to catch it and fail open.
 
-**Internal function** — A registered query, mutation, or procedure addressable
-only by server-side callers. It keeps its full contract — validation, access
-policy, typed results — but has no client-facing address: generated client
-surfaces erase it, and a remote call finds no function at all. Deliberate
-re-exposure is its own declaration.
-_Avoid_: Private function, hidden function, system function
-
 ## Durable jobs
 
 **Step** — One named, journaled unit of work inside a procedure-kind job
@@ -1242,7 +1235,8 @@ _Avoid_: Private prefix, system namespace, underscore convention
 **API path** — The named group a function is published in, deciding its
 generated binding and its HTTP root together. It is a grouping choice and never
 an access rule: who may call a function is decided by its access policy alone.
-Groups whose name begins with `_` belong to the framework.
+No group's name may carry the reserved marker; the framework's own routes live
+behind it inside the default group, not in a group of their own.
 _Avoid_: Internal flag, private function, route prefix
 
 **Admin scope** — A scope in the framework's own reserved vocabulary, naming one

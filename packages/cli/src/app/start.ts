@@ -373,7 +373,7 @@ export async function startApp<const A extends App = App>(
     });
     await awaitStartup(pluginRuntime.start());
     requireStartupOwnership();
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, app.apiPaths);
     const realtime = registry.realtime.size === 0
       ? undefined
       : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));

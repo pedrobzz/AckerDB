@@ -65,10 +65,16 @@ describe("HTTP-exposed function paths", () => {
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { echo: exposed } })).toThrow(
-      'HTTP-exposed function "_internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "/api/_" is reserved',
+      'HTTP-exposed function "_internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "_" is reserved to AckerDB',
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
     expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
+    // The reservation is the marker, not the `/api/` root: it holds in every
+    // group, which is what keeps a future built-in route collision-free.
+    const grouped = { ...exposed, apiPath: "internal" } as never;
+    expect(() => new Registry({ _internal: { echo: grouped } }, ["internal"])).toThrow(
+      'claims AckerDB-owned path "/internal/_internal/echo"; "_" is reserved to AckerDB',
+    );
   });
 
   test("refuses a path claimed by both a function and an MCP endpoint, in either order", () => {
@@ -126,7 +132,7 @@ describe("raw http handler routes", () => {
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { hook } })).toThrow(
-      'http handler "_internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "/api/_" is reserved',
+      'http handler "_internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
     );
   });
 
@@ -189,6 +195,25 @@ describe("raw http handler routes", () => {
     expect(route.fn.methods).toEqual(["POST"]);
     expect(typeof route.fn.handler).toBe("function");
     expect(Object.isFrozen(route.fn)).toBe(true);
+  });
+
+  test("stores the handler it type-checked, not a second read of the field", () => {
+    // An accessor that answers a function once and something else afterwards
+    // would otherwise pass validation and put a non-function into a live
+    // route: the field must be read exactly once and that value kept.
+    let reads = 0;
+    const shifty = {
+      isAckerDB: true,
+      isAckerDBServerOnly: true,
+      kind: "http",
+      methods: ["POST"],
+      get handler() {
+        reads++;
+        return reads === 1 ? () => new Response(null) : ("not a function" as never);
+      },
+    };
+    const registry = new Registry({ hooks: { shifty: shifty as never } });
+    expect(typeof registry.httpRoutes.get("/api/hooks/shifty")!.fn.handler).toBe("function");
   });
 
   test("refuses a shape hiding fields behind non-enumerable keys", () => {

@@ -8,8 +8,12 @@
  */
 import type { ExternalAccount, Principal } from "../auth/credentials.ts";
 import {
+  DEFAULT_API_PATH,
+  EVENTS_NAMESPACE,
   Status,
   type ApplicationError,
+  type DefaultApiPath,
+  type RegisteredApiPath,
   type ErrorHttpStatus,
   type ErrResult,
   type OkResult,
@@ -265,7 +269,49 @@ type ErrorDeclarationConstraint<
         };
       };
 
+/**
+ * The shape a declaration cannot satisfy, so the error names the rule. It is
+ * an object, not a string: intersected with a union of literals a string
+ * marker reduces to `never`, and TypeScript then reports every property of the
+ * declaration instead of the one at fault. This is the shape
+ * {@link ErrorDeclarationConstraint} already uses for the same reason.
+ */
+interface ImpreciseApiPath {
+  readonly apiPath: {
+    readonly "AckerDB: apiPath must be exactly one string literal": never;
+  };
+}
+
+/** True when `T` stands for more than one type — a union rather than one literal. */
+type IsUnion<T, Members = T> = T extends unknown
+  ? [Members] extends [T]
+    ? false
+    : true
+  : never;
+
+/**
+ * A declared group must be exactly one string literal. A generated tree
+ * selects functions whose group matches one exact name, so anything less
+ * precise — a widened `string`, a union of literals, a literal that may be
+ * `undefined` — names no group any tree can select, and the function would
+ * answer on a live route while appearing in no binding at all. This is the
+ * same silent widening the literal-only rule on the retired `internal` field
+ * existed to prevent.
+ */
+type ApiPathConstraint<Definition> = Definition extends {
+  readonly apiPath: infer Path;
+}
+  ? [Path] extends [string]
+    ? string extends Path
+      ? ImpreciseApiPath
+      : IsUnion<Path> extends true
+        ? ImpreciseApiPath
+        : unknown
+    : ImpreciseApiPath
+  : unknown;
+
 type DefinitionConstraint<Definition extends { readonly handler: Function }> =
+  ApiPathConstraint<Definition> &
   ReturnDeclarationConstraint<
     DefinitionReturn<Definition>,
     DefinitionReturns<Definition>
@@ -283,11 +329,75 @@ type FunctionHandler<
   args: Expand<InferShape<A>>,
 ) => unknown;
 
+/**
+ * An API path is one URL segment and one generated binding name, so it obeys
+ * the rule module segments already obey. The leading `_` is the framework's
+ * reserved marker, which the identifier rule excludes at the first character.
+ */
+const API_PATH = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * Names the identifier rule admits but `export const <name>` does not: the
+ * reserved words, plus `eval` and `arguments`, which strict mode forbids as
+ * bindings. Code generation writes a group's name straight into a binding, so
+ * a name that cannot be one fails here rather than inside a generated file.
+ */
+const UNBINDABLE_NAMES: ReadonlySet<string> = new Set([
+  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
+  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
+  "extends", "false", "finally", "for", "function", "if", "implements",
+  "import", "in", "instanceof", "interface", "let", "new", "null", "package",
+  "private", "protected", "public", "return", "static", "super", "switch",
+  "this", "throw", "true", "try", "typeof", "var", "void", "while", "with",
+  "yield",
+]);
+
+/**
+ * The one interpreter of `apiPath`: the group a function's address is
+ * published in, deciding its generated binding and its HTTP root together.
+ * Absent means {@link DEFAULT_API_PATH}. It is grouping and routing only —
+ * who may call is `access` alone — so no value here widens or narrows
+ * admission.
+ */
+export function apiPath(value: unknown, where = "apiPath"): string {
+  if (value === undefined) return DEFAULT_API_PATH;
+  if (typeof value !== "string" || !API_PATH.test(value)) {
+    throw new TypeError(
+      `${where} must be a name starting with a letter, followed by letters, digits, or "_" — "_" is reserved to AckerDB`,
+    );
+  }
+  if (UNBINDABLE_NAMES.has(value)) {
+    throw new TypeError(`${where} must not be "${value}" — a group's name becomes a binding, and that one cannot be`);
+  }
+  if (value === EVENTS_NAMESPACE) {
+    throw new TypeError(
+      `${where} must not be "${EVENTS_NAMESPACE}" — the generated api module already binds that name to event-table references`,
+    );
+  }
+  return value;
+}
+
+/** Startup refusal for kinds addressed over the socket, which have no HTTP root. */
+export function refuseApiPathDeclaration(def: object, what: string): void {
+  if ((def as { readonly apiPath?: unknown }).apiPath !== undefined) {
+    throw new TypeError(
+      `${what} cannot declare apiPath — it is addressed over the socket and has no HTTP root to group`,
+    );
+  }
+}
+
 /** Surface metadata every kind shares: HTTP exposure and its documentation. */
 interface ExposureDef {
   readonly http?: HttpExposure;
   readonly description?: string;
   readonly title?: string;
+  /**
+   * The group this function is published in: `"api"` by default, giving the
+   * binding `api.*` and the HTTP root `/api/*`; `"internal"` gives
+   * `internal.*` and `/internal/*`. Grouping and routing only — `access`
+   * alone decides who may call it. Names beginning with `_` are reserved.
+   */
+  readonly apiPath?: string;
 }
 
 type FunctionDef<
@@ -295,55 +405,22 @@ type FunctionDef<
   Ctx extends InvocationContext,
 > = ExposureDef & {
   readonly args: A;
-  /**
-   * Declares a function with no client-facing address: erased from the
-   * generated `api` tree, published on `internal.*`, and treated by every
-   * transport exactly as a name that never existed. Only the literal `true`
-   * — a computed boolean cannot silently widen a function into the client
-   * surface. Orthogonal to `access`, which is still declared and enforced
-   * for server-side callers.
-   */
-  readonly internal?: true;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
   readonly handler: FunctionHandler<A, Ctx>;
 };
 
-/** Carries a declaration's `internal: true` onto the registered type for erasure. */
-type InternalMarkOf<Definition> = Definition extends { readonly internal: true }
-  ? { readonly internal: true }
-  : unknown;
-
 /**
- * The one interpreter of `internal`: exactly `true` or absent, and never
- * combined with HTTP exposure on the same declaration — one declaration must
- * not both erase its client address and claim an HTTP path.
+ * Carries a declaration's group onto the registered type using core's own
+ * selector, so the tree that reads it and the builder that writes it cannot
+ * disagree about the field.
  */
-export function internalDeclaration(
-  def: { readonly internal?: unknown; readonly http?: unknown },
-  where: string,
-): boolean {
-  if (def.internal === undefined) return false;
-  if (def.internal !== true) {
-    throw new TypeError(`${where} internal must be the literal true or absent`);
-  }
-  if (httpExposure(def.http, `${where} http`) !== null) {
-    throw new TypeError(
-      `${where} declares internal: true and HTTP exposure — an internal function has no client-facing address`,
-    );
-  }
-  return true;
+type ApiPathOf<Definition> = Definition extends {
+  readonly apiPath: infer Path extends string;
 }
-
-/** Startup refusal for kinds that exist only at the transport boundary. */
-export function refuseInternalDeclaration(def: object, what: string): void {
-  if ((def as { readonly internal?: unknown }).internal !== undefined) {
-    throw new TypeError(
-      `${what} cannot declare internal — it exists only at the transport boundary, so an internal one would be callable by nobody`,
-    );
-  }
-}
+  ? RegisteredApiPath<Path>
+  : RegisteredApiPath<DefaultApiPath>;
 
 type DefinitionReturn<Definition extends { readonly handler: Function }> =
   Definition["handler"] extends (...args: never[]) => infer HandlerReturn
@@ -432,8 +509,8 @@ export interface Registered<
   H = R,
 > extends Invocable<K, A, Ctx, R, H>, ExposureDef {
   readonly isAckerDB: true;
-  /** Present exactly when the declaration wrote `internal: true`. */
-  readonly internal?: true;
+  /** Always present: the declaration's group, or `"api"` when it named none. */
+  readonly apiPath: string;
 }
 
 export type RegisteredQuery<
@@ -510,15 +587,21 @@ function validateOutputDeclarations(def: Pick<
 }
 
 /** Validated surface metadata, spread onto the registered function as declared. */
-function exposureFields(def: ExposureDef): ExposureDef {
-  httpExposure(def.http);
+function exposureFields(
+  def: ExposureDef,
+  kind: string,
+): ExposureDef & { readonly apiPath: string } {
+  httpExposure(def.http, `${kind} http`);
   for (const field of ["description", "title"] as const) {
     const value = def[field];
     if (value !== undefined && typeof value !== "string") {
-      throw new TypeError(`${field} must be a string`);
+      throw new TypeError(`${kind} ${field} must be a string`);
     }
   }
   return {
+    // Resolved, never conditional: every registered function has a group, so
+    // the registry reads one field instead of restating the default.
+    apiPath: apiPath(def.apiPath, `${kind} apiPath`),
     ...(def.http === undefined ? {} : { http: def.http }),
     ...(def.description === undefined ? {} : { description: def.description }),
     ...(def.title === undefined ? {} : { title: def.title }),
@@ -531,6 +614,65 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
   }
   if (yields.kind === "pk" || yields.kind === "scheduleAt" || yields.kind === "tag") {
     throw new Error(`yields: v.${yields.kind}() is not a valid chunk validator`);
+  }
+}
+
+/**
+ * The declaration's own fields, listed once for the refusal below. `satisfies`
+ * makes the type the source of truth in both directions: adding a field to the
+ * definition without listing it here, or listing one the definition dropped,
+ * fails this build rather than a caller's declaration.
+ */
+const FUNCTION_FIELDS = {
+  apiPath: true,
+  http: true,
+  description: true,
+  title: true,
+  args: true,
+  returns: true,
+  errors: true,
+  access: true,
+  handler: true,
+} satisfies Record<keyof FunctionDef<ObjectShape, InvocationContext>, true>;
+
+const SSE_FIELDS = {
+  apiPath: true,
+  http: true,
+  description: true,
+  title: true,
+  args: true,
+  yields: true,
+  access: true,
+  handler: true,
+} satisfies Record<
+  keyof SseDef<ObjectShape, Validator<unknown, string>, InvocationContext>,
+  true
+>;
+
+const FUNCTION_KEYS = Object.freeze(Object.keys(FUNCTION_FIELDS));
+const SSE_KEYS = Object.freeze(Object.keys(SSE_FIELDS));
+
+/**
+ * Every field a declaration may carry, refused by name otherwise. An
+ * intersection parameter turns off TypeScript's excess-property check, so a
+ * misspelled or retired key — `internal`, once — would otherwise be dropped in
+ * silence and read as an expectation nothing meets.
+ *
+ * Every own key, enumerable or not, string or symbol: a field hidden behind
+ * `enumerable: false` is still a field the author expected something to
+ * consume, and nothing here consumes any of them.
+ */
+export function refuseUnknownFields(
+  def: object,
+  allowed: readonly string[],
+  where: string,
+): void {
+  for (const key of Reflect.ownKeys(def)) {
+    if (typeof key === "symbol" || !allowed.includes(key)) {
+      throw new TypeError(
+        `${where} must not declare "${String(key)}" — it carries exactly ${allowed.join(", ")}`,
+      );
+    }
   }
 }
 
@@ -549,14 +691,14 @@ function register<K extends string>(kind: K) {
     Ctx,
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
-  > & InternalMarkOf<Definition> => {
+  > & ApiPathOf<Definition> => {
+    refuseUnknownFields(def, FUNCTION_KEYS, kind);
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
     validateArgsShape(def.args);
     validateOutputDeclarations(def as never);
-    const internal = internalDeclaration(def, kind);
-    const exposure = exposureFields(def);
+    const exposure = exposureFields(def, kind);
 
     const callable =
       kind === "query" || kind === "mutation" || kind === "procedure"
@@ -568,7 +710,6 @@ function register<K extends string>(kind: K) {
       isAckerDB: true as const,
       kind,
       args: def.args,
-      ...(internal ? { internal: true as const } : {}),
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
       ...exposure,
@@ -580,7 +721,7 @@ function register<K extends string>(kind: K) {
       Ctx,
       ResultOfDefinition<Definition>,
       DefinitionReturn<Definition>
-    > & InternalMarkOf<Definition>;
+    > & ApiPathOf<Definition>;
     compileInvocation(registered);
     return registered;
   };
@@ -603,7 +744,7 @@ function registerCallable<K extends string>(kind: K) {
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
   > &
-    InternalMarkOf<Definition> &
+    ApiPathOf<Definition> &
     ((
       ctx: Ctx,
       args: Expand<ArgsInput<A>>,
@@ -637,14 +778,17 @@ export function sseProcedure<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
->(def: SseDef<A, Y, Ctx>): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> {
-  refuseInternalDeclaration(def, "an sseProcedure");
+  const Definition extends SseDef<A, Y, Ctx>,
+>(
+  def: SseDef<A, Y, Ctx> & Definition & ApiPathConstraint<NoInfer<Definition>>,
+): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> & ApiPathOf<Definition> {
+  refuseUnknownFields(def, SSE_KEYS, "sse");
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
   validateArgsShape(def.args);
   validateYields(def.yields);
-  const exposure = exposureFields(def);
+  const exposure = exposureFields(def, "sse");
 
   const callable = () => {
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
@@ -657,7 +801,8 @@ export function sseProcedure<
     ...exposure,
     access: def.access,
     handler: def.handler,
-  }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema>;
+  }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema> &
+    ApiPathOf<Definition>;
   compileInvocation(registered);
   return registered;
 }
@@ -679,7 +824,7 @@ export type QueryBuilder<
   S,
   DefinitionReturn<Definition>
 > &
-  InternalMarkOf<Definition> &
+  ApiPathOf<Definition> &
   ((
     ctx: QueryCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -702,7 +847,7 @@ export type MutationBuilder<
   S,
   DefinitionReturn<Definition>
 > &
-  InternalMarkOf<Definition> &
+  ApiPathOf<Definition> &
   ((
     ctx: MutationCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -730,7 +875,7 @@ export type ProcedureBuilder<
   S,
   DefinitionReturn<Definition>
 > &
-  InternalMarkOf<Definition> &
+  ApiPathOf<Definition> &
   ((
     ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<ArgsInput<A>>,
@@ -742,18 +887,21 @@ export type SseBuilder<
   TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
-> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: ExposureDef & {
-  readonly args: A;
-  readonly yields: Y;
-  readonly access: AccessPolicy<
-    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
-    Expand<InferShape<A>>
-  >;
-  readonly handler: (
-    ctx: SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
-    args: Expand<InferShape<A>>,
-  ) => SseSource<InferValidator<Y>> | Promise<SseSource<InferValidator<Y>>>;
-}) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;
+> = <
+  A extends ObjectShape,
+  Y extends Validator<unknown, string>,
+  const Definition extends SseDef<
+    A,
+    Y,
+    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
+  >,
+>(
+  def: SseDef<
+    A,
+    Y,
+    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
+  > & Definition & ApiPathConstraint<NoInfer<Definition>>,
+) => RegisteredSse<A, Expand<InferValidator<Y>>, S> & ApiPathOf<Definition>;
 
 // Runtime registries deliberately erase each function's concrete context.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

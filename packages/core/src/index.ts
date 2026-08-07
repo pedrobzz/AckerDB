@@ -53,9 +53,14 @@ export {
   type RegisteredChannelContract,
   type RegisteredRealtimeContract,
   type RegisteredServerOnly,
-  type RegisteredInternal,
+  type RegisteredApiPath,
   type ApiFromModules,
-  type InternalFromModules,
+  apiGroup,
+  refApiPath,
+  httpPathForAddress,
+  DEFAULT_API_PATH,
+  EVENTS_NAMESPACE,
+  type DefaultApiPath,
 } from "./refs.ts";
 export * from "./protocol.ts";
 export * from "./sse.ts";
