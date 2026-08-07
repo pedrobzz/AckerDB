@@ -269,6 +269,12 @@ export class RuntimeControl {
     if (!Number.isFinite(deadlineAtMs)) {
       throw new RangeError("runtime shutdown deadline must be finite");
     }
+    // The epoch deadline converts ONCE into a monotonic budget: every
+    // scheduling, classification, and recheck below compares against the
+    // monotonic clock, so a wall-clock adjustment mid-drain (VM resume,
+    // NTP sync) can neither launder a late settlement as in-time nor
+    // inflate a grace timer.
+    const deadlineMonotonicMs = performance.now() + Math.max(0, deadlineAtMs - Date.now());
     this.lifecycle = "draining";
     this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();
@@ -321,7 +327,7 @@ export class RuntimeControl {
     const shutdownWork = coreShutdown.then(async () => {
       if (deadlineReached) return;
       this.options.flushDeliveryFailures();
-      const errors = await this.finalizeTelemetry(undefined, deadlineAtMs);
+      const errors = await this.finalizeTelemetry(undefined, deadlineAtMs, deadlineMonotonicMs);
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) {
         throw new AggregateError(errors, "Runtime telemetry finalization failed");
@@ -343,7 +349,7 @@ export class RuntimeControl {
         this.shutdownController.abort(deadlineError);
         void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
-      }, Math.max(0, deadlineAtMs - Date.now()));
+      }, Math.max(0, deadlineMonotonicMs - performance.now()));
     });
     this.drainPromise = Promise.race([shutdownWork, deadline]).then(
       () => {
@@ -364,7 +370,7 @@ export class RuntimeControl {
         // so keep each cause once.
         const isDeadline = (candidate: unknown): boolean =>
           candidate instanceof AckerDBError && candidate.code === "deadline_exceeded";
-        const finalizationErrors = await this.finalizeTelemetry(error, deadlineAtMs);
+        const finalizationErrors = await this.finalizeTelemetry(error, deadlineAtMs, deadlineMonotonicMs);
         const cleanupErrors = finalizationErrors.filter((cleanup) =>
           cleanup !== error &&
           !(error instanceof AggregateError && error.errors.includes(cleanup)) &&
@@ -386,9 +392,13 @@ export class RuntimeControl {
    * while the owning finalizer is still active, and a deadline expiring
    * mid-finalization flips the terminal outcome instead of racing it.
    */
-  private finalizeTelemetry(failure: unknown, deadlineAtMs: number): Promise<unknown[]> {
+  private finalizeTelemetry(
+    failure: unknown,
+    deadlineAtMs: number,
+    deadlineMonotonicMs: number,
+  ): Promise<unknown[]> {
     this.registerTerminalFailure(failure);
-    this.finalization ??= this.runFinalization(deadlineAtMs);
+    this.finalization ??= this.runFinalization(deadlineAtMs, deadlineMonotonicMs);
     return this.finalization;
   }
 
@@ -413,11 +423,14 @@ export class RuntimeControl {
    * surface in accounting, but cannot flip the durable row: nothing can be
    * written into a sidecar that already failed.
    */
-  private async runFinalization(deadlineAtMs: number): Promise<unknown[]> {
+  private async runFinalization(
+    deadlineAtMs: number,
+    deadlineMonotonicMs: number,
+  ): Promise<unknown[]> {
     const errors: unknown[] = [];
     const attempt = async (work: () => unknown): Promise<void> => {
       try {
-        await this.boundedBy(work(), deadlineAtMs);
+        await this.boundedBy(work(), deadlineMonotonicMs);
       } catch (error) {
         errors.push(error);
       }
@@ -428,20 +441,21 @@ export class RuntimeControl {
     // The exporter and in-memory telemetry flushes guard their own post-stop
     // store writes, so Promise-race abandonment at the deadline is safe for
     // them. The journal and span stores are different: their drains are
-    // COOPERATIVE — the deadline is passed in, they drop the unpersisted
-    // tail and settle only once the sidecar is guaranteed quiescent.
+    // COOPERATIVE — the monotonic deadline is passed in, they drop the
+    // unpersisted tail and settle only once the sidecar is guaranteed
+    // quiescent.
     await attempt(() => this.options.telemetryExporters?.drain());
-    const graceAtMs = deadlineAtMs + QUIESCENCE_GRACE_MS;
+    const graceMonotonicMs = deadlineMonotonicMs + QUIESCENCE_GRACE_MS;
     const journalAck = await this.acknowledged(
       this.options.ownsTelemetryJournal
-        ? this.options.telemetryJournal.drain(deadlineAtMs)
-        : this.options.telemetryJournal.flush(deadlineAtMs),
-      graceAtMs,
+        ? this.options.telemetryJournal.drain(deadlineMonotonicMs)
+        : this.options.telemetryJournal.flush(deadlineMonotonicMs),
+      graceMonotonicMs,
     );
     if (journalAck.error !== undefined) errors.push(journalAck.error);
     const spansAck = await this.acknowledged(
-      this.options.telemetrySpans.drain(deadlineAtMs),
-      graceAtMs,
+      this.options.telemetrySpans.drain(deadlineMonotonicMs),
+      graceMonotonicMs,
     );
     if (spansAck.error !== undefined) errors.push(spansAck.error);
     const quiescent = journalAck.ack !== "none" && spansAck.ack !== "none";
@@ -460,11 +474,11 @@ export class RuntimeControl {
         { resource: "operation" },
       ));
     }
-    // FREEZE: synchronous from here through the terminal append. Wall-clock
+    // FREEZE: synchronous from here through the terminal append. Monotonic
     // recheck first — a blocked event loop can deliver every settlement
     // before the overdue deadline timer, and a finalization past its
     // deadline must never freeze a clean outcome.
-    if (Date.now() > deadlineAtMs && this.terminalFailure === undefined && errors.length === 0) {
+    if (performance.now() > deadlineMonotonicMs && this.terminalFailure === undefined && errors.length === 0) {
       errors.push(new AckerDBError(
         "deadline_exceeded",
         "telemetry finalization completed after the shutdown deadline",
@@ -519,15 +533,17 @@ export class RuntimeControl {
    * drain that answers nothing at all leaves the store unacknowledged.
    * Timers alone cannot judge lateness: a synchronously blocked event loop
    * delivers every settlement microtask before any overdue timer macrotask,
-   * so the settlement handlers check the wall clock themselves — a late
-   * REAL settlement is still quiescent (safe to append and close), it just
-   * must never be called clean.
+   * so the settlement handlers check the clock themselves — the MONOTONIC
+   * clock, which no wall-clock adjustment can rewind under a settlement.
+   * A late REAL settlement is still quiescent (safe to append and close),
+   * it just must never be called clean.
    */
   private acknowledged(
     work: Promise<void>,
-    graceAtMs: number,
+    graceMonotonicMs: number,
   ): Promise<{ readonly ack: "in-time" | "late" | "none"; readonly error?: unknown }> {
-    const ackNow = (): "in-time" | "late" => Date.now() > graceAtMs ? "late" : "in-time";
+    const ackNow = (): "in-time" | "late" =>
+      performance.now() > graceMonotonicMs ? "late" : "in-time";
     return Promise.race([
       work.then(
         () => ({ ack: ackNow() }),
@@ -536,15 +552,15 @@ export class RuntimeControl {
       new Promise<{ readonly ack: "none" }>((resolve) => {
         const timer = setTimeout(
           () => resolve({ ack: "none" as const }),
-          Math.max(0, graceAtMs - Date.now()),
+          Math.max(0, graceMonotonicMs - performance.now()),
         );
         timer.unref?.();
       }),
     ]);
   }
 
-  /** Bound one finalization step by the shutdown deadline. */
-  private boundedBy<T>(work: T | Promise<T>, deadlineAtMs: number): Promise<T> {
+  /** Bound one finalization step by the monotonic shutdown deadline. */
+  private boundedBy<T>(work: T | Promise<T>, deadlineMonotonicMs: number): Promise<T> {
     if (!(work instanceof Promise)) return Promise.resolve(work);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -553,7 +569,7 @@ export class RuntimeControl {
           "telemetry finalization exceeded the shutdown deadline",
           { resource: "operation" },
         ));
-      }, Math.max(0, deadlineAtMs - Date.now()));
+      }, Math.max(0, deadlineMonotonicMs - performance.now()));
       timer.unref?.();
       work.then(
         (value) => {

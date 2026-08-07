@@ -2446,6 +2446,64 @@ describe("Runtime telemetry acceptance", () => {
     store.close();
   });
 
+  test("a backward clock jump cannot reclassify a blocked flush as in time", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    const realNow = Date.now.bind(Date);
+    let nowSpy: ReturnType<typeof spyOn<typeof Date, "now">> | undefined;
+    const drainSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(async () => {
+        const until = realNow() + 700;
+        while (realNow() < until) {
+          // Synchronous stall past deadline and grace.
+        }
+        // The wall clock falls back (VM resume, NTP sync): an epoch
+        // comparison would now call this settlement in time.
+        nowSpy = spyOn(Date, "now").mockImplementation(() => until - 60_000);
+      });
+    try {
+      await expect(app.runtime.drain(realNow() + 50)).rejects.toMatchObject({
+        code: "deadline_exceeded",
+      });
+    } finally {
+      nowSpy?.mockRestore();
+      drainSpy.mockRestore();
+    }
+    const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
+    const lifecycle = lifecycleStates(entries);
+    expect(lifecycle.filter((state) => state === "failed")).toHaveLength(1);
+    expect(lifecycle).not.toContain("stopped");
+    store.close();
+  });
+
+  test("a backward clock jump does not inflate the quiescence grace", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    const realNow = Date.now.bind(Date);
+    let nowSpy: ReturnType<typeof spyOn<typeof Date, "now">> | undefined;
+    // The clock falls back a minute before the zombie store's grace timer is
+    // armed: an epoch-derived delay would postpone rejection by that minute.
+    const journalSpy = spyOn(app.runtime.telemetryJournal, "drain")
+      .mockImplementationOnce(async () => {
+        nowSpy = spyOn(Date, "now").mockImplementation(() => realNow() - 60_000);
+      });
+    const spansSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const startedAt = performance.now();
+    try {
+      await expect(app.runtime.drain(realNow() + 50)).rejects.toThrow();
+    } finally {
+      nowSpy?.mockRestore();
+      journalSpy.mockRestore();
+      spansSpy.mockRestore();
+    }
+    // Rejection lands within the monotonic grace, not a skew-inflated one.
+    expect(performance.now() - startedAt).toBeLessThan(3_000);
+    store.close();
+  });
+
   test("an unacknowledged span drain skips the terminal row and leaves the sidecar open", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const store = new TelemetryStore({ path: ":memory:" });

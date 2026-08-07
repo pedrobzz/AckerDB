@@ -327,7 +327,7 @@ describe("TelemetryJournal", () => {
     }
     // The deadline already passed: cooperative overrun — the unpersisted
     // tail is dropped, the store quiesces, and the loss is the error.
-    await expect(journal.drain(Date.now() - 1)).rejects.toMatchObject({
+    await expect(journal.drain(performance.now() - 1)).rejects.toMatchObject({
       code: "deadline_exceeded",
     });
     expect(journal.snapshot()).toMatchObject({

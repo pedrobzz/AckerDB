@@ -367,15 +367,20 @@ export class TelemetryJournal {
   }
 
   /**
-   * Flush the queue; an optional deadline makes the flush COOPERATIVE: once
-   * it passes, the unpersisted tail is dropped instead of written, the
+   * Flush the queue; an optional MONOTONIC deadline (performance.now()
+   * basis — immune to wall-clock adjustments) makes the flush COOPERATIVE:
+   * once it passes, the unpersisted tail is dropped instead of written, the
    * in-flight batch still settles, and the store is guaranteed quiescent
    * when this resolves — reported as a deadline error carrying the loss.
    */
-  async flush(deadlineAtMs?: number): Promise<void> {
+  async flush(deadlineMonotonicMs?: number): Promise<void> {
     let deadlineDropped = 0;
     for (;;) {
-      if (deadlineAtMs !== undefined && this.queue.length > 0 && Date.now() >= deadlineAtMs) {
+      if (
+        deadlineMonotonicMs !== undefined &&
+        this.queue.length > 0 &&
+        performance.now() >= deadlineMonotonicMs
+      ) {
         deadlineDropped += this.queue.length;
         this.droppedRecords += this.queue.length;
         this.queue.length = 0;
@@ -637,11 +642,11 @@ export class TelemetryJournal {
     `).run(this.storedRecords, this.storedBytes, this.evictedRecords, this.lastRecordId);
   }
 
-  async drain(deadlineAtMs?: number): Promise<void> {
+  async drain(deadlineMonotonicMs?: number): Promise<void> {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "draining";
     try {
-      await this.flush(deadlineAtMs);
+      await this.flush(deadlineMonotonicMs);
     } finally {
       // A deadline overrun still quiesced (its loss is the thrown error);
       // only a failed journal keeps its failed state.
