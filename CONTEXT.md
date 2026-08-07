@@ -212,6 +212,69 @@ _Avoid_: Application table, exporter queue
 provider represents without changing application execution or other exporters.
 _Avoid_: Telemetry provider, application integration
 
+**Trace** — The tree of spans sharing one trace identifier, describing a single
+operation's execution from boundary to settlement across framework stages and
+nested application functions.
+_Avoid_: request log, execution history
+
+**Span** — One timed unit of work inside a trace: start, duration, and outcome,
+attached to a parent span so spans compose into a tree. All spans are
+framework-emitted; application code does not create spans.
+_Avoid_: timing event, log entry
+
+**Unattributed time** — The portion of a span's duration not covered by any
+child span: work the framework cannot observe inside an application function's
+body, such as external calls or computation. It marks where manual
+instrumentation would attach if it existed.
+_Avoid_: gap, overhead, missing time
+
+**Error group** — The durable identity of one distinct unhandled failure,
+keyed by a stack fingerprint. It accumulates occurrence counts and first/last
+seen times, never expires, and carries a two-state lifecycle: unresolved or
+resolved, where any new occurrence reopens a resolved group as regressed.
+Expected failure outcomes and handled, logged errors never form groups.
+_Avoid_: issue, error bucket, exception type
+
+**Error occurrence** — One capture of an unhandled failure joined to its error
+group: when it happened, in which function, and in which trace. Occurrences
+expire on the error retention clock; their group outlives them.
+_Avoid_: error event, error instance
+
+**Funnel** — An ordered sequence of analytics-event steps evaluated exactly,
+per durable Identity, within a conversion window: how many identities advanced
+through each step and which ones stalled where. Never sampled or approximated.
+_Avoid_: conversion pipeline, journey
+
+**Identity timeline** — The chronological record of one Identity's analytics
+events. It shows what that identity did, never an inferred profile or
+aggregated person attributes.
+_Avoid_: person timeline, user profile, person page
+
+**Pressure hint** — A static severity badge derived from a configured hard
+limit the runtime already enforces, shown when a resource approaches its cap.
+It is a reading of existing budgets, never a user-defined threshold, rule, or
+notification.
+_Avoid_: alert, alarm, threshold rule
+
+**Direct write** — A Studio operator's single-row insert, edit, or delete,
+validated by the table's schema and committed through the ordinary application
+transaction path, so reactivity and constraints apply exactly as they would to
+application code. Every direct write leaves a durable audit event naming the
+administrative identity.
+_Avoid_: raw write, manual SQL, database patch
+
+**Impersonated run** — A Studio function execution performed under a chosen
+application Identity by an administrative operator, so the function observes
+exactly what that identity would observe. Gated by its own scope and always
+audit-evented naming both the administrative and the impersonated identity.
+_Avoid_: act as user, sudo, identity switch
+
+**Live inventory** — A read of who is connected, listening, or joined right
+now, taken by walking the runtime's existing in-memory structures at call
+time. It observes ephemeral state without retaining or instrumenting it, and
+so has no history of its own and no effect on execution.
+_Avoid_: registry, presence table, connection log
+
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
 capability. Each run begins with only the canonical system principal, may use
@@ -1100,6 +1163,33 @@ migration question: the server stays down, nothing is written or persisted,
 and the state releases when the ledger changes — a rescued schema starts the
 server silently, a different ledger asks again, and generation stays available
 on demand.
+
+## Studio
+
+**Studio** — The opt-in observability and administration client for one AckerDB
+application. It runs outside the application's process as a client on the public
+AckerDB client stack, authenticates with an admin credential rather than as an
+application user, and consumes only functions the framework itself exposes. The
+name is provisional.
+_Avoid_: Dashboard, admin panel, embedded console
+
+**Admin Credential** — The opaque credential that authenticates a Studio
+operator as an administrative identity, distinct from any application user and
+from the system principal. Administrative authority is implicit and total — it
+satisfies every scope requirement. An application manages a single master Admin
+Credential by default, though the model admits more.
+_Avoid_: admin token, API key, master key
+
+**Log source** — The origin of a record in Studio's Logs stream: application
+(developer-authored application log records) or framework (framework-emitted
+diagnostic events made durable). Analytics events are never part of the Logs
+stream.
+_Avoid_: log kind, log channel
+
+**Live tail** — The Logs stream's default mode: the newest records arrive
+continuously, newest first. Reading pauses it — scrolling into history or
+pinning a time range — and resuming is one explicit action.
+_Avoid_: follow mode, streaming view
 
 ## Demo app (Savoria restaurant)
 
