@@ -269,6 +269,14 @@ exactly what that identity would observe. Gated by its own scope and always
 audit-evented naming both the administrative and the impersonated identity.
 _Avoid_: act as user, sudo, identity switch
 
+**Visitor id** — The server-issued first-party identifier naming one browser
+or installation, always present so that abuse is attributable and anonymous
+activity is countable. It identifies a client, never a person: it is unreadable
+by application code, is never shared or correlated across sites, and carries no
+personal data. When a durable Identity is present it accompanies the Visitor
+id rather than being derived from it.
+_Avoid_: user id, device fingerprint, tracking id
+
 **First-party capture** — Client-side measurement that travels to the
 application's own origin over the connection the application already holds,
 carrying no cross-site identity, no stored network address, and no device
