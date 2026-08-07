@@ -273,8 +273,10 @@ export class RuntimeControl {
     // scheduling, classification, and recheck below compares against the
     // monotonic clock, so a wall-clock adjustment mid-drain (VM resume,
     // NTP sync) can neither launder a late settlement as in-time nor
-    // inflate a grace timer.
-    const deadlineMonotonicMs = performance.now() + Math.max(0, deadlineAtMs - Date.now());
+    // inflate a grace timer. The offset stays SIGNED — an already-expired
+    // deadline must overrun immediately, not earn a fresh grace window;
+    // timer delays clamp to zero only where they are scheduled.
+    const deadlineMonotonicMs = performance.now() + (deadlineAtMs - Date.now());
     this.lifecycle = "draining";
     this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();

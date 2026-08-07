@@ -2504,6 +2504,29 @@ describe("Runtime telemetry acceptance", () => {
     store.close();
   });
 
+  test("an already-expired deadline grants no fresh grace to an unresponsive drain", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    const spansSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const startedAt = performance.now();
+    // The deadline is long gone at entry: the monotonic conversion must
+    // preserve the signed overrun — clamping it to "now" would hand the
+    // zombie drain a fresh grace window it was never promised.
+    await expect(app.runtime.drain(Date.now() - 10_000)).rejects.toMatchObject({
+      code: "deadline_exceeded",
+    });
+    spansSpy.mockRestore();
+    expect(performance.now() - startedAt).toBeLessThan(400);
+    // Immediate overrun takes the unacknowledged form: no terminal row,
+    // sidecar left open.
+    const lifecycle = lifecycleStates(app.runtime.telemetryJournal.readBatch(0n, 10_000));
+    expect(lifecycle).not.toContain("stopped");
+    expect(lifecycle).not.toContain("failed");
+    store.close();
+  });
+
   test("an unacknowledged span drain skips the terminal row and leaves the sidecar open", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const store = new TelemetryStore({ path: ":memory:" });
