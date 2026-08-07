@@ -327,4 +327,42 @@ describe("usePaginatedQuery", () => {
       root.unmount();
     });
   });
+
+  test("recovery withholds pages behind a still-stale boundary", async () => {
+    const harness = createHarness(APP);
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    await render(root, app(harness, { list: 1n }, 2));
+    await ready(harness);
+    const first = harness.frames("sub")[0]!;
+    await deliverPage(harness, first.id, 1n, { items: ["a", "b"], nextCursor: "c1" });
+    await loadMore();
+    const second = harness.frames("sub")[1]!;
+    await deliverPage(harness, second.id, 1n, { items: ["c"], nextCursor: null });
+    expect(container.textContent).toBe("fresh:a,b,c+end");
+
+    await act(async () => {
+      harness.live().close();
+    });
+    await act(async () => {
+      harness.clock.advance(200);
+    });
+    await ready(harness);
+    expect(container.textContent).toBe("stale:a,b,c+end");
+
+    // Page two recovers first with post-reconnect content. Its predecessor's
+    // boundary is still the pre-disconnect era: flattening them would mix
+    // eras (overlap or gap), so everything behind the stale page is withheld.
+    await deliverPage(harness, second.id, 2n, { items: ["x"], nextCursor: null });
+    expect(container.textContent).toBe("stale:a,b");
+
+    // The boundary page recovering re-proves the chain and the window returns.
+    await deliverPage(harness, first.id, 2n, { items: ["a", "b"], nextCursor: "c1" });
+    expect(container.textContent).toBe("fresh:a,b,x+end");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

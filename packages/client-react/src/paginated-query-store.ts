@@ -161,7 +161,19 @@ interface PageSlot<Item, Error extends ApplicationError> {
  * affected page; when it moves a page's `nextCursor`, the pages behind it are
  * resubscribed from the new boundary so the flattened window stays contiguous
  * (it briefly truncates to the proven prefix rather than showing overlap).
- * Releasing the last listener releases every page subscription.
+ * The flatten never mixes eras: pages behind a stale or pending boundary are
+ * withheld until the boundary itself re-proves the chain. Releasing the last
+ * listener releases every page subscription.
+ *
+ * Known bound: one commit whose fan-out touches BOTH sides of a page
+ * boundary without moving the cursor string arrives as independent frames,
+ * so between those frames the flatten can transiently pair one page's new
+ * delivery with its neighbor's not-yet-delivered one. The client cannot
+ * tell that apart from "the neighbor was unaffected" without commit-scoped
+ * delivery metadata; closing it needs the session to expose per-commit
+ * atomic fan-out (or per-commit checkpoints for unaffected subscriptions),
+ * which is a protocol decision, not a client-side one. It self-heals on the
+ * neighbor's frame of the same commit.
  */
 export class PaginatedQueryEntry<
   Item,
@@ -245,27 +257,35 @@ export class PaginatedQueryEntry<
     this.replace(this.fold());
   }
 
+  /**
+   * Flatten one era, never two. A window that leads with stale-retained
+   * pages is the pre-disconnect era: its consecutive retained pages were a
+   * proven chain when live and flatten together, ending at the first page
+   * that has since moved on. A window that leads with live successes is the
+   * current era: a stale or pending page ends it — retained rows behind a
+   * fresh boundary (and fresh rows behind a stale one) would mix eras as
+   * overlap or gaps, so the suffix is withheld until its pages re-prove.
+   */
   private fold(): AckerDBPaginatedQueryState<Item, Error> {
+    const first = this.pages[0]?.source.snapshot();
+    if (first !== undefined && first.status === "unavailable" && first.data !== undefined) {
+      return this.foldRetainedEra(first.error);
+    }
     const items: Item[] = [];
-    let unavailableError: AckerDBClientError | undefined;
-    let exhausted = false;
     for (let index = 0; index < this.pages.length; index++) {
       const state = this.pages[index]!.source.snapshot();
-      if (state.status === "unavailable" && unavailableError === undefined) {
-        unavailableError = state.error;
-      }
-      if (state.status === "success" || (state.status === "unavailable" && state.data !== undefined)) {
+      if (state.status === "success") {
         const page = pageOf<Item>(state.data);
         if (page === undefined) return this.errorState("rejected", malformedPage());
         items.push(...page.items);
-        if (index === this.pages.length - 1) exhausted = page.nextCursor === null;
+        if (index === this.pages.length - 1) {
+          return this.successState(items, false, page.nextCursor === null);
+        }
         continue;
       }
       if (state.status === "pending") {
         if (index === 0) return PAGINATED_PENDING_STATE as AckerDBPaginatedQueryState<Item, Error>;
-        return unavailableError !== undefined
-          ? this.staleState(items, unavailableError, false)
-          : this.successState(items, true, false);
+        return this.successState(items, true, false);
       }
       if (state.status === "application-error") {
         return {
@@ -280,6 +300,11 @@ export class PaginatedQueryEntry<
       }
       if (state.status === "rejected") return this.errorState("rejected", state.error);
       if (state.status === "unavailable") {
+        if (state.data !== undefined) {
+          // Pre-disconnect rows behind a live fresh boundary: the connection
+          // is back, this page just has not re-proven yet — withhold it.
+          return this.successState(items, true, false);
+        }
         // Unavailable without retained data: nothing behind it is proven.
         return items.length === 0
           ? this.errorState("unavailable", state.error)
@@ -288,12 +313,27 @@ export class PaginatedQueryEntry<
       // "disabled" never happens: page sources always carry real arguments.
       break;
     }
-    if (unavailableError !== undefined) {
-      return items.length === 0
-        ? this.errorState("unavailable", unavailableError)
-        : this.staleState(items, unavailableError, exhausted);
+    return this.successState(items, false, false);
+  }
+
+  /** The leading run of stale-retained pages — one era retained as it was. */
+  private foldRetainedEra(error: AckerDBClientError): AckerDBPaginatedQueryState<Item, Error> {
+    const items: Item[] = [];
+    for (let index = 0; index < this.pages.length; index++) {
+      const state = this.pages[index]!.source.snapshot();
+      if (state.status !== "unavailable" || state.data === undefined) {
+        // This page moved past the retained era; it and everything behind it
+        // are withheld until the chain re-proves from the front.
+        return this.staleState(items, error, false);
+      }
+      const page = pageOf<Item>(state.data);
+      if (page === undefined) return this.errorState("rejected", malformedPage());
+      items.push(...page.items);
+      if (index === this.pages.length - 1) {
+        return this.staleState(items, error, page.nextCursor === null);
+      }
     }
-    return this.successState(items, false, exhausted);
+    return this.staleState(items, error, false);
   }
 
   private successState(
