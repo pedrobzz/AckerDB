@@ -8,6 +8,7 @@ import {
 import { isSchema, type Schema } from "../schema/definition.ts";
 import { DEFAULT_API_PATH } from "@ackerdb/core";
 import { apiPath } from "./functions.ts";
+import { validateScopeVocabulary, type ScopeValues } from "../auth/scopes.ts";
 
 const APP_IDENTITY = Symbol.for("@ackerdb/server/App/v1");
 
@@ -16,16 +17,20 @@ type EmptyPluginMounts = Readonly<Record<never, never>>;
 export interface App<
   S extends Schema = Schema,
   Plugins extends PluginMounts = PluginMounts,
+  Scopes extends ScopeValues | undefined = ScopeValues | undefined,
 > {
   readonly schema: S;
   readonly plugins: Readonly<Plugins>;
   /** Groups beyond `"api"` that this application publishes functions in. */
   readonly apiPaths: readonly string[];
+  /** The application's scope vocabulary; absent when it declares none. */
+  readonly scopes: Scopes;
 }
 
 export interface AppDefinition<
   S extends Schema,
   Plugins extends PluginMounts = EmptyPluginMounts,
+  Scopes extends ScopeValues | undefined = undefined,
 > {
   readonly schema: S;
   readonly plugins?: Plugins;
@@ -36,12 +41,26 @@ export interface AppDefinition<
    * named here once.
    */
   readonly apiPaths?: readonly string[];
+  /**
+   * The one scope vocabulary every Identity grant and every function
+   * requirement draws from. Names carrying the reserved marker belong to the
+   * framework and are refused here.
+   */
+  readonly scopes?: Scopes;
 }
 
 /** The application's exact root schema, as consumed by host code generation. */
 export type AppSchema<A extends App> = A["schema"];
 /** The application's exact Plugin mount map, as consumed by host code generation. */
 export type AppPlugins<A extends App> = A["plugins"];
+/**
+ * The declared scope union, as consumed by host code generation: generated
+ * server modules instantiate the function builders with it, so a function
+ * requiring an undeclared scope fails to compile.
+ */
+export type AppScope<A extends App> = A["scopes"] extends ScopeValues
+  ? A["scopes"][number]
+  : never;
 
 /** Direct host capabilities for every mounted Plugin at one execution boundary. */
 export type AppPluginCapabilities<
@@ -92,7 +111,8 @@ function declaredApiPaths(value: unknown): readonly string[] {
 export function defineApp<
   const S extends Schema,
   const Plugins extends PluginMounts = EmptyPluginMounts,
->(definition: AppDefinition<S, Plugins>): App<S, Plugins> {
+  const Scopes extends ScopeValues | undefined = undefined,
+>(definition: AppDefinition<S, Plugins, Scopes>): App<S, Plugins, Scopes> {
   if (
     typeof definition !== "object" ||
     definition === null ||
@@ -103,7 +123,12 @@ export function defineApp<
     throw new TypeError("application definition must be a plain object");
   }
   for (const option of Object.keys(definition)) {
-    if (option !== "schema" && option !== "plugins" && option !== "apiPaths") {
+    if (
+      option !== "schema" &&
+      option !== "plugins" &&
+      option !== "apiPaths" &&
+      option !== "scopes"
+    ) {
       throw new TypeError(`unknown application option "${option}"`);
     }
   }
@@ -117,6 +142,9 @@ export function defineApp<
     schema: definition.schema,
     plugins,
     apiPaths: declaredApiPaths(definition.apiPaths),
+    scopes: (definition.scopes === undefined
+      ? undefined
+      : validateScopeVocabulary(definition.scopes)) as Scopes,
   };
   brand(app, APP_IDENTITY);
   return Object.freeze(app);

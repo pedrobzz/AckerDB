@@ -17,7 +17,7 @@
  * The listener and the OpenAPI document both read this module, so a documented
  * method or header cannot drift from the one the surface actually serves.
  */
-import type { SseAckRequest, SseMessage } from "@ackerdb/core";
+import { RESERVED_MARKER, type SseAckRequest, type SseMessage } from "@ackerdb/core";
 
 export const ACKERDB_HTTP_ROUTES = Object.freeze({
   live: "/live",
@@ -32,14 +32,6 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   /** Served only when the serve options ask for it; a 404 otherwise. */
   openapi: "/_openapi.json",
 } as const);
-
-/**
- * The character marking a name as the framework's own, across every namespace
- * an application shares with it. An `apiPath` may not begin with it, and
- * neither may the module namespace directly under one. Segments deeper than
- * that are the application's own business.
- */
-export const RESERVED_MARKER = "_";
 
 /** The reserved root: every AckerDB-owned route lives behind it. */
 const ACKERDB_RESERVED_ROOT = `/${RESERVED_MARKER}`;

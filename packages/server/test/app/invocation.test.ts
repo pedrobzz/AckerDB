@@ -19,6 +19,7 @@ import { createMutationInvocationScope } from "../../src/runtime/mutation-scope.
 function user(): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity: 1n as UserPrincipal["identity"],
     issuer: "https://issuer.example/",
     subject: "user-1",

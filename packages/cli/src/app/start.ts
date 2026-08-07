@@ -24,6 +24,7 @@ import {
   desiredPluginMounts,
   type CredentialVerifier,
   type EngineCloseDisposition,
+  type ScopeResolver,
   type RealtimeRuntimeModule,
   type SystemRunner,
   MigrationError,
@@ -81,6 +82,8 @@ export interface StartAppOptions<A extends App = App> {
   prepare?: StartupPreparation;
   /** Programmatic auth authority. Cannot be combined with a configured verifier or OIDC. */
   credentialVerifier?: CredentialVerifier;
+  /** Programmatic scope resolution. Cannot be combined with a configured scopeResolver module. */
+  resolveScopes?: ScopeResolver;
   /**
    * Exit instead of applying pending migrations — the interactive dev
    * supervisor's gate, which asks for consent and restarts without the hold.
@@ -134,6 +137,40 @@ async function importCredentialVerifier(path: string): Promise<CredentialVerifie
     `credential verifier default export from ${path}`,
   );
   return module.default;
+}
+
+async function importScopeResolver(path: string): Promise<ScopeResolver> {
+  if (!existsSync(path)) throw new Error(`scope resolver not found at ${path}`);
+  let module: { default?: unknown };
+  try {
+    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(`failed to import scope resolver at ${path}${detail}`, { cause: error });
+  }
+  if (typeof module.default !== "function") {
+    throw new TypeError(`scope resolver default export from ${path} must be a function`);
+  }
+  return module.default as ScopeResolver;
+}
+
+function scopeResolverLoader(
+  config: AppConfig,
+  injected: ScopeResolver | undefined,
+): () => Promise<ScopeResolver | undefined> {
+  if (injected !== undefined && config.scopeResolver !== undefined) {
+    throw new Error("startApp resolveScopes cannot be combined with a configured scopeResolver");
+  }
+  if (injected !== undefined) {
+    if (typeof injected !== "function") {
+      throw new TypeError("startApp resolveScopes must be a function");
+    }
+    return async () => injected;
+  }
+  const path = config.scopeResolver;
+  return path === undefined
+    ? async () => undefined
+    : async () => importScopeResolver(path);
 }
 
 function credentialVerifierLoader(
@@ -200,6 +237,7 @@ export async function startApp<const A extends App = App>(
   options: StartAppOptions<A> = {},
 ): Promise<RunningApp<A>> {
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
+  const loadScopeResolver = scopeResolverLoader(config, options.resolveScopes);
   const startupSignal = options.signal ?? AbortSignal.any([]);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
@@ -353,8 +391,9 @@ export async function startApp<const A extends App = App>(
     // not schema migration. Load them only after durable schema work commits so
     // unrelated runtime configuration cannot block a pending migration.
     server.advanceStartup("loading-runtime");
-    const [verifier, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
+    const [verifier, resolveScopes, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
+      loadScopeResolver(),
       importFunctionModules(config),
       importServiceModules(config),
       importJobModules(config),
@@ -374,6 +413,9 @@ export async function startApp<const A extends App = App>(
     await awaitStartup(pluginRuntime.start());
     requireStartupOwnership();
     const registry = new Registry(modules, app.apiPaths);
+    // The App manifest and the Registry meet here: every declared scope
+    // requirement must draw from the known vocabulary.
+    registry.checkScopeRequirements(app.scopes);
     const realtime = registry.realtime.size === 0
       ? undefined
       : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));
@@ -388,6 +430,8 @@ export async function startApp<const A extends App = App>(
         maxBytes: config.files.maxBytes,
       },
       ...(verifier === undefined ? {} : { verifier }),
+      ...(resolveScopes === undefined ? {} : { resolveScopes }),
+      ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
       ...(options.telemetryJournal === undefined

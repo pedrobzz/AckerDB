@@ -8,6 +8,7 @@ import {
   EVENTS_NAMESPACE,
   getRef,
   httpPathForAddress,
+  RESERVED_MARKER,
 } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import {
@@ -31,18 +32,20 @@ import {
   type AnyRegisteredRealtime,
 } from "../realtime/definition.ts";
 import {
-  isMcpAuthProvider,
   isMcpDeclaration,
   isRegisteredMcpTool,
-  type AnyMcpAuthProvider,
   type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
-import { isMcpToolAuthorized } from "../mcp/scopes.ts";
+import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
+import {
+  checkRequirementAgainstVocabulary,
+  knownScopeVocabulary,
+  normalizeScopeRequirement,
+} from "../auth/scopes.ts";
 import {
   claimsReservedName,
-  RESERVED_MARKER,
   exposedHttpKind,
   isAckerDBHttpRoute,
   type ExposedHttpKind,
@@ -52,7 +55,7 @@ import {
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
 
-type ServerOnlyExport = AnyMcpDeclaration | AnyMcpAuthProvider;
+type ServerOnlyExport = AnyMcpDeclaration;
 
 interface ModuleExport {
   readonly address: string;
@@ -253,11 +256,6 @@ export class Registry {
     }
 
     for (const { address, value } of moduleExports) {
-      if (!isMcpAuthProvider(value)) continue;
-      this.serverOnly.set(address, value);
-    }
-
-    for (const { address, value } of moduleExports) {
       if (
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
@@ -267,6 +265,35 @@ export class Registry {
       ) {
         throw new Error(`unknown server-only export at "${address}"`);
       }
+    }
+  }
+
+  /**
+   * Load-time cross-check where the App manifest meets the Registry: every
+   * scope a function or a tool entry requires must exist in the known
+   * vocabulary. Registered declarations are module-level constants that exist
+   * before `defineApp` is evaluated, so the check lives here rather than at
+   * registration — and it covers untyped callers, which the generated
+   * builders' scope union cannot.
+   */
+  checkScopeRequirements(applicationScopes: readonly string[] | undefined): void {
+    const vocabulary = knownScopeVocabulary(applicationScopes);
+    for (const [address, fn] of this.functions) {
+      if (fn.scopes === undefined) continue;
+      checkRequirementAgainstVocabulary(
+        normalizeScopeRequirement(fn.scopes, `function "${address}" scopes`),
+        vocabulary,
+        `function "${address}"`,
+      );
+    }
+    for (const tool of this.mcpTools.values()) {
+      const policy = tool.accessPolicy;
+      if (policy.kind !== "anyOf" && policy.kind !== "allOf") continue;
+      checkRequirementAgainstVocabulary(
+        policy,
+        vocabulary,
+        `MCP "${tool.mcp.name}" tool "${tool.name}"`,
+      );
     }
   }
 

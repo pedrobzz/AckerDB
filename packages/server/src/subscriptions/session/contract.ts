@@ -30,6 +30,7 @@ import type {
   CredentialVerifier,
   ExternalAccount,
   Principal,
+  ScopeResolver,
 } from "../../auth/credentials.ts";
 import type { AuthInvalidationScope } from "../../auth/invalidation.ts";
 import type { TransportSource } from "../../runtime/caller.ts";
@@ -163,6 +164,8 @@ export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): numb
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
   readonly credentialVerifier: CredentialVerifier | undefined;
+  /** Scope grants ride the same re-verification: an auth-epoch change re-reads them. */
+  readonly resolveScopes?: ScopeResolver;
   resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity>;
   openSession(context: SessionRuntimeContext): Promise<void>;
   transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;

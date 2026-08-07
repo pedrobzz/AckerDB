@@ -75,11 +75,13 @@ export interface ServiceLimits {
   readonly auth: {
     readonly revocationDeadlineMs: number;
   };
-  readonly mcp: {
-    /** Applied independently to each Identity and named MCP endpoint. */
-    readonly maxTokensPerIdentity: number;
+  readonly credentials: {
+    /** Credentials one Identity may hold as children, and standalone ones as a set. */
+    readonly maxPerIdentity: number;
     readonly maxNameBytes: number;
     readonly maxMetadataBytes: number;
+  };
+  readonly mcp: {
     /** Maximum normalized request-header bytes accepted by an MCP route. */
     readonly maxHeaderBytes: number;
     /** Maximum explicitly registered tools on one named MCP endpoint. */
@@ -155,9 +157,9 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["mutationReplay.maxRecords", limits.mutationReplay.maxRecords],
     ["mutationReplay.maxBytes", limits.mutationReplay.maxBytes],
     ["auth.revocationDeadlineMs", limits.auth.revocationDeadlineMs],
-    ["mcp.maxTokensPerIdentity", limits.mcp.maxTokensPerIdentity],
-    ["mcp.maxNameBytes", limits.mcp.maxNameBytes],
-    ["mcp.maxMetadataBytes", limits.mcp.maxMetadataBytes],
+    ["credentials.maxPerIdentity", limits.credentials.maxPerIdentity],
+    ["credentials.maxNameBytes", limits.credentials.maxNameBytes],
+    ["credentials.maxMetadataBytes", limits.credentials.maxMetadataBytes],
     ["mcp.maxHeaderBytes", limits.mcp.maxHeaderBytes],
     ["mcp.maxToolsPerEndpoint", limits.mcp.maxToolsPerEndpoint],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
@@ -204,6 +206,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     resume: Object.freeze({ ...limits.resume }),
     mutationReplay: Object.freeze({ ...limits.mutationReplay }),
     auth: Object.freeze({ ...limits.auth }),
+    credentials: Object.freeze({ ...limits.credentials }),
     mcp: Object.freeze({ ...limits.mcp }),
     jobs: Object.freeze({ ...limits.jobs }),
   });
@@ -241,10 +244,12 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     maxBytes: 4 * GiB,
   },
   auth: { revocationDeadlineMs: 5_000 },
-  mcp: {
-    maxTokensPerIdentity: 64,
+  credentials: {
+    maxPerIdentity: 64,
     maxNameBytes: 128,
     maxMetadataBytes: 16 * KiB,
+  },
+  mcp: {
     maxHeaderBytes: 32 * KiB,
     maxToolsPerEndpoint: 256,
   },

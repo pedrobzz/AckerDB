@@ -27,6 +27,20 @@ export type DefaultApiPath = typeof DEFAULT_API_PATH;
  */
 export const EVENTS_NAMESPACE = "events";
 
+/**
+ * The character marking a name as the framework's own, across every namespace
+ * an application shares with it: API paths, HTTP roots, and scopes. An
+ * application may never declare a name carrying it, so the two vocabularies
+ * cannot collide.
+ *
+ * It lives here for the same reason the two names above do — the rule is
+ * enforced in the server's routing, its authorization vocabulary, and the
+ * declaration builders that refuse it, and those must agree on one character.
+ * The one exception is framework tables, which carry the older `_ackerdb_`
+ * prefix released in 0.16.0 data; see CONTEXT.md.
+ */
+export const RESERVED_MARKER = "_";
+
 export interface FunctionReference<
   K extends FunctionKind = FunctionKind,
   A = unknown,

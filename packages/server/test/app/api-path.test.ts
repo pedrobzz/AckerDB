@@ -10,7 +10,7 @@ import { mutation, procedure, query, sseProcedure } from "../../src/app/function
 import { httpHandler } from "../../src/app/http-handler.ts";
 import { channel } from "../../src/channels/definition.ts";
 import { realtime } from "../../src/realtime/definition.ts";
-import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 describe("apiPath declarations", () => {
@@ -211,7 +211,6 @@ describe("the HTTP root a group owns", () => {
   test("an MCP tools record may name a function from any group", () => {
     const endpoint = mcp({
       name: "admin",
-      auth: mcpAuth({ name: "admin" }),
       path: "/mcp/admin",
       tools: { list_index: { fn: compact, access: "public" } },
     });

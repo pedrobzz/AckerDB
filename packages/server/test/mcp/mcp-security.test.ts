@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -18,7 +18,7 @@ const PROTOCOL_VERSION = "2025-11-25";
 const ARGUMENT_CANARY = "private-mcp-argument-canary";
 const RESULT_CANARY = "private-mcp-result-canary";
 const HANDLER_ERROR_CANARY = "private-mcp-handler-error-canary";
-const TOKEN_CANARY = `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
+const TOKEN_CANARY = `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`;
 const PROVIDER_CREDENTIAL_CANARY = "private-provider-credential-canary";
 
 const schema = defineSchema({});
@@ -41,7 +41,6 @@ const protectedTool = query({
 });
 const securityMcp = mcp({
   name: "security",
-  auth: mcpAuth({ name: "security" }),
   tools: {
     echo_secret: { fn: echoSecret, access: "public" },
     protected_tool: { fn: protectedTool, access: "authenticated" },
@@ -309,7 +308,6 @@ describe("MCP HTTP security boundary", () => {
     });
     const limitedMcp = mcp({
       name: "limited",
-      auth: mcpAuth({ name: "limited" }),
       path: "/limited",
       tools: { one: { fn: one }, two: { fn: two } },
     });
@@ -345,19 +343,16 @@ describe("MCP HTTP security boundary", () => {
     });
     expect(() => mcp({
       name: "invalid_name",
-      auth: mcpAuth({ name: "invalid_name" }),
       path: "/invalid-name",
       tools: { [`a${"b".repeat(63)}`]: { fn: one } },
     })).toThrow("at most 63 UTF-8 bytes");
     expect(() => mcp({
       name: "invalid_title",
-      auth: mcpAuth({ name: "invalid_title" }),
       path: "/invalid-title",
       tools: { long_title: { fn: longTitle } },
     })).toThrow("title exceeds 256 UTF-8 bytes");
     expect(() => mcp({
       name: "invalid_description",
-      auth: mcpAuth({ name: "invalid_description" }),
       path: "/invalid-description",
       tools: { long_description: { fn: longDescription } },
     })).toThrow("description exceeds 4096 UTF-8 bytes");

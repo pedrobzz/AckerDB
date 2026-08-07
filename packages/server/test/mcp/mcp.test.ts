@@ -21,9 +21,7 @@ import { ACKERDB_HTTP_ROUTES } from "../../src/transport/http-surface.ts";
 import {
   mcp as mcpDeclaration,
   finalizeMcpToolResult,
-  mcpAuth,
   type McpBuilder,
-  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -46,12 +44,6 @@ const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-/** Route and naming checks care about paths, not about authority. */
-const rawAuth = mcpAuth({ name: "raw" });
-const agentAuth = typedMcpAuth({ name: "agent" });
-const operationsAuth = typedMcpAuth({ name: "operations" });
-const valuesAuth = typedMcpAuth({ name: "values" });
 
 const listNotes = typedQuery({
   access: "public",
@@ -180,7 +172,6 @@ const echoValues = typedQuery({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   instructions: "Use the note tools for durable user notes.",
   metadata: {
     title: "Notes Agent",
@@ -194,7 +185,6 @@ const agentMcp = typedMcp({
 });
 const operationsMcp = typedMcp({
   name: "operations",
-  auth: operationsAuth,
   path: "/agents/operations",
   instructions: "Use the operations tools only for service status.",
   metadata: { title: "Operations Agent" },
@@ -210,7 +200,6 @@ const titledStatus = typedQuery({
 });
 const titledMcp = typedMcp({
   name: "titled",
-  auth: typedMcpAuth({ name: "titled" }),
   path: "/mcp/titled",
   tools: {
     titled_status: {
@@ -227,7 +216,6 @@ const titledMcp = typedMcp({
 });
 const valuesMcp = typedMcp({
   name: "values",
-  auth: valuesAuth,
   path: "/mcp/values",
   tools: { echo_values: { fn: echoValues, access: "public" } },
 });
@@ -909,7 +897,6 @@ describe("MCP startup invariants", () => {
     });
     const endpoint = typedMcp({
       name: "prototype_fields",
-      auth: typedMcpAuth({ name: "prototype_fields" }),
       path: "/prototype/fields",
       tools: { prototype_fields: { fn: prototypeFields, access: "public" } },
     });
@@ -954,7 +941,6 @@ describe("MCP startup invariants", () => {
       });
       expect(() => typedMcp({
         name: `invalid_shape_${index}`,
-        auth: typedMcpAuth({ name: `invalid_shape_${index}` }),
         path: `/invalid/shape-${index}`,
         tools: { invalid_shape: { fn: invalidShape, access: "public" } },
       })).toThrow(message);
@@ -969,29 +955,28 @@ describe("MCP startup invariants", () => {
     });
     expect(() => typedMcp({
       name: "invalid_output",
-      auth: typedMcpAuth({ name: "invalid_output" }),
       path: "/invalid/output",
       tools: { invalid_output: { fn: invalidOutput, access: "public" } },
     })).toThrow("$.value[]: v.scheduleAt() is not a standard-JSON value");
   });
 
   test("rejects two declarations that claim the default route", () => {
-    const other = mcpDeclaration({ auth: rawAuth, name: "other", tools: {} });
+    const other = mcpDeclaration({ name: "other", tools: {} });
     expect(() => new Registry({ agent: { agentMcp }, other: { other } })).toThrow(
       'both use path "/mcp"',
     );
   });
 
   test("rejects duplicate stable names independently of paths and export order", () => {
-    const duplicateName = mcpDeclaration({ auth: rawAuth, name: "agent", path: "/other", tools: {} });
+    const duplicateName = mcpDeclaration({ name: "agent", path: "/other", tools: {} });
     expect(() => new Registry({ z: { duplicateName }, agent: { agentMcp } })).toThrow(
       'duplicate MCP name "agent"',
     );
   });
 
   test("rejects duplicate custom paths deterministically", () => {
-    const alpha = mcpDeclaration({ auth: rawAuth, name: "alpha", path: "/shared/mcp", tools: {} });
-    const zeta = mcpDeclaration({ auth: rawAuth, name: "zeta", path: "/shared/mcp", tools: {} });
+    const alpha = mcpDeclaration({ name: "alpha", path: "/shared/mcp", tools: {} });
+    const zeta = mcpDeclaration({ name: "zeta", path: "/shared/mcp", tools: {} });
     expect(() => new Registry({ z: { zeta }, a: { alpha } })).toThrow(
       'MCP "zeta" and "alpha" both use path "/shared/mcp"',
     );
@@ -1000,7 +985,7 @@ describe("MCP startup invariants", () => {
   test("rejects every path owned by the AckerDB listener", () => {
     for (const path of Object.values(ACKERDB_HTTP_ROUTES)) {
       const declare = () => new Registry({
-        endpoint: { collision: mcpDeclaration({ auth: rawAuth, name: "collision", path, tools: {} }) },
+        endpoint: { collision: mcpDeclaration({ name: "collision", path, tools: {} }) },
       });
       // A dotted route — the document endpoint's file extension — is not even a
       // spellable MCP path, so it is refused before a registry compares it.
@@ -1014,36 +999,36 @@ describe("MCP startup invariants", () => {
 
   test("rejects non-canonical paths and bounds declaration guidance", () => {
     for (const path of ["mcp", "/", "//mcp", "/mcp/", "/mcp?mode=1", "/mcp tools", "/a/../mcp"]) {
-      expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path, tools: {} })).toThrow(
+      expect(() => mcpDeclaration({ name: "invalid", path, tools: {} })).toThrow(
         "MCP path must be an absolute static path",
       );
     }
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path: `/${"a".repeat(257)}`, tools: {} })).toThrow(
+    expect(() => mcpDeclaration({ name: "invalid", path: `/${"a".repeat(257)}`, tools: {} })).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path: null, tools: {} } as never)).toThrow(
+    expect(() => mcpDeclaration({ name: "invalid", path: null, tools: {} } as never)).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", pth: "/custom", tools: {} } as never)).toThrow(
+    expect(() => mcpDeclaration({ name: "invalid", pth: "/custom", tools: {} } as never)).toThrow(
       'unknown MCP config field "pth"',
     );
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
+    expect(() => mcpDeclaration({ name: "invalid",
       instructions: "x".repeat(16 * 1_024 + 1),
       tools: {},
     })).toThrow("MCP instructions must be at most 16384 UTF-8 bytes");
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
+    expect(() => mcpDeclaration({ name: "invalid",
       metadata: { description: "x".repeat(4 * 1_024) },
       tools: {},
     })).toThrow("MCP metadata must be at most 4096 UTF-8 bytes");
-    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
+    expect(() => mcpDeclaration({ name: "invalid",
       metadata: { websiteUrl: "relative/path" },
       tools: {},
     })).toThrow("MCP metadata websiteUrl must be an absolute URL");
   });
 
   test("keeps stable identity independent from path changes", () => {
-    const original = mcpDeclaration({ auth: rawAuth, name: "stable", path: "/first", tools: {} });
-    const moved = mcpDeclaration({ auth: rawAuth, name: "stable", path: "/second", tools: {} });
+    const original = mcpDeclaration({ name: "stable", path: "/first", tools: {} });
+    const moved = mcpDeclaration({ name: "stable", path: "/second", tools: {} });
     expect(original.name).toBe(moved.name);
     expect(original.path).not.toBe(moved.path);
   });

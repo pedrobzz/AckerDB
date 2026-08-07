@@ -805,6 +805,7 @@ describe("Runtime telemetry acceptance", () => {
     const principal = Object.freeze({
       kind: "user",
       identity: 42n as Identity,
+      scopes: [],
       issuer: "https://identity.test",
       subject: "private-subject",
       claims: Object.freeze({ role: "private-claim" }),

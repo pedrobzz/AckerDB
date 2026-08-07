@@ -60,6 +60,7 @@ export {
   httpPathForAddress,
   DEFAULT_API_PATH,
   EVENTS_NAMESPACE,
+  RESERVED_MARKER,
   type DefaultApiPath,
 } from "./refs.ts";
 export * from "./protocol.ts";

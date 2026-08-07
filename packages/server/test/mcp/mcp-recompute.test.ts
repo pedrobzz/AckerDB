@@ -16,8 +16,6 @@ import {
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
-  type McpAuthBuilder,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -57,7 +55,6 @@ const schema = defineSchema({
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
 const statusReturns = v.object({ status: v.string() });
 
@@ -91,10 +88,8 @@ const emitSignal = typedProcedure({
   },
 });
 
-const actionsAuth = typedMcpAuth({ name: "actions" });
 const actionsMcp = typedMcp({
   name: "actions",
-  auth: actionsAuth,
   path: "/actions/mcp",
   tools: {
     add_record: { fn: addRecord },
@@ -157,6 +152,7 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject,

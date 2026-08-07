@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "../auth/credentials.ts";
+import { CREDENTIAL_ISSUER } from "../auth/credential-token.ts";
+import { isScopeGrant } from "../auth/scopes.ts";
+import { effectiveChildScopes } from "../auth/child-credentials.ts";
 import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
 import type { ProcedureCtx } from "../app/functions.ts";
 import type {
@@ -14,10 +17,7 @@ import type {
   McpCallToolResult,
   McpJsonValue,
 } from "./content.ts";
-import {
-  isMcpToolAuthorized,
-  normalizeMcpScopeGrant,
-} from "./scopes.ts";
+import { isMcpToolAuthorized } from "./tool-access.ts";
 import type { Schema } from "../schema/definition.ts";
 import type {
   StandardJsonInput,
@@ -121,6 +121,8 @@ export type McpAiToolsOptions<Scope extends string = never> =
   | McpAiToolsCompleteOptions<Scope>;
 
 export interface McpAiRuntimeCapability {
+  /** The known scope vocabulary; a local delegation must draw from it. */
+  readonly vocabulary: readonly string[];
   readonly toolsFor: (
     mcp: AnyMcpDeclaration,
   ) => readonly AnyRegisteredMcpTool[] | undefined;
@@ -137,15 +139,8 @@ interface BoundMcpAiCapability extends McpAiRuntimeCapability {
   readonly assertActive: () => void;
 }
 
-interface McpLocalAuthority {
-  readonly principal: Principal;
-  readonly mcp: AnyMcpDeclaration;
-  readonly scopes: readonly string[];
-}
-
 const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
 const capabilities = new WeakMap<McpAiContext, BoundMcpAiCapability>();
-const localAuthority = new AsyncLocalStorage<McpLocalAuthority>();
 
 /** Bind same-process MCP authority to one Runtime-owned server-function lifecycle. */
 export function bindMcpAiContext(
@@ -168,28 +163,6 @@ export function bindMcpAiContext(
     active = false;
     if (capabilities.get(context) === bound) capabilities.delete(context);
   };
-}
-
-/** Run one local call with an immutable grant bound to its exact parent and MCP. */
-export function withMcpLocalAuthority<T>(
-  principal: Principal,
-  mcp: AnyMcpDeclaration,
-  scopes: readonly string[],
-  work: () => T,
-): T {
-  return localAuthority.run(Object.freeze({ principal, mcp, scopes }), work);
-}
-
-/** Resolve the local grant without allowing it to leak to another context or endpoint. */
-export function mcpLocalGrant(
-  principal: Principal,
-  mcp: McpEndpointDeclaration,
-): readonly string[] | undefined {
-  const authority = localAuthority.getStore();
-  if (authority === undefined) return undefined;
-  return authority.principal === principal && authority.mcp === mcp
-    ? authority.scopes
-    : EMPTY_SCOPES;
 }
 
 interface NormalizedMcpAiToolsOptions {
@@ -222,39 +195,32 @@ function normalizeOptions(
   ) {
     throw new TypeError("MCP AI tools includeUnavailable must be a boolean");
   }
-  if (mcp.auth.scopes === undefined) {
-    if ("scopes" in value) {
-      throw new TypeError(`MCP "${mcp.name}" declares no scopes`);
-    }
-    return Object.freeze({
-      includeUnavailable: value.includeUnavailable ?? false,
-      scopes: EMPTY_SCOPES,
-    });
-  }
-  let scopes: readonly string[];
-  try {
-    scopes = normalizeMcpScopeGrant(
-      mcp.auth.scopes,
-      value.scopes ?? EMPTY_SCOPES,
-      `MCP "${mcp.name}" local scopes`,
+  const scopes = value.scopes ?? EMPTY_SCOPES;
+  if (!isScopeGrant(scopes)) {
+    throw new TypeError(
+      `MCP "${mcp.name}" local scopes must be an array of unique scope strings`,
     );
-  } catch (error) {
-    if (error instanceof AckerDBError) throw new TypeError(error.message);
-    throw error;
   }
   return Object.freeze({
     includeUnavailable: value.includeUnavailable ?? false,
-    scopes,
+    scopes: Object.freeze([...scopes]),
   });
 }
 
+/**
+ * A server-side procedure delegates the APPLICATION's authority to the model,
+ * so an interactive user principal grants exactly what it asked for. A
+ * credential-backed principal is delegated authority itself: its local grant
+ * intersects with the credential's, because authority never exceeds its source.
+ */
 function effectiveGrant(
   principal: Principal,
   requested: readonly string[],
 ): readonly string[] {
-  if (principal.kind === "user") return requested;
-  if (principal.kind !== "mcp") return EMPTY_SCOPES;
-  return Object.freeze(requested.filter((scope) => principal.scopes.includes(scope)));
+  if (principal.kind !== "user") return EMPTY_SCOPES;
+  return principal.issuer === CREDENTIAL_ISSUER
+    ? effectiveChildScopes(requested, principal.scopes)
+    : requested;
 }
 
 function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
@@ -325,18 +291,19 @@ export function createMcpAiTools(
     throw new TypeError(`MCP "${mcp.name}" is not exported by this Runtime`);
   }
   const normalized = normalizeOptions(mcp, options);
+  for (const scope of normalized.scopes) {
+    if (!capability.vocabulary.includes(scope)) {
+      throw new TypeError(
+        `MCP "${mcp.name}" local scopes contains undeclared scope ${JSON.stringify(scope)}`,
+      );
+    }
+  }
   const scopes = effectiveGrant(context.auth, normalized.scopes);
-  const endpointAvailable = context.auth.kind !== "mcp" ||
-    context.auth.mcp === mcp.auth.name;
 
   const runInParent = AsyncLocalStorage.snapshot();
   const tools: Record<string, McpAiTool> = Object.create(null) as Record<string, McpAiTool>;
   for (const tool of registered) {
-    const available = endpointAvailable && isMcpToolAuthorized(
-      tool.accessPolicy,
-      context.auth,
-      scopes,
-    );
+    const available = isMcpToolAuthorized(tool.accessPolicy, context.auth, scopes);
     if (!available && !normalized.includeUnavailable) continue;
     tools[tool.name] = Object.freeze({
       ...(tool.title === undefined ? {} : { title: tool.title }),

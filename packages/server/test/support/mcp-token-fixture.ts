@@ -9,6 +9,7 @@ import {
   type SubscribeMessage,
 } from "@ackerdb/core";
 import type { CredentialVerifier, UserPrincipal } from "../../src/auth/credentials.ts";
+import { credentials } from "../../src/auth/credential-context.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -24,8 +25,6 @@ import {
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
-  type McpAuthBuilder,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -48,19 +47,15 @@ const schema = defineSchema({
   }),
 });
 
+/** The application scope vocabulary every fixture credential draws from. */
+export const FIXTURE_SCOPES = ["orders.all", "orders.get", "reports.all"] as const;
+
 export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
 export const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 export const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-export const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
-export const agentAuth = typedMcpAuth({ name: "agent" });
-export const operationsAuth = typedMcpAuth({ name: "operations" });
-export const scopedAuth = typedMcpAuth({
-  name: "scoped",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
-});
-const invalidUpdateKind = v.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
+const invalidUpdateKind = v.enum("InvalidCredentialUpdateKind", ["empty", "undefined"]);
 
 const writeOwnedRecord = typedProcedure({
   description: "Write a row owned by the delegated Identity.",
@@ -68,15 +63,17 @@ const writeOwnedRecord = typedProcedure({
   args: { value: v.string() },
   returns: v.object({ principal: v.string(), record: v.string(), tokenId: v.string() }),
   handler: async (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user") throw new Error("expected a first-class user principal");
     const identity = ctx.auth.identity;
+    const tokenId = ctx.auth.tokenId;
+    if (tokenId === null) throw new Error("expected a credential-backed principal");
     const inserted = await ctx.tx((tx) =>
       tx.db.records.insert({ owner: identity, value: args.value }));
     if (!inserted.ok) throw new Error("insert failed");
     return {
       principal: `${ctx.auth.kind}:${identity}`,
       record: `ackerdb://records/${inserted.data}`,
-      tokenId: ctx.auth.tokenId,
+      tokenId,
     };
   },
 });
@@ -88,9 +85,11 @@ const attemptSelfAdministration = typedProcedure({
   returns: v.object({ status: v.string() }),
   handler: async (ctx) => {
     const done = await ctx.tx((tx) => {
-      agentAuth.tokens.list(tx);
-      agentAuth.tokens.create(tx, { name: "escalated", metadata: {} });
-      return { status: "unexpected" };
+      credentials.list(tx);
+      // Chained delegation: an agent may mint a sub-credential, but only a
+      // subset of its own grant — over-delegation is a typed error.
+      credentials.create(tx, { name: "escalated", scopes: ["orders.all"] });
+      return { status: "over-delegated" };
     });
     if (!done.ok) throw new Error("administration unexpectedly failed");
     return done.data;
@@ -141,7 +140,6 @@ const exactAllTool = typedQuery({
 
 export const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   path: "/agent/mcp",
   tools: {
     attempt_self_administration: { fn: attemptSelfAdministration },
@@ -150,13 +148,11 @@ export const agentMcp = typedMcp({
 });
 const operationsMcp = typedMcp({
   name: "operations",
-  auth: operationsAuth,
   path: "/operations/mcp",
   tools: {},
 });
 export const scopedMcp = typedMcp({
   name: "scoped",
-  auth: scopedAuth,
   path: "/scoped/mcp",
   tools: {
     admin_orders: { fn: exactAllTool, access: { anyOf: ["orders.all"] } },
@@ -176,20 +172,20 @@ const createAgentToken = typedMutation({
   },
   handler: (ctx, args) => {
     escapedOwnerContext = ctx;
-    return agentAuth.tokens.create(ctx, args);
+    return credentials.create(ctx, args);
   },
 });
 
 const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => agentAuth.tokens.list(ctx),
+  handler: (ctx) => credentials.list(ctx),
 });
 
 const renameAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string(), name: v.string() },
-  handler: (ctx, args) => agentAuth.tokens.update(ctx, args.id, { name: args.name }),
+  handler: (ctx, args) => credentials.update(ctx, args.id, { name: args.name }),
 });
 
 const updateAgentTokenMetadata = typedMutation({
@@ -198,13 +194,13 @@ const updateAgentTokenMetadata = typedMutation({
     id: v.string(),
     metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
-  handler: (ctx, args) => agentAuth.tokens.update(ctx, args.id, { metadata: args.metadata }),
+  handler: (ctx, args) => credentials.update(ctx, args.id, { metadata: args.metadata }),
 });
 
 const invalidAgentTokenUpdate = typedMutation({
   access: "authenticated",
   args: { id: v.string(), kind: invalidUpdateKind },
-  handler: (ctx, args) => agentAuth.tokens.update(
+  handler: (ctx, args) => credentials.update(
     ctx,
     args.id,
     (args.kind === "empty" ? {} : { name: undefined }) as never,
@@ -214,49 +210,31 @@ const invalidAgentTokenUpdate = typedMutation({
 const revokeAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => agentAuth.tokens.revoke(ctx, args.id),
-});
-
-const renameOperationsToken = typedMutation({
-  access: "authenticated",
-  args: { id: v.string(), name: v.string() },
-  handler: (ctx, args) => operationsAuth.tokens.update(ctx, args.id, { name: args.name }),
-});
-
-const revokeOperationsToken = typedMutation({
-  access: "authenticated",
-  args: { id: v.string() },
-  handler: (ctx, args) => operationsAuth.tokens.revoke(ctx, args.id),
-});
-
-const listOperationsTokens = typedQuery({
-  access: "authenticated",
-  args: {},
-  handler: (ctx) => operationsAuth.tokens.list(ctx),
+  handler: (ctx, args) => credentials.revoke(ctx, args.id),
 });
 
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
     name: v.string(),
-    scopes: v.array(scopedAuth.scopes),
+    scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => scopedAuth.tokens.create(ctx, args),
+  handler: (ctx, args) => credentials.create(ctx, args),
 });
 
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
     id: v.string(),
-    scopes: v.array(scopedAuth.scopes),
+    scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => scopedAuth.tokens.updateScopes(ctx, args.id, args.scopes),
+  handler: (ctx, args) => credentials.updateScopes(ctx, args.id, args.scopes),
 });
 
 const listScopedTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => scopedAuth.tokens.list(ctx),
+  handler: (ctx) => credentials.list(ctx),
 });
 
 const normalProcedure = typedProcedure({
@@ -281,12 +259,9 @@ const modules = {
     createScopedToken,
     invalidAgentTokenUpdate,
     listAgentTokens,
-    listOperationsTokens,
     listScopedTokens,
     renameAgentToken,
-    renameOperationsToken,
     revokeAgentToken,
-    revokeOperationsToken,
     updateAgentTokenMetadata,
     updateScopedToken,
   },
@@ -305,6 +280,7 @@ export interface McpTokenFixtureOptions {
   readonly limits?: ServiceLimits;
   readonly now?: RuntimeOptions["now"];
   readonly telemetry?: RuntimeOptions["telemetry"];
+  readonly resolveScopes?: RuntimeOptions["resolveScopes"];
 }
 
 export function databasePath(prefix: string): string {
@@ -325,11 +301,15 @@ export function fixture(
     engine,
     registry: new Registry({ ...modules, ...extraModules }),
     verifier,
+    scopes: FIXTURE_SCOPES,
+    // Parent identities hold the full vocabulary unless a test narrows it,
+    // so child-credential intersections read a real issuer grant.
+    resolveScopes: options.resolveScopes ?? (() => FIXTURE_SCOPES),
     telemetry: options.telemetry ?? false,
     ...(options.now === undefined ? {} : { now: options.now }),
     limits: options.limits ?? {
       ...PRODUCTION_LIMITS,
-      mcp: { ...PRODUCTION_LIMITS.mcp, maxTokensPerIdentity: 2 },
+      credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
     },
   });
   let closed = false;
@@ -357,10 +337,15 @@ export function retainedOwnerContext(): MutationCtx<typeof schema> | null {
   return escapedOwnerContext;
 }
 
-export async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
+export async function user(
+  runtime: Runtime,
+  subject: string,
+  scopes: readonly string[] = [],
+): Promise<UserPrincipal> {
   const identity = await runtime.resolveIdentity({ issuer: "https://issuer.test/", subject });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([...scopes]),
     identity,
     issuer: "https://issuer.test/",
     subject,

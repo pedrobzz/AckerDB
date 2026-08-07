@@ -4,6 +4,7 @@ import type {
   Principal,
   PrincipalInvalidation,
 } from "./credentials.ts";
+import { VAULT_CREDENTIAL_AUTHORITY } from "./credential-token.ts";
 
 const AUTH_INVALIDATION_SCOPE: unique symbol = Symbol("ackerdb.authInvalidationScope");
 export const SUBSCRIBE_AUTH_INVALIDATION: unique symbol = Symbol("ackerdb.subscribeAuthInvalidation");
@@ -49,11 +50,15 @@ export function subscribeAuthInvalidation(
 export class AuthInvalidationBoundary {
   readonly verifier: CredentialVerifier | undefined;
   private readonly listeners = new Map<AuthInvalidationScope, InvalidationListener>();
+  private readonly directListeners = new Set<InvalidationListener>();
 
   constructor(source: CredentialVerifier | undefined) {
     this.verifier = source === undefined
       ? undefined
       : Object.freeze({
+          ...((source as { [VAULT_CREDENTIAL_AUTHORITY]?: boolean })[VAULT_CREDENTIAL_AUTHORITY] === true
+            ? { [VAULT_CREDENTIAL_AUTHORITY]: true }
+            : {}),
           revocationBound: source.revocationBound,
           verify: (credential: string) => source.verify(credential),
           subscribeInvalidation: (listener: InvalidationListener) =>
@@ -77,7 +82,24 @@ export class AuthInvalidationBoundary {
       }
       this.deliver(listener, invalidation);
     }
+    for (const listener of [...this.directListeners]) this.deliver(listener, invalidation);
     return excluded;
+  }
+
+  /**
+   * Runtime-owned subscription to boundary-published account invalidations,
+   * present even when no application verifier is configured. It is how a
+   * credential revocation or grant change reaches a live lease: the vault has
+   * no upstream provider to publish through.
+   */
+  subscribeDirect(listener: InvalidationListener): () => void {
+    this.directListeners.add(listener);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.directListeners.delete(listener);
+    };
   }
 
   /** Deliver after response handoff only if the exact originating subscription is still active. */

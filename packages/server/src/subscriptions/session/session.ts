@@ -620,6 +620,7 @@ export class Session {
       this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
       () => this.readNow(),
+      this.runtime.resolveScopes,
     );
     if (signal?.aborted) throw signal.reason;
     return principal;
@@ -644,7 +645,8 @@ export class Session {
     if (
       principal.kind === "anonymous" ||
       principal.kind === "system" ||
-      principal.kind === "mcp"
+      // Vault credentials never expire; invalidation revokes them instead.
+      !Number.isFinite(principal.expiresAt)
     ) return;
     const schedule = () => {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;

@@ -5,7 +5,7 @@ import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
-import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp } from "../../src/mcp/index.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   claimsReservedName,
@@ -113,7 +113,6 @@ describe("HTTP-exposed function paths", () => {
     // for the one surface that picks its path by hand.
     const squatter = mcp({
       name: "squatter",
-      auth: mcpAuth({ name: "squatter" }),
       path: "/api/_realtime",
       tools: {},
     });
@@ -123,7 +122,6 @@ describe("HTTP-exposed function paths", () => {
     // A path that really is a built-in route says so instead.
     const collider = mcp({
       name: "collider",
-      auth: mcpAuth({ name: "collider" }),
       path: "/_ws",
       tools: {},
     });
@@ -135,7 +133,6 @@ describe("HTTP-exposed function paths", () => {
   test("refuses a path claimed by both a function and an MCP endpoint, in either order", () => {
     const endpoint = mcp({
       name: "agent",
-      auth: mcpAuth({ name: "agent" }),
       path: "/api/notes/echo",
       tools: {},
     });
@@ -194,7 +191,6 @@ describe("raw http handler routes", () => {
   test("refuses a path claimed by both a handler and an MCP endpoint, in either order", () => {
     const endpoint = mcp({
       name: "agent",
-      auth: mcpAuth({ name: "agent" }),
       path: "/api/hooks/stripe",
       tools: {},
     });
