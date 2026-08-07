@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine } from "../../src/database/engine.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { advanceFrameworkSnapshot } from "../../src/schema/migrations/framework.ts";
+import { planFrameworkMigrations } from "../../src/schema/migrations/framework.ts";
 import { canonicalSnapshotJson, snapshotOf } from "../../src/schema/snapshot.ts";
 import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 import { defineSchema, defineTable, Schema, TableDef } from "../../src/schema/definition.ts";
@@ -403,7 +403,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     // The CLI never opens an Engine; its pure advance must land on exactly the
     // snapshot the server commits, or a developer is asked to migrate a table
     // they do not declare.
-    expect(canonicalSnapshotJson(advanceFrameworkSnapshot(stored)))
+    expect(canonicalSnapshotJson(planFrameworkMigrations(stored).snapshot))
       .toBe(canonicalSnapshotJson(engine.loadSnapshot()!));
     expect(canonicalSnapshotJson(engine.loadSnapshot()!))
       .toBe(canonicalSnapshotJson(snapshotOf(withFrameworkTables(application))));
@@ -447,7 +447,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
       const stored = peek.loadSnapshot()!;
       peek.close("clean");
 
-      const pre = generatedAgainst === "old" ? stored : advanceFrameworkSnapshot(stored);
+      const pre = generatedAgainst === "old" ? stored : planFrameworkMigrations(stored).snapshot;
       const target = generatedAgainst === "old"
         ? {
             version: 2 as const,

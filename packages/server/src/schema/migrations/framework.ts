@@ -45,29 +45,29 @@ export interface FrameworkMigration {
  */
 export const FRAMEWORK_MIGRATIONS: readonly FrameworkMigration[] = [SPLIT_JOBS_INTO_RUNS];
 
-/** The suffix of framework migrations a stored snapshot still needs. */
-export function pendingFrameworkMigrations(stored: SchemaSnapshot): FrameworkMigration[] {
-  const pending: FrameworkMigration[] = [];
-  let current = stored;
-  for (const migration of FRAMEWORK_MIGRATIONS) {
-    if (!migration.applies(current)) continue;
-    pending.push(migration);
-    current = targetOf(current, migration);
-  }
-  return pending;
+export interface FrameworkMigrationPlan {
+  /** The migrations this stored snapshot still needs, oldest first. */
+  readonly pending: readonly FrameworkMigration[];
+  /** The snapshot the server will store once it opens this database. */
+  readonly snapshot: SchemaSnapshot;
 }
 
 /**
- * The snapshot the server will store once it opens this database: `stored`
- * advanced through every pending framework migration. Pure — the CLI diffs
- * against it so a developer is never asked to migrate a framework table.
+ * What a stored snapshot still owes the framework, and where that leaves it.
+ * Pure: the CLI diffs against `snapshot` so a developer is never asked to
+ * migrate a framework table, and the chain-free reconcile entry refuses on
+ * `pending` by name instead of reporting the framework's tables as unanswered
+ * refusals.
  */
-export function advanceFrameworkSnapshot(stored: SchemaSnapshot): SchemaSnapshot {
-  let current = stored;
+export function planFrameworkMigrations(stored: SchemaSnapshot): FrameworkMigrationPlan {
+  const pending: FrameworkMigration[] = [];
+  let snapshot = stored;
   for (const migration of FRAMEWORK_MIGRATIONS) {
-    if (migration.applies(current)) current = targetOf(current, migration);
+    if (!migration.applies(snapshot)) continue;
+    pending.push(migration);
+    snapshot = targetOf(snapshot, migration);
   }
-  return current;
+  return { pending, snapshot };
 }
 
 /**

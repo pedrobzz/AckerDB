@@ -279,9 +279,9 @@ export {
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
 export {
-  advanceFrameworkSnapshot,
-  pendingFrameworkMigrations,
+  planFrameworkMigrations,
   type FrameworkMigration,
+  type FrameworkMigrationPlan,
 } from "./schema/migrations/framework.ts";
 export {
   applyRenames,
