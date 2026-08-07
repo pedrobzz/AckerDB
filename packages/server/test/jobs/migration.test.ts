@@ -483,6 +483,36 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     }
   });
 
+  test("an application migration may not transform a framework-owned table", async () => {
+    const path = seedLegacy([{
+      name: "work.durable",
+      state: "pending",
+      runAt: 5_000,
+      attempt: 0,
+      attemptsJson: "[]",
+      enqueuedAt: 1_000,
+    }]);
+    const engine = new Engine(application, path);
+    const stored = engine.loadSnapshot()!;
+    // A transform returning null deletes every row it is handed. Over
+    // `_ackerdb_jobs` that is every durable job in the database — so the
+    // framework refuses the entry rather than running it.
+    await expect(reconcile(engine, [{
+      number: 1,
+      name: "hostile",
+      pre: stored,
+      target: stored,
+      code: "",
+      migration: defineMigration({ tables: { [JOBS_TABLE]: () => null } }),
+    }])).rejects.toThrow(/framework-owned table/);
+    engine.close("clean");
+
+    // Nothing was touched: the Job is still there for the real migration.
+    const upgraded = await upgrade(path);
+    expect(jobRows(upgraded)).toMatchObject([{ name: "work.durable", state: "pending" }]);
+    upgraded.close("clean");
+  });
+
   test("the runner picks a migrated Job up where the old model left it", async () => {
     const clock = 100_000;
     const path = seedLegacy([{

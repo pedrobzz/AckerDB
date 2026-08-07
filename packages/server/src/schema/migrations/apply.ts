@@ -161,7 +161,7 @@ export async function applyStep(
   const targetPlans = buildTargetPlans(target, stepTags);
   const planOf = (t: string): PhysicalTablePlan => targetPlans.get(t)!;
 
-  validateEntries(renames.renamedCurrent, targetPlans, refusals, entries);
+  validateEntries(renames.renamedCurrent, targetPlans, refusals, entries, owner);
 
   // A surviving table with an entry is rebuilt from its new plan; a table the
   // schema no longer keeps is dropped (after an optional salvage transform).
@@ -321,7 +321,21 @@ function validateEntries(
   targetPlans: Map<string, PhysicalTablePlan>,
   refusals: SchemaRefusal[],
   entries: Record<string, RowTransform | null>,
+  owner: StepOwner,
 ): void {
+  // Ownership is a rule about writes, not only about shapes. Pinning keeps an
+  // application step from *reshaping* a framework table; this keeps it from
+  // rebuilding one — a transform over `_ackerdb_jobs` returning `null` would
+  // delete every durable job, which is precisely the promise ADR-0018 makes.
+  if (owner === "application") {
+    const framework = Object.keys(entries).filter(isFrameworkTable).sort();
+    if (framework.length > 0) {
+      throw new MigrationError(
+        `migration transforms framework-owned table(s): ${framework.join(", ")}. ` +
+          "The framework migrates its own tables; remove the entry.",
+      );
+    }
+  }
   const missing = [...new Set(refusals.map((r) => r.table))].filter((t) => !Object.hasOwn(entries, t)).sort();
   if (missing.length > 0) {
     throw new MigrationError(`migration is missing a transform for refused table(s): ${missing.join(", ")}`);
