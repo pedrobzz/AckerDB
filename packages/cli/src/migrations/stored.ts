@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { AppliedMigrationRow, SchemaSnapshot } from "@ackerdb/server";
+import { advanceFrameworkSnapshot, type AppliedMigrationRow, type SchemaSnapshot } from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 
 export interface StoredState {
@@ -42,7 +42,12 @@ export function readStoredState(config: AppConfig): StoredState | null {
         identity: string;
       }[]
     ).map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
-    return { snapshot: JSON.parse(row.value) as SchemaSnapshot, applied };
+    // Advanced through any pending framework migration: the server applies
+    // those to its own tables the moment it opens this database, so they are
+    // the pre-state a new migration will actually sit on — and a developer is
+    // never asked to answer a refusal on a table they do not declare.
+    const snapshot = advanceFrameworkSnapshot(JSON.parse(row.value) as SchemaSnapshot);
+    return { snapshot, applied };
   } finally {
     db.close();
   }
