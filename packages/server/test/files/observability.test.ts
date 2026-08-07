@@ -226,10 +226,17 @@ describe("File observability", () => {
     expect(runtime.status().files.upload.latencyMs.max).toBeGreaterThanOrEqual(0);
     expect(runtime.status().files.download.latencyMs.max).toBeGreaterThanOrEqual(0);
 
-    await eventually(() => telemetryRecords.some((record) =>
-      record.kind === "metric" &&
-      record.name === "runtime.file_download_bytes" &&
-      record.value === 11));
+    // Each metric below is emitted on its own path — the active-bytes gauge, the
+    // rejected upload, the missing download — so waiting for one says nothing
+    // about the others. Wait for every record this test asserts on, or a host
+    // slow enough to interleave the flushes fails an assertion that is true.
+    const recorded = (name: string, value: number) => telemetryRecords.some((record) =>
+      record.kind === "metric" && record.name === name && record.value === value);
+    await eventually(() =>
+      recorded("runtime.file_download_bytes", 11) &&
+      recorded("runtime.file_active_bytes", 11) &&
+      recorded("runtime.file_upload_outcomes", 1) &&
+      recorded("runtime.file_download_outcomes", 1));
     const metrics = telemetryRecords.filter(
       (record): record is TelemetryMetricRecord => record.kind === "metric",
     );
