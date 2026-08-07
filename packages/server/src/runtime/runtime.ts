@@ -174,6 +174,8 @@ export class Runtime implements RuntimePort {
   private readonly sampler: RuntimeSampler;
   private readonly control: RuntimeControl;
   private readonly applicationSignals: ApplicationSignals;
+  /** Releases this Runtime's claim on the durable sink of its Telemetry. */
+  private readonly detachDurableSink: () => void;
 
   constructor(options: RuntimeOptions) {
     if (options.telemetryExporters !== undefined) {
@@ -278,297 +280,308 @@ export class Runtime implements RuntimePort {
     // constructed; the closures bind lazily because the read-model owners
     // construct after telemetry. An instance already carrying a sink is
     // rejected inside attach: silent read-model divergence is not a mode.
-    this.telemetry.attachDurableSink({
+    // The lease is released when this Runtime's stores stop accepting
+    // writes; on any construction failure past this point the claim on a
+    // caller-owned instance is released too.
+    this.detachDurableSink = this.telemetry.attachDurableSink({
       span: (record) => void this.telemetrySpans.append(record),
       event: (record) => this.applicationSignals.framework(record),
     });
-    this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
-    this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
-      this.telemetry,
-      this.tracing,
-      (clientSessionId) => digest(clientSessionId),
-    );
-    this.deliveryObserver = this.deliveryTelemetry.observer;
-    this.operations = new RuntimeOperationRunner({
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
-      admit: (session, fairnessKey, sessionOrder) =>
-        this.control.admit(session, fairnessKey, sessionOrder),
-      captureError: (error, functionName, traceId) => {
-        try {
-          this.telemetryErrors.ingest({
-            error,
-            timestampMs: this.now(),
-            ...(functionName === undefined ? {} : { functionAddress: functionName }),
-            ...(traceId === undefined ? {} : { traceId }),
-          });
-        } catch {
-          // Error capture is diagnostic; the failing operation owns the outcome.
-        }
-      },
-    });
-    if (
-      options.telemetryJournal instanceof TelemetryJournal &&
-      options.telemetryStore instanceof TelemetryStore &&
-      options.telemetryJournal.store !== options.telemetryStore
-    ) {
-      throw new TypeError("Runtime telemetryJournal must live in the provided telemetryStore");
-    }
-    const ownsTelemetryStore = !(options.telemetryStore instanceof TelemetryStore) &&
-      !(options.telemetryJournal instanceof TelemetryJournal);
-    this.telemetryStore = options.telemetryJournal instanceof TelemetryJournal
-      ? options.telemetryJournal.store
-      : options.telemetryStore instanceof TelemetryStore
-        ? options.telemetryStore
-        : new TelemetryStore({
-            path: this.engine.path === ":memory:"
-              ? ":memory:"
-              : telemetryStorePath(this.engine.path),
-            now: this.now,
-            ...options.telemetryStore,
-          });
-    const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
-    this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
-      ? options.telemetryJournal
-      : new TelemetryJournal({
-          store: this.telemetryStore,
-          ...options.telemetryJournal,
-        });
-    if (this.telemetryJournal.snapshot().state !== "ready") {
-      throw new TypeError("Runtime requires a ready telemetry journal");
-    }
-    this.telemetryJournal.onPersist(() => this.telemetryInvalidation.notify());
-    this.telemetrySpans = new TelemetrySpanStore({ store: this.telemetryStore });
-    this.telemetrySpans.onPersist(() => this.telemetryInvalidation.notify());
-    this.telemetryErrors = new TelemetryErrorStore({ store: this.telemetryStore });
-    this.applicationSignals = new ApplicationSignals(
-      this.telemetryJournal,
-      this.now,
-      () => this.tracing.applicationLogContext(),
-    );
-    this.log = this.applicationSignals.log;
-    this.telemetryExporters = options.telemetryExporters === undefined
-      ? undefined
-      : new TelemetryJournalExporters({
-          journal: this.telemetryJournal,
-          ...options.telemetryExporters,
-        });
-    this.reads = new RuntimeReadExecutor({
-      engine: this.engine,
-      limits: this.limits,
-      now: this.now,
-      telemetryEnabled: this.telemetry.enabled,
-      tracing: this.tracing,
-    });
-    this.reactive = new OrderedReactive<RuntimeReactiveContext>({
-      limits: this.limits,
-      initialVersion: this.engine.commitVersion(),
-      now: this.now,
-      evaluate: (input) => this.queries.evaluate(input),
-      ...(this.telemetry.enabled ? { observer: this.tracing.observeReactive } : {}),
-    });
-    this.functions = new RuntimeFunctionExecutor({
-      engine: this.engine,
-      registry: this.registry,
-      limits: this.limits,
-      reads: this.reads,
-      reactive: this.reactive,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      applicationSignals: this.applicationSignals,
-      log: this.log,
-      pluginRuntime: this.pluginRuntime,
-      credentialVerifier: this.credentialVerifier,
-      ...(options.scopes === undefined ? {} : { scopes: options.scopes }),
-      publishCredentialInvalidations: (accounts) => {
-        for (const account of accounts) this.authInvalidation.publishAccount(account);
-      },
-      ...(hasMcpCapabilities
-        ? {
-            mcp: {
-              bindAiContext: (context, fairnessKey, requestBytes) =>
-                this.mcp.bindAiContext(context, fairnessKey, requestBytes),
-            },
+    try {
+      this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
+      this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
+        this.telemetry,
+        this.tracing,
+        (clientSessionId) => digest(clientSessionId),
+      );
+      this.deliveryObserver = this.deliveryTelemetry.observer;
+      this.operations = new RuntimeOperationRunner({
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+        assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
+        admit: (session, fairnessKey, sessionOrder) =>
+          this.control.admit(session, fairnessKey, sessionOrder),
+        captureError: (error, functionName, traceId) => {
+          try {
+            this.telemetryErrors.ingest({
+              error,
+              timestampMs: this.now(),
+              ...(functionName === undefined ? {} : { functionAddress: functionName }),
+              ...(traceId === undefined ? {} : { traceId }),
+            });
+          } catch {
+            // Error capture is diagnostic; the failing operation owns the outcome.
           }
-        : {}),
-      armJobs: () => this.jobs.arm(),
-      jobs: () => this.jobs,
-      files: this.files,
-      fileLifecycleSignal: () => this.control.shutdownSignal,
-      hooks: options.hooks,
-      now: this.now,
-    });
-    this.queries = new RuntimeQueries({
-      registry: this.registry,
-      reads: this.reads,
-      functions: this.functions,
-      shutdownSignal: () => this.control.shutdownSignal,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-    });
-    this.fileHttp = new FileHttpRuntime({
-      files: this.files,
-      now: this.now,
-      lifecycleSignal: () => this.control.shutdownSignal,
-      read: (signal, work) => this.functions.filesRead(signal, work),
-      write: (signal, work) => this.functions.filesWrite(signal, work),
-      authorize: (address, args, principal, fairnessKey, signal) =>
-        this.queries.execute(address, args, principal, fairnessKey, signal, 1),
-    });
-    this.fileCleanup = new FileCleanupRuntime({
-      files: this.files,
-      now: this.now,
-      read: (signal, work) => this.functions.filesRead(signal, work),
-      write: (signal, work) => this.functions.filesWrite(signal, work, { waitForRecovery: false }),
-    });
-    this.http = new RuntimeHttp({
-      registry: this.registry,
-      limits: this.limits,
-      operations: this.operations,
-      functions: this.functions,
-      queries: this.queries,
-      authInvalidation: this.authInvalidation,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      admittedRequestBytes: (request, receivedBytes) =>
-        this.control.admittedRequestBytes(request, receivedBytes),
-      operationSignal: (signal) => this.control.operationSignal(signal),
-      admit: (fairnessKey) => this.control.admit(null, fairnessKey),
-      captureDeliveryObserver: () => this.deliveryTelemetry.capture(),
-      now: this.now,
-    });
-    this.mcp = new RuntimeMcp({
-      registry: this.registry,
-      ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
-      reads: this.reads,
-      functions: this.functions,
-      operations: this.operations,
-      now: this.now,
-      operationSignal: (signal) => this.control.operationSignal(signal),
-      admittedRequestBytes: (request, receivedBytes) =>
-        this.control.admittedRequestBytes(request, receivedBytes),
-      publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
-    });
-    const authCaptureControlReserve = Math.min(
-      this.limits.maxFrameBytes,
-      this.limits.webSocket.maxBytes - 1,
-    );
-    this.authCaptureBudget = new OutboundBudget(
-      this.limits.webSocket.maxBytes,
-      authCaptureControlReserve,
-    );
-    this.sessionStore = new RuntimeSessionStore({
-      limits: this.limits,
-      engine: this.engine,
-      registry: this.registry,
-      channels: this.channels,
-      reactive: this.reactive,
-      operations: this.operations,
-      authCaptureBudget: this.authCaptureBudget,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      ...(this.telemetry.enabled
-        ? { telemetryConnectionId: (clientSessionId) => digest(clientSessionId) }
-        : {}),
-      createChannelContext: (state, signal, requestBytes) =>
-        this.channelProcedureContext(state, signal, requestBytes),
-      observeConnectionCount: (connections) =>
-        this.telemetry.recordMetric({
-          name: "runtime.connections",
-          value: connections,
-          unit: "gauge",
+        },
+      });
+      if (
+        options.telemetryJournal instanceof TelemetryJournal &&
+        options.telemetryStore instanceof TelemetryStore &&
+        options.telemetryJournal.store !== options.telemetryStore
+      ) {
+        throw new TypeError("Runtime telemetryJournal must live in the provided telemetryStore");
+      }
+      const ownsTelemetryStore = !(options.telemetryStore instanceof TelemetryStore) &&
+        !(options.telemetryJournal instanceof TelemetryJournal);
+      this.telemetryStore = options.telemetryJournal instanceof TelemetryJournal
+        ? options.telemetryJournal.store
+        : options.telemetryStore instanceof TelemetryStore
+          ? options.telemetryStore
+          : new TelemetryStore({
+              path: this.engine.path === ":memory:"
+                ? ":memory:"
+                : telemetryStorePath(this.engine.path),
+              now: this.now,
+              ...options.telemetryStore,
+            });
+      const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
+      this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
+        ? options.telemetryJournal
+        : new TelemetryJournal({
+            store: this.telemetryStore,
+            ...options.telemetryJournal,
+          });
+      if (this.telemetryJournal.snapshot().state !== "ready") {
+        throw new TypeError("Runtime requires a ready telemetry journal");
+      }
+      this.telemetryJournal.onPersist(() => this.telemetryInvalidation.notify());
+      this.telemetrySpans = new TelemetrySpanStore({ store: this.telemetryStore });
+      this.telemetrySpans.onPersist(() => this.telemetryInvalidation.notify());
+      this.telemetryErrors = new TelemetryErrorStore({ store: this.telemetryStore });
+      this.applicationSignals = new ApplicationSignals(
+        this.telemetryJournal,
+        this.now,
+        () => this.tracing.applicationLogContext(),
+      );
+      this.log = this.applicationSignals.log;
+      this.telemetryExporters = options.telemetryExporters === undefined
+        ? undefined
+        : new TelemetryJournalExporters({
+            journal: this.telemetryJournal,
+            ...options.telemetryExporters,
+          });
+      this.reads = new RuntimeReadExecutor({
+        engine: this.engine,
+        limits: this.limits,
+        now: this.now,
+        telemetryEnabled: this.telemetry.enabled,
+        tracing: this.tracing,
+      });
+      this.reactive = new OrderedReactive<RuntimeReactiveContext>({
+        limits: this.limits,
+        initialVersion: this.engine.commitVersion(),
+        now: this.now,
+        evaluate: (input) => this.queries.evaluate(input),
+        ...(this.telemetry.enabled ? { observer: this.tracing.observeReactive } : {}),
+      });
+      this.functions = new RuntimeFunctionExecutor({
+        engine: this.engine,
+        registry: this.registry,
+        limits: this.limits,
+        reads: this.reads,
+        reactive: this.reactive,
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+        applicationSignals: this.applicationSignals,
+        log: this.log,
+        pluginRuntime: this.pluginRuntime,
+        credentialVerifier: this.credentialVerifier,
+        ...(options.scopes === undefined ? {} : { scopes: options.scopes }),
+        publishCredentialInvalidations: (accounts) => {
+          for (const account of accounts) this.authInvalidation.publishAccount(account);
+        },
+        ...(hasMcpCapabilities
+          ? {
+              mcp: {
+                bindAiContext: (context, fairnessKey, requestBytes) =>
+                  this.mcp.bindAiContext(context, fairnessKey, requestBytes),
+              },
+            }
+          : {}),
+        armJobs: () => this.jobs.arm(),
+        jobs: () => this.jobs,
+        files: this.files,
+        fileLifecycleSignal: () => this.control.shutdownSignal,
+        hooks: options.hooks,
+        now: this.now,
+      });
+      this.queries = new RuntimeQueries({
+        registry: this.registry,
+        reads: this.reads,
+        functions: this.functions,
+        shutdownSignal: () => this.control.shutdownSignal,
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+      });
+      this.fileHttp = new FileHttpRuntime({
+        files: this.files,
+        now: this.now,
+        lifecycleSignal: () => this.control.shutdownSignal,
+        read: (signal, work) => this.functions.filesRead(signal, work),
+        write: (signal, work) => this.functions.filesWrite(signal, work),
+        authorize: (address, args, principal, fairnessKey, signal) =>
+          this.queries.execute(address, args, principal, fairnessKey, signal, 1),
+      });
+      this.fileCleanup = new FileCleanupRuntime({
+        files: this.files,
+        now: this.now,
+        read: (signal, work) => this.functions.filesRead(signal, work),
+        write: (signal, work) => this.functions.filesWrite(signal, work, { waitForRecovery: false }),
+      });
+      this.http = new RuntimeHttp({
+        registry: this.registry,
+        limits: this.limits,
+        operations: this.operations,
+        functions: this.functions,
+        queries: this.queries,
+        authInvalidation: this.authInvalidation,
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+        admittedRequestBytes: (request, receivedBytes) =>
+          this.control.admittedRequestBytes(request, receivedBytes),
+        operationSignal: (signal) => this.control.operationSignal(signal),
+        admit: (fairnessKey) => this.control.admit(null, fairnessKey),
+        captureDeliveryObserver: () => this.deliveryTelemetry.capture(),
+        now: this.now,
+      });
+      this.mcp = new RuntimeMcp({
+        registry: this.registry,
+        ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
+        reads: this.reads,
+        functions: this.functions,
+        operations: this.operations,
+        now: this.now,
+        operationSignal: (signal) => this.control.operationSignal(signal),
+        admittedRequestBytes: (request, receivedBytes) =>
+          this.control.admittedRequestBytes(request, receivedBytes),
+        publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
+      });
+      const authCaptureControlReserve = Math.min(
+        this.limits.maxFrameBytes,
+        this.limits.webSocket.maxBytes - 1,
+      );
+      this.authCaptureBudget = new OutboundBudget(
+        this.limits.webSocket.maxBytes,
+        authCaptureControlReserve,
+      );
+      this.sessionStore = new RuntimeSessionStore({
+        limits: this.limits,
+        engine: this.engine,
+        registry: this.registry,
+        channels: this.channels,
+        reactive: this.reactive,
+        operations: this.operations,
+        authCaptureBudget: this.authCaptureBudget,
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+        ...(this.telemetry.enabled
+          ? { telemetryConnectionId: (clientSessionId) => digest(clientSessionId) }
+          : {}),
+        createChannelContext: (state, signal, requestBytes) =>
+          this.channelProcedureContext(state, signal, requestBytes),
+        observeConnectionCount: (connections) =>
+          this.telemetry.recordMetric({
+            name: "runtime.connections",
+            value: connections,
+            unit: "gauge",
+          }),
+      });
+      this.system = new RuntimeSystem({
+        functions: this.functions,
+        operations: this.operations,
+        telemetry: this.telemetry,
+        tracing: this.tracing,
+        invalidations: this.immediateProcedureInvalidations,
+        signal: (signal) => this.control.systemSignal(signal),
+        now: this.now,
+      });
+      this.jobs = new RuntimeJobs({
+        declared: options.jobs ?? [],
+        executor: this.functions,
+        reads: this.reads,
+        system: this.system,
+        telemetry: this.telemetry,
+        limits: this.limits.jobs,
+        now: this.now,
+        signal: () => this.control.shutdownSignal,
+        isReady: () => this.control.isReady,
+      });
+      this.control = new RuntimeControl({
+        limits: this.limits,
+        engine: this.engine,
+        telemetry: this.telemetry,
+        telemetryStore: this.telemetryStore,
+        telemetryJournal: this.telemetryJournal,
+        telemetrySpans: this.telemetrySpans,
+        ...(this.telemetryExporters === undefined
+          ? {}
+          : { telemetryExporters: this.telemetryExporters }),
+        ownsTelemetry,
+        ownsTelemetryStore,
+        ownsTelemetryJournal,
+        ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
+        ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
+        reads: this.reads,
+        functions: this.functions,
+        reactive: this.reactive,
+        sessions: this.sessionStore,
+        jobs: this.jobs,
+        fileCleanup: this.fileCleanup,
+        files: this.files,
+        authCaptureBudget: this.authCaptureBudget,
+        sseBudget: this.http.sseBudget,
+        sseProducers: this.http.sseProducers,
+        stopPeriodicTelemetry: () => {
+          this.sampler.stop();
+          this.telemetryInvalidation.stop();
+        },
+        releaseDurableSink: () => this.detachDurableSink(),
+        flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
+      });
+      this.sessionApplication = new RuntimeSessionApplication({
+        engine: this.engine,
+        registry: this.registry,
+        store: this.sessionStore,
+        functions: this.functions,
+        queries: this.queries,
+        reactive: this.reactive,
+        authInvalidation: this.authInvalidation,
+        operationSignal: (signal) => this.control.operationSignal(signal),
+        now: this.now,
+      });
+      this.sampler = new RuntimeSampler({
+        telemetry: this.telemetry,
+        isReady: () => this.control.isReady,
+        state: () => ({
+          connections: this.sessionStore.size,
+          activeOperations: this.control.activeOperationCount,
+          activeOperationCallers: this.control.activeCallerCount,
+          activeSse: this.http.sseProducers.size,
+          realtime: this.realtime?.snapshot() ?? null,
+          reader: this.reads.snapshot(),
+          writer: this.functions.snapshot(),
+          reactive: this.reactive.metricsSnapshot(),
+          publication: this.reactive.publication.snapshot(),
+          authCaptureBudget: this.authCaptureBudget.snapshot(),
+          sseBudget: this.http.sseBudget.snapshot(),
+          telemetry: this.telemetry.snapshot(),
+          files: this.files.observability.snapshot(),
+          storage: this.engine.status(),
         }),
-    });
-    this.system = new RuntimeSystem({
-      functions: this.functions,
-      operations: this.operations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      invalidations: this.immediateProcedureInvalidations,
-      signal: (signal) => this.control.systemSignal(signal),
-      now: this.now,
-    });
-    this.jobs = new RuntimeJobs({
-      declared: options.jobs ?? [],
-      executor: this.functions,
-      reads: this.reads,
-      system: this.system,
-      telemetry: this.telemetry,
-      limits: this.limits.jobs,
-      now: this.now,
-      signal: () => this.control.shutdownSignal,
-      isReady: () => this.control.isReady,
-    });
-    this.control = new RuntimeControl({
-      limits: this.limits,
-      engine: this.engine,
-      telemetry: this.telemetry,
-      telemetryStore: this.telemetryStore,
-      telemetryJournal: this.telemetryJournal,
-      telemetrySpans: this.telemetrySpans,
-      ...(this.telemetryExporters === undefined
-        ? {}
-        : { telemetryExporters: this.telemetryExporters }),
-      ownsTelemetry,
-      ownsTelemetryStore,
-      ownsTelemetryJournal,
-      ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
-      ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
-      reads: this.reads,
-      functions: this.functions,
-      reactive: this.reactive,
-      sessions: this.sessionStore,
-      jobs: this.jobs,
-      fileCleanup: this.fileCleanup,
-      files: this.files,
-      authCaptureBudget: this.authCaptureBudget,
-      sseBudget: this.http.sseBudget,
-      sseProducers: this.http.sseProducers,
-      stopPeriodicTelemetry: () => {
-        this.sampler.stop();
-        this.telemetryInvalidation.stop();
-      },
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.sessionApplication = new RuntimeSessionApplication({
-      engine: this.engine,
-      registry: this.registry,
-      store: this.sessionStore,
-      functions: this.functions,
-      queries: this.queries,
-      reactive: this.reactive,
-      authInvalidation: this.authInvalidation,
-      operationSignal: (signal) => this.control.operationSignal(signal),
-      now: this.now,
-    });
-    this.sampler = new RuntimeSampler({
-      telemetry: this.telemetry,
-      isReady: () => this.control.isReady,
-      state: () => ({
-        connections: this.sessionStore.size,
-        activeOperations: this.control.activeOperationCount,
-        activeOperationCallers: this.control.activeCallerCount,
-        activeSse: this.http.sseProducers.size,
-        realtime: this.realtime?.snapshot() ?? null,
-        reader: this.reads.snapshot(),
-        writer: this.functions.snapshot(),
-        reactive: this.reactive.metricsSnapshot(),
-        publication: this.reactive.publication.snapshot(),
-        authCaptureBudget: this.authCaptureBudget.snapshot(),
-        sseBudget: this.http.sseBudget.snapshot(),
-        telemetry: this.telemetry.snapshot(),
-        files: this.files.observability.snapshot(),
-        storage: this.engine.status(),
-      }),
-      sampleRealtime: () => {
-        void this.realtime?.sampleHealth(8);
-      },
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.sampler.start();
-    this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
-    void this.jobs.activate();
+        sampleRealtime: () => {
+          void this.realtime?.sampleHealth(8);
+        },
+        flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
+      });
+      this.sampler.start();
+      this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
+      void this.jobs.activate();
+    } catch (error) {
+      // A half-built Runtime must not keep its claim on a caller-owned
+      // Telemetry: release the durable-sink lease before failing.
+      this.detachDurableSink();
+      throw error;
+    }
   }
 
   get state(): RuntimeLifecycleState {
@@ -778,8 +791,10 @@ export class Runtime implements RuntimePort {
       await this.control.drain(deadlineAtMs);
     } finally {
       // Invalidations still propagate through the grace window; a drained
-      // Runtime then releases its standing verifier subscription.
+      // Runtime then releases its standing verifier subscription and — as a
+      // backstop to control's ordered release — the durable-sink lease.
       this.credentials.stop();
+      this.detachDurableSink();
     }
   }
 

@@ -301,16 +301,24 @@ export class Telemetry {
    * uses, injected or constructed; an instance already carrying a sink has
    * two would-be owners and is rejected loudly. Disabled telemetry records
    * nothing, durable or otherwise: attaching is an explicit no-op.
+   *
+   * Returns an idempotent detach lease: the attaching Runtime releases it
+   * when its stores stop accepting writes (drain, or a failed construction),
+   * so a caller-owned instance keeps recording cleanly and can serve a later
+   * Runtime.
    */
-  attachDurableSink(sink: TelemetryDurableSink): void {
+  attachDurableSink(sink: TelemetryDurableSink): () => void {
     const state = this.state;
-    if (!state) return;
+    if (!state) return () => {};
     if (state.durableSink !== undefined) {
       throw new TypeError(
         "this Telemetry already carries a durable sink — the Runtime owns the durable pipeline",
       );
     }
     state.durableSink = sink;
+    return () => {
+      if (state.durableSink === sink) state.durableSink = undefined;
+    };
   }
 
   [OPEN_OPERATION_TRACE](input: OperationTraceInput): OperationTraceHandle {

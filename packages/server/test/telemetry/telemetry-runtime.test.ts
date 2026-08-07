@@ -19,6 +19,8 @@ import {
   Registry,
   Runtime,
   Telemetry,
+  TelemetryJournal,
+  TelemetryStore,
   v,
   defineEventTable,
   defineSchema,
@@ -2293,6 +2295,87 @@ describe("Runtime telemetry acceptance", () => {
       .readBatch(0n, 1_000)
       .filter((entry) => entry.kind === "log" && entry.source === "framework");
     expect(frameworkLogs.length).toBeGreaterThan(0);
+  });
+
+  test("drain releases the durable sink; recording afterwards is a clean no-op", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const app = harness(telemetry);
+    const session = await app.openSession("telemetry-released");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 940_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    }))).toEqual([]);
+    await app.runtime.drain();
+    const drained = app.runtime.telemetrySpans.snapshot();
+
+    // The caller still owns the instance: recording keeps working and no
+    // longer reaches the closed read-model stores.
+    expect(telemetry.recordSpan({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "items.list",
+      durationMs: 1,
+      context: {
+        traceId: "0193a0e2-1111-7000-8000-000000000009",
+        spanId: "0193a0e2-2222-7000-8000-000000000009",
+      },
+    })).toBe(true);
+    expect(app.runtime.telemetrySpans.snapshot()).toEqual(drained);
+  });
+
+  test("one injected Telemetry serves two sequential Runtimes", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const first = harness(telemetry);
+    await first.runtime.drain();
+    harnesses.delete(first);
+    await first.close();
+
+    const second = harness(telemetry);
+    const session = await second.openSession("telemetry-reused");
+    expect(await second.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 950_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    }))).toEqual([]);
+    await second.runtime.telemetry.flush();
+    await second.runtime.telemetrySpans.flush();
+    expect(second.runtime.telemetrySpans.snapshot().storedSpans).toBeGreaterThan(0);
+  });
+
+  test("a failed Runtime construction releases the injected instance", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const journal = new TelemetryJournal({ store });
+    await journal.drain();
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-release-"));
+    const engine = new Engine(schema, join(directory, "data.db"));
+    try {
+      reconcile(engine);
+      // The drained journal fails construction AFTER the sink attached.
+      expect(() => new Runtime({
+        engine,
+        registry: new Registry(functions),
+        telemetry,
+        telemetryJournal: journal,
+      })).toThrow("ready telemetry journal");
+      // The failed Runtime released its claim: the instance serves a new one.
+      const runtime = new Runtime({
+        engine,
+        registry: new Registry(functions),
+        telemetry,
+      });
+      await runtime.drain();
+    } finally {
+      store.close();
+      engine.close("clean");
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("an injected Telemetry carrying its own durable sink is rejected", () => {

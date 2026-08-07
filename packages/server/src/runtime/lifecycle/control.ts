@@ -57,6 +57,8 @@ export interface RuntimeControlOptions {
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
   /** Stops the sampler and every other periodic telemetry emitter at drain start. */
   readonly stopPeriodicTelemetry: () => void;
+  /** Releases the durable-sink lease before the read-model store closes. */
+  readonly releaseDurableSink: () => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -316,6 +318,9 @@ export class RuntimeControl {
         await this.options.telemetryJournal.flush();
       }
       await this.options.telemetrySpans.drain();
+      // The stores stop accepting writes here: recording on a caller-owned
+      // Telemetry after this point must be a clean non-durable no-op.
+      this.options.releaseDurableSink();
       if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
@@ -372,6 +377,11 @@ export class RuntimeControl {
         }
         try {
           await this.options.telemetrySpans.drain();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        try {
+          this.options.releaseDurableSink();
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
