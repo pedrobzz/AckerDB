@@ -24,6 +24,13 @@ import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { serve, type AckerDBServer } from "../../src/transport/server.ts";
 import { deferred, waitForAbort, within } from "ackerdb-test-support/async";
 
+/**
+ * The Runtime holds one standing verifier subscription for its lifetime: the
+ * descendant-credential invalidation propagation. Lease subscriptions come
+ * and go on top of it, and drain releases it.
+ */
+const RUNTIME_SUBSCRIPTIONS = 1;
+
 async function eventually(check: () => boolean): Promise<void> {
   await within((async () => {
     while (!check()) await Bun.sleep(2);
@@ -222,19 +229,19 @@ describe("HTTP and SSE credential leases", () => {
     const response = await call("auth.identity", "user-success");
     expect(response.status).toBe(200);
     expect(decode(await response.text())).toBe("user-success");
-    expect(verifier.activeListeners).toBe(0);
-    expect(verifier.subscribeCalls).toBe(1);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS);
+    expect(verifier.subscribeCalls).toBe(RUNTIME_SUBSCRIPTIONS + 1);
     expect(verifier.unsubscribeCalls).toBe(1);
   });
 
   test("ignores unrelated invalidation then fails a live procedure closed on a match", async () => {
     const pending = call("auth.block", "user-revoked");
     await within(blockedProcedureStarted.promise);
-    expect(verifier.activeListeners).toBe(1);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS + 1);
 
     verifier.emit({ issuer: "https://issuer.example", subject: "someone-else" });
     await Bun.sleep(5);
-    expect(verifier.activeListeners).toBe(1);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS + 1);
 
     verifier.emit({
       issuer: "https://issuer.example",
@@ -247,7 +254,7 @@ describe("HTTP and SSE credential leases", () => {
       code: "unauthenticated",
       message: "credential revoked",
     });
-    expect(verifier.activeListeners).toBe(0);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS);
   });
 
   test("aborts a live procedure at the verified expiration timestamp", async () => {
@@ -261,7 +268,7 @@ describe("HTTP and SSE credential leases", () => {
       code: "unauthenticated",
       message: "credential expired",
     });
-    expect(verifier.activeListeners).toBe(0);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS);
   });
 
   test("owns an SSE lease through normal body completion", async () => {
@@ -271,7 +278,7 @@ describe("HTTP and SSE credential leases", () => {
     const reader = complete.body.getReader();
     const chunk = await readSseMessage(reader);
     expect(chunk).toMatchObject({ t: "sse_chunk", value: { phase: "once" } });
-    expect(verifier.activeListeners).toBe(1);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS + 1);
 
     const subscribed = verifier.subscribeCalls;
     expect((await acknowledgeSse(
@@ -286,7 +293,7 @@ describe("HTTP and SSE credential leases", () => {
     expect((await acknowledgeSse(base, streamId, terminal)).status).toBe(204);
     expect(await within(reader.read())).toEqual({ done: true, value: undefined });
     reader.releaseLock();
-    await eventually(() => verifier.activeListeners === 0);
+    await eventually(() => verifier.activeListeners === RUNTIME_SUBSCRIPTIONS);
   });
 
   test("releases an SSE lease when the response consumer cancels", async () => {
@@ -297,10 +304,10 @@ describe("HTTP and SSE credential leases", () => {
     expect(new TextDecoder().decode((await within(canceledReader.read())).value)).toContain(
       '"phase":"started"',
     );
-    expect(verifier.activeListeners).toBe(1);
+    expect(verifier.activeListeners).toBe(RUNTIME_SUBSCRIPTIONS + 1);
     const closed = canceledReader.read().catch(() => ({ done: true as const }));
     cancellation.abort("test cancellation");
-    await eventually(() => verifier.activeListeners === 0);
+    await eventually(() => verifier.activeListeners === RUNTIME_SUBSCRIPTIONS);
     await closed;
   });
 
@@ -315,7 +322,7 @@ describe("HTTP and SSE credential leases", () => {
       issuer: "https://issuer.example",
       subject: "user-stream-revoked",
     });
-    await eventually(() => verifier.activeListeners === 0);
+    await eventually(() => verifier.activeListeners === RUNTIME_SUBSCRIPTIONS);
     // The lease is released and the body ends. Note this is the same terminal
     // signal "owns an SSE lease through normal body completion" observes: at
     // the transport level a revoked stream is not distinguishable from a

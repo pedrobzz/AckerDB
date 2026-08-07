@@ -63,6 +63,7 @@ const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
 export class RuntimeCredentials {
   /** The one verifier the Runtime owns: vault credentials plus the app verifier. */
   readonly verifier: CredentialVerifier;
+  private stopPropagation: (() => void) | null = null;
 
   constructor(private readonly options: RuntimeCredentialsOptions) {
     const source = options.appVerifier;
@@ -130,9 +131,9 @@ export class RuntimeCredentials {
    * one invalidation story, two origins.
    */
   propagateExternalInvalidations(
-    subscribe: (listener: (invalidation: PrincipalInvalidation) => void) => void,
+    subscribe: (listener: (invalidation: PrincipalInvalidation) => void) => () => void,
   ): void {
-    subscribe((invalidation) => {
+    this.stopPropagation = subscribe((invalidation) => {
       // Vault-origin invalidations already staged their exact descendant
       // set; re-walking them would only echo.
       if (invalidation.issuer === CREDENTIAL_ISSUER) return;
@@ -145,6 +146,12 @@ export class RuntimeCredentials {
         );
       });
     });
+  }
+
+  /** Release the standing propagation subscription; a drained Runtime must not haunt a long-lived verifier. */
+  stop(): void {
+    this.stopPropagation?.();
+    this.stopPropagation = null;
   }
 
   private async publishDescendantInvalidations(

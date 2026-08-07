@@ -255,7 +255,7 @@ export class Runtime implements RuntimePort {
     if (this.authInvalidation.verifier !== undefined) {
       const verifier = this.authInvalidation.verifier;
       this.credentials.propagateExternalInvalidations(
-        (listener) => void verifier.subscribeInvalidation(listener),
+        (listener) => verifier.subscribeInvalidation(listener),
       );
     }
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
@@ -772,8 +772,14 @@ export class Runtime implements RuntimePort {
     return this.realtime.diagnostic(sessionId, owner);
   }
 
-  drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
-    return this.control.drain(deadlineAtMs);
+  async drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
+    try {
+      await this.control.drain(deadlineAtMs);
+    } finally {
+      // Invalidations still propagate through the grace window; a drained
+      // Runtime then releases its standing verifier subscription.
+      this.credentials.stop();
+    }
   }
 
   private realtimeApplication() {
