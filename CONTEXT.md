@@ -113,6 +113,51 @@ services start to the moment their cleanups finish. Every declared service
 starts exactly once per generation, and a development reload fully ends one
 generation before beginning the next.
 
+**Job definition** — A declared kind of durable application work, combining
+its handler with the policies governing its execution.
+_Avoid_: Job, job handler
+
+**Job** — One durable admission of a Job definition with canonical arguments,
+scheduling intent, and dedupe identity. A Job may own multiple Job runs before
+it reaches a terminal state.
+_Avoid_: Job record, job row, Job run
+
+**Job run** — One actual handler execution owned by a Job, from claim through
+settlement. A dedupe hit creates no Job run because no handler executes.
+_Avoid_: Job attempt, enqueue, dedupe hit
+
+**Retrying Job** — A non-terminal Job whose latest Job run failed and whose
+next Job run is durably scheduled by its retry policy.
+_Avoid_: Failed Job, pending Job
+
+**Failed Job** — A terminal Job whose latest Job run failed and whose retry
+policy admitted no further run.
+_Avoid_: Discarded Job, exhausted Job
+
+**Manual retry** — An administrator's instruction to give a Failed Job another
+Job run while preserving the Job's identity and run history.
+_Avoid_: Run again, replay
+
+**Run again** — An administrator's instruction to submit a terminal Job's
+arguments through its Job definition again. The definition's ordinary dedupe
+policy may resolve it to an existing Job and memoized outcome without creating
+a Job run.
+_Avoid_: Force run again, Manual retry
+
+**Force run again** — An administrator's instruction to give a terminal Job
+another Job run under the same identity and history, replacing any memoized
+outcome with the new run's outcome.
+_Avoid_: Duplicate Job, bypassed dedupe identity
+
+**Repeat policy** — The rule on a Job definition that decides whether and when
+another Job follows a terminal Job. It is not a separately owned schedule.
+_Avoid_: Schedule, cron job
+
+**Upcoming Job** — A future Job that already durably exists and is waiting for
+its execution time. A projected calendar occurrence is not an Upcoming Job, and
+its first Job run does not exist until the handler is claimed.
+_Avoid_: Upcoming run, forecast Job, projected occurrence
+
 **Plugin instance** — One configured occurrence of a plugin in an
 application. Each instance has its own identity and isolated state, even when
 several instances come from the same plugin definition. Every instance must
