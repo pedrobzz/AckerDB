@@ -113,6 +113,51 @@ services start to the moment their cleanups finish. Every declared service
 starts exactly once per generation, and a development reload fully ends one
 generation before beginning the next.
 
+**Job definition** — A declared kind of durable application work, combining
+its handler with the policies governing its execution.
+_Avoid_: Job, job handler
+
+**Job** — One durable admission of a Job definition with canonical arguments,
+scheduling intent, and dedupe identity. A Job may own multiple Job runs before
+it reaches a terminal state.
+_Avoid_: Job record, job row, Job run
+
+**Job run** — One actual handler execution owned by a Job, from claim through
+settlement. A dedupe hit creates no Job run because no handler executes.
+_Avoid_: Job attempt, enqueue, dedupe hit
+
+**Retrying Job** — A non-terminal Job whose latest Job run failed and whose
+next Job run is durably scheduled by its retry policy.
+_Avoid_: Failed Job, pending Job
+
+**Failed Job** — A terminal Job whose latest Job run failed and whose retry
+policy admitted no further run.
+_Avoid_: Discarded Job, exhausted Job
+
+**Manual retry** — An administrator's instruction to give a Failed Job another
+Job run while preserving the Job's identity and run history.
+_Avoid_: Run again, replay
+
+**Run again** — An administrator's instruction to submit a terminal Job's
+arguments through its Job definition again. The definition's ordinary dedupe
+policy may resolve it to an existing Job and memoized outcome without creating
+a Job run.
+_Avoid_: Force run again, Manual retry
+
+**Force run again** — An administrator's instruction to give a terminal Job
+another Job run under the same identity and history, replacing any memoized
+outcome with the new run's outcome.
+_Avoid_: Duplicate Job, bypassed dedupe identity
+
+**Repeat policy** — The rule on a Job definition that decides whether and when
+another Job follows a terminal Job. It is not a separately owned schedule.
+_Avoid_: Schedule, cron job
+
+**Upcoming Job** — A future Job that already durably exists and is waiting for
+its execution time. A projected calendar occurrence is not an Upcoming Job, and
+its first Job run does not exist until the handler is claimed.
+_Avoid_: Upcoming run, forecast Job, projected occurrence
+
 **Plugin instance** — One configured occurrence of a plugin in an
 application. Each instance has its own identity and isolated state, even when
 several instances come from the same plugin definition. Every instance must
@@ -211,6 +256,85 @@ _Avoid_: Application table, exporter queue
 **Telemetry exporter** — An isolated adapter that delivers the signal kinds a
 provider represents without changing application execution or other exporters.
 _Avoid_: Telemetry provider, application integration
+
+**Trace** — The tree of spans sharing one trace identifier, describing a single
+operation's execution from boundary to settlement across framework stages and
+nested application functions.
+_Avoid_: request log, execution history
+
+**Span** — One timed unit of work inside a trace: start, duration, and outcome,
+attached to a parent span so spans compose into a tree. All spans are
+framework-emitted; application code does not create spans.
+_Avoid_: timing event, log entry
+
+**Unattributed time** — The portion of a span's duration not covered by any
+child span: work the framework cannot observe inside an application function's
+body, such as external calls or computation. It marks where manual
+instrumentation would attach if it existed.
+_Avoid_: gap, overhead, missing time
+
+**Error group** — The durable identity of one distinct unhandled failure,
+keyed by a stack fingerprint. It accumulates occurrence counts and first/last
+seen times, never expires, and carries a two-state lifecycle: unresolved or
+resolved, where any new occurrence reopens a resolved group as regressed.
+Expected failure outcomes and handled, logged errors never form groups.
+_Avoid_: issue, error bucket, exception type
+
+**Error occurrence** — One capture of an unhandled failure joined to its error
+group: when it happened, in which function, and in which trace. Occurrences
+expire on the error retention clock; their group outlives them.
+_Avoid_: error event, error instance
+
+**Funnel** — An ordered sequence of analytics-event steps evaluated exactly,
+per durable Identity, within a conversion window: how many identities advanced
+through each step and which ones stalled where. Never sampled or approximated.
+_Avoid_: conversion pipeline, journey
+
+**Identity timeline** — The chronological record of one Identity's analytics
+events. It shows what that identity did, never an inferred profile or
+aggregated person attributes.
+_Avoid_: person timeline, user profile, person page
+
+**Pressure hint** — A static severity badge derived from a configured hard
+limit the runtime already enforces, shown when a resource approaches its cap.
+It is a reading of existing budgets, never a user-defined threshold, rule, or
+notification.
+_Avoid_: alert, alarm, threshold rule
+
+**Direct write** — A Studio operator's single-row insert, edit, or delete,
+validated by the table's schema and committed through the ordinary application
+transaction path, so reactivity and constraints apply exactly as they would to
+application code. Every direct write leaves a durable audit event naming the
+administrative identity.
+_Avoid_: raw write, manual SQL, database patch
+
+**Impersonated run** — A Studio function execution performed under a chosen
+application Identity by an administrative operator, so the function observes
+exactly what that identity would observe. Gated by its own scope and always
+audit-evented naming both the administrative and the impersonated identity.
+_Avoid_: act as user, sudo, identity switch
+
+**Visitor id** — The server-issued first-party identifier naming one browser
+or installation, always present so that abuse is attributable and anonymous
+activity is countable. It identifies a client, never a person: it is unreadable
+by application code, is never shared or correlated across sites, and carries no
+personal data. When a durable Identity is present it accompanies the Visitor
+id rather than being derived from it.
+_Avoid_: user id, device fingerprint, tracking id
+
+**First-party capture** — Client-side measurement that travels to the
+application's own origin over the connection the application already holds,
+carrying no cross-site identity, no stored network address, and no device
+fingerprint. It observes what a user does inside one application rather than
+who they are across the web, and it fails silently rather than degrading the
+application when a user blocks it.
+_Avoid_: tracking, telemetry beacon, analytics pixel
+
+**Live inventory** — A read of who is connected, listening, or joined right
+now, taken by walking the runtime's existing in-memory structures at call
+time. It observes ephemeral state without retaining or instrumenting it, and
+so has no history of its own and no effect on execution.
+_Avoid_: registry, presence table, connection log
 
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
@@ -1100,6 +1224,71 @@ migration question: the server stays down, nothing is written or persisted,
 and the state releases when the ledger changes — a rescued schema starts the
 server silently, a different ledger asks again, and generation stays available
 on demand.
+
+## Administration
+
+**Admin API** — The built-in administration surface every application carries:
+framework-declared functions that observe the application and administer it.
+It is the server side of administration, named for what it does rather than for
+any client that consumes it — Studio is one such client, not its owner.
+_Avoid_: Studio surface, system UDFs, dashboard API
+
+**Reserved marker** — The leading `_` that marks a name as the framework's own,
+across every namespace an application shares with it: API paths, HTTP roots, and
+scopes. An application may never declare a name carrying it, so the two
+vocabularies cannot collide.
+_Avoid_: Private prefix, system namespace, underscore convention
+
+**API path** — The named group a function is published in, deciding its
+generated binding and its HTTP root together. It is a grouping choice and never
+an access rule: who may call a function is decided by its access policy alone.
+Groups whose name begins with `_` belong to the framework.
+_Avoid_: Internal flag, private function, route prefix
+
+**Admin scope** — A scope in the framework's own reserved vocabulary, naming one
+verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB
+defines the whole vocabulary and an application never declares one.
+_Avoid_: Studio scope, system permission
+
+**Scope wildcard** — A pattern in a grant that stands for every scope it
+matches, resolved against the vocabulary known at the moment of the check. The
+pattern `*` deliberately excludes everything carrying the reserved marker, so
+the two vocabularies are only ever granted on purpose — an administrative
+identity holds both `*` and `_*`.
+_Avoid_: Role, superuser flag, permission group
+
+**Admin Credential** — The opaque credential that authenticates an
+administrative identity, distinct from any application user and from the system
+principal. Its authority is nothing more than the grant it holds: the patterns
+covering both the application vocabulary and the framework's reserved one. An
+application manages a single master Admin Credential by default, though the
+model admits more.
+_Avoid_: admin token, API key, master key
+
+**Agent Credential** — A credential issued for one external agent host, holding
+a chosen subset of an Admin Credential's authority. It is an ordinary child
+credential: an agent is a first-class identity, and its grant never exceeds its
+parent's, at issuance or afterwards.
+_Avoid_: MCP token, API key, service account
+
+## Studio
+
+**Studio** — The opt-in observability and administration client for one AckerDB
+application. It runs outside the application's process as a client on the public
+AckerDB client stack, authenticates with an Admin Credential rather than as an
+application user, and consumes only the Admin API. The name is provisional.
+_Avoid_: Dashboard, admin panel, embedded console
+
+**Log source** — The origin of a record in Studio's Logs stream: application
+(developer-authored application log records) or framework (framework-emitted
+diagnostic events made durable). Analytics events are never part of the Logs
+stream.
+_Avoid_: log kind, log channel
+
+**Live tail** — The Logs stream's default mode: the newest records arrive
+continuously, newest first. Reading pauses it — scrolling into history or
+pinning a time range — and resuming is one explicit action.
+_Avoid_: follow mode, streaming view
 
 ## Demo app (Savoria restaurant)
 
