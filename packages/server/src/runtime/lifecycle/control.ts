@@ -38,15 +38,46 @@ const DRAIN_RETRY_AFTER_MS = 1_000;
 const QUIESCENCE_GRACE_MS = 500;
 /**
  * The 32-bit timer horizon: a longer setTimeout delay overflows to ~1 ms and
- * fires almost immediately. Scheduled delays clamp to it — a shutdown
- * deadline more than ~24.8 days out simply cannot fire early, which is the
- * honest semantics for a shutdown bound.
+ * fires almost immediately. Each ARM clamps to it; a wake at the horizon is
+ * not expiry — the scheduler below re-arms until the budget is spent.
  */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** One timer delay: non-negative and inside the 32-bit horizon. */
 function timerDelay(remainingMs: number): number {
   return Math.min(MAX_TIMER_DELAY_MS, Math.max(0, remainingMs));
+}
+
+/**
+ * Schedule one expiry against a monotonic target. Every wake recomputes the
+ * remaining budget: positive re-arms (a horizon wake is a re-arm, never an
+ * expiry), non-positive fires `onExpire` — synchronously at scheduling when
+ * the target is already past. Returns a cancel that clears the armed timer;
+ * `maxDelayMs` exists so tests can exercise horizon wakes without waiting
+ * 24.8 days.
+ */
+export function scheduleMonotonicDeadline(
+  targetMonotonicMs: number,
+  onExpire: () => void,
+  maxDelayMs = MAX_TIMER_DELAY_MS,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+  const arm = (): void => {
+    if (cancelled) return;
+    const remainingMs = targetMonotonicMs - performance.now();
+    if (remainingMs <= 0) {
+      onExpire();
+      return;
+    }
+    timer = setTimeout(arm, Math.min(maxDelayMs, timerDelay(remainingMs)));
+    timer.unref?.();
+  };
+  arm();
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }
 const utf8 = new TextEncoder();
 
@@ -353,9 +384,9 @@ export class RuntimeControl {
       "runtime graceful shutdown deadline exceeded",
       { resource: "operation" },
     );
-    let timeout!: ReturnType<typeof setTimeout>;
+    let cancelDeadline!: () => void;
     const deadline = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
+      cancelDeadline = scheduleMonotonicDeadline(deadlineMonotonicMs, () => {
         deadlineReached = true;
         // Synchronous: an in-flight finalization that has not yet frozen its
         // terminal outcome must see this deadline as the failure.
@@ -363,16 +394,16 @@ export class RuntimeControl {
         this.shutdownController.abort(deadlineError);
         void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
-      }, timerDelay(deadlineMonotonicMs - performance.now()));
+      });
     });
     this.drainPromise = Promise.race([shutdownWork, deadline]).then(
       () => {
-        clearTimeout(timeout);
+        cancelDeadline();
         this.shutdownController.abort(draining);
         this.lifecycle = "stopped";
       },
       async (error) => {
-        clearTimeout(timeout);
+        cancelDeadline();
         deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
@@ -564,11 +595,13 @@ export class RuntimeControl {
         (error: unknown) => ({ ack: ackNow(), error }),
       ),
       new Promise<{ readonly ack: "none" }>((resolve) => {
-        const timer = setTimeout(
-          () => resolve({ ack: "none" as const }),
-          timerDelay(graceMonotonicMs - performance.now()),
-        );
-        timer.unref?.();
+        scheduleMonotonicDeadline(graceMonotonicMs, () => {
+          // Expiry yields one turn: work that has already settled (or
+          // settles within it) classifies by its own settlement — "none" is
+          // only for a drain that answers nothing at all.
+          const yielded = setTimeout(() => resolve({ ack: "none" as const }), 0);
+          yielded.unref?.();
+        });
       }),
     ]);
   }
@@ -577,21 +610,25 @@ export class RuntimeControl {
   private boundedBy<T>(work: T | Promise<T>, deadlineMonotonicMs: number): Promise<T> {
     if (!(work instanceof Promise)) return Promise.resolve(work);
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new AckerDBError(
-          "deadline_exceeded",
-          "telemetry finalization exceeded the shutdown deadline",
-          { resource: "operation" },
-        ));
-      }, timerDelay(deadlineMonotonicMs - performance.now()));
-      timer.unref?.();
+      const cancel = scheduleMonotonicDeadline(deadlineMonotonicMs, () => {
+        // Expiry yields one turn: work already settled (or settling within
+        // it) wins its own race instead of being rejected retroactively.
+        const yielded = setTimeout(() => {
+          reject(new AckerDBError(
+            "deadline_exceeded",
+            "telemetry finalization exceeded the shutdown deadline",
+            { resource: "operation" },
+          ));
+        }, 0);
+        yielded.unref?.();
+      });
       work.then(
         (value) => {
-          clearTimeout(timer);
+          cancel();
           resolve(value);
         },
         (error) => {
-          clearTimeout(timer);
+          cancel();
           reject(error);
         },
       );
