@@ -247,6 +247,7 @@ export class Runtime implements RuntimePort {
       ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
       subscribeInvalidation: (listener) => this.authInvalidation.subscribeDirect(listener),
       publishAccountInvalidation: (account) => void this.authInvalidation.publishAccount(account),
+      publishIssuerInvalidation: (issuer) => this.authInvalidation.publishIssuerInvalidation(issuer),
       revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
     });
     this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);

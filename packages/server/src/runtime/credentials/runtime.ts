@@ -55,6 +55,8 @@ export interface RuntimeCredentialsOptions {
   ) => () => void;
   /** Publishes one account invalidation through the same boundary channel. */
   readonly publishAccountInvalidation: (account: ExternalAccount) => void;
+  /** Publishes one issuer-wide invalidation: every principal of the issuer re-verifies. */
+  readonly publishIssuerInvalidation: (issuer: string) => void;
   readonly revocationDeadlineMs: number;
 }
 
@@ -133,18 +135,38 @@ export class RuntimeCredentials {
   propagateExternalInvalidations(
     subscribe: (listener: (invalidation: PrincipalInvalidation) => void) => () => void,
   ): void {
+    // Half the declared revocation bound budgets the exact lookup; the other
+    // half is headroom for fan-out and re-verification of the holders.
+    const lookupBudgetMs = Math.max(1, Math.floor(this.options.revocationDeadlineMs / 2));
     this.stopPropagation = subscribe((invalidation) => {
       // Vault-origin invalidations already staged their exact descendant
       // set; re-walking them would only echo.
       if (invalidation.issuer === CREDENTIAL_ISSUER) return;
-      void this.publishDescendantInvalidations(invalidation).catch((error) => {
-        // Descendants keep authority until their next verification if this
-        // read fails; say so instead of hiding it.
-        console.warn(
-          `[ackerdb] credential descendant invalidation for issuer ${invalidation.issuer} failed:`,
-          error,
-        );
-      });
+      // Fail CLOSED inside the revocation bound: if the exact descendant
+      // lookup cannot answer in time — saturated read queue, failing read —
+      // every credential holder re-verifies instead of any descendant
+      // keeping revoked authority. Over-invalidation is safe; staleness of
+      // a non-expiring credential is not.
+      let failedClosed = false;
+      const failClosed = (): void => {
+        if (failedClosed) return;
+        failedClosed = true;
+        this.options.publishIssuerInvalidation(CREDENTIAL_ISSUER);
+      };
+      const deadline = setTimeout(failClosed, lookupBudgetMs);
+      deadline.unref?.();
+      void this.publishDescendantInvalidations(invalidation).then(
+        () => clearTimeout(deadline),
+        (error) => {
+          clearTimeout(deadline);
+          failClosed();
+          console.warn(
+            `[ackerdb] credential descendant lookup for issuer ${invalidation.issuer} failed; ` +
+              "published an issuer-wide credential invalidation instead:",
+            error,
+          );
+        },
+      );
     });
   }
 

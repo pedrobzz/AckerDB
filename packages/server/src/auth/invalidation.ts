@@ -87,6 +87,17 @@ export class AuthInvalidationBoundary {
   }
 
   /**
+   * Publish one issuer-wide invalidation: every principal of the issuer
+   * re-verifies. The conservative fail-closed path when exact per-subject
+   * fan-out cannot be computed inside the revocation bound.
+   */
+  publishIssuerInvalidation(issuer: string): void {
+    const invalidation = Object.freeze({ issuer });
+    for (const [, listener] of [...this.listeners]) this.deliver(listener, invalidation);
+    for (const listener of [...this.directListeners]) this.deliver(listener, invalidation);
+  }
+
+  /**
    * Runtime-owned subscription to boundary-published account invalidations —
    * present even when no application verifier is configured, which is how
    * credential-token revocations and grant changes reach live leases.
