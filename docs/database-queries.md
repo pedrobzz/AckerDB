@@ -100,6 +100,115 @@ Pagination cursors are opaque, versioned encodings of the complete ordering
 tuple. Pass `nextCursor` back unchanged. AckerDB validates its arity, nullability,
 and value types against the query order and rejects malformed cursors.
 
+A page size normally arrives from a caller, so both of a page's bounds are the
+server's:
+
+- `pageSize` may not exceed `MAX_PAGE_SIZE` (256) rows. A larger one is
+  rejected rather than clamped, because silently returning a different page
+  than the one asked for is worse than saying no.
+- A page's rows may not exceed `MAX_PAGE_BYTES` (512 KiB) of stored value
+  bytes. This bound takes rows away, never fields: the page stops at the last
+  row that fits and its `nextCursor` resumes at the row that did not, so a
+  table with a few oversized rows costs a page its tail instead of costing the
+  whole delivery. A page always carries at least one row, so a single row above
+  the entire budget still advances the cursor.
+
+A shorter page is therefore normal, and `nextCursor` — never `items.length` —
+is what says whether more rows exist. On the client,
+[`usePaginatedQuery`](client-react.md#reactive-cursor-pagination) keeps a
+window of these pages live.
+
+## Serializable filters
+
+A `.where` callback is code, so it cannot cross a wire. When the rows a caller
+wants are chosen by the caller — a console, a saved view, a filter bar whose
+state lives in the URL — it sends a **filter expression** instead: a closed
+JSON vocabulary that the server validates and compiles into exactly the
+predicates a callback would have produced.
+
+A table declares the columns it accepts filters on, in the same shape a
+declared index uses:
+
+```ts
+import { filterableFields } from "@ackerdb/server";
+import { schema } from "./schema";
+
+export const logFilters = filterableFields(schema.tables.logs, [
+  "level",
+  "fn",
+  "durationMs",
+  "requestId",
+]);
+```
+
+The declaration is the boundary. A filter is an oracle — it reveals whether
+rows exist without returning them — so a column that is not declared is
+unknown to filtering even when the query returns it. Declaring an unknown or
+uncomparable column throws at startup; it is the developer's mistake, not a
+caller's.
+
+Validation returns its failures as data, so a query hands them straight back
+as an ordinary application error and a client renders them inline:
+
+```ts
+export const list = query({
+  args: { filter: v.any(), cursor: v.string().nullable(), pageSize: v.int() },
+  handler: async (ctx, args) => {
+    const filter = logFilters.validate(args.filter);
+    if (!filter.ok) return filter;
+
+    return await ctx.db.logs
+      .query()
+      .where(filter.data)
+      .orderBy((row) => row.id.desc())
+      .paginate({ cursor: args.cursor, pageSize: args.pageSize });
+  },
+});
+```
+
+The error is `filter.invalid` (400) carrying `issues`, one per offending node:
+`{ path: "$.all[1].value", message: "..." }`. The path locates the node from
+the expression root so a filter bar can attach each message to the control
+that produced it. See [Typed function results](function-results.md) for the
+Result contract this uses.
+
+An expression is either a clause or a group:
+
+```ts
+{ field: "level", op: "eq", value: "error" }
+{ field: "level", op: "anyOf", values: ["warn", "error"] }
+{ all: [
+    { field: "fn", op: "eq", value: "orders.create" },
+    { any: [
+        { field: "durationMs", op: "gt", value: 500 },
+        { field: "level", op: "eq", value: "error" },
+      ] },
+  ] }
+```
+
+- Comparison clauses are `eq`, `neq`, `gt`, `gte`, `lt`, `lte`. The ordered
+  four are accepted only by ordered column kinds — the same `lt`/`gt` set the
+  callback form exposes.
+- Membership clauses are `anyOf` and `noneOf`. `null` is not a member value.
+- `eq`/`neq` against `null` are presence tests on a nullable column. Following
+  SQL, `noneOf` excludes NULL rows; add `{ field, op: "eq", value: null }`
+  under an `any` group to keep them.
+- Groups are `all` (AND) and `any` (OR). **OR is in the contract from the
+  first version** — the predicate layer already composes AND, OR, and NOT, so
+  the serializable form mirrors it rather than describing something weaker.
+  An empty `all` matches every row and an empty `any` matches none, which is
+  also how `noneOf []` and `anyOf []` behave.
+- Bounds are `MAX_FILTER_DEPTH` (8) nested groups and `MAX_FILTER_NODES` (128)
+  clauses and groups. Exceeding either is an issue, not a throw.
+
+There is no index selection and no way to name one: indexes stay transparent
+and planner-owned (ADR-0008). Every value crosses its column's validator and
+storage codec before SQLite sees it, exactly as a callback's values do, and a
+validated filter is an ordinary predicate afterwards — it composes with more
+`.where` calls, ordering, aggregates, pagination, and reactive dependency
+recording. A filter is bound to the table that validated it; passing it to
+another table's query is a programmer error and throws.
+
 ## Transparent indexes
 
 Declare indexes structurally, without public names:

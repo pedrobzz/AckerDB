@@ -5,7 +5,7 @@ import { baseValidator } from "../../validation/validator.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
-type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
+export type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
 
 export type PredicateNode =
   | { readonly kind: "comparison"; readonly column: string; readonly op: ComparisonOperator; readonly value: unknown }
@@ -35,7 +35,8 @@ interface ColumnReferenceMeta {
 const predicates = new WeakMap<object, PredicateMeta>();
 const orders = new WeakMap<object, OrderMeta>();
 const columnReferences = new WeakMap<object, ColumnReferenceMeta>();
-const EQUATABLE_KINDS = new Set([
+/** Column kinds that carry `eq`, `ne`, and `in`. */
+export const EQUATABLE_KINDS: ReadonlySet<string> = new Set([
   "pk",
   "string",
   "int",
@@ -58,7 +59,8 @@ const ORDERABLE_KINDS = new Set([
   "scheduleAt",
   "boolean",
 ]);
-const ORDERED_KINDS = new Set([
+/** Column kinds that carry `lt`, `lte`, `gt`, `gte`, and `between`. */
+export const ORDERED_KINDS: ReadonlySet<string> = new Set([
   "pk",
   "string",
   "int",
@@ -114,13 +116,18 @@ function predicateMeta(value: unknown, owner: object, path: string): PredicateMe
   return meta;
 }
 
-interface PredicatePlanIngredients {
+export interface PredicatePlanIngredients {
   readonly columns: ReadonlyMap<string, ColumnPlan>;
   readonly table: TableDef;
   readonly displayName: string;
 }
 
-function toSqlPredicateValue(
+/**
+ * Check one logical predicate value against its column's validator and encode
+ * it for SQLite. Every predicate value reaches SQLite through here, whether a
+ * `.where` callback or a serializable filter produced it.
+ */
+export function toSqlPredicateValue(
   plan: PredicatePlanIngredients,
   column: string,
   value: unknown,
