@@ -1230,8 +1230,47 @@ _Avoid_: Studio surface, system UDFs, dashboard API
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
 across every namespace an application shares with it: API paths, HTTP roots, and
 scopes. An application may never declare a name carrying it, so the two
-vocabularies cannot collide.
+vocabularies cannot collide. Framework *tables* are the one exception: they
+carry the older `_ackerdb_` prefix (`_ackerdb_jobs`, `_ackerdb_credentials`,
+`_ackerdb_meta`, …), which is in released 0.16.0 data and cannot be unified
+without rewriting every existing database.
 _Avoid_: Private prefix, system namespace, underscore convention
+
+**Scope** — One named unit of authority in the single authorization vocabulary,
+opaque to the framework. A scope is the currency of both halves of that
+vocabulary: an application's own names, and the framework's `_`-marked ones.
+_Avoid_: Permission, role, claim
+
+**Scope vocabulary** — The complete set of scopes that exist: the application's,
+declared once in the manifest, plus the framework's, which AckerDB pre-declares.
+Nothing outside it can be granted or required, so every check is a membership
+test against a known set rather than string comparison against a guess.
+_Avoid_: Permission list, ACL
+
+**Scope grant** — What an Identity holds, written as patterns and resolved by
+expansion against the vocabulary known at the moment of the check. A grant may
+therefore cover a scope that did not exist when it was issued, and one covering
+nothing that exists grants nothing.
+_Avoid_: Permission set, role assignment
+
+**Scope requirement** — What a function or tool entry demands of its caller,
+always concrete: `anyOf` passes on one held scope, `allOf` on every one. A
+requirement never carries a wildcard — it names exactly what it needs, so it can
+be read and audited without knowing the vocabulary.
+_Avoid_: Guard, permission check
+
+**Identity credential** — An opaque bearer credential that *is* an Identity:
+issuing one mints an Identity, so its holder is a first-class user at every
+choke point rather than a second kind of caller. Its secret is shown once, at
+issuance, and only its digest is stored.
+_Avoid_: API token, service account, machine user
+
+**Child credential** — An identity credential issued by another Identity, whose
+authority is bounded by its issuer's at both ends: a scope the issuer does not
+hold cannot be delegated, and the child's live authority is intersected with its
+issuer's current grant on every use. A parent losing a scope narrows every
+descendant immediately, with no revocation sweep.
+_Avoid_: Sub-token, delegated key
 
 **API path** — The named group a function is published in, deciding its
 generated binding and its HTTP root together. It is a grouping choice and never
