@@ -918,12 +918,46 @@ describe("durability", () => {
     expect(jobRows()).toMatchObject([{ state: "retrying", deleteAfter: null }]);
 
     // The Job is alive and never reaped, but its settled runs are not history
-    // the operator asked to keep forever.
+    // the operator asked to keep forever — except the latest, which is the run
+    // its outcome is read from and only ever leaves with its Job.
     clock = 20_000_000 + 120_000;
     await runtime.runJobs();
     await Bun.sleep(10);
+    const surviving = runRows();
     expect(jobRows()).toHaveLength(1);
-    expect(runRows().filter((run) => run.state === "failed" && run.settledAt! < 20_120_000)).toHaveLength(0);
+    expect(surviving.map((run) => Number(run.number))).toEqual([Number(jobRows()[0]!.runCount)]);
+  });
+
+  test("a terminal Job never loses the run its outcome is read from", async () => {
+    clock = 25_000_000;
+    start(declareJobs({
+      work: {
+        brief: job({
+          kind: "mutation" as const,
+          args: { n: v.int() },
+          retention: 1_000,
+          handler: async (_tx: Ctx, args: Ctx) => `value:${args.n}`,
+        }),
+      },
+    }), limits({ claimBatchSize: 1 }));
+    // More expired Jobs than one sweep of the Job reaper can take, so the run
+    // reaper meets the leftovers' runs on its own.
+    for (let index = 0; index < 3; index++) {
+      await runtime.jobs.enqueue("work.brief", { n: index });
+      await runtime.runJobs();
+    }
+    expect(jobRows()).toHaveLength(3);
+
+    clock = 25_000_000 + 120_000;
+    await runtime.runJobs();
+    // Whatever the sweep managed, no surviving Job is left without its outcome.
+    for (const survivor of jobRows()) {
+      const outcome = runRows().find(
+        (run) => run.jobId === survivor.id && run.number === survivor.runCount,
+      );
+      expect(outcome).toBeDefined();
+      expect(outcome!.outputJson).toContain("value:");
+    }
   });
 });
 

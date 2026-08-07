@@ -965,11 +965,14 @@ export class RuntimeJobs {
     });
   }
 
+
   /**
    * Delete what retention has released: expired Jobs with the runs they own,
-   * then expired runs of Jobs that are still alive. Jobs go first, so a run a
-   * live Job's outcome is read from can never be the leftover of a Job the
-   * same sweep was about to remove.
+   * then expired runs that are only history. A Job's latest run is never
+   * history — it is the run its outcome is read from — so it is skipped and
+   * leaves only with its Job. That keeps the two sweeps independent: neither
+   * ordering nor either sweep's limit can leave a Job pointing at a run that
+   * is gone.
    */
   private async reap(signal: AbortSignal): Promise<void> {
     const now = this.options.now();
@@ -981,6 +984,8 @@ export class RuntimeJobs {
         await this.deleteWithRuns(surface, job.id);
       }
       for (const run of surface.runs.expired(now, limit)) {
+        const job = surface.jobs.byId(run.jobId);
+        if (job !== null && job.runCount === run.number) continue;
         await surface.runs.delete(run.id);
       }
     });
