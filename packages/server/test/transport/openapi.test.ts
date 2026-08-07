@@ -365,14 +365,14 @@ describe("openapi document", () => {
     // Acknowledgement is the contract: without it the receiver reads one event
     // and stalls out, so the response says so where a client generator reads.
     expect(stream.description).toContain("sse_ack");
-    expect(stream.description).toContain("/api/_sse/ack");
+    expect(stream.description).toContain("/_sse/ack");
     expect(stream.description).toContain("x-ackerdb-sse-max-stall-ms");
 
     expect(Object.keys(stream.headers)).toEqual([
       "x-ackerdb-sse-stream",
       "x-ackerdb-sse-max-stall-ms",
     ]);
-    expect(stream.headers["x-ackerdb-sse-stream"].description).toContain("/api/_sse/ack");
+    expect(stream.headers["x-ackerdb-sse-stream"].description).toContain("/_sse/ack");
   });
 
   test("refuses a document where two addresses claim one operationId", () => {

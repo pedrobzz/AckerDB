@@ -1007,7 +1007,7 @@ describe("MCP startup invariants", () => {
       expect(declare).toThrow(
         path.includes(".")
           ? "MCP path must be an absolute static path"
-          : `MCP "collision" path "${path}" collides with a AckerDB route`,
+          : `MCP "collision" path "${path}" collides with AckerDB route "${path}"`,
       );
     }
   });

@@ -262,7 +262,7 @@ function createApp(): App {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 // Counts SSE request traffic so reconnect/cancellation tests can prove no
 // hidden second stream ever starts. Resolves `fetch` at call time: after

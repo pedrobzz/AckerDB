@@ -174,7 +174,7 @@ describe("useRealtime", () => {
       },
       fetch: async (url, init) => {
         const path = new URL(url).pathname;
-        if (path === "/api/_realtime/prepare" && init?.method === "POST") {
+        if (path === "/_realtime/prepare" && init?.method === "POST") {
           return new Response(encode({
             v: PROTOCOL_VERSION,
             t: "realtime_prepared",
@@ -182,7 +182,7 @@ describe("useRealtime", () => {
             configuration: {},
           }));
         }
-        if (path === "/api/_realtime" && init?.method === "POST") {
+        if (path === "/_realtime" && init?.method === "POST") {
           offers++;
           return new Response(encode({
             v: PROTOCOL_VERSION,

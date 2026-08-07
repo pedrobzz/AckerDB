@@ -250,7 +250,7 @@ function acknowledgeSse(
   message: SseMessage,
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${base}/api/_sse/ack`, {
+  return fetch(`${base}/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
@@ -507,7 +507,7 @@ test("disabled telemetry adds no HTTP token or WebSocket auth-observer records",
     expect(response.status).toBe(200);
     await response.text();
 
-    const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     client.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -548,7 +548,7 @@ test("samples bounded Serve pressure during pre-hello and HTTP auth stalls witho
   let pendingHttp: Promise<Response | undefined> | undefined;
 
   try {
-    client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     client.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -679,7 +679,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
       dropped: { invalid: 0 },
     });
 
-    const hanging = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    const hanging = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     hanging.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -718,7 +718,7 @@ async function hello(
   clientSessionId: string,
   token: string,
 ): Promise<WsClient> {
-  const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+  const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
   client.send({
     v: PROTOCOL_VERSION,
     t: "hello",
@@ -773,7 +773,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
     await within(primary.closed());
     expectTailBaseline(app.runtime);
 
-    const failedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    const failedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     failedHello.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -839,7 +839,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
     await eventually(() => app.server.status().connections === 0);
     expectTailBaseline(app.runtime);
 
-    const closedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    const closedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     closedHello.send({
       v: PROTOCOL_VERSION,
       t: "hello",

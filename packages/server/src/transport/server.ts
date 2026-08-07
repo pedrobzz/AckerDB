@@ -105,7 +105,7 @@ export interface AckerDBServerOptions {
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
   /**
-   * Serve the OpenAPI document at `GET /api/_openapi.json`, published under this
+   * Serve the OpenAPI document at `GET /_openapi.json`, published under this
    * identity — the application's own name and version, which a listener that
    * never sees an app directory cannot derive. Absent (the default) leaves the
    * path a 404 like any other unclaimed route: the CLI export is the default way
@@ -123,7 +123,7 @@ export interface ServeOptions {
   readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
-  /** Identity of the document served at GET /api/_openapi.json; absent, that path is a 404. */
+  /** Identity of the document served at GET /_openapi.json; absent, that path is a 404. */
   readonly openapiEndpoint?: OpenApiInfo;
 }
 
@@ -1023,7 +1023,7 @@ export class AckerDBServer {
       }
       return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
     }
-    if (url.pathname.startsWith("/api/_files/")) {
+    if (url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.files}/`)) {
       if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
       if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
         return outcomeError(unavailableWhile(this.lifecycle));
