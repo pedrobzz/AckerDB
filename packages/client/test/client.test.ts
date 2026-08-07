@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PROTOCOL_VERSION,
+  apiGroup,
   decode,
   encode,
   parseClientMessage,
@@ -12,6 +13,7 @@ import {
   type Identity,
   type ServerMessage,
   type SseAckRequest,
+  type SseRef,
   type SubscriptionCursor,
 } from "@ackerdb/core";
 import {
@@ -111,9 +113,9 @@ function sseEvent(frame: unknown): string {
 /** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
 const SSE_ACK_PATH = "/api/_sse/ack";
 
-/** Address segments are path segments: "stream.ordered" streams from "/api/stream/ordered". */
-function ssePath(ref: string): string {
-  return `/api/${ref.replaceAll(".", "/")}`;
+/** The group is the root: "stream.ordered" streams from "/api/stream/ordered". */
+function ssePath(ref: string, group = "api"): string {
+  return `/${group}/${ref.replaceAll(".", "/")}`;
 }
 
 function isSseCall(url: string): boolean {
@@ -1221,6 +1223,25 @@ describe("AckerDBClient protocol 2 ownership", () => {
         .next().catch((error) => error),
     ).toMatchObject({ code: "malformed", resource: "sse" });
     framed.client.close();
+  });
+
+  test("streams from the root of the group its reference was taken from", async () => {
+    let streamUrl = "";
+    const { client } = createHarness({
+      fetch: async (url) => {
+        streamUrl = url;
+        return sseResponse([{ v: 5, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
+      },
+    });
+    // A generated binding carries its group; the address is unchanged by it.
+    const ref = apiGroup("internal").ops.tail as SseRef<Record<string, never>, string>;
+    await client.sse(ref, {})[Symbol.asyncIterator]().next();
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("ops.tail", "internal")}`);
+
+    // A raw address string carries no group and names the default one.
+    await client.sse("ops.tail", {})[Symbol.asyncIterator]().next();
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("ops.tail")}`);
+    client.close();
   });
 
   test("requires an exact 204 acknowledgment response", async () => {

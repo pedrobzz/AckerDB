@@ -8,7 +8,7 @@ import {
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
-  refuseInternalDeclaration,
+  refuseApiPathDeclaration,
   type ArgsInput,
   type Invocable,
   type ProcedureCtx,
@@ -304,7 +304,7 @@ export const channel: ChannelBuilder<Schema> = <
   AuthorizationReturn,
   Schema
 > => {
-  refuseInternalDeclaration(definition, "a channel");
+  refuseApiPathDeclaration(definition, "a channel");
   if (!isAccessPolicy(definition.access)) {
     throw new TypeError(
       "channel access must be public, authenticated, system, or a policy callback",

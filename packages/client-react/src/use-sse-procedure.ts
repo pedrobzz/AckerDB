@@ -1,6 +1,7 @@
 import {
   AckerDBClientError,
   getRef,
+  refApiPath,
   type AckerDBCallOptions,
   type SseRef,
 } from "@ackerdb/client";
@@ -33,7 +34,10 @@ export function useSseProcedure<A, Chunk>(
   ref: SseRef<A, Chunk> | string,
 ): SseProcedureCall<A, Chunk> {
   const client = useProviderClient("useSseProcedure");
+  // The address identifies the callable; the group travels with it, because a
+  // group decides which root the stream is fetched from.
   const address = getRef(ref);
+  const apiPath = refApiPath(ref);
   return useCallback<SseProcedureCall<A, Chunk>>(
     (args, options = {}) => {
       if (client === null) {
@@ -65,10 +69,12 @@ export function useSseProcedure<A, Chunk>(
         }
       }
       return sseReadableStream<Chunk>(
-        client.sse<A, Chunk>(address, args, { signal: abort.signal }),
+        client.sse<A, Chunk>({ $ref: address, $apiPath: apiPath }, args, {
+          signal: abort.signal,
+        }),
         abort,
       );
     },
-    [client, address],
+    [client, address, apiPath],
   );
 }

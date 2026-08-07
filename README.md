@@ -56,11 +56,10 @@ your-app/
   `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
-  A query, mutation, or procedure may also declare `internal: true`: it keeps
-  its full contract but has no client-facing address — erased from the
-  generated `api` tree, published on `internal.*` for server-side callers,
-  and treated by every transport exactly as a name that never existed
-  (ADR-0021).
+  A declaration may also name its `apiPath`: the group it is published in,
+  deciding its generated binding and its HTTP root together — `"internal"`
+  gives `internal.*` and `/internal/*`, and `"api"` is the default. Grouping
+  and routing only; `access` alone decides who may call (ADR-0023).
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs

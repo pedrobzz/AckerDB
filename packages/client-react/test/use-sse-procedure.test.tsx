@@ -3,7 +3,7 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@ackerdb/core";
+import { apiGroup, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
   Engine,
@@ -41,6 +41,17 @@ let unmountHoldReleased = deferred<void>();
 function registry(): Registry {
   return new Registry({
     stream: {
+      /** Published in another group, so its root is `/internal/` not `/api/`. */
+      grouped: sseProcedure({
+        apiPath: "internal",
+        access: "public",
+        http: true,
+        args: {},
+        yields: v.object({ tick: v.int() }),
+        handler: async function* () {
+          yield { tick: 0 };
+        },
+      }),
       ticks: sseProcedure({
         access: "public",
         http: true,
@@ -106,7 +117,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  }, ["internal"]);
 }
 
 interface App {
@@ -167,7 +178,11 @@ interface Mounted {
   unmount(): void;
 }
 
-async function mountSse(base: string, address: string, log: string[] = []): Promise<Mounted> {
+async function mountSse(
+  base: string,
+  address: SseRef<Record<string, unknown>, Record<string, unknown>> | string,
+  log: string[] = [],
+): Promise<Mounted> {
   const calls: AnyCall[] = [];
   let phase = "";
   let bump: () => void = () => {};
@@ -225,13 +240,37 @@ afterEach(() => {
   while (roots.length > 0) roots.pop()!.unmount();
 });
 
-async function mount(address: string, log: string[] = []): Promise<Mounted> {
+async function mount(
+  address: SseRef<Record<string, unknown>, Record<string, unknown>> | string,
+  log: string[] = [],
+): Promise<Mounted> {
   const mounted = await mountSse(app.base, address, log);
   roots.push(mounted);
   return mounted;
 }
 
 describe("useSseProcedure against a real ackerdb server", () => {
+  test("streams from the root of the group its reference names", async () => {
+    // The hook takes a reference apart to key its callable, so the group has
+    // to travel with the address: a real server only answers `stream.grouped`
+    // under `/internal/`, and reading a chunk is the proof it was asked there.
+    const ref = apiGroup("internal").stream.grouped as SseRef<
+      Record<string, unknown>,
+      { tick: number }
+    >;
+    const mounted = await mount(ref as never);
+    const reader = mounted.call({}).getReader();
+    expect(await reader.read()).toEqual({ done: false, value: { tick: 0 } });
+    await reader.cancel();
+
+    // The callable's identity survives a rerender, exactly as it does for a
+    // plain address: the group is one more string in its dependency list.
+    const before = mounted.call;
+    mounted.rerender();
+    await until(() => mounted.calls.length > 0, "a committed render");
+    expect(mounted.call).toBe(before);
+  });
+
   test("pull-driven chunks with exact acknowledgement order and no read-ahead", async () => {
     const log: string[] = [];
     const mounted = await mount("stream.ticks", log);

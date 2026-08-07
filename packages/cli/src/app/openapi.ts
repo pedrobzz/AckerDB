@@ -14,7 +14,7 @@ import {
   type OpenApiInfo,
 } from "@ackerdb/server";
 import { runCodegen } from "./codegen.ts";
-import { importFunctionModules } from "./manifest.ts";
+import { importApp, importFunctionModules } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
 export interface OpenApiExport {
@@ -53,8 +53,9 @@ export async function exportOpenApi(config: AppConfig, file: string): Promise<Op
   // Function modules import `_generated/server.ts`; generate it first exactly
   // as `acker start` does, so a fresh checkout exports in one pass.
   await runCodegen(config);
+  const app = await importApp(config);
   const document = openApiDocument(
-    new Registry(await importFunctionModules(config)),
+    new Registry(await importFunctionModules(config), app.apiPaths),
     appInfo(config),
   );
   writeFileSync(file, openApiBytes(document));
