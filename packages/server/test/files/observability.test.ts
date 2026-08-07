@@ -230,13 +230,21 @@ describe("File observability", () => {
     // rejected upload, the missing download — so waiting for one says nothing
     // about the others. Wait for every record this test asserts on, or a host
     // slow enough to interleave the flushes fails an assertion that is true.
-    const recorded = (name: string, value: number) => telemetryRecords.some((record) =>
-      record.kind === "metric" && record.name === name && record.value === value);
+    // The wait matches on the same fields the assertions do, labels included: an
+    // outcome metric carries one row per outcome, so waiting on name and value
+    // alone is satisfied by a *different* outcome and lets the test read the
+    // records before the one it asserts on has flushed.
+    const recorded = (name: string, value: number, outcome?: string) =>
+      telemetryRecords.some((record) =>
+        record.kind === "metric" &&
+        record.name === name &&
+        record.value === value &&
+        (outcome === undefined || record.labels?.outcome === outcome));
     await eventually(() =>
       recorded("runtime.file_download_bytes", 11) &&
       recorded("runtime.file_active_bytes", 11) &&
-      recorded("runtime.file_upload_outcomes", 1) &&
-      recorded("runtime.file_download_outcomes", 1));
+      recorded("runtime.file_upload_outcomes", 1, "validation") &&
+      recorded("runtime.file_download_outcomes", 1, "not_found"));
     const metrics = telemetryRecords.filter(
       (record): record is TelemetryMetricRecord => record.kind === "metric",
     );
