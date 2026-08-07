@@ -8,6 +8,7 @@ import {
   type FileUploadSession,
   type Identity,
 } from "@ackerdb/core";
+import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
 import type { Principal } from "../auth/credentials.ts";
 import type { QueryMaterializers } from "../database/query/types.ts";
 import { ValidationError } from "../validation/error.ts";
@@ -330,7 +331,7 @@ export class RuntimeFiles {
         markOneTimeResult();
         scheduleCleanup(timestamp + expiresIn);
         return Object.freeze({
-          url: new URL(`/api/_files/uploads/${id}.${token.plain}`, this.publicUrl).href,
+          url: new URL(`${ACKERDB_HTTP_ROUTES.files}/uploads/${id}.${token.plain}`, this.publicUrl).href,
           expiresAt: timestamp + expiresIn,
           maxBytes,
         });
@@ -395,7 +396,7 @@ export class RuntimeFiles {
         return Object.freeze({
           id,
           fileId,
-          url: new URL(`/api/_files/grants/${id}.${token.plain}`, this.publicUrl).href,
+          url: new URL(`${ACKERDB_HTTP_ROUTES.files}/grants/${id}.${token.plain}`, this.publicUrl).href,
           access: access.type,
           expiresAt,
           disposition: normalizedDisposition,

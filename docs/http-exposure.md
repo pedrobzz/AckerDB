@@ -113,7 +113,7 @@ registration:
 
 The SSE response carries the existing stream contract unchanged:
 `x-ackerdb-sse-stream` and `x-ackerdb-sse-max-stall-ms` response headers, and
-chunk acknowledgement at `POST /api/_sse/ack` with the existing
+chunk acknowledgement at `POST /_sse/ack` with the existing
 `sse_ack` frame. Only the call route moves; the ack machinery is
 stream-id-keyed and does not know which function produced the stream.
 Every event's `data` is therefore a whole frame — `sse_chunk`, `sse_done`, or
@@ -126,24 +126,39 @@ send an `Authorization` header, so it would serve only anonymous streams.
 
 ## Route namespace
 
-Every AckerDB route an application could otherwise collide with lives behind
-the `_` marker, so the app owns every other path. Adding a future built-in
-route can never collide with an application module, because neither an
-`apiPath` nor the module namespace under it may begin with `_`. The
-operational endpoints below are the deliberate exception: `/live`, `/ready`,
-`/status`, and `/ws` carry no marker because their names live in Kubernetes
-probes and load-balancer configuration that is not ours to rename.
+**The framework's own routes live at the root, behind the `_` marker.** `/api/`
+is one function group among however many an application names, so a protocol
+endpoint nested under it would be squatting in that group's namespace — there
+was never a principle separating `/ws` at the root from `/api/_realtime` below
+it, only history. At the root the rule is uniform: `_` belongs to AckerDB, and
+an `apiPath` may not begin with it, so a future built-in route can never
+collide with an application module.
 
 | Route | Fate |
 | --- | --- |
 | `/api/call` | deleted (replaced by per-function paths) |
 | `/api/sse` | deleted (replaced by per-function paths) |
-| `/api/sse/ack` | → `/api/_sse/ack` |
-| `/api/realtime` | → `/api/_realtime` |
-| `/api/realtime/prepare` | → `/api/_realtime/prepare` |
-| `/api/realtime/<session>` | → `/api/_realtime/<session>` |
-| — | new, opt-in: `GET /api/_openapi.json` |
-| `/live`, `/ready`, `/status`, `/ws` | unchanged (root-level) |
+| `/ws` | → `/_ws` |
+| `/api/sse/ack` | → `/_sse/ack` |
+| `/api/realtime` | → `/_realtime` |
+| `/api/realtime/prepare` | → `/_realtime/prepare` |
+| `/api/realtime/<session>` | → `/_realtime/<session>` |
+| `/api/_files/<route>/…` | → `/_files/<route>/…` |
+| — | new, opt-in: `GET /_openapi.json` |
+| `/live`, `/ready`, `/status` | unchanged, and unmarked |
+
+**The operational endpoints do not move and carry no marker.** `/live`,
+`/ready`, and `/status` are the contract with the outside world — Kubernetes
+probes, load-balancer health checks — and their names live in configuration
+that is not ours to rename. The reserved-name list in
+`packages/server/src/transport/http-surface.ts` is what stops an application
+route from hijacking them, and it is load-bearing for exactly that reason.
+
+`/_files/` is the one move visible in application code: a download link lands
+in an `<img src>`, and shortening it is a direct gain. `/ws` → `/_ws` is
+invisible to callers — the SDK builds it — but a WebSocket upgrade usually has
+its own reverse-proxy rule (an nginx `location`, an Ingress path, an ALB
+rule), so an existing deployment needs that one line updated.
 
 The `CallRequest`/`CallResponse` envelope types in `@ackerdb/core` die with
 the envelope routes, as does the client's `encodeCall`.
@@ -326,7 +341,7 @@ operation per exposed function with `openapi` not disabled.
   (`acker openapi <document> [app-dir]`, in the existing `@ackerdb/cli`),
   which codegens, loads the function modules, and writes the document. It
   needs no database, port, or credential authority. The runtime endpoint
-  `GET /api/_openapi.json` exists only when the serve options carry
+  `GET /_openapi.json` exists only when the serve options carry
   `openapiEndpoint`, whose value is the document's `info` — the listener never
   sees an app directory, so it cannot derive the application's identity, and a
   bare `true` could not answer with the export's bytes. It serves a document
@@ -384,13 +399,15 @@ how a tool's scopes sit alongside the function's own access policy.
   not: the CLI manifest loader rejects a function-module path segment that is
   not a plain identifier, so an app loaded the normal way never reaches the
   registry at all. The registry's own check — an exposed function may not claim
-  a path under `/api/_` — is the narrower second net, for a `Registry`
+  a path under a `_`-marked namespace — is the narrower second net, for a `Registry`
   constructed directly from modules.
 - An HTTP-exposed function whose contract cannot cross the standard-JSON
   boundary is a registration error (see *Wire format*).
-- MCP endpoint paths must not collide with built-in routes, the `/api/_`
-  prefix, or any exposed function path; exposed function paths must not
-  collide with a declared MCP path.
+- MCP endpoint paths must not collide with built-in routes, carry a `_`-marked
+  name in either of their first two segments, or collide with any exposed
+  function path; exposed function paths must not collide with a declared MCP
+  path. One predicate owns the marker rule for every claiming site, so it
+  cannot hold for functions while lapsing for the paths MCP picks by hand.
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
 - A malformed `apiPath` — anything that is not one identifier-shaped segment,
@@ -415,7 +432,7 @@ how a tool's scopes sit alongside the function's own access policy.
 `@ackerdb/client` keeps the WebSocket for queries, mutations, and procedures
 — this surface targets external callers, and moving client transport is a
 separate discussion. The client changes are the URL renames — `sse()` calls
-the per-function path with a raw args body, and acks go to `/api/_sse/ack` —
+the per-function path with a raw args body, and acks go to `/_sse/ack` —
 plus the wire format that path speaks: `sse()` encodes its args as standard
 JSON (`toStandardJson` in `@ackerdb/core`) and reads chunk values as standard
 JSON, never as wire escapes. The ack request itself stays a Protocol-2 frame.

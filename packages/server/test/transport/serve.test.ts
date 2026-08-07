@@ -571,7 +571,7 @@ function acknowledgeSse(
   overrides: { readonly stream?: string; readonly seq?: number; readonly proof?: string } = {},
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${baseUrl}/api/_sse/ack`, {
+  return fetch(`${baseUrl}/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
@@ -614,7 +614,7 @@ describe("health and protected status", () => {
         resource: "connection",
         message: "server is not ready",
       } as const;
-      for (const path of ["/status", "/ws"] as const) {
+      for (const path of ["/status", "/_ws"] as const) {
         const response = await fetch(`${earlyBase}${path}`);
         expect(response.status).toBe(503);
         expect(parseServerMessage(decode(await response.text()))).toEqual({
@@ -636,7 +636,7 @@ describe("health and protected status", () => {
         expect(JSON.parse(await early503.text())).toEqual(unavailable);
       }
 
-      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/ws`);
+      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/_ws`);
       const wsResult = await within(new Promise<"opened" | "refused">((resolve) => {
         socket.onopen = () => resolve("opened");
         socket.onerror = () => resolve("refused");
@@ -852,7 +852,7 @@ describe("exposed HTTP procedures", () => {
       expect(await response.text()).toBe(body);
     }
     // The unexposed procedure keeps working over the WebSocket session.
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({ v: PROTOCOL_VERSION, t: "p", id: 1, ref: "notes.hidden", args: { value: "ws" } });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1, value: "ws" });
     client.socket.close();
@@ -891,7 +891,7 @@ describe("exposed HTTP procedures", () => {
 
     // Over the socket the address is unchanged — the group moves the HTTP
     // root, never the name — and the same policy answers.
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "ops.count", args: {} });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1 });
     client.send({
@@ -958,7 +958,7 @@ describe("exposed HTTP procedures", () => {
     const http = await call("notes.identity", {}, "Bearer user-token");
     expect(http.status).toBe(200);
 
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`, {
       kind: "bearer",
       token: "user-token",
     });
@@ -1674,7 +1674,7 @@ describe("SSE", () => {
     expect(await stale.text()).toBe("");
     expect(server.status()).toMatchObject({ sseAckIngress: 7, sseAckNoops: 4 });
 
-    const malformed = await fetch(`${base}/api/_sse/ack`, {
+    const malformed = await fetch(`${base}/_sse/ack`, {
       method: "POST",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -1698,10 +1698,10 @@ describe("SSE", () => {
       sseAckNoops: 4,
     });
 
-    const preflight = await fetch(`${base}/api/_sse/ack`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}/_sse/ack`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-expose-headers")).toContain("x-ackerdb-sse-stream");
-    const wrongMethod = await fetch(`${base}/api/_sse/ack`);
+    const wrongMethod = await fetch(`${base}/_sse/ack`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
 
@@ -1777,7 +1777,7 @@ describe("SSE", () => {
 
 describe("the opt-in OpenAPI endpoint", () => {
   const info = { title: "notes-app", version: "4.2.0" } as const;
-  const OPENAPI = "/api/_openapi.json";
+  const OPENAPI = "/_openapi.json";
 
   let owned: {
     readonly dir: string;
@@ -1886,7 +1886,7 @@ describe("the opt-in OpenAPI endpoint", () => {
 
 describe("WebSocket Session transport", () => {
   test("handles hello, query, subscription, mutation, and filtered event contracts", async () => {
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`, {
       kind: "bearer",
       token: "user-token",
     });
@@ -1955,7 +1955,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("accepts exact-limit noncanonical text and rejects the next received byte", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -2000,7 +2000,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("accepts valid binary UTF-8 at the exact request limit", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -2037,7 +2037,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("rejects invalid binary UTF-8 before Protocol-2 decoding", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.socket.send(new Uint8Array([0xc3, 0x28]));
 
     expect(await within(client.next())).toMatchObject({
@@ -2050,7 +2050,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("bounds malformed and one-byte-over frames, then lets Bun reject larger payloads", async () => {
-    const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     malformed.socket.send("{");
     expect(await within(malformed.next())).toMatchObject({
       v: PROTOCOL_VERSION,
@@ -2061,7 +2061,7 @@ describe("WebSocket Session transport", () => {
     expect((await within(malformed.closed())).code).toBe(1002);
     await eventually(() => server.status().connections === 0);
 
-    const oneByteOver = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const oneByteOver = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     oneByteOver.socket.send("x".repeat(limits.maxFrameBytes + 1));
     expect(await within(oneByteOver.next())).toMatchObject({
       v: PROTOCOL_VERSION,
@@ -2072,7 +2072,7 @@ describe("WebSocket Session transport", () => {
     expect((await within(oneByteOver.closed())).code).toBe(1013);
     await eventually(() => server.status().connections === 0);
 
-    const oversized = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const oversized = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     oversized.socket.send("x".repeat(limits.maxFrameBytes + 2));
     const result = await within(Promise.race([
       oversized.next().then((frame) => ({ kind: "frame" as const, frame })),
@@ -2083,10 +2083,10 @@ describe("WebSocket Session transport", () => {
   });
 
   test("counts upgraded pre-hello sockets against connection admission", async () => {
-    const first = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const first = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     expect(server.status().connections).toBe(1);
 
-    const second = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const second = new WebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     const opened = await within(new Promise<boolean>((resolve) => {
       second.onopen = () => resolve(true);
       second.onerror = () => resolve(false);
@@ -2121,7 +2121,7 @@ describe("WebSocket Session transport", () => {
     });
     const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
-    const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
+    const wsUrl = `ws://127.0.0.1:${fairServer.port}/_ws`;
     const clients: WsClient[] = [];
 
     try {
@@ -2239,7 +2239,7 @@ describe("WebSocket Session transport", () => {
       telemetry: false,
     });
     const overlapServer = serve({ runtime: overlapRuntime, port: 0 });
-    const url = `ws://127.0.0.1:${overlapServer.port}/ws`;
+    const url = `ws://127.0.0.1:${overlapServer.port}/_ws`;
     const sessionId = "overlapping-session";
     const open = async (): Promise<WsClient> => {
       const client = await rawWebSocket(url);
@@ -2288,7 +2288,7 @@ describe("WebSocket Session transport", () => {
 
 describe("lifecycle drain", () => {
   test("stops admission, terminates WS and SSE, drains Runtime, then stops", async () => {
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     longSseStarted = deferred<void>();
     const response = await fetch(`${base}${httpPath("notes.stayOpen")}`, { method: "POST" });
     await within(longSseStarted.promise);
@@ -2362,7 +2362,7 @@ describe("lifecycle drain", () => {
       const drain = slowServer.drain();
       const terminal = await within(sse.next());
       expect(terminal).toMatchObject({ t: "sse_error", outcome: { code: "draining" } });
-      const stalledCredit = fetch(`${slowBase}/api/_sse/ack`, {
+      const stalledCredit = fetch(`${slowBase}/_sse/ack`, {
         method: "POST",
         body: stalledBody(),
         signal: stalledCreditController.signal,
@@ -2471,7 +2471,7 @@ describe("lifecycle drain", () => {
   test("keeps the connection deadline when only Session shutdown stalls", async () => {
     blockedCredentialStarted = deferred<void>();
     blockedCredentialRelease = deferred<void>();
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     try {
       client.send({
         v: PROTOCOL_VERSION,

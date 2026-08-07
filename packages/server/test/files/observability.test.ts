@@ -200,7 +200,7 @@ describe("File observability", () => {
     if (!grant.ok) throw grant.error;
     const download = await fetch(`${base}${new URL(grant.data.url).pathname}`);
     expect(await download.text()).toBe("hello-files");
-    expect((await fetch(`${base}/api/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
+    expect((await fetch(`${base}/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
 
     const rejectedSession = await runtime.system.run("test.files.rejected-session", (ctx) =>
       ctx.tx((tx) => tx.files.createUploadSession({ contentTypes: ["text/plain"] })));

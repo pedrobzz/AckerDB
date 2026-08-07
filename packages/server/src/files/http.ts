@@ -7,6 +7,7 @@ import {
   type Outcome,
   type OutcomeCode,
 } from "@ackerdb/core";
+import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
 import type { Principal } from "../auth/credentials.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
@@ -85,7 +86,10 @@ interface DownloadGrant {
 }
 
 const utf8 = new TextEncoder();
-const FILE_ROUTE = /^\/api\/_files\/(uploads|grants)\/([1-9]\d*)\.([A-Za-z0-9_-]{20,})$/;
+/** Derived from the canonical surface, so the route cannot drift from it. */
+const FILE_ROUTE = new RegExp(
+  `^${ACKERDB_HTTP_ROUTES.files}/(uploads|grants)/([1-9]\\d*)\\.([A-Za-z0-9_-]{20,})$`,
+);
 const MAX_UPLOAD_RECOVERY_WAIT_MS = 30_000;
 
 function notFound(): Response {
