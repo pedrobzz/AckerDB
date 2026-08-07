@@ -2504,6 +2504,25 @@ describe("Runtime telemetry acceptance", () => {
     store.close();
   });
 
+  test("a far-future deadline does not overflow the shutdown timers", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    // One millisecond past the 32-bit timer horizon: an overflowed delay
+    // fires at ~1 ms and would abort this healthy drain as deadline_exceeded.
+    // The 50 ms flush keeps the drain alive long enough for a premature
+    // timer to fire — a healthy pace far inside any sane deadline.
+    const spansSpy = spyOn(app.runtime.telemetrySpans, "drain").mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(resolve, 50)),
+    );
+    await app.runtime.drain(Date.now() + 2_147_483_648);
+    spansSpy.mockRestore();
+    const lifecycle = lifecycleStates(app.runtime.telemetryJournal.readBatch(0n, 10_000));
+    expect(lifecycle.filter((state) => state === "stopped")).toHaveLength(1);
+    expect(lifecycle).not.toContain("failed");
+    store.close();
+  });
+
   test("an already-expired deadline grants no fresh grace to an unresponsive drain", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const store = new TelemetryStore({ path: ":memory:" });

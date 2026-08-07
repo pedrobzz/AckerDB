@@ -36,6 +36,18 @@ const DRAIN_RETRY_AFTER_MS = 1_000;
  * without letting a zombie drain hold the caller's drain hostage.
  */
 const QUIESCENCE_GRACE_MS = 500;
+/**
+ * The 32-bit timer horizon: a longer setTimeout delay overflows to ~1 ms and
+ * fires almost immediately. Scheduled delays clamp to it — a shutdown
+ * deadline more than ~24.8 days out simply cannot fire early, which is the
+ * honest semantics for a shutdown bound.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** One timer delay: non-negative and inside the 32-bit horizon. */
+function timerDelay(remainingMs: number): number {
+  return Math.min(MAX_TIMER_DELAY_MS, Math.max(0, remainingMs));
+}
 const utf8 = new TextEncoder();
 
 export interface RuntimeControlOptions {
@@ -351,7 +363,7 @@ export class RuntimeControl {
         this.shutdownController.abort(deadlineError);
         void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
-      }, Math.max(0, deadlineMonotonicMs - performance.now()));
+      }, timerDelay(deadlineMonotonicMs - performance.now()));
     });
     this.drainPromise = Promise.race([shutdownWork, deadline]).then(
       () => {
@@ -554,7 +566,7 @@ export class RuntimeControl {
       new Promise<{ readonly ack: "none" }>((resolve) => {
         const timer = setTimeout(
           () => resolve({ ack: "none" as const }),
-          Math.max(0, graceMonotonicMs - performance.now()),
+          timerDelay(graceMonotonicMs - performance.now()),
         );
         timer.unref?.();
       }),
@@ -571,7 +583,7 @@ export class RuntimeControl {
           "telemetry finalization exceeded the shutdown deadline",
           { resource: "operation" },
         ));
-      }, Math.max(0, deadlineMonotonicMs - performance.now()));
+      }, timerDelay(deadlineMonotonicMs - performance.now()));
       timer.unref?.();
       work.then(
         (value) => {
