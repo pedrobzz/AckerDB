@@ -269,6 +269,14 @@ exactly what that identity would observe. Gated by its own scope and always
 audit-evented naming both the administrative and the impersonated identity.
 _Avoid_: act as user, sudo, identity switch
 
+**First-party capture** — Client-side measurement that travels to the
+application's own origin over the connection the application already holds,
+carrying no cross-site identity, no stored network address, and no device
+fingerprint. It observes what a user does inside one application rather than
+who they are across the web, and it fails silently rather than degrading the
+application when a user blocks it.
+_Avoid_: tracking, telemetry beacon, analytics pixel
+
 **Live inventory** — A read of who is connected, listening, or joined right
 now, taken by walking the runtime's existing in-memory structures at call
 time. It observes ephemeral state without retaining or instrumenting it, and
