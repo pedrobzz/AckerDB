@@ -65,14 +65,15 @@ export class TelemetryErrorStore {
     this.upsertGroup = this.database.query(`
       INSERT INTO _ackerdb_telemetry_error_groups (
         hash, algo_version, name, message, times_seen, first_seen, last_seen,
-        status, regressed, sample_stack, sample_trace_id
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, 'unresolved', 0, ?, ?)
+        status, regressed, revision, sample_stack, sample_trace_id
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, 'unresolved', 0, 1, ?, ?)
       ON CONFLICT(hash) DO UPDATE SET
         algo_version = excluded.algo_version,
         name = excluded.name,
         message = excluded.message,
         times_seen = times_seen + 1,
         last_seen = excluded.last_seen,
+        revision = revision + 1,
         sample_stack = excluded.sample_stack,
         sample_trace_id = COALESCE(excluded.sample_trace_id, sample_trace_id),
         regressed = CASE WHEN status = 'resolved' THEN 1 ELSE regressed END,
@@ -122,21 +123,23 @@ export class TelemetryErrorStore {
 
   /**
    * Resolving clears the regressed mark; ingest reopens on the next
-   * occurrence. Compare-and-set on the observed `last_seen`: an occurrence
-   * arriving between the operator's read and their resolve reopens the group,
-   * and the stale resolve must surface as a conflict instead of silently
-   * erasing that regression.
+   * occurrence. Compare-and-set on the observed `revision` — a monotonic
+   * counter every ingest advances, so even two occurrences in the same
+   * millisecond never share a token: an occurrence arriving between the
+   * operator's read and their resolve reopens the group, and the stale
+   * resolve surfaces as a conflict instead of silently erasing that
+   * regression.
    */
   resolve(
     hash: string,
     resolved: boolean,
-    observedLastSeenMs: number,
+    observedRevision: bigint,
   ): TelemetryErrorResolveOutcome {
     const changes = this.database.query(`
       UPDATE _ackerdb_telemetry_error_groups
       SET status = ?, regressed = CASE WHEN ? THEN 0 ELSE regressed END
-      WHERE hash = ? AND last_seen = ?
-    `).run(resolved ? "resolved" : "unresolved", resolved ? 1 : 0, hash, observedLastSeenMs);
+      WHERE hash = ? AND revision = ?
+    `).run(resolved ? "resolved" : "unresolved", resolved ? 1 : 0, hash, observedRevision);
     if (changes.changes > 0) return "applied";
     const exists = this.database.query(
       "SELECT 1 FROM _ackerdb_telemetry_error_groups WHERE hash = ?",
@@ -164,6 +167,7 @@ function createErrorSchema(database: Database): void {
       last_seen REAL NOT NULL,
       status TEXT NOT NULL,
       regressed INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
       sample_stack TEXT NOT NULL,
       sample_trace_id TEXT
     )

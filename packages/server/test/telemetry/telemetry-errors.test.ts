@@ -230,7 +230,7 @@ describe("TelemetryErrorStore", () => {
       "SELECT hash FROM _ackerdb_telemetry_error_groups",
     ).get() as { readonly hash: string }).hash;
 
-    expect(errors.resolve(hash, true, NOW - 3_000)).toBe("applied");
+    expect(errors.resolve(hash, true, 1n)).toBe("applied");
     expect(store.database.query(
       "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "resolved", regressed: 0n });
@@ -240,19 +240,43 @@ describe("TelemetryErrorStore", () => {
       "SELECT status, regressed, times_seen AS timesSeen FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "unresolved", regressed: 1n, timesSeen: 2n });
 
-    // A resolve carrying the state the operator OBSERVED is stale once a new
-    // occurrence arrived: it must conflict as data, not erase the regression.
-    expect(errors.resolve(hash, true, NOW - 3_000)).toBe("conflict");
+    // A resolve carrying the revision the operator OBSERVED is stale once a
+    // new occurrence arrived: it conflicts as data, not erases the regression.
+    expect(errors.resolve(hash, true, 1n)).toBe("conflict");
     expect(store.database.query(
       "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "unresolved", regressed: 1n });
 
-    // Resolving against the current occurrence clears the mark for the next cycle.
-    expect(errors.resolve(hash, true, NOW - 1_000)).toBe("applied");
+    // Resolving against the current revision clears the mark for the next cycle.
+    expect(errors.resolve(hash, true, 2n)).toBe("applied");
     expect(store.database.query(
       "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "resolved", regressed: 0n });
-    expect(errors.resolve("missing-hash", true, NOW)).toBe("not_found");
+    expect(errors.resolve("missing-hash", true, 1n)).toBe("not_found");
+    store.close();
+  });
+
+  test("same-millisecond occurrences never share a resolve token", () => {
+    const store = createStore();
+    const errors = new TelemetryErrorStore({ store });
+    const boom = () => stackedError("TypeError", "boom", [
+      `    at createItem (${ROOT}/src/items.ts:10:5)`,
+    ]);
+    // Two occurrences in the SAME millisecond: a timestamp token could not
+    // tell them apart; the monotonic revision can.
+    expect(errors.ingest({ error: boom(), timestampMs: NOW })).toBe(true);
+    const observed = (store.database.query(
+      "SELECT hash, revision FROM _ackerdb_telemetry_error_groups",
+    ).get() as { readonly hash: string; readonly revision: bigint });
+    expect(observed.revision).toBe(1n);
+    expect(errors.ingest({ error: boom(), timestampMs: NOW })).toBe(true);
+
+    // The operator observed revision 1; the second occurrence moved it on.
+    expect(errors.resolve(observed.hash, true, observed.revision)).toBe("conflict");
+    expect(store.database.query(
+      "SELECT status, revision FROM _ackerdb_telemetry_error_groups",
+    ).get()).toEqual({ status: "unresolved", revision: 2n });
+    expect(errors.resolve(observed.hash, true, 2n)).toBe("applied");
     store.close();
   });
 
