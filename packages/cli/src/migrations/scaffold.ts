@@ -42,7 +42,7 @@ import {
   type SchemaSnapshot,
   type TableSnapshot,
 } from "@ackerdb/server";
-import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
+import { isFrameworkTable, withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 
 /** Raised when a descriptor kind cannot be rendered structurally — a hard stop. */
 export class GenerateError extends Error {}
@@ -203,11 +203,16 @@ interface RealTables {
   target: string[];
 }
 
-/** The two worlds' real (non-event) table names, each sorted. */
+/**
+ * The two worlds' real (non-event) table names, each sorted. Framework-owned
+ * tables are absent: the framework migrates its own tables, and the server
+ * refuses an application step that transforms or emits into one — so the
+ * generated types must not offer them as targets either.
+ */
 function realTables(pre: SchemaSnapshot, target: SchemaSnapshot): RealTables {
   const of = (snap: SchemaSnapshot): string[] =>
     Object.keys(snap.tables)
-      .filter((t) => snap.tables[t]!.kind === "table")
+      .filter((t) => snap.tables[t]!.kind === "table" && !isFrameworkTable(t))
       .sort(byName);
   return { pre: of(pre), target: of(target) };
 }

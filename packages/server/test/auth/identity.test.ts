@@ -171,6 +171,7 @@ describe("durable provider-neutral Identity", () => {
     expect([...engine.plans.keys()]).toEqual([
       "owned",
       "_ackerdb_jobs",
+      "_ackerdb_job_runs",
       "_ackerdb_files",
       "_ackerdb_file_uploads",
       "_ackerdb_file_grants",

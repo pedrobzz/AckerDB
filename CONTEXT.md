@@ -464,16 +464,17 @@ whether to catch it and fail open.
 
 **Step** — One named, journaled unit of work inside a procedure-kind job
 handler. A completed step's recorded result stands in for re-execution when
-the run resumes, so an attempt re-runs only work the journal has not
+the handler replays, so a Job run executes only work the journal has not
 recorded. The name carries the author's promise that the same name means the
 same meaning.
 _Avoid_: Sub-job, child job, workflow task
 
-**Step journal** — The durable per-run record of each completed step's
-identity and result. Resuming replays the handler against it: a recorded
+**Step journal** — The durable record, owned by a Job, of each completed
+step's identity and result. Replay reads the handler against it: a recorded
 entry answers instead of executing, and a mismatch between journal and code
-refuses with a typed outcome rather than guessing. The journal lives and dies
-with its job row.
+refuses with a typed outcome rather than guessing. It outlives one Job run —
+a Manual retry resumes it and only a Force run again clears it — and it lives
+and dies with its Job.
 _Avoid_: Event log, workflow state, checkpoint
 
 ## File storage

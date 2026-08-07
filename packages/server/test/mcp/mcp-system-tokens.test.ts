@@ -215,11 +215,15 @@ async function runJobsAt(runtime: Runtime, at: number): Promise<number> {
   return systemRunCount - before;
 }
 
-/** The most recent job row: discarded failures record their error here. */
-function lastJobRow(engine: Engine): { state: string; attemptsJson: string } {
-  return engine.reader
-    .query('SELECT state, attemptsJson FROM "_ackerdb_jobs" ORDER BY id DESC LIMIT 1')
-    .get() as { state: string; attemptsJson: string };
+/** The newest Job and the run its outcome is recorded on. */
+function lastJobRow(engine: Engine): { state: string; errorText: string | null } {
+  const job = engine.reader
+    .query('SELECT id, state, runCount FROM "_ackerdb_jobs" ORDER BY id DESC LIMIT 1')
+    .get() as { id: bigint; state: string; runCount: bigint };
+  const run = engine.reader
+    .query('SELECT errorText FROM "_ackerdb_job_runs" WHERE jobId = ? AND number = ?')
+    .get(job.id, job.runCount) as { errorText: string | null } | null;
+  return { state: job.state, errorText: run?.errorText ?? null };
 }
 
 afterEach(async () => {
@@ -467,8 +471,8 @@ describe("system-managed MCP integration tokens", () => {
     );
     // The failed attempt settles as discarded; the runner never wedges.
     expect(await runJobsAt(endpoint.runtime, wrongEndpointAt)).toBe(1);
-    expect(lastJobRow(endpoint.engine)).toMatchObject({ state: "discarded" });
-    expect(lastJobRow(endpoint.engine).attemptsJson).toContain("not_found");
+    expect(lastJobRow(endpoint.engine)).toMatchObject({ state: "failed" });
+    expect(lastJobRow(endpoint.engine).errorText).toContain("not_found");
     expect(await endpoint.runtime.authenticateMcpToken(
       "agent",
       endpointToken.token,
@@ -487,8 +491,8 @@ describe("system-managed MCP integration tokens", () => {
       tokenId: identityToken.id,
     });
     expect(await runJobsAt(identity.runtime, wrongIdentityAt)).toBe(1);
-    expect(lastJobRow(identity.engine)).toMatchObject({ state: "discarded" });
-    expect(lastJobRow(identity.engine).attemptsJson).toContain("not_found");
+    expect(lastJobRow(identity.engine)).toMatchObject({ state: "failed" });
+    expect(lastJobRow(identity.engine).errorText).toContain("not_found");
     expect(await identity.runtime.authenticateMcpToken(
       "agent",
       identityToken.token,
@@ -506,8 +510,8 @@ describe("system-managed MCP integration tokens", () => {
       scopes: ["orders.create"],
     });
     expect(await runJobsAt(runtime, at)).toBe(1);
-    expect(lastJobRow(engine)).toMatchObject({ state: "discarded" });
-    expect(lastJobRow(engine).attemptsJson).toContain("validation");
+    expect(lastJobRow(engine)).toMatchObject({ state: "failed" });
+    expect(lastJobRow(engine).errorText).toContain("validation");
     expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
       .toEqual({ count: 0n });
   });

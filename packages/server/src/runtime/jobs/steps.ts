@@ -1,8 +1,8 @@
 /**
  * Durable steps (ADR-0022): the per-run `ctx.step` surface of a
  * procedure-kind job. Completed steps are recorded in the row's `stepsJson`
- * journal; a resumed attempt replays the handler, and a recorded entry
- * answers instead of executing.
+ * journal; a resumed run replays the handler, and a recorded entry answers
+ * instead of executing.
  *
  * Step identity is the name, and the name is a contract: same name, same
  * meaning. Strictness is applied exactly where it is free of false
@@ -12,12 +12,13 @@
  * the run without consulting the retry policy, because retrying into
  * unchanged code cannot fix code.
  *
- * `step.sleep` settles the attempt in ONE writer transaction — journal
- * entry, pending state, wake time, attempt decrement, and lease release
- * commit together, so no crash window can turn a suspension into a failed
- * attempt. The thrown signal only unwinds the handler: a handler that
- * catches it is a stale attempt with cancel's semantics — its later step
- * calls refuse on the lease check and its late settle is discarded.
+ * `step.sleep` suspends in ONE writer transaction — journal entry, pending
+ * Job, wake time, and lease release commit together, so no crash window can
+ * turn a suspension into a failed run. The run itself stays open, so the
+ * claim that wakes it resumes the same run. The thrown signal only unwinds the
+ * handler: a handler that catches it is a stale run with cancel's semantics —
+ * its later step calls refuse on the lease check and its late settle is
+ * discarded.
  */
 import {
   Failure,
@@ -34,7 +35,8 @@ import { hashJobArgs } from "../../jobs/identity.ts";
 import type { AnyRegistered } from "../../app/functions.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { JobStep } from "../../jobs/definition.ts";
-import type { JobsExecutor, JobRow } from "./runtime.ts";
+import type { JobsExecutor } from "./runtime.ts";
+import type { JobRunRow } from "./store.ts";
 
 /**
  * Finite journal bounds, per the everything-finite contract: a run may not
@@ -86,8 +88,8 @@ type EntryOf<K extends StepKind> = K extends "run"
     : InlineStepEntry;
 
 /**
- * A typed step refusal: the run settles as discarded with this error in its
- * attempt history, and the retry policy is never consulted.
+ * A typed step refusal: the run settles as failed with this error recorded on
+ * it, and the retry policy is never consulted.
  */
 export class StepRefusalError extends AckerDBError {
   constructor(step: string, detail: string) {
@@ -169,9 +171,10 @@ function restoreResult(encoded: string): Result<unknown, unknown> {
 }
 
 export interface JobStepsOptions {
-  readonly id: bigint;
+  readonly jobId: bigint;
+  readonly runId: bigint;
   readonly jobName: string;
-  readonly attempt: number;
+  readonly runNumber: number;
   readonly leaseToken: string;
   readonly stepsJson: string | null;
   readonly executor: JobsExecutor;
@@ -182,7 +185,7 @@ export interface JobStepsOptions {
   readonly onSlept: (wakeAt: number) => void;
 }
 
-/** The `ctx.step` implementation for one dispatched attempt. */
+/** The `ctx.step` implementation for one dispatched run. */
 export class JobSteps {
   private readonly entries = new Map<string, StepJournalEntry>();
   private readonly seen = new Set<string>();
@@ -266,10 +269,10 @@ export class JobSteps {
     // Query/mutation callees run inside one writer transaction with their
     // journal entry: a mutation step commits atomically with its record.
     return await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
-      this.assertOwned(surface.jobs.byId(this.options.id));
+      this.assertOwned(surface.runs.byId(this.options.runId));
       const value = await surface.runMutationHandler(
         `jobs.${this.options.jobName}`,
-        this.options.attempt,
+        this.options.runNumber,
         (ctx) => this.invoke(fn, ctx, args),
       );
       await this.appendIn(surface, record(value));
@@ -301,10 +304,10 @@ export class JobSteps {
     const prior = this.claim(name, kind, () => null);
     if (prior !== null) return decode(prior.result);
     return await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
-      this.assertOwned(surface.jobs.byId(this.options.id));
+      this.assertOwned(surface.runs.byId(this.options.runId));
       const value = await surface.runMutationHandler(
         `jobs.${this.options.jobName}`,
-        this.options.attempt,
+        this.options.runNumber,
         (ctx) => fn(ctx as never),
       );
       await this.appendIn(surface, {
@@ -347,9 +350,11 @@ export class JobSteps {
     if (prior !== null) return;
 
     const wakeAt = this.options.now() + durationMs;
-    // One writer transaction: journal entry, pending state, wake time,
-    // attempt decrement (sleeping is not failing), and lease release commit
-    // together — no crash window between "recorded" and "suspended".
+    // One writer transaction: journal entry, pending state, wake time, and
+    // lease release commit together — no crash window between "recorded" and
+    // "suspended". The run itself stays open and unleased, so the claim that
+    // wakes it resumes THIS run instead of opening another: sleeping is not
+    // failing, and the retry budget is the run number.
     await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
       await this.appendIn(surface, {
         name,
@@ -357,12 +362,11 @@ export class JobSteps {
         wakeAt,
         completedAt: this.options.now(),
       });
-      await surface.jobs.patch(this.options.id, {
+      await surface.runs.patch(this.options.runId, { leaseToken: null, leaseUntil: null });
+      await surface.jobs.patch(this.options.jobId, {
         state: "pending",
-        runAt: wakeAt,
-        attempt: this.options.attempt - 1,
-        leaseToken: null,
-        leaseUntil: null,
+        nextRunAt: wakeAt,
+        nextRunTrigger: null,
       });
     });
     this.options.onSlept(wakeAt);
@@ -407,19 +411,27 @@ export class JobSteps {
     });
   }
 
-  /** Append one entry inside an already-owned transaction, within finite bounds. */
+  /**
+   * Append one entry inside an already-owned transaction, within finite bounds.
+   * The journal belongs to the Job — it outlives one run — but the right to
+   * write it belongs to the run holding the lease.
+   */
   private async appendIn(
     surface: {
       readonly jobs: {
-        byId(id: bigint): JobRow | null;
+        byId(id: bigint): { readonly stepsJson: string | null } | null;
         patch(id: bigint, partial: Record<string, unknown>): Promise<void>;
       };
+      readonly runs: { byId(id: bigint): JobRunRow | null };
     },
     entry: StepJournalEntry,
   ): Promise<void> {
-    const row = surface.jobs.byId(this.options.id);
-    this.assertOwned(row);
-    const journal = parseStepJournal(row!.stepsJson);
+    this.assertOwned(surface.runs.byId(this.options.runId));
+    const job = surface.jobs.byId(this.options.jobId);
+    if (job === null) {
+      throw new AckerDBError("unavailable", "job run was superseded; its steps may not record");
+    }
+    const journal = parseStepJournal(job.stepsJson);
     journal.push(entry);
     if (journal.length > MAX_JOURNAL_STEPS) {
       throw new StepRefusalError(entry.name, `the journal is full (${MAX_JOURNAL_STEPS} steps)`);
@@ -431,14 +443,14 @@ export class JobSteps {
         `the journal exceeds ${MAX_JOURNAL_BYTES} bytes; record smaller results or use child jobs`,
       );
     }
-    await surface.jobs.patch(this.options.id, { stepsJson: encoded });
+    await surface.jobs.patch(this.options.jobId, { stepsJson: encoded });
     this.entries.set(entry.name, entry);
   }
 
-  /** A canceled, reclaimed, deleted, or suspended row must not gain journal entries. */
-  private assertOwned(row: JobRow | null): void {
-    if (row === null || row.state !== "running" || row.leaseToken !== this.options.leaseToken) {
-      throw new AckerDBError("unavailable", "job attempt was superseded; its steps may not record");
+  /** A canceled, reclaimed, deleted, or suspended run must not gain journal entries. */
+  private assertOwned(run: JobRunRow | null): void {
+    if (run === null || run.state !== "running" || run.leaseToken !== this.options.leaseToken) {
+      throw new AckerDBError("unavailable", "job run was superseded; its steps may not record");
     }
   }
 }

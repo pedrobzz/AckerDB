@@ -18,7 +18,7 @@ import {
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
 import { decode, stableEncode } from "@ackerdb/core";
-import { JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
+import { JOB_RUNS_TABLE, JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
 import { hashJobArgs } from "../jobs/identity.ts";
 import { FILES_TABLE } from "../files/tables.ts";
 import {
@@ -678,10 +678,11 @@ export function makeDbReader(
 /**
  * The application-facing writer over the framework jobs table. The runner owns
  * the state machine, so its columns are guarded here — the one public write
- * seam — while scheduling intent stays open: `runAt`, `key`, and `argsJson`
- * may be patched (a patched `argsJson` recomputes the dedup hash so identity
- * cannot drift), and rows may be deleted. Inserts go through
- * `ctx.jobs.enqueue`, the door that computes identity and dedup.
+ * seam — while scheduling intent stays open: `nextRunAt`, `key`, and `argsJson`
+ * may be patched (a patched `argsJson` recomputes the dedupe hash so identity
+ * cannot drift). Creation goes through `ctx.jobs.enqueue` and deletion through
+ * `ctx.jobs.<definition>.delete`, the door that removes a Job together with its
+ * runs — a Job deleted here would leave its run history parented to nothing.
  */
 function guardedJobsWriter(
   writer: ReturnType<typeof writeMethods>,
@@ -689,13 +690,15 @@ function guardedJobsWriter(
 ): ReturnType<typeof writeMethods> {
   const refuse = (op: string): never => {
     throw new ValidationError(
-      `${JOBS_TABLE}.${op}: jobs are created with ctx.jobs.enqueue and settled by the runner`,
+      `${JOBS_TABLE}.${op}: jobs are created with ctx.jobs.enqueue, settled by the runner, and removed with ctx.jobs.<definition>.delete`,
     );
   };
   return {
     ...writer,
     insert: () => refuse("insert"),
     replace: () => refuse("replace"),
+    delete: () => refuse("delete"),
+    deleteMany: () => refuse("deleteMany"),
     patch: (id: bigint, partial: unknown) => {
       if (partial !== null && typeof partial === "object" && !Array.isArray(partial)) {
         const input = partial as Record<string, unknown>;
@@ -706,7 +709,7 @@ function guardedJobsWriter(
             );
           }
         }
-        const editsIntent = ["argsJson", "key", "runAt"].some(
+        const editsIntent = ["argsJson", "key", "nextRunAt"].some(
           (column) => input[column] !== undefined,
         );
         if (editsIntent) {
@@ -782,9 +785,11 @@ export function makeDbWriter(
             writer,
             reader["get"] as (id: bigint) => Promise<Record<string, unknown> | null>,
           )
-        : writer,
+        : name === JOB_RUNS_TABLE
+          ? readOnlyRunsWriter(writer)
+          : writer,
     );
-    if (name !== JOBS_TABLE) {
+    if (name !== JOBS_TABLE && name !== JOB_RUNS_TABLE) {
       const upsertWriter = observer === undefined
         ? writer
         : writeMethods(engine, writes, plan);
@@ -796,16 +801,40 @@ export function makeDbWriter(
 }
 
 /**
- * The runner's unguarded door to the jobs table: full write methods over the
- * jobs plan, with write keys and commit-wake emitted like any table write.
+ * A Job run is the runner's record of what actually executed: applications read
+ * it like any table and never write it. The Job that owns it is the only thing
+ * that moves it.
+ */
+function readOnlyRunsWriter(
+  writer: ReturnType<typeof writeMethods>,
+): ReturnType<typeof writeMethods> {
+  const refuse = (op: string): never => {
+    throw new ValidationError(
+      `${JOB_RUNS_TABLE}.${op}: job runs are written only by the runner; move the job with the ctx.jobs transitions`,
+    );
+  };
+  return {
+    ...writer,
+    insert: () => refuse("insert"),
+    replace: () => refuse("replace"),
+    patch: () => refuse("patch"),
+    delete: () => refuse("delete"),
+    deleteMany: () => refuse("deleteMany"),
+  };
+}
+
+/**
+ * The runner's unguarded door to a framework jobs table: full write methods
+ * over its plan, with write keys and commit-wake emitted like any table write.
  * Framework code only — never handed to an application handler.
  */
-export function makeJobsTableWriter(
+export function makeFrameworkTableWriter(
   engine: Engine,
   writes: WriteCollector,
+  table: string,
   observer?: DbStatementObserver,
 ): ReturnType<typeof writeMethods> & { plan: TablePlan } {
-  const plan = engine.rootScope.plan(JOBS_TABLE);
+  const plan = engine.rootScope.plan(table);
   return Object.assign(writeMethods(engine, writes, plan, observer), { plan });
 }
 

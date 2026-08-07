@@ -6,7 +6,7 @@ import {
   FILE_UPLOADS_TABLE,
   FILES_TABLE,
 } from "../../src/files/tables.ts";
-import { JOBS_TABLE } from "../../src/jobs/table.ts";
+import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 
@@ -22,6 +22,7 @@ describe("Files framework schema", () => {
     expect([...engine.rootScope.plans.keys()]).toEqual([
       "documents",
       JOBS_TABLE,
+      JOB_RUNS_TABLE,
       FILES_TABLE,
       FILE_UPLOADS_TABLE,
       FILE_GRANTS_TABLE,

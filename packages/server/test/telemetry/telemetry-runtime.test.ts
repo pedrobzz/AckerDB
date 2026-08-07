@@ -1595,9 +1595,10 @@ describe("Runtime telemetry acceptance", () => {
       span.commitId === String(scheduled.receipt.commitVersion) &&
       span.resultCount === 0
     );
-    // The enqueue writes one jobs row: its id key plus the jobs table's
-    // index keys form the commit's exact dependency set.
-    expect(unmatchedInvalidation).toMatchObject({ dependencyCount: 8 });
+    // The enqueue writes one Job row: its id key, the table scan key, and one
+    // key per index eq-prefix (4 + 2 + 1) form the commit's exact dependency
+    // set. No run row exists yet — the claim is what creates one.
+    expect(unmatchedInvalidation).toMatchObject({ dependencyCount: 9 });
     expect(unmatchedInvalidation.function).toBeUndefined();
 
     // The job runner commits through the ordinary transaction path: the
