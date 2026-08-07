@@ -18,6 +18,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
+  Telemetry,
   v,
   defineEventTable,
   defineSchema,
@@ -2270,6 +2271,47 @@ describe("Runtime telemetry acceptance", () => {
     mode = "capture";
     await app.runtime.telemetry.flush();
     expect(captured.length).toBeGreaterThan(0);
+  });
+
+  test("an injected Telemetry instance still feeds the durable read model", async () => {
+    const app = harness(new Telemetry({ localSink: false }));
+    const session = await app.openSession("telemetry-injected");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 930_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    }))).toEqual([]);
+    await app.runtime.telemetry.flush();
+    await app.runtime.telemetrySpans.flush();
+    // The durable pipeline is Runtime-owned wiring: whichever Telemetry the
+    // Runtime uses, spans and framework events land in the read model.
+    expect(app.runtime.telemetrySpans.snapshot().storedSpans).toBeGreaterThan(0);
+    await app.runtime.telemetryJournal.flush();
+    const frameworkLogs = app.runtime.telemetryJournal
+      .readBatch(0n, 1_000)
+      .filter((entry) => entry.kind === "log" && entry.source === "framework");
+    expect(frameworkLogs.length).toBeGreaterThan(0);
+  });
+
+  test("an injected Telemetry carrying its own durable sink is rejected", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-conflict-"));
+    const engine = new Engine(schema, join(directory, "data.db"));
+    try {
+      reconcile(engine);
+      expect(() => new Runtime({
+        engine,
+        registry: new Registry(functions),
+        telemetry: new Telemetry({
+          localSink: false,
+          durableSink: { span: () => {} },
+        }),
+      })).toThrow("durable sink");
+    } finally {
+      engine.close("clean");
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("disabled telemetry produces no exported records", async () => {

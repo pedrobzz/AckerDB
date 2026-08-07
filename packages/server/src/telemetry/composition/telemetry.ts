@@ -59,6 +59,7 @@ import type {
   TelemetrySpanRecord,
   TelemetryRecord,
   TelemetryScheduler,
+  TelemetryDurableSink,
   TelemetryOptions,
   TelemetryTraceRetentionSnapshot,
   TelemetrySnapshot,
@@ -291,6 +292,25 @@ export class Telemetry {
         this.observeExportFailure(state);
       }
     }
+  }
+
+  /**
+   * Attach the durable span/event pipeline after construction. The Runtime
+   * owns the read-model stores, which exist only after the Telemetry they
+   * observe — so the sink composes onto WHICHEVER Telemetry the Runtime
+   * uses, injected or constructed; an instance already carrying a sink has
+   * two would-be owners and is rejected loudly. Disabled telemetry records
+   * nothing, durable or otherwise: attaching is an explicit no-op.
+   */
+  attachDurableSink(sink: TelemetryDurableSink): void {
+    const state = this.state;
+    if (!state) return;
+    if (state.durableSink !== undefined) {
+      throw new TypeError(
+        "this Telemetry already carries a durable sink — the Runtime owns the durable pipeline",
+      );
+    }
+    state.durableSink = sink;
   }
 
   [OPEN_OPERATION_TRACE](input: OperationTraceInput): OperationTraceHandle {

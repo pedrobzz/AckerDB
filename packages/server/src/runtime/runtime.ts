@@ -271,14 +271,16 @@ export class Runtime implements RuntimePort {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
             },
-            // Framework events become durable journal rows and every span
-            // persists durably; the closures bind lazily because the
-            // read-model owners construct after telemetry.
-            durableSink: {
-              span: (record) => void this.telemetrySpans.append(record),
-              event: (record) => this.applicationSignals.framework(record),
-            },
           });
+    // Framework events become durable journal rows and every span persists
+    // durably — on WHICHEVER Telemetry this Runtime uses, injected or
+    // constructed; the closures bind lazily because the read-model owners
+    // construct after telemetry. An instance already carrying a sink is
+    // rejected inside attach: silent read-model divergence is not a mode.
+    this.telemetry.attachDurableSink({
+      span: (record) => void this.telemetrySpans.append(record),
+      event: (record) => this.applicationSignals.framework(record),
+    });
     this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
     this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
       this.telemetry,

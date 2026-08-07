@@ -50,7 +50,8 @@ export interface TelemetryState {
   readonly scheduler: TelemetryScheduler;
   readonly exporter?: TelemetryExporter;
   readonly localSink?: (safeJsonLine: string) => void;
-  readonly durableSink?: TelemetryDurableSink;
+  /** Mutable: the Runtime attaches its durable pipeline after construction. */
+  durableSink?: TelemetryDurableSink;
   readonly metricSeries: Set<string>;
   readonly aggregation: TelemetryAggregation;
   publicTraceIndex: Map<string, MutableTraceRetention>;
