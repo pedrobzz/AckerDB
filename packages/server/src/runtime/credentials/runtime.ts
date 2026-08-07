@@ -53,6 +53,8 @@ export interface RuntimeCredentialsOptions {
   readonly subscribeInvalidation: (
     listener: (invalidation: PrincipalInvalidation) => void,
   ) => () => void;
+  /** Publishes one account invalidation through the same boundary channel. */
+  readonly publishAccountInvalidation: (account: ExternalAccount) => void;
   readonly revocationDeadlineMs: number;
 }
 
@@ -116,6 +118,64 @@ export class RuntimeCredentials {
   /** True when the account is the vault's synthetic issuer. */
   isVaultAccount(account: ExternalAccount): boolean {
     return account.issuer === CREDENTIAL_ISSUER;
+  }
+
+  /**
+   * The external flank of descendant invalidation: an application-account
+   * invalidation (a resolver grant narrowed, a provider revocation) names the
+   * ANCESTOR's account, while live descendant sessions and leases match on
+   * their own synthetic `ackerdb:credentials` accounts. Re-publish per
+   * descendant token through the same boundary channel, with the same
+   * `descendantTokenIds` walk vault-origin changes stage in-transaction —
+   * one invalidation story, two origins.
+   */
+  propagateExternalInvalidations(
+    subscribe: (listener: (invalidation: PrincipalInvalidation) => void) => void,
+  ): void {
+    subscribe((invalidation) => {
+      // Vault-origin invalidations already staged their exact descendant
+      // set; re-walking them would only echo.
+      if (invalidation.issuer === CREDENTIAL_ISSUER) return;
+      void this.publishDescendantInvalidations(invalidation).catch((error) => {
+        // Descendants keep authority until their next verification if this
+        // read fails; say so instead of hiding it.
+        console.warn(
+          `[ackerdb] credential descendant invalidation for issuer ${invalidation.issuer} failed:`,
+          error,
+        );
+      });
+    });
+  }
+
+  private async publishDescendantInvalidations(
+    invalidation: PrincipalInvalidation,
+  ): Promise<void> {
+    const tokens = await this.options.reads().submit(
+      (connection) => {
+        const vault = this.options.engine[credentialVaultOwner];
+        const identities = invalidation.subject === undefined
+          ? this.options.engine.identitiesForIssuer(connection, invalidation.issuer)
+          : (() => {
+              const identity = this.options.engine.identityForAccount(
+                connection,
+                invalidation.issuer,
+                invalidation.subject,
+              );
+              return identity === null ? [] : [identity];
+            })();
+        return identities.flatMap((identity) => vault.descendantTokenIds(connection, identity));
+      },
+      {
+        operation: "procedure",
+        bytes: 1,
+        fairnessKey: "internal:credential-invalidation",
+        signal: this.options.operationSignal(),
+      },
+      false,
+    );
+    for (const tokenId of tokens) {
+      this.options.publishAccountInvalidation({ issuer: CREDENTIAL_ISSUER, subject: tokenId });
+    }
   }
 
   /** Resolve a verified vault account to its child Identity; fails closed when revoked. */

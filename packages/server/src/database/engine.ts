@@ -1643,6 +1643,14 @@ export class Engine {
     return account === null ? null : account.identity as Identity;
   }
 
+  /** Every Identity holding an account with one issuer — issuer-wide invalidations fan out over it. */
+  identitiesForIssuer(connection: Database, issuer: string): readonly Identity[] {
+    const rows = connection
+      .query("SELECT DISTINCT identity FROM _ackerdb_identity_accounts WHERE issuer = ?")
+      .all(issuer) as { identity: bigint }[];
+    return rows.map((row) => row.identity as Identity);
+  }
+
   /** Resolve or provision one exact account. The caller must own the writer transaction. */
   resolveIdentity(issuer: string, subject: string): Identity {
     const existing = this.identityForAccount(this.writer, issuer, subject);

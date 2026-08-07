@@ -246,9 +246,18 @@ export class Runtime implements RuntimePort {
       ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
       ...(options.scopes === undefined ? {} : { vocabulary: options.scopes }),
       subscribeInvalidation: (listener) => this.authInvalidation.subscribeDirect(listener),
+      publishAccountInvalidation: (account) => void this.authInvalidation.publishAccount(account),
       revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
     });
     this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
+    // External-account invalidations re-publish per descendant credential;
+    // the verifier channel carries both provider- and boundary-origin ones.
+    if (this.authInvalidation.verifier !== undefined) {
+      const verifier = this.authInvalidation.verifier;
+      this.credentials.propagateExternalInvalidations(
+        (listener) => void verifier.subscribeInvalidation(listener),
+      );
+    }
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);

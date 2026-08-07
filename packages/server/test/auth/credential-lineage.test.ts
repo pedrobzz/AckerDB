@@ -9,7 +9,11 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { CREDENTIAL_ISSUER, parseCredentialToken } from "../../src/auth/credential-token.ts";
-import type { UserPrincipal } from "../../src/auth/credentials.ts";
+import type {
+  CredentialVerifier,
+  PrincipalInvalidation,
+  UserPrincipal,
+} from "../../src/auth/credentials.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session/contract.ts";
 import {
@@ -145,6 +149,74 @@ describe("credential delegation lineage", () => {
     expect(credentialCount(engine)).toBe(3n);
     const fresh = await runtime.authenticateCredential(grandchild.token, "narrow-fresh");
     expect((fresh as UserPrincipal).scopes).toEqual(["orders.get"]);
+  });
+
+  test("an external ancestor invalidation reaches every live credential descendant", async () => {
+    const externalListeners = new Set<(invalidation: PrincipalInvalidation) => void>();
+    const external = (invalidation: PrincipalInvalidation): void => {
+      for (const listener of [...externalListeners]) listener(invalidation);
+    };
+    const appVerifier: CredentialVerifier = {
+      revocationBound: { kind: "invalidation", deadlineMs: 1_000 },
+      subscribeInvalidation: (listener) => {
+        externalListeners.add(listener);
+        return () => externalListeners.delete(listener);
+      },
+      verify: async () => {
+        throw new Error("no external bearer is verified in this test");
+      },
+    };
+    const { runtime } = fixture(databasePath("ackerdb-credential-external-"), appVerifier);
+    const { child, grandchild } = await chain(runtime, ["orders.all", "orders.get"]);
+
+    const published: PrincipalInvalidation[] = [];
+    runtime.credentialVerifier!.subscribeInvalidation((invalidation) => {
+      published.push(invalidation);
+    });
+
+    // Live delegated authority at two depths, held across the change.
+    const childLease = await runtime.acquireCredentialLease(
+      parseCredentialToken(child.token)!,
+      "external-child-lease",
+    );
+    const grandchildLease = await runtime.acquireCredentialLease(
+      parseCredentialToken(grandchild.token)!,
+      "external-grandchild-lease",
+    );
+
+    // The application narrows the ancestor's resolver grant and publishes the
+    // account invalidation live sessions and leases re-authorize on.
+    external({ issuer: "https://issuer.test/", subject: "lineage-owner" });
+    const deadline = Date.now() + 2_000;
+    while (!grandchildLease.signal.aborted && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+
+    // Both descendants abort immediately; matching is by their own synthetic
+    // account, so the propagation must have re-published per token id.
+    expect(childLease.signal.aborted).toBe(true);
+    expect(grandchildLease.signal.aborted).toBe(true);
+    childLease.release();
+    grandchildLease.release();
+    const subjects = published
+      .filter((invalidation) => invalidation.issuer === CREDENTIAL_ISSUER)
+      .map((invalidation) => invalidation.subject)
+      .sort();
+    expect(subjects).toContain(child.id);
+    expect(subjects).toContain(grandchild.id);
+
+    // An issuer-wide invalidation (no subject) reaches descendants too.
+    const fresh = await runtime.acquireCredentialLease(
+      parseCredentialToken(grandchild.token)!,
+      "external-issuer-wide-lease",
+    );
+    external({ issuer: "https://issuer.test/" });
+    const wideDeadline = Date.now() + 2_000;
+    while (!fresh.signal.aborted && Date.now() < wideDeadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(fresh.signal.aborted).toBe(true);
+    fresh.release();
   });
 
   test("scope resolution fails closed for a revoked vault credential", async () => {
