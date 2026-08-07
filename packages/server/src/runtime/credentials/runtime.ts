@@ -111,11 +111,6 @@ export class RuntimeCredentials {
     );
   };
 
-  /** True when the account is the vault's synthetic issuer. */
-  isVaultAccount(account: ExternalAccount): boolean {
-    return account.issuer === CREDENTIAL_ISSUER;
-  }
-
   /** Resolve a verified vault account to its Identity; fails closed when revoked. */
   async identityFor(account: ExternalAccount, signal?: AbortSignal): Promise<Identity> {
     this.options.assertReady();
