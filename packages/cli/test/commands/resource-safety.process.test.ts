@@ -378,7 +378,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
     rejectOpen = reject;
     socket.once("connect", () => {
       socket.write([
-        "GET /ws HTTP/1.1",
+        "GET /_ws HTTP/1.1",
         "Host: 127.0.0.1",
         "Upgrade: websocket",
         "Connection: Upgrade",
@@ -1084,7 +1084,7 @@ processResourceTest(
   const processHarness = spawnFixture(dir, port);
   await processHarness.waitForCount("@@ready", 1);
   const base = `http://127.0.0.1:${port}`;
-  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const wsUrl = `ws://127.0.0.1:${port}/_ws`;
 
   // Warm every measured path so the baseline excludes one-time module/JIT work.
   const warm = await connectWebSocket(wsUrl);
@@ -1171,7 +1171,7 @@ processResourceTest(
   const unread = await pausedWebSocket(port);
   await processHarness.waitForCount("@@large-eval", 1);
 
-  const connectionExcess = await fetch(`${base}/ws`, {
+  const connectionExcess = await fetch(`${base}/_ws`, {
     headers: { connection: "close" },
   });
   expect(connectionExcess.status).toBe(503);
@@ -1542,7 +1542,7 @@ processResourceTest(
 
   await eventually(
     async () => {
-      const response = await fetch(`${base}/ws`, { headers: { connection: "close" } });
+      const response = await fetch(`${base}/_ws`, { headers: { connection: "close" } });
       await response.arrayBuffer();
       return response.status;
     },

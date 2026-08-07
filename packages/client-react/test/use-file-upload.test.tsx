@@ -124,12 +124,12 @@ describe("useFileUpload", () => {
     acceptSession(
       current,
       mutation,
-      "https://public-files.test/api/_files/uploads/31.current-session",
+      "https://public-files.test/_files/uploads/31.current-session",
     );
 
     expect(mustOk(await result)).toBe(71n as FileId);
     expect(requests.map(({ url }) => url)).toEqual([
-      "http://two.test/api/_files/uploads/31.current-session",
+      "http://two.test/_files/uploads/31.current-session",
     ]);
     expect(harness.sockets[0]!.framesOf("m")).toHaveLength(0);
 
@@ -170,7 +170,7 @@ describe("useFileUpload", () => {
     acceptSession(
       socket,
       mutation,
-      "https://public-files.test/api/_files/uploads/32.queued-session",
+      "https://public-files.test/_files/uploads/32.queued-session",
     );
 
     expect(mustOk(await result!)).toBe(72n as FileId);

@@ -6,6 +6,11 @@ import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
 import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import {
+  ACKERDB_HTTP_ROUTES,
+  claimsReservedName,
+  isAckerDBHttpRoute,
+} from "../../src/transport/http-surface.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 const exposed = procedure({
@@ -74,6 +79,56 @@ describe("HTTP-exposed function paths", () => {
     const grouped = { ...exposed, apiPath: "internal" } as never;
     expect(() => new Registry({ _internal: { echo: grouped } }, ["internal"])).toThrow(
       'claims AckerDB-owned path "/internal/_internal/echo"; "_" is reserved to AckerDB',
+    );
+  });
+
+  test("owns the root the protocol endpoints moved to, and nothing deeper", () => {
+    // The protocol endpoints all live behind the marker at the root, and the
+    // operational ones deliberately do not — the reserved-name list is what
+    // keeps an application route off `/live`, `/ready`, and `/status`.
+    for (const path of ["/_ws", "/_sse/ack", "/_realtime", "/_files/x", "/_openapi.json"]) {
+      expect(isAckerDBHttpRoute(path)).toBe(true);
+    }
+    for (const operational of [
+      ACKERDB_HTTP_ROUTES.live,
+      ACKERDB_HTTP_ROUTES.ready,
+      ACKERDB_HTTP_ROUTES.status,
+    ]) {
+      expect(operational.startsWith("/_")).toBe(false);
+      expect(isAckerDBHttpRoute(operational)).toBe(true);
+    }
+
+    // One reservation, applied wherever a path is claimed: the group, the
+    // module namespace under it, and an MCP endpoint's free-form path alike.
+    expect(claimsReservedName("/api/_realtime")).toBe(true);
+    expect(claimsReservedName("/_ws")).toBe(true);
+    expect(claimsReservedName("/mcp/_private")).toBe(true);
+    expect(claimsReservedName("/api/notes/_echo")).toBe(false);
+    expect(claimsReservedName("/mcp/my_endpoint")).toBe(false);
+  });
+
+  test("refuses an MCP endpoint reaching into a marked name", () => {
+    // `/api/_realtime` holds no framework route any more, but the marker is
+    // still AckerDB's — and the rule cannot hold for functions while lapsing
+    // for the one surface that picks its path by hand.
+    const squatter = mcp({
+      name: "squatter",
+      auth: mcpAuth({ name: "squatter" }),
+      path: "/api/_realtime",
+      tools: {},
+    });
+    expect(() => new Registry({ mcp: { squatter } })).toThrow(
+      'MCP "squatter" path "/api/_realtime" claims a "_"-marked name reserved to AckerDB',
+    );
+    // A path that really is a built-in route says so instead.
+    const collider = mcp({
+      name: "collider",
+      auth: mcpAuth({ name: "collider" }),
+      path: "/_ws",
+      tools: {},
+    });
+    expect(() => new Registry({ mcp: { collider } })).toThrow(
+      'MCP "collider" path "/_ws" collides with AckerDB route "/_ws"',
     );
   });
 

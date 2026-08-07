@@ -41,9 +41,10 @@ import {
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/scopes.ts";
 import {
+  claimsReservedName,
+  RESERVED_MARKER,
   exposedHttpKind,
   isAckerDBHttpRoute,
-  RESERVED_MARKER,
   type ExposedHttpKind,
 } from "../transport/http-surface.ts";
 import {
@@ -173,8 +174,18 @@ export class Registry {
       // `aiTools`, so it neither collides with an application module nor
       // leaves a route advertising a tool list no caller may read.
       if (value.path !== null) {
+        // Two refusals, not one message: a path that hits a built-in route and
+        // a path that reaches into a marked name send the developer looking in
+        // very different places.
         if (isAckerDBHttpRoute(value.path)) {
-          throw new Error(`MCP "${value.name}" path "${value.path}" collides with a AckerDB route`);
+          throw new Error(
+            `MCP "${value.name}" path "${value.path}" collides with AckerDB route "${value.path}"`,
+          );
+        }
+        if (claimsReservedName(value.path)) {
+          throw new Error(
+            `MCP "${value.name}" path "${value.path}" claims a "${RESERVED_MARKER}"-marked name reserved to AckerDB`,
+          );
         }
         const pathOwner = this.mcpByPath.get(value.path);
         if (pathOwner !== undefined) {
@@ -278,11 +289,10 @@ export class Registry {
   /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
   private claimApplicationHttpPath(group: string, address: string, label: string): string {
     const path = httpPathForAddress(group, address);
-    // `_` marks a name as the framework's own. The group carries that rule
-    // already; this is the module namespace directly under it — the `/api/_`
-    // reservation, stated for every group rather than the default alone.
-    // Deeper segments are the application's, as they always were.
-    if (isAckerDBHttpRoute(path) || address.startsWith(RESERVED_MARKER)) {
+    // `claimsReservedName` does the work here: a validated group can never
+    // begin with `_`, so an address-derived path cannot reach a built-in route
+    // — the first arm is belt and braces against a future route shape.
+    if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
       throw new Error(
         `${label} "${address}" claims AckerDB-owned path "${path}"; "${RESERVED_MARKER}" is reserved to AckerDB`,
       );

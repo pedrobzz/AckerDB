@@ -784,7 +784,7 @@ export class AckerDBClient {
   constructor(options: AckerDBClientOptions) {
     this.httpUrl = options.url.replace(/\/$/, "");
     if (!/^https?:\/\//.test(this.httpUrl)) throw new TypeError("url must use http or https");
-    this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/ws`;
+    this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/_ws`;
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.scheduler = Object.freeze({
       now: () => this.clock.now(),
@@ -2904,7 +2904,7 @@ export class AckerDBClient {
           const cancellationError = localError("unavailable", "SSE acknowledgment was canceled", "sse");
           const response = await raceWithAbort(
             (async () =>
-              this.fetcher(`${this.httpUrl}/api/_sse/ack`, {
+              this.fetcher(`${this.httpUrl}/_sse/ack`, {
                 method: "POST",
                 headers: { "content-type": "text/plain;charset=UTF-8" },
                 body,

@@ -151,7 +151,7 @@ function createApp(): App {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 // Records the exact order of SSE request and acknowledgement traffic; the
 // stream body itself is untouched. Resolves `fetch` at call time: after

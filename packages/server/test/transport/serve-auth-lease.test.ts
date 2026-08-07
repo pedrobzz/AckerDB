@@ -56,7 +56,7 @@ function acknowledgeSse(
   message: SseMessage,
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${base}/api/_sse/ack`, {
+  return fetch(`${base}/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({

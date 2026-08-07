@@ -111,7 +111,7 @@ function sseEvent(frame: unknown): string {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 /** The group is the root: "stream.ordered" streams from "/api/stream/ordered". */
 function ssePath(ref: string, group = "api"): string {
@@ -1292,7 +1292,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/_sse/ack")) return fake204;
+          if (url.endsWith("/_sse/ack")) return fake204;
           throw new Error(`unexpected HTTP route ${url}`);
         },
       });
@@ -1588,7 +1588,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgments++;
               return new Response(null, { status: 204 });
             }
@@ -1628,7 +1628,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
             { close: false, onCancel: () => cancellations++ },
           );
         }
-        if (url.endsWith("/api/_sse/ack")) {
+        if (url.endsWith("/_sse/ack")) {
           acknowledgments++;
           return new Response(null, { status: 204 });
         }
@@ -1676,7 +1676,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/_sse/ack")) {
+          if (url.endsWith("/_sse/ack")) {
             return openResponse("x".repeat(257), () => {
               acknowledgmentCancellations++;
               return adversarialCancellation(behavior);
@@ -1738,7 +1738,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgmentAttempts++;
               return open503;
             }
@@ -1784,7 +1784,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 { stallMs: "100", close: false },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgmentAttempts++;
               return late.promise;
             }

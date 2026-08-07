@@ -466,7 +466,7 @@ describe("File HTTP flow", () => {
   test("invalid bearer upload URLs never enter the database writer", async () => {
     const before = engine.commitVersion();
     const response = await fetch(
-      `${base}/api/_files/uploads/9223372036854775807.${"x".repeat(43)}`,
+      `${base}/_files/uploads/9223372036854775807.${"x".repeat(43)}`,
       { method: "PUT", body: "untrusted" },
     );
 
@@ -753,7 +753,7 @@ describe("File HTTP flow", () => {
     })).status).toBe(404);
     await Bun.sleep(2);
     expect((await fetch(path(created.data.expiring.url))).status).toBe(404);
-    expect((await fetch(`${base}/api/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
+    expect((await fetch(`${base}/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
   });
 
   test("reports authenticated transfer saturation as retryable overload", async () => {

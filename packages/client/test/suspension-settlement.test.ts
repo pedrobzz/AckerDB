@@ -49,7 +49,7 @@ const encoder = new TextEncoder();
 interface HttpJournal {
   /** Chronological per-function stream paths the client dispatched to. */
   readonly dispatches: string[];
-  /** Every `/api/_sse/ack` request the client issued, parsed. */
+  /** Every `/_sse/ack` request the client issued, parsed. */
   readonly acknowledgments: SseAckRequest[];
 }
 
@@ -72,7 +72,7 @@ function harness(
   const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
   const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
-    if (path === "/api/_sse/ack") {
+    if (path === "/_sse/ack") {
       journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
       return Promise.resolve(new Response(null, { status: 204 }));
     }
@@ -539,7 +539,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
         clock,
         fetch: (url, init) => {
           const path = new URL(url).pathname;
-          if (path === "/api/_sse/ack") {
+          if (path === "/_sse/ack") {
             heldAcks++;
             journalAcks.push(parseSseAckRequest(decode(String(init?.body))));
             return new Promise<Response>(() => {});
@@ -780,7 +780,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       clock,
       fetch: (url, init) => {
         const path = new URL(url).pathname;
-        if (path !== "/api/_sse/ack") requests.push(path);
+        if (path !== "/_sse/ack") requests.push(path);
         return fetch(url, init);
       },
       lifecycle: (livePort) => {

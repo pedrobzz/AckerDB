@@ -2,9 +2,17 @@
  * The canonical HTTP surface: the paths AckerDB's listener owns, the methods
  * each exposed kind answers, and the headers a call carries beside its body.
  *
- * Everything AckerDB owns under `/api/` lives behind the `_` prefix, so an
- * application owns every other path there and a future built-in route can
- * never collide with an existing application module.
+ * The framework's own routes live at the root behind the `_` marker, which no
+ * `apiPath` may begin with. `/api/` is one function group among however many an
+ * application names, so a protocol endpoint nested under it would be squatting
+ * in that group's namespace; at the root, `_` belongs to AckerDB and every
+ * other path belongs to the application.
+ *
+ * The operational endpoints are the deliberate exception. `/live`, `/ready`,
+ * and `/status` carry no marker because they are the contract with the outside
+ * world — Kubernetes probes, load-balancer health checks — and their names live
+ * in configuration that is not ours to rename. The reserved-name list below is
+ * what stops an application route from hijacking them.
  *
  * The listener and the OpenAPI document both read this module, so a documented
  * method or header cannot drift from the one the surface actually serves.
@@ -15,12 +23,14 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   live: "/live",
   ready: "/ready",
   status: "/status",
-  websocket: "/ws",
-  sseAck: "/api/_sse/ack",
-  realtime: "/api/_realtime",
-  realtimePrepare: "/api/_realtime/prepare",
+  websocket: "/_ws",
+  sseAck: "/_sse/ack",
+  realtime: "/_realtime",
+  realtimePrepare: "/_realtime/prepare",
+  /** The root of the File byte routes; the segments after it name one grant. */
+  files: "/_files",
   /** Served only when the serve options ask for it; a 404 otherwise. */
-  openapi: "/api/_openapi.json",
+  openapi: "/_openapi.json",
 } as const);
 
 /**
@@ -31,13 +41,31 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
  */
 export const RESERVED_MARKER = "_";
 
-/** The reserved prefix for every AckerDB-owned route under `/api/`. */
-const ACKERDB_RESERVED_API_PREFIX = `/api/${RESERVED_MARKER}`;
+/** The reserved root: every AckerDB-owned route lives behind it. */
+const ACKERDB_RESERVED_ROOT = `/${RESERVED_MARKER}`;
 
 const builtinPaths = new Set<string>(Object.values(ACKERDB_HTTP_ROUTES));
 
 export function isAckerDBHttpRoute(path: string): boolean {
-  return builtinPaths.has(path) || path.startsWith(ACKERDB_RESERVED_API_PREFIX);
+  return builtinPaths.has(path) || path.startsWith(ACKERDB_RESERVED_ROOT);
+}
+
+/**
+ * Whether a path an application wants to claim reaches into a name marked as
+ * the framework's own. `_` is AckerDB's at the root, where the protocol
+ * endpoints live, and directly under a group, so a future built-in route can
+ * never collide with an application's. Segments deeper than that are the
+ * application's own business.
+ *
+ * One predicate for every claiming site — address-derived routes and the
+ * free-form paths MCP endpoints choose alike — so the reservation cannot hold
+ * on one surface and lapse on another.
+ */
+export function claimsReservedName(path: string): boolean {
+  return path
+    .split("/")
+    .slice(1, 3)
+    .some((segment) => segment.startsWith(RESERVED_MARKER));
 }
 
 /** Every registered kind the exposed surface serves, narrowed from an erased kind. */

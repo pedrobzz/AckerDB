@@ -197,7 +197,7 @@ function createApp(): App {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 // Records SSE request and acknowledgement traffic so the tests can prove no
 // hidden replacement stream starts and no acknowledgement leaks after

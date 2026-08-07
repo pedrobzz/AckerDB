@@ -74,11 +74,11 @@ function acceptSession(
 }
 
 function advertisedUploadUrl(secret: string): string {
-  return `https://public-files.test/api/_files/uploads/${secret}`;
+  return `https://public-files.test/_files/uploads/${secret}`;
 }
 
 function clientUploadUrl(secret: string): string {
-  return `http://ackerdb.test/api/_files/uploads/${secret}`;
+  return `http://ackerdb.test/_files/uploads/${secret}`;
 }
 
 async function eventually(predicate: () => boolean, description: string): Promise<void> {
@@ -129,14 +129,14 @@ describe("AckerDBClient files", () => {
     acceptSession(
       socket,
       mutation,
-      "http://127.0.0.1:3000/api/_files/uploads/17.session-secret",
+      "http://127.0.0.1:3000/_files/uploads/17.session-secret",
     );
 
     expect(mustOk(await uploaded)).toBe(42n as FileId);
     expect(requests).toHaveLength(1);
     const request = requests[0]!;
     const headers = new Headers(request.init?.headers);
-    expect(request.url).toBe("http://ackerdb.test/api/_files/uploads/17.session-secret");
+    expect(request.url).toBe("http://ackerdb.test/_files/uploads/17.session-secret");
     expect(request.init?.method).toBe("PUT");
     expect(request.init?.body).toBe(file);
     expect(headers.get("content-type")).toBe("application/pdf");
@@ -201,7 +201,7 @@ describe("AckerDBClient files", () => {
     });
 
     const first = await client.files.fetch(
-      "http://ackerdb.test/api/_files/grants/grant-a",
+      "http://ackerdb.test/_files/grants/grant-a",
       {
         headers: {
           authorization: "Bearer caller-spoof",
@@ -226,7 +226,7 @@ describe("AckerDBClient files", () => {
     });
     await refresh;
     const second = await client.files.fetch(
-      "http://ackerdb.test/api/_files/grants/grant-b",
+      "http://ackerdb.test/_files/grants/grant-b",
       {
         method: "HEAD",
         headers: { authorization: "Bearer caller-spoof" },
@@ -236,8 +236,8 @@ describe("AckerDBClient files", () => {
     expect(second.body).toBeNull();
 
     expect(requests.map((request) => request.url)).toEqual([
-      "http://ackerdb.test/api/_files/grants/grant-a",
-      "http://ackerdb.test/api/_files/grants/grant-b",
+      "http://ackerdb.test/_files/grants/grant-a",
+      "http://ackerdb.test/_files/grants/grant-b",
     ]);
     expect(new Headers(requests[0]!.init?.headers).get("authorization")).toBe("Bearer token-a");
     expect(new Headers(requests[1]!.init?.headers).get("authorization")).toBeNull();
@@ -260,19 +260,19 @@ describe("AckerDBClient files", () => {
     });
 
     await (await client.files.fetch(
-      "https://public-files.test/api/_files/grants/17.secret",
+      "https://public-files.test/_files/grants/17.secret",
     )).text();
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.url).toBe("http://ackerdb.test/api/_files/grants/17.secret");
+    expect(requests[0]!.url).toBe("http://ackerdb.test/_files/grants/17.secret");
     expect(new Headers(requests[0]!.init?.headers).get("authorization")).toBe(
       "Bearer must-not-leak",
     );
 
     for (const unsafe of [
       "http://ackerdb.test/api/private-data",
-      "https://user:password@public-files.test/api/_files/grants/17.secret",
-      "https://public-files.test/api/_files/grants/17.secret?redirect=https://attacker.test",
-      "https://public-files.test/api/_files/grants/17.secret#fragment",
+      "https://user:password@public-files.test/_files/grants/17.secret",
+      "https://public-files.test/_files/grants/17.secret?redirect=https://attacker.test",
+      "https://public-files.test/_files/grants/17.secret#fragment",
     ]) {
       await expect(client.files.fetch(unsafe)).rejects.toThrow(
         "File grant URL has an invalid AckerDB grant shape",
@@ -303,7 +303,7 @@ describe("AckerDBClient files", () => {
     const abort = new AbortController();
 
     const response = await client.files.fetch(
-      "http://ackerdb.test/api/_files/grants/streaming-grant",
+      "http://ackerdb.test/_files/grants/streaming-grant",
       { signal: abort.signal },
     );
     expect(response.bodyUsed).toBe(false);

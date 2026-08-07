@@ -298,7 +298,7 @@ Registration errors, which also cover untyped callers constructing a
 - a record key that fails the tool-name pattern or the 63-byte limit;
 - duplicate tool names within an endpoint, and duplicate endpoint names or
   paths (both already checked);
-- an endpoint path colliding with a built-in route, the `/api/_` prefix, or an
+- an endpoint path colliding with a built-in route, the reserved `_` root, or an
   exposed function path (already checked).
 
 ## Client impact
