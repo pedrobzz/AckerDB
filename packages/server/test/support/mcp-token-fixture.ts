@@ -2,7 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  Err,
   PROTOCOL_VERSION,
+  Status,
   encode,
   type MutationMessage,
   type QueryMessage,
@@ -213,6 +215,21 @@ const revokeAgentToken = typedMutation({
   handler: (ctx, args) => credentials.revoke(ctx, args.id),
 });
 
+/** Revoke inside a nested scope that then rolls back, and report that it did. */
+const revokeThenRollback = typedProcedure({
+  description: "Revoke a credential in a nested scope that rolls back.",
+  access: "authenticated",
+  args: { id: v.string() },
+  returns: v.object({ rolledBack: v.boolean() }),
+  handler: async (ctx, args) => {
+    const attempt = await ctx.tx((tx) => {
+      credentials.revoke(tx, args.id);
+      return Err("rolled-back", {}, Status.Conflict);
+    });
+    return { rolledBack: !attempt.ok };
+  },
+});
+
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
@@ -262,6 +279,7 @@ const modules = {
     listScopedTokens,
     renameAgentToken,
     revokeAgentToken,
+    revokeThenRollback,
     updateAgentTokenMetadata,
     updateScopedToken,
   },

@@ -86,34 +86,32 @@ export interface CredentialContextCapability {
 }
 
 const capabilities = new WeakMap<object, CredentialContextCapability>();
-const staged = new WeakMap<WriteCollector, ExternalAccount[]>();
+const NO_INVALIDATIONS: readonly ExternalAccount[] = Object.freeze([]);
 
 /**
- * Stage transaction-local authority changes as data; only the commit owner
- * publishes them. One change carries every token id it reaches — a credential
- * and its delegates — because a live descendant matches on its own subject and
- * would otherwise keep an authority its source no longer has.
+ * Stage transaction-local authority changes on the write set, where the
+ * savepoint journal already covers them: a nested revoke that rolls back must
+ * not invalidate anything. One change carries every token id it reaches — a
+ * credential and its delegates — because a live descendant matches on its own
+ * subject and would otherwise keep an authority its source no longer has.
  */
 function stageCredentialInvalidations(
   writes: WriteCollector,
   tokenIds: readonly string[],
 ): void {
-  if (tokenIds.length === 0) return;
-  let invalidations = staged.get(writes);
-  if (invalidations === undefined) staged.set(writes, (invalidations = []));
-  for (const tokenId of tokenIds) {
-    invalidations.push(Object.freeze({ issuer: CREDENTIAL_ISSUER, subject: tokenId }));
-  }
+  for (const tokenId of tokenIds) writes.credentialInvalidations.push(tokenId);
 }
 
 /** Consume one committed transaction's staged authority changes exactly once. */
 export function takeCredentialInvalidations(
   writes: WriteCollector,
 ): readonly ExternalAccount[] {
-  const invalidations = staged.get(writes);
-  if (invalidations === undefined) return [];
-  staged.delete(writes);
-  return invalidations;
+  const tokenIds = writes.credentialInvalidations;
+  if (tokenIds.length === 0) return NO_INVALIDATIONS;
+  const accounts = tokenIds.map((subject) =>
+    Object.freeze({ issuer: CREDENTIAL_ISSUER, subject }));
+  tokenIds.length = 0;
+  return Object.freeze(accounts);
 }
 
 /** Expose reserved Engine state only while one exact Runtime invocation is active. */

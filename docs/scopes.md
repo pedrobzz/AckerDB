@@ -71,6 +71,18 @@ field, drawn from the same vocabulary. One deliberate difference: a tool entry
 is a curation surface, so even system authority passes a scoped entry only
 through an explicit local grant.
 
+**What a local delegation grants.** `mcp.aiTools(ctx, { scopes })` is
+application code handing a model a curated tool set, and the scopes it names are
+a literal in that code — never caller input. So for an ordinary user the
+delegation carries the *application's* authority: the procedure has already
+passed its own access policy, and what it then lends the model is its decision,
+exactly as calling the function directly would be. For a **credential-backed**
+caller the delegation is intersected with that credential's own grant, because
+such a caller is itself a delegate and the child invariant must not be
+sidesteppable through the AI adapter. Authority never exceeds its source; for an
+external user the source is the application, and for a credential it is the
+credential.
+
 ## Grants and wildcards
 
 A grant is a set of **patterns**. A pattern is either a concrete scope or a

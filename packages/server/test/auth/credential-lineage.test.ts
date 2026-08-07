@@ -5,8 +5,12 @@
  * would be an authority it kept forever.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { PROTOCOL_VERSION } from "@ackerdb/core";
 import type { UserPrincipal } from "../../src/auth/credentials.ts";
-import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
+import {
+  CREDENTIAL_ISSUER,
+  parseCredentialToken,
+} from "../../src/auth/credential-token.ts";
 import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import {
@@ -120,6 +124,46 @@ describe("credential delegation lineage", () => {
       .query("SELECT scopes FROM _ackerdb_credentials WHERE token_id = ?")
       .get(grandchild.id) as { scopes: string };
     expect(stored.scopes).toContain("orders.all");
+  });
+
+  test("a revocation that rolls back invalidates nothing", async () => {
+    const { runtime, engine } = start();
+    const alice = await user(runtime, "rollback-owner", FIXTURE_SCOPES);
+    const aliceSession = session(alice, "rollback-owner");
+    await runtime.openSession(aliceSession);
+    const child = await issue(runtime, aliceSession, 1, "Child", ["orders.all"]);
+
+    const lease = await runtime.acquireCredentialLease(
+      parseCredentialToken(child.token)!,
+      "rollback-lease",
+    );
+    try {
+      const attempt = await runtime.procedure(aliceSession, request({
+        v: PROTOCOL_VERSION,
+        t: "p" as const,
+        id: 1,
+        ref: "tokens.revokeThenRollback",
+        args: { id: child.id },
+      })) as { readonly rolledBack: boolean };
+      expect(attempt.rolledBack).toBe(true);
+
+      // The row survived the savepoint rollback, and so did the live lease:
+      // an invalidation for a revocation that never committed would have
+      // terminated a credential that is still perfectly valid.
+      expect(engine.reader
+        .query("SELECT COUNT(*) AS count FROM _ackerdb_credentials WHERE token_id = ?")
+        .get(child.id)).toEqual({ count: 1n });
+      expect(lease.signal.aborted).toBe(false);
+
+      // The same operation, committed, does cancel it.
+      await runtime.mutation(
+        aliceSession,
+        request(mutationMessage(2, "2", { id: child.id }, "tokens.revokeAgentToken")),
+      );
+      expect(lease.signal.aborted).toBe(true);
+    } finally {
+      lease.release();
+    }
   });
 
   test("the lineage walk names the credential and every delegate under it", () => {

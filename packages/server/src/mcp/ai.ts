@@ -208,10 +208,17 @@ function normalizeOptions(
 }
 
 /**
- * A server-side procedure delegates the APPLICATION's authority to the model,
- * so an interactive user principal grants exactly what it asked for. A
- * credential-backed principal is delegated authority itself: its local grant
- * intersects with the credential's, because authority never exceeds its source.
+ * Authority never exceeds its source — and the source differs by caller.
+ *
+ * A server-side procedure delegates the APPLICATION's authority to the model:
+ * the requested scopes are a literal in application code, never caller input,
+ * and the procedure has already passed its own access policy. So for an
+ * ordinary user the delegation carries what the application asked for, exactly
+ * as calling the function directly would.
+ *
+ * A credential-backed principal is itself a delegate, so its source is the
+ * credential: the local grant intersects with what that credential holds, or
+ * the child invariant would be sidesteppable through this adapter.
  */
 function effectiveGrant(
   principal: Principal,
