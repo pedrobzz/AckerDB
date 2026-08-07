@@ -44,6 +44,13 @@ import {
 export const MAX_FILTER_DEPTH = 8;
 /** Contract bound: one expression may hold at most this many clauses and groups. */
 export const MAX_FILTER_NODES = 128;
+/**
+ * Contract bound: comparison values and membership members one expression may
+ * carry. Each becomes one SQL parameter, so this bound is what keeps a filter
+ * clear of SQLite's variable limit while leaving the rest of the statement —
+ * other predicates, the cursor tuple — its own room.
+ */
+export const MAX_FILTER_VALUES = 1_024;
 
 const OPERATORS: Readonly<Record<string, ComparisonOperator>> = {
   eq: "eq",
@@ -154,11 +161,12 @@ export function filterableFields<C extends ObjectShape>(
   };
 }
 
-/** One walk's shared state: collected issues and the remaining node budget. */
+/** One walk's shared state: the issues found and the budgets left to spend. */
 interface Walk {
   readonly issues: FilterIssue[];
   nodes: number;
-  exhausted: boolean;
+  values: number;
+  overflowed: boolean;
 }
 
 class FilterValidator {
@@ -167,8 +175,21 @@ class FilterValidator {
     private readonly fields: ReadonlyMap<string, FieldPlan>,
   ) {}
 
+  /**
+   * Report the first budget an expression overruns and end the walk. Both
+   * budgets exist so an untrusted expression cannot buy work; a wall of
+   * identical issues would be exactly the work they refuse to sell.
+   */
+  private overflow(walk: Walk, path: string, bound: string): undefined {
+    if (!walk.overflowed) {
+      walk.overflowed = true;
+      walk.issues.push({ path, message: `a filter may hold ${bound}` });
+    }
+    return undefined;
+  }
+
   validate(expression: unknown): Result<TableFilter, FilterInvalid> {
-    const walk: Walk = { issues: [], nodes: 0, exhausted: false };
+    const walk: Walk = { issues: [], nodes: 0, values: 0, overflowed: false };
     const node = this.node(expression, "$", 0, walk);
     if (node === undefined || walk.issues.length > 0) {
       return Err("filter.invalid", { issues: Object.freeze(walk.issues) }, Status.BadRequest);
@@ -184,16 +205,8 @@ class FilterValidator {
     depth: number,
     walk: Walk,
   ): ValidatedNode | undefined {
-    walk.nodes++;
-    if (walk.nodes > MAX_FILTER_NODES) {
-      if (!walk.exhausted) {
-        walk.exhausted = true;
-        walk.issues.push({
-          path,
-          message: `a filter may hold at most ${MAX_FILTER_NODES} clauses and groups`,
-        });
-      }
-      return undefined;
+    if (walk.nodes++ >= MAX_FILTER_NODES) {
+      return this.overflow(walk, path, `at most ${MAX_FILTER_NODES} clauses and groups`);
     }
     if (!isPlainObject(raw)) {
       walk.issues.push({ path, message: "expected a filter expression object" });
@@ -301,6 +314,9 @@ class FilterValidator {
       });
       return undefined;
     }
+    if (walk.values++ >= MAX_FILTER_VALUES) {
+      return this.overflow(walk, `${path}.value`, `at most ${MAX_FILTER_VALUES} values`);
+    }
     const checked = this.checked(plan, value, `${path}.value`, walk);
     return checked === undefined
       ? undefined
@@ -323,6 +339,13 @@ class FilterValidator {
     let failed = false;
     for (let index = 0; index < raw.length; index++) {
       const memberPath = `${path}.values[${index}]`;
+      // Every member becomes one SQL parameter, so members are charged against
+      // the same budget a comparison value is. Without this a single clause
+      // could pass validation and then fail inside the compiler — turning the
+      // promise of failures-as-data into a thrown framework error.
+      if (walk.values++ >= MAX_FILTER_VALUES) {
+        return this.overflow(walk, memberPath, `at most ${MAX_FILTER_VALUES} values`);
+      }
       if (raw[index] === null) {
         walk.issues.push({
           path: memberPath,

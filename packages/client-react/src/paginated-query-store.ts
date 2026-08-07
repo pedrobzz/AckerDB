@@ -151,6 +151,16 @@ interface PageSlot<Item, Error extends ApplicationError> {
  * boundary, and until the chain proves itself again the window shows only its
  * proven prefix. A truncated window is honest; an overlapping one is not.
  *
+ * Each page is individually consistent, and the window is consistent across
+ * pages only eventually. One commit that changes two pages produces two
+ * deliveries, and between them the pages sit at different versions: a later
+ * page can land first and be flattened onto a predecessor that is about to
+ * move, so the window can briefly miss or repeat a row that crossed a
+ * boundary. The predecessor's own delivery — already in flight, since the
+ * server sent both — repairs it. Closing that gap would need every
+ * subscription to confirm its currency at every commit, which is a cost the
+ * whole system would pay for a transient one list shows.
+ *
  * The chain lives and dies with committed demand, which is what makes it idle
  * cheap: the last listener leaving releases every page subscription, and a
  * listener returning within the release window continues them untouched.

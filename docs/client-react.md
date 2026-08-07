@@ -238,9 +238,19 @@ write landing anywhere inside the window re-delivers the page it touched, and
 two components resting on the same page share one subscription. Because the
 pages are live, the chain can be contradicted — when a delivery moves a page's
 `nextCursor`, the pages behind it are resubscribed at the new boundary and the
-window shows only the prefix it can still prove. It briefly gets shorter rather
-than ever showing an overlap or a gap. Losing the connection keeps the whole
-window as explicitly stale `items`, exactly like `useQuery`.
+window shows only the prefix it can still prove, getting briefly shorter rather
+than showing an overlap. Losing the connection keeps the whole window as
+explicitly stale `items`, exactly like `useQuery`.
+
+Each page is individually consistent; the window is consistent across pages
+only eventually. One commit that changes two pages sends two deliveries, so
+between them the pages sit at different versions and a row that crossed a page
+boundary can briefly appear twice or not at all. The predecessor's own delivery
+is already in flight and repairs it. This is the cost of a subscription per
+page, and it is the right one: the alternative is every subscription confirming
+its currency at every commit, which the whole system would pay for a transient
+that one list shows. Do not read a paginated window as an atomic snapshot of
+the table.
 
 The window is committed demand, so it is cheap when idle: the last consumer
 leaving releases every page subscription, and a consumer returning within the

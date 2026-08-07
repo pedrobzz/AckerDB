@@ -198,8 +198,11 @@ An expression is either a clause or a group:
   the serializable form mirrors it rather than describing something weaker.
   An empty `all` matches every row and an empty `any` matches none, which is
   also how `noneOf []` and `anyOf []` behave.
-- Bounds are `MAX_FILTER_DEPTH` (8) nested groups and `MAX_FILTER_NODES` (128)
-  clauses and groups. Exceeding either is an issue, not a throw.
+- Bounds are `MAX_FILTER_DEPTH` (8) nested groups, `MAX_FILTER_NODES` (128)
+  clauses and groups, and `MAX_FILTER_VALUES` (1024) comparison values and
+  membership members across the whole expression — each of those becomes one
+  SQL parameter, so the bound is what keeps a filter clear of SQLite's variable
+  limit. Exceeding any of them is an issue, not a throw.
 
 There is no index selection and no way to name one: indexes stay transparent
 and planner-owned (ADR-0008). Every value crosses its column's validator and

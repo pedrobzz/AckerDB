@@ -255,6 +255,7 @@ export {
   filterableFields,
   MAX_FILTER_DEPTH,
   MAX_FILTER_NODES,
+  MAX_FILTER_VALUES,
   type FilterableFields,
   type FilterInvalid,
   type TableFilter,

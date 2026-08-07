@@ -6,6 +6,7 @@ import {
   Engine,
   MAX_FILTER_DEPTH,
   MAX_FILTER_NODES,
+  MAX_FILTER_VALUES,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -149,7 +150,7 @@ describe("filter validation returns its failures as data", () => {
     ]);
   });
 
-  test("depth and node count are contract bounds, also reported as data", () => {
+  test("depth, node count, and value count are bounds, also reported as data", () => {
     let deep: FilterExpression = { field: "fn", op: "eq", value: "x" };
     for (let level = 0; level <= MAX_FILTER_DEPTH; level++) deep = { all: [deep] };
     expect(issuesOf(deep)[0]!.message).toContain("nest deeper");
@@ -161,12 +162,50 @@ describe("filter validation returns its failures as data", () => {
         value: "x",
       })),
     };
-    expect(issuesOf(wide)[0]!.message).toContain("at most");
+    expect(issuesOf(wide)[0]!.message).toContain(`at most ${MAX_FILTER_NODES}`);
     // Groups count too, so a wall of empty groups cannot buy an unbounded walk.
     expect(
       issuesOf({ all: Array.from({ length: MAX_FILTER_NODES }, () => ({ all: [] })) })[0]!
         .message,
-    ).toContain("at most");
+    ).toContain(`at most ${MAX_FILTER_NODES}`);
+  });
+
+  test("membership members are values, so one clause cannot outrun SQLite", () => {
+    const members = Array.from({ length: MAX_FILTER_VALUES + 1 }, (_, index) => `fn-${index}`);
+    const issues = issuesOf({ field: "fn", op: "anyOf", values: members });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toEqual({
+      path: `$.values[${MAX_FILTER_VALUES}]`,
+      message: `a filter may hold at most ${MAX_FILTER_VALUES} values`,
+    });
+
+    // The budget is the whole expression's, not one clause's.
+    const half = Math.ceil(MAX_FILTER_VALUES / 2) + 1;
+    expect(
+      issuesOf({
+        all: [
+          { field: "fn", op: "anyOf", values: members.slice(0, half) },
+          { field: "fn", op: "anyOf", values: members.slice(0, half) },
+        ],
+      })[0]!.message,
+    ).toContain(`at most ${MAX_FILTER_VALUES} values`);
+
+    // A rejected member list reports its bound, never a per-member issue wall.
+    expect(
+      issuesOf({
+        field: "fn",
+        op: "anyOf",
+        values: Array.from({ length: MAX_FILTER_VALUES * 4 }, () => null),
+      }),
+    ).toHaveLength(MAX_FILTER_VALUES + 1);
+
+    // Exactly at the bound the filter is valid and compiles.
+    const exact = fields.validate({
+      field: "fn",
+      op: "anyOf",
+      values: members.slice(0, MAX_FILTER_VALUES),
+    });
+    expect(exact.ok).toBe(true);
   });
 });
 
