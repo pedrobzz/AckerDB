@@ -230,7 +230,7 @@ describe("TelemetryErrorStore", () => {
       "SELECT hash FROM _ackerdb_telemetry_error_groups",
     ).get() as { readonly hash: string }).hash;
 
-    expect(errors.resolve(hash, true)).toBe(true);
+    expect(errors.resolve(hash, true, NOW - 3_000)).toBe("applied");
     expect(store.database.query(
       "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "resolved", regressed: 0n });
@@ -240,12 +240,19 @@ describe("TelemetryErrorStore", () => {
       "SELECT status, regressed, times_seen AS timesSeen FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "unresolved", regressed: 1n, timesSeen: 2n });
 
-    // Resolving again clears the regressed mark for the next cycle.
-    expect(errors.resolve(hash, true)).toBe(true);
+    // A resolve carrying the state the operator OBSERVED is stale once a new
+    // occurrence arrived: it must conflict as data, not erase the regression.
+    expect(errors.resolve(hash, true, NOW - 3_000)).toBe("conflict");
+    expect(store.database.query(
+      "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
+    ).get()).toEqual({ status: "unresolved", regressed: 1n });
+
+    // Resolving against the current occurrence clears the mark for the next cycle.
+    expect(errors.resolve(hash, true, NOW - 1_000)).toBe("applied");
     expect(store.database.query(
       "SELECT status, regressed FROM _ackerdb_telemetry_error_groups",
     ).get()).toEqual({ status: "resolved", regressed: 0n });
-    expect(errors.resolve("missing-hash", true)).toBe(false);
+    expect(errors.resolve("missing-hash", true, NOW)).toBe("not_found");
     store.close();
   });
 

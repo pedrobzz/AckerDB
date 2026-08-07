@@ -470,6 +470,7 @@ export {
 export {
   TelemetryErrorStore,
   type TelemetryErrorIngest,
+  type TelemetryErrorResolveOutcome,
   type TelemetryErrorStoreOptions,
   type TelemetryErrorStoreSnapshot,
 } from "./telemetry/errors/store.ts";

@@ -19,6 +19,9 @@ export interface TelemetryErrorStoreSnapshot {
   readonly droppedErrors: number;
 }
 
+/** A stale resolve is a conflict as data — the caller re-reads and decides. */
+export type TelemetryErrorResolveOutcome = "applied" | "conflict" | "not_found";
+
 /**
  * Error groups are the index of every unhandled failure the application has
  * ever seen — deliberately not a retention class, they never expire, and each
@@ -117,14 +120,28 @@ export class TelemetryErrorStore {
     }
   }
 
-  /** Resolving clears the regressed mark; ingest reopens on the next occurrence. */
-  resolve(hash: string, resolved: boolean): boolean {
+  /**
+   * Resolving clears the regressed mark; ingest reopens on the next
+   * occurrence. Compare-and-set on the observed `last_seen`: an occurrence
+   * arriving between the operator's read and their resolve reopens the group,
+   * and the stale resolve must surface as a conflict instead of silently
+   * erasing that regression.
+   */
+  resolve(
+    hash: string,
+    resolved: boolean,
+    observedLastSeenMs: number,
+  ): TelemetryErrorResolveOutcome {
     const changes = this.database.query(`
       UPDATE _ackerdb_telemetry_error_groups
       SET status = ?, regressed = CASE WHEN ? THEN 0 ELSE regressed END
-      WHERE hash = ?
-    `).run(resolved ? "resolved" : "unresolved", resolved ? 1 : 0, hash);
-    return changes.changes > 0;
+      WHERE hash = ? AND last_seen = ?
+    `).run(resolved ? "resolved" : "unresolved", resolved ? 1 : 0, hash, observedLastSeenMs);
+    if (changes.changes > 0) return "applied";
+    const exists = this.database.query(
+      "SELECT 1 FROM _ackerdb_telemetry_error_groups WHERE hash = ?",
+    ).get(hash);
+    return exists === null ? "not_found" : "conflict";
   }
 
   snapshot(): TelemetryErrorStoreSnapshot {
