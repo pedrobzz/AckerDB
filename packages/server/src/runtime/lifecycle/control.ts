@@ -30,6 +30,12 @@ import type { FileCleanupRuntime } from "../../files/cleanup.ts";
 import type { RuntimeFiles } from "../../files/namespace.ts";
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+/**
+ * How long past the shutdown deadline a cooperative store drain may take to
+ * acknowledge quiescence — enough for its one in-flight synchronous batch,
+ * without letting a zombie drain hold the caller's drain hostage.
+ */
+const QUIESCENCE_GRACE_MS = 500;
 const utf8 = new TextEncoder();
 
 export interface RuntimeControlOptions {
@@ -419,11 +425,33 @@ export class RuntimeControl {
     // Ordinary concurrent records bypass cleanly while the queues flush:
     // never accepted by Telemetry yet dropped by a not-ready store.
     await attempt(() => this.options.releaseDurableSink());
+    // The exporter and in-memory telemetry flushes guard their own post-stop
+    // store writes, so Promise-race abandonment at the deadline is safe for
+    // them. The journal and span stores are different: their drains are
+    // COOPERATIVE — the deadline is passed in, they drop the unpersisted
+    // tail and settle only once the sidecar is guaranteed quiescent.
     await attempt(() => this.options.telemetryExporters?.drain());
-    await attempt(() => this.options.ownsTelemetryJournal
-      ? this.options.telemetryJournal.drain()
-      : this.options.telemetryJournal.flush());
-    await attempt(() => this.options.telemetrySpans.drain());
+    const graceAtMs = deadlineAtMs + QUIESCENCE_GRACE_MS;
+    const journalAck = await this.acknowledged(
+      this.options.ownsTelemetryJournal
+        ? this.options.telemetryJournal.drain(deadlineAtMs)
+        : this.options.telemetryJournal.flush(deadlineAtMs),
+      graceAtMs,
+    );
+    if (journalAck.error !== undefined) errors.push(journalAck.error);
+    const spansAck = await this.acknowledged(
+      this.options.telemetrySpans.drain(deadlineAtMs),
+      graceAtMs,
+    );
+    if (spansAck.error !== undefined) errors.push(spansAck.error);
+    const quiescent = journalAck.quiescent && spansAck.quiescent;
+    if (!quiescent) {
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry stores did not acknowledge quiescence by the shutdown deadline",
+        { resource: "operation" },
+      ));
+    }
     // FREEZE: synchronous from here through the terminal append.
     const terminal = this.terminalFailure ?? errors[0];
     const outcome = terminal === undefined
@@ -444,18 +472,51 @@ export class RuntimeControl {
     } catch (error) {
       errors.push(error);
     }
-    try {
-      this.options.appendTerminalLifecycle(outcome);
-    } catch (error) {
-      errors.push(error);
+    // The deadline-overrun form: without acknowledged quiescence, a zombie
+    // flush may still touch the sidecar — never append the terminal row
+    // into it and never close it under active owners. The drain rejects
+    // with the deadline error instead; a late-resuming flush is then a
+    // clean write into a store that was deliberately left open.
+    if (quiescent) {
+      try {
+        this.options.appendTerminalLifecycle(outcome);
+      } catch (error) {
+        errors.push(error);
+      }
     }
     await attempt(() => this.options.ownsTelemetry
       ? this.options.telemetry.drain(deadlineAtMs)
       : this.options.telemetry.flush());
-    await attempt(() => {
-      if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
-    });
+    if (quiescent) {
+      await attempt(() => {
+        if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
+      });
+    }
     return errors;
+  }
+
+  /**
+   * Await one cooperative store drain up to the grace bound. Settlement —
+   * resolution OR rejection — is the quiescence acknowledgement; only a
+   * drain that answers nothing at all leaves the store unacknowledged.
+   */
+  private acknowledged(
+    work: Promise<void>,
+    graceAtMs: number,
+  ): Promise<{ readonly quiescent: boolean; readonly error?: unknown }> {
+    return Promise.race([
+      work.then(
+        () => ({ quiescent: true as const }),
+        (error: unknown) => ({ quiescent: true as const, error }),
+      ),
+      new Promise<{ readonly quiescent: false }>((resolve) => {
+        const timer = setTimeout(
+          () => resolve({ quiescent: false }),
+          Math.max(0, graceAtMs - Date.now()),
+        );
+        timer.unref?.();
+      }),
+    ]);
   }
 
   /** Bound one finalization step by the shutdown deadline. */

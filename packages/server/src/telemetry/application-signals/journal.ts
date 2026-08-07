@@ -1,5 +1,6 @@
 import type { Database, Statement } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
+import { AckerDBError } from "../../shared/errors.ts";
 import { DAY_MS } from "../storage/retention.ts";
 import { positiveInteger, type TelemetryStore } from "../storage/store.ts";
 import type {
@@ -365,8 +366,21 @@ export class TelemetryJournal {
     }
   }
 
-  async flush(): Promise<void> {
+  /**
+   * Flush the queue; an optional deadline makes the flush COOPERATIVE: once
+   * it passes, the unpersisted tail is dropped instead of written, the
+   * in-flight batch still settles, and the store is guaranteed quiescent
+   * when this resolves — reported as a deadline error carrying the loss.
+   */
+  async flush(deadlineAtMs?: number): Promise<void> {
+    let deadlineDropped = 0;
     for (;;) {
+      if (deadlineAtMs !== undefined && this.queue.length > 0 && Date.now() >= deadlineAtMs) {
+        deadlineDropped += this.queue.length;
+        this.droppedRecords += this.queue.length;
+        this.queue.length = 0;
+        this.queuedBytes = 0;
+      }
       if (this.pumpScheduled) {
         if (this.pumpHandle !== undefined) clearImmediate(this.pumpHandle);
         this.pumpScheduled = false;
@@ -378,6 +392,13 @@ export class TelemetryJournal {
       if (!this.pumpScheduled && this.queue.length === 0 && tail === this.tail) break;
     }
     if (this.failure !== undefined) throw this.failure;
+    if (deadlineDropped > 0) {
+      throw new AckerDBError(
+        "deadline_exceeded",
+        `telemetry journal dropped ${deadlineDropped} queued records at the shutdown deadline`,
+        { resource: "operation" },
+      );
+    }
   }
 
   readBatch(afterId: bigint, limit: number): readonly TelemetryJournalEntry[] {
@@ -616,11 +637,16 @@ export class TelemetryJournal {
     `).run(this.storedRecords, this.storedBytes, this.evictedRecords, this.lastRecordId);
   }
 
-  async drain(): Promise<void> {
+  async drain(deadlineAtMs?: number): Promise<void> {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "draining";
-    await this.flush();
-    this.state = "stopped";
+    try {
+      await this.flush(deadlineAtMs);
+    } finally {
+      // A deadline overrun still quiesced (its loss is the thrown error);
+      // only a failed journal keeps its failed state.
+      if (this.state === "draining") this.state = "stopped";
+    }
   }
 
   /**
@@ -633,6 +659,11 @@ export class TelemetryJournal {
    * with zero terminal rows is not a mode.
    */
   appendFinal(record: TelemetryJournalRecord): void {
+    const before = {
+      storedRecords: this.storedRecords,
+      storedBytes: this.storedBytes,
+      lastRecordId: this.lastRecordId,
+    };
     try {
       const encoded = encode(record);
       const bytes = Buffer.byteLength(encoded);
@@ -651,6 +682,11 @@ export class TelemetryJournal {
       })();
       this.persistedRecords++;
     } catch (error) {
+      // The transaction rolled back: accounting must describe the durable
+      // truth, not the row that never landed.
+      this.storedRecords = before.storedRecords;
+      this.storedBytes = before.storedBytes;
+      this.lastRecordId = before.lastRecordId;
       this.droppedRecords++;
       this.failure ??= error;
       this.state = "failed";

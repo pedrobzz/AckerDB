@@ -320,6 +320,51 @@ describe("TelemetryJournal", () => {
     journal.store.close();
   });
 
+  test("a deadline-bounded drain drops the queued tail and quiesces", async () => {
+    const journal = createJournal();
+    for (let sequence = 1n; sequence <= 3n; sequence++) {
+      expect(journal.append(record(sequence))).toBe(true);
+    }
+    // The deadline already passed: cooperative overrun — the unpersisted
+    // tail is dropped, the store quiesces, and the loss is the error.
+    await expect(journal.drain(Date.now() - 1)).rejects.toMatchObject({
+      code: "deadline_exceeded",
+    });
+    expect(journal.snapshot()).toMatchObject({
+      state: "stopped",
+      queuedRecords: 0,
+      storedRecords: 0,
+      droppedRecords: 3,
+    });
+    // Quiescent: late appends are clean drops, the store is untouched.
+    expect(journal.append(record(9n))).toBe(false);
+    expect(journal.readBatch(0n, 10)).toEqual([]);
+    journal.store.close();
+  });
+
+  test("a failed terminal append restores accounting to the durable truth", async () => {
+    const journal = createJournal();
+    expect(journal.append(record(1n))).toBe(true);
+    await journal.drain();
+    const before = journal.snapshot();
+    // The state table dies between the terminal INSERT and its accounting
+    // update: the transaction rolls back, and the snapshot must describe
+    // the durable truth, not the row that never landed.
+    journal.store.database.exec("DROP TABLE _ackerdb_telemetry_state");
+    expect(() => journal.appendFinal(record(2n))).toThrow();
+    expect(journal.snapshot()).toMatchObject({
+      state: "failed",
+      storedRecords: before.storedRecords,
+      storedBytes: before.storedBytes,
+      droppedRecords: 1,
+    });
+    const rows = journal.store.database.query(
+      "SELECT COUNT(*) AS rows FROM _ackerdb_telemetry_journal",
+    ).get();
+    expect(rows).toEqual({ rows: 1n });
+    journal.store.close();
+  });
+
   test("counts retention holes a consumer crosses as evicted", async () => {
     const journal = createJournal({ now: () => NOW, retention: { debug: DAY_MS } });
     // Interleave rows the per-class clock expires among retained ones, so the

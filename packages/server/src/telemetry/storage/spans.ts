@@ -1,4 +1,5 @@
 import type { Database, Statement } from "bun:sqlite";
+import { AckerDBError } from "../../shared/errors.ts";
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
 import { positiveInteger, type TelemetryStore } from "./store.ts";
 
@@ -199,8 +200,20 @@ export class TelemetrySpanStore {
     return true;
   }
 
-  async flush(): Promise<void> {
+  /**
+   * Flush the queue; an optional deadline makes the flush COOPERATIVE: once
+   * it passes, the unpersisted tail is dropped instead of written, the
+   * in-flight batch still settles, and the store is guaranteed quiescent
+   * when this resolves — reported as a deadline error carrying the loss.
+   */
+  async flush(deadlineAtMs?: number): Promise<void> {
+    let deadlineDropped = 0;
     for (;;) {
+      if (deadlineAtMs !== undefined && this.queue.length > 0 && Date.now() >= deadlineAtMs) {
+        deadlineDropped += this.queue.length;
+        this.droppedRecords += this.queue.length;
+        this.queue.length = 0;
+      }
       if (this.pumpScheduled) {
         if (this.pumpHandle !== undefined) clearImmediate(this.pumpHandle);
         this.pumpScheduled = false;
@@ -212,13 +225,25 @@ export class TelemetrySpanStore {
       if (!this.pumpScheduled && this.queue.length === 0 && tail === this.tail) break;
     }
     if (this.failure !== undefined) throw this.failure;
+    if (deadlineDropped > 0) {
+      throw new AckerDBError(
+        "deadline_exceeded",
+        `telemetry span store dropped ${deadlineDropped} queued spans at the shutdown deadline`,
+        { resource: "operation" },
+      );
+    }
   }
 
-  async drain(): Promise<void> {
+  async drain(deadlineAtMs?: number): Promise<void> {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "draining";
-    await this.flush();
-    this.state = "stopped";
+    try {
+      await this.flush(deadlineAtMs);
+    } finally {
+      // A deadline overrun still quiesced (its loss is the thrown error);
+      // only a failed store keeps its failed state.
+      if (this.state === "draining") this.state = "stopped";
+    }
   }
 
   onPersist(listener: () => void): () => void {

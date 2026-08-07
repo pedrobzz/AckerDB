@@ -2417,7 +2417,7 @@ describe("Runtime telemetry acceptance", () => {
     },
   );
 
-  test("a finalization blocked past the deadline still writes one failed terminal row", async () => {
+  test("an unacknowledged span drain skips the terminal row and leaves the sidecar open", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const store = new TelemetryStore({ path: ":memory:" });
     const app = harness(telemetry, { telemetryStore: store });
@@ -2425,23 +2425,27 @@ describe("Runtime telemetry acceptance", () => {
     const stalled = new Promise<void>((resolve) => {
       release = resolve;
     });
-    // The span flush hangs far past the shutdown deadline: the deadline
-    // must both bound the drain AND own the terminal outcome — the stalled
-    // finalizer must never later persist `stopped` on a failed Runtime.
+    // A zombie span drain never acknowledges quiescence: the drain must
+    // still reject at the deadline, but a store an active owner may touch
+    // gets NO terminal row and is never closed — appending or closing under
+    // a zombie flush would break the structurally-last-row guarantee.
     const drainSpy = spyOn(app.runtime.telemetrySpans, "drain")
       .mockImplementationOnce(() => stalled);
-    await expect(app.runtime.drain(Date.now() + 100)).rejects.toThrow();
-    // drain settled only after the finalization finished: the terminal row
-    // is already durable and readable, exactly once, and it says failed.
+    await expect(app.runtime.drain(Date.now() + 100)).rejects.toMatchObject({
+      code: "deadline_exceeded",
+    });
     const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
     const lifecycle = lifecycleStates(entries);
-    expect(lifecycle.filter((state) => state === "failed")).toHaveLength(1);
     expect(lifecycle).not.toContain("stopped");
-    const last = entries.at(-1)! as { metadata?: { lifecycleState?: string; outcome?: string } };
-    expect(last.metadata?.lifecycleState).toBe("failed");
-    expect(last.metadata?.outcome).toBe("deadline_exceeded");
+    expect(lifecycle).not.toContain("failed");
+    // The late-resuming flush is a clean no-op against the still-open store.
     release();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
     drainSpy.mockRestore();
+    // No post-close SQLite errors anywhere: the sidecar is alive and readable.
+    expect(app.runtime.telemetryJournal.readBatch(0n, 10_000).length)
+      .toBe(entries.length);
+    expect(app.runtime.telemetryJournal.snapshot().state).not.toBe("failed");
     store.close();
   });
 
