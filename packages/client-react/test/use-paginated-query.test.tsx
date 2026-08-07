@@ -218,6 +218,48 @@ describe("usePaginatedQuery", () => {
     });
   });
 
+  test("a boundary shift releases the whole suffix, then regrows to the asked depth", async () => {
+    const harness = createHarness(APP);
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    await render(root, app(harness, { list: 1n }, 2));
+    await ready(harness);
+    const first = harness.frames("sub")[0]!;
+    await deliverPage(harness, first.id, 1n, { items: ["a", "b"], nextCursor: "c1" });
+    await loadMore();
+    const second = harness.frames("sub")[1]!;
+    await deliverPage(harness, second.id, 1n, { items: ["c", "d"], nextCursor: "c2" });
+    await loadMore();
+    const third = harness.frames("sub")[2]!;
+    await deliverPage(harness, third.id, 1n, { items: ["e"], nextCursor: null });
+    expect(container.textContent).toBe("fresh:a,b,c,d,e+end");
+
+    // Page one's boundary moves. Everything behind it started at a boundary
+    // that no longer exists, so it is released now — not once the replacement
+    // resolves, which it may never do.
+    await deliverPage(harness, first.id, 2n, { items: ["z", "a"], nextCursor: "c1'" });
+    expect(harness.frames("unsub").map((frame) => frame.id).sort()).toEqual(
+      [second.id, third.id].sort(),
+    );
+    expect(container.textContent).toBe("fresh:z,a+more");
+    const repairedSecond = harness.frames("sub")[3]!;
+    expect(repairedSecond.args).toEqual({ list: 1n, cursor: "c1'", pageSize: 2 });
+    expect(harness.frames("sub")).toHaveLength(4);
+
+    // The depth someone clicked for survives the release: page three comes
+    // back on its own as soon as its boundary is proven again.
+    await deliverPage(harness, repairedSecond.id, 2n, { items: ["b", "c"], nextCursor: "c2'" });
+    const repairedThird = harness.frames("sub")[4]!;
+    expect(repairedThird.args).toEqual({ list: 1n, cursor: "c2'", pageSize: 2 });
+    await deliverPage(harness, repairedThird.id, 2n, { items: ["d", "e"], nextCursor: null });
+    expect(container.textContent).toBe("fresh:z,a,b,c,d,e+end");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   test("a shrunken window drops the pages past its new end", async () => {
     const harness = createHarness(APP);
     const container = mountPoint();

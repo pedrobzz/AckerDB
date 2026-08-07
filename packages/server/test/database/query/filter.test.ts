@@ -168,6 +168,14 @@ describe("filter validation returns its failures as data", () => {
       issuesOf({ all: Array.from({ length: MAX_FILTER_NODES }, () => ({ all: [] })) })[0]!
         .message,
     ).toContain(`at most ${MAX_FILTER_NODES}`);
+
+    // A group far past the bound is not walked past it: one issue, at the node
+    // that overran, and nothing read behind it.
+    const huge = issuesOf({
+      all: Array.from({ length: MAX_FILTER_NODES * 50 }, () => ({ all: [] })),
+    });
+    expect(huge).toHaveLength(1);
+    expect(huge[0]!.path).toBe(`$.all[${MAX_FILTER_NODES - 1}]`);
   });
 
   test("membership members are values, so one clause cannot outrun SQLite", () => {

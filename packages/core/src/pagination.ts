@@ -20,11 +20,15 @@ export const DEFAULT_PAGE_SIZE = 25;
 export const MAX_PAGE_SIZE = 256;
 
 /**
- * Row bytes one page may hold, measured over the stored values a page carries.
- * It is the cap that survives a table whose rows are not uniform: a page stops
- * at the last row that fits and reports a cursor there, so a few oversized rows
+ * Row bytes one page may hold, charged against each cell's wire cost. It is
+ * the bound that survives a table whose rows are not uniform: a page stops at
+ * the last row that fits and reports a cursor there, so a few oversized rows
  * cost the page its trailing rows instead of the whole delivery. A page always
- * carries at least one row, so an individual row larger than the budget still
- * makes forward progress; the transport's own frame limit judges that row.
+ * carries at least one row, so an individual row above the whole budget still
+ * makes forward progress.
+ *
+ * It is a budget, not a delivery guarantee — the charge is an approximation
+ * that avoids encoding every row twice, and the transport's own frame limit
+ * remains the authority on what fits in one message.
  */
 export const MAX_PAGE_BYTES = 512 * 1024;

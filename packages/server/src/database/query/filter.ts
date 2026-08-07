@@ -234,6 +234,10 @@ class FilterValidator {
     const children: ValidatedNode[] = [];
     let failed = false;
     for (let index = 0; index < members.length; index++) {
+      // An overrun ends the walk here rather than visiting the rest of a
+      // caller-sized array: the bounds are what a filter may hold, so reading
+      // past them would be the work they exist to refuse.
+      if (walk.overflowed) return undefined;
       const child = this.node(members[index], `${path}.${op}[${index}]`, depth + 1, walk);
       if (child === undefined) failed = true;
       else children.push(child);

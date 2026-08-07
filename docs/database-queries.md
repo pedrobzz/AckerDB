@@ -106,12 +106,16 @@ server's:
 - `pageSize` may not exceed `MAX_PAGE_SIZE` (256) rows. A larger one is
   rejected rather than clamped, because silently returning a different page
   than the one asked for is worse than saying no.
-- A page's rows may not exceed `MAX_PAGE_BYTES` (512 KiB) of stored value
-  bytes. This bound takes rows away, never fields: the page stops at the last
-  row that fits and its `nextCursor` resumes at the row that did not, so a
-  table with a few oversized rows costs a page its tail instead of costing the
-  whole delivery. A page always carries at least one row, so a single row above
-  the entire budget still advances the cursor.
+- A page's rows may not exceed `MAX_PAGE_BYTES` (512 KiB), charged against each
+  cell's wire cost. This bound takes rows away, never fields: the page stops at
+  the last row that fits and its `nextCursor` resumes at the row that did not,
+  so a table with a few oversized rows costs a page its tail instead of costing
+  the whole delivery. A page always carries at least one row, so a single row
+  above the entire budget still advances the cursor. The charge is an
+  approximation — measuring exactly would mean encoding every row twice — so it
+  is a budget rather than a delivery guarantee; the transport's frame limit
+  stays the authority on what fits in one message, as it is for every other
+  materializer.
 
 A shorter page is therefore normal, and `nextCursor` — never `items.length` —
 is what says whether more rows exist. On the client,

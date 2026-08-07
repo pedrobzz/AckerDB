@@ -146,10 +146,11 @@ interface PageSlot<Item, Error extends ApplicationError> {
  * write landing anywhere inside it re-delivers the page it touched.
  *
  * Because every page is a real subscription, the chain can be contradicted:
- * when a write moves a page's `nextCursor`, the pages behind it no longer
- * start where their predecessor ends. Those are resubscribed at the new
- * boundary, and until the chain proves itself again the window shows only its
- * proven prefix. A truncated window is honest; an overlapping one is not.
+ * when a write moves a page's `nextCursor`, the pages behind it no longer start
+ * where their predecessor ends. They are released, the window falls back to the
+ * prefix it can still prove, and it grows back to the depth its consumer asked
+ * for as each new boundary proves. A truncated window is honest; an overlapping
+ * one is not.
  *
  * Each page is individually consistent, and the window is consistent across
  * pages only eventually. One commit that changes two pages produces two
@@ -170,6 +171,13 @@ export class PaginatedQueryEntry<
   Error extends ApplicationError = never,
 > extends SharedObservation<AckerDBPaginatedQueryState<Item, Error>> {
   private pages: PageSlot<Item, Error>[] = [];
+  /**
+   * How many pages the consumer has asked for. The chain is what is currently
+   * proven and may be shorter; it grows back toward this depth as boundaries
+   * prove, which is what lets a repair release pages without the window
+   * silently losing the depth someone clicked for.
+   */
+  private depth = 1;
 
   constructor(
     private readonly client: AckerDBClient,
@@ -189,12 +197,14 @@ export class PaginatedQueryEntry<
     if (state.status !== "success") return;
     const page = pageOf<Item>(state.data);
     if (page === undefined || page.nextCursor === null) return;
+    this.depth = this.pages.length + 1;
     this.openPage(page.nextCursor, this.pages.length);
     this.replace(this.fold());
   };
 
   protected startObservation(): void {
     this.pages = [];
+    this.depth = 1;
     this.openPage(null, 0);
     this.replace(this.fold());
   }
@@ -229,26 +239,43 @@ export class PaginatedQueryEntry<
   }
 
   /**
-   * Re-verify the chain: every page after the first must start at its
-   * predecessor's delivered `nextCursor`. A page whose predecessor has not
-   * resolved keeps its subscription until the chain can be proven again.
+   * Rebuild the chain from the boundaries that are currently proven, up to the
+   * depth the consumer asked for. Every page after the first must start at its
+   * predecessor's delivered `nextCursor`; when a boundary moves, the whole
+   * suffix behind it started somewhere that no longer exists, so it is released
+   * rather than kept as subscriptions no proven chain can reach — a replacement
+   * page that never resolves would otherwise retain them for the window's whole
+   * life. The depth survives the release, so the window grows itself back as
+   * each new boundary proves.
    */
   private reconcile(): void {
-    for (let index = 0; index + 1 < this.pages.length; index++) {
+    for (let index = 0; index < this.pages.length; index++) {
       const state = this.pages[index]!.source.snapshot();
       if (state.status !== "success") break;
       const page = pageOf<Item>(state.data);
       if (page === undefined) break;
+      const next = index + 1;
       if (page.nextCursor === null) {
-        for (const dropped of this.pages.splice(index + 1)) dropped.stop();
+        // The sequence ends here, so the asked-for depth is unreachable.
+        this.truncate(next);
         break;
       }
-      if (this.pages[index + 1]!.cursor !== page.nextCursor) {
-        this.pages[index + 1]!.stop();
-        this.openPage(page.nextCursor, index + 1);
+      if (next === this.pages.length) {
+        if (next >= this.depth) break;
+        this.openPage(page.nextCursor, next);
+        break;
+      }
+      if (this.pages[next]!.cursor !== page.nextCursor) {
+        this.truncate(next);
+        this.openPage(page.nextCursor, next);
+        break;
       }
     }
     this.replace(this.fold());
+  }
+
+  private truncate(from: number): void {
+    for (const dropped of this.pages.splice(from)) dropped.stop();
   }
 
   /** Flatten the chain into one window, stopping at the first unproven page. */

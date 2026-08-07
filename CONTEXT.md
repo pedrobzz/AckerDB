@@ -1006,9 +1006,10 @@ _Avoid_: Offset page, truncated row
 
 **Live page window** — The client's flattened view of consecutive query pages,
 each held as its own live subscription so a write inside the window re-delivers
-the page it touched. When a delivery moves a page's cursor, the pages behind it
-resubscribe at the new boundary and the window shortens to its proven prefix
-rather than showing an overlap. Each page is individually consistent and the
+the page it touched. When a delivery moves a page's cursor, every page behind it
+is released and the window shortens to its proven prefix rather than showing an
+overlap, then grows back to the depth its consumer asked for as each new
+boundary proves. Each page is individually consistent and the
 window is consistent across pages only eventually: one commit changing two
 pages sends two deliveries, and a row crossing a boundary between them can
 briefly repeat or disappear until the predecessor's own delivery lands.

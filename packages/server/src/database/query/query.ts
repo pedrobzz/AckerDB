@@ -25,19 +25,37 @@ import { filterPredicate, tableFilterMeta } from "./filter.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
+// Wire costs the page budget charges per cell, from the JSON wire format:
+// `null`, a number's worst-case JSON form, and the escape envelopes bigints
+// and byte arrays travel in. Base64 spends four characters per three bytes.
+const NULL_CELL_BYTES = 4;
+const NUMBER_CELL_BYTES = 24;
+const BIGINT_CELL_BYTES = 36;
+const BYTES_CELL_ENVELOPE = 16;
+
 /**
- * The stored size of one raw SQLite row, which is what a page budgets. Cells
- * are counted where they already sit — no encoding pass, no copy — so the
- * measure costs a walk over the row's columns. Fixed-width cells count as
- * their storage width; a NULL costs the byte its type tag occupies.
+ * The approximate wire size of one raw SQLite row, which is what a page
+ * budgets. Cells are charged where they already sit — no encoding pass, no
+ * copy — so the measure costs one walk over the row and never the second
+ * encoding an exact answer would need.
+ *
+ * It is a budget, not the transport's bound. A string dense in characters JSON
+ * escapes still encodes larger than it measures here, and `maxFrameBytes`
+ * stays the authority that answers such a row with a typed overloaded outcome,
+ * exactly as it does for every other materializer. What this bound owes is
+ * that an ordinary page of ordinary rows cannot grow without limit.
  */
-function storedRowBytes(raw: Record<string, unknown>): number {
+function pageRowBytes(raw: Record<string, unknown>): number {
   let bytes = 0;
-  for (const value of Object.values(raw)) {
-    if (value === null) bytes += 1;
-    else if (typeof value === "string") bytes += Buffer.byteLength(value);
-    else if (ArrayBuffer.isView(value)) bytes += value.byteLength;
-    else bytes += 8;
+  for (const key in raw) {
+    const value = raw[key];
+    bytes += key.length + 3;
+    if (value === null) bytes += NULL_CELL_BYTES;
+    else if (typeof value === "string") bytes += Buffer.byteLength(value) + 2;
+    else if (typeof value === "bigint") bytes += BIGINT_CELL_BYTES;
+    else if (ArrayBuffer.isView(value)) {
+      bytes += Math.ceil(value.byteLength / 3) * 4 + BYTES_CELL_ENVELOPE;
+    } else bytes += NUMBER_CELL_BYTES;
   }
   return bytes;
 }
@@ -619,7 +637,7 @@ class TableQueryRuntime {
     let bytes = 0;
     let beyondBudget = false;
     for (const raw of raws) {
-      const rowBytes = storedRowBytes(raw);
+      const rowBytes = pageRowBytes(raw);
       if (items.length > 0 && bytes + rowBytes > MAX_PAGE_BYTES) {
         beyondBudget = true;
         break;

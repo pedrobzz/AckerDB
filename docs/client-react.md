@@ -237,9 +237,11 @@ Every loaded page is an ordinary shared live subscription, not a snapshot: a
 write landing anywhere inside the window re-delivers the page it touched, and
 two components resting on the same page share one subscription. Because the
 pages are live, the chain can be contradicted — when a delivery moves a page's
-`nextCursor`, the pages behind it are resubscribed at the new boundary and the
-window shows only the prefix it can still prove, getting briefly shorter rather
-than showing an overlap. Losing the connection keeps the whole window as
+`nextCursor`, every page behind it started at a boundary that no longer exists.
+Those subscriptions are released at once and the window shows only the prefix
+it can still prove, getting briefly shorter rather than showing an overlap. The
+depth someone clicked for survives the release: pages come back on their own as
+each new boundary proves. Losing the connection keeps the whole window as
 explicitly stale `items`, exactly like `useQuery`.
 
 Each page is individually consistent; the window is consistent across pages
