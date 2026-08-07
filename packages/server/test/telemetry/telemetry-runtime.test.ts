@@ -2417,6 +2417,35 @@ describe("Runtime telemetry acceptance", () => {
     },
   );
 
+  test("a synchronously blocked flush past the deadline yields a failed terminal row", async () => {
+    const telemetry = new Telemetry({ localSink: false });
+    const store = new TelemetryStore({ path: ":memory:" });
+    const app = harness(telemetry, { telemetryStore: store });
+    // Synchronous persistence blocks the event loop past deadline AND grace:
+    // every settlement microtask then runs before the overdue timers, so
+    // only a wall-clock check can see the overrun. The store DID quiesce —
+    // the terminal row must be appended, but it must say failed.
+    const drainSpy = spyOn(app.runtime.telemetrySpans, "drain")
+      .mockImplementationOnce(async () => {
+        const until = Date.now() + 700;
+        while (Date.now() < until) {
+          // Busy-wait: a stand-in for a giant synchronous SQLite batch.
+        }
+      });
+    await expect(app.runtime.drain(Date.now() + 50)).rejects.toMatchObject({
+      code: "deadline_exceeded",
+    });
+    drainSpy.mockRestore();
+    const entries = app.runtime.telemetryJournal.readBatch(0n, 10_000);
+    const lifecycle = lifecycleStates(entries);
+    expect(lifecycle.filter((state) => state === "failed")).toHaveLength(1);
+    expect(lifecycle).not.toContain("stopped");
+    const last = entries.at(-1)! as { metadata?: { lifecycleState?: string; outcome?: string } };
+    expect(last.metadata?.lifecycleState).toBe("failed");
+    expect(last.metadata?.outcome).toBe("deadline_exceeded");
+    store.close();
+  });
+
   test("an unacknowledged span drain skips the terminal row and leaves the sidecar open", async () => {
     const telemetry = new Telemetry({ localSink: false });
     const store = new TelemetryStore({ path: ":memory:" });

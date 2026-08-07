@@ -444,15 +444,33 @@ export class RuntimeControl {
       graceAtMs,
     );
     if (spansAck.error !== undefined) errors.push(spansAck.error);
-    const quiescent = journalAck.quiescent && spansAck.quiescent;
+    const quiescent = journalAck.ack !== "none" && spansAck.ack !== "none";
     if (!quiescent) {
       errors.push(new AckerDBError(
         "deadline_exceeded",
         "telemetry stores did not acknowledge quiescence by the shutdown deadline",
         { resource: "operation" },
       ));
+    } else if (journalAck.ack === "late" || spansAck.ack === "late") {
+      // Quiescence arrived, but past the bound: safe to append and close —
+      // never clean to claim.
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry stores acknowledged quiescence after the shutdown deadline",
+        { resource: "operation" },
+      ));
     }
-    // FREEZE: synchronous from here through the terminal append.
+    // FREEZE: synchronous from here through the terminal append. Wall-clock
+    // recheck first — a blocked event loop can deliver every settlement
+    // before the overdue deadline timer, and a finalization past its
+    // deadline must never freeze a clean outcome.
+    if (Date.now() > deadlineAtMs && this.terminalFailure === undefined && errors.length === 0) {
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry finalization completed after the shutdown deadline",
+        { resource: "operation" },
+      ));
+    }
     const terminal = this.terminalFailure ?? errors[0];
     const outcome = terminal === undefined
       ? { lifecycleState: "stopped" as const }
@@ -499,19 +517,25 @@ export class RuntimeControl {
    * Await one cooperative store drain up to the grace bound. Settlement —
    * resolution OR rejection — is the quiescence acknowledgement; only a
    * drain that answers nothing at all leaves the store unacknowledged.
+   * Timers alone cannot judge lateness: a synchronously blocked event loop
+   * delivers every settlement microtask before any overdue timer macrotask,
+   * so the settlement handlers check the wall clock themselves — a late
+   * REAL settlement is still quiescent (safe to append and close), it just
+   * must never be called clean.
    */
   private acknowledged(
     work: Promise<void>,
     graceAtMs: number,
-  ): Promise<{ readonly quiescent: boolean; readonly error?: unknown }> {
+  ): Promise<{ readonly ack: "in-time" | "late" | "none"; readonly error?: unknown }> {
+    const ackNow = (): "in-time" | "late" => Date.now() > graceAtMs ? "late" : "in-time";
     return Promise.race([
       work.then(
-        () => ({ quiescent: true as const }),
-        (error: unknown) => ({ quiescent: true as const, error }),
+        () => ({ ack: ackNow() }),
+        (error: unknown) => ({ ack: ackNow(), error }),
       ),
-      new Promise<{ readonly quiescent: false }>((resolve) => {
+      new Promise<{ readonly ack: "none" }>((resolve) => {
         const timer = setTimeout(
-          () => resolve({ quiescent: false }),
+          () => resolve({ ack: "none" as const }),
           Math.max(0, graceAtMs - Date.now()),
         );
         timer.unref?.();
