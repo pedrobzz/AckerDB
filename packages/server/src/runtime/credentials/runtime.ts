@@ -22,6 +22,7 @@ import {
 } from "../../auth/credentials.ts";
 import {
   CREDENTIAL_ISSUER,
+  hasCredentialTokenPrefix,
   parseCredentialToken,
   VAULT_CREDENTIAL_AUTHORITY,
   type ParsedCredentialToken,
@@ -227,7 +228,12 @@ export class RuntimeCredentials {
   ): Promise<VerifiedCredential> {
     const parsed = parseCredentialToken(credential);
     if (parsed === null) {
-      if (source === undefined) throw unauthenticated();
+      // The prefix claims the vault, so the vault answers — malformed included.
+      // Delegating a reserved-prefix bearer would let a permissive application
+      // verifier authenticate a string the vault has already refused.
+      if (source === undefined || hasCredentialTokenPrefix(credential)) {
+        throw unauthenticated();
+      }
       return source.verify(credential);
     }
     this.options.assertReady();

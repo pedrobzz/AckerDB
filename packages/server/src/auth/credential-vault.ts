@@ -125,6 +125,7 @@ type StoredDescriptorRow = Pick<StoredCredentialRow,
 
 const utf8 = new TextEncoder();
 const DUMMY_DIGEST = new Uint8Array(32);
+const EMPTY_LINEAGE: readonly string[] = Object.freeze([]);
 
 function digest(secret: string): Uint8Array {
   return createHash("sha256").update(secret).digest();
@@ -428,14 +429,19 @@ export class CredentialVault {
     if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
   }
 
-  /** Replace the stored grant. Returns true when the stored patterns changed. */
+  /**
+   * Replace the stored grant, and report every credential whose live authority
+   * the change can reach: the credential itself plus everything delegated
+   * beneath it, because a descendant's effective grant is intersected with
+   * this one's. An unchanged grant reaches nothing.
+   */
   updateScopes(
     parentIdentity: Identity | null,
     tokenId: string,
     value: unknown,
     vocabulary: readonly string[],
     now: number,
-  ): boolean {
+  ): readonly string[] {
     if (parentIdentity !== null) validateIdentity(parentIdentity);
     validateTokenId(tokenId);
     const scopes = normalizeGrantPatterns(value, vocabulary, "credential scopes");
@@ -451,17 +457,53 @@ export class CredentialVault {
         WHERE token_id = ? AND parent_identity IS ?`,
     ).run(encode(scopes), now, tokenId, parentIdentity);
     if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
-    return previous.length !== scopes.length ||
+    const changed = previous.length !== scopes.length ||
       previous.some((scope, index) => scopes[index] !== scope);
+    return changed ? this.lineage(this.writer, tokenId) : EMPTY_LINEAGE;
   }
 
-  revoke(parentIdentity: Identity | null, tokenId: string): void {
+  /**
+   * Revoke one credential and everything delegated beneath it, returning every
+   * token id removed. The cascade is the invariant, not a convenience: a
+   * child's authority is bounded by its parent's, so a surviving child of a
+   * revoked parent would have no source to be bounded by — and, because a
+   * credential-less Identity reads as an ordinary application root, it would be
+   * resolved by the application's own scope resolver instead of failing closed.
+   */
+  revoke(parentIdentity: Identity | null, tokenId: string): readonly string[] {
     if (parentIdentity !== null) validateIdentity(parentIdentity);
     validateTokenId(tokenId);
-    const result = this.writer.query(
-      "DELETE FROM _ackerdb_credentials WHERE token_id = ? AND parent_identity IS ?",
-    ).run(tokenId, parentIdentity);
-    if (result.changes === 0) throw new AckerDBError("not_found", "credential not found");
+    // Ownership is proved against the named credential; the cascade below is
+    // unconditional, because everything under it descends from that authority.
+    const owned = this.writer.query(
+      "SELECT 1 FROM _ackerdb_credentials WHERE token_id = ? AND parent_identity IS ?",
+    ).get(tokenId, parentIdentity);
+    if (owned === null) throw new AckerDBError("not_found", "credential not found");
+    const revoked = this.lineage(this.writer, tokenId);
+    this.writer.query(
+      `DELETE FROM _ackerdb_credentials WHERE token_id IN (${revoked.map(() => "?").join(", ")})`,
+    ).run(...(revoked as string[]));
+    return revoked;
+  }
+
+  /**
+   * One credential and every credential delegated beneath it. Identity creation
+   * order makes the delegation chain acyclic, and the owner index answers each
+   * level directly, so the walk costs one indexed step per level.
+   */
+  lineage(connection: Database, tokenId: string): readonly string[] {
+    validateTokenId(tokenId);
+    const rows = connection.query(
+      `WITH RECURSIVE lineage(token_id, identity) AS (
+        SELECT token_id, identity FROM _ackerdb_credentials WHERE token_id = ?
+        UNION ALL
+        SELECT c.token_id, c.identity
+          FROM _ackerdb_credentials c
+          JOIN lineage ON c.parent_identity = lineage.identity
+      )
+      SELECT token_id FROM lineage`,
+    ).all(tokenId) as { token_id: string }[];
+    return Object.freeze(rows.map((row) => row.token_id));
   }
 
   authenticate(

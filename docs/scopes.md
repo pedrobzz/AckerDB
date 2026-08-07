@@ -146,6 +146,12 @@ The child invariant is enforced at BOTH ends:
   ending at the application resolver for a non-credential root. A parent losing
   a scope narrows all of its descendants immediately, with no revocation sweep.
 
+**Revoking a credential revokes everything delegated beneath it.** The cascade
+is the invariant rather than a convenience: a surviving child of a revoked
+parent would have no source left to be bounded by, and — because an Identity
+with no credential row reads as an ordinary application root — it would be
+resolved by the application's own scope resolver instead of failing closed.
+
 Agents are first-class users. A credential bearer authenticates on every
 transport — WebSocket sessions, exposed HTTP functions, and MCP endpoints —
 through the Runtime's one composed credential authority, producing an ordinary
@@ -167,8 +173,22 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   `ackerdb:credentials` issuer. Live WebSocket sessions and HTTP leases holding
   that credential are cancelled immediately; the next verification reads the new
   grant.
+- One change publishes for **every credential it reaches** — the credential
+  itself and every credential delegated beneath it. A descendant's live session
+  matches on its own token id, so publishing only for the changed credential
+  would leave a descendant holding an authority its source no longer has, and a
+  vault principal never expires out of it.
 - Resolver-backed user grants re-authorize through the same path when the
   application publishes an invalidation for the account.
+
+One boundary is deliberate: when an *external* identity's grant changes, the
+application publishes an invalidation for that account, and credentials
+delegated from it are live under `ackerdb:credentials` with their own subjects.
+They therefore re-derive their intersection at their next authentication rather
+than instantly. Closing that would mean resolving an external account to an
+Identity, and that Identity to its credentials, inside the invalidation path —
+an Engine read on a channel that must stay synchronous. Revoke or narrow the
+credential itself when the change must be immediate.
 
 Shipping enforcement without live invalidation would be a security regression;
 this propagation is part of the feature's contract, not an optimization.

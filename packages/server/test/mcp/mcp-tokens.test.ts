@@ -765,6 +765,20 @@ describe("Identity credentials", () => {
     await expect(verifyBearerCredential(created.token, permissiveVerifier)).rejects.toMatchObject({
       code: "unauthenticated",
     });
+    // Nor can one the vault itself refuses: the prefix claims the vault, so a
+    // malformed, truncated, or oversized bearer under it is unauthenticated
+    // rather than an external user this permissive verifier would accept.
+    const composed = second.runtime.credentialVerifier!;
+    for (const malformed of [
+      "ackerdb_credential.",
+      "ackerdb_credential.short.secret",
+      `${created.token}x`,
+      `ackerdb_credential.${"a".repeat(22)}.${"b".repeat(44)}`,
+    ]) {
+      await expect(verifyBearerCredential(malformed, composed)).rejects.toMatchObject({
+        code: "unauthenticated",
+      });
+    }
     expect(verifierCalls).toEqual([]);
 
     const server = serve({ runtime: second.runtime, port: 0 });

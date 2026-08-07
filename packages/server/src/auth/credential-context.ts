@@ -88,11 +88,22 @@ export interface CredentialContextCapability {
 const capabilities = new WeakMap<object, CredentialContextCapability>();
 const staged = new WeakMap<WriteCollector, ExternalAccount[]>();
 
-/** Stage a transaction-local authority change as data; only the commit owner publishes it. */
-function stageCredentialInvalidation(writes: WriteCollector, tokenId: string): void {
+/**
+ * Stage transaction-local authority changes as data; only the commit owner
+ * publishes them. One change carries every token id it reaches — a credential
+ * and its delegates — because a live descendant matches on its own subject and
+ * would otherwise keep an authority its source no longer has.
+ */
+function stageCredentialInvalidations(
+  writes: WriteCollector,
+  tokenIds: readonly string[],
+): void {
+  if (tokenIds.length === 0) return;
   let invalidations = staged.get(writes);
   if (invalidations === undefined) staged.set(writes, (invalidations = []));
-  invalidations.push(Object.freeze({ issuer: CREDENTIAL_ISSUER, subject: tokenId }));
+  for (const tokenId of tokenIds) {
+    invalidations.push(Object.freeze({ issuer: CREDENTIAL_ISSUER, subject: tokenId }));
+  }
 }
 
 /** Consume one committed transaction's staged authority changes exactly once. */
@@ -216,7 +227,9 @@ export const credentials: CredentialOperations = Object.freeze({
   updateScopes(ctx: WriteContext, tokenId: string, scopes: readonly string[]): void {
     const owner = ownerCapability(ctx, true);
     delegable(owner, scopes, "credential scopes");
-    const changed = owner.engine[credentialVaultOwner].updateScopes(
+    // Any grant change re-authorizes live holders: narrowing must revoke
+    // authority immediately, and widening is only visible after re-auth.
+    const reached = owner.engine[credentialVaultOwner].updateScopes(
       owner.principal.identity,
       tokenId,
       scopes,
@@ -224,15 +237,16 @@ export const credentials: CredentialOperations = Object.freeze({
       owner.now(),
     );
     owner.writes!.keys.add(ownerKey(owner.principal.identity));
-    // Any grant change re-authorizes live holders: narrowing must revoke
-    // authority immediately, and widening is only visible after re-auth.
-    if (changed) stageCredentialInvalidation(owner.writes!, tokenId);
+    stageCredentialInvalidations(owner.writes!, reached);
   },
   revoke(ctx: WriteContext, tokenId: string): void {
     const owner = ownerCapability(ctx, true);
-    owner.engine[credentialVaultOwner].revoke(owner.principal.identity, tokenId);
+    const revoked = owner.engine[credentialVaultOwner].revoke(
+      owner.principal.identity,
+      tokenId,
+    );
     owner.writes!.keys.add(ownerKey(owner.principal.identity));
-    stageCredentialInvalidation(owner.writes!, tokenId);
+    stageCredentialInvalidations(owner.writes!, revoked);
   },
 });
 
@@ -267,7 +281,7 @@ export const systemCredentials: SystemCredentialOperations = Object.freeze({
     scopes: readonly string[],
   ): void {
     const system = systemCapability(ctx, true);
-    const changed = system.engine[credentialVaultOwner].updateScopes(
+    const reached = system.engine[credentialVaultOwner].updateScopes(
       parentIdentity,
       tokenId,
       scopes,
@@ -275,12 +289,12 @@ export const systemCredentials: SystemCredentialOperations = Object.freeze({
       system.now(),
     );
     system.writes!.keys.add(ownerKey(parentIdentity));
-    if (changed) stageCredentialInvalidation(system.writes!, tokenId);
+    stageCredentialInvalidations(system.writes!, reached);
   },
   revoke(ctx: WriteContext, parentIdentity: Identity | null, tokenId: string): void {
     const system = systemCapability(ctx, true);
-    system.engine[credentialVaultOwner].revoke(parentIdentity, tokenId);
+    const revoked = system.engine[credentialVaultOwner].revoke(parentIdentity, tokenId);
     system.writes!.keys.add(ownerKey(parentIdentity));
-    stageCredentialInvalidation(system.writes!, tokenId);
+    stageCredentialInvalidations(system.writes!, revoked);
   },
 });

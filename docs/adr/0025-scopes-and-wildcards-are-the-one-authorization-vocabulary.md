@@ -112,7 +112,15 @@ feature, so it is part of the contract rather than a later optimization.
   without that brand.
 - A credential is non-expiring by construction. Nothing but invalidation revokes
   it, which is why the lease and session expiry paths now skip a non-finite
-  deadline instead of scheduling a timer for it.
+  deadline instead of scheduling a timer for it, and why a mutation's
+  idempotency fingerprint is now the caller's ownership key — the one the HTTP
+  path already used — rather than a digest of the whole principal. Digesting the
+  principal made a token refresh look like a different caller and could not
+  encode a non-finite deadline at all.
+- Revoking or narrowing a credential publishes an invalidation for every
+  credential delegated beneath it, and revocation cascades to them. Authority
+  that outlives its source is the failure mode the child invariant exists to
+  prevent, and a non-expiring principal has no second chance to notice.
 - The framework's own vocabulary is empty until the Admin API declares
   `_admin:<domain>:<verb>`. `_*` is still meaningful before then: it is what an
   administrative grant names, and it grows with that list rather than needing to
