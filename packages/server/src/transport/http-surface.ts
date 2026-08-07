@@ -23,8 +23,16 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   openapi: "/api/_openapi.json",
 } as const);
 
+/**
+ * The character marking a name as the framework's own, across every namespace
+ * an application shares with it. An `apiPath` may not begin with it, and
+ * neither may the module namespace directly under one. Segments deeper than
+ * that are the application's own business.
+ */
+export const RESERVED_MARKER = "_";
+
 /** The reserved prefix for every AckerDB-owned route under `/api/`. */
-export const ACKERDB_RESERVED_API_PREFIX = "/api/_";
+const ACKERDB_RESERVED_API_PREFIX = `/api/${RESERVED_MARKER}`;
 
 const builtinPaths = new Set<string>(Object.values(ACKERDB_HTTP_ROUTES));
 

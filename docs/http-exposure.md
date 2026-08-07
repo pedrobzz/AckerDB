@@ -26,8 +26,10 @@ transport-free query boundary (`executeQuery`); an HTTP-native procedure path
 ## The surface
 
 An exposed function at address `messages.list` is served at
-`/api/messages/list`: address segments (module path + export name) map 1:1 to
-path segments. The wire format is plain JSON — no protocol envelope. `ref`
+`/api/messages/list`: its group is the root and address segments (module path
+plus export name) map 1:1 to the segments after it, so the same function in
+the `internal` group is served at `/internal/messages/list` — see
+[API paths](#api-paths). The wire format is plain JSON — no protocol envelope. `ref`
 lives in the path, correlation is the HTTP response itself, and the protocol
 version is the package version (no `/v1` segment; the surface versions with
 the lockstep release, breaks are explicit).
@@ -124,9 +126,13 @@ send an `Authorization` header, so it would serve only anonymous streams.
 
 ## Route namespace
 
-AckerDB-owned routes move under the `_` prefix so the app owns every other
-path under `/api/`. Adding a future built-in route can never collide with an
-application module.
+Every AckerDB route an application could otherwise collide with lives behind
+the `_` marker, so the app owns every other path. Adding a future built-in
+route can never collide with an application module, because neither an
+`apiPath` nor the module namespace under it may begin with `_`. The
+operational endpoints below are the deliberate exception: `/live`, `/ready`,
+`/status`, and `/ws` carry no marker because their names live in Kubernetes
+probes and load-balancer configuration that is not ours to rename.
 
 | Route | Fate |
 | --- | --- |
@@ -137,10 +143,66 @@ application module.
 | `/api/realtime/prepare` | → `/api/_realtime/prepare` |
 | `/api/realtime/<session>` | → `/api/_realtime/<session>` |
 | — | new, opt-in: `GET /api/_openapi.json` |
-| `/live`, `/ready`, `/status`, `/ws` | unchanged (root-level, outside `/api/`) |
+| `/live`, `/ready`, `/status`, `/ws` | unchanged (root-level) |
 
 The `CallRequest`/`CallResponse` envelope types in `@ackerdb/core` die with
 the envelope routes, as does the client's `encodeCall`.
+
+## API paths
+
+`/api/` is one group, not the whole surface. A function's `apiPath` names the
+group it is published in, and the group decides two things at once: the
+generated binding a caller imports, and the HTTP root the function answers on.
+
+| `apiPath` | binding | URL |
+| --- | --- | --- |
+| `"api"` (the default) | `api.*` | `/api/*` |
+| `"internal"` | `internal.*` | `/internal/*` |
+| `"admin"` | `admin.*` | `/admin/*` |
+
+The framework does not decide that `internal` is a meaningful category — an
+application names its own groups. A name must be one identifier-shaped path
+segment that `export const <name>` accepts, and may not begin with `_`, which
+is reserved to AckerDB.
+
+**A group decides where a function answers, not whether it answers.** Plain
+HTTP is still opt-in: a function without `http` has no URL in any group. Over
+the socket the group does nothing at all — a call names the function by its
+dotted address, which its group never touches.
+
+**A group is never an access rule.** Who may call a function is decided by its
+`access` policy alone, plus its orthogonal scope requirement. A function in the
+`internal` group answering at `/internal/...` is protected exactly as strongly
+as its `access` says — which is why nothing is exposed by accident: `access` is
+a required field on every declaration.
+
+An address is unchanged by its group: `admin/users.ts`'s `compact` export is
+`admin.users.compact` in every group, and only its root moves.
+
+Groups beyond `"api"` are declared once in the manifest, because code
+generation reads the manifest and never the function modules — which import
+what it writes:
+
+```ts
+// app.ts
+export default defineApp({ schema, apiPaths: ["internal"] });
+```
+
+That earns `_generated/api.ts` an `internal` binding beside `api`:
+
+```ts
+import { api, internal } from "./_generated/api.ts";
+```
+
+The manifest and the declarations are two statements of one fact, so startup
+reconciles them: a function whose `apiPath` the manifest does not list is a
+registration error naming both. A misspelled group would otherwise serve a live
+route whose binding nobody can import.
+
+Each binding is a reference builder that knows its own root, so `client.sse()`
+streams a group's procedure from that group's root without being told. A raw
+address string carries no group and names the default one — what a
+hand-written address has always meant.
 
 ## Per-function exposure
 
@@ -163,10 +225,10 @@ export const purge = mutation({
 });
 ```
 
-`internal: true` and `http` on one declaration is a startup refusal: an
-internal function has no client-facing address, and one declaration must not
-both erase it and claim an HTTP path (ADR-0021).
-
+- `apiPath?: string` — the group this function is published in, deciding its
+  generated binding and its HTTP root together (ADR-0023). Absent means
+  `"api"`. It is grouping and routing only: who may call the function is
+  `access` alone, so a group is never a shortcut for a policy.
 - `http?: boolean | { openapi: boolean }` — absent or `false` means not
   reachable over HTTP and absent from OpenAPI. `true` is shorthand for
   `{ openapi: true }`. Because `openapi` only exists inside an exposed
@@ -331,6 +393,17 @@ how a tool's scopes sit alongside the function's own access policy.
   collide with a declared MCP path.
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
+- A malformed `apiPath` — anything that is not one identifier-shaped segment,
+  including one beginning with `_` or a word `export const <name>` rejects —
+  is a registration error, as is one the manifest does not list. The registry
+  re-interprets the field rather than trusting it, so a hand-built export
+  meets the same refusals the builder gives. At the type level a group must be
+  one string literal: a widened `string` would name no group a generated tree
+  can select.
+- A field no declaration consumes is a registration error naming it, exactly as
+  for `httpHandler`. An intersection parameter turns off TypeScript's
+  excess-property check, so a misspelled key would otherwise be dropped in
+  silence and read as an expectation nothing meets.
 - An exposed function's kind is narrowed to the four this surface serves at
   registration, and an exposure no method serves is a registration error like
   every other malformed one. The narrowed kind is what the listener and the

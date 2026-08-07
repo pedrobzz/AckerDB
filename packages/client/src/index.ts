@@ -20,7 +20,7 @@ export {
   type AckerDBRealtimeStreamOn,
   type AckerDBRealtimeStreamUnion,
 } from "./realtime/session.ts";
-export { anyApi, getRef, stableEncode } from "@ackerdb/core";
+export { anyApi, apiGroup, getRef, httpPathForAddress, refApiPath, stableEncode } from "@ackerdb/core";
 export type {
   ApiFromModules,
   AnyChannelRef,

@@ -194,22 +194,50 @@ export const tuya = service({
     const config = loadConfig(dir);
     await runCodegen(config);
     const modules = await importFunctionModules(config);
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
+      "admin.users.compact",
       "admin.users.count",
       "messages.enqueueNote",
       "messages.list",
       "messages.send",
       "messages.tail",
     ]);
+    // the group decides the HTTP root, never the address
+    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("messages.tail");
+    expect(registry.get("admin.users.compact")?.apiPath).toBe("internal");
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
-    expect(api).toContain("messages: typeof m_messages;");
+    expect(api).toContain("messages: typeof _m_messages;");
     expect(api).toContain("admin: {");
-    expect(api).toContain("users: typeof m_admin_users;");
+    expect(api).toContain("users: typeof _m_admin_users;");
     expect(api).toContain(
-      'typingEvents: EventRef<import("./types.ts").TypingEventArgs, import("./types.ts").TypingEvent>;',
+      'typingEvents: _EventRef<import("./types.ts").TypingEventArgs, import("./types.ts").TypingEvent>;',
     );
+  });
+
+  test("emits one binding per API path the manifest declares", async () => {
+    const dir = fixture();
+    const config = loadConfig(dir);
+    await runCodegen(config);
+    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
+    expect(api).toContain(
+      "export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {",
+    );
+    expect(api).toContain(
+      'export const internal = _apiGroup("internal") as unknown as _ApiFromModules<_Modules, "internal">;',
+    );
+    // An undeclared group earns no binding: the manifest is the only list, and
+    // code generation never imports the function modules that would hold one.
+    expect(api).not.toContain("export const admin =");
+    // Every name the module needs for itself carries the reserved `_`, which a
+    // group's name can never begin with — so `api` and `events` are the whole
+    // of what a group must not be called, and the manifest refuses both.
+    for (const line of api.split("\n")) {
+      const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
+      if (owned !== undefined) expect(["api", "events", "internal"]).toContain(owned);
+    }
+    expect(typecheckFixture(dir)).toBe("");
   });
 
   test("binds MCP declarations to the schema while keeping them server-only", async () => {
@@ -246,7 +274,7 @@ export const agentMcp = mcp({
     expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema>;");
     expect(generatedServer).toContain("export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;");
 
-    const registry = new Registry(await importFunctionModules(config));
+    const registry = new Registry(await importFunctionModules(config), ["internal"]);
     // The tool is an ordinary function and keeps its address; the endpoint and
     // its auth provider are the only server-only exports.
     expect([...registry.functions.keys()]).toEqual(["agent.echo"]);

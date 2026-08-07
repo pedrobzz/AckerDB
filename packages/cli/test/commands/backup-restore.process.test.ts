@@ -32,7 +32,7 @@ import {
   type RestoreReport,
   type StatusReport,
 } from "../../src/commands/operations.ts";
-import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
+import { FIXTURE_APP, FIXTURE_DEFINE_APP, makeFixture } from "../support/fixture.ts";
 import { desiredPluginMounts } from "@ackerdb/server";
 
 import { runCli } from "../support/process.ts";
@@ -145,7 +145,7 @@ function appWithPlugin(
   return FIXTURE_APP
     .replace("defineApp,", "defineApp, definePlugin,")
     .replace(
-      "export default defineApp({ schema });",
+      FIXTURE_DEFINE_APP,
       `const pluginSchema = defineSchema({
   entries: defineTable({ id: v.primaryKey(), value: ${valueValidator} }),
 });
@@ -155,7 +155,7 @@ const plugin = definePlugin({
   create: () => ({ exports: {} }),
 })();
 
-export default defineApp({ schema, plugins: { ${mount}: plugin } });`,
+export default defineApp({ schema, apiPaths: ["internal"], plugins: { ${mount}: plugin } });`,
     );
 }
 

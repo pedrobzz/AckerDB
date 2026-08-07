@@ -54,7 +54,7 @@ function start(
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: new Registry(functions, ["internal"]),
     telemetry: false,
     limits: limits(),
     jobs,
@@ -73,7 +73,7 @@ async function restart(
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: new Registry(functions, ["internal"]),
     telemetry: false,
     limits: limits(),
     jobs,
@@ -117,7 +117,7 @@ afterEach(async () => {
 
 /** Registered targets for `step.run`, shared across tests. */
 const record = mutation({
-  internal: true,
+  apiPath: "internal",
   access: "system",
   args: { line: v.string() },
   handler: async (ctx: Ctx, args: Ctx) => {
@@ -131,7 +131,7 @@ const snapshot = query({
   handler: () => "observed",
 });
 const payInvoice = procedure({
-  internal: true,
+  apiPath: "internal",
   access: "authenticated",
   args: { invoiceId: v.string() },
   handler: (_ctx: Ctx, args: Ctx) =>

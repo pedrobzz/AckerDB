@@ -318,7 +318,29 @@ const functions = {
       },
     }),
   },
+  ops: {
+    /** Another group's root: an ordinary address, served off `/internal/`. */
+    // (declared in APP_API_PATHS below, exactly as an app.ts manifest would)
+    count: query({
+      apiPath: "internal",
+      access: "public",
+      http: true,
+      args: {},
+      handler: (ctx: Ctx) => ctx.db.notes.query().count(),
+    }),
+    /** The group grants nothing: `access` is the whole of the admission decision. */
+    purge: mutation({
+      apiPath: "internal",
+      access: "system",
+      http: true,
+      args: {},
+      handler: () => "purged",
+    }),
+  },
 };
+
+/** What `defineApp({ apiPaths })` would declare for the modules above. */
+const APP_API_PATHS = ["internal"];
 
 class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
@@ -461,7 +483,7 @@ beforeEach(() => {
   verifier = new TestVerifier();
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: new Registry(functions, APP_API_PATHS),
     verifier,
     limits,
     telemetry: false,
@@ -477,9 +499,9 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Address segments are path segments: "notes.echo" is served at "/api/notes/echo". */
-function apiPath(address: string): string {
-  return `/api/${address.replaceAll(".", "/")}`;
+/** The group is the root and address segments follow: "notes.echo" -> "/api/notes/echo". */
+function httpPath(address: string, group = "api"): string {
+  return `/${group}/${address.replaceAll(".", "/")}`;
 }
 
 /**
@@ -491,7 +513,7 @@ async function call(
   args: unknown,
   authorization?: string,
 ): Promise<{ readonly status: number; readonly body: unknown }> {
-  const response = await fetch(`${base}${apiPath(address)}`, {
+  const response = await fetch(`${base}${httpPath(address)}`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: JSON.stringify(args),
@@ -646,7 +668,7 @@ describe("health and protected status", () => {
       reconcile(earlyEngine);
       earlyRuntime = new Runtime({
         engine: earlyEngine,
-        registry: new Registry(functions),
+        registry: new Registry(functions, APP_API_PATHS),
         verifier,
         limits,
         telemetry: false,
@@ -780,7 +802,7 @@ describe("exposed HTTP procedures", () => {
     });
     expect(verifier.verified).toEqual(["user-token"]);
 
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "headers" }),
     });
@@ -790,11 +812,11 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("treats an absent or empty body as empty args", async () => {
-    const absent = await fetch(`${base}${apiPath("notes.conflict")}`, { method: "POST" });
+    const absent = await fetch(`${base}${httpPath("notes.conflict")}`, { method: "POST" });
     expect(absent.status).toBe(409);
     expect(JSON.parse(await absent.text())).toMatchObject({ code: "conflict" });
 
-    const empty = await fetch(`${base}${apiPath("notes.identity")}`, {
+    const empty = await fetch(`${base}${httpPath("notes.identity")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: "",
@@ -804,11 +826,11 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("hides unexposed functions behind the same 404 as a nonexistent path", async () => {
-    const unexposed = await fetch(`${base}${apiPath("notes.hidden")}`, {
+    const unexposed = await fetch(`${base}${httpPath("notes.hidden")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
-    const missing = await fetch(`${base}${apiPath("notes.missing")}`, {
+    const missing = await fetch(`${base}${httpPath("notes.missing")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -837,9 +859,62 @@ describe("exposed HTTP procedures", () => {
     await within(client.closed());
   });
 
+  test("serves another group off its own root, gated by access alone", async () => {
+    const counted = await fetch(`${base}${httpPath("ops.count", "internal")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(counted.status).toBe(200);
+
+    // The same function is nowhere under `/api/`: a group is one root, not an
+    // alias for every root.
+    const wrongRoot = await fetch(`${base}${httpPath("ops.count")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(wrongRoot.status).toBe(404);
+
+    // Being in the `internal` group grants nothing. The system-only mutation
+    // answers exactly what its `access` says, to an anonymous caller and to an
+    // authenticated user alike.
+    const anonymous = await fetch(`${base}${httpPath("ops.purge", "internal")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(anonymous.status).toBe(401);
+    const user = await fetch(`${base}${httpPath("ops.purge", "internal")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+      body: JSON.stringify({}),
+    });
+    expect(user.status).toBe(403);
+
+    // Over the socket the address is unchanged — the group moves the HTTP
+    // root, never the name — and the same policy answers.
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "ops.count", args: {} });
+    expect(await within(client.next())).toMatchObject({ t: "ok", id: 1 });
+    client.send({
+      v: PROTOCOL_VERSION,
+      t: "m",
+      id: 2,
+      ref: "ops.purge",
+      args: {},
+      mutationRequestId: uuidV7(2),
+      issuedAt: Date.now(),
+    });
+    expect(await within(client.next())).toMatchObject({
+      t: "err",
+      id: 2,
+      outcome: { code: "unauthenticated" },
+    });
+    client.socket.close();
+    await within(client.closed());
+  });
+
   test("answers a wrong method on an exposed path with 405 and its Allow header", async () => {
     for (const method of ["GET", "PUT", "DELETE"]) {
-      const response = await fetch(`${base}${apiPath("notes.echo")}`, { method });
+      const response = await fetch(`${base}${httpPath("notes.echo")}`, { method });
       expect(response.status).toBe(405);
       expect(response.headers.get("allow")).toBe("POST");
       expect(response.headers.get("access-control-allow-origin")).toBe("*");
@@ -851,7 +926,7 @@ describe("exposed HTTP procedures", () => {
         message: "method not allowed; allow: POST",
       });
     }
-    const preflight = await fetch(`${base}${apiPath("notes.echo")}`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}${httpPath("notes.echo")}`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
   });
 
@@ -859,13 +934,13 @@ describe("exposed HTTP procedures", () => {
     // A GET query is the cacheable form an operator is invited to front with a
     // CDN rule; without this it would serve one caller's rows to another.
     const get = await fetch(
-      `${base}${apiPath("notes.identityQuery")}?args=${encodeURIComponent("{}")}`,
+      `${base}${httpPath("notes.identityQuery")}?args=${encodeURIComponent("{}")}`,
       { headers: { authorization: "Bearer user-token" } },
     );
     expect(get.status).toBe(200);
     expect(get.headers.get("vary")).toBe("authorization");
 
-    const posted = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const posted = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
@@ -941,13 +1016,13 @@ describe("exposed HTTP procedures", () => {
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(limits.maxRequestBytes);
     expect(Buffer.byteLength(JSON.stringify(JSON.parse(body)))).toBeGreaterThan(limits.maxRequestBytes);
 
-    const response = await fetch(`${base}${apiPath("notes.numbers")}`, { method: "POST", body });
+    const response = await fetch(`${base}${httpPath("notes.numbers")}`, { method: "POST", body });
     expect(response.status).toBe(200);
     expect(JSON.parse(await response.text())).toBe(60);
   });
 
   test("rejects malformed args bodies and malformed Authorization", async () => {
-    const malformed = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const malformed = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: "{",
     });
@@ -958,7 +1033,7 @@ describe("exposed HTTP procedures", () => {
     expect(unknownArgument.status).toBe(400);
     expect(unknownArgument.body).toMatchObject({ code: "validation" });
 
-    const basic = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const basic = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       headers: { authorization: "Basic secret" },
       body: JSON.stringify({ value: "x" }),
@@ -968,7 +1043,7 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("rejects invalid credentials without reading a stalled request body", async () => {
-    const response = await fetch(`${base}${apiPath("notes.identity")}`, {
+    const response = await fetch(`${base}${httpPath("notes.identity")}`, {
       method: "POST",
       headers: { authorization: "Bearer invalid" },
       body: stalledBody(),
@@ -980,7 +1055,7 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("bounds declared and streaming HTTP bodies before parsing them", async () => {
-    const declared = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const declared = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: "x".repeat(limits.maxRequestBytes + 1),
     });
@@ -997,7 +1072,7 @@ describe("exposed HTTP procedures", () => {
         controller.close();
       },
     });
-    const chunked = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const chunked = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: chunkedBody,
     });
@@ -1019,7 +1094,7 @@ describe("exposed HTTP procedures", () => {
         controller.close();
       },
     });
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body,
     });
@@ -1031,7 +1106,7 @@ describe("exposed HTTP procedures", () => {
   test("globally bounds pre-body HTTP admission and rejects node saturation as 503", async () => {
     const controllers = [new AbortController(), new AbortController()];
     const stalled = controllers.map((controller) =>
-      fetch(`${base}${apiPath("notes.echo")}`, {
+      fetch(`${base}${httpPath("notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: controller.signal,
@@ -1061,7 +1136,7 @@ describe("exposed HTTP procedures", () => {
     const fairVerifier = new TestVerifier();
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       verifier: fairVerifier,
       limits: defineServiceLimits({
         ...limits,
@@ -1079,14 +1154,14 @@ describe("exposed HTTP procedures", () => {
     let heldSseReader: SseResponseReader | undefined;
 
     try {
-      const stalled = fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const stalled = fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: sourceController.signal,
       }).catch(() => undefined);
       await eventually(() => fairServer.status().httpIngress === 1);
 
-      const spoofedSource = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const spoofedSource = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
         body: JSON.stringify({ value: "spoofed" }),
@@ -1109,14 +1184,14 @@ describe("exposed HTTP procedures", () => {
 
       blockedProcedureStarted = deferred<void>();
       blockedProcedureRelease = deferred<void>();
-      heldProcedure = fetch(`${fairBase}${apiPath("notes.block")}`, {
+      heldProcedure = fetch(`${fairBase}${httpPath("notes.block")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({}),
       });
       await blockedProcedureStarted.promise;
 
-      const hot = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const hot = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
         body: JSON.stringify({ value: "hot" }),
@@ -1128,7 +1203,7 @@ describe("exposed HTTP procedures", () => {
         resource: "operation",
       });
 
-      const cold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const cold = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
         body: JSON.stringify({ value: "cold" }),
@@ -1143,7 +1218,7 @@ describe("exposed HTTP procedures", () => {
       await eventually(() => fairServer.status().httpIngress === 0);
 
       longSseStarted = deferred<void>();
-      heldSse = await fetch(`${fairBase}${apiPath("notes.stayOpen")}`, {
+      heldSse = await fetch(`${fairBase}${httpPath("notes.stayOpen")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({}),
@@ -1169,7 +1244,7 @@ describe("exposed HTTP procedures", () => {
       expect(fairVerifier.verified).toEqual(verifiedBeforeAck);
       expect(fairServer.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
 
-      const whileStreaming = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const whileStreaming = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({ value: "streaming" }),
@@ -1188,7 +1263,7 @@ describe("exposed HTTP procedures", () => {
         fairServer.status().httpIngress === 0 &&
         fairRuntime.status().activeOperationCallers === 0
       );
-      const afterCancel = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const afterCancel = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({ value: "released" }),
@@ -1210,7 +1285,7 @@ describe("exposed HTTP procedures", () => {
 
   test("cancels a slow request body at the finite ingress deadline", async () => {
     const startedAt = performance.now();
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: stalledBody(),
     });
@@ -1230,7 +1305,7 @@ describe("exposed HTTP procedures", () => {
 describe("exposed HTTP queries", () => {
   /** A GET query carries its whole args object in one url-encoded parameter. */
   function queryUrl(address: string, args?: string): string {
-    return `${base}${apiPath(address)}${args === undefined ? "" : `?args=${encodeURIComponent(args)}`}`;
+    return `${base}${httpPath(address)}${args === undefined ? "" : `?args=${encodeURIComponent(args)}`}`;
   }
 
   test("answers one query identically through GET args and a POST body", async () => {
@@ -1240,7 +1315,7 @@ describe("exposed HTTP queries", () => {
     const args = JSON.stringify({ rank: "1" });
 
     const get = await fetch(queryUrl("notes.list", args));
-    const post = await fetch(`${base}${apiPath("notes.list")}`, {
+    const post = await fetch(`${base}${httpPath("notes.list")}`, {
       method: "POST",
       body: JSON.stringify({ rank: 1 }),
     });
@@ -1270,7 +1345,7 @@ describe("exposed HTTP queries", () => {
     expect(emptyParameter.status).toBe(200);
     expect(JSON.parse(await emptyParameter.text())).toEqual(identity);
 
-    const emptyBody = await fetch(`${base}${apiPath("notes.identityQuery")}`, {
+    const emptyBody = await fetch(`${base}${httpPath("notes.identityQuery")}`, {
       method: "POST",
       headers: authorization,
       body: "",
@@ -1289,7 +1364,7 @@ describe("exposed HTTP queries", () => {
     expect(JSON.parse(await invalid.text())).toMatchObject({ code: "validation" });
 
     // Per-field parameters are not a supported spelling: nothing coerces them.
-    const perField = await fetch(`${base}${apiPath("notes.list")}?rank=1`);
+    const perField = await fetch(`${base}${httpPath("notes.list")}?rank=1`);
     expect(perField.status).toBe(400);
     expect(JSON.parse(await perField.text())).toMatchObject({ code: "validation" });
 
@@ -1316,15 +1391,15 @@ describe("exposed HTTP queries", () => {
   });
 
   test("offers GET on query paths alone and names the allowed methods", async () => {
-    const wrongMethod = await fetch(`${base}${apiPath("notes.list")}`, { method: "DELETE" });
+    const wrongMethod = await fetch(`${base}${httpPath("notes.list")}`, { method: "DELETE" });
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("GET, POST");
 
-    const procedureGet = await fetch(`${base}${apiPath("notes.echo")}`);
+    const procedureGet = await fetch(`${base}${httpPath("notes.echo")}`);
     expect(procedureGet.status).toBe(405);
     expect(procedureGet.headers.get("allow")).toBe("POST");
 
-    const mutationGet = await fetch(`${base}${apiPath("notes.add")}`);
+    const mutationGet = await fetch(`${base}${httpPath("notes.add")}`);
     expect(mutationGet.status).toBe(405);
     expect(mutationGet.headers.get("allow")).toBe("POST");
   });
@@ -1343,7 +1418,7 @@ describe("exposed HTTP mutations", () => {
     args: unknown,
     headers: Record<string, string> = {},
   ): Promise<MutationResponse> {
-    const response = await fetch(`${base}${apiPath(address)}`, {
+    const response = await fetch(`${base}${httpPath(address)}`, {
       method: "POST",
       headers,
       body: JSON.stringify(args),
@@ -1362,7 +1437,7 @@ describe("exposed HTTP mutations", () => {
   }
 
   function notes(rank: string): Promise<unknown> {
-    return fetch(`${base}${apiPath("notes.list")}?args=${encodeURIComponent(JSON.stringify({ rank }))}`)
+    return fetch(`${base}${httpPath("notes.list")}?args=${encodeURIComponent(JSON.stringify({ rank }))}`)
       .then((response) => response.text())
       .then((body) => JSON.parse(body));
   }
@@ -1522,7 +1597,7 @@ describe("exposed HTTP mutations", () => {
   });
 
   test("names the receipt headers a browser caller may read", async () => {
-    const preflight = await fetch(`${base}${apiPath("notes.add")}`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}${httpPath("notes.add")}`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     const exposed = preflight.headers.get("access-control-expose-headers");
     expect(exposed).toContain("x-ackerdb-commit-version");
@@ -1535,7 +1610,7 @@ describe("exposed HTTP mutations", () => {
 
 describe("SSE", () => {
   test("routes capability ACKs without oracles and keeps the registry through terminal credit", async () => {
-    const denied = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const denied = await fetch(`${base}${httpPath("notes.chat")}`, {
       method: "POST",
       body: JSON.stringify({ text: "no" }),
     });
@@ -1543,7 +1618,7 @@ describe("SSE", () => {
     expect(denied.headers.get("content-type")).toStartWith("application/json");
     expect(JSON.parse(await denied.text())).toMatchObject({ code: "unauthenticated" });
 
-    const success = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const success = await fetch(`${base}${httpPath("notes.chat")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: JSON.stringify({ text: "hello" }),
@@ -1631,7 +1706,7 @@ describe("SSE", () => {
     expect(wrongMethod.headers.get("allow")).toBe("POST");
 
     // An absent body is empty args here exactly as it is for every other kind.
-    const late = await fetch(`${base}${apiPath("notes.failLate")}`, { method: "POST" });
+    const late = await fetch(`${base}${httpPath("notes.failLate")}`, { method: "POST" });
     expect(late.status).toBe(200);
     const lateReader = readSse(late);
     const lateStarted = await lateReader.next();
@@ -1660,7 +1735,7 @@ describe("SSE", () => {
     expect(envelope.status).toBe(404);
 
     // Unexposed is indistinguishable from nonexistent, and there is no GET.
-    const unexposed = await fetch(`${base}${apiPath("notes.hiddenChat")}`, { method: "POST" });
+    const unexposed = await fetch(`${base}${httpPath("notes.hiddenChat")}`, { method: "POST" });
     expect(unexposed.status).toBe(404);
 
     // An sseProcedure that was never given `http` is the mistake this feature
@@ -1668,14 +1743,14 @@ describe("SSE", () => {
     // reaching the client's frame parser as plain text.
     expect(JSON.parse(await unexposed.text())).toMatchObject({ code: "not_found" });
 
-    const wrongMethod = await fetch(`${base}${apiPath("notes.chat")}`);
+    const wrongMethod = await fetch(`${base}${httpPath("notes.chat")}`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
     expect(runtime.status().activeSse).toBe(0);
   });
 
   test("validates chunks against yields and rejects args the validator refuses", async () => {
-    const invalid = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const invalid = await fetch(`${base}${httpPath("notes.chat")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: JSON.stringify({ text: 7 }),
@@ -1686,7 +1761,7 @@ describe("SSE", () => {
 
     // A chunk the yields validator refuses is still a terminal stream failure,
     // never an unvalidated value on the wire.
-    const invalidChunk = await fetch(`${base}${apiPath("notes.badChunk")}`, { method: "POST" });
+    const invalidChunk = await fetch(`${base}${httpPath("notes.badChunk")}`, { method: "POST" });
     expect(invalidChunk.status).toBe(200);
     const reader = readSse(invalidChunk);
     const first = await reader.next();
@@ -1727,7 +1802,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, APP_API_PATHS);
     const documentedRuntime = new Runtime({
       engine,
       registry,
@@ -1761,16 +1836,16 @@ describe("the opt-in OpenAPI endpoint", () => {
     // The endpoint and `acker openapi` publish one encoding of one document.
     const served = new Uint8Array(await response.arrayBuffer());
     expect(served).toEqual(
-      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions), info))),
+      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions, APP_API_PATHS), info))),
     );
 
     const document = JSON.parse(new TextDecoder().decode(served)) as Ctx;
     expect(document.info).toEqual({ title: "notes-app", version: "4.2.0" });
-    expect(Object.keys(document.paths)).toContain(apiPath("notes.list"));
+    expect(Object.keys(document.paths)).toContain(httpPath("notes.list"));
     // The same per-function flags the surface serves: hidden stays callable but
     // undocumented, and unexposed appears nowhere.
-    expect(document.paths[apiPath("notes.numbers")]).toBeUndefined();
-    expect(document.paths[apiPath("notes.hidden")]).toBeUndefined();
+    expect(document.paths[httpPath("notes.numbers")]).toBeUndefined();
+    expect(document.paths[httpPath("notes.hidden")]).toBeUndefined();
 
     const wrongMethod = await fetch(`${documentedBase}${OPENAPI}`, {
       method: "POST",
@@ -1800,7 +1875,7 @@ describe("the opt-in OpenAPI endpoint", () => {
   test("serves the bytes it cached, never a fresh walk of the registry", async () => {
     const { base: documentedBase, registry } = documented();
     const first = await (await fetch(`${documentedBase}${OPENAPI}`)).text();
-    expect((JSON.parse(first) as Ctx).paths[apiPath("notes.list")]).toBeDefined();
+    expect((JSON.parse(first) as Ctx).paths[httpPath("notes.list")]).toBeDefined();
 
     // The registry is immutable after load; emptying it is only a probe, and a
     // document assembled per request could not still describe what it lost.
@@ -2039,7 +2114,7 @@ describe("WebSocket Session transport", () => {
     });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       verifier: new TestVerifier(),
       limits: fairLimits,
       telemetry: false,
@@ -2073,7 +2148,7 @@ describe("WebSocket Session transport", () => {
         outcome: { code: "overloaded", retryable: true, resource: "operation" },
       });
 
-      const samePrincipalHttp = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const samePrincipalHttp = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
         body: JSON.stringify({ value: "ok" }),
@@ -2116,7 +2191,7 @@ describe("WebSocket Session transport", () => {
       await eventually(() => fairRuntime.status().activeOperations === 2);
       expect(fairRuntime.status().activeOperationCallers).toBe(1);
 
-      const spoofedAnonymous = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const spoofedAnonymous = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
         body: JSON.stringify({ value: "ok" }),
@@ -2128,7 +2203,7 @@ describe("WebSocket Session transport", () => {
         resource: "operation",
       });
 
-      const verifiedCold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const verifiedCold = await fetch(`${fairBase}${httpPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
         body: JSON.stringify({ value: "cold" }),
@@ -2159,7 +2234,7 @@ describe("WebSocket Session transport", () => {
     reconcile(overlapEngine);
     const overlapRuntime = new Runtime({
       engine: overlapEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
       telemetry: false,
     });
@@ -2215,7 +2290,7 @@ describe("lifecycle drain", () => {
   test("stops admission, terminates WS and SSE, drains Runtime, then stops", async () => {
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
     longSseStarted = deferred<void>();
-    const response = await fetch(`${base}${apiPath("notes.stayOpen")}`, { method: "POST" });
+    const response = await fetch(`${base}${httpPath("notes.stayOpen")}`, { method: "POST" });
     await within(longSseStarted.promise);
     expect(response.status).toBe(200);
     const sse = readSse(response);
@@ -2268,7 +2343,7 @@ describe("lifecycle drain", () => {
     });
     const slowRuntime = new Runtime({
       engine: slowEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       limits: slowLimits,
       telemetry: false,
     });
@@ -2277,7 +2352,7 @@ describe("lifecycle drain", () => {
     const stalledCreditController = new AbortController();
     try {
       longSseStarted = deferred<void>();
-      const response = await fetch(`${slowBase}${apiPath("notes.stayOpen")}`, { method: "POST" });
+      const response = await fetch(`${slowBase}${httpPath("notes.stayOpen")}`, { method: "POST" });
       await within(longSseStarted.promise);
       const sse = readSse(response);
       const started = await within(sse.next());
@@ -2330,7 +2405,7 @@ describe("lifecycle drain", () => {
   test("force closes and preserves unclean storage when an admitted operation stalls", async () => {
     blockedProcedureStarted = deferred<void>();
     blockedProcedureRelease = deferred<void>();
-    const transport = fetch(`${base}${apiPath("notes.block")}`, {
+    const transport = fetch(`${base}${httpPath("notes.block")}`, {
       method: "POST",
       body: JSON.stringify({}),
     }).then(
@@ -2345,7 +2420,7 @@ describe("lifecycle drain", () => {
     const notReady = await fetch(`${base}/ready`);
     expect(notReady.status).toBe(503);
     expect(await notReady.json()).toEqual({ version: 1, ready: false, state: "draining" });
-    const refusedDuringDrain = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const refusedDuringDrain = await fetch(`${base}${httpPath("notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
