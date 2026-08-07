@@ -1225,21 +1225,59 @@ and the state releases when the ledger changes — a rescued schema starts the
 server silently, a different ledger asks again, and generation stays available
 on demand.
 
+## Administration
+
+**Admin API** — The built-in administration surface every application carries:
+framework-declared functions that observe the application and administer it.
+It is the server side of administration, named for what it does rather than for
+any client that consumes it — Studio is one such client, not its owner.
+_Avoid_: Studio surface, system UDFs, dashboard API
+
+**Reserved marker** — The leading `_` that marks a name as the framework's own,
+across every namespace an application shares with it: API paths, HTTP roots, and
+scopes. An application may never declare a name carrying it, so the two
+vocabularies cannot collide.
+_Avoid_: Private prefix, system namespace, underscore convention
+
+**API path** — The named group a function is published in, deciding its
+generated binding and its HTTP root together. It is a grouping choice and never
+an access rule: who may call a function is decided by its access policy alone.
+Groups whose name begins with `_` belong to the framework.
+_Avoid_: Internal flag, private function, route prefix
+
+**Admin scope** — A scope in the framework's own reserved vocabulary, naming one
+verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB
+defines the whole vocabulary and an application never declares one.
+_Avoid_: Studio scope, system permission
+
+**Scope wildcard** — A pattern in a grant that stands for every scope it
+matches, resolved against the vocabulary known at the moment of the check. The
+pattern `*` deliberately excludes everything carrying the reserved marker, so
+the two vocabularies are only ever granted on purpose — an administrative
+identity holds both `*` and `_*`.
+_Avoid_: Role, superuser flag, permission group
+
+**Admin Credential** — The opaque credential that authenticates an
+administrative identity, distinct from any application user and from the system
+principal. Its authority is nothing more than the grant it holds: the patterns
+covering both the application vocabulary and the framework's reserved one. An
+application manages a single master Admin Credential by default, though the
+model admits more.
+_Avoid_: admin token, API key, master key
+
+**Agent Credential** — A credential issued for one external agent host, holding
+a chosen subset of an Admin Credential's authority. It is an ordinary child
+credential: an agent is a first-class identity, and its grant never exceeds its
+parent's, at issuance or afterwards.
+_Avoid_: MCP token, API key, service account
+
 ## Studio
 
 **Studio** — The opt-in observability and administration client for one AckerDB
 application. It runs outside the application's process as a client on the public
-AckerDB client stack, authenticates with an admin credential rather than as an
-application user, and consumes only functions the framework itself exposes. The
-name is provisional.
+AckerDB client stack, authenticates with an Admin Credential rather than as an
+application user, and consumes only the Admin API. The name is provisional.
 _Avoid_: Dashboard, admin panel, embedded console
-
-**Admin Credential** — The opaque credential that authenticates a Studio
-operator as an administrative identity, distinct from any application user and
-from the system principal. Administrative authority is implicit and total — it
-satisfies every scope requirement. An application manages a single master Admin
-Credential by default, though the model admits more.
-_Avoid_: admin token, API key, master key
 
 **Log source** — The origin of a record in Studio's Logs stream: application
 (developer-authored application log records) or framework (framework-emitted
