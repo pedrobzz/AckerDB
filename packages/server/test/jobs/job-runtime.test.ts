@@ -1128,6 +1128,44 @@ describe("administration transitions", () => {
     expect(runRows()).toHaveLength(0);
   });
 
+  test("retention wakes an idle runner, and a full page brings it straight back", async () => {
+    clock = 26_000_000;
+    start(declareJobs({
+      work: {
+        brief: job({
+          kind: "mutation" as const,
+          args: { n: v.int() },
+          retention: 1_000,
+          handler: async () => "done",
+        }),
+      },
+    }), limits({ claimBatchSize: 1 }));
+    for (let index = 0; index < 3; index++) {
+      await runtime.jobs.enqueue("work.brief", { n: index });
+      await runtime.runJobs();
+    }
+    expect(jobRows()).toHaveLength(3);
+
+    // Nothing is due and nothing is enqueued ever again: the only reason left
+    // to wake is the retention the operator asked for. No runJobs() below —
+    // the runner has to schedule every one of these sweeps itself.
+    clock = 26_000_000 + 120_000;
+    runtime.jobs.arm();
+    const deadline = Date.now() + 5_000;
+    let swept = jobRows().length;
+    while (swept > 0 && Date.now() < deadline) {
+      await Bun.sleep(5);
+      if (jobRows().length === swept) continue;
+      swept = jobRows().length;
+      // A page went; the sweep interval is the next wake, so move the clock
+      // onto it. A runner that parked after a full page would stop here.
+      clock += 120_000;
+      runtime.jobs.arm("requeue");
+    }
+    expect(jobRows()).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
+  });
+
   test("cancel before the claim creates no run at all", async () => {
     clock = 22_000_000;
     start(declareJobs({
@@ -1138,6 +1176,34 @@ describe("administration transitions", () => {
     expect(jobRows()).toMatchObject([{ state: "canceled", runCount: 0n }]);
     expect(runRows()).toHaveLength(0);
     expect(await runtime.jobs.wait(handle.id)).toMatchObject({ ok: false, state: "canceled" });
+  });
+
+  test("reopening a terminal Job restamps the run it leaves behind as history", async () => {
+    clock = 27_000_000;
+    start(declareJobs({
+      work: {
+        cached: job({
+          kind: "mutation" as const,
+          args: {},
+          retention: 1_000,
+          dedupe: { completed: "forever" },
+          handler: async () => "value",
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.cached", {});
+    await runtime.runJobs();
+    // Settled as the Job's outcome, so it carries the forever dedupe stamp.
+    expect(runRows()).toMatchObject([{ number: 1n, deleteAfter: null }]);
+
+    clock = 27_010_000;
+    await runtime.jobs.forceRunAgain(handle.id);
+    // It is history now, and history keeps the plain retention it was settled
+    // with — not the forever stamp of an outcome nothing can reach again.
+    expect(runRows()).toMatchObject([{ number: 1n, deleteAfter: 27_001_000 }]);
+    await runtime.runJobs();
+    expect(runRows().map((run) => Number(run.number))).toEqual([1, 2]);
+    expect(runRows()[1]!.deleteAfter).toBeNull();
   });
 
   test("deleting a Job removes every run it owns", async () => {

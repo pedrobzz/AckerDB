@@ -16,7 +16,7 @@
  */
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../jobs/table.ts";
 import type {
-  JobAttemptOutcome,
+  JobRunOutcome,
   JobEnqueueOptions,
   JobHandle,
   RuntimeJobs,
@@ -92,11 +92,11 @@ export function procedureJobsNamespace(jobs: RuntimeJobs): unknown {
     assignLeaf(root, name, {
       enqueue: (args: unknown, options?: JobEnqueueOptions): Promise<JobHandle> =>
         jobs.enqueue(name, args, options),
-      run: async (args: unknown, options?: JobEnqueueOptions): Promise<JobAttemptOutcome> => {
+      run: async (args: unknown, options?: JobEnqueueOptions): Promise<JobRunOutcome> => {
         const handle = await jobs.enqueue(name, args, options);
         return await jobs.wait(handle.id);
       },
-      wait: (handle: JobHandle | bigint): Promise<JobAttemptOutcome> => jobs.wait(idOf(handle)),
+      wait: (handle: JobHandle | bigint): Promise<JobRunOutcome> => jobs.wait(idOf(handle)),
       cancel: (handle: JobHandle | bigint) => jobs.cancel(idOf(handle)),
       retry: (handle: JobHandle | bigint) => jobs.retry(idOf(handle)),
       runAgain: (handle: JobHandle | bigint) => jobs.runAgain(idOf(handle)),

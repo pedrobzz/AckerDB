@@ -281,14 +281,17 @@ export function dueJobStats(
 }
 
 /**
- * The next moment the runner must wake: the earliest due Job's `nextRunAt`, or
- * the earliest `leaseUntil` of a running run with no live in-process run — a
- * crashed run whose recovery deadline is a wake reason of its own.
+ * The next moment the runner must wake: the earliest due Job's `nextRunAt`, the
+ * earliest `leaseUntil` of a running run with no live in-process run — a
+ * crashed run whose recovery deadline is a wake reason of its own — or the
+ * earliest retention deadline, because a stamp an idle application never
+ * collects is not retention.
  */
 export function nextDueJobAt(
   engine: Engine,
   connection: Database,
   inProcessIds: readonly bigint[] = [],
+  notBefore = 0,
 ): number | null {
   const jobs = engine.rootScope.plan(JOBS_TABLE);
   const runs = engine.rootScope.plan(JOB_RUNS_TABLE);
@@ -312,5 +315,15 @@ export function nextDueJobAt(
   const candidates = [...due.map((row) => row.at), abandoned.at]
     .filter((value): value is number | bigint => value !== null)
     .map(Number);
-  return candidates.length === 0 ? null : Math.min(...candidates);
+  // Retention rides its own index in both tables. `notBefore` is the sweep's
+  // own interval: waking earlier than it would find nothing to do and park.
+  const expiring = [jobs, runs]
+    .map((plan) =>
+      (connection
+        .query(`SELECT MIN(${quote("deleteAfter")}) AS at FROM ${quote(plan.name)}`)
+        .get() as { at: number | bigint | null }).at)
+    .filter((value): value is number | bigint => value !== null)
+    .map((value) => Math.max(Number(value), notBefore));
+  const all = [...candidates, ...expiring];
+  return all.length === 0 ? null : Math.min(...all);
 }

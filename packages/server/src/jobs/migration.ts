@@ -63,8 +63,13 @@ const JOB_STATE_OF_OLD_STATE: Record<string, string> = {
 /**
  * The recorded attempts, position preserved. A malformed entry becomes a hole
  * rather than disappearing: attempt `i` is run `i`, and compacting the array
- * would renumber every attempt after the damaged one — including the last,
+ * would renumber every attempt behind the damaged one — including the last,
  * which is where a completed Job's output belongs.
+ *
+ * Every field is validated, not just the ones the reconstruction reads. An
+ * entry whose `error` is an object would otherwise reach the new table's
+ * validator and roll the whole migration back — one damaged row taking a
+ * database's entire startup with it.
  */
 function readAttempts(value: unknown): (StoredAttempt | undefined)[] {
   if (typeof value !== "string") return [];
@@ -75,14 +80,18 @@ function readAttempts(value: unknown): (StoredAttempt | undefined)[] {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  return parsed.map((entry) =>
-    typeof entry === "object" &&
-    entry !== null &&
-    Number.isFinite((entry as StoredAttempt).startedAt) &&
-    Number.isFinite((entry as StoredAttempt).settledAt) &&
-    typeof (entry as StoredAttempt).outcome === "string"
-      ? (entry as StoredAttempt)
-      : undefined);
+  return parsed.map((raw) => {
+    if (typeof raw !== "object" || raw === null) return undefined;
+    const entry = raw as Record<string, unknown>;
+    const readable =
+      Number.isFinite(entry["startedAt"]) &&
+      Number.isFinite(entry["settledAt"]) &&
+      typeof entry["outcome"] === "string" &&
+      (entry["error"] === null ||
+        entry["error"] === undefined ||
+        typeof entry["error"] === "string");
+    return readable ? (raw as StoredAttempt) : undefined;
+  });
 }
 
 const finite = (value: unknown, fallback: number): number =>
@@ -125,6 +134,15 @@ export const SPLIT_JOBS_INTO_RUNS: FrameworkMigration = {
           const attempt = open ? undefined : settled[position - 1];
           const startedAt = open ? runAt : finite(attempt?.startedAt, runAt);
           const lost = !open && attempt === undefined;
+          // The Job's own state is the authority on how it ended, so the last
+          // run of a terminal Job takes its outcome from the Job when its own
+          // record is unreadable. Otherwise a completed Job could end up
+          // pointing at a failed run with no output — a success that answers
+          // `undefined`.
+          const inherits = lost && position === runCount && state !== "pending";
+          const outcome = inherits
+            ? state === "retrying" ? "failed" : state
+            : RUN_STATE_OF_OUTCOME[attempt?.outcome ?? ""] ?? "failed";
           ctx.insert(JOB_RUNS_TABLE, {
             jobId,
             number: position,
@@ -132,9 +150,9 @@ export const SPLIT_JOBS_INTO_RUNS: FrameworkMigration = {
             scheduledAt: startedAt,
             startedAt,
             settledAt: open ? null : finite(attempt?.settledAt, startedAt),
-            state: open ? "running" : RUN_STATE_OF_OUTCOME[attempt?.outcome ?? ""] ?? "failed",
+            state: open ? "running" : outcome,
             // The Job's recorded output belongs to the run that produced it.
-            outputJson: attempt?.outcome === "completed" && position === runCount
+            outputJson: outcome === "completed" && position === runCount
               ? row["outputJson"] ?? null
               : null,
             errorCode: null,

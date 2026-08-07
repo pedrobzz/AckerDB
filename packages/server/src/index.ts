@@ -196,7 +196,7 @@ export {
 } from "./jobs/api.ts";
 export { JOB_RUNS_TABLE, JOBS_TABLE } from "./jobs/table.ts";
 export {
-  type JobAttemptOutcome,
+  type JobRunOutcome,
   type JobEnqueueOptions,
   type JobHandle,
 } from "./runtime/jobs/runtime.ts";

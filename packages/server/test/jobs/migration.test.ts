@@ -585,6 +585,97 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     engine.close("clean");
   });
 
+  test("a terminal Job whose last attempt is unreadable takes its outcome from itself", async () => {
+    const path = seedLegacy([
+      {
+        name: "work.won",
+        argsJson: '{"n":1}',
+        state: "completed",
+        runAt: 3_000,
+        attempt: 1,
+        // Readable JSON, unreadable entry — and it is the entry the Job's
+        // outcome lives on.
+        attemptsJson: JSON.stringify([{ startedAt: "not a number", outcome: "completed" }]),
+        outputJson: '"kept"',
+        enqueuedAt: 1_000,
+        settledAt: 3_100,
+      },
+      {
+        name: "work.lost",
+        argsJson: '{"n":2}',
+        state: "discarded",
+        runAt: 4_000,
+        attempt: 1,
+        // An object-valued error would reach the new table's validator and
+        // roll the whole migration back if it were let through.
+        attemptsJson: JSON.stringify([
+          { startedAt: 4_000, settledAt: 4_100, outcome: "discarded", error: { deep: true } },
+        ]),
+        enqueuedAt: 1_000,
+        settledAt: 4_100,
+      },
+    ]);
+    const engine = await upgrade(path);
+    expect(jobRows(engine).map((row) => row["state"])).toEqual(["completed", "failed"]);
+    // A completed Job answers with its recorded output, never with `undefined`
+    // from a run the migration invented as failed.
+    expect(runRows(engine)).toMatchObject([
+      { jobId: 1n, number: 1n, state: "completed", outputJson: '"kept"' },
+      { jobId: 2n, number: 1n, state: "failed", outputJson: null },
+    ]);
+    for (const run of runRows(engine)) expect(run["errorText"]).toContain("unreadable");
+    engine.close("clean");
+  });
+
+  test("a Job suspended in step.sleep resumes as the run the old model would have claimed", async () => {
+    let clock = 200_000;
+    // What the old `step.sleep` transaction left behind: pending, woken at the
+    // journaled time, and one attempt *given back* so the resume reclaims it.
+    const path = seedLegacy([{
+      name: "work.sleeper",
+      state: "pending",
+      runAt: 200_000,
+      attempt: 1,
+      attemptsJson: JSON.stringify([attempt(1_000, 1_100, "failed", "Error: first")]),
+      stepsJson: JSON.stringify([{ name: "hold", kind: "sleep", wakeAt: 200_000, completedAt: 1_500 }]),
+      enqueuedAt: 1_000,
+    }]);
+    const engine = await upgrade(path);
+    expect(jobRows(engine)).toMatchObject([{ state: "retrying", runCount: 1n, stepsJson: expect.any(String) }]);
+
+    const seen: number[] = [];
+    const runtime = new Runtime({
+      engine,
+      registry: new Registry({}),
+      telemetry: false,
+      limits: PRODUCTION_LIMITS,
+      jobs: declareJobs({
+        work: {
+          sleeper: job({
+            args: {},
+            handler: async (ctx: Ctx) => {
+              seen.push(ctx.runNumber);
+              await ctx.step.sleep("hold", 60_000); // recorded: satisfied by the claim
+              return "woke";
+            },
+          }),
+        },
+      }),
+      now: () => clock,
+    } as Ctx);
+
+    await runtime.runJobs();
+    await Bun.sleep(20);
+    // The old model would have claimed this as attempt 2, and so does the new
+    // one — the sleep gave its attempt back before the upgrade, and the
+    // journal answers the recorded step instead of sleeping again.
+    expect(seen).toEqual([2]);
+    expect(jobRows(engine)).toMatchObject([{ state: "completed", runCount: 2n }]);
+    expect(runRows(engine).map((run) => Number(run["number"]))).toEqual([1, 2]);
+    await runtime.drain().catch(() => {});
+    engine.close("clean");
+  });
+
   test("the runner picks a migrated Job up where the old model left it", async () => {
     const clock = 100_000;
     const path = seedLegacy([{

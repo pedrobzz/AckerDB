@@ -770,8 +770,8 @@ export class RuntimeFunctionExecutor<C> {
     return readJobRunRow(this.options.engine, connection, jobId, number);
   }
 
-  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = []) {
-    return nextDueJobAt(this.options.engine, connection, inProcessIds);
+  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = [], notBefore = 0) {
+    return nextDueJobAt(this.options.engine, connection, inProcessIds, notBefore);
   }
 
   dueJobStats(connection: Database, now: number) {

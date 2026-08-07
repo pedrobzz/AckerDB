@@ -301,10 +301,11 @@ dedupe window. Settled runs of a Job that is still alive expire on the plain
 latest run is never swept as history — it is the run its outcome is read from,
 and it leaves with its Job. Deleting a Job deletes its runs.
 
-The sweep itself rides the runner: it runs when the runner runs, at most once a
-minute. A stamp is a promise about when a row *may* go, not a timer that wakes
-an idle process to delete it — an application with no job activity spends
-nothing, and its expired rows are collected on the next wake.
+The sweep is a wake reason of its own, at most once a minute: the runner arms
+for the earliest `deleteAfter` exactly as it arms for the earliest due Job, so
+retention is a promise an idle application keeps too. It costs nothing when
+there is nothing to collect — a database with no stamps schedules no sweep —
+and a sweep that fills its page comes back for the rest instead of parking.
 
 Clients never see either table implicitly. Expose exactly what they need
 through your own queries with explicit `access` — fail-closed, like every
@@ -334,13 +335,26 @@ was running keeps its lease on its in-flight run, so ordinary lease recovery
 finishes it instead of restarting it silently; and a completed Job's output
 moves onto the run that produced it. Nothing reads the old shape afterwards.
 
-Two consequences are worth knowing. Runs that predate the split all read as
-`automatic_retry`, because the old history could not distinguish a manual
-re-run from an automatic one. And migrated Jobs carry no retention stamp — they
-are retained until deleted — because retention belongs to a Job definition, and
-definitions are not loaded while schema work runs; guessing a window could
-delete an outcome a `"forever"` dedupe promised. Every Job the runner settles
-after the upgrade is stamped normally.
+Three consequences are worth knowing.
+
+Runs that predate the split all read as `automatic_retry`: the old history
+could not distinguish a manual re-run from an automatic one, and a run
+suspended in `step.sleep` across the upgrade resumes as its Job's next run
+rather than as the same open run. The work is still exact — the journal is on
+the Job, so recorded steps answer instead of executing — and the run number is
+the one the old model would have claimed, because a sleep gave its attempt back
+before the upgrade. Only the provenance label is unrecoverable.
+
+Migrated Jobs carry no retention stamp — they are retained until deleted —
+because retention belongs to a Job definition, and definitions are not loaded
+while schema work runs; guessing a window could delete an outcome a
+`"forever"` dedupe promised. Every Job the runner settles after the upgrade is
+stamped normally.
+
+An attempt whose record is damaged still becomes a run, carrying the loss in
+its `errorText`. When the damaged record is the *last* one of a terminal Job,
+the run takes its state and output from the Job itself, which is the
+authoritative record of how that Job ended.
 
 ## Recipes
 

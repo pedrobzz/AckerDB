@@ -55,7 +55,11 @@ export interface JobsExecutor {
   ): Promise<T>;
   readJobRow(connection: Database, id: bigint): JobRow | null;
   readJobRunRow(connection: Database, jobId: bigint, number: number): JobRunRow | null;
-  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[]): number | null;
+  nextDueJobAt(
+    connection: Database,
+    inProcessIds: readonly bigint[],
+    notBefore: number,
+  ): number | null;
   dueJobStats(connection: Database, now: number): { due: number; oldestDueAt: number | null };
 }
 
@@ -66,7 +70,7 @@ const REAP_INTERVAL_MS = 60_000;
 const CASCADE_BATCH = 512;
 
 /** What one settled run reports to awaiting callers. */
-export type JobAttemptOutcome =
+export type JobRunOutcome =
   | { readonly ok: true; readonly value: unknown }
   | {
       readonly ok: false;
@@ -120,7 +124,7 @@ interface ClaimedRun {
 
 interface Notification {
   readonly id: bigint;
-  readonly outcome: JobAttemptOutcome;
+  readonly outcome: JobRunOutcome;
   readonly event: "settled" | "retried" | "failed" | "canceled" | "slept";
   readonly errorCode?: OutcomeCode;
 }
@@ -142,7 +146,7 @@ interface JobOutcomeRows {
 
 export class RuntimeJobs {
   private readonly definitions = new Map<string, AnyJob>();
-  private readonly waiters = new Map<bigint, Set<(outcome: JobAttemptOutcome) => void>>();
+  private readonly waiters = new Map<bigint, Set<(outcome: JobRunOutcome) => void>>();
   private readonly runControllers = new Map<bigint, AbortController>();
   private activeRuns = 0;
   private generation = 0;
@@ -225,7 +229,10 @@ export class RuntimeJobs {
     const generation = ++this.generation;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.options.isReady() || this.definitions.size === 0) return;
+    // No short-circuit on an empty definition list: an application that
+    // removed a job definition still owns the rows it left behind, and their
+    // retention is still a promise.
+    if (!this.options.isReady()) return;
     void this.nextDueAt().then(
       (at) => {
         if (!this.options.isReady() || generation !== this.generation) return;
@@ -345,12 +352,12 @@ export class RuntimeJobs {
    * including a dedupe hit inside a completed window — resolves immediately
    * from its latest run's recorded outcome.
    */
-  async wait(id: bigint): Promise<JobAttemptOutcome> {
+  async wait(id: bigint): Promise<JobRunOutcome> {
     if (typeof id !== "bigint") {
       throw new ValidationError("jobs.wait: expected a bigint job id");
     }
-    let resolver: ((outcome: JobAttemptOutcome) => void) | null = null;
-    const pending = new Promise<JobAttemptOutcome>((resolve) => {
+    let resolver: ((outcome: JobRunOutcome) => void) | null = null;
+    const pending = new Promise<JobRunOutcome>((resolve) => {
       resolver = resolve;
       let set = this.waiters.get(id);
       if (set === undefined) this.waiters.set(id, (set = new Set()));
@@ -416,13 +423,7 @@ export class RuntimeJobs {
       if (job.state !== "failed") {
         throw new AckerDBError("conflict", `job ${id} is ${job.state}; only failed jobs retry`);
       }
-      await surface.jobs.patch(id, {
-        state: "retrying",
-        nextRunAt: this.options.now(),
-        nextRunTrigger: "manual_retry",
-        settledAt: null,
-        deleteAfter: null,
-      });
+      await this.reopen(surface, job, { nextRunTrigger: "manual_retry", state: "retrying" });
     });
   }
 
@@ -441,14 +442,46 @@ export class RuntimeJobs {
           `job ${id} is ${job.state}; only terminal jobs are forced to run again`,
         );
       }
-      await surface.jobs.patch(id, {
-        state: "pending",
-        nextRunAt: this.options.now(),
+      await this.reopen(surface, job, {
         nextRunTrigger: "force",
+        state: "pending",
         stepsJson: "[]",
-        settledAt: null,
-        deleteAfter: null,
       });
+    });
+  }
+
+  /**
+   * Give a terminal Job another run. Its previous latest run stops being the
+   * Job's outcome the moment the next one opens, so it is restamped down to
+   * the definition's plain retention: the dedupe-extended stamp it settled
+   * with — possibly forever — would keep history no dedupe hit can ever reach
+   * again.
+   */
+  private async reopen(
+    surface: JobsWriteSurface,
+    job: JobRow,
+    intent: {
+      readonly state: "pending" | "retrying";
+      readonly nextRunTrigger: JobRunTrigger;
+      readonly stepsJson?: string;
+    },
+  ): Promise<void> {
+    const now = this.options.now();
+    const previous = job.runCount === 0 ? null : surface.runs.byNumber(job.id, job.runCount);
+    if (previous !== null && previous.settledAt !== null) {
+      const definition = this.definitions.get(job.name);
+      await surface.runs.patch(previous.id, {
+        deleteAfter: this.window(
+          definition?.retention ?? DEFAULT_JOB_RETENTION_MS,
+          previous.settledAt,
+        ),
+      });
+    }
+    await surface.jobs.patch(job.id, {
+      ...intent,
+      nextRunAt: now,
+      settledAt: null,
+      deleteAfter: null,
     });
   }
 
@@ -522,8 +555,10 @@ export class RuntimeJobs {
         claims++;
         if (next.outcome !== "settled-inline") this.dispatch(next.outcome);
       }
-      this.stalled = claims === 0;
-      await this.reap(signal);
+      // Stalled means "nothing this runner can do", not "nothing claimable":
+      // a reap that filled its page still has work waiting behind it, and a
+      // page of runs alone wakes nothing on commit.
+      this.stalled = claims === 0 && !(await this.reap(signal));
       await this.recordGauges();
     } catch (error) {
       this.event("failure", "error", outcomeFromError(error).code);
@@ -974,20 +1009,23 @@ export class RuntimeJobs {
    * ordering nor either sweep's limit can leave a Job pointing at a run that
    * is gone.
    */
-  private async reap(signal: AbortSignal): Promise<void> {
+  private async reap(signal: AbortSignal): Promise<boolean> {
     const now = this.options.now();
-    if (now - this.lastReapAt < REAP_INTERVAL_MS) return;
+    if (now - this.lastReapAt < REAP_INTERVAL_MS) return false;
     this.lastReapAt = now;
     const limit = this.options.limits.claimBatchSize;
-    await this.options.executor.jobsWrite(signal, async (surface) => {
-      for (const job of surface.jobs.expired(now, limit)) {
-        await this.deleteWithRuns(surface, job.id);
-      }
-      for (const run of surface.runs.expired(now, limit)) {
+    return await this.options.executor.jobsWrite(signal, async (surface) => {
+      const jobs = surface.jobs.expired(now, limit);
+      for (const job of jobs) await this.deleteWithRuns(surface, job.id);
+      const runs = surface.runs.expired(now, limit);
+      for (const run of runs) {
         const job = surface.jobs.byId(run.jobId);
         if (job !== null && job.runCount === run.number) continue;
         await surface.runs.delete(run.id);
       }
+      // A full page means more is waiting: say so, so the runner comes back
+      // instead of parking on work it can see.
+      return jobs.length === limit || runs.length === limit;
     });
   }
 
@@ -1119,7 +1157,6 @@ export class RuntimeJobs {
       if (job === null || job.settledAt === null) continue;
       if (window !== "forever" && job.settledAt + window <= now) continue;
       // The same total order the per-state read uses: settle time, then id.
-      // The same total order the per-state read uses: settle time, then id.
       if (
         best === null ||
         job.settledAt > best.settledAt! ||
@@ -1143,7 +1180,7 @@ export class RuntimeJobs {
       : text;
   }
 
-  private terminalOutcome(rows: JobOutcomeRows): JobAttemptOutcome | null {
+  private terminalOutcome(rows: JobOutcomeRows): JobRunOutcome | null {
     const { job, run } = rows;
     switch (job.state) {
       case "completed":
@@ -1170,7 +1207,7 @@ export class RuntimeJobs {
     }
   }
 
-  private notifyDirect(id: bigint, outcome: JobAttemptOutcome): void {
+  private notifyDirect(id: bigint, outcome: JobRunOutcome): void {
     const set = this.waiters.get(id);
     if (set === undefined) return;
     this.waiters.delete(id);
@@ -1212,7 +1249,12 @@ export class RuntimeJobs {
   private async nextDueAt(): Promise<number | null> {
     const inProcessIds = [...this.runControllers.keys()];
     return await this.options.reads.submit(
-      (connection) => this.options.executor.nextDueJobAt(connection, inProcessIds),
+      (connection) =>
+        this.options.executor.nextDueJobAt(
+          connection,
+          inProcessIds,
+          this.lastReapAt + REAP_INTERVAL_MS,
+        ),
       { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
       false,
     );

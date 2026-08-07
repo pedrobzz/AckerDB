@@ -91,7 +91,11 @@ export function buildJobsTable(): TableDef {
     /** When retention lets this Job and its runs be deleted; null is forever. */
     deleteAfter: v.float().nullable(),
   }, "table")
-    .index(["name", "argsHash"])
+    // Identity first: its two-column prefix answers the live-Job lookup, and
+    // the full key turns "the newest settled Job of this identity in this
+    // state" into a seek. A `"forever"` dedupe keeps every Job of an identity,
+    // so that read must not sort a history that only grows.
+    .index(["name", "argsHash", "state", "settledAt"])
     .index(["state", "nextRunAt"])
     .index(["deleteAfter"]) as TableDef;
 }
