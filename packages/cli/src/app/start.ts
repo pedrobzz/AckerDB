@@ -100,7 +100,40 @@ export interface StartAppOptions<A extends App = App> {
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
 
-async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeModule> {
+async function importConfiguredRealtimeRuntime(path: string): Promise<RealtimeRuntimeModule> {
+  if (!existsSync(path)) {
+    throw new Error(`realtime module configured by "realtime" not found at ${path}`);
+  }
+  let module: { default?: unknown };
+  try {
+    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(
+      `failed to import realtime module configured by "realtime" at ${path}${detail}`,
+      { cause: error },
+    );
+  }
+  const runtime = module.default;
+  if (
+    typeof runtime !== "object" ||
+    runtime === null ||
+    typeof (runtime as { create?: unknown }).create !== "function"
+  ) {
+    throw new TypeError(
+      `realtime module configured by "realtime" at ${path} must default-export createRealtimeRuntime(...)`,
+    );
+  }
+  return runtime as RealtimeRuntimeModule;
+}
+
+async function importRealtimeRuntime(
+  appDir: string,
+  configuredPath?: string,
+): Promise<RealtimeRuntimeModule> {
+  if (configuredPath !== undefined) {
+    return importConfiguredRealtimeRuntime(configuredPath);
+  }
   const require = createRequire(join(appDir, "package.json"));
   let entry: string;
   try {
@@ -418,7 +451,9 @@ export async function startApp<const A extends App = App>(
     registry.checkScopeRequirements(app.scopes);
     const realtime = registry.realtime.size === 0
       ? undefined
-      : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));
+      : options.realtime ?? await awaitStartup(
+        importRealtimeRuntime(config.appDir, config.realtime),
+      );
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
