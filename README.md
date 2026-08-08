@@ -56,10 +56,12 @@ your-app/
   `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
-  A declaration may also name its `apiPath`: the group it is published in,
-  deciding its generated binding and its HTTP root together — `"internal"`
-  gives `internal.*` and `/internal/*`, and `"api"` is the default. Grouping
-  and routing only; `access` alone decides who may call (ADR-0023).
+  A declaration may also name its `apiPath`: the group it is published in and
+  the first segment of its address, deciding its generated binding and its HTTP
+  root together — `"internal"` addresses `internal.orders.list` and serves
+  `/internal/orders/list`, and `"api"` is the default. A file named `index.ts`
+  takes its directory's name. Namespacing and routing only; `access` alone
+  decides who may call (ADR-0023).
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs
