@@ -11,7 +11,6 @@ import {
   encode,
   getRef,
   httpPathForAddress,
-  refApiPath,
   parseClientMessage,
   parseCredential,
   parseOutcome,
@@ -1369,10 +1368,10 @@ export class AckerDBClient {
     if (this.suspended) {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
-    // The group is the root and the address is the path after it; the response
-    // is the correlation, so the request carries the args object alone — no
-    // envelope, no client id.
-    const url = `${this.httpUrl}${httpPathForAddress(refApiPath(ref), getRef(ref))}`;
+    // The URL is the address, segment for segment — the group is already its
+    // first segment. The response is the correlation, so the request carries
+    // the args object alone — no envelope, no client id.
+    const url = `${this.httpUrl}${httpPathForAddress(getRef(ref))}`;
     let body: string;
     try {
       // The exposed surface speaks the plain JSON its OpenAPI document

@@ -101,7 +101,7 @@ function WrongReferences(): ReactNode {
 // --- raw addresses stay available as the untyped escape hatch --------------
 
 function RawAddress(): ReactNode {
-  const bare: ChatTransport<UIMessage> = useChatTransport("ai.chat");
+  const bare: ChatTransport<UIMessage> = useChatTransport("api.ai.chat");
   const standardArgs: AckerDBChatArgs = {
     trigger: "submit-message",
     chatId: "c",

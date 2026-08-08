@@ -403,7 +403,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("streams every chunk family through useChat and forwards the standard request", async () => {
     const mounted = await mount({
       id: "chat-main",
-      probe: () => useChatTransport(standardRef("ai.chat")),
+      probe: () => useChatTransport(standardRef("api.ai.chat")),
     });
     await mounted.chat.sendMessage({ text: "hi ackerdb" });
     await until(
@@ -457,7 +457,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("a mock model stream returned directly from the handler reaches useChat", async () => {
     const mounted = await mount({
       id: "chat-model",
-      probe: () => useChatTransport(standardRef("ai.model")),
+      probe: () => useChatTransport(standardRef("api.ai.model")),
     });
     await mounted.chat.sendMessage({ text: "hi" });
     await until(
@@ -476,7 +476,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("regeneration forwards the regenerate trigger and message id", async () => {
     const mounted = await mount({
       id: "chat-regen",
-      probe: () => useChatTransport(standardRef("ai.chat")),
+      probe: () => useChatTransport(standardRef("api.ai.chat")),
     });
     await mounted.chat.sendMessage({ text: "first" });
     await until(() => mounted.chat.messages.length === 2, "the first exchange");
@@ -495,7 +495,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   });
 
   test("per-request headers, body, and metadata flow through the typed mapper", async () => {
-    const customRef = { $ref: "ai.custom" } as CustomRef;
+    const customRef = { $ref: "api.ai.custom" } as CustomRef;
     const mounted = await mount({
       id: "chat-custom",
       probe: () =>
@@ -534,7 +534,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("stop before the first chunk aborts the ackerdb request and releases the server iterator", async () => {
     const mounted = await mount({
       id: "chat-hold",
-      probe: () => useChatTransport(standardRef("ai.holdBeforeFirst")),
+      probe: () => useChatTransport(standardRef("api.ai.holdBeforeFirst")),
     });
     void mounted.chat.sendMessage({ text: "never answered" });
     await holdStarted.promise;
@@ -553,7 +553,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("stop mid-stream cancels the ackerdb stream and keeps the streamed tokens", async () => {
     const mounted = await mount({
       id: "chat-hold-mid",
-      probe: () => useChatTransport(standardRef("ai.holdMidStream")),
+      probe: () => useChatTransport(standardRef("api.ai.holdMidStream")),
     });
     void mounted.chat.sendMessage({ text: "partial answer" });
     await until(() => {
@@ -582,7 +582,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("a malformed chunk surfaces the exact ackerdb validation error", async () => {
     const mounted = await mount({
       id: "chat-malformed",
-      probe: () => useChatTransport(standardRef("ai.malformed")),
+      probe: () => useChatTransport(standardRef("api.ai.malformed")),
     });
     void mounted.chat.sendMessage({ text: "malform" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
@@ -597,7 +597,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("a handler that fails before streaming surfaces a typed ackerdb error", async () => {
     const mounted = await mount({
       id: "chat-failing",
-      probe: () => useChatTransport(standardRef("ai.failing")),
+      probe: () => useChatTransport(standardRef("api.ai.failing")),
     });
     void mounted.chat.sendMessage({ text: "explode" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
@@ -610,7 +610,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("a handler that fails mid-stream surfaces a typed ackerdb error", async () => {
     const mounted = await mount({
       id: "chat-failing-mid",
-      probe: () => useChatTransport(standardRef("ai.failingMidStream")),
+      probe: () => useChatTransport(standardRef("api.ai.failingMidStream")),
     });
     void mounted.chat.sendMessage({ text: "explode later" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
@@ -626,7 +626,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
     const mounted = await mount({
       id: "chat-reconnect",
       log,
-      probe: () => useChatTransport(standardRef("ai.chat")),
+      probe: () => useChatTransport(standardRef("api.ai.chat")),
     });
     await mounted.chat.sendMessage({ text: "hello" });
     await until(() => mounted.chat.status === "ready", "the exchange to finish");
@@ -664,7 +664,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
       return null;
     }
     function ChatProbe(): ReactNode {
-      const transport = useChatTransport(standardRef("ai.holdMidStream"));
+      const transport = useChatTransport(standardRef("api.ai.holdMidStream"));
       chat = useChat<UIMessage>({
         id: "chat-orphan",
         transport,
@@ -713,7 +713,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
   test("the transport identity is stable across rerenders", async () => {
     const mounted = await mount({
       id: "chat-stable",
-      probe: () => useChatTransport(standardRef("ai.chat")),
+      probe: () => useChatTransport(standardRef("api.ai.chat")),
     });
     const transport = mounted.transports.at(-1)!;
     mounted.rerender();

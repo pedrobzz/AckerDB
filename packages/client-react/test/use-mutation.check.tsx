@@ -108,7 +108,7 @@ export function WrongReferenceKinds(): ReactNode {
   // @ts-expect-error an SSE reference is not a mutation reference
   useMutation(api.messages.stream);
   // @ts-expect-error raw address strings carry no inference; only generated references are accepted
-  useMutation("messages.send");
+  useMutation("api.messages.send");
   return null;
 }
 

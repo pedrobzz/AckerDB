@@ -227,9 +227,15 @@ function operationId(address: string, method: string): string {
   return method === "POST" ? address : `${address}.${method.toLowerCase()}`;
 }
 
-/** The tag an operation carries: its address's top-level module. */
+/**
+ * The tag an operation carries: its address's top-level module, which is the
+ * segment after the group. Tagging by the group instead would put every
+ * operation of a single-group application under one tag, which is no grouping
+ * at all — the module is what the document has always sorted operations by.
+ */
 function topLevelModule(address: string): string {
-  return address.slice(0, address.indexOf("."));
+  const afterGroup = address.indexOf(".") + 1;
+  return address.slice(afterGroup, address.indexOf(".", afterGroup));
 }
 
 function applicationErrorSchema(

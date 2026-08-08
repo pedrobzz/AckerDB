@@ -198,16 +198,20 @@ export const tuya = service({
     const modules = await importFunctionModules(config);
     const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
-      "admin.users.compact",
-      "admin.users.count",
-      "messages.enqueueNote",
-      "messages.list",
-      "messages.send",
-      "messages.tail",
+      "api.admin.users.count",
+      "api.messages.enqueueNote",
+      "api.messages.list",
+      "api.messages.send",
+      "api.messages.tail",
+      "internal.admin.users.compact",
     ]);
-    // the group decides the HTTP root, never the address
-    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("messages.tail");
-    expect(registry.get("admin.users.compact")?.apiPath).toBe("internal");
+    // the group is the address's first segment, and the URL is the address
+    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("api.messages.tail");
+    expect(registry.get("internal.admin.users.compact")?.apiPath).toBe("internal");
+    // `functions/admin/` is a module directory, not a group: a directory named
+    // after a declared group still publishes into the group each function
+    // declares.
+    expect(registry.get("api.admin.users.count")?.apiPath).toBe("api");
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     expect(api).toContain("messages: typeof _m_messages;");
@@ -239,6 +243,37 @@ export const tuya = service({
       const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
       if (owned !== undefined) expect(["api", "events", "internal"]).toContain(owned);
     }
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
+  test("an index module publishes its directory's name beside its siblings", async () => {
+    const dir = makeFixture({
+      "app.ts": FIXTURE_APP,
+      "functions/orders/index.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const list = query({ access: "public", args: {}, handler: () => [] });
+`,
+      "functions/orders/refunds.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const pending = query({ access: "public", args: {}, handler: () => [] });
+`,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    await runCodegen(config);
+
+    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    expect([...registry.functions.keys()].sort())
+      .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
+
+    // `orders` is a module and a namespace at once, so the generated tree is
+    // the intersection: dropping either half would leave a registered address
+    // with no binding to import.
+    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
+    expect(api).toContain("orders: typeof _m_orders & {");
+    expect(api).toContain("refunds: typeof _m_orders_refunds;");
     expect(typecheckFixture(dir)).toBe("");
   });
 
@@ -276,8 +311,8 @@ export const agentMcp = mcp({
     const registry = new Registry(await importFunctionModules(config), ["internal"]);
     // The tool is an ordinary function and keeps its address; the endpoint is
     // the only server-only export.
-    expect([...registry.functions.keys()]).toEqual(["agent.echo"]);
-    expect([...registry.serverOnly.keys()]).toEqual(["agent.agentMcp"]);
+    expect([...registry.functions.keys()]).toEqual(["api.agent.echo"]);
+    expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
   });
 
   test("derives exact local Plugin capabilities without exposing them remotely or to MCP", async () => {

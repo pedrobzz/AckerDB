@@ -25,10 +25,11 @@ transport-free query boundary (`executeQuery`); an HTTP-native procedure path
 
 ## The surface
 
-An exposed function at address `messages.list` is served at
-`/api/messages/list`: its group is the root and address segments (module path
-plus export name) map 1:1 to the segments after it, so the same function in
-the `internal` group is served at `/internal/messages/list` — see
+An exposed function at address `api.messages.list` is served at
+`/api/messages/list`: the URL is the address, segment for segment, and the
+address begins with the function's group — so the same module and export
+published in the `internal` group is addressed `internal.messages.list` and
+served at `/internal/messages/list` — see
 [API paths](#api-paths). The wire format is plain JSON — no protocol envelope. `ref`
 lives in the path, correlation is the HTTP response itself, and the protocol
 version is the package version (no `/v1` segment; the surface versions with
@@ -166,14 +167,16 @@ the envelope routes, as does the client's `encodeCall`.
 ## API paths
 
 `/api/` is one group, not the whole surface. A function's `apiPath` names the
-group it is published in, and the group decides two things at once: the
-generated binding a caller imports, and the HTTP root the function answers on.
+group it is published in, and **the group is the first segment of the
+function's address** — so it decides the generated binding a caller imports
+and the HTTP root the function answers on, because both are read off the one
+address.
 
-| `apiPath` | binding | URL |
-| --- | --- | --- |
-| `"api"` (the default) | `api.*` | `/api/*` |
-| `"internal"` | `internal.*` | `/internal/*` |
-| `"admin"` | `admin.*` | `/admin/*` |
+| `apiPath` | address | binding | URL |
+| --- | --- | --- | --- |
+| `"api"` (the default) | `api.users.list` | `api.*` | `/api/*` |
+| `"internal"` | `internal.users.list` | `internal.*` | `/internal/*` |
+| `"admin"` | `admin.users.list` | `admin.*` | `/admin/*` |
 
 The framework does not decide that `internal` is a meaningful category — an
 application names its own groups. A name must be one identifier-shaped path
@@ -182,8 +185,8 @@ is reserved to AckerDB.
 
 **A group decides where a function answers, not whether it answers.** Plain
 HTTP is still opt-in: a function without `http` has no URL in any group. Over
-the socket the group does nothing at all — a call names the function by its
-dotted address, which its group never touches.
+the socket a call names the function by its dotted address, group segment
+included — one name on both transports.
 
 **A group is never an access rule.** Who may call a function is decided by its
 `access` policy alone, plus its orthogonal scope requirement. A function in the
@@ -191,8 +194,19 @@ dotted address, which its group never touches.
 as its `access` says — which is why nothing is exposed by accident: `access` is
 a required field on every declaration.
 
-An address is unchanged by its group: `admin/users.ts`'s `compact` export is
-`admin.users.compact` in every group, and only its root moves.
+An address is `<apiPath>.<...directory segments>.<export name>`, so a group is
+a namespace and not a label: `api.users.list` and `internal.users.list` are two
+functions, and one group can never squat on another's names. The group is
+declared on the function and never inferred from a directory — a
+`functions/admin/` folder publishes into whatever group each of its functions
+declares, the default one included.
+
+**A file named `index.ts` takes its directory's name.**
+`functions/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
+module of its own name beside its siblings. Two files may not claim one name:
+`functions/orders.ts` beside `functions/orders/index.ts` is a startup refusal
+naming both, and so is a `functions/index.ts` with no directory to be named
+after.
 
 Groups beyond `"api"` are declared once in the manifest, because code
 generation reads the manifest and never the function modules — which import
@@ -214,10 +228,10 @@ reconciles them: a function whose `apiPath` the manifest does not list is a
 registration error naming both. A misspelled group would otherwise serve a live
 route whose binding nobody can import.
 
-Each binding is a reference builder that knows its own root, so `client.sse()`
-streams a group's procedure from that group's root without being told. A raw
-address string carries no group and names the default one — what a
-hand-written address has always meant.
+Each binding is a reference builder seeded with its own name, so `client.sse()`
+streams a group's procedure from that group's root without being told: the URL
+is the address, segment for segment. A hand-written address is the same one
+value and carries its group the same way.
 
 ## Per-function exposure
 
@@ -240,10 +254,11 @@ export const purge = mutation({
 });
 ```
 
-- `apiPath?: string` — the group this function is published in, deciding its
-  generated binding and its HTTP root together (ADR-0023). Absent means
-  `"api"`. It is grouping and routing only: who may call the function is
-  `access` alone, so a group is never a shortcut for a policy.
+- `apiPath?: string` — the group this function is published in and the first
+  segment of its address, deciding its generated binding and its HTTP root
+  together (ADR-0023). Absent means `"api"`. It is namespacing and routing
+  only: who may call the function is `access` alone, so a group is never a
+  shortcut for a policy.
 - `http?: boolean | { openapi: boolean }` — absent or `false` means not
   reachable over HTTP and absent from OpenAPI. `true` is shorthand for
   `{ openapi: true }`. Because `openapi` only exists inside an exposed
@@ -364,14 +379,16 @@ operation per exposed function with `openapi` not disabled.
   `sse_error` (whose `outcome` is the `Outcome` schema) — and states the
   acknowledgement the receiver owes, because a client that reads an event as a
   bare chunk misparses every one and stalls out after one event.
-  `operationId` is the address; the top-level module is the tag; bearer auth is
+  `operationId` is the address; the top-level module — the segment after the
+  group — is the tag; bearer auth is
   the security scheme, declared document-wide as optional because the function's
   own policy — not the transport — decides whether a caller may be anonymous.
 - A query has two operations for its two methods, and two operations cannot
   share an `operationId`: POST is the form every kind answers, so it owns the
   address, and the GET form is `<address>.get`. Two addresses can still collide
-  on one id — a query at `notes.list` and a function at `notes.list.get` own
-  different paths but the same `notes.list.get` — so the walk tracks emitted
+  on one id — a query at `api.notes.list` and a function at
+  `api.notes.list.get` own different paths but the same `api.notes.list.get` —
+  so the walk tracks emitted
   ids and refuses the document naming both addresses, the same way an
   undocumentable function fails activation and the CLI export.
 - The document's `info` is the *application's* identity, not AckerDB's: the
@@ -402,6 +419,11 @@ access policy.
   registry at all. The registry's own check — an exposed function may not claim
   a path under a `_`-marked namespace — is the narrower second net, for a `Registry`
   constructed directly from modules.
+- Two module files claiming one name are refused where the name is decided, in
+  the CLI manifest loader, naming both files: `functions/orders.ts` beside
+  `functions/orders/index.ts`, and a `functions/index.ts` with no directory to
+  be named after. The `index.ts` collapse is the only way two files reach one
+  name, so this is one check rather than a rule per shape.
 - An HTTP-exposed function whose contract cannot cross the standard-JSON
   boundary is a registration error (see *Wire format*).
 - MCP endpoint paths must not collide with built-in routes, carry a `_`-marked

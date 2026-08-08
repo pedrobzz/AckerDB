@@ -43,37 +43,27 @@ function writeIfChanged(path: string, content: string): boolean {
   return true;
 }
 
-interface JobsTypeTree {
-  children: Map<string, JobsTypeTree>;
+interface ModuleTreeNode {
+  children: Map<string, ModuleTreeNode>;
   alias?: string;
 }
 
-function renderJobsTree(node: JobsTypeTree, surface: string, indent: string): string {
-  const lines: string[] = [];
-  for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    if (child.alias !== undefined) {
-      lines.push(`${indent}readonly ${name}: ${surface}<typeof ${child.alias}>;`);
-    } else {
-      lines.push(
-        `${indent}readonly ${name}: {`,
-        renderJobsTree(child, surface, `${indent}  `),
-        `${indent}};`,
-      );
-    }
-  }
-  return lines.join("\n");
-}
-
-function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
-  const appImport = relImport(config.generatedDir, config.appPath);
-  const jobImports: string[] = [];
-  const jobsRoot: JobsTypeTree = { children: new Map() };
-  for (const module of jobModules) {
-    const alias = `jm_${module.segments.join("_")}`;
-    jobImports.push(
-      `import type * as ${alias} from "${relImport(config.generatedDir, module.file)}";`,
-    );
-    let node = jobsRoot;
+/**
+ * The nested type tree for one module list, plus the type-only import each
+ * module needs. Both generated trees are built this way, so a module file is
+ * imported once and named once wherever it appears.
+ */
+function moduleTree(
+  modules: readonly ModuleFile[],
+  generatedDir: string,
+  aliasPrefix: string,
+): { imports: string[]; root: ModuleTreeNode } {
+  const imports: string[] = [];
+  const root: ModuleTreeNode = { children: new Map() };
+  for (const module of modules) {
+    const alias = `${aliasPrefix}${module.segments.join("_")}`;
+    imports.push(`import type * as ${alias} from "${relImport(generatedDir, module.file)}";`);
+    let node = root;
     for (const segment of module.segments) {
       let child = node.children.get(segment);
       if (child === undefined) node.children.set(segment, (child = { children: new Map() }));
@@ -81,10 +71,47 @@ function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
     }
     node.alias = alias;
   }
+  return { imports, root };
+}
+
+/**
+ * Render one module tree as an object type. A node carries an alias when a
+ * module file sits at its name, children when modules sit beneath it, and
+ * *both* when a directory holds an `index.ts` next to its siblings — the
+ * layout the collapse makes ordinary. The two are intersected rather than one
+ * winning, because dropping either would leave a registered address with no
+ * binding anybody can import.
+ */
+function renderModuleTree(
+  node: ModuleTreeNode,
+  leafType: (alias: string) => string,
+  modifier: string,
+  indent: string,
+): string {
+  const lines: string[] = [];
+  for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const nested = child.children.size === 0
+      ? undefined
+      : `{\n${renderModuleTree(child, leafType, modifier, `${indent}  `)}\n${indent}}`;
+    const leaf = child.alias === undefined ? undefined : leafType(child.alias);
+    const type = leaf === undefined
+      ? nested!
+      : nested === undefined ? leaf : `${leaf} & ${nested}`;
+    lines.push(`${indent}${modifier}${name}: ${type};`);
+  }
+  return lines.join("\n");
+}
+
+function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
+  const appImport = relImport(config.generatedDir, config.appPath);
+  const { imports: jobImports, root: jobsRoot } =
+    moduleTree(jobModules, config.generatedDir, "jm_");
   const jobsType = (name: string, surface: string): string =>
     jobsRoot.children.size === 0
       ? `type ${name} = Readonly<Record<never, never>>;`
-      : `type ${name} = {\n${renderJobsTree(jobsRoot, surface, "  ")}\n};`;
+      : `type ${name} = {\n${
+        renderModuleTree(jobsRoot, (alias) => `${surface}<typeof ${alias}>`, "readonly ", "  ")
+      }\n};`;
   return `${HEADER}
 import {
   mcp as mcpGeneric,
@@ -164,11 +191,6 @@ export type DatabaseWriter = DbWriter<Schema>;
 `;
 }
 
-interface ModuleTreeNode {
-  children: Map<string, ModuleTreeNode>;
-  alias?: string;
-}
-
 /**
  * Every name `api.ts` needs for itself carries the reserved `_`, which an API
  * path may never begin with. A group's name is written straight into
@@ -183,32 +205,7 @@ function apiTs(
   schema: Schema,
   modules: ModuleFile[],
 ): string {
-  const imports: string[] = [];
-  const root: ModuleTreeNode = { children: new Map() };
-  for (const module of modules) {
-    const alias = `_m_${module.segments.join("_")}`;
-    imports.push(
-      `import type * as ${alias} from "${relImport(config.generatedDir, module.file)}";`,
-    );
-    let node = root;
-    for (const segment of module.segments) {
-      let child = node.children.get(segment);
-      if (child === undefined) node.children.set(segment, (child = { children: new Map() }));
-      node = child;
-    }
-    node.alias = alias;
-  }
-  const renderTree = (node: ModuleTreeNode, indent: string): string => {
-    const lines: string[] = [];
-    for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      if (child.alias !== undefined) {
-        lines.push(`${indent}${name}: typeof ${child.alias};`);
-      } else {
-        lines.push(`${indent}${name}: {`, renderTree(child, `${indent}  `), `${indent}};`);
-      }
-    }
-    return lines.join("\n");
-  };
+  const { imports, root } = moduleTree(modules, config.generatedDir, "_m_");
 
   const eventTables = Object.keys(schema.tables)
     .filter((t) => schema.tables[t]!.kind === "event")
@@ -218,13 +215,14 @@ function apiTs(
       `    ${t}: _EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
   );
 
-  // One binding per group the manifest declares, each a reference builder that
-  // knows its own root. The addresses are identical — the socket names every
-  // function by its dotted address — so only the type a binding selects and
-  // the HTTP root its references resolve to differ.
+  // One binding per group the manifest declares, each a reference builder
+  // seeded with its own name. The module tree every binding types is the same
+  // one — the file list knows nothing about groups — but each is rooted at its
+  // group, so the addresses it produces begin there and two groups can hold
+  // one trailing name without naming one function.
   const groups = apiPaths.map(
     (path) =>
-      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, served under \`/${path}/\`. */\n` +
+      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, addressed and served under \`${path}\`. */\n` +
       `export const ${path} = _apiGroup(${JSON.stringify(path)}) as unknown as _ApiFromModules<_Modules, ${JSON.stringify(path)}>;\n`,
   );
 
@@ -233,7 +231,7 @@ import { anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
 import type { ApiFromModules as _ApiFromModules, EventRef as _EventRef } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
 type _Modules = {
-${renderTree(root, "  ")}
+${renderModuleTree(root, (alias) => `typeof ${alias}`, "", "  ")}
 };
 
 export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {

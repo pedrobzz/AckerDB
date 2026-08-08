@@ -290,7 +290,7 @@ describe("ordered reactive ownership", () => {
     });
     const caller = new RecordingSubscriber();
     const subscription = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "caller",
@@ -328,7 +328,7 @@ describe("ordered reactive ownership", () => {
     const peer = new RecordingSubscriber();
     const isolated = new RecordingSubscriber();
     const common = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: { room: 7 },
       policyScopeFingerprint: "room:7",
       fairnessKey: "caller",
@@ -373,7 +373,7 @@ describe("ordered reactive ownership", () => {
     const first = new RecordingSubscriber();
     const peer = new RecordingSubscriber();
     const common = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "same-claim-sensitive-scope",
       context: undefined,
@@ -421,7 +421,7 @@ describe("ordered reactive ownership", () => {
     const subscriber = new RecordingSubscriber();
 
     const subscribing = reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -457,7 +457,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -688,7 +688,7 @@ describe("ordered reactive ownership", () => {
       },
     });
     await reactive.subscribeQuery({
-      address: "messages.byIds",
+      address: "api.messages.byIds",
       args: input,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -935,7 +935,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     const options = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -979,7 +979,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1144,7 +1144,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1184,7 +1184,7 @@ describe("ordered reactive ownership", () => {
     const first = new RecordingSubscriber();
     const second = new RecordingSubscriber();
     const options = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1238,7 +1238,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "room:7",
       fairnessKey: "room:7",
@@ -1414,7 +1414,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     const base = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "user:1",
       fairnessKey: "user:1",
@@ -1433,8 +1433,8 @@ describe("ordered reactive ownership", () => {
     const rotated = await reactive.rotateAuth(subscriber, 2);
     expect(rotated).toMatchObject({
       subscriptions: [
-        { id: 1, address: "events.messages", args: {} },
-        { id: 2, address: "messages.list", args: null },
+        { id: 1, address: "api.events.messages", args: {} },
+        { id: 2, address: "api.messages.list", args: null },
       ],
       deliveryFailures: [],
     });
@@ -1603,7 +1603,7 @@ describe("ordered reactive ownership", () => {
       evaluate: async () => evaluation(value, version, "messages"),
     });
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",

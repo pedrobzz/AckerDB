@@ -498,7 +498,7 @@ function credentialPrincipal(
 async function callProcedure(principal: Principal, mode: string): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: 1,
-    address: "app.runLocal",
+    address: "api.app.runLocal",
     args: { mode },
     principal,
     respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -594,7 +594,7 @@ describe("MCP identity-preserving local delegation", () => {
 
       await runtime.telemetry.flush();
       expect(spans()).toContainEqual(expect.objectContaining({
-        function: "tools.readOrders",
+        function: "api.tools.readOrders",
         stage: "policy",
         outcome: "ok",
       }));

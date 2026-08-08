@@ -3,7 +3,7 @@
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, durable jobs,
 live query subscriptions, application channels, and WebRTC media sessions
-through Protocol 5.
+through Protocol 6.
 
 The supported production topology is one Bun server process owning one local
 SQLite database file. AckerDB is not a horizontally scaled or replicated service,
@@ -19,7 +19,7 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@ackerdb/core` | Protocol 5 envelopes, wire encoding, outcomes, cursors, and typed function/channel/realtime references. |
+| `@ackerdb/core` | Protocol 6 envelopes, wire encoding, outcomes, cursors, and typed function/channel/realtime references. |
 | `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, and telemetry. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
@@ -56,10 +56,12 @@ your-app/
   `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
-  A declaration may also name its `apiPath`: the group it is published in,
-  deciding its generated binding and its HTTP root together — `"internal"`
-  gives `internal.*` and `/internal/*`, and `"api"` is the default. Grouping
-  and routing only; `access` alone decides who may call (ADR-0023).
+  A declaration may also name its `apiPath`: the group it is published in and
+  the first segment of its address, deciding its generated binding and its HTTP
+  root together — `"internal"` addresses `internal.orders.list` and serves
+  `/internal/orders/list`, and `"api"` is the default. A file named `index.ts`
+  takes its directory's name. Namespacing and routing only; `access` alone
+  decides who may call (ADR-0023).
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs
@@ -138,7 +140,7 @@ client.close();
   issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
-  receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
+  receipts, receiver-confirmed Protocol 6 SSE delivery, reconnect behavior, and
   the deliberately weaker live-event contract.
 - [Application channels](docs/channels.md) documents typed bidirectional
   events, opt-in rooms, shared memberships, handler deduplication, and

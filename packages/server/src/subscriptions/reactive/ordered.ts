@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
+  EVENTS_ADDRESS_PREFIX,
   decode,
   stableEncode,
   type LiveEvent,
@@ -278,7 +279,9 @@ export class OrderedReactive<C = unknown> {
     this.assertNewAuthEpoch(bindings, nextAuthEpoch);
     const subscriptions = bindings.map((binding) => Object.freeze({
       id: binding.id,
-      address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
+      address: binding.kind === "query"
+        ? binding.entry.address
+        : `${EVENTS_ADDRESS_PREFIX}${binding.state.table}`,
       args: binding.kind === "query" ? binding.entry.args.decoded : binding.args,
     })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];

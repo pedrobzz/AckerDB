@@ -25,7 +25,7 @@
     "pack:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts pack",
     "verify:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts verify",
     "audit:prod": "bun scripts/ci/audit-production.ts",
-    "test:webrtc": "bun run build:webrtc && bun test packages/realtime/native/webrtc/test",
+    "test:webrtc": "bun run build:webrtc && bun test ./packages/realtime/native/webrtc/test",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "release:prepare": "bun scripts/release/prepare.ts",
     "publish:beta": "bun scripts/release/publish.ts beta",

@@ -328,7 +328,7 @@ function closeClient(client: AckerDBClient): void {
 
 async function snapshot(client: AckerDBClient): Promise<Snapshot> {
   return withTimeout(
-    client.mutation<Record<string, never>, Snapshot>("state.snapshot", {}),
+    client.mutation<Record<string, never>, Snapshot>("api.state.snapshot", {}),
     "state snapshot",
   );
 }
@@ -355,7 +355,7 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
       stateA: string;
       stateB: string;
       cache: string;
-    }, boolean>("state.seed", {
+    }, boolean>("api.state.seed", {
       root: "root-value",
       stateA: "state-a-value",
       stateB: "state-b-value",
@@ -365,8 +365,8 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
     const racerA = clientFor(port, "plugins-cache-race-a");
     const racerB = clientFor(port, "plugins-cache-race-b");
     const attempts = await withTimeout(Promise.all([
-      racerA.mutation<{ value: string }, boolean>("state.raceCache", { value: "racer-a" }),
-      racerB.mutation<{ value: string }, boolean>("state.raceCache", { value: "racer-b" }),
+      racerA.mutation<{ value: string }, boolean>("api.state.raceCache", { value: "racer-a" }),
+      racerB.mutation<{ value: string }, boolean>("api.state.raceCache", { value: "racer-b" }),
     ]), "concurrent if-missing writes");
     const attemptValues = attempts.map((attempt) => {
       if (!attempt.ok) throw attempt.error;

@@ -248,7 +248,7 @@ function fixture(reconnect?: {
         const request = parseRealtimePrepareRequest(
           decode(String(init.body)),
         );
-        expect(request.ref).toBe("assistant.live");
+        expect(request.ref).toBe("api.assistant.live");
         expect(request.args).toEqual({ assistantId: 1n });
         recoveryPreparations.push(request.recovery === true);
         if (rejectPrepare) {

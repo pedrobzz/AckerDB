@@ -252,7 +252,7 @@ async function mount(
 describe("useSseProcedure against a real ackerdb server", () => {
   test("streams from the root of the group its reference names", async () => {
     // The hook takes a reference apart to key its callable, so the group has
-    // to travel with the address: a real server only answers `stream.grouped`
+    // to travel with the address: a real server only answers `api.stream.grouped`
     // under `/internal/`, and reading a chunk is the proof it was asked there.
     const ref = apiGroup("internal").stream.grouped as SseRef<
       Record<string, unknown>,
@@ -273,7 +273,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("pull-driven chunks with exact acknowledgement order and no read-ahead", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.ticks", log);
+    const mounted = await mount("api.stream.ticks", log);
     const stream = mounted.call({ count: 3 });
     expect(stream).toBeInstanceOf(ReadableStream);
 
@@ -305,7 +305,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel before the first pull never contacts the server", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.ticks", log);
+    const mounted = await mount("api.stream.ticks", log);
     const stream = mounted.call({ count: 3 });
     await stream.cancel("never started");
     await Bun.sleep(20);
@@ -317,7 +317,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel before the first chunk aborts the request and releases the server iterator", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.hold", log);
+    const mounted = await mount("api.stream.hold", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     const pending = reader.read();
@@ -334,7 +334,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel between chunks releases the server iterator promptly", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.holdAfterFirst", log);
+    const mounted = await mount("api.stream.holdAfterFirst", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
@@ -347,7 +347,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   });
 
   test("an invalid chunk fails the stream with the exact validation error", async () => {
-    const mounted = await mount("stream.invalid");
+    const mounted = await mount("api.stream.invalid");
     const reader = mounted.call({}).getReader();
     expect(await reader.read()).toEqual({ done: false, value: { value: "first" } });
 
@@ -367,7 +367,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   test("server disconnect fails the stream once with the typed outcome and never restarts", async () => {
     const local = createApp();
     const log: string[] = [];
-    const mounted = await mountSse(local.base, "stream.hold", log);
+    const mounted = await mountSse(local.base, "api.stream.hold", log);
     try {
       const stream = mounted.call({});
       const reader = stream.getReader();
@@ -399,7 +399,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("provider shutdown settles an open stream with a typed error and no restart", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.unmountHold", log);
+    const mounted = await mount("api.stream.unmountHold", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
@@ -418,7 +418,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   });
 
   test("the callable is stable across rerenders and errors before the client exists", async () => {
-    const mounted = await mount("stream.ticks");
+    const mounted = await mount("api.stream.ticks");
     const ready = mounted.call;
     mounted.rerender();
     await Bun.sleep(20);

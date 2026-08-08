@@ -55,22 +55,22 @@ describe("HTTP-exposed function paths", () => {
     ]);
     const echo = registry.exposed.get("/api/notes/echo");
     expect(echo).toMatchObject({
-      address: "notes.echo",
+      address: "api.notes.echo",
       path: "/api/notes/echo",
       openapi: true,
     });
-    expect(echo?.fn).toBe(registry.get("notes.echo")!);
+    expect(echo?.fn).toBe(registry.get("api.notes.echo")!);
     expect(registry.exposed.get("/api/admin/messages/purge")).toMatchObject({
-      address: "admin.messages.purge",
+      address: "api.admin.messages.purge",
       openapi: false,
     });
     expect(registry.exposed.get("/api/messages/internal")).toBeUndefined();
-    expect(registry.get("messages.internal")).toBe(internal);
+    expect(registry.get("api.messages.internal")).toBe(internal);
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { echo: exposed } })).toThrow(
-      'HTTP-exposed function "_internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "_" is reserved to AckerDB',
+      'HTTP-exposed function "api._internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "_" is reserved to AckerDB',
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
     expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
@@ -136,17 +136,37 @@ describe("HTTP-exposed function paths", () => {
       path: "/api/notes/echo",
       tools: {},
     });
-    const message = 'HTTP-exposed function "notes.echo" and MCP "agent" both use path "/api/notes/echo"';
+    const message = 'HTTP-exposed function "api.notes.echo" and MCP "agent" both use path "/api/notes/echo"';
 
     expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, notes: { echo: exposed } })).toThrow(message);
     expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
   });
 
+  test("refuses two addresses projecting onto one path", () => {
+    // Unique addresses do not imply unique paths: the projection joins on `/`
+    // where the address joined on `.`, and a string-named export may contain
+    // either. Two functions with two access policies at one URL would
+    // otherwise be settled by whichever was registered second.
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: listing } })
+    ).toThrow(
+      'HTTP-exposed function "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+    // A raw handler meets the same check: handler paths are claimed after
+    // exposed ones, so one check covers both orders and both kinds.
+    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: hook } })
+    ).toThrow(
+      'http handler "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+  });
+
   test("refuses a malformed http field from an untyped export", () => {
     const untyped = { ...exposed, http: { openapi: "yes" } } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(
-      'function "notes.untyped" http must be true, false, or { openapi: boolean }',
+      'function "api.notes.untyped" http must be true, false, or { openapi: boolean }',
     );
   });
 
@@ -156,7 +176,7 @@ describe("HTTP-exposed function paths", () => {
     // and a silent omission from the document.
     const untyped = { ...exposed, kind: "queryy" } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(
-      'HTTP-exposed function "notes.untyped" is a queryy, which the HTTP surface does not serve',
+      'HTTP-exposed function "api.notes.untyped" is a queryy, which the HTTP surface does not serve',
     );
     // Unexposed, no HTTP surface reads its kind and the load stands.
     const internalKind = { ...exposed, kind: "queryy", http: false } as never;
@@ -171,20 +191,20 @@ describe("raw http handler routes", () => {
     const registry = new Registry({ hooks: { stripe: hook } });
 
     const route = registry.httpRoutes.get("/api/hooks/stripe");
-    expect(route).toMatchObject({ address: "hooks.stripe", path: "/api/hooks/stripe" });
+    expect(route).toMatchObject({ address: "api.hooks.stripe", path: "/api/hooks/stripe" });
     // The route serves the registry's own validated snapshot; the handler it
     // calls is the exported one.
     expect(route?.fn.handler).toBe(hook.handler);
     expect(route?.fn.methods).toEqual(["POST"]);
-    expect(registry.httpHandler("hooks.stripe")).toBe(route?.fn);
+    expect(registry.httpHandler("api.hooks.stripe")).toBe(route?.fn);
     // Not a contract function: it is neither addressable nor exposed.
-    expect(registry.get("hooks.stripe")).toBeUndefined();
+    expect(registry.get("api.hooks.stripe")).toBeUndefined();
     expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { hook } })).toThrow(
-      'http handler "_internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
+      'http handler "api._internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
     );
   });
 
@@ -194,7 +214,7 @@ describe("raw http handler routes", () => {
       path: "/api/hooks/stripe",
       tools: {},
     });
-    const message = 'http handler "hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
+    const message = 'http handler "api.hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
 
     expect(() => new Registry({ hooks: { stripe: hook }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, hooks: { stripe: hook } })).toThrow(message);
@@ -202,7 +222,7 @@ describe("raw http handler routes", () => {
 
   test("refuses one handler exported at two addresses", () => {
     expect(() => new Registry({ hooks: { stripe: hook, again: hook } })).toThrow(
-      'registered http handler is exported at both "hooks.again" and "hooks.stripe"',
+      'registered http handler is exported at both "api.hooks.again" and "api.hooks.stripe"',
     );
   });
 
@@ -398,7 +418,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       handler: () => 1n,
     });
     expect(() => new Registry({ notes: { unrepresentable } })).toThrow(
-      /HTTP-exposed function "notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary: .*v\.primaryKey\(\) is not a standard-JSON value/,
+      /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary: .*v\.primaryKey\(\) is not a standard-JSON value/,
     );
     // Unexposed, the same contract is only the WebSocket protocol's business.
     expect(() => new Registry({ notes: { unrepresentable: { ...unrepresentable, http: false } } }))

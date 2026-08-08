@@ -16,12 +16,18 @@ import {
 export { ProtocolError } from "./protocol-validation.ts";
 
 /**
- * Protocol 3 is the executable client/server envelope contract. Application
- * arguments, results, and event rows remain opaque and keep their inferred
- * TypeScript types; every framework-owned field is validated after wire decode.
+ * The executable client/server envelope contract. Application arguments,
+ * results, and event rows remain opaque and keep their inferred TypeScript
+ * types; every framework-owned field is validated after wire decode.
+ *
+ * The version covers the grammar of every framework-owned field, `ref`
+ * included: 6 is where a function address began with its API path, so a
+ * version-5 `ref` naming one function could name a different one here. A
+ * decoder that refuses the version is what turns that skew into one refusal
+ * instead of a call that lands somewhere else.
  */
 
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;

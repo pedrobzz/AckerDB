@@ -152,7 +152,7 @@ async function prepare(recovery = false) {
     body: encode({
       v: PROTOCOL_VERSION,
       t: "realtime_prepare",
-      ref: "assistant.live",
+      ref: "api.assistant.live",
       args: {},
       ...(recovery ? { recovery: true as const } : {}),
     }),
@@ -194,7 +194,7 @@ describe("realtime HTTP signaling", () => {
       body: encode({
         v: PROTOCOL_VERSION,
         t: "realtime_prepare",
-        ref: "assistant.live",
+        ref: "api.assistant.live",
         args: {},
       }),
     });
@@ -285,7 +285,7 @@ describe("realtime HTTP signaling", () => {
       body: encode({
         v: PROTOCOL_VERSION,
         t: "realtime_prepare",
-        ref: "assistant.live",
+        ref: "api.assistant.live",
         args: {},
       }),
     });

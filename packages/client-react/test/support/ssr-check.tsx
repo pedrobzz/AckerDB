@@ -27,7 +27,7 @@ let socketAttempts = 0;
   }
 };
 
-const echo = { $ref: "tools.echo" } as ProcedureRef<
+const echo = { $ref: "api.tools.echo" } as ProcedureRef<
   { readonly value: string },
   string
 >;

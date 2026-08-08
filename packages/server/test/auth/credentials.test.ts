@@ -205,7 +205,7 @@ describe("Identity credentials", () => {
       102,
       "102",
       { id: created.id, name: "Personal Codex" },
-      "tokens.renameAgentToken",
+      "api.tokens.renameAgentToken",
     )));
     expect(lifecycleTransitions()).toHaveLength(3);
     expect(lifecycleTransitions().at(-1)).toMatchObject({
@@ -216,7 +216,7 @@ describe("Identity credentials", () => {
       103,
       "103",
       { id: created.id, metadata: { device: "mac", color: "blue", generation: 2n } },
-      "tokens.updateAgentTokenMetadata",
+      "api.tokens.updateAgentTokenMetadata",
     )));
     expect(lifecycleTransitions()).toHaveLength(4);
     expect(lifecycleTransitions().at(-1)).toMatchObject({
@@ -244,9 +244,9 @@ describe("Identity credentials", () => {
     });
 
     for (const [id, args, ref] of [
-      [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.credentials.maxMetadataBytes) } }, "tokens.updateAgentTokenMetadata"],
-      [105, { id: created.id, kind: "empty" }, "tokens.invalidAgentTokenUpdate"],
-      [106, { id: created.id, kind: "undefined" }, "tokens.invalidAgentTokenUpdate"],
+      [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.credentials.maxMetadataBytes) } }, "api.tokens.updateAgentTokenMetadata"],
+      [105, { id: created.id, kind: "empty" }, "api.tokens.invalidAgentTokenUpdate"],
+      [106, { id: created.id, kind: "undefined" }, "api.tokens.invalidAgentTokenUpdate"],
     ] as const) {
       await expect(runtime.mutation(aliceSession, request(mutationMessage(id, String(id), args, ref))))
         .rejects.toMatchObject({ code: "validation" });
@@ -258,8 +258,8 @@ describe("Identity credentials", () => {
     await runtime.openSession(bobSession);
     expect(await runtime.query(bobSession, request(queryMessage(107)))).toEqual([]);
     for (const [id, context, args, ref] of [
-      [109, bobSession, { id: created.id, name: "Stolen" }, "tokens.renameAgentToken"],
-      [110, bobSession, { id: created.id }, "tokens.revokeAgentToken"],
+      [109, bobSession, { id: created.id, name: "Stolen" }, "api.tokens.renameAgentToken"],
+      [110, bobSession, { id: created.id }, "api.tokens.revokeAgentToken"],
     ] as const) {
       await expect(runtime.mutation(context, request(mutationMessage(id, String(id), args, ref))))
         .rejects.toMatchObject({ code: "not_found" });
@@ -282,7 +282,7 @@ describe("Identity credentials", () => {
       114,
       "114",
       { id: created.id },
-      "tokens.revokeAgentToken",
+      "api.tokens.revokeAgentToken",
     )));
     expect(lifecycleTransitions()).toHaveLength(5);
     expect(lifecycleTransitions().at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
@@ -332,7 +332,7 @@ describe("Identity credentials", () => {
       19,
       "19",
       { name: "No null sentinel", scopes: null },
-      "tokens.createScopedToken",
+      "api.tokens.createScopedToken",
     )))).rejects.toMatchObject({ code: "validation" });
     expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 0n });
@@ -341,7 +341,7 @@ describe("Identity credentials", () => {
       20,
       "20",
       { name: "Least privilege", scopes: ["orders.get"] },
-      "tokens.createScopedToken",
+      "api.tokens.createScopedToken",
     )))).value as CreatedValue;
     expect(created.scopes).toEqual(["orders.get"]);
     expect(Object.isFrozen(created.scopes)).toBe(true);
@@ -401,11 +401,11 @@ describe("Identity credentials", () => {
       21,
       "21",
       { id: created.id, scopes: ["reports.all", "orders.get"] },
-      "tokens.updateScopedToken",
+      "api.tokens.updateScopedToken",
     )));
     const listed = await runtime.query(
       aliceSession,
-      request(queryMessage(22, "tokens.listScopedTokens")),
+      request(queryMessage(22, "api.tokens.listScopedTokens")),
     ) as readonly [{ readonly scopes: readonly string[] }];
     // A grant is stored as requested: patterns have no place in the
     // vocabulary's order, so only their expansion is canonically ordered.
@@ -430,12 +430,12 @@ describe("Identity credentials", () => {
         id,
         String(id),
         { id: created.id, scopes },
-        "tokens.updateScopedToken",
+        "api.tokens.updateScopedToken",
       )))).rejects.toMatchObject({ code: "validation" });
     }
     expect((await runtime.query(
       aliceSession,
-      request(queryMessage(26, "tokens.listScopedTokens")),
+      request(queryMessage(26, "api.tokens.listScopedTokens")),
     ) as readonly [{ readonly scopes: readonly string[] }])[0].scopes).toEqual([
       "reports.all",
       "orders.get",
@@ -445,7 +445,7 @@ describe("Identity credentials", () => {
       27,
       "27",
       { id: created.id, scopes: [] },
-      "tokens.updateScopedToken",
+      "api.tokens.updateScopedToken",
     )));
     const emptyPrincipal = await runtime.authenticateCredential(
       created.token,
@@ -482,7 +482,7 @@ describe("Identity credentials", () => {
       30,
       "30",
       { name: "Least privilege", scopes: ["orders.get"] },
-      "tokens.createScopedToken",
+      "api.tokens.createScopedToken",
     )))).value as CreatedValue;
 
     const server = serve({ runtime, port: 0 });
@@ -605,7 +605,7 @@ describe("Identity credentials", () => {
       31,
       "31",
       { id: created.id, scopes: ["reports.all", "orders.get"] },
-      "tokens.updateScopedToken",
+      "api.tokens.updateScopedToken",
     )));
     const cachedNames = await listedToolNames(
       await rpc(base, scopedMcp.path, "tools/list", {}, created.token),
@@ -626,7 +626,7 @@ describe("Identity credentials", () => {
       32,
       "32",
       { id: created.id, scopes: [] },
-      "tokens.updateScopedToken",
+      "api.tokens.updateScopedToken",
     )));
     expect(cachedNames).toContain("read_reports");
     const cachedCall = await rpc(base, scopedMcp.path, "tools/call", {

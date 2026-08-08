@@ -287,7 +287,7 @@ async function invoke(
 }
 
 async function link(harness: Harness, principal: UserPrincipal, token: string): Promise<void> {
-  expect(await invoke(harness, principal, "accounts.link", { rawBearerToken: token }))
+  expect(await invoke(harness, principal, "api.accounts.link", { rawBearerToken: token }))
     .toMatchObject({ status: 200 });
 }
 
@@ -336,7 +336,7 @@ describe("transactional external-account unlinking", () => {
     let harness = open();
     const aliceA = await authenticate(harness, "alice-a");
     await link(harness, aliceA, "alice-b");
-    expect(await invoke(harness, aliceA, "owned.create", { value: "durable owner" }))
+    expect(await invoke(harness, aliceA, "api.owned.create", { value: "durable owner" }))
       .toMatchObject({ status: 200 });
 
     const lease = await acquire(harness, "alice-a");
@@ -347,7 +347,7 @@ describe("transactional external-account unlinking", () => {
         invalidationOrder.push(handedOff);
       }
     });
-    const unlinked = await invoke(harness, lease.principal, "accounts.unlink", ALICE_A, {
+    const unlinked = await invoke(harness, lease.principal, "api.accounts.unlink", ALICE_A, {
       lease,
       handoff: () => {
         expect(lease.signal.aborted).toBe(false);
@@ -368,7 +368,7 @@ describe("transactional external-account unlinking", () => {
     const aliceB = await authenticate(harness, "alice-b");
     expect(aliceB.identity).toBe(aliceA.identity);
     expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
-    expect(await invoke(harness, aliceB, "owned.current", {})).toMatchObject({
+    expect(await invoke(harness, aliceB, "api.owned.current", {})).toMatchObject({
       status: 200,
       body: { userId: String(aliceA.identity), value: "durable owner" },
     });
@@ -385,9 +385,9 @@ describe("transactional external-account unlinking", () => {
     const bob = await authenticate(harness, "bob-a");
 
     const denied = await Promise.all([
-      invoke(harness, ANONYMOUS_PRINCIPAL, "accounts.unlink", ALICE_A),
-      invoke(harness, alice, "accounts.unlink", BOB_A),
-      invoke(harness, alice, "accounts.unlink", { issuer: ISSUER_C, subject: "missing" }),
+      invoke(harness, ANONYMOUS_PRINCIPAL, "api.accounts.unlink", ALICE_A),
+      invoke(harness, alice, "api.accounts.unlink", BOB_A),
+      invoke(harness, alice, "api.accounts.unlink", { issuer: ISSUER_C, subject: "missing" }),
     ]);
     expect(denied.map(({ status }) => status)).toEqual([403, 403, 403]);
     expect(denied.map(({ body }) => body)).toEqual([
@@ -396,7 +396,7 @@ describe("transactional external-account unlinking", () => {
         { code: "unauthorized", retryable: false, message: "account unlinking requires ownership" },
       ]);
 
-    expect(await invoke(harness, bob, "accounts.unlink", BOB_A)).toMatchObject({
+    expect(await invoke(harness, bob, "api.accounts.unlink", BOB_A)).toMatchObject({
       status: 409,
       body: { code: "conflict", message: "cannot unlink the final external account" },
     });
@@ -422,16 +422,16 @@ describe("transactional external-account unlinking", () => {
       BEGIN
         SELECT RAISE(FAIL, 'forced identity unlink failure');
       END`);
-    expect(await invoke(harness, alice, "accounts.unlink", ALICE_ROLLBACK))
+    expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_ROLLBACK))
       .toMatchObject({ status: 500 });
     expect(invalidations).toEqual([]);
     expect(harness.engine.identityForAccount(harness.engine.reader, ROLLBACK_ISSUER, "alice"))
       .toBe(alice.identity);
     harness.engine.writer.exec("DROP TRIGGER fail_identity_unlink");
 
-    expect(await invoke(harness, alice, "accounts.unlink", ALICE_ROLLBACK))
+    expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_ROLLBACK))
       .toMatchObject({ status: 200 });
-    expect(await invoke(harness, alice, "accounts.unlinkThenFail", ALICE_C))
+    expect(await invoke(harness, alice, "api.accounts.unlinkThenFail", ALICE_C))
       .toMatchObject({ status: 500 });
     unsubscribe();
     expect(invalidations).toEqual([
@@ -460,7 +460,7 @@ describe("transactional external-account unlinking", () => {
     await hello(session, "alice-a", "active-account-session");
     expect(session.snapshot().phase).toBe("active");
 
-    expect(await invoke(harness, alice, "accounts.unlink", ALICE_A))
+    expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_A))
       .toMatchObject({ status: 200 });
     await settle();
     expect(lease.signal).toMatchObject({ aborted: true });
@@ -488,7 +488,7 @@ describe("transactional external-account unlinking", () => {
     const release = deferred<void>();
     unlinkStall = { committed, release };
     let handedOff = false;
-    const response = invoke(harness, origin.principal, "accounts.unlinkAndWait", ALICE_A, {
+    const response = invoke(harness, origin.principal, "api.accounts.unlinkAndWait", ALICE_A, {
       lease: origin,
       handoff: () => {
         handedOff = true;
@@ -528,7 +528,7 @@ describe("transactional external-account unlinking", () => {
       clock: CLOCK,
     });
     await httpBlock.entered;
-    expect(await invoke(harness, alice, "accounts.unlink", ALICE_A))
+    expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_A))
       .toMatchObject({ status: 200 });
     await expect(pendingLease).rejects.toMatchObject({ code: "unauthenticated" });
     httpBlock.release();
@@ -546,7 +546,7 @@ describe("transactional external-account unlinking", () => {
     });
     const pendingHello = hello(session, "alice-c", "pending-account-session");
     await sessionBlock.entered;
-    expect(await invoke(harness, alice, "accounts.unlink", ALICE_C))
+    expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_C))
       .toMatchObject({ status: 200 });
     expect(session.snapshot().phase).toBe("closed");
     sessionBlock.release();

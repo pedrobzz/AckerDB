@@ -188,7 +188,7 @@ describe("ackerdb CLI", () => {
     const firstClient = authenticatedClientFor(port);
     const firstIdentity = mustOk(
       await firstClient.procedure<Record<string, never>, bigint>(
-        "identity.current",
+        "api.identity.current",
         {},
       ),
     );
@@ -202,7 +202,7 @@ describe("ackerdb CLI", () => {
     expect(
       mustOk(
         await secondClient.procedure<Record<string, never>, bigint>(
-          "identity.current",
+          "api.identity.current",
           {},
         ),
       ),
@@ -227,7 +227,7 @@ describe("ackerdb CLI", () => {
     try {
       const client = authenticatedClientFor(port);
       expect(mustOk(await client.procedure<Record<string, never>, bigint>(
-        "identity.current",
+        "api.identity.current",
         {},
       ))).toBe(1n);
       client.close();
@@ -457,19 +457,19 @@ describe("ackerdb CLI", () => {
 
     const client = clientFor(port);
     expect(mustOk(await client.mutation<{ channelId: bigint; body: string }, bigint>(
-      "messages.send",
+      "api.messages.send",
       { channelId: 1n, body: "hi" },
     ))).toBe(1n);
     expect(mustOk(await client.query<unknown, unknown[]>(
-      "messages.list",
+      "api.messages.list",
       { channelId: 1n },
     ))).toHaveLength(1);
     expect(mustOk(await client.query<Record<never, never>, number>(
-      "admin.users.count",
+      "api.admin.users.count",
       {},
     ))).toBe(1);
     const chunks: unknown[] = [];
-    for await (const chunk of client.sse("messages.tail", { channelId: 1n })) chunks.push(chunk);
+    for await (const chunk of client.sse("api.messages.tail", { channelId: 1n })) chunks.push(chunk);
     expect(chunks).toEqual([{ body: "channel 1" }]);
     client.close();
 
@@ -725,7 +725,7 @@ ${FIXTURE_APP}`,
     const client = clientFor(port);
 
     // survives data before the edit
-    await client.mutation("messages.send", { channelId: 2n, body: "before" });
+    await client.mutation("api.messages.send", { channelId: 2n, body: "before" });
 
     // edit the schema: add a table (a safe change)
     writeFileSync(
@@ -757,7 +757,7 @@ ${FIXTURE_APP}`,
     // data survived the reload (safe reconciliation, same database)
     expect(
       mustOk(
-        await client.query<unknown, unknown[]>("messages.list", {
+        await client.query<unknown, unknown[]>("api.messages.list", {
           channelId: 2n,
         }),
       ),

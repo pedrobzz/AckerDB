@@ -5,7 +5,11 @@
 // read the package set from `lib.ts`, so the workflow no longer restates it —
 // a package added there is picked up by classification and execution together,
 // instead of passing classification and then failing an allow-list in YAML.
+import { join } from "node:path";
 import { PUBLIC_PACKAGES, packageDirectory } from "../lib.ts";
+
+/** The repository root, resolved from this file rather than the caller's cwd. */
+const REPOSITORY_ROOT = join(import.meta.dir, "../..");
 
 export type PublicPackage = typeof PUBLIC_PACKAGES[number];
 
@@ -36,9 +40,17 @@ export function affectedPackages(raw: string | undefined): readonly PublicPackag
   return parsed as readonly PublicPackage[];
 }
 
-/** The test path for one package, so the runner and its test agree on it. */
+/**
+ * The test path for one package, so the runner and its test agree on it.
+ *
+ * Absolute, always: `bun test` treats a bare relative path as a *filter* and
+ * crawls the whole working tree to resolve it, holding a descriptor per
+ * directory until pipe-backed child spawns start failing silently. A checkout
+ * carrying agent worktrees or a vendored source mirror is enough to trigger
+ * it, so the path may never be relative to wherever the runner was invoked.
+ */
 export function testPath(pkg: PublicPackage): string {
-  return `./${packageDirectory(pkg)}/test`;
+  return join(REPOSITORY_ROOT, packageDirectory(pkg), "test");
 }
 
 if (import.meta.main) {

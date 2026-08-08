@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  EVENTS_ADDRESS_PREFIX,
   stableEncode,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
@@ -521,7 +522,7 @@ export class Runtime implements RuntimePort {
   }
 
   kindOf(address: string): string | null {
-    if (address.startsWith("events.")) return "event";
+    if (address.startsWith(EVENTS_ADDRESS_PREFIX)) return "event";
     return this.registry.kindOf(address) ?? null;
   }
 

@@ -500,12 +500,12 @@ describe("Plugin invocation boundaries", () => {
   test("logs from query, mutation, procedure, and nested Plugin contexts", async () => {
     const harness = await makeHarness();
 
-    await callQuery(harness, "plugins.inspect", { key: "logged" });
-    await callMutation(harness, "plugins.sameTransaction", {
+    await callQuery(harness, "api.plugins.inspect", { key: "logged" });
+    await callMutation(harness, "api.plugins.sameTransaction", {
       key: "logged",
       value: "value",
     });
-    await callProcedure(harness, "plugins.pluginFlow", {});
+    await callProcedure(harness, "api.plugins.pluginFlow", {});
     await harness.runtime.telemetryJournal.flush();
 
     const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
@@ -526,11 +526,11 @@ describe("Plugin invocation boundaries", () => {
   test("publishes Plugin mutation and transaction analytics only after commit", async () => {
     const harness = await makeHarness();
 
-    await callMutation(harness, "plugins.sameTransaction", {
+    await callMutation(harness, "api.plugins.sameTransaction", {
       key: "tracked",
       value: "value",
     });
-    await callProcedure(harness, "plugins.pluginFlow", {});
+    await callProcedure(harness, "api.plugins.pluginFlow", {});
     await harness.runtime.telemetryJournal.flush();
 
     const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
@@ -599,7 +599,7 @@ describe("Plugin invocation boundaries", () => {
 
     const mutationResult = await callMutation(
       harness,
-      "plugins.sameTransaction",
+      "api.plugins.sameTransaction",
       { key: "same", value: "same" },
     ) as AnyContext;
 
@@ -620,7 +620,7 @@ describe("Plugin invocation boundaries", () => {
     expect(rootLogs(harness)).toEqual(["same:same"]);
     expect(storedValues(harness)).toEqual(["same"]);
 
-    const queryResult = await callQuery(harness, "plugins.inspect", { key: "same" }) as AnyContext;
+    const queryResult = await callQuery(harness, "api.plugins.inspect", { key: "same" }) as AnyContext;
     expect(queryResult).toMatchObject({
       value: "same",
       hostMounts: ["facade", "store"],
@@ -638,11 +638,11 @@ describe("Plugin invocation boundaries", () => {
   test("keeps caught errors caught and rolls back an uncaught Plugin error normally", async () => {
     const harness = await makeHarness();
 
-    expect(await callMutation(harness, "plugins.caughtFailure", {})).toBe(true);
+    expect(await callMutation(harness, "api.plugins.caughtFailure", {})).toBe(true);
     expect(storedValues(harness)).toEqual(["caught"]);
     expect(rootLogs(harness)).toEqual(["caught"]);
 
-    await expect(callMutation(harness, "plugins.uncaughtFailure", {}))
+    await expect(callMutation(harness, "api.plugins.uncaughtFailure", {}))
       .rejects.toThrow("store failure:uncaught");
     expect(storedValues(harness)).toEqual(["caught"]);
     expect(rootLogs(harness)).toEqual(["caught"]);
@@ -651,17 +651,17 @@ describe("Plugin invocation boundaries", () => {
   test("runs direct procedure reads/writes independently and explicit tx work atomically", async () => {
     const harness = await makeHarness();
 
-    const failed = await callProcedure(harness, "plugins.independentFailure", {});
+    const failed = await callProcedure(harness, "api.plugins.independentFailure", {});
     expect(failed).toMatchObject({ code: "internal" });
     expect(storedValues(harness)).toEqual(["independent"]);
     const independentRead = await callProcedure(
       harness,
-      "plugins.independentRead",
+      "api.plugins.independentRead",
       { key: "independent" },
     );
     expect(independentRead).toMatchObject({ value: "independent", providerMount: "store" });
 
-    const hostValue = await callProcedure(harness, "plugins.hostTransaction", {}) as AnyContext;
+    const hostValue = await callProcedure(harness, "api.plugins.hostTransaction", {}) as AnyContext;
     expect(new Set([
       hostValue.hostTimestamp,
       hostValue.txTimestamp,
@@ -673,7 +673,7 @@ describe("Plugin invocation boundaries", () => {
       dependencyOperations: ["read", "set"],
     });
 
-    const flowValue = await callProcedure(harness, "plugins.pluginFlow", {}) as AnyContext;
+    const flowValue = await callProcedure(harness, "api.plugins.pluginFlow", {}) as AnyContext;
     expect(new Set([
       flowValue.hostTimestamp,
       flowValue.procedureTimestamp,
@@ -685,7 +685,7 @@ describe("Plugin invocation boundaries", () => {
       procedureDependencyOperations: ["external", "read", "set"],
       transactionDependencyOperations: ["read", "set"],
     });
-    const vocabulary = await callProcedure(harness, "plugins.procedureVocabulary", {});
+    const vocabulary = await callProcedure(harness, "api.plugins.procedureVocabulary", {});
     expect(vocabulary).toMatchObject({
       storeOperations: ["external", "fail", "read", "set"],
       facadeOperations: ["flow", "put", "read"],

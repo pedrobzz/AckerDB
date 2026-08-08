@@ -58,10 +58,11 @@ export const stripe = httpHandler({
 });
 ```
 
-- The route is address-derived like every other function: the group is the
-  root and module path plus export name follow, 1:1 to path segments —
-  `hooks.stripe` serves `/api/hooks/stripe`, and `apiPath: "internal"` serves
-  it at `/internal/hooks/stripe`. There is no router and no path field; a
+- The route is address-derived like every other function: the address is
+  `<apiPath>.<module path>.<export name>` and the URL is that address, segment
+  for segment — `hooks.stripe` is addressed `api.hooks.stripe` and serves
+  `/api/hooks/stripe`, and `apiPath: "internal"` addresses it
+  `internal.hooks.stripe` at `/internal/hooks/stripe`. There is no router and no path field; a
   webhook URL is a thing pasted into a provider's dashboard, and the reserved
   `_` marker plus the MCP-path collision checks apply at registration exactly
   as they do for exposed functions.

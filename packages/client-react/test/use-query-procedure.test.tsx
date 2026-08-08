@@ -28,18 +28,18 @@ const APP = {
 };
 
 type UppercaseError = ApplicationError<
-  "tools.unavailable",
+  "api.tools.unavailable",
   { readonly source: string },
   503
 >;
 
-const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
+const uppercase = { $ref: "api.tools.uppercase" } as ProcedureRef<
   { readonly value: string },
   { readonly value: string },
   UppercaseError
 >;
-const reverse = { $ref: "tools.reverse" } as typeof uppercase;
-const unencodable = { $ref: "tools.unencodable" } as ProcedureRef<
+const reverse = { $ref: "api.tools.reverse" } as typeof uppercase;
+const unencodable = { $ref: "api.tools.unencodable" } as ProcedureRef<
   { readonly value: unknown },
   { readonly value: string }
 >;
@@ -183,9 +183,9 @@ describe("useQueryProcedure", () => {
     });
 
     expect(harness.live().framesOf("p").map(({ ref }) => ref).sort()).toEqual([
-      "tools.reverse",
-      "tools.uppercase",
-      "tools.uppercase",
+      "api.tools.reverse",
+      "api.tools.uppercase",
+      "api.tools.uppercase",
     ]);
     await act(async () => root.unmount());
   });
@@ -227,7 +227,7 @@ describe("useQueryProcedure", () => {
 
     await render(root, page(reverse));
     const secondRequest = harness.live().framesOf("p")[1]!;
-    expect(secondRequest.ref).toBe("tools.reverse");
+    expect(secondRequest.ref).toBe("api.tools.reverse");
     expect(observed.get("identity")).not.toBe(first);
     expect(observed.get("identity")!.refresh).not.toBe(first.refresh);
     first.refresh();
@@ -399,7 +399,7 @@ describe("useQueryProcedure", () => {
         kind: "procedure",
         error: {
           kind: "application",
-          code: "tools.unavailable",
+          code: "api.tools.unavailable",
           body: { source: "upstream" },
           status: 503,
         },
@@ -837,7 +837,7 @@ describe("useQueryProcedure", () => {
     });
     const request = harness.live().framesOf("p")[0]!;
     expect(request).toMatchObject({
-      ref: "tools.uppercase",
+      ref: "api.tools.uppercase",
       args: { value: "one" },
     });
 

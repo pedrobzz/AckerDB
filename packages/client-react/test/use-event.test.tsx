@@ -13,7 +13,7 @@ import { AckerDBProvider, useEvent, type AckerDBProviderConfig } from "@ackerdb/
 import { createBoundary } from "./support/boundary.tsx";
 
 type PingRow = { readonly id: bigint; readonly n: number };
-const pings = { $ref: "events.pings" } as EventRef<{ min: bigint }, PingRow>;
+const pings = { $ref: "api.events.pings" } as EventRef<{ min: bigint }, PingRow>;
 
 interface ProbeProps {
   readonly config: AckerDBProviderConfig;
@@ -84,7 +84,7 @@ describe("useEvent lifecycle", () => {
     });
     const subs = socket.framesOf("sub");
     expect(subs).toHaveLength(1);
-    expect(subs[0]).toMatchObject({ ref: "events.pings", args: { min: 1n } });
+    expect(subs[0]).toMatchObject({ ref: "api.events.pings", args: { min: 1n } });
     const id = subs[0]!.id;
 
     await act(async () => {
@@ -159,7 +159,7 @@ describe("useEvent lifecycle", () => {
     expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
     const subs = socket.framesOf("sub");
     expect(subs).toHaveLength(2);
-    expect(subs[1]).toMatchObject({ ref: "events.pings", args: { min: 2n } });
+    expect(subs[1]).toMatchObject({ ref: "api.events.pings", args: { min: 2n } });
     expect(subs[1]!.id).not.toBe(firstId);
 
     await act(async () => {
@@ -207,7 +207,7 @@ describe("useEvent lifecycle", () => {
     });
     // The client re-sends the same subscription without any cursor: it never
     // asks the server to replay missed transient events.
-    expect(next.framesOf("sub")).toMatchObject([{ id, ref: "events.pings" }]);
+    expect(next.framesOf("sub")).toMatchObject([{ id, ref: "api.events.pings" }]);
     expect(next.framesOf("sub")[0]!.cursor).toBeUndefined();
 
     await act(async () => {
@@ -285,7 +285,7 @@ describe("useEvent lifecycle", () => {
   });
 
   test("reordered argument keys keep the canonical subscription identity", async () => {
-    const scoped = { $ref: "events.scoped" } as EventRef<{ a: bigint; b: string }, PingRow>;
+    const scoped = { $ref: "api.events.scoped" } as EventRef<{ a: bigint; b: string }, PingRow>;
     function ScopedProbe({ args }: { readonly args: { a: bigint; b: string } }): ReactNode {
       useEvent(scoped, args, () => {});
       return null;

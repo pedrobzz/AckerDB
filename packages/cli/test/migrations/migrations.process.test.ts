@@ -206,11 +206,11 @@ describe("ackerdb startup migrations", () => {
     await first.waitFor("ready on");
     const seeder = makeClient(port, "migrations-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "beta", count: 42 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "beta", count: 42 }),
       "seed beta",
     )).toBe(2n);
     closeClient(seeder);
@@ -238,7 +238,7 @@ describe("ackerdb startup migrations", () => {
     expect(second.output()).toContain("migrated table items");
 
     const reader = makeClient(port, "migrations-read");
-    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("items.list", {}), "list after migration");
+    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("api.items.list", {}), "list after migration");
     expect(rows.map((row) => [row.label, row.count])).toEqual([
       ["alpha", "5"],
       ["beta", "42"],
@@ -267,7 +267,7 @@ describe("ackerdb startup migrations", () => {
     await waitForReady(port);
     const seeder = makeClient(port, "runtime-loading-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed before runtime loading failure",
     )).toBe(1n);
     closeClient(seeder);
@@ -330,7 +330,7 @@ throw new Error("runtime-only verifier failure");
     await first.waitFor("ready on");
     const seeder = makeClient(port, "immutable-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     closeClient(seeder);
@@ -374,7 +374,7 @@ throw new Error("runtime-only verifier failure");
     await first.waitFor("ready on");
     const seeder = makeClient(port, "migrations-refusal-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     closeClient(seeder);

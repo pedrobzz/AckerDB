@@ -143,7 +143,7 @@ describe("registry vocabulary cross-check", () => {
 
   test("rejects an undeclared scope, naming the function", () => {
     expect(() => registryWith(scoped).checkScopeRequirements(["other:read"]))
-      .toThrow(/function "notes\.list" requires undeclared scope "notes:read"/);
+      .toThrow(/function "api\.notes\.list" requires undeclared scope "notes:read"/);
   });
 
   test("an application declaring no vocabulary declares no application scope", () => {

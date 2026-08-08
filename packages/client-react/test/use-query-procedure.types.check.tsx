@@ -16,7 +16,7 @@ import {
 } from "@ackerdb/client-react";
 
 type StatsUnavailable = ApplicationError<
-  "stats.unavailable",
+  "api.stats.unavailable",
   { readonly source: string },
   503
 >;
@@ -69,7 +69,7 @@ useQueryProcedure(event, { prefix: "a" });
 // @ts-expect-error an SSE reference is not a procedure
 useQueryProcedure(stream, { prefix: "a" });
 // @ts-expect-error raw addresses bypass generated typing
-useQueryProcedure("stats.read", { prefix: "a" });
+useQueryProcedure("api.stats.read", { prefix: "a" });
 // @ts-expect-error arguments are inferred from the generated reference
 useQueryProcedure(stats, { prefix: 1 });
 // @ts-expect-error only the shared skip sentinel disables demand

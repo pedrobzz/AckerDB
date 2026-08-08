@@ -22,7 +22,7 @@ interface UploadSession {
 }
 
 const createUpload = {
-  $ref: "documents.createUpload",
+  $ref: "api.documents.createUpload",
 } as MutationRef<{ readonly folder: string }, UploadSession>;
 
 type UploadDenied = ApplicationError<
@@ -32,7 +32,7 @@ type UploadDenied = ApplicationError<
 >;
 
 const createAuthorizedUpload = {
-  $ref: "documents.createAuthorizedUpload",
+  $ref: "api.documents.createAuthorizedUpload",
 } as MutationRef<
   { readonly organizationId: bigint },
   UploadSession,
@@ -123,7 +123,7 @@ describe("AckerDBClient files", () => {
     const socket = sockets[0]!;
     const mutation = dispatchSession(client, socket);
     expect(mutation).toMatchObject({
-      ref: "documents.createUpload",
+      ref: "api.documents.createUpload",
       args: { folder: "contracts" },
     });
     acceptSession(

@@ -424,7 +424,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
               v: PROTOCOL_VERSION,
               t: "sub",
               id: 1,
-              ref: "items.large",
+              ref: "api.items.large",
               args: {},
             }));
           } else if (
@@ -1088,7 +1088,7 @@ processResourceTest(
 
   // Warm every measured path so the baseline excludes one-time module/JIT work.
   const warm = await connectWebSocket(wsUrl);
-  warm.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
+  warm.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
   expect(await withTimeout(warm.next(), "warm subscription reset")).toMatchObject({
     t: "transition",
     id: 1,
@@ -1114,8 +1114,8 @@ processResourceTest(
   const first = await connectWebSocket(wsUrl);
   const second = await connectWebSocket(wsUrl);
   const third = await connectWebSocket(wsUrl);
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
-  second.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
+  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  second.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
   for (const client of [first, second]) {
     expect(await withTimeout(client.next(), "subscription reset")).toMatchObject({
       t: "transition",
@@ -1124,7 +1124,7 @@ processResourceTest(
     });
   }
 
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "items.list", args: {} });
+  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(first.next(), "subscription overload")).toMatchObject({
     t: "err",
     id: 2,
@@ -1140,7 +1140,7 @@ processResourceTest(
     v: PROTOCOL_VERSION,
     t: "m",
     id: 1,
-    ref: "items.add",
+    ref: "api.items.add",
     args: { sequence: 1 },
     mutationRequestId: uuidV7(1),
     issuedAt: Date.now(),
@@ -1217,7 +1217,7 @@ processResourceTest(
       v: PROTOCOL_VERSION,
       t: "m",
       id: pressureSequence,
-      ref: "items.add",
+      ref: "api.items.add",
       args: { sequence: pressureSequence },
       mutationRequestId: uuidV7(pressureSequence),
       issuedAt: Date.now(),
@@ -1254,7 +1254,7 @@ processResourceTest(
   }
   await processHarness.waitForCount("@@block-start", 4);
 
-  third.send({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "items.list", args: {} });
+  third.send({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(third.next(), "operation overload")).toMatchObject({
     t: "err",
     id: 2,

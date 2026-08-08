@@ -52,8 +52,8 @@ describe("realtime declarations", () => {
     });
 
     const registry = new Registry({ assistants: { live: assistant } });
-    expect(registry.getRealtime("assistants.live")).toBe(assistant);
-    expect(registry.kindOf("assistants.live")).toBe("realtime");
+    expect(registry.getRealtime("api.assistants.live")).toBe(assistant);
+    expect(registry.kindOf("api.assistants.live")).toBe("realtime");
   });
 
   test("rejects malformed stream declarations", () => {

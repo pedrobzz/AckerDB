@@ -26,7 +26,7 @@ console.error = (...parts: unknown[]) => {
   warnings.push(parts.map(String).join(" "));
 };
 
-const pings = { $ref: "events.pings" } as EventRef<{ min: number }, { n: number }>;
+const pings = { $ref: "api.events.pings" } as EventRef<{ min: number }, { n: number }>;
 let deliveries = 0;
 
 function Listener(): ReactNode {
