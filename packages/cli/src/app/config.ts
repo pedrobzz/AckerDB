@@ -3,12 +3,14 @@
  * field is optional; defaults give the layout from the design docs.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DurabilityPolicy } from "@ackerdb/core";
-import type {
-  OidcVerifierOptions,
-  S3FileStoreChecksum,
-  S3FileStoreEncryption,
+import {
+  normalizeAdminOptions,
+  type NormalizedAdminOptions,
+  type OidcVerifierOptions,
+  type S3FileStoreChecksum,
+  type S3FileStoreEncryption,
 } from "@ackerdb/server";
 
 export type TelemetryMode = "enabled" | "disabled";
@@ -74,6 +76,8 @@ export interface AppConfig {
   statusScope: string;
   /** One active immutable File byte backend. */
   files: FilesConfig;
+  /** Everything administrative, resolved once: the Admin API reads it. */
+  admin: NormalizedAdminOptions;
 }
 
 interface RawConfig {
@@ -92,6 +96,7 @@ interface RawConfig {
   realtime?: string;
   statusScope?: string;
   files?: unknown;
+  admin?: unknown;
 }
 
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
@@ -110,6 +115,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "realtime",
   "statusScope",
   "files",
+  "admin",
 ]);
 const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 
@@ -210,6 +216,43 @@ function exactObject(value: unknown, allowed: readonly string[], path: string): 
   const unknown = Object.keys(value).filter((field) => !allowed.includes(field));
   if (unknown.length > 0) throw new Error(`unknown ${path} field: ${unknown.join(", ")}`);
   return value as Record<string, unknown>;
+}
+
+/**
+ * What the application package says about itself, which is the closest thing
+ * to a name this project has. The OpenAPI document's identity and the Admin
+ * API's answer are the same fact, so it is read once here and both take it
+ * from the resolved configuration.
+ */
+function applicationPackage(appDir: string): { name?: unknown; version?: unknown } {
+  const manifest = join(appDir, "package.json");
+  if (!existsSync(manifest)) return {};
+  return JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown };
+}
+
+/** A package manifest field is a default, so an unusable one is simply absent. */
+function packagedText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
+}
+
+/**
+ * Validate and resolve the `admin` block. Unknown fields are refused here,
+ * where a JSON file can carry one; the values themselves are interpreted by
+ * the server's own `normalizeAdminOptions`, so configuration and a programmatic
+ * host meet one validator rather than two that can disagree. What an operator
+ * wrote is held to that validator; what the package manifest supplies is a
+ * default, and a default that cannot be used is one that was not there.
+ */
+function resolveAdminConfig(value: unknown, appDir: string): NormalizedAdminOptions {
+  const raw = exactObject(value ?? {}, ["application"], "admin");
+  const declared = exactObject(raw.application ?? {}, ["name", "version"], "admin.application");
+  const packaged = applicationPackage(appDir);
+  return normalizeAdminOptions({
+    application: {
+      name: declared.name ?? packagedText(packaged.name, basename(appDir)),
+      version: declared.version ?? packagedText(packaged.version, "0.0.0"),
+    },
+  });
 }
 
 export interface FilesConfigContext {
@@ -378,5 +421,6 @@ export function loadConfig(
       hostname,
       port,
     }),
+    admin: resolveAdminConfig(raw.admin, dir),
   };
 }

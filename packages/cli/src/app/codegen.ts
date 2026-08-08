@@ -26,7 +26,7 @@ import {
   type UnionValidator,
   type Validator,
 } from "@ackerdb/server";
-import { EVENTS_NAMESPACE } from "@ackerdb/core";
+import { ADMIN_API_PATH, EVENTS_NAMESPACE } from "@ackerdb/core";
 import { importApp, listFunctionModules, listJobModules, type ModuleFile } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
@@ -227,7 +227,7 @@ function apiTs(
   );
 
   return `${HEADER}
-import { anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
+import { adminApi as _adminApi, anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
 import type { ApiFromModules as _ApiFromModules, EventRef as _EventRef } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
 type _Modules = {
@@ -240,6 +240,15 @@ ${eventLines.join("\n")}${eventLines.length > 0 ? "\n" : ""}  };
 };
 
 export const ${EVENTS_NAMESPACE} = api.${EVENTS_NAMESPACE};
+
+/**
+ * The administration group: the framework's own functions, plus any this
+ * application published beside them. The framework's half is typed from the
+ * tree \`@ackerdb/core\` ships, not from this project's modules — it is
+ * declared inside AckerDB, so no walk of a functions directory could ever find
+ * it, and a package with no code generation of its own imports that same tree.
+ */
+export const ${ADMIN_API_PATH} = _adminApi as unknown as typeof _adminApi & _ApiFromModules<_Modules, ${JSON.stringify(ADMIN_API_PATH)}>;
 ${groups.join("")}`;
 }
 

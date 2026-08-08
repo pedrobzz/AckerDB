@@ -4,6 +4,7 @@ import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
 import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
+import { applicationAddresses } from "ackerdb-test-support/framework-functions";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -198,6 +199,8 @@ export const tuya = service({
     const modules = await importFunctionModules(config);
     const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
+      // The framework's own group is registered in every application.
+      "admin.system.info",
       "api.admin.users.count",
       "api.messages.enqueueNote",
       "api.messages.list",
@@ -233,15 +236,22 @@ export const tuya = service({
     expect(api).toContain(
       'export const internal = _apiGroup("internal") as unknown as _ApiFromModules<_Modules, "internal">;',
     );
-    // An undeclared group earns no binding: the manifest is the only list, and
-    // code generation never imports the function modules that would hold one.
-    expect(api).not.toContain("export const admin =");
+    // The framework's two groups earn a binding without the manifest naming
+    // them, and `admin` takes the framework's own tree rather than selecting
+    // from modules that could never hold it.
+    expect(api).toContain(
+      'export const admin = _adminApi as unknown as typeof _adminApi & _ApiFromModules<_Modules, "admin">;',
+    );
+    // An undeclared group earns none: the manifest is the only list, and code
+    // generation never imports the function modules that would hold one.
+    expect(api).not.toContain("export const reports =");
     // Every name the module needs for itself carries the reserved `_`, which a
-    // group's name can never begin with — so `api` and `events` are the whole
-    // of what a group must not be called, and the manifest refuses both.
+    // group's name can never begin with — so `api`, `admin` and `events` are
+    // the whole of what a group must not be called, and the manifest refuses
+    // all three.
     for (const line of api.split("\n")) {
       const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
-      if (owned !== undefined) expect(["api", "events", "internal"]).toContain(owned);
+      if (owned !== undefined) expect(["admin", "api", "events", "internal"]).toContain(owned);
     }
     expect(typecheckFixture(dir)).toBe("");
   });
@@ -265,7 +275,7 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     await runCodegen(config);
 
     const registry = new Registry(await importFunctionModules(config), ["internal"]);
-    expect([...registry.functions.keys()].sort())
+    expect(applicationAddresses(registry))
       .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
 
     // `orders` is a module and a namespace at once, so the generated tree is
@@ -311,7 +321,7 @@ export const agentMcp = mcp({
     const registry = new Registry(await importFunctionModules(config), ["internal"]);
     // The tool is an ordinary function and keeps its address; the endpoint is
     // the only server-only export.
-    expect([...registry.functions.keys()]).toEqual(["api.agent.echo"]);
+    expect(applicationAddresses(registry)).toEqual(["api.agent.echo"]);
     expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
   });
 
