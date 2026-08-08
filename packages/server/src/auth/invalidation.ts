@@ -165,7 +165,21 @@ export class AuthInvalidationBoundary {
     return true;
   }
 
-  /** Defer the originating credential's self-invalidation until response handoff. */
+  /**
+   * Defer the originating credential's self-invalidation until response handoff.
+   *
+   * The exclusion names a *subscription*, and a subscription can be shared: one
+   * WebSocket session subscribes once for every operation on it, and one MCP
+   * POST holds one lease for its whole batch. So a concurrent operation on that
+   * same connection keeps the revoked authority until this one's answer lands.
+   * That is the exception's exact width, and it is deliberate. The sharer is by
+   * construction the same principal — one connection, one credential — so what
+   * it buys is a moment more use of an authority the caller already held and is
+   * itself retiring, not a boundary anyone crosses. Narrowing it to the exact
+   * operation would mean a subscription per operation on a long-lived session
+   * plus a partial termination that keeps a socket open for one more frame, and
+   * that is a great deal of machinery for a window bounded by one response.
+   */
   publisher(
     principal: Principal,
     originScope?: AuthInvalidationScope,

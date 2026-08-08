@@ -217,6 +217,11 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   frame, and on the MCP endpoint the tool call's own signal aborts. Every other
   holder is still cancelled at commit, and the origin follows immediately after.
   Every subscriber is addressable, so no door is exempt from the exclusion.
+  The exclusion names a **subscription**, which a WebSocket session and an MCP
+  batch share across their concurrent operations — so a sibling call on that one
+  connection keeps the credential until the answer lands. That connection is the
+  same principal by construction, so what it buys is a moment more use of an
+  authority the caller already held and is itself retiring.
 - One change publishes for **every credential it reaches** — the credential
   itself and every credential delegated beneath it. A descendant's live session
   matches on its own token id, so publishing only for the changed credential

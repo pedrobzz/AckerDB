@@ -413,12 +413,16 @@ export const adminCredentials: AdminCredentialOperations = Object.freeze({
           " and this caller presents none",
       );
     }
-    const created = createCredential(owner, null, { name, scopes: ADMINISTRATIVE_GRANT });
-    // Read before the mint, revoked after it: the replacement is never in the
-    // set it replaces, and the caller's own credential — always one of these —
-    // is revoked with the response carrying the new secret already staged.
+    // Revoked first, then minted, inside one transaction. Root credentials
+    // share one capacity bucket, so minting first would make a full bucket the
+    // one state rotation cannot get out of — and the bucket is exactly what a
+    // rotation is about to make room in. Ordering it this way costs nothing:
+    // the set was read before either step, so the replacement is never in the
+    // set it replaces, and a failed mint rolls the revocations back with it.
     for (const previous of superseded) revokeCredential(owner, null, previous.id);
-    return created;
+    // The caller's own credential is always among those, and it is revoked with
+    // the response carrying the new secret already staged.
+    return createCredential(owner, null, { name, scopes: ADMINISTRATIVE_GRANT });
   },
 });
 

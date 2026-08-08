@@ -162,6 +162,31 @@ integer hides the one fact the field exists to communicate. Omitting the field
 was rejected too — a client must never have to read silence as a value — so it
 stays required and gains an honest one.
 
+## Two costs accepted deliberately
+
+**The deferral is per subscription, not per operation.** A WebSocket session
+subscribes once for every operation on it, and one MCP POST holds one lease for
+its whole batch, so a concurrent call on that connection keeps the revoked
+credential until the rotating call's answer lands. Narrowing it would mean a
+subscription per operation on a long-lived session, plus a partial termination
+that keeps a socket open for exactly one more frame. The window is bounded by
+one response, and the sharer is the same principal by construction — one
+connection carries one credential — so the purchase is a moment more use of an
+authority the caller already held and is itself retiring, not a boundary anyone
+crosses.
+
+**Boot-mint competes for the root capacity bucket.** Rotation does not, because
+it revokes before it mints and a failed mint rolls both back; a full bucket is
+exactly what a rotation makes room in. Boot-mint has nothing to revoke, so a
+database holding `maxPerIdentity` standalone credentials and no master cannot
+start. Reserving a slot for the framework's own credential was rejected: it is a
+special case inside the one capacity rule, for a state the framework's own paths
+cannot produce. The master is minted before any application code runs, so an
+application can only ever fill the bucket to one below the limit, and clearing
+the master frees the slot the next boot needs. Reaching it requires lowering
+`maxPerIdentity` under an already-populated database — the same class of change
+as shrinking any other limit under live data.
+
 ## Consequences
 
 - `_admin:credentials:read` and `_admin:credentials:write` join the framework

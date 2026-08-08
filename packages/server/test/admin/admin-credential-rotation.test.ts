@@ -30,7 +30,11 @@ import {
 } from "../../src/auth/scopes.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { mcp } from "../../src/mcp/index.ts";
-import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
+import {
+  defineServiceLimits,
+  PRODUCTION_LIMITS,
+  type ServiceLimits,
+} from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -93,7 +97,7 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-async function fixture(): Promise<Fixture> {
+async function fixture(limits?: ServiceLimits): Promise<Fixture> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-admin-rotation-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -101,6 +105,7 @@ async function fixture(): Promise<Fixture> {
     engine,
     registry: new Registry(modules),
     scopes: APP_SCOPES,
+    ...(limits === undefined ? {} : { limits }),
     telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
@@ -314,6 +319,28 @@ describe("who may mint administrative authority", () => {
     const listed = await listCredentials(value, value.token);
     expect(listed.status).toBe(200);
     expect(await listed.json()).toHaveLength(1);
+  });
+
+  test("still replaces the master when the root capacity bucket is full", async () => {
+    // Root credentials share one bucket, and boot-mint has taken the only slot
+    // here. Minting the replacement before revoking what it replaces would make
+    // a full bucket the one state rotation cannot get out of — while a full
+    // bucket is exactly what a rotation is about to make room in.
+    const value = await fixture(defineServiceLimits({
+      ...PRODUCTION_LIMITS,
+      credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 1 },
+    }));
+
+    const response = await fetch(`${value.base}/admin/credentials/rotate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${value.token}` },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(200);
+    const rotated = await response.json() as { id: string; token: string };
+    expect((await listCredentials(value, rotated.token)).status).toBe(200);
+    expect((await listCredentials(value, value.token)).status).toBe(401);
   });
 
   test("leaves exactly one master behind, whatever it replaced", async () => {
