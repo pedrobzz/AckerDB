@@ -6,14 +6,21 @@
  *
  * "No signal" is a real answer here, not a failure to produce one. A gate that
  * always emits a number teaches everyone to re-run until the number is
- * agreeable; one that can say the run could not tell them apart is worth more
- * than one that guesses.
+ * agreeable; one that can say the run could not tell the two commits apart is
+ * worth more than one that guesses.
  *
- * Exits non-zero when a gated metric regressed, or when a side recorded a
- * correctness or accounting failure.
+ * Silence is not the same as agreement, though, so the contract is checked
+ * before the verdicts are read: every unit, every metric that unit owes, and
+ * every repetition of it must be present on both sides. A head that stops
+ * producing a number fails here rather than quietly shrinking the comparison
+ * until nothing is left to regress.
+ *
+ * Exits non-zero when a gated metric regressed, when the contract is short, or
+ * when either side recorded a correctness, accounting, or harness failure.
  */
 import { median } from "./load-engine.ts";
-import { metricPolicy } from "./units.ts";
+import { contractShortfalls, metricPolicy, METRIC_POLICY } from "./units.ts";
+import type { BenchmarkConfig } from "./benchmark.ts";
 import {
   comparePaired,
   scatterSummary,
@@ -35,6 +42,7 @@ interface PairedRun {
   readonly executionHost: string;
   readonly repetitions: number;
   readonly wallSeconds: number;
+  readonly config: BenchmarkConfig;
   readonly units: readonly string[];
   readonly profiles: readonly {
     readonly profile: string;
@@ -51,9 +59,8 @@ interface SideSample {
   readonly harnessObservations: readonly string[];
 }
 
-const [directoryArgument] = process.argv.slice(2);
-if (!directoryArgument) throw new Error("usage: bun bench/report.ts <benchmark-results-directory>");
-const directory = directoryArgument;
+const [directory] = process.argv.slice(2);
+if (!directory) throw new Error("usage: bun bench/report.ts <benchmark-results-directory>");
 const run = JSON.parse(await Bun.file(`${directory}/pair.json`).text()) as PairedRun;
 if (run.schemaVersion !== 2) throw new Error("unsupported AckerDB paired benchmark schema");
 
@@ -82,8 +89,9 @@ const MARK: Readonly<Record<PairedComparison["signal"], string>> = Object.freeze
 const lines: string[] = [];
 const say = (line = "") => lines.push(line);
 
-const firstBase = await readSide(run.profiles[0]?.profile ?? "disabled", "base");
-const firstHead = await readSide(run.profiles[0]?.profile ?? "disabled", "head");
+const firstProfile = run.profiles[0]?.profile ?? "disabled";
+const firstBase = await readSide(firstProfile, "base");
+const firstHead = await readSide(firstProfile, "head");
 say(`# AckerDB paired benchmark: v${firstBase?.source.version ?? "?"} → v${firstHead?.source.version ?? "?"}`);
 say();
 say(`Base: \`${run.base}\`  `);
@@ -101,27 +109,47 @@ say(
     "ratios with a distribution-free interval around it; the interval is measured from this run's own scatter.",
 );
 
+// The rule this run was judged by, printed where the verdict is read. Weakening
+// the gate remains possible — a pull request supplies the harness that judges it
+// — but it cannot be done quietly.
+const ungated = Object.entries(METRIC_POLICY).filter(([, policy]) => !policy.gated).map(([name]) => name);
+say();
+say(
+  `Rule: a gated metric regresses when its ${(100 * (1 - DEFAULT_POLICY.alpha)).toFixed(0)}%+ interval keeps the ` +
+    `whole median on the worse side of zero **and** the median clears ${DEFAULT_POLICY.floorPercent}%. ` +
+    `Reported but never gated: ${ungated.join(", ")}.`,
+);
+
 let gatedRegressions = 0;
-let correctnessFailures = 0;
+let failures = 0;
 const everyComparison: PairedComparison[] = [];
 
 for (const profile of run.profiles) {
   say();
   say(`## Telemetry: ${profile.profile}`);
   say();
-  if (profile.terminalFailures.length > 0) {
-    correctnessFailures += profile.terminalFailures.length;
-    for (const failure of profile.terminalFailures) say(`- **terminal failure** ${failure}`);
-    say();
+  for (const failure of profile.terminalFailures) {
+    failures++;
+    say(`- **terminal failure** ${failure}`);
   }
+  for (const shortfall of contractShortfalls(run.config, run.repetitions, profile.series)) {
+    failures++;
+    say(`- **incomplete measurement** ${shortfall}`);
+  }
+  if (failures > 0) say();
   say("| Work | Metric | Base | Head | Change | Interval | Verdict |");
   say("| --- | --- | ---: | ---: | ---: | :---: | --- |");
   for (const series of profile.series) {
     const policy = metricPolicy(series.metric);
     const comparison = comparePaired(series.samples, { ...DEFAULT_POLICY, better: policy.better });
     everyComparison.push(comparison);
+    // A gated metric the run could not resolve is a missing answer, not a
+    // passing one: too few usable pairs means the machine, not the change,
+    // decided what this comparison saw.
+    const unresolved = policy.gated && comparison.signal === "not measured";
     const gated = policy.gated && comparison.signal === "regression";
     if (gated) gatedRegressions++;
+    if (unresolved) failures++;
     const interval = Number.isFinite(comparison.lowPercent)
       ? `${signed(comparison.lowPercent)} … ${signed(comparison.highPercent)}`
       : "—";
@@ -131,28 +159,38 @@ for (const profile of run.profiles) {
     say(
       `| ${series.unitId} | ${series.metric} | ${fixed(median(series.samples.map((s) => s.base)))} | ` +
         `${fixed(median(series.samples.map((s) => s.head)))} | ${signed(comparison.medianPercent)} | ` +
-        `${interval} | ${gated ? `**${verdict}**` : verdict} |`,
+        `${interval} | ${gated || unresolved ? `**${verdict}**` : verdict} |`,
     );
   }
 
   for (const side of ["base", "head"] as const) {
     const sample = await readSide(profile.profile, side);
-    if (sample === undefined) continue;
-    const failures = sample.observations.failures.length;
-    const anomalies = sample.observations.integrityAnomalies.length;
-    correctnessFailures += failures + anomalies;
+    if (sample === undefined) {
+      failures++;
+      say();
+      say(`- **missing sample** the ${side} side wrote no record for the ${profile.profile} profile`);
+      continue;
+    }
     say();
     say(
       `${side} idle: ${fixed(sample.startupIdle.snapshot.rssMb, 1)} MB RSS, ` +
         `${fixed(sample.startupIdle.window.cpuCores)} CPU cores — context, never gated.`,
     );
     for (const failure of sample.observations.failures) {
+      failures++;
       say(`- **${side} correctness** ${failure.case}: ${failure.errors.join("; ")}`);
     }
     for (const anomaly of sample.observations.integrityAnomalies) {
+      failures++;
       say(`- **${side} integrity** ${anomaly.message}`);
     }
-    for (const observation of sample.harnessObservations) say(`- ${side} harness: ${observation}`);
+    // A startup mode that did not match, or telemetry accounting that does not
+    // cover the work the workload says it did, means the numbers above describe
+    // something other than what this run claims to have measured.
+    for (const observation of sample.harnessObservations) {
+      failures++;
+      say(`- **${side} harness** ${observation}`);
+    }
   }
 }
 
@@ -169,16 +207,20 @@ say(
 say();
 if (gatedRegressions > 0) {
   say(`**${gatedRegressions} gated metric(s) regressed.** The interval excludes zero and the median clears the floor.`);
-} else if (correctnessFailures > 0) {
-  say(`**${correctnessFailures} correctness or accounting failure(s) recorded.**`);
-} else {
-  say("No gated metric regressed and no correctness failure was recorded.");
+}
+if (failures > 0) {
+  say(`**${failures} incomplete, incorrect, or unattributable measurement(s) recorded.**`);
+}
+if (gatedRegressions === 0 && failures === 0) {
+  say("No gated metric regressed, and every unit reported the numbers it owes.");
 }
 say();
 say(
   "A green check means this comparison found no regression large enough and consistent enough to stop the merge. " +
-    "It is not an approval of the whole performance vector: read the table.",
+    "It is not an approval of the whole performance vector, and it is not blind to nothing: against this harness's " +
+    "own measured noise it catches roughly 60% of twenty-percent regressions and 94% of fifty-percent ones, and " +
+    "sees almost nothing below ten. Read the table.",
 );
 
 console.log(lines.join("\n"));
-if (gatedRegressions > 0 || correctnessFailures > 0) process.exitCode = 1;
+if (gatedRegressions > 0 || failures > 0) process.exitCode = 1;

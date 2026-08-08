@@ -7,7 +7,13 @@ import {
   DEFAULT_REPETITIONS,
   type PairedSample,
 } from "./paired-statistics.ts";
-import { benchUnits, expectedUnitMetricNames, leadingSide, metricPolicy } from "./units.ts";
+import {
+  benchUnits,
+  contractShortfalls,
+  expectedUnitMetricNames,
+  leadingSide,
+  metricPolicy,
+} from "./units.ts";
 import { benchmarkConfigFromEnv } from "./benchmark.ts";
 
 const higher = { ...DEFAULT_POLICY, better: "higher" } as const;
@@ -166,5 +172,41 @@ describe("metric policy", () => {
     }
     expect(metricPolicy("p95 ms").gated).toBe(true);
     expect(metricPolicy("throughput/s").gated).toBe(true);
+  });
+});
+
+describe("measurement contract", () => {
+  const config = benchmarkConfigFromEnv();
+  const complete = benchUnits(config).flatMap((unit) =>
+    expectedUnitMetricNames(config, unit).map((metric) => ({
+      unitId: unit.id,
+      metric,
+      samples: Array(DEFAULT_REPETITIONS).fill({ base: 1, head: 1 }),
+    }))
+  );
+
+  test("a run that delivered everything it owes has nothing to report", () => {
+    expect(contractShortfalls(config, DEFAULT_REPETITIONS, complete)).toEqual([]);
+  });
+
+  test("a metric that quietly stopped being produced is named", () => {
+    const dropped = complete.filter((series) => series.metric !== "throughput/s");
+    const shortfalls = contractShortfalls(config, DEFAULT_REPETITIONS, dropped);
+    expect(shortfalls.length).toBeGreaterThan(0);
+    expect(shortfalls.every((line) => line.includes("never produced throughput/s"))).toBe(true);
+  });
+
+  test("a whole unit that vanished is named", () => {
+    const withoutSubscriptions = complete.filter((series) => !series.unitId.startsWith("subscription:"));
+    expect(contractShortfalls(config, DEFAULT_REPETITIONS, withoutSubscriptions).length).toBeGreaterThan(0);
+  });
+
+  test("a series that paired fewer repetitions than the run asked for is named", () => {
+    const short = complete.map((series, index) =>
+      index === 0 ? { ...series, samples: series.samples.slice(1) } : series
+    );
+    expect(contractShortfalls(config, DEFAULT_REPETITIONS, short)).toEqual([
+      `${complete[0]!.unitId} ${complete[0]!.metric} paired ${DEFAULT_REPETITIONS - 1} of ${DEFAULT_REPETITIONS} repetitions`,
+    ]);
   });
 });

@@ -84,7 +84,7 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
   const native = nativeInputsChanged(files);
-  const performance = performanceInputsChanged(files);
+  const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
   const telemetry = telemetryInputsChanged(base, head, files);
   const verifyPackages = files.some((file) =>
     file === "package.json" ||
@@ -101,6 +101,36 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
   return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
+}
+
+/** The packages whose code the benchmark workload actually executes. */
+const MEASURED_PACKAGES = Object.freeze(["core", "client", "server", "cli"]);
+
+const DEPENDENCY_FIELDS = Object.freeze([
+  "dependencies",
+  "peerDependencies",
+  "optionalDependencies",
+]);
+
+/**
+ * Whether a measured package's third-party dependencies moved. A dependency
+ * update changes the executable product without touching a single line of
+ * source, so a path list alone would report a successful no-op for it.
+ *
+ * Workspace `@ackerdb/*` entries are excluded deliberately: every release step
+ * rewrites all twelve of them in lockstep, and a version bump that ships the
+ * same code is exactly the case the benchmark must not spend a runner on.
+ */
+export function measuredDependenciesChanged(base: string, head: string): boolean {
+  const externals = (ref: string): string =>
+    JSON.stringify(MEASURED_PACKAGES.map((pkg) => {
+      const manifest = JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, unknown>;
+      return DEPENDENCY_FIELDS.map((field) => {
+        const entries = Object.entries((manifest[field] ?? {}) as Record<string, string>);
+        return entries.filter(([name]) => !name.startsWith("@ackerdb/")).sort();
+      });
+    }));
+  return externals(base) !== externals(head);
 }
 
 /**

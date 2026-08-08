@@ -181,20 +181,37 @@ native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.
 
-The `Benchmark` check gates the release, not the road to it: it runs on the
-`canary` → `main` promotion only, where it is required alongside `Release
-policy` and `Fast CI`, and only when the release changed code exercised by the
-benchmark, its executable harness, the pull-request workflow, or its path
-classifier. Every pull request into `canary` skips it; version bumps, docs,
-tests, and unrelated packages must not spend benchmark time. Measuring on the
-promotion means the comparison is the whole release delta rather than one pull
-request's slice — the only measurement that sees what the accumulated merges
-did together. It never runs another vendor and never runs on
-the developer machine. Telemetry is disabled unless telemetry-related source
-changed; only then are enabled, exporter, and disabled profiles measured. The
-check has no thresholds, score, or automated performance acceptance. Pedro and
-an agent interpret the complete vector and anomalies by reasoning before merge.
-Historical files in `bench/results/` are not current release evidence.
+The `Benchmark` check gates every pull request that touches a measured input,
+on the way into `canary` and again on the `canary` → `main` promotion, where it
+is required alongside `Release policy` and `Fast CI`. A regression is then
+attributable to one pull request first and to the release second. It ran on the
+promotion alone until a branch costing eighty-six percent of query throughput
+reached a clean review behind a two-second green tick; the release delta is a
+real measurement, but it arrives when attributing it costs the whole cycle.
+Version bumps, docs, tests, and unrelated packages still must not spend
+benchmark time, and it never runs another vendor.
+
+Both commits are measured live and interleaved, one unit of work at a time, so
+drift lands on both sides instead of on whichever ran second. Each metric is
+judged on the median of its paired ratios against a distribution-free interval
+built from the repetitions themselves — a noise band measured from the run, not
+a threshold carried in. A gated metric fails the check only when that interval
+keeps the whole median on the worse side of neutral **and** the median clears a
+twelve-percent floor; anything else reports no signal, which is an answer.
+Correctness, accounting, and incomplete-measurement failures fail outright.
+`p99` and connect-readiness `p95` are reported and never gated.
+
+This is detection, not acceptance. Measured against its own noise the gate
+catches roughly sixty percent of twenty-percent regressions and almost nothing
+below ten, so a green check is not a performance verdict: Pedro and an agent
+still interpret the complete vector and anomalies by reasoning before merge.
+Telemetry is disabled unless telemetry-related source changed; only then are
+enabled, exporter, and disabled profiles measured, and that widening is
+load-bearing — the sidecar regression above was invisible with telemetry off.
+A run declares the host it executed on rather than refusing to execute off the
+runner; a paired interleaved comparison is meaningful wherever it runs, but a
+number without a machine beside it is not. Historical files in `bench/results/`
+are not current release evidence.
 
 Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
 Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is

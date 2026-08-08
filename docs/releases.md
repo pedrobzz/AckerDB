@@ -165,6 +165,44 @@ emits a number teaches everyone to re-run until the number is agreeable; one
 that can say the run could not tell the two commits apart is worth more than one
 that guesses.
 
+### What it can and cannot see
+
+Injecting a known uniform effect into the harness's own recorded noise gives the
+gate's power directly. Across two hundred and sixteen gated series:
+
+| Regression | Detected |
+| --- | ---: |
+| 10% | 6% |
+| 15% | 41% |
+| 20% | 60% |
+| 25% | 73% |
+| 35% | 88% |
+| 50% | 94% |
+
+Relabelling which side is base within each repetition — a valid permutation
+under the null — puts the false-failure rate at 3.6% of runs. Loosening the
+interval to tolerate one sign-flipped repetition would raise detection at 20%
+from 60% to 90%, and the false-failure rate from 3.6% to 18.8%: one run in five
+failing on identical code is the fastest way to teach everyone to press rerun,
+so the tighter interval stands. `BENCH_REPETITIONS` buys power at proportional
+wall-clock cost and is the knob to turn when the runner budget allows.
+
+The check is therefore a detector for large regressions, not an acceptance test.
+It is blind below roughly ten percent and unreliable in the teens, which is what
+the reviewer's reading of the full vector is still for.
+
+### What it cannot defend against
+
+A pull request supplies the harness that judges it — the workload, the metric
+policy, the floor, the report, and the classifier that decides whether the
+benchmark runs at all. Running the judge from the base commit does not close
+this either, because the workflow itself comes from the head. The gate's answer
+is branch protection and review: `bench/**`, `scripts/ci/**`, and
+`.github/workflows/**` are Pedro's to approve. What the harness does do is print
+the rule it applied — interval confidence, floor, and every ungated metric — into
+the step summary beside the verdict, so the gate can be weakened but not
+quietly.
+
 Two things are deliberately reported and never gated. `p99` is the noisiest
 statistic in the set — one scheduling stall in a few thousand operations moves
 it — and connect-readiness `p95` carries a scheduling tail that belongs to the

@@ -128,6 +128,33 @@ export function capacityMetricName(slots: number, metric: string): string {
   return `${slots} writers/${metric}`;
 }
 
+/**
+ * What the head commit owes the comparison but did not deliver. Silence is not
+ * agreement: a unit that stops emitting a metric, or that pairs fewer
+ * repetitions than the run asked for, shrinks the comparison until there is
+ * nothing left to regress. Every absence is named so it can fail the check
+ * instead of quietly passing it.
+ */
+export function contractShortfalls(
+  config: BenchmarkConfig,
+  repetitions: number,
+  series: readonly { readonly unitId: string; readonly metric: string; readonly samples: readonly unknown[] }[],
+): string[] {
+  const present = new Map(series.map((entry) => [`${entry.unitId} ${entry.metric}`, entry]));
+  const shortfalls: string[] = [];
+  for (const unit of benchUnits(config)) {
+    for (const metric of expectedUnitMetricNames(config, unit)) {
+      const entry = present.get(`${unit.id} ${metric}`);
+      if (entry === undefined) {
+        shortfalls.push(`${unit.id} never produced ${metric}`);
+      } else if (entry.samples.length !== repetitions) {
+        shortfalls.push(`${unit.id} ${metric} paired ${entry.samples.length} of ${repetitions} repetitions`);
+      }
+    }
+  }
+  return shortfalls;
+}
+
 export function expectedUnitMetricNames(config: BenchmarkConfig, unit: BenchUnit): string[] {
   if (unit.kind === "operation") return ["throughput/s", "p50 ms", "p95 ms", "p99 ms"];
   if (unit.kind === "connection") {
