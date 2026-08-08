@@ -1,0 +1,137 @@
+# Studio
+
+Studio is the opt-in observability and administration client for one AckerDB
+application. It runs outside the application's process, authenticates with an
+Admin Credential rather than as an application user, and consumes only the
+[Admin API](admin-api.md).
+
+It is a client, not a component of the server. Nothing about it is compiled into
+your application, and an application that never installs it is unchanged in
+every way.
+
+## Installing and running it
+
+```sh
+bun add -d @ackerdb/studio
+acker studio            # or: acker studio ./my-app --url https://app.example.com --port 4680
+```
+
+Installing the package **is** the opt-in. The `acker` CLI declares no dependency
+on it: `acker studio` resolves `@ackerdb/studio` from the application's own
+`node_modules` at run time and, when it is absent, prints the install hint and
+stops.
+
+The command prints a URL and never opens a browser — it is as likely to run over
+SSH as on a laptop:
+
+```
+[ackerdb] Studio serving at http://127.0.0.1:4680/_studio/ — proxying to http://127.0.0.1:3211
+[ackerdb] copy the URL into a browser; Ctrl+C stops Studio
+```
+
+| argument | what it does |
+| --- | --- |
+| `[app-dir]` | Where `.ackerdb.config.json` is read from. Defaults to `.` |
+| `--url <origin>` | Proxy to this origin instead of the configured listener. Must be a bare `http`/`https` origin |
+| `--port <n>` | Studio's own port. Defaults to `4680` |
+
+Without `--url`, the target is the application's configured `hostname` and
+`port`. A wildcard bind (`0.0.0.0`, `::`) is an interface list rather than an
+address to dial, so it becomes loopback.
+
+## One origin
+
+The `acker studio` process serves the Studio bundle **and** proxies HTTP,
+WebSocket, and SSE to the application. The browser only ever talks to the origin
+it loaded from, which means:
+
+- **No CORS.** The application needs no configuration to be viewed in Studio.
+- **No URL field, ever.** The connect screen asks for a credential and nothing
+  else. A field naming a server would put an Admin Credential one typo away from
+  an origin nobody chose.
+- **One port to expose.** Reaching Studio from elsewhere is one port, and
+  exposing it — reverse proxy, TLS, network policy — is deliberately your
+  decision, not a default.
+
+Because `--url` reaches a deployed application over the network, nobody ever has
+to run a UI process inside a production machine.
+
+### What belongs to which side
+
+Studio serves the bundle under one path prefix, `/_studio/`, and proxies
+everything else. The prefix carries the reserved `_` marker, the character an
+application may never begin a name with, so no application can collide with it
+by declaring an API path or an MCP path.
+
+The rule runs the other way too, and deliberately: **a path neither side
+recognizes goes to the application.** An application group named `logs` or
+`database` therefore keeps answering through Studio's origin, and a path nobody
+serves comes back as the application's own 404. The alternative — treating
+anything HTML-ish as a Studio route — hides a shadowed application route behind
+a plausible-looking page nobody notices.
+
+The single exception is a browser landing on the bare origin: a `GET` of `/`
+redirects into `/_studio/`. It is restricted to navigations because `/` is a
+legal MCP endpoint path and MCP speaks `POST`.
+
+### While the application is down
+
+Studio serves anyway. The shell loads, the connect screen shows *application
+unreachable*, proxied HTTP answers `502` and proxied WebSockets close with
+`1011`, and the client reconnects on its own when the application comes up.
+There is no boot-order requirement between the two processes, and an operator
+who typed the wrong port reads a diagnosis instead of finding a dead port.
+
+## Signing in
+
+Studio authenticates with an **Admin Credential** — an identity credential whose
+grant covers the framework's reserved vocabulary. Nothing else opens the Admin
+API: the most generous application grant, a bare `*`, deliberately excludes
+every `_admin:` scope. See [Scopes and identity credentials](scopes.md).
+
+The credential is held in `sessionStorage`, in the tab you typed it into. A
+reload does not ask again; closing the tab forgets it. It is never written to
+`localStorage`, to a cookie, or into a URL.
+
+It reaches the client as a **credential source** rather than a fixed credential,
+which is what makes signing in and later rotations reconnect nothing: a fixed
+credential would make the React provider close its client and construct a new
+one on every change, dropping every live subscription.
+
+The connect screen has five honest states:
+
+| state | what it means |
+| --- | --- |
+| connecting | the first connect attempt has not settled |
+| application unreachable | the application is not answering; no credential can be checked |
+| sign in | the application answers and Studio holds no credential |
+| credential refused | the credential Studio holds does not open the Admin API |
+| connected | signed in, showing the application `admin.system.info` named |
+
+The transport is read before anything about credentials, because a stopped
+application makes every statement about a credential unknowable. And the state
+is decided by an authenticated probe against `admin.system.info` rather than by
+the handshake alone: a credential can authenticate perfectly and still hold no
+`_admin:` grant, and reaching a real admin function is the only proof Studio is
+usable.
+
+## What the application sees
+
+Every request arrives from the `acker studio` process, so the application
+attributes it to that hop's address rather than to the operator's browser.
+Studio forwards no client address and sets no forwarding header — the server
+honours `X-Forwarded-For` only behind a configured `trustedProxy`, which
+`.ackerdb.config.json` has no key for. Studio's traffic is one authenticated
+administrative identity on a trusted hop, so loopback attribution is the honest
+description of what actually made the request.
+
+## Building it inside the monorepo
+
+`packages/studio/dist/` is git-ignored and produced at release time; see
+[Releases](releases.md#the-studio-build-stage). Working on Studio locally:
+
+```sh
+cd packages/studio
+bun run build   # produce dist/, which `acker studio` serves
+bun run dev     # the Vite dev server, for developing Studio itself
+```

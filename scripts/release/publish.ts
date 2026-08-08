@@ -35,6 +35,7 @@ import {
 } from "../../packages/realtime/native/webrtc/evidence.ts";
 import { WEBRTC_TARGETS } from "../../packages/realtime/native/webrtc/provenance.ts";
 import { ensureNativeArtifacts } from "./native-artifacts.ts";
+import { buildStudioDist } from "./studio-dist.ts";
 import {
   assertStableVersion,
   nextBetaVersion,
@@ -308,6 +309,11 @@ try {
     await Bun.write(path, `${JSON.stringify({ ...manifest, version, loader }, null, 2)}\n`);
   }
   assertWebRtcDistribution();
+  // Studio's dist/ is git-ignored and built at release time. `release.yml` runs
+  // the build stage before this script and proves it reproducible; building
+  // again here is what makes the local beta path and a resumed dispatch pack a
+  // bundle from this tree rather than whatever happened to be on disk.
+  buildStudioDist();
 
   const tarballs = new Map<string, string>();
   for (const pkg of PACKAGES) {

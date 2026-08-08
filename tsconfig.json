@@ -26,5 +26,5 @@
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
-  "exclude": ["packages/client-react"]
+  "exclude": ["packages/client-react", "packages/studio"]
 }

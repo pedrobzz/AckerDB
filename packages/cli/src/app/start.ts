@@ -3,7 +3,6 @@
  * assembled server (engine + reconcile + runtime + transport).
  */
 import { mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -47,6 +46,7 @@ import {
   importJobModules,
   importServiceModules,
 } from "./manifest.ts";
+import { resolveAppPackage } from "./optional-package.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
@@ -123,15 +123,9 @@ async function importRealtimeRuntime(
   if (configuredPath !== undefined) {
     return importConfiguredRealtimeRuntime(configuredPath);
   }
-  const require = createRequire(join(appDir, "package.json"));
-  let entry: string;
-  try {
-    entry = require.resolve("@ackerdb/realtime");
-  } catch (error) {
-    throw new Error(
-      "this app declares realtime handlers but @ackerdb/realtime is not installed",
-      { cause: error },
-    );
+  const entry = resolveAppPackage(appDir, "@ackerdb/realtime");
+  if (entry === null) {
+    throw new Error("this app declares realtime handlers but @ackerdb/realtime is not installed");
   }
   const module = await import(pathToFileURL(entry).href) as {
     createRealtimeRuntime?: unknown;

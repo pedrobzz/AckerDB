@@ -25,7 +25,7 @@ hotfix/*     ──urgent pull request──────────────
   every merge still publishes a distinct `X.Y.Z-canary.N`. Declare a version
   step only when the work releases a new source version: run
   `bun run release:prepare <level>` after the branch is based on the current
-  target. The command updates all twelve package manifests, their exact
+  target. The command updates all thirteen package manifests, their exact
   workspace interdependencies, the generated native loader, and `bun.lock`,
   then creates the release-intent commit.
 - A `hotfix/*` pull request into `main` always declares exactly one `major`,
@@ -132,10 +132,10 @@ evidence.
 
 ## Public npm delivery
 
-All twelve packages move in lockstep:
+All thirteen packages move in lockstep:
 
-- seven user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
-  `client`, `client-react`, and `cli`;
+- eight user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
+  `client`, `client-react`, `cli`, and `studio`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
 Every merge into `canary` prepares the current source version as
@@ -154,6 +154,30 @@ public package version is skipped only when its tarball is byte-identical; a
 different existing tarball is a hard collision. Public delivery never reads
 from Verdaccio. Release tags are optional manual bookkeeping and are not
 created by a write-capable CI job.
+
+### The Studio build stage
+
+`@ackerdb/studio` is the only package that publishes a built artifact: its
+`dist/` bundle is git-ignored and produced at release time. Every other package
+ships TypeScript source, so packing has never needed a build.
+
+It is an explicit, ordered stage in `release.yml` — `bun
+scripts/release/studio-dist.ts`, between the frozen install and `publish.ts` —
+and never a `prepack` or `prepublishOnly` hook. The pipeline disables lifecycle
+scripts in three places on purpose (`bunfig.toml`'s `ignoreScripts`, the
+install's `--ignore-scripts`, and `bun pm pack --ignore-scripts`), so a hook
+would not fire, and re-enabling one for a single package would trade away the
+supply-chain posture those flags exist to hold.
+
+**The stage proves the bundle packs reproducibly, not merely that it builds.**
+It builds and packs twice and compares tarball digests, because byte-identity
+is what decides whether an existing version is skipped or collides: a bundle
+that changed for no reason would make a resumed or re-dispatched publication
+unrecoverable. Every path that packs Studio — the npm publisher, the local beta
+publisher, and the packed-package gate — builds the bundle first, so a tarball
+always carries a bundle built from the tree it was packed from. The gate then
+asserts the packed `dist/index.html` shipped and that every asset it references
+shipped beside it.
 
 The workflow's manual dispatch exists only to bootstrap or resume delivery from
 the current protected `canary` or `main` commit. It crosses the same environment,
@@ -174,7 +198,8 @@ credential or secret. It restores no release cache and installs with lifecycle
 scripts disabled. The npm account has no access tokens. Canary publication is
 automatic after merge; stable publication requires the separate approval above.
 
-All twelve package records now exist with that same trusted publisher.
+Every published package record exists with that same trusted publisher; a
+newly added package gains its record on its first protected publication.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported
 local public-publishing command. The local bootstrap session was removed, CI
 has no npm token or secret, and every future public release comes from the
@@ -204,7 +229,7 @@ bun run publish:beta       # publish the next local beta
 bun run publish:beta:demo  # publish it, repin matching demo packages, reinstall
 ```
 
-The publisher accepts a dirty topic branch, assembles the exact twelve-package
+The publisher accepts a dirty topic branch, assembles the exact thirteen-package
 set, chooses the next registry-backed beta number, and restores every release
 manifest and generated native evidence byte-for-byte even after a failed
 publication. It can reuse a matching native artifact set from Verdaccio or

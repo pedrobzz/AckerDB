@@ -9,12 +9,12 @@
     "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/cache/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun test ./bench && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
+    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/cache/test ./packages/client/test ./packages/cli/test ./packages/studio/test && bun test ./packages/client-react/test && bun test ./bench && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
     "test:mcp:conformance": "bun scripts/mcp-conformance.ts",
     "test:mcp:hosts": "bun scripts/mcp-host-acceptance.ts",
     "test:packages": "bun scripts/verify-packages.ts",
     "test:packages:webrtc": "bun scripts/verify-packages.ts --require-webrtc",
-    "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p packages/studio/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
     "typecheck:bench": "bun packages/cli/src/commands/main.ts codegen bench/ackerdb-app && bunx tsc -p bench/tsconfig.json --noEmit",
     "typecheck:tooling": "bunx tsc -p scripts/tsconfig.json --noEmit",
     "prototype:telemetry-fast": "bun bench/hot-path-microbenchmark.ts procedure enabled",

@@ -47,7 +47,10 @@ export function releaseVersionAt(ref: string): string {
     [...manifests.values()].map((manifest) => manifest.version as unknown),
   );
   if (versions.size !== 1 || typeof [...versions][0] !== "string") {
-    throw new Error(`all twelve packages at ${ref} must share one version`);
+    // The count is read off the package set rather than spelled, so adding a
+    // lockstep package cannot leave this message asserting a number that is
+    // no longer true — it is the one an operator reads when the check fails.
+    throw new Error(`all ${PACKAGES.length} packages at ${ref} must share one version`);
   }
   const version = [...versions][0] as string;
   parseVersion(version);
