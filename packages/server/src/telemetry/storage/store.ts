@@ -32,11 +32,13 @@
  *
  * **Failure is a property of the store too.** One kind's write failing is an
  * accounted drop; only a shared connection that cannot answer a probe makes the
- * runtime unhealthy. That is decided by evidence — the probe — rather than by
- * matching driver error strings.
+ * runtime unhealthy. The probe is a committed WRITE, not a read: a full disk
+ * leaves SQLite perfectly readable, so a read probe would classify disk
+ * exhaustion — the failure this rule exists for — as one row's bad luck. The
+ * probe deliberately crosses the boundary that failed.
  */
-import { Database } from "bun:sqlite";
-import { rmSync } from "node:fs";
+import { Database, type Statement } from "bun:sqlite";
+import { rmSync, statSync } from "node:fs";
 import {
   resolveTelemetryRetention,
   TELEMETRY_RETENTION_CLASSES,
@@ -85,12 +87,6 @@ export interface TelemetryStoreLimits {
    * passes evict back under.
    */
   readonly maxStoredBytes: number;
-  /**
-   * Maintenance passes between two size samples while the store is comfortably
-   * under budget. Over budget, every pass samples — the loop must terminate on
-   * measurement, not on hope.
-   */
-  readonly bytesSampleInterval: number;
 }
 
 export interface TelemetryStoreOptions {
@@ -105,8 +101,14 @@ export interface TelemetryStoreSnapshot {
   readonly path: string;
   readonly retention: TelemetryRetentionTtls;
   readonly maxStoredBytes: number;
-  /** The sidecar database's logical size, as of the last sample. */
+  /** The sidecar database's logical size, as of the last maintenance pass. */
   readonly storedBytes: number;
+  /**
+   * The write-ahead log beside it. Reported rather than budgeted: before a
+   * checkpoint its frames and the database's pages are the same data, so adding
+   * the two would double-count. Total sidecar footprint is these two summed.
+   */
+  readonly walBytes: number;
   readonly overBudget: boolean;
   readonly expiredRecords: Readonly<Record<TelemetryRetentionClass, number>>;
   readonly evictedRecords: Readonly<Record<TelemetryRetentionClass, number>>;
@@ -118,7 +120,6 @@ export interface TelemetryStoreSnapshot {
 const DEFAULT_LIMITS: TelemetryStoreLimits = Object.freeze({
   maxExpiredRowsPerPass: 256,
   maxStoredBytes: 512 * 1_024 * 1_024,
-  bytesSampleInterval: 64,
 });
 
 /**
@@ -144,6 +145,15 @@ const WAL_BYTES_LIMIT = 32 * 1_024 * 1_024;
 /** A cutoff every stored row is older than: eviction is expiry with no clock. */
 const EVICT_EVERYTHING_CUTOFF = Number.MAX_SAFE_INTEGER;
 
+/** The write-ahead log's size, for the snapshot; a missing file is zero bytes. */
+function fileBytes(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
 /** Guard for the storage substrate's limit and budget options. */
 export function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -166,8 +176,9 @@ export class TelemetryStore {
   private readonly expiredRecords: Record<TelemetryRetentionClass, number>;
   private readonly evictedRecords: Record<TelemetryRetentionClass, number>;
   private readonly failureListeners = new Set<(error: unknown) => void>();
+  private readonly sampleBytes: Statement;
+  private readonly probeWrite: Statement;
   private cursor = 0;
-  private passes = 0;
   private storedBytes = 0;
   private overBudgetPasses = 0;
   private containedFailures = 0;
@@ -188,10 +199,6 @@ export class TelemetryStore {
         options.limits?.maxStoredBytes ?? DEFAULT_LIMITS.maxStoredBytes,
         "telemetry store maxStoredBytes",
       ),
-      bytesSampleInterval: positiveInteger(
-        options.limits?.bytesSampleInterval ?? DEFAULT_LIMITS.bytesSampleInterval,
-        "telemetry store bytesSampleInterval",
-      ),
     });
     this.now = options.now ?? Date.now;
     const expired = {} as Record<TelemetryRetentionClass, number>;
@@ -203,6 +210,14 @@ export class TelemetryStore {
     this.expiredRecords = expired;
     this.evictedRecords = evicted;
     this.database = openSidecar(this.path, this.limits.maxStoredBytes);
+    // Prepared once: a maintenance pass samples on every batch, so re-preparing
+    // the pragma read would cost more than the read it performs.
+    this.sampleBytes = this.database.query(
+      "SELECT (SELECT * FROM pragma_page_count()) * (SELECT * FROM pragma_page_size()) AS bytes",
+    );
+    this.probeWrite = this.database.query(
+      "UPDATE _ackerdb_telemetry_health SET probes = probes + 1 WHERE singleton = 1",
+    );
     this.sampleStoredBytes();
   }
 
@@ -246,13 +261,11 @@ export class TelemetryStore {
       removed += deleted;
       this.expiredRecords[set.retention] += deleted;
     }
-    this.passes++;
-    // Sampling is a header read plus one stat; spending it every pass would be
-    // pure overhead while the store sits comfortably under budget, and skipping
-    // it while over budget would let the eviction loop run on a stale number.
-    if (this.overBudgetPasses > 0 || this.passes % this.limits.bytesSampleInterval === 0) {
-      this.sampleStoredBytes();
-    }
+    // Every pass samples. The read is the database header SQLite already holds
+    // in memory through a statement prepared once, so sampling on a schedule
+    // would trade a negligible cost for a window in which the store is over
+    // budget, reports that it is not, and — if writes then stop — stays there.
+    this.sampleStoredBytes();
     if (this.storedBytes <= this.limits.maxStoredBytes) {
       this.overBudgetPasses = 0;
       return removed;
@@ -284,9 +297,7 @@ export class TelemetryStore {
   }
 
   private sampleStoredBytes(): void {
-    const page = this.database.query(
-      "SELECT (SELECT * FROM pragma_page_count()) * (SELECT * FROM pragma_page_size()) AS bytes",
-    ).get() as { readonly bytes: bigint | number };
+    const page = this.sampleBytes.get() as { readonly bytes: bigint | number };
     this.storedBytes = Number(page.bytes);
   }
 
@@ -299,7 +310,10 @@ export class TelemetryStore {
    *
    * Classification is by evidence rather than by matching driver error text: a
    * constraint violation and a full disk arrive as the same kind of exception,
-   * and only one of them means the file is gone. One throw observed by two
+   * and only one of them means the file is gone. The probe therefore commits a
+   * write — a full disk answers reads perfectly well, so a read probe would
+   * call disk exhaustion a contained row failure and keep serving an
+   * application whose telemetry has silently stopped. One throw observed by two
    * frames is one event, so the same error object is judged once.
    */
   observeFailure(error: unknown): boolean {
@@ -308,7 +322,7 @@ export class TelemetryStore {
     this.lastObserved = error;
     if (!repeat) this.containedFailures++;
     try {
-      this.database.query("SELECT 1").get();
+      this.probeWrite.run();
       return true;
     } catch (probeError) {
       if (!repeat) this.containedFailures--;
@@ -347,6 +361,7 @@ export class TelemetryStore {
       retention: this.retention,
       maxStoredBytes: this.limits.maxStoredBytes,
       storedBytes: this.storedBytes,
+      walBytes: this.path === ":memory:" ? 0 : fileBytes(`${this.path}-wal`),
       overBudget: this.storedBytes > this.limits.maxStoredBytes,
       expiredRecords: Object.freeze({ ...this.expiredRecords }),
       evictedRecords: Object.freeze({ ...this.evictedRecords }),
@@ -389,6 +404,17 @@ function openSidecar(path: string, maxStoredBytes: number): Database {
     `PRAGMA journal_size_limit = ${Math.min(WAL_BYTES_LIMIT, Math.max(1, maxStoredBytes))}`,
   );
   database.exec(`PRAGMA user_version = ${TELEMETRY_STORE_SCHEMA_VERSION}`);
+  // The store's own row, so the failure probe has a write to commit that
+  // belongs to no kind and disturbs no kind's accounting.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_health (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      probes INTEGER NOT NULL
+    )
+  `);
+  database.query(
+    "INSERT OR IGNORE INTO _ackerdb_telemetry_health (singleton, probes) VALUES (1, 0)",
+  ).run();
   return database;
 }
 

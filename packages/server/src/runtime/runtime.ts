@@ -309,6 +309,17 @@ export class Runtime implements RuntimePort {
         assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
         admit: (session, fairnessKey, sessionOrder) =>
           this.control.admit(session, fairnessKey, sessionOrder),
+        // The one funnel every unhandled failure already passes through, so
+        // error groups see exactly what the runtime calls a failure and never
+        // a second opinion about it.
+        captureError: (error, functionName, traceId) => {
+          this.telemetryErrors.ingest({
+            error,
+            timestampMs: this.now(),
+            ...(functionName === undefined ? {} : { functionAddress: functionName }),
+            ...(traceId === undefined ? {} : { traceId }),
+          });
+        },
       });
       const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
       this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal

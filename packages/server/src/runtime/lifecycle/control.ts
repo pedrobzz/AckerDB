@@ -491,9 +491,6 @@ export class RuntimeControl {
         errors.push(error);
       }
     };
-    // Ordinary concurrent records bypass cleanly while the queues flush:
-    // never accepted by Telemetry yet dropped by a not-ready store.
-    await attempt(() => this.options.releaseDurableSink());
     // The exporter and in-memory telemetry flushes guard their own post-stop
     // store writes, so Promise-race abandonment at the deadline is safe for
     // them. The journal and span stores are different: their drains are
@@ -532,6 +529,13 @@ export class RuntimeControl {
         { resource: "operation" },
       ));
     }
+    // The durable sink is released only now, after the stores have answered.
+    // Releasing it first would be quieter but dishonest: the deadline can win
+    // while operations are still running, and a span recorded in that window
+    // would then reach no sink at all and appear in no count. Kept attached, it
+    // reaches a store that is no longer ready, which refuses it and counts the
+    // drop — the loss is the same, the record of it is not.
+    await attempt(() => this.options.releaseDurableSink());
     // FREEZE: synchronous from here through the terminal append. Monotonic
     // recheck first — a blocked event loop can deliver every settlement
     // before the overdue deadline timer, and a finalization past its

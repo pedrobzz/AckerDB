@@ -132,7 +132,7 @@ describe("TelemetryStore", () => {
     const now = 1_000 * 86_400_000;
     const store = open({
       path,
-      limits: { maxStoredBytes: 1_024 * 1_024, bytesSampleInterval: 1 },
+      limits: { maxStoredBytes: 1_024 * 1_024 },
       now: () => now,
     });
     const short = rows(store, "probe_short", "debug");
@@ -169,9 +169,11 @@ describe("TelemetryStore", () => {
     stale.close(false);
 
     const store = open({ path });
+    // Only the store's own health row survives a discard; every kind's table is
+    // recreated by that kind when it registers.
     expect(store.database.query(
-      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'",
-    ).get()).toEqual({ n: 0n });
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).all()).toEqual([{ name: "_ackerdb_telemetry_health" }]);
     expect(store.database.query("SELECT * FROM pragma_user_version() AS v").get())
       .toEqual({ user_version: BigInt(TELEMETRY_STORE_SCHEMA_VERSION) });
   });
@@ -186,6 +188,18 @@ describe("TelemetryStore", () => {
     const second = open({ path });
     expect(second.database.query("SELECT COUNT(*) AS n FROM probe_rows").get())
       .toEqual({ n: 3n });
+  });
+
+  test("probes the write boundary, not merely a readable connection", () => {
+    const store = open({ path: sidecarPath() });
+    const before = store.database.query(
+      "SELECT probes FROM _ackerdb_telemetry_health WHERE singleton = 1",
+    ).get() as { readonly probes: bigint };
+    expect(store.observeFailure(new Error("one row"))).toBe(true);
+    // A full disk answers reads perfectly well, so the probe has to commit.
+    expect(store.database.query(
+      "SELECT probes FROM _ackerdb_telemetry_health WHERE singleton = 1",
+    ).get()).toEqual({ probes: before.probes + 1n });
   });
 
   test("contains a failure the connection survives and fails on one it does not", () => {

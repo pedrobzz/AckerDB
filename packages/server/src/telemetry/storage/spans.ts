@@ -1,7 +1,13 @@
 /**
- * The durable home of every span. No sampling: the trace an operator is
- * looking for is always there, which is the product decision #194 made in
- * exchange for the materialization cost the recording path now always pays.
+ * The stored home of every span. No sampling: nothing decides which traces are
+ * worth keeping, so the trace an operator is looking for is there. That is the
+ * product decision #194 made, in exchange for a cost the recording path pays on
+ * every operation whether or not anyone is reading.
+ *
+ * It is bounded best-effort capture, not a synchronous durability guarantee, on
+ * exactly the terms ADR-0017 already sets for logs: the queue is finite and
+ * drops observably when it saturates, a crash may lose the queued tail, and no
+ * operation ever waits for the write.
  *
  * Spans queue off the recording hot path and land in bounded batches that also
  * write-maintain the per-trace summary and the hourly

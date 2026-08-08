@@ -577,13 +577,29 @@ kind's snapshot, the sidecar's `containedFailures` counter advances, and the
 application keeps serving. Only a connection that cannot answer makes the
 runtime unhealthy and drains it — the amended rule in ADR-0017.
 
-**Spans are durable and unsampled.** Every span the runtime records is written,
-independent of the in-memory retention decision that governs the local sink and
-exporters, so the trace you are looking for is always there. That is not free:
-on the repository's hot-path microbenchmark, durable span capture cost roughly
-50–110 µs of CPU per operation and cut throughput on a near-empty procedure by
-about half. Turning telemetry off with `admin.telemetry.enabled: false` removes
-it entirely.
+**Spans are stored unsampled.** Every span the runtime records is queued for
+the sidecar, independent of the in-memory retention decision that governs the
+local sink and exporters — there is no sampling rule deciding which traces are
+worth keeping, so the trace you are looking for is there. Persistence is
+asynchronous on exactly the terms ADR-0017 already states for logs: a bounded
+queue that drops observably when it saturates, and a process crash that may
+lose the queued tail. Drops are counted in `RuntimeStatus.telemetrySpans`. This
+is bounded best-effort capture with no sampling, not a synchronous durability
+guarantee, and no operation ever waits for it.
+
+That is not free. On the repository's hot-path microbenchmark, durable span
+capture cost roughly 50–110 µs of CPU per operation and cut throughput on a
+near-empty procedure by about half. `admin.telemetry.enabled: false` removes it
+entirely.
+
+**Error groups are bounded by the application's distinct failure sites.** They
+never expire, so they are the one kind eviction cannot spend. That is safe
+because a fingerprint is the error's name plus its in-app stack frames, with
+volatile values in the fallback message parameterized away — so distinct groups
+count throw sites in the codebase, not requests. Occurrences, which do scale
+with traffic, expire on the `error` clock. An application that manufactures
+unbounded distinct failure sites would leave the sidecar unable to converge on
+its budget, which stays visible as a persistent `overBudget: true`.
 
 **The file is disposable and never migrated.** It is stamped with the shape the
 running version writes; a sidecar stamped with any other is deleted and

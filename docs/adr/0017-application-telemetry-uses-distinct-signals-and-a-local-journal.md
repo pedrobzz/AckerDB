@@ -96,13 +96,18 @@ arrive as the same kind of exception and only one of them means the file is
 gone. Every kind's drops stay observable in its own snapshot, and the sidecar's
 contained-failure count stays observable in its own.
 
-**Spans are durable and unsampled.** Every span the runtime records is written,
-independent of the in-memory retention decision that governs what an exporter
-and a local sink see — the trace an operator is looking for is always there.
-That durability costs measurable work on the recording path for every operation,
-whether or not anyone is watching, and this ADR records the trade rather than
-hiding it: the cost is stated in the pull request that introduced it and the
-decision to keep paying it is revisited on that evidence.
+**Spans are stored unsampled.** Every span the runtime records is queued for
+the sidecar, independent of the in-memory retention decision that governs what
+an exporter and a local sink see — no rule decides which traces are worth
+keeping, so the trace an operator is looking for is there. Persistence is
+asynchronous on the same terms this ADR already sets for logs: a bounded queue
+that drops observably when it saturates, a crash that may lose the queued tail,
+and no operation ever waiting for the write. That is bounded best-effort capture
+with no sampling, not a synchronous durability guarantee, and the two must not
+be confused. The capture costs measurable work on the recording path for every
+operation, whether or not anyone is watching; this ADR records the trade rather
+than hiding it, and the decision to keep paying it is revisited on the
+measurement stated in the pull request that introduced it.
 
 **The sidecar is disposable, so it is never migrated.** It is stamped with the
 shape this version writes; a file stamped with any other is deleted and

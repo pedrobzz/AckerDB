@@ -820,6 +820,49 @@ describe("Runtime telemetry acceptance", () => {
     expect(() => injected.attachDurableSink({})).not.toThrow();
   });
 
+  test("groups an unhandled failure and keeps its occurrence", async () => {
+    const app = harness({ localSink: false });
+    const session = await app.openSession("error-groups");
+
+    await expect(app.mutation(
+      session.context,
+      720_000_080,
+      "items.fail",
+      { room: 11n, body: "grouped" },
+    )).rejects.toThrow(PRIVATE_FAILURE);
+
+    expect(app.runtime.telemetryErrors.snapshot().ingestedErrors).toBeGreaterThan(0);
+    const groups = app.runtime.telemetryStore.database.query(`
+      SELECT times_seen AS timesSeen, status FROM _ackerdb_telemetry_error_groups
+    `).all() as { readonly timesSeen: bigint; readonly status: string }[];
+    expect(groups.length).toBeGreaterThan(0);
+    expect(groups.every((row) => row.status === "unresolved")).toBe(true);
+    const occurrences = app.runtime.telemetryStore.database.query(`
+      SELECT function_address AS functionAddress FROM _ackerdb_telemetry_error_occurrences
+    `).all() as { readonly functionAddress: string | null }[];
+    expect(occurrences.length).toBeGreaterThan(0);
+  });
+
+  test("counts a span recorded after the stores stopped instead of losing it silently", async () => {
+    const app = harness({ localSink: false });
+    const spans = app.runtime.telemetrySpans;
+    await app.runtime.drain(Date.now() + 5_000);
+    const dropped = spans.snapshot().droppedRecords;
+
+    // The sink is released once the stores answer, so a record arriving in the
+    // drain window meets a store that refuses it and counts it.
+    expect(spans.append({
+      schemaVersion: 1,
+      kind: "span",
+      timestampMs: Date.now(),
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    } as TelemetrySpanRecord)).toBe(false);
+    expect(spans.snapshot().droppedRecords).toBe(dropped + 1);
+  });
+
   test("counts one kind's rejected write as a drop and keeps serving", async () => {
     const app = harness(false);
     const duplicate = Object.freeze({
