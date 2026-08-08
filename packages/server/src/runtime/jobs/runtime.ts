@@ -718,12 +718,18 @@ export class RuntimeJobs {
     run: JobRunRow,
     definition: AnyJob,
   ): Promise<Notification> {
-    const args = decode(job.argsJson);
     const savepoint = surface.savepoint();
     let failure: { error: unknown } | null = null;
     let value: unknown;
     let outputJson = "";
     try {
+      // Decoding belongs inside the caught boundary, with the savepoint already
+      // open. Stored arguments that no longer decode are a failed run like any
+      // other failure; decoding before the boundary would instead throw out of
+      // the claim transaction, roll the claim back, and leave the Job due — to
+      // be claimed and thrown out of again, forever, with nothing recorded. A
+      // job that cannot run must say so once, durably, not spin.
+      const args = decode(job.argsJson);
       value = await surface.runMutationHandler(job.name, run.number, (ctx) =>
         definition.handler(ctx as never, args as never));
       if (isResult(value) && !value.ok) {

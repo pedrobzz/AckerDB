@@ -181,12 +181,15 @@ native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.
 
-The `Fast CI` benchmark runs a same-job GitHub-hosted comparison only when the
-pull request changes code exercised by the benchmark, its executable harness,
-the pull-request workflow, or its path classifier. Every other pull request skips
-it immediately; version bumps, docs, tests, and unrelated packages must not
-spend benchmark time. A real run compares the pull request's AckerDB
-with the base branch's AckerDB. It never runs another vendor and never runs on
+The `Benchmark` check gates the release, not the road to it: it runs on the
+`canary` → `main` promotion only, where it is required alongside `Release
+policy` and `Fast CI`, and only when the release changed code exercised by the
+benchmark, its executable harness, the pull-request workflow, or its path
+classifier. Every pull request into `canary` skips it; version bumps, docs,
+tests, and unrelated packages must not spend benchmark time. Measuring on the
+promotion means the comparison is the whole release delta rather than one pull
+request's slice — the only measurement that sees what the accumulated merges
+did together. It never runs another vendor and never runs on
 the developer machine. Telemetry is disabled unless telemetry-related source
 changed; only then are enabled, exporter, and disabled profiles measured. The
 check has no thresholds, score, or automated performance acceptance. Pedro and

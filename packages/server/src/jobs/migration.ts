@@ -117,7 +117,19 @@ export const SPLIT_JOBS_INTO_RUNS: FrameworkMigration = {
       [JOBS_TABLE]: (row, ctx): MigrationRow => {
         const jobId = row["id"] as bigint;
         const oldState = String(row["state"]);
-        const state = JOB_STATE_OF_OLD_STATE[oldState] ?? "failed";
+        const state = JOB_STATE_OF_OLD_STATE[oldState];
+        // The five states 0.16.0 could persist are all mapped, so this refuses
+        // only a database this migration was not written for. Coercing the
+        // unknown to `failed` would be a guess recorded as a fact — and this
+        // transform is one-way, so the row that would have explained it is
+        // dropped in the same breath. Refusing leaves the database intact and
+        // names what was not understood.
+        if (state === undefined) {
+          throw new Error(
+            `${JOBS_TABLE}: job ${jobId} carries unrecognized state ${JSON.stringify(oldState)};` +
+              " this database was not written by a version this migration understands",
+          );
+        }
         const runAt = finite(row["runAt"], finite(row["enqueuedAt"], 0));
         const settled = readAttempts(row["attemptsJson"]);
         const inFlight = oldState === "running";

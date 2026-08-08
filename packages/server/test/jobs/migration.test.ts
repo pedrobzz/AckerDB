@@ -627,6 +627,26 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     engine.close("clean");
   });
 
+  test("a state this migration does not understand refuses instead of inventing a failure", async () => {
+    // The five states 0.16.0 could persist are all mapped, so reaching this
+    // means the database was not written by a version this transform knows.
+    // The transform is one-way and drops the source table, so coercing the
+    // unknown to "failed" would record a guess as an outcome and destroy the
+    // row that could have explained it. Refuse, and leave the database intact.
+    const path = seedLegacy([
+      {
+        name: "work.strange",
+        argsJson: "{}",
+        state: "quarantined",
+        runAt: 3_000,
+        attempt: 0,
+        attemptsJson: "[]",
+        enqueuedAt: 1_000,
+      },
+    ]);
+    await expect(upgrade(path)).rejects.toThrow(/unrecognized state "quarantined"/);
+  });
+
   test("a Job suspended in step.sleep resumes as the run the old model would have claimed", async () => {
     let clock = 200_000;
     // What the old `step.sleep` transaction left behind: pending, woken at the

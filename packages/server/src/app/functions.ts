@@ -41,6 +41,7 @@ import {
 } from "./access.ts";
 import {
   normalizeScopeRequirement,
+  type NormalizedScopeRequirement,
   type ScopeRequirement,
 } from "../auth/scopes.ts";
 import type { Schema } from "../schema/definition.ts";
@@ -502,7 +503,7 @@ export interface Invocable<
   readonly kind: K;
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
-  readonly scopes?: ScopeRequirement<string>;
+  readonly scopes?: NormalizedScopeRequirement;
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
@@ -630,19 +631,30 @@ function exposureFields(
  * configuration, because system authority bypasses scopes at the funnel. Both
  * are registration errors rather than a rule that silently never fires.
  */
+/**
+ * Normalize the declared requirement once, here, and keep the canonical value.
+ *
+ * What is registered must be what is enforced and what is validated. Keeping
+ * the caller's own object instead would leave three parties reading a mutable
+ * declaration at three different moments: registration validating one shape,
+ * dispatch compiling a private snapshot of another, and the load-time
+ * vocabulary check approving a third. `normalizeScopeRequirement` already
+ * clones and freezes, so storing its result is what makes the authorization
+ * rule single-valued rather than merely written down three times.
+ */
 function scopeFields(
   def: { readonly access: unknown; readonly scopes?: ScopeRequirement<string> },
   kind: string,
-): { readonly scopes?: ScopeRequirement<string> } {
+): { readonly scopes?: NormalizedScopeRequirement } {
   if (def.scopes === undefined) return {};
-  normalizeScopeRequirement(def.scopes, `${kind} scopes`);
+  const scopes = normalizeScopeRequirement(def.scopes, `${kind} scopes`);
   if (def.access === "public" || def.access === "system") {
     throw new TypeError(
       `${kind} scopes cannot combine with access "${String(def.access)}"` +
         ` — use "authenticated" or a policy callback`,
     );
   }
-  return { scopes: def.scopes };
+  return { scopes };
 }
 
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
