@@ -278,60 +278,80 @@ export class RuntimeSessionApplication {
     }
   }
 
-  mutation(
+  async mutation(
     context: SessionRuntimeContext,
     request: RuntimeRequest<MutationMessage>,
   ): Promise<RuntimeMutationResult> {
     const { message } = request;
     let successPublication: RuntimePublication | undefined;
-    return this.options.store.run(context, request, "mutation", message.ref, async (state, requestBytes) => {
-      const fn = this.expect(message.ref, "mutation");
-      const signal = this.options.operationSignal(context.signal);
-      let executedPublication: RuntimePublication | undefined;
-      const result = await this.options.functions.commitMutation({
-        fairnessKey: context.fairnessKey,
-        requestBytes,
-        admissionSignal: signal,
-        subscriber: state.subscriber,
-        idempotency: {
-          sessionId: context.clientSessionId,
-          requestId: message.mutationRequestId,
-          issuedAt: message.issuedAt,
-          // The caller's ownership key, exactly as the HTTP path already uses:
-          // a replay is the same caller's when the Identity matches, not when
-          // its credential's expiry and claims happen to match too. Digesting
-          // the whole principal would make a token refresh — or a non-expiring
-          // vault credential, whose deadline is not even encodable — look like
-          // a different caller.
-          principalFingerprint: context.fairnessKey,
-          functionRef: message.ref,
-          argsFingerprint: digest(message.args),
+    // A session is a long-lived invalidation subscriber, so a mutation that
+    // revokes the caller's own credential would terminate the socket from
+    // inside its own commit and discard the frame carrying the result. The
+    // origin's delivery is withheld until the frame has been published.
+    const invalidations = this.options.authInvalidation.publisher(
+      context.principal,
+      context.invalidationScope,
+    );
+    try {
+      return await this.options.store.run(
+        context,
+        request,
+        "mutation",
+        message.ref,
+        async (state, requestBytes) => {
+          const fn = this.expect(message.ref, "mutation");
+          const signal = this.options.operationSignal(context.signal);
+          let executedPublication: RuntimePublication | undefined;
+          const result = await this.options.functions.commitMutation({
+            fairnessKey: context.fairnessKey,
+            requestBytes,
+            admissionSignal: signal,
+            subscriber: state.subscriber,
+            idempotency: {
+              sessionId: context.clientSessionId,
+              requestId: message.mutationRequestId,
+              issuedAt: message.issuedAt,
+              // The caller's ownership key, exactly as the HTTP path already
+              // uses: a replay is the same caller's when the Identity matches,
+              // not when its credential's expiry and claims happen to match
+              // too. Digesting the whole principal would make a token refresh —
+              // or a non-expiring vault credential, whose deadline is not even
+              // encodable — look like a different caller.
+              principalFingerprint: context.fairnessKey,
+              functionRef: message.ref,
+              argsFingerprint: digest(message.args),
+            },
+            fn,
+            principal: context.principal,
+            args: message.args,
+            publishAuthInvalidation: invalidations.publish,
+            validate: (value, version, _writes, publication) => {
+              executedPublication = this.options.store.prepare(
+                this.mutationFrame(
+                  message,
+                  value,
+                  version,
+                  this.options.engine.durability,
+                  "executed",
+                  publication.affectedCallerIds,
+                ),
+                "mutation result",
+              );
+            },
+          });
+          const finished = await this.finishMutation(state, message, result, executedPublication);
+          successPublication = finished.publication;
+          return finished.result;
         },
-        fn,
-        principal: context.principal,
-        args: message.args,
-        validate: (value, version, _writes, publication) => {
-          executedPublication = this.options.store.prepare(
-            this.mutationFrame(
-              message,
-              value,
-              version,
-              this.options.engine.durability,
-              "executed",
-              publication.affectedCallerIds,
-            ),
-            "mutation result",
-          );
+        {
+          identifiers: { requestId: String(message.id), mutationId: message.mutationRequestId },
+          synthesizeHandler: false,
+          successPublication: () => requiredPublication(successPublication, "mutation"),
         },
-      });
-      const finished = await this.finishMutation(state, message, result, executedPublication);
-      successPublication = finished.publication;
-      return finished.result;
-    }, {
-      identifiers: { requestId: String(message.id), mutationId: message.mutationRequestId },
-      synthesizeHandler: false,
-      successPublication: () => requiredPublication(successPublication, "mutation"),
-    });
+      );
+    } finally {
+      invalidations.finish();
+    }
   }
 
   close(context: SessionRuntimeContext, _outcome: Outcome): Promise<void> {

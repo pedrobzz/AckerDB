@@ -251,7 +251,9 @@ describe("ackerdb startup migrations", () => {
     const status: StatusReport = await inspectDatabase(loadConfig(dir));
     expect(status.operation).toBe("status");
     expect(status.schemaFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(status.status.commitVersion).toBe("2");
+    // Two application mutations, plus the first boot's Admin Credential mint.
+    // Only the boot that finds no master writes, so the restarts cost nothing.
+    expect(status.status.commitVersion).toBe("3");
   }, TEST_TIMEOUT_MS);
 
   test("applies pending migrations before loading runtime-only modules", async () => {

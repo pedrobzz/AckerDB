@@ -200,6 +200,8 @@ export const tuya = service({
     const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
       // The framework's own group is registered in every application.
+      "admin.credentials.list",
+      "admin.credentials.rotate",
       "admin.system.info",
       "api.admin.users.count",
       "api.messages.enqueueNote",

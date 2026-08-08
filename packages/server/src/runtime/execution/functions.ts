@@ -146,6 +146,7 @@ export interface RuntimeMutationCommitRequest {
   readonly principal: Principal;
   readonly args: unknown;
   readonly validate?: CommitRequest<unknown, ReactiveCommit>["validate"];
+  readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
 export interface RuntimeFunctionMcpCapabilities {
@@ -166,6 +167,13 @@ interface RuntimeCommitRequest<T> {
   readonly subscriber?: Subscriber;
   readonly work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>;
   readonly validate?: CommitRequest<T, ReactiveCommit>["validate"];
+  /**
+   * The originating caller's own auth-invalidation channel, when the caller
+   * owns a response this commit's revocations could destroy. Absent means the
+   * Runtime's immediate fan-out, which is right for every commit whose origin
+   * is the framework itself.
+   */
+  readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
 export interface RuntimeFunctionExecutorOptions<C> {
@@ -182,8 +190,11 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly credentialVerifier?: CredentialVerifier;
   /** Application scopes plus the framework's: what a credential grant expands against. */
   readonly vocabulary: readonly string[];
-  /** Committed revocations and grant changes, onto the generic auth-invalidation path. */
-  readonly publishCredentialInvalidations: (accounts: readonly ExternalAccount[]) => void;
+  /**
+   * Committed revocations and grant changes, onto the generic auth-invalidation
+   * path, for a commit whose origin holds no response of its own.
+   */
+  readonly publishAuthInvalidation: (account: ExternalAccount) => void;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
   /** Commit-wake: fired when a transaction touched the jobs table. */
   readonly armJobs: () => void;
@@ -204,6 +215,14 @@ export class RuntimeFunctionExecutor<C> {
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly fileProcedures: FileProcedureRuntime;
   private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
+  /**
+   * Where one commit's committed authority changes are published. The commit
+   * request knows its origin and the post-commit handoff only sees the write
+   * set, so the two meet on the collector the turn already owns — the same
+   * shape staged analytics use, for the same reason.
+   */
+  private readonly authInvalidationByWrites =
+    new WeakMap<WriteCollector, (account: ExternalAccount) => void>();
   private fileRecoveryBarrier: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: RuntimeFunctionExecutorOptions<C>) {
@@ -216,7 +235,9 @@ export class RuntimeFunctionExecutor<C> {
         if (writes.fileCleanupAt !== null) options.files.scheduleCleanupAt(writes.fileCleanupAt);
         const credentialInvalidations = takeCredentialInvalidations(writes);
         if (credentialInvalidations.length > 0) {
-          options.publishCredentialInvalidations(credentialInvalidations);
+          const publish = this.authInvalidationByWrites.get(writes)
+            ?? options.publishAuthInvalidation;
+          for (const account of credentialInvalidations) publish(account);
         }
         const analytics = this.analyticsByWrites.get(writes);
         if (analytics !== undefined) {
@@ -379,6 +400,9 @@ export class RuntimeFunctionExecutor<C> {
       idempotency: request.idempotency,
       subscriber: request.subscriber,
       validate: request.validate,
+      ...(request.publishAuthInvalidation === undefined
+        ? {}
+        : { publishAuthInvalidation: request.publishAuthInvalidation }),
       work: this.mutationWork(request.fn, request.principal, request.args),
     });
   }
@@ -649,10 +673,12 @@ export class RuntimeFunctionExecutor<C> {
           }
         : {}),
       run: AsyncLocalStorage.snapshot(),
-      work: (db, writes) => this.withStagedAnalytics(
-        writes,
-        () => request.work(db, writes),
-      ),
+      work: (db, writes) => {
+        if (request.publishAuthInvalidation !== undefined) {
+          this.authInvalidationByWrites.set(writes, request.publishAuthInvalidation);
+        }
+        return this.withStagedAnalytics(writes, () => request.work(db, writes));
+      },
       rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
         scheduledTables = new Set(writes.scheduledTables);

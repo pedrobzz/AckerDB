@@ -29,7 +29,11 @@ import {
   type ParsedCredentialToken,
 } from "../../auth/credential-token.ts";
 import { credentialVaultOwner } from "../../auth/credential-vault.ts";
-import { invalidationReaches } from "../../auth/invalidation.ts";
+import {
+  invalidationReaches,
+  type AuthInvalidationScope,
+  type AuthInvalidationSubscription,
+} from "../../auth/invalidation.ts";
 import { expandScopeGrant } from "../../auth/scopes.ts";
 import type { Engine } from "../../database/engine.ts";
 import { externalAccountFairnessKey } from "../caller.ts";
@@ -39,6 +43,12 @@ import type { RuntimeReadExecutor } from "../execution/read.ts";
 export interface CredentialLease {
   readonly principal: UserPrincipal;
   readonly signal: AbortSignal;
+  /**
+   * Package-owned origin naming this exact lease. A revocation the leased
+   * caller performs itself is published with this scope excluded, so the door
+   * that carries the response is not the door the change closes.
+   */
+  readonly invalidationScope: AuthInvalidationScope;
   release(): void;
 }
 
@@ -56,7 +66,7 @@ export interface RuntimeCredentialsOptions {
   /** Boundary-published account invalidations; present without an app verifier. */
   readonly subscribeInvalidation: (
     listener: (invalidation: PrincipalInvalidation) => void,
-  ) => () => void;
+  ) => AuthInvalidationSubscription & { readonly scope: AuthInvalidationScope };
   readonly revocationDeadlineMs: number;
 }
 
@@ -205,7 +215,7 @@ export class RuntimeCredentials {
     // principal shares takes over — and that is what carries the upstream
     // accounts a delegated credential is bounded by.
     let leased: UserPrincipal | undefined;
-    const unsubscribe = this.options.subscribeInvalidation((invalidation) => {
+    const subscription = this.options.subscribeInvalidation((invalidation) => {
       if (controller.signal.aborted) return;
       const reached = leased === undefined
         ? invalidation.issuer === CREDENTIAL_ISSUER &&
@@ -224,14 +234,15 @@ export class RuntimeCredentials {
       return Object.freeze({
         principal,
         signal: leaseSignal,
+        invalidationScope: subscription.scope,
         release: () => {
           if (!active) return;
           active = false;
-          unsubscribe();
+          subscription.unsubscribe();
         },
       });
     } catch (error) {
-      unsubscribe();
+      subscription.unsubscribe();
       throw error;
     }
   }

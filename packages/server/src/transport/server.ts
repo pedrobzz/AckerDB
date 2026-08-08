@@ -23,6 +23,7 @@ import {
   acquireAuthLease,
   type AuthLease,
 } from "../auth/lease.ts";
+import type { AuthInvalidationPublisher } from "../auth/invalidation.ts";
 import {
   callerFairnessKey,
   transportSource,
@@ -91,6 +92,7 @@ export type AckerDBStartupPhase =
   | "migrating"
   | "reconciling"
   | "loading-runtime"
+  | "issuing-credential"
   | "starting-services";
 
 export interface AckerDBServerOptions {
@@ -206,7 +208,8 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   migrating: 4,
   reconciling: 5,
   "loading-runtime": 6,
-  "starting-services": 7,
+  "issuing-credential": 7,
+  "starting-services": 8,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -1166,6 +1169,10 @@ export class AckerDBServer {
     const externalTrace = beginHttpTrace(runtime.telemetry, exposed.kind);
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
+    // The listener owns the response handoff, so it owns the release of any
+    // self-invalidation this request commits: publishing one from inside the
+    // commit would abort the lease the answer is still travelling on.
+    let invalidations: AuthInvalidationPublisher | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
@@ -1188,6 +1195,10 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
+      invalidations = runtime.authInvalidation.publisher(
+        lease.principal,
+        lease.invalidationScope,
+      );
       const input = carryHttpRequestProvenance({
         id,
         address,
@@ -1195,7 +1206,7 @@ export class AckerDBServer {
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, bytes, externalTrace, lease.invalidationScope);
+      }, bytes, externalTrace, invalidations);
       if (exposed.kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
@@ -1231,6 +1242,7 @@ export class AckerDBServer {
       return outcomeError(error);
     } finally {
       finishHttpTrace(externalTrace);
+      invalidations?.finish();
       lease?.release();
       admission?.release();
     }
@@ -1362,6 +1374,10 @@ export class AckerDBServer {
     let admission: HttpAdmissionLease | undefined;
     let credentialLease: CredentialLease | undefined;
     let principal: Principal = ANONYMOUS_PRINCIPAL;
+    // The MCP door's credential lease is a subscriber like any other, and the
+    // JSON-RPC body is assembled after the tool call returns, so releasing the
+    // origin's own delivery belongs here rather than inside the Runtime.
+    let invalidations: AuthInvalidationPublisher | undefined;
     try {
       if (this.lifecycle !== "ready" || runtime.state !== "ready") {
         throw unavailableWhile(this.lifecycle);
@@ -1383,6 +1399,10 @@ export class AckerDBServer {
       }
       const fairnessKey = callerFairnessKey(principal, source);
       admission.transfer(fairnessKey);
+      invalidations = runtime.authInvalidation.publisher(
+        principal,
+        credentialLease?.invalidationScope,
+      );
       const { handleMcpPost } = await import("../mcp/http.ts");
       return withMcpCors(await handleMcpPost({
         request,
@@ -1393,6 +1413,7 @@ export class AckerDBServer {
         principal,
         signal: credentialLease?.signal ?? request.signal,
         fairnessKey,
+        invalidations,
       }), cors);
     } catch (error) {
       return mcpErrorResponse(error, cors, {
@@ -1400,6 +1421,7 @@ export class AckerDBServer {
         credentialPresented: request.headers.has("authorization"),
       });
     } finally {
+      invalidations?.finish();
       credentialLease?.release();
       admission?.release();
     }

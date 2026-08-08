@@ -23,6 +23,7 @@
  * declaration that names the framework's own group *and* its module and export
  * name collides — which the address space refuses out loud.
  */
+import { credentialsModule } from "./credentials.ts";
 import { normalizeAdminOptions, type AdminOptions } from "./options.ts";
 import { systemModule } from "./system.ts";
 
@@ -33,17 +34,23 @@ import { systemModule } from "./system.ts";
  * produces and the Registry takes one kind of contribution.
  */
 export type FrameworkFunctionModules = {
+  readonly credentials: typeof credentialsModule;
   readonly system: ReturnType<typeof systemModule>;
 };
 
 /**
  * Build the framework's contribution from the resolved `admin` object. It is
- * built rather than imported because its declarations close over
+ * built rather than imported because some of its declarations close over
  * configuration: what the surface reports about an application is decided by
  * the operator, and a module-level constant could only report the framework.
+ * A module that closes over nothing — what a credential is does not depend on
+ * how an application was described — stays a constant and is named here.
  */
 export function frameworkFunctionModules(
   admin: AdminOptions = {},
 ): FrameworkFunctionModules {
-  return { system: systemModule(normalizeAdminOptions(admin)) };
+  return {
+    credentials: credentialsModule,
+    system: systemModule(normalizeAdminOptions(admin)),
+  };
 }
