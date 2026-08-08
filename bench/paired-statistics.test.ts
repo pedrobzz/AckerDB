@@ -115,6 +115,18 @@ describe("paired comparison", () => {
     expect(comparePaired(pairs([0.2, 0.2]), higher).signal).toBe("not measured");
   });
 
+  test("shrinking the repetition count cannot buy a pass, only a failed measurement", () => {
+    // An eighty-percent throughput loss, sampled too few times to bound. The
+    // answer is "not measured", which `report.ts` counts against a gated metric
+    // as a failure — so turning `BENCH_REPETITIONS` down to escape a regression
+    // fails the check instead of passing it.
+    for (const repetitions of [2, 4, 6]) {
+      const comparison = comparePaired(pairs(Array(repetitions).fill(0.2)), higher);
+      expect(comparison.signal).not.toBe("no signal");
+      if (repetitions < DEFAULT_POLICY.minimumPairs) expect(comparison.signal).toBe("not measured");
+    }
+  });
+
   test("an unchanging metric produces no signal, not a verdict of zero", () => {
     expect(comparePaired(pairs(Array(8).fill(1)), higher).signal).toBe("no signal");
   });
