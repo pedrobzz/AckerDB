@@ -26,6 +26,8 @@
  * identically.
  */
 export const ADMIN_SCOPES = Object.freeze([
+  "_admin:credentials:read",
+  "_admin:credentials:write",
   "_admin:database:read",
   "_admin:database:write",
   "_admin:errors:read",

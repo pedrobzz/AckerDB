@@ -156,7 +156,12 @@ export class Runtime implements RuntimePort {
   private readonly credentials: RuntimeCredentials;
   /** Application scopes plus the framework's: what every grant expands against. */
   private readonly vocabulary: readonly string[];
-  private readonly authInvalidation: AuthInvalidationBoundary;
+  /**
+   * Package-internal: the transport builds one origin-aware publisher per
+   * request from it, because the transport is what owns the response handoff a
+   * self-invalidation must wait for. It is absent from the public index.
+   */
+  readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: AuthInvalidationPublisher;
   private readonly reads: RuntimeReadExecutor;
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
@@ -245,7 +250,8 @@ export class Runtime implements RuntimePort {
       ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
       ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
       vocabulary: this.vocabulary,
-      subscribeInvalidation: (listener) => this.authInvalidation.subscribeDirect(listener),
+      subscribeInvalidation: (listener) =>
+        this.authInvalidation.subscribeDirect(listener),
       revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
     });
     this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
@@ -328,9 +334,7 @@ export class Runtime implements RuntimePort {
       pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
-      publishCredentialInvalidations: (accounts) => {
-        for (const account of accounts) this.authInvalidation.publishAccount(account);
-      },
+      publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
       ...(hasMcpCapabilities
         ? {
             mcp: {
@@ -375,7 +379,7 @@ export class Runtime implements RuntimePort {
       operations: this.operations,
       functions: this.functions,
       queries: this.queries,
-      authInvalidation: this.authInvalidation,
+      immediateInvalidations: this.immediateProcedureInvalidations,
       telemetry: this.telemetry,
       tracing: this.tracing,
       admittedRequestBytes: (request, receivedBytes) =>
@@ -395,7 +399,7 @@ export class Runtime implements RuntimePort {
       operationSignal: (signal) => this.control.operationSignal(signal),
       admittedRequestBytes: (request, receivedBytes) =>
         this.control.admittedRequestBytes(request, receivedBytes),
-      publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
+      immediateInvalidations: this.immediateProcedureInvalidations,
     });
     const authCaptureControlReserve = Math.min(
       this.limits.maxFrameBytes,

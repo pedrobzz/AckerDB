@@ -18,7 +18,7 @@
  * compile-time proof on the server side, so a declaration that drifts from
  * this file fails the build rather than a caller.
  */
-import { ADMIN_API_PATH, apiGroup, type QueryRef } from "./refs.ts";
+import { ADMIN_API_PATH, apiGroup, type MutationRef, type QueryRef } from "./refs.ts";
 
 /**
  * What identifies one running application to an operator. Nothing else in the
@@ -41,12 +41,42 @@ export interface AdminSystemInfo {
 export type AdminSystemInfoArgs = Record<never, never>;
 
 /**
+ * One Admin Credential, as an operator sees it. The secret is absent by
+ * construction: only its digest is stored, so no read can return one, and the
+ * plaintext exists solely in the answer of the call that issued it.
+ */
+export interface AdminCredential {
+  /** The credential's public id — the first half of its bearer token. */
+  readonly id: string;
+  readonly name: string;
+  /** Epoch milliseconds; with one master, this is what tells a rotation apart. */
+  readonly createdAt: number;
+}
+
+/** Arguments of the calls that read and replace administrative authority. */
+export type AdminCredentialsArgs = Record<never, never>;
+
+/**
+ * A freshly issued Admin Credential. `token` is the whole bearer, shown exactly
+ * once: the call that produced it is marked non-replayable, so retrying it with
+ * the same idempotency key answers with a receipt and never a second secret.
+ */
+export interface AdminCredentialIssued {
+  readonly id: string;
+  readonly token: string;
+}
+
+/**
  * The Admin API as a client addresses it. Every leaf is an ordinary function
  * reference, called through the ordinary client with a credential holding the
  * scope the declaration requires — there is no administrative transport and no
  * second stack.
  */
 export interface AdminApi {
+  readonly credentials: {
+    readonly list: QueryRef<AdminCredentialsArgs, AdminCredential[]>;
+    readonly rotate: MutationRef<AdminCredentialsArgs, AdminCredentialIssued>;
+  };
   readonly system: {
     readonly info: QueryRef<AdminSystemInfoArgs, AdminSystemInfo>;
   };
