@@ -272,11 +272,16 @@ async function measureProfile(
       if (terminalFailures.length > 0) break;
       process.stderr.write(`— repetition ${repetition + 1}/${REPETITIONS} complete (${profile})\n`);
     }
+    // An orderly stop is still part of the measurement: a side that cannot shut
+    // its server down cleanly did not measure what it claims to have measured.
+    await Promise.all([base.stop(), head.stop()]);
   } catch (error) {
+    // Whatever failed, neither side may outlive this driver. A server left
+    // holding its port would fail every profile after it with a message about
+    // the port rather than about the thing that actually broke.
     await Promise.all([base.kill(), head.kill()]);
     throw error;
   }
-  await Promise.all([base.stop(), head.stop()]);
   return { profile, series: pairMetrics(baseUnits, headUnits), terminalFailures };
 }
 

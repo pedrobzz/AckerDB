@@ -114,7 +114,11 @@ jobs:
     if: always()
     needs: [changes, native]
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    # One telemetry profile is a single-digit number of minutes; a pull request
+    # that touches telemetry pays for three of them, and the ceiling has to hold
+    # that case rather than the common one. It is still a hard cap: a hung
+    # process cannot keep a runner past it.
+    timeout-minutes: 45
     steps:
       - name: Validate prerequisite jobs
         env:

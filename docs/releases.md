@@ -100,7 +100,10 @@ A benchmark-exercised input is one of:
 - the CLI codegen, configuration, or manifest code used to launch the benchmark
   application;
 - executable files under `bench/`, excluding Markdown and historical results;
-  or
+- a third-party dependency of `core`, `client`, `server`, or `cli`, which
+  changes the executable product without touching a source path — the lockstep
+  `@ackerdb/*` rewrite every release step performs is excluded, because a
+  version bump that ships the same code must not spend a runner; or
 - the pull-request workflow or its path classifier.
 
 All other changes—including docs, tests, release metadata/version bumps,
