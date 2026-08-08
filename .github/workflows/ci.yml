@@ -30,6 +30,7 @@ jobs:
       verify_packages: ${{ steps.changes.outputs.verify_packages }}
       mcp: ${{ steps.changes.outputs.mcp }}
       workflows: ${{ steps.changes.outputs.workflows }}
+      website: ${{ steps.changes.outputs.website }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -46,13 +47,14 @@ jobs:
   native_build:
     name: Native build
     needs: changes
-    if: needs.changes.outputs.native_build == 'true'
+    if: github.head_ref != 'canary' && needs.changes.outputs.native_build == 'true'
     uses: ./.github/workflows/native.yml
 
   native_tests:
     name: Native tests
     needs: changes
     if: >-
+      github.head_ref != 'canary' &&
       needs.changes.outputs.native_tests == 'true' &&
       needs.changes.outputs.native_build != 'true'
     runs-on: macos-15
@@ -86,39 +88,51 @@ jobs:
           case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
           case "$NATIVE_BUILD" in success|skipped) ;; *) exit 1 ;; esac
           case "$NATIVE_TESTS" in success|skipped) ;; *) exit 1 ;; esac
-      - if: needs.changes.result == 'success'
+      - if: github.head_ref != 'canary' && needs.changes.result == 'success'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
-      - if: needs.changes.result == 'success'
+      - if: github.head_ref != 'canary' && needs.changes.result == 'success'
         uses: ./.github/actions/bun-workspace
       - name: Test affected packages
-        if: needs.changes.result == 'success' && needs.changes.outputs.test_packages != '[]'
+        if: github.head_ref != 'canary' && needs.changes.result == 'success' && needs.changes.outputs.test_packages != '[]'
         env:
           TEST_PACKAGES: ${{ needs.changes.outputs.test_packages }}
         run: bun scripts/ci/test-affected.ts
       - name: Typecheck packages
-        if: needs.changes.outputs.code == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.code == 'true'
         run: bun run typecheck
       - name: Check repository boundaries
-        if: needs.changes.outputs.code == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.code == 'true'
         run: |
           bun test ./scripts/ci ./scripts/release
           bun test ./bench
           bun run typecheck:tooling
           bun run typecheck:bench
       - name: Audit production dependencies
-        if: needs.changes.outputs.verify_packages == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.verify_packages == 'true'
         run: bun scripts/ci/audit-production.ts
       - name: Check MCP conformance
-        if: needs.changes.outputs.mcp == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.mcp == 'true'
         run: bun run test:mcp:conformance
       - name: Verify publishable packages
-        if: needs.changes.outputs.verify_packages == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.verify_packages == 'true'
         run: bun run test:packages
       - name: Lint workflows
-        if: needs.changes.outputs.workflows == 'true'
+        if: github.head_ref != 'canary' && needs.changes.outputs.workflows == 'true'
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
+      - name: Install website dependencies
+        if: github.head_ref != 'canary' && needs.changes.outputs.website == 'true'
+        working-directory: website
+        run: bun install --frozen-lockfile
+      - name: Install website browser
+        if: github.head_ref != 'canary' && needs.changes.outputs.website == 'true'
+        working-directory: website
+        run: bunx playwright install --with-deps chromium
+      - name: Verify website
+        if: github.head_ref != 'canary' && needs.changes.outputs.website == 'true'
+        working-directory: website
+        run: bun run verify
 
   # The benchmark gates every pull request that touches a measured input,
   # because a regression is only cheap to fix while it still belongs to one

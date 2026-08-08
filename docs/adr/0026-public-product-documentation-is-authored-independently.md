@@ -32,11 +32,28 @@ Basic Usage starts inside a Bun-workspace monorepo with `apps/server`,
 server declarations and the React frontend one direct contract without
 cross-application relative imports, wrappers, or alternative onboarding layouts.
 
-## Version publication
+## Version publication contract
 
-Product documentation is published from the exact commits that publish AckerDB
-packages. A successful Canary publication replaces `/docs/canary`; a successful
-stable publication replaces `/docs` and preserves the same bytes under immutable
-`/docs/X.Y.Z`, with a durable version-to-commit-to-artifact manifest. Content
-equality, branch aliases, optional Git tags, and GitHub Releases play no role in
-this model.
+The website builds three independent public artifact kinds from a clean checkout
+whose exact commit matches the requested publication identity. Latest bootstrap
+establishes `/` and `/docs` without inventing history. Canary replaces only
+`/docs/canary`. Stable publication advances `/docs` and adds immutable
+`/docs/X.Y.Z` output generated from the same source commit and content build.
+Route-specific HTML may differ because canonical URLs, links, and labels name
+different public prefixes.
+
+Every artifact inventories its owned routes and route-specific TanStack caches,
+hashes every file, and records the hashed Vite assets referenced by Latest,
+current Canary, or an immutable stable version. The host-neutral state transition
+preserves stable history, rejects byte collisions and stable downgrades, removes
+obsolete mutable files and unreferenced Canary assets, and activates the public
+version catalog only after independently built Latest and Canary artifacts both
+exist. A durable state record maps every stable SemVer to its commit and exact
+historical artifact digest. Canary never enters history.
+
+The existing npm workflow does not yet deploy these artifacts. A static host and
+durable state store must be selected before adding the final adapter that applies
+the generated put, delete, and catalog operations atomically or in a recoverable
+order. This is one open deployment boundary, not an alternate publication path.
+Content equality, branch aliases, optional Git tags, and GitHub Releases play no
+role in the contract.

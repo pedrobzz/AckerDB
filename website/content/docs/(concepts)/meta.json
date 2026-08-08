@@ -1,0 +1,14 @@
+{
+  "title": "Concepts",
+  "icon": "Lightbulb",
+  "description": "Learn the application and runtime model behind AckerDB.",
+  "pages": [
+    "---Application model---",
+    "application-model",
+    "generated-types",
+    "---Runtime---",
+    "execution-model",
+    "reactivity",
+    "durability"
+  ]
+}

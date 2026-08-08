@@ -1,0 +1,13 @@
+{
+  "title": "Recipes",
+  "icon": "ListTree",
+  "description": "Compose AckerDB capabilities and external systems into complete outcomes.",
+  "pages": [
+    "---Application architecture---",
+    "multi-tenant-app",
+    "live-collaboration",
+    "---Integrations---",
+    "streaming-ai-agent",
+    "webhooks-and-background-work"
+  ]
+}

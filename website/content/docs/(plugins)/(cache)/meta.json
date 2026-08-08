@@ -1,0 +1,5 @@
+{
+  "title": "Cache Plugin",
+  "pagesIndex": "cache-plugin",
+  "pages": ["external-cache-adapters"]
+}

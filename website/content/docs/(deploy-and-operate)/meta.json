@@ -1,0 +1,16 @@
+{
+  "title": "Deploy & Operate",
+  "icon": "CloudCog",
+  "description": "Ship, preserve, observe, and recover an AckerDB application.",
+  "pages": [
+    "---Ship---",
+    "production-server",
+    "configuration",
+    "---Preserve data---",
+    "durability-profiles",
+    "backups-and-restore",
+    "---Observe---",
+    "status-and-health",
+    "telemetry"
+  ]
+}

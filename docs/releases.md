@@ -53,6 +53,9 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - package tests for directly affected packages and their AckerDB dependents;
 - the repository TypeScript checks, skipped when only documentation changed;
 - package, MCP, and workflow boundary checks only when their inputs changed;
+- the independent website verification when `website/`, `.bun-version`, or the
+  lockstep source-version manifest changes, using the website's own manifest
+  and lockfile; and
 - the native matrix only when the WebRTC Rust source, native build/evidence
   contract, distribution/evidence tests, or native workflow changed;
 - runtime-only WebRTC test changes reuse verified published binaries in one
@@ -65,6 +68,8 @@ Ordinary work is consolidated into `Select affected work` and one `Fast CI`
 job. This avoids paying a full runner minute for each short package or boundary
 check. The native multi-platform matrix remains separate because the five host
 targets require different operating systems, and it stays path-gated.
+The private website does not enter the AckerDB package graph, package
+verification, or release-version machinery.
 
 Lockstep version-only edits to native `package.json` files do not compile Rust.
 Native jobs cache Cargo dependencies, compiled targets, and evidence tools.

@@ -17,6 +17,7 @@ interface ChangeSet {
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
   readonly workflows: boolean;
+  readonly website: boolean;
 }
 
 function sourcePackage(file: string): string | undefined {
@@ -91,6 +92,7 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
+  const website = websiteInputsChanged(files);
   return {
     files,
     testPackages,
@@ -101,6 +103,7 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     verifyPackages,
     mcp,
     workflows,
+    website,
   };
 }
 
@@ -136,7 +139,10 @@ export function measuredDependenciesChanged(base: string, head: string): boolean
 
 export function codeInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
-    !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
+    !file.startsWith("website/") &&
+    !file.endsWith(".md") &&
+    !file.startsWith("docs/") &&
+    !file.startsWith("wiki/")
   );
 }
 
@@ -149,15 +155,24 @@ export function codeInputsChanged(files: readonly string[]): boolean {
  */
 export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
-    file === "package.json" ||
-    file === "bun.lock" ||
-    file.endsWith("/package.json") ||
-    file.startsWith("scripts/release/") ||
-    file.startsWith("scripts/verify-packages") ||
-    file.startsWith("scripts/packed-consumer") ||
-    (file.startsWith("packages/realtime/native/") &&
-      !file.startsWith("packages/realtime/native/webrtc/test/")) ||
-    file.startsWith("packages/realtime-native/")
+    !file.startsWith("website/") &&
+    (file === "package.json" ||
+      file === "bun.lock" ||
+      file.endsWith("/package.json") ||
+      file.startsWith("scripts/release/") ||
+      file.startsWith("scripts/verify-packages") ||
+      file.startsWith("scripts/packed-consumer") ||
+      (file.startsWith("packages/realtime/native/") &&
+        !file.startsWith("packages/realtime/native/webrtc/test/")) ||
+      file.startsWith("packages/realtime-native/"))
+  );
+}
+
+export function websiteInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    file.startsWith("website/") ||
+    file === "packages/core/package.json" ||
+    file === ".bun-version"
   );
 }
 
@@ -206,6 +221,7 @@ if (import.meta.main) {
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,
+      `website=${changes.website}`,
       "",
     ].join("\n"));
   }

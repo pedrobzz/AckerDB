@@ -1,0 +1,15 @@
+{
+  "title": "Reference",
+  "icon": "Blocks",
+  "description": "Look up packages, configuration, generated output, and exact API contracts.",
+  "pages": [
+    "---Packages---",
+    "server-api",
+    "client-api",
+    "react-api",
+    "cli-reference",
+    "---Contracts---",
+    "configuration-reference",
+    "generated-files"
+  ]
+}

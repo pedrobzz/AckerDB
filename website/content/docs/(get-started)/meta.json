@@ -1,0 +1,13 @@
+{
+  "title": "Get Started",
+  "icon": "BookOpen",
+  "description": "Install AckerDB and build your first reactive application.",
+  "pages": [
+    "index",
+    "installation",
+    "basic-usage",
+    "---Continue learning---",
+    "project-structure",
+    "development-workflow"
+  ]
+}

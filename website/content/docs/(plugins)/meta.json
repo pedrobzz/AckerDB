@@ -1,0 +1,13 @@
+{
+  "title": "Plugins",
+  "icon": "Plug",
+  "description": "Mount reusable capabilities with explicit runtime and storage contracts.",
+  "pages": [
+    "---Use Plugins---",
+    "installing-plugins",
+    "plugin-storage",
+    "(cache)",
+    "---Author Plugins---",
+    "building-plugins"
+  ]
+}

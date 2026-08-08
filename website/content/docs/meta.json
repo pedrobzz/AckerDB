@@ -1,0 +1,19 @@
+{
+  "title": "AckerDB",
+  "pages": [
+    "(get-started)",
+    "(concepts)",
+    "(database)",
+    "(functions)",
+    "(clients)",
+    "(authentication-and-access)",
+    "(realtime)",
+    "(files)",
+    "(jobs-and-services)",
+    "(plugins)",
+    "(http-and-mcp)",
+    "(deploy-and-operate)",
+    "(recipes)",
+    "(reference)"
+  ]
+}
