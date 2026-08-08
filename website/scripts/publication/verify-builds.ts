@@ -6,10 +6,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import corePackage from "../../../packages/core/package.json";
 import {
-  transitionPublication,
   type PublicationArtifactManifest,
   verifyPublicationArtifact,
-} from "../../src/lib/documentation/publication";
+} from "../../src/lib/documentation/publication/artifact";
+import { transitionPublication } from "../../src/lib/documentation/publication/deployment";
 
 const websiteDirectory = fileURLToPath(new URL("../..", import.meta.url));
 const repositoryDirectory = resolve(websiteDirectory, "..");

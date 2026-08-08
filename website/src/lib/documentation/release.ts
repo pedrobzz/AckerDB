@@ -1,7 +1,8 @@
 import corePackage from "../../../../packages/core/package.json";
-import type {
-  DocumentationIdentity,
-  DocumentationVersionCatalog,
+import {
+  createDocumentationVersionCatalog,
+  type DocumentationIdentity,
+  type DocumentationVersionCatalog,
 } from "./identity";
 import {
   parseDocumentationPublicationPlan,
@@ -24,38 +25,21 @@ export function latestIdentity(): DocumentationIdentity & {
   kind: "latest";
   version: string;
 } {
-  return {
-    kind: "latest",
-    label: `v${latestVersion()} (Latest)`,
-    basePath: "/docs",
-    version: latestVersion(),
-  };
+  return versionCatalog().latest;
 }
 
 export function canaryIdentity(): DocumentationIdentity & { kind: "canary" } {
-  return {
-    kind: "canary",
-    label: "Canary",
-    basePath: "/docs/canary",
-  };
+  return versionCatalog().canary;
 }
 
 export function versionCatalog(): DocumentationVersionCatalog {
-  const historical = documentationPlan.kind === "stable"
-    ? [{
-        kind: "stable" as const,
-        label: `v${documentationPlan.packageVersion}`,
-        basePath: `/docs/${documentationPlan.packageVersion}` as const,
-        version: documentationPlan.packageVersion,
-      }]
-    : [];
-
-  return {
-    schemaVersion: 1,
-    latest: latestIdentity(),
-    canary: canaryIdentity(),
-    historical,
-  };
+  return createDocumentationVersionCatalog({
+    latestVersion: latestVersion(),
+    historicalVersions:
+      documentationPlan.kind === "stable"
+        ? [documentationPlan.packageVersion]
+        : [],
+  });
 }
 
 export function identityForVersionId(versionId: string): DocumentationIdentity | undefined {

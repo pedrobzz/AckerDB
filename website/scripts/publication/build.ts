@@ -38,7 +38,7 @@ import {
   type PublicationFileOwnership,
   type PublicationKind,
   type PublicationRecordReference,
-} from "../../src/lib/documentation/publication";
+} from "../../src/lib/documentation/publication/artifact";
 
 interface PublicationBuildArguments {
   commit: string;

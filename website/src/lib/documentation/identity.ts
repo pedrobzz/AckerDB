@@ -30,6 +30,32 @@ export interface DocumentationVersionCatalog {
   historical: Array<DocumentationIdentity & { kind: "stable" }>;
 }
 
+export function createDocumentationVersionCatalog(input: {
+  latestVersion: string;
+  historicalVersions: readonly string[];
+}): DocumentationVersionCatalog {
+  return {
+    schemaVersion: 1,
+    latest: {
+      kind: "latest",
+      label: `v${input.latestVersion} (Latest)`,
+      basePath: "/docs",
+      version: input.latestVersion,
+    },
+    canary: {
+      kind: "canary",
+      label: "Canary",
+      basePath: "/docs/canary",
+    },
+    historical: input.historicalVersions.map((version) => ({
+      kind: "stable",
+      label: `v${version}`,
+      basePath: `/docs/${version}`,
+      version,
+    })),
+  };
+}
+
 export interface DocumentationRouteManifest {
   schemaVersion: 1;
   identity: DocumentationIdentity;
