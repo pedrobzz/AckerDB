@@ -246,6 +246,37 @@ export const tuya = service({
     expect(typecheckFixture(dir)).toBe("");
   });
 
+  test("an index module publishes its directory's name beside its siblings", async () => {
+    const dir = makeFixture({
+      "app.ts": FIXTURE_APP,
+      "functions/orders/index.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const list = query({ access: "public", args: {}, handler: () => [] });
+`,
+      "functions/orders/refunds.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const pending = query({ access: "public", args: {}, handler: () => [] });
+`,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    await runCodegen(config);
+
+    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    expect([...registry.functions.keys()].sort())
+      .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
+
+    // `orders` is a module and a namespace at once, so the generated tree is
+    // the intersection: dropping either half would leave a registered address
+    // with no binding to import.
+    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
+    expect(api).toContain("orders: typeof _m_orders & {");
+    expect(api).toContain("refunds: typeof _m_orders_refunds;");
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
   test("binds MCP declarations to the schema while keeping them server-only", async () => {
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
