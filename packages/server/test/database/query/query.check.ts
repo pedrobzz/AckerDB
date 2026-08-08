@@ -2,6 +2,7 @@
 import {
   defineSchema,
   defineTable,
+  filterableFields,
   v,
   type DbReader,
   type DbWriter,
@@ -47,6 +48,42 @@ const schema = defineSchema({
 
 declare const reader: DbReader<typeof schema>;
 declare const writer: DbWriter<typeof schema>;
+
+const documentFilters = filterableFields(schema.tables.documents, [
+  "tenantId",
+  "status",
+  "score",
+  "note",
+]);
+const userFilters = filterableFields(schema.tables.users, ["email"]);
+
+// @ts-expect-error a filterable field must name a declared column
+filterableFields(schema.tables.documents, ["missing"]);
+
+export async function _filterTypecheck(expression: unknown): Promise<void> {
+  const validated = documentFilters.validate(expression);
+  if (!validated.ok) {
+    // Failures are ordinary application errors: return them and a client
+    // renders them beside the control that produced them.
+    const _issues: readonly { readonly path: string; readonly message: string }[] =
+      validated.error.body.issues;
+    return;
+  }
+  const rows = await reader.documents
+    .query()
+    .where(validated.data)
+    .where((row) => row.tenantId.eq(1n))
+    .orderBy((row) => row.score.desc())
+    .where(validated.data)
+    .collect();
+  const _score: number = rows[0]!.score;
+
+  const foreign = userFilters.validate(expression);
+  if (foreign.ok) {
+    // @ts-expect-error a filter belongs to the table that validated it
+    reader.documents.query().where(foreign.data);
+  }
+}
 
 export async function _queryTypecheck(): Promise<void> {
   const rows = await reader.documents

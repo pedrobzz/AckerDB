@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Engine,
+  MAX_PAGE_BYTES,
+  MAX_PAGE_SIZE,
   UniqueConstraintError,
   defineSchema,
   defineTable,
@@ -318,6 +320,56 @@ describe("table query", () => {
     await expect(
       db.documents.query().paginate({ pageSize: 1, cursor: invalidPrimaryKey }),
     ).rejects.toThrow("incompatible with id");
+  });
+
+  test("caps a page's rows, because the page size comes from a caller", async () => {
+    await expect(db.documents.query().paginate({ pageSize: MAX_PAGE_SIZE + 1 })).rejects.toThrow(
+      `at most ${MAX_PAGE_SIZE}`,
+    );
+    await expect(db.documents.query().paginate({ pageSize: 0 })).rejects.toThrow(
+      "positive safe integer",
+    );
+  });
+
+  test("a page's byte budget takes rows away, never fields", async () => {
+    const wide = "w".repeat(Math.floor(MAX_PAGE_BYTES * 0.4));
+    for (let index = 0; index < 4; index++) {
+      await db.documents.insert({
+        tenantId: 1n,
+        status: "active",
+        score: index,
+        label: wide,
+        rank: null,
+      });
+    }
+
+    const first = await db.documents.query().paginate({ pageSize: 4 });
+    expect(first.items).toHaveLength(2);
+    expect(first.items[0].label).toBe(wide);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await db.documents.query().paginate({ pageSize: 4, cursor: first.nextCursor });
+    expect(second.items).toHaveLength(2);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("a row larger than the whole budget still advances the cursor", async () => {
+    await db.documents.insert({
+      tenantId: 1n,
+      status: "active",
+      score: 1,
+      label: "h".repeat(MAX_PAGE_BYTES + 1),
+      rank: null,
+    });
+    await db.documents.insert({ tenantId: 1n, status: "active", score: 2, label: "next", rank: null });
+
+    const first = await db.documents.query().paginate({ pageSize: 2 });
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await db.documents.query().paginate({ pageSize: 2, cursor: first.nextCursor });
+    expect(second.items.map((row: any) => row.label)).toEqual(["next"]);
+    expect(second.nextCursor).toBeNull();
   });
 
   test("does not expose enum storage-tag ordering", () => {

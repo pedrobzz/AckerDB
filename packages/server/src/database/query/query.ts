@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { MAX_PAGE_BYTES, MAX_PAGE_SIZE } from "@ackerdb/core";
 import { isValidationError, ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
@@ -20,8 +21,44 @@ import {
   type PredicateNode,
   type QueryOrder,
 } from "./predicate.ts";
+import { filterPredicate, tableFilterMeta } from "./filter.ts";
 
 const quote = (name: string): string => `"${name}"`;
+
+// Wire costs the page budget charges per cell, from the JSON wire format:
+// `null`, a number's worst-case JSON form, and the escape envelopes bigints
+// and byte arrays travel in. Base64 spends four characters per three bytes.
+const NULL_CELL_BYTES = 4;
+const NUMBER_CELL_BYTES = 24;
+const BIGINT_CELL_BYTES = 36;
+const BYTES_CELL_ENVELOPE = 16;
+
+/**
+ * The approximate wire size of one raw SQLite row, which is what a page
+ * budgets. Cells are charged where they already sit — no encoding pass, no
+ * copy — so the measure costs one walk over the row and never the second
+ * encoding an exact answer would need.
+ *
+ * It is a budget, not the transport's bound. A string dense in characters JSON
+ * escapes still encodes larger than it measures here, and `maxFrameBytes`
+ * stays the authority that answers such a row with a typed overloaded outcome,
+ * exactly as it does for every other materializer. What this bound owes is
+ * that an ordinary page of ordinary rows cannot grow without limit.
+ */
+function pageRowBytes(raw: Record<string, unknown>): number {
+  let bytes = 0;
+  for (const key in raw) {
+    const value = raw[key];
+    bytes += key.length + 3;
+    if (value === null) bytes += NULL_CELL_BYTES;
+    else if (typeof value === "string") bytes += Buffer.byteLength(value) + 2;
+    else if (typeof value === "bigint") bytes += BIGINT_CELL_BYTES;
+    else if (ArrayBuffer.isView(value)) {
+      bytes += Math.ceil(value.byteLength / 3) * 4 + BYTES_CELL_ENVELOPE;
+    } else bytes += NUMBER_CELL_BYTES;
+  }
+  return bytes;
+}
 
 interface QueryState {
   readonly predicates: readonly PredicateNode[];
@@ -211,11 +248,18 @@ class TableQueryRuntime {
   }
 
   where(callback: unknown): TableQueryRuntime {
-    const predicate = resolvePredicate(
-      this.plan.environment,
-      callback,
-      `${this.plan.displayName}.query.where`,
-    );
+    // A validated serializable filter and a predicate callback arrive at the
+    // same node vocabulary; only the way the caller wrote them differs. A
+    // filter that matches every row adds nothing.
+    const filter = tableFilterMeta(callback);
+    const predicate = filter === undefined
+      ? resolvePredicate(
+          this.plan.environment,
+          callback,
+          `${this.plan.displayName}.query.where`,
+        )
+      : filterPredicate(this.plan, filter);
+    if (predicate === null) return this;
     return this.next({
       ...this.state,
       predicates: [...this.state.predicates, predicate],
@@ -306,17 +350,20 @@ class TableQueryRuntime {
     };
   }
 
-  private rowsArray(
-    limit = -1,
+  private rawRows(
+    limit: number,
     cursor?: { readonly sql: string; readonly params: readonly unknown[] },
   ): Record<string, unknown>[] {
     assertMutationAccess();
     this.recordRead();
     const { sql, params } = this.statement(limit, cursor);
-    const raws = this.engine
+    return this.engine
       .statement(this.conn, sql)
       .all(...(params as never[])) as Record<string, unknown>[];
-    return raws.map((raw) => this.engine.rowFromSql(this.plan, raw));
+  }
+
+  private rowsArray(limit = -1): Record<string, unknown>[] {
+    return this.rawRows(limit).map((raw) => this.engine.rowFromSql(this.plan, raw));
   }
 
   private *streamRows(): IterableIterator<Record<string, unknown>> {
@@ -552,6 +599,14 @@ class TableQueryRuntime {
         `${this.plan.displayName}.query.paginate: pageSize must be a positive safe integer`,
       );
     }
+    // A page size normally arrives from a caller, so the bound is the
+    // server's, not the caller's. Rejecting is the honest answer: silently
+    // clamping would hand back a page that does not match what was asked for.
+    if (options.pageSize > MAX_PAGE_SIZE) {
+      throw new ValidationError(
+        `${this.plan.displayName}.query.paginate: pageSize must be at most ${MAX_PAGE_SIZE}`,
+      );
+    }
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
       throw new ValidationError(`${this.plan.displayName}.query.paginate: cursor must be a string or null`);
     }
@@ -570,11 +625,28 @@ class TableQueryRuntime {
     const cursor = options.cursor === undefined || options.cursor === null
       ? undefined
       : cursorPredicate(order, parseCursor(options.cursor, this.plan, order));
-    const items = this.rowsArray(options.pageSize + 1, cursor);
-    const hasMore = items.length > options.pageSize;
-    if (hasMore) items.pop();
+    const raws = this.rawRows(options.pageSize + 1, cursor);
+    const beyondPage = raws.length > options.pageSize;
+    if (beyondPage) raws.pop();
+    // Two bounds decide one page: the requested row count, and the byte budget
+    // that keeps a handful of oversized rows from making the page undeliverable.
+    // The budget takes rows away, never fields — a truncated page is a shorter
+    // page whose cursor resumes at the row that did not fit. The first row is
+    // always admitted, so a single row above the whole budget still advances.
+    const items: Record<string, unknown>[] = [];
+    let bytes = 0;
+    let beyondBudget = false;
+    for (const raw of raws) {
+      const rowBytes = pageRowBytes(raw);
+      if (items.length > 0 && bytes + rowBytes > MAX_PAGE_BYTES) {
+        beyondBudget = true;
+        break;
+      }
+      bytes += rowBytes;
+      items.push(this.engine.rowFromSql(this.plan, raw));
+    }
     const last = items[items.length - 1];
-    const nextCursor = !hasMore || last === undefined
+    const nextCursor = (!beyondPage && !beyondBudget) || last === undefined
       ? null
       : opaqueCursor({
           version: 1,

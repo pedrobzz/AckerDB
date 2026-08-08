@@ -195,6 +195,117 @@ authoritative resume, checkpoint, reset, or update. `skip` is a symbol, not an
 empty argument object; switching between `skip` and real arguments cleanly
 disables or starts demand.
 
+## Reactive cursor pagination
+
+`usePaginatedQuery(ref, args, options?)` turns a cursor-paginated query — one
+declaring `{ cursor, pageSize }` arguments and returning `paginate()`'s
+`QueryPage` — into a live window. The hook owns both of those arguments;
+callers pass the rest.
+
+```tsx
+import { skip, usePaginatedQuery } from "@ackerdb/client-react";
+import { api } from "./_generated/api";
+
+function LogList({ level }: { level: string | null }) {
+  const logs = usePaginatedQuery(
+    api.logs.list,
+    level === null ? skip : { level },
+    { pageSize: 50 },
+  );
+
+  if (logs.status !== "success") return <LogListFallback state={logs} />;
+  return (
+    <>
+      <ul>{logs.items.map((row) => <li key={row.id}>{row.message}</li>)}</ul>
+      {logs.exhausted ? null : (
+        <button onClick={logs.loadMore} disabled={logs.loadingMore}>Load more</button>
+      )}
+    </>
+  );
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `status` | The `useQuery` union — `disabled`, `pending`, `success`, `application-error`, `rejected`, `unavailable`. |
+| `items` | The flattened window across every loaded page, or `undefined` when no prefix is proven. |
+| `loadMore` | Always present. A no-op unless the window can actually grow, so callers never guard the call. |
+| `loadingMore` | A page beyond the proven prefix is in flight. |
+| `exhausted` | The last loaded page ended the sequence. Derived from data, so it survives staleness. |
+
+Every loaded page is an ordinary shared live subscription, not a snapshot: a
+write landing anywhere inside the window re-delivers the page it touched, and
+two components resting on the same page share one subscription. Because the
+pages are live, the chain can be contradicted — when a delivery moves a page's
+`nextCursor`, every page behind it started at a boundary that no longer exists.
+Those subscriptions are released at once and the window shows only the prefix
+it can still prove, getting briefly shorter rather than showing an overlap. The
+depth someone clicked for survives the release: pages come back on their own as
+each new boundary proves. Losing the connection keeps the whole window as
+explicitly stale `items`, exactly like `useQuery`.
+
+Each page is individually consistent; the window is consistent across pages
+only eventually. One commit that changes two pages sends two deliveries, so
+between them the pages sit at different versions and a row that crossed a page
+boundary can briefly appear twice or not at all. The predecessor's own delivery
+is already in flight and repairs it. This is the cost of a subscription per
+page, and it is the right one: the alternative is every subscription confirming
+its currency at every commit, which the whole system would pay for a transient
+that one list shows. Do not read a paginated window as an atomic snapshot of
+the table.
+
+The window is committed demand, so it is cheap when idle: the last consumer
+leaving releases every page subscription, and a consumer returning within the
+same commit pass continues them untouched.
+
+`pageSize` defaults to 25 and must be a positive safe integer of at most 256 —
+the server's own bound, so a bad value throws `RangeError` during render
+instead of failing one subscription per page. The server also budgets a page's
+bytes, so a page can come back shorter than `pageSize`; `exhausted` (not
+`items.length`) is what says the sequence ended. See
+[Database queries](database-queries.md#deterministic-order-and-pagination).
+
+The server function is an ordinary query — pagination needs no special kind:
+
+```ts
+export const list = query({
+  args: { level: v.string(), cursor: v.string().nullable(), pageSize: v.int() },
+  access: "authenticated",
+  handler: async (ctx, args) =>
+    await ctx.db.logs
+      .query()
+      .where((row) => row.level.eq(args.level))
+      .orderBy((row) => row.id.desc())
+      .paginate({ cursor: args.cursor, pageSize: args.pageSize }),
+});
+```
+
+### Filters the caller composes
+
+When the rows are chosen by the caller rather than by the component, send a
+[serializable filter](database-queries.md#serializable-filters) as an ordinary
+argument. The server validates it and returns its failures as an application
+error, so the hook reports them through `status: "application-error"` and the
+UI renders them beside the controls that produced them — no `try`/`catch`, no
+separate validation round trip:
+
+```tsx
+const logs = usePaginatedQuery(api.logs.list, { filter });
+
+if (logs.status === "application-error" && logs.error.code === "filter.invalid") {
+  return (
+    <ul>
+      {logs.error.body.issues.map((issue) => (
+        <li key={issue.path}>{issue.path}: {issue.message}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Because the expression is plain data, it survives a reload in the URL, and
+because it is validated on arrival, a hand-edited one fails as data too.
+
 ## Mutations
 
 `useMutation(ref)` returns a stable typed async function:

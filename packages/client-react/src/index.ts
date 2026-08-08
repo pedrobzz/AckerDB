@@ -13,6 +13,14 @@ export { useMutation } from "./use-mutation.ts";
 export { useProcedure, type AckerDBProcedure } from "./use-procedure.ts";
 export { skip, useQuery } from "./use-query.ts";
 export {
+  usePaginatedQuery,
+  type UsePaginatedQueryOptions,
+} from "./use-paginated-query.ts";
+export type {
+  AckerDBPaginatedArgs,
+  AckerDBPaginatedQueryState,
+} from "./paginated-query-store.ts";
+export {
   useRealtime,
   type RealtimeOn,
   type UseRealtimeOptions,
@@ -48,4 +56,5 @@ export type {
   Credential,
   CredentialProvenance,
   Identity,
+  QueryPage,
 } from "@ackerdb/core";

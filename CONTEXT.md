@@ -982,6 +982,39 @@ descending. Enum and union tags are stable storage identities rather than
 logical sort positions, so enum and union columns are not query-order fields.
 _Avoid_: Index order
 
+**Serializable filter expression** — A caller-supplied database predicate in
+closed wire form: comparison and membership clauses over declared filterable
+fields, composed by nested `all` and `any` groups. The server validates it and
+compiles it into ordinary predicate expression nodes, so it selects rows
+through the same path a `.where` callback does and never names an index.
+Validation failures are application errors carrying one issue per offending
+node, located by path from the expression root.
+_Avoid_: Query DSL, filter language, client-side filtering
+
+**Filterable field** — A column a table declares as accepting serializable
+filter clauses. The declaration is a boundary, not a convenience: an undeclared
+column is unknown to filtering even when queries return it, because a filter
+reveals whether rows exist without returning them.
+_Avoid_: Implicit column exposure, filter allowlist bypass
+
+**Query page** — One slice of a table query's declared order, bounded by both a
+requested row count and the framework's page byte budget, plus the opaque
+cursor that resumes after its last row. The byte budget removes rows, never
+fields, and always admits the first row, so a page may be shorter than
+requested and only its cursor states whether more rows exist.
+_Avoid_: Offset page, truncated row
+
+**Live page window** — The client's flattened view of consecutive query pages,
+each held as its own live subscription so a write inside the window re-delivers
+the page it touched. When a delivery moves a page's cursor, every page behind it
+is released and the window shortens to its proven prefix rather than showing an
+overlap, then grows back to the depth its consumer asked for as each new
+boundary proves. Each page is individually consistent and the
+window is consistent across pages only eventually: one commit changing two
+pages sends two deliveries, and a row crossing a boundary between them can
+briefly repeat or disappear until the predecessor's own delivery lands.
+_Avoid_: Infinite scroll cache, accumulated snapshot, atomic window
+
 **Transparent index** — An exact-result storage optimization selected by the
 database planner. Public schema declarations identify indexes by their ordered
 columns and configuration rather than a user-chosen name; AckerDB derives the
