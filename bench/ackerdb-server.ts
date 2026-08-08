@@ -41,15 +41,30 @@ if (reportPath === undefined || !isAbsolute(reportPath)) {
   throw new Error("ACKERDB_BENCH_TELEMETRY_REPORT must be an absolute path");
 }
 
+// The port is the caller's, not the application's. Base and head listen at the
+// same time so the pair driver can alternate between them without paying to
+// start a server for every window it measures, and two sides cannot share one
+// pinned port. The benchmark application therefore declares no port at all.
+const port = Number(process.env.ACKERDB_BENCH_PORT);
+if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  throw new Error("ACKERDB_BENCH_PORT must be an integer from 1 through 65535");
+}
+
 const config = loadConfig(appDir);
 const exporterMode = process.env.ACKERDB_BENCH_EXPORTER;
 if (exporterMode !== "disabled" && exporterMode !== "in-process") {
   throw new Error("ACKERDB_BENCH_EXPORTER must be disabled or in-process");
 }
-const profile = benchmarkProfileFromConfig(
-  config.telemetry,
-  exporterMode,
-);
+// The telemetry mode belongs to the harness, not to the benchmark application:
+// the pair driver decides which profile a side runs, exactly as it decides the
+// exporter mode beside it. Reading it back out of the application config made
+// this adapter depend on where the framework happens to keep its own switch,
+// which is not a fact about the workload.
+const telemetryMode = process.env.ACKERDB_BENCH_TELEMETRY;
+if (telemetryMode !== "enabled" && telemetryMode !== "disabled") {
+  throw new Error("ACKERDB_BENCH_TELEMETRY must be enabled or disabled");
+}
+const profile = benchmarkProfileFromConfig(telemetryMode, exporterMode);
 const startupMode = expectedAckerDBStartupMode(profile, config.durability);
 const schema = (await importApp(config)).schema;
 const modules = await importFunctionModules(config);
@@ -71,7 +86,7 @@ try {
         ? { telemetry: { exporter: BENCHMARK_EXPORTER } }
         : {}),
   });
-  server = serve({ runtime, port: config.port, statusScope: config.statusScope });
+  server = serve({ runtime, port, statusScope: config.statusScope });
   console.log(`@@ackerdb-startup ${JSON.stringify(startupMode)}`);
   console.log(
     `[ackerdb] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,

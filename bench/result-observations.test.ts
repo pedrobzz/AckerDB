@@ -54,7 +54,6 @@ function workload(system: SystemName): DriverResult {
   return {
     system,
     config: structuredClone(config),
-    snapshots: { seededIdle: "seeded", seededIdlePhaseId: "seeded", connectionBaselineIdlePhaseId: "baseline" },
     operations: ["query", "mutation-uncontended", "mutation-contended", "procedure"].map((operation) => ({
       operation,
       profile: { name: "latency", connections: 1, inFlightPerConnection: 1 },
@@ -67,7 +66,6 @@ function workload(system: SystemName): DriverResult {
     connections: [{
       targetConnections: 1,
       connected: 1,
-      addedConnections: 1,
       setupMs: 1,
       readyConnectionsPerSec: 1,
       readyLatency: { count: 1, minMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1, maxMs: 1 },

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { codeInputsChanged, nativeInputsChanged, performanceInputsChanged } from "./changes.ts";
+import {
+  codeInputsChanged,
+  nativeInputsChanged,
+  performanceInputsChanged,
+  telemetryInputsChanged,
+} from "./changes.ts";
 
 describe("native CI selection", () => {
   test("does not compile Rust for routine release or realtime TypeScript work", () => {
@@ -54,6 +59,33 @@ describe("benchmark selection", () => {
       "bun.lock",
       ".github/workflows/native.yml",
     ])).toBe(false);
+  });
+});
+
+describe("telemetry profile selection", () => {
+  const unreachable = "0000000000000000000000000000000000000000";
+
+  test("selects the profiles from the telemetry directories without consulting git", () => {
+    // No commit range is valid here: a path under either telemetry directory is
+    // enough on its own, so the probe below must never run.
+    expect(telemetryInputsChanged(unreachable, unreachable, [
+      "packages/server/src/telemetry/storage/store.ts",
+    ])).toBe(true);
+    expect(telemetryInputsChanged(unreachable, unreachable, [
+      "packages/server/src/runtime/telemetry/sampler.ts",
+    ])).toBe(true);
+  });
+
+  test("fails loudly when git cannot classify the range", () => {
+    // The old classifier read any non-matching exit code as "no telemetry
+    // changed", which would silently drop the only profiles that make a
+    // telemetry regression visible.
+    expect(() => telemetryInputsChanged(unreachable, unreachable, ["README.md"]))
+      .toThrow(/could not classify telemetry changes/);
+  });
+
+  test("reads a real range and finds the telemetry work in it", () => {
+    expect(telemetryInputsChanged("HEAD", "HEAD", ["README.md"])).toBe(false);
   });
 });
 

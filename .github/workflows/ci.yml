@@ -15,9 +15,9 @@ concurrency:
 jobs:
   changes:
     name: Select affected work
-    # A promotion (`canary` → `main`) selects work too, but only so `Benchmark`
-    # can read `performance`: everything else was already proven on the way into
-    # `canary`, and `Fast CI` stays skipped there as before.
+    # Both roads select work. `Benchmark` reads `performance` on the way into
+    # `canary` and again on the promotion, so a regression is attributable to
+    # one pull request first and to the release second.
     if: github.event.pull_request.draft == false && (github.base_ref == 'canary' || github.base_ref == 'main' || github.head_ref != 'canary')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -97,16 +97,18 @@ jobs:
         if: needs.changes.outputs.workflows == 'true'
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
 
-  # The benchmark gates the release, not the road to it. A merge into `canary`
-  # publishes a prerelease nobody depends on; a promotion to `main` ships. So it
-  # runs on the promotion only, where base is `main` and head is `canary` — which
-  # makes the comparison the whole release delta rather than one pull request's
-  # slice, the only measurement that sees what twenty merges did together. Every
-  # pull request into `canary` stops paying for it.
+  # The benchmark gates every pull request that touches a measured input,
+  # because a regression is only cheap to fix while it still belongs to one
+  # change. It used to run on the `canary` → `main` promotion alone, which meant
+  # `Benchmark ✅` on a pull request into `canary` was a two-second no-op — and a
+  # branch that cost most of the framework's throughput reached a clean review
+  # with that green tick beside it. The release delta is a real measurement, but
+  # it arrives at the one moment when attributing it costs the whole cycle, so
+  # the same comparison now runs on the way in as well as on the way out.
   #
   # `always()` with the prerequisite gate below mirrors Fast CI: a required check
-  # must report a conclusion even when it has nothing to measure, or a promotion
-  # touching no performance-relevant input would sit pending forever.
+  # must report a conclusion even when it has nothing to measure, or a pull
+  # request touching no performance-relevant input would sit pending forever.
   benchmark:
     name: Benchmark
     if: always()
@@ -121,14 +123,14 @@ jobs:
         run: |
           case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
           case "$NATIVE" in success|skipped) ;; *) exit 1 ;; esac
-      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+      - if: needs.changes.outputs.performance == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
-      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+      - if: needs.changes.outputs.performance == 'true'
         uses: ./.github/actions/bun-workspace
-      - name: Measure the release delta
-        if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+      - name: Measure both commits, interleaved
+        if: needs.changes.outputs.performance == 'true'
         env:
           BENCH_EXECUTION_HOST: github-hosted
           BENCH_TELEMETRY_PROFILES: ${{ needs.changes.outputs.telemetry == 'true' && 'enabled,exporter,disabled' || 'disabled' }}
@@ -137,10 +139,16 @@ jobs:
           "${{ github.event.pull_request.base.sha }}"
           "${{ github.event.pull_request.head.sha }}"
           benchmark-results
-      - name: Write the benchmark reasoning input
-        if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
-        run: bun bench/report.ts benchmark-results/base.json benchmark-results/head.json | tee benchmark-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
-      - if: github.base_ref == 'main' && needs.changes.outputs.performance == 'true'
+      # `shell: bash` is load-bearing: it turns on `pipefail`, without which the
+      # pipeline's exit code would be `tee`'s and a reported regression would
+      # leave the check green.
+      - name: Read the comparison and decide
+        if: needs.changes.outputs.performance == 'true'
+        shell: bash
+        run: bun bench/report.ts benchmark-results | tee benchmark-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
+      # Uploaded even when the comparison failed: the numbers that failed it are
+      # the ones worth reading.
+      - if: always() && needs.changes.outputs.performance == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ackerdb-benchmark-${{ github.event.pull_request.head.sha }}

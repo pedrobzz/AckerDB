@@ -18,8 +18,9 @@ import {
   type ProbeResult,
   type SearchResult,
 } from "./benchmark.ts";
-import { waitForBenchmarkStart } from "./process-lifecycle.ts";
-import { runWorkload } from "./workload.ts";
+import { parentCommands } from "./process-lifecycle.ts";
+import { openWorkloadSession, type WorkloadSession } from "./workload.ts";
+import type { BenchUnit } from "./units.ts";
 
 const url = process.env.ACKERDB_URL ?? "http://127.0.0.1:3311";
 
@@ -165,6 +166,28 @@ const adapter: BenchAdapter = {
   },
 };
 
-await waitForBenchmarkStart();
-const result = await runWorkload(adapter);
-console.log(`@@result ${JSON.stringify(result)}`);
+/**
+ * The load generator outlives one instruction. It seeds once, then answers unit
+ * requests until the side driver stops it, so the pair driver can hand the
+ * machine back and forth between base and head without paying to seed, connect,
+ * and warm a fresh process for every window it measures.
+ */
+type ClientCommand =
+  | { readonly type: "open" }
+  | { readonly type: "unit"; readonly unit: BenchUnit; readonly measureIdle: boolean }
+  | { readonly type: "close" };
+
+let session: WorkloadSession | undefined;
+for await (const line of parentCommands()) {
+  const command = JSON.parse(line) as ClientCommand;
+  if (command.type === "close") break;
+  if (command.type === "open") {
+    if (session !== undefined) throw new Error("benchmark client was opened twice");
+    session = await openWorkloadSession(adapter);
+    console.log(`@@session ${JSON.stringify({ seededIdle: session.seededIdle })}`);
+    continue;
+  }
+  if (session === undefined) throw new Error("benchmark client received a unit before it was opened");
+  const result = await session.runUnit(command.unit, { measureIdle: command.measureIdle });
+  console.log(`@@unit ${JSON.stringify({ unitId: command.unit.id, ...result })}`);
+}

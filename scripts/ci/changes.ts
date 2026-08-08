@@ -85,11 +85,7 @@ export function classifyChanges(base: string, head: string): ChangeSet {
 
   const native = nativeInputsChanged(files);
   const performance = performanceInputsChanged(files);
-  const telemetry = files.some((file) => file.startsWith("packages/server/src/telemetry/")) ||
-    Bun.spawnSync(
-      ["git", "diff", "--quiet", "-G", "(telemetry|Telemetry)", `${base}...${head}`, "--", "packages/*/src", "bench"],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exitCode === 1;
+  const telemetry = telemetryInputsChanged(base, head, files);
   const verifyPackages = files.some((file) =>
     file === "package.json" ||
     file === "bun.lock" ||
@@ -105,6 +101,43 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
   return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
+}
+
+/**
+ * Whether the benchmark must run the telemetry profiles beside the default one.
+ *
+ * This classifier is wider than it looks like it needs to be, and stays that
+ * way on evidence: the telemetry sidecar rework cost eighty-six percent of
+ * query throughput with telemetry on and nothing measurable with it off. The
+ * profiles it selects are the only place that class of regression is visible,
+ * so narrowing it to buy runner minutes would be spending the gate to save
+ * change. What it does tighten is the failure mode — a git invocation that
+ * neither says "no match" nor "match" is an error, where it used to be read as
+ * "no telemetry changed" and quietly drop the profiles that catch the largest
+ * regressions this benchmark has ever recorded.
+ */
+export function telemetryInputsChanged(
+  base: string,
+  head: string,
+  files: readonly string[],
+): boolean {
+  if (
+    files.some((file) =>
+      file.startsWith("packages/server/src/telemetry/") ||
+      file.startsWith("packages/server/src/runtime/telemetry/")
+    )
+  ) {
+    return true;
+  }
+  const probe = Bun.spawnSync(
+    ["git", "diff", "--quiet", "-G", "[Tt]elemetry", `${base}...${head}`, "--", "packages/*/src", "bench"],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+  if (probe.exitCode === 0) return false;
+  if (probe.exitCode === 1) return true;
+  throw new Error(
+    `git could not classify telemetry changes (exit ${probe.exitCode}): ${probe.stderr.toString().trim()}`,
+  );
 }
 
 export function codeInputsChanged(files: readonly string[]): boolean {
