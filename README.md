@@ -104,8 +104,9 @@ client.close();
   types, constraints, presence semantics, stored-data enforcement, and the
   deliberate pre-1.0 upgrade break.
 - [Database queries](docs/database-queries.md) documents typed SQL predicates,
-  deterministic ordering and keyset pagination, transparent indexes,
-  conservative reactive dependencies, and structural upsert.
+  serializable filter expressions, deterministic ordering and keyset pagination
+  with server-enforced row and byte bounds, transparent indexes, conservative
+  reactive dependencies, and structural upsert.
 - [Full-text search](docs/full-text-search.md) documents explicit FTS5 targets,
   literal implicit-AND queries, predicate composition, deterministic rank
   order, reactivity, lifecycle, and application-owned hybrid rank fusion.

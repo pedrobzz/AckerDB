@@ -15,6 +15,24 @@ export {
 } from "./result.ts";
 export type { Identity } from "./identity.ts";
 export type {
+  FilterAllGroup,
+  FilterAnyGroup,
+  FilterComparison,
+  FilterComparisonOperator,
+  FilterExpression,
+  FilterIssue,
+  FilterMembership,
+  FilterMembershipOperator,
+  FilterOperator,
+  FilterValue,
+} from "./filters.ts";
+export {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_BYTES,
+  MAX_PAGE_SIZE,
+  type QueryPage,
+} from "./pagination.ts";
+export type {
   FileGrantId,
   FileId,
   FileMetadata,

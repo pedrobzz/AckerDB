@@ -242,7 +242,6 @@ export type {
   PredicateExpression,
   OrderExpression,
   QueryRow,
-  QueryPage,
   QueryMaterializers,
   TableQuery,
   OrderedTableQuery,
@@ -252,6 +251,25 @@ export type {
   FullTextQuery,
   WriteResult,
 } from "./database/query/types.ts";
+export {
+  filterableFields,
+  MAX_FILTER_DEPTH,
+  MAX_FILTER_NODES,
+  MAX_FILTER_VALUES,
+  type FilterableFields,
+  type FilterInvalid,
+  type TableFilter,
+} from "./database/query/filter.ts";
+// The read contract itself belongs to core, where the client shares it.
+export {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_BYTES,
+  MAX_PAGE_SIZE,
+  type FilterExpression,
+  type FilterIssue,
+  type FilterValue,
+  type QueryPage,
+} from "@ackerdb/core";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
 export {
   probeOptimisticChanges,
