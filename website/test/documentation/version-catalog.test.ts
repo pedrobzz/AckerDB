@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDocumentationVersionCatalog } from "../src/lib/documentation/identity";
+import { createDocumentationVersionCatalog } from "../../src/lib/documentation/identity";
 
 describe("Documentation version catalog", () => {
   test("constructs the shared Latest, Canary, and stable identities", () => {

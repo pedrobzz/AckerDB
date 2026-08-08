@@ -8,7 +8,7 @@
     "build:publication": "bun run scripts/publication/build.ts",
     "preview": "bun run scripts/serve-static.ts .output/public 4173",
     "typecheck": "tsc --noEmit",
-    "test:static": "bun test test/*.test.ts",
+    "test:static": "bun test test/documentation/*.test.ts test/publication/*.test.ts",
     "test:publication-builds": "bun run scripts/publication/verify-builds.ts",
     "test:e2e": "playwright test",
     "verify": "bun run typecheck && bun run build && bun run test:static && bun run test:e2e && bun run test:publication-builds"

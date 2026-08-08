@@ -5,14 +5,14 @@ import {
   createPublicationArtifact,
   type PublicationFileOwnership,
   verifyPublicationArtifact,
-} from "../src/lib/documentation/publication/artifact";
+} from "../../src/lib/documentation/publication/artifact";
 import {
   artifactDirectory,
   createArtifact,
   latestAsset,
   publicationCommit as commit,
   stableAsset,
-} from "./publication-fixture";
+} from "./fixture";
 
 describe("documentation publication artifacts", () => {
   test("inventories every file deterministically with explicit mutable ownership", async () => {

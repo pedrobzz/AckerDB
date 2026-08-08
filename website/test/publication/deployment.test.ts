@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { transitionPublication } from "../src/lib/documentation/publication/deployment";
+import { transitionPublication } from "../../src/lib/documentation/publication/deployment";
 import {
   canaryAsset,
   createArtifact,
   latestAsset,
   publicationCommit as commit,
   stableAsset,
-} from "./publication-fixture";
+} from "./fixture";
 
 describe("documentation publication transitions", () => {
   test("uploads Latest as pre-activation without advertising a missing Canary", async () => {

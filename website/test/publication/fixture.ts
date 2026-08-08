@@ -5,7 +5,7 @@ import {
   createPublicationArtifact,
   type PublicationFileOwnership,
   type PublicationKind,
-} from "../src/lib/documentation/publication/artifact";
+} from "../../src/lib/documentation/publication/artifact";
 
 export const publicationCommit = "0123456789abcdef0123456789abcdef01234567";
 

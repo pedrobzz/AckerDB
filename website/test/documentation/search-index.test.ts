@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { codeIdentifiersFromMarkdown } from "../src/lib/documentation/search/code-identifiers";
+import { codeIdentifiersFromMarkdown } from "../../src/lib/documentation/search/code-identifiers";
 
 describe("Product documentation search indexing", () => {
   test("indexes code identifiers at the heading that owns the example", () => {

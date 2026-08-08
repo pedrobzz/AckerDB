@@ -4,8 +4,8 @@ import {
   publicationEntryPaths,
   publicationOwnsPath,
   publicationOwnsIdentity,
-} from "../src/lib/documentation/plan";
-import { documentationLocation } from "../src/lib/documentation/identity";
+} from "../../src/lib/documentation/plan";
+import { documentationLocation } from "../../src/lib/documentation/identity";
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 

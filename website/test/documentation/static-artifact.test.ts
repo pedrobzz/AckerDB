@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const publicArtifact = join(import.meta.dir, "..", ".output", "public");
+const publicArtifact = join(import.meta.dir, "..", "..", ".output", "public");
 
 interface RouteManifest {
   identity: {
@@ -72,7 +72,10 @@ describe("Product documentation static artifact", () => {
     const latest = await routeManifest("docs/routes.json");
     const canary = await routeManifest("docs/canary/routes.json");
     const corePackage = JSON.parse(
-      await readFile(join(import.meta.dir, "..", "..", "packages", "core", "package.json"), "utf8"),
+      await readFile(
+        join(import.meta.dir, "..", "..", "..", "packages", "core", "package.json"),
+        "utf8",
+      ),
     ) as { version: string };
 
     expect(latest.identity).toEqual({
@@ -116,9 +119,9 @@ describe("Product documentation static artifact", () => {
   test("keeps Installation aligned with the repository runtime and lockstep package version", async () => {
     const [installation, bunVersion, corePackage] = await Promise.all([
       readFile(join(publicArtifact, "docs", "installation.md"), "utf8"),
-      readFile(join(import.meta.dir, "..", "..", ".bun-version"), "utf8"),
+      readFile(join(import.meta.dir, "..", "..", "..", ".bun-version"), "utf8"),
       readFile(
-        join(import.meta.dir, "..", "..", "packages", "core", "package.json"),
+        join(import.meta.dir, "..", "..", "..", "packages", "core", "package.json"),
         "utf8",
       ).then((contents) => JSON.parse(contents) as { version: string }),
     ]);

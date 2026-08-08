@@ -13,8 +13,8 @@ import {
   type DocumentationIdentity,
 } from "@/lib/documentation/identity";
 import {
+  documentationVersionCatalog,
   publishedIdentity,
-  versionCatalog,
 } from "@/lib/documentation/release";
 import { docs, source } from "@/lib/documentation/source";
 
@@ -47,7 +47,7 @@ const loadDocumentationPage = createServerFn({ method: "GET" })
     const pageTree = pageTreeFor(identity);
 
     return {
-      catalog: versionCatalog(),
+      catalog: documentationVersionCatalog,
       currentIdentity: identity,
       currentAncestry: routeAncestryFor(pageTree, currentUrl),
       currentUrl,

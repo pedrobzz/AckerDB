@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { latestIdentity } from "@/lib/documentation/release";
+import { documentationVersionCatalog } from "@/lib/documentation/release";
 import { getMarkdown, source } from "@/lib/documentation/source";
 
 export const Route = createFileRoute("/llms-full.txt")({
@@ -7,7 +7,9 @@ export const Route = createFileRoute("/llms-full.txt")({
     handlers: {
       GET: async () => {
         const pages = await Promise.all(
-          source.getPages().map((page) => getMarkdown(page, latestIdentity())),
+          source
+            .getPages()
+            .map((page) => getMarkdown(page, documentationVersionCatalog.latest)),
         );
         return new Response(pages.join("\n\n---\n\n"), {
           headers: { "Content-Type": "text/plain; charset=utf-8" },

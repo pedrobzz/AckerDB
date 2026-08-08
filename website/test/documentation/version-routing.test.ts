@@ -5,7 +5,7 @@ import {
   resolveVersionSwitch,
   versionedDocumentationHref,
   versionedDocumentationMarkdown,
-} from "../src/lib/documentation/identity";
+} from "../../src/lib/documentation/identity";
 
 describe("Documentation version routing", () => {
   test("keeps Latest, Canary, and exact stable versions as distinct identities", () => {
