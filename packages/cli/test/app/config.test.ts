@@ -119,6 +119,28 @@ describe("production profile configuration", () => {
     }
   });
 
+  test("resolves a realtime runtime module relative to the app directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        realtime: "./deployment/realtime.ts",
+      }));
+
+      expect(loadConfig(dir, {})).toMatchObject({
+        realtime: resolve(dir, "deployment/realtime.ts"),
+      });
+
+      for (const realtime of ["", 42, null]) {
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ realtime }));
+        expect(() => loadConfig(dir, {})).toThrow(
+          "realtime must be a non-empty module path",
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects competing or malformed custom authentication configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {

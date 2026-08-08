@@ -94,6 +94,20 @@ export async function importApp(config: AppConfig): Promise<App> {
   return module.default;
 }
 
+/** Import one serving-only configured module while preserving its owner in failures. */
+export async function importConfiguredDefault(
+  path: string,
+  owner: string,
+): Promise<unknown> {
+  if (!existsSync(path)) throw new Error(`${owner} not found at ${path}`);
+  try {
+    return ((await import(pathToFileURL(path).href)) as { default?: unknown }).default;
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(`failed to import ${owner} at ${path}${detail}`, { cause: error });
+  }
+}
+
 async function importModules(
   files: readonly ModuleFile[],
 ): Promise<Record<string, Record<string, unknown>>> {

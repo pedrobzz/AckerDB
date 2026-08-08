@@ -128,6 +128,16 @@ filters, UDP range, advertised-address mappings, ICE timing, and TURN.
 Configuration is validated before accepting traffic. Direct UDP remains
 preferred; standard coturn REST credentials provide fallback relay access.
 
+The standard CLI configuration may name a serving-only module whose default
+export is the result of `createRealtimeRuntime(options)`. The CLI imports that
+module only when the assembled application declares realtime handlers; schema,
+code-generation, migration, backup, and other manifest consumers never import
+it. When no module is configured, an application with realtime handlers keeps
+the default `createRealtimeRuntime()` behavior. An explicitly supplied
+programmatic runtime overrides the configured module without importing it.
+This keeps deployment secrets and native network policy outside `defineApp`
+without requiring an application-owned process bootstrap.
+
 Remote candidate admission parses and charges every candidate before native
 WebRTC sees it. Consistent with the [W3C `addIceCandidate` behavior for an
 administratively prohibited candidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate), AckerDB omits unusable `typ host`
