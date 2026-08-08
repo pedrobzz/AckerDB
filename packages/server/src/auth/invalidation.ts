@@ -84,8 +84,10 @@ export class AuthInvalidationBoundary {
   readonly verifier: CredentialVerifier | undefined;
   private readonly listeners = new Map<AuthInvalidationScope, InvalidationListener>();
   private readonly directListeners = new Set<InvalidationListener>();
+  private readonly source: CredentialVerifier | undefined;
 
   constructor(source: CredentialVerifier | undefined) {
+    this.source = source;
     this.verifier = source === undefined
       ? undefined
       : Object.freeze({
@@ -120,18 +122,32 @@ export class AuthInvalidationBoundary {
   }
 
   /**
-   * Runtime-owned subscription to boundary-published account invalidations,
-   * present even when no application verifier is configured. It is how a
-   * credential revocation or grant change reaches a live lease: the vault has
-   * no upstream provider to publish through.
+   * Runtime-owned subscription to account invalidations, present even when no
+   * application verifier is configured. It is how a credential revocation or
+   * grant change reaches a live lease: the vault has no upstream provider to
+   * publish through.
+   *
+   * It subscribes to the provider too. A delegated credential's authority is
+   * bounded by an account further up its lineage, and that account is revoked
+   * by the *application's* verifier — an event this boundary never publishes,
+   * it only forwards. A subscriber hearing one source and not the other holds
+   * a correct predicate over events it never receives, which is the same as
+   * having no predicate: the in-flight holder would keep authority its parent
+   * has already lost. Both doors, or neither.
    */
   subscribeDirect(listener: InvalidationListener): () => void {
     this.directListeners.add(listener);
+    const stopSource = this.source?.subscribeInvalidation(listener);
+    if (this.source !== undefined && typeof stopSource !== "function") {
+      this.directListeners.delete(listener);
+      throw new TypeError("verifier returned an invalid unsubscribe callback");
+    }
     let active = true;
     return () => {
       if (!active) return;
       active = false;
       this.directListeners.delete(listener);
+      stopSource?.();
     };
   }
 

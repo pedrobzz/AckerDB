@@ -54,8 +54,10 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - the repository TypeScript checks, skipped when only documentation changed;
 - package, MCP, and workflow boundary checks only when their inputs changed;
 - the native matrix only when the WebRTC Rust source, native build/evidence
-  contract, native tests, or native workflow changed; and
-- the paired benchmark only when a benchmark-exercised input changed.
+  contract, native tests, or native workflow changed.
+
+The benchmark is not part of `Fast CI`. It is its own required check, and it
+measures the promotion — see [Benchmark job](#benchmark-job).
 
 Ordinary work is consolidated into `Select affected work` and one `Fast CI`
 job. This avoids paying a full runner minute for each short package or boundary
@@ -67,16 +69,29 @@ Native jobs cache Cargo dependencies, compiled targets, and evidence tools.
 Every job carries a hard timeout so a hung process can never hold a runner for
 hours.
 
-A `canary` → `main` pull request runs only the release-policy check; `Fast CI`
-completes as a successful no-op. The commit was already tested before it
-entered `canary`, and any performance-relevant change was benchmarked there;
-repeating that work would waste the release path. A merge into `main` runs
-only npm delivery.
+A `canary` → `main` pull request runs the release-policy check and the
+benchmark; `Fast CI` completes as a successful no-op, because the commit was
+already tested before it entered `canary` and repeating that work would waste
+the release path. A merge into `main` runs only npm delivery.
 
 ## Benchmark job
 
-`Fast CI` runs its benchmark job only when the pull request changes an input
-that the measured AckerDB workload can exercise:
+**The benchmark gates the release, not the road to it.** It runs on the
+`canary` → `main` promotion only, and only when a benchmark-exercised input
+changed somewhere in the release. A merge into `canary` publishes a prerelease
+nobody depends on; a promotion to `main` ships.
+
+Running it there rather than on every pull request also changes what is being
+measured, for the better: the comparison is the whole release delta rather than
+one pull request's slice, which is the only measurement that sees what twenty
+merges did *together*. A change that costs two percent is invisible in its own
+pull request and plain across a release.
+
+`Benchmark` is a required check on `main` alongside `Release policy` and
+`Fast CI`. Like `Fast CI` it reports a conclusion even when it has nothing to
+measure, because a required check that stays pending blocks forever.
+
+A benchmark-exercised input is one of:
 
 - production source under `packages/core/src`, `packages/client/src`, or
   `packages/server/src`;

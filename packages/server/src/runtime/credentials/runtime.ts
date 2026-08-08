@@ -91,10 +91,17 @@ export class RuntimeCredentials {
    */
   readonly resolveScopes: ScopeResolver = async (identity, account) => {
     if (account === null || account.issuer !== CREDENTIAL_ISSUER) {
-      return expandScopeGrant(
-        await this.resolveIdentityGrant(identity),
-        this.options.vocabulary,
-      );
+      // The verified account travels with the identity. `null` means one exact
+      // thing in this contract — the framework re-deriving an ancestor's grant,
+      // where no account is being presented — and spending it here would tell
+      // an application resolver that keys on issuer or subject to answer for
+      // "no account in particular" while a specific one was in fact presented.
+      // An Identity may hold several linked accounts with different authority.
+      const resolve = this.options.resolveAppScopes;
+      const grant = resolve === undefined
+        ? EMPTY_SCOPES
+        : resolvedGrant(await resolve(identity, account)).scopes;
+      return expandScopeGrant(grant, this.options.vocabulary);
     }
     // The lineage travels with the grant. Every transport resolves a vault
     // credential through here, so this is the one place that can guarantee a

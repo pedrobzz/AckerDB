@@ -42,7 +42,6 @@ import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
 import {
   checkRequirementAgainstVocabulary,
   knownScopeVocabulary,
-  normalizeScopeRequirement,
 } from "../auth/scopes.ts";
 import {
   claimsReservedName,
@@ -280,11 +279,9 @@ export class Registry {
     const vocabulary = knownScopeVocabulary(applicationScopes);
     for (const [address, fn] of this.functions) {
       if (fn.scopes === undefined) continue;
-      checkRequirementAgainstVocabulary(
-        normalizeScopeRequirement(fn.scopes, `function "${address}" scopes`),
-        vocabulary,
-        `function "${address}"`,
-      );
+      // Registration already normalized and froze it. Re-normalizing here
+      // would mean validating a value dispatch may not be enforcing.
+      checkRequirementAgainstVocabulary(fn.scopes, vocabulary, `function "${address}"`);
     }
     for (const tool of this.mcpTools.values()) {
       const policy = tool.accessPolicy;

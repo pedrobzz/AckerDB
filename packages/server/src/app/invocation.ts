@@ -23,7 +23,6 @@ import type {
 import type { AccessPolicy, InvocationContext } from "./access.ts";
 import {
   enforceScopeRequirement,
-  normalizeScopeRequirement,
   type NormalizedScopeRequirement,
   type ScopeRequirement,
 } from "../auth/scopes.ts";
@@ -117,8 +116,12 @@ export interface InvocationOptions<Ctx, Args> {
 export interface AuthorizationDefinition<A extends ObjectShape, Ctx extends InvocationContext> {
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
-  /** Scope requirement enforced after `access` at this one funnel. */
-  readonly scopes?: ScopeRequirement<string>;
+  /**
+   * Scope requirement enforced after `access` at this one funnel, in the
+   * canonical form registration froze. Taking the declared form here would
+   * re-open the question of which normalization dispatch is enforcing.
+   */
+  readonly scopes?: NormalizedScopeRequirement;
 }
 
 export interface AuthorizedInvocation<Ctx, Args> {
@@ -226,11 +229,10 @@ function compileBaseAccess<Ctx extends InvocationContext, Args>(
  */
 function compileAccess<Ctx extends InvocationContext, Args>(
   access: AccessPolicy<Ctx, Args>,
-  scopes: ScopeRequirement<string> | undefined,
+  requirement: NormalizedScopeRequirement | undefined,
 ): AccessEnforcer<Ctx, Args> {
   const base = compileBaseAccess(access);
-  if (scopes === undefined) return base;
-  const requirement: NormalizedScopeRequirement = normalizeScopeRequirement(scopes, "scopes");
+  if (requirement === undefined) return base;
   return (ctx, args) => {
     const result = base(ctx, args);
     if (isPromiseLike(result)) {

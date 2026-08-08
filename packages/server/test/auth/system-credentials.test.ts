@@ -50,6 +50,7 @@ import type {
 const action = v.enum("SystemCredentialAction", [
   "create_agent",
   "create_scoped",
+  "create_root_scoped",
   "list_agent",
   "revoke_agent",
   "revoke_missing",
@@ -145,6 +146,13 @@ const declaredJobs = () => declareJobs({
             return;
           case "create_scoped":
             systemResult = systemCredentials.create(ctx, args.identity, {
+              name: args.name ?? "",
+              metadata: args.metadata,
+              scopes: args.scopes as readonly string[],
+            });
+            return;
+          case "create_root_scoped":
+            systemResult = systemCredentials.create(ctx, null, {
               name: args.name ?? "",
               metadata: args.metadata,
               scopes: args.scopes as readonly string[],
@@ -498,5 +506,42 @@ describe("system-managed identity credentials", () => {
     expect(lastJobRow(engine).errorText).toContain("validation");
     expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 0n });
+  });
+
+  test("system cannot store an open-ended grant under a parent it does not bound", async () => {
+    // The child invariant is enforced at issuance and at use. System authority
+    // has no grant of its own, so issuance cannot be checked the way the owner
+    // surface checks it — and a stored wildcard under a parent is exactly the
+    // grant that would start authorizing more the day the parent grows, with
+    // nobody having granted the difference. Use-time intersection would hide
+    // it: the child looks correctly narrow until it silently is not.
+    const { engine, runtime } = fixture();
+    const bob = await user(runtime, "wildcard-owner");
+    const bobSession = session(bob, "wildcard-owner-session");
+    await runtime.openSession(bobSession);
+    const at = await queueJob(runtime, bobSession, 137, "create_scoped", {
+      name: "Open-ended agent",
+      scopes: ["orders.*"],
+    });
+    expect(await runJobsAt(runtime, at)).toBe(1);
+    expect(lastJobRow(engine)).toMatchObject({ state: "failed" });
+    expect(lastJobRow(engine).errorText).toContain("open-ended");
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
+      .toEqual({ count: 0n });
+  });
+
+  test("a root credential has no parent to outgrow, so it keeps its patterns", async () => {
+    const { engine, runtime } = fixture();
+    const bob = await user(runtime, "root-minter");
+    const bobSession = session(bob, "root-minter-session");
+    await runtime.openSession(bobSession);
+    const at = await queueJob(runtime, bobSession, 139, "create_root_scoped", {
+      name: "Root agent",
+      scopes: ["orders.*"],
+    });
+    expect(await runJobsAt(runtime, at)).toBe(1);
+    expect(lastJobRow(engine)).toMatchObject({ state: "completed" });
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
+      .toEqual({ count: 1n });
   });
 });
