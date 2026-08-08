@@ -1,7 +1,8 @@
 /**
- * API paths (ADR-0023): the group a function is published in, deciding its
- * generated binding and its HTTP root together — and deciding nothing about
- * admission, which stays `access`'s alone.
+ * API paths (ADR-0023): the group a function is published in — the first
+ * segment of its address, deciding its generated binding and its HTTP root
+ * together — and deciding nothing about admission, which stays `access`'s
+ * alone.
  */
 import { describe, expect, test } from "bun:test";
 import { ANONYMOUS_PRINCIPAL, SYSTEM_PRINCIPAL } from "../../src/auth/credentials.ts";
@@ -201,11 +202,35 @@ describe("the HTTP root a group owns", () => {
     expect([...registry.httpRoutes.keys()]).toEqual(["/internal/stripe/hook"]);
   });
 
-  test("every registered function resolves at its address, whatever its group", () => {
+  test("every registered function resolves at the address its group begins", () => {
     const registry = new Registry({ messages: { list, compact } }, ["internal"]);
-    expect(registry.get("messages.list")).toBe(list as never);
-    expect(registry.get("messages.compact")).toBe(compact as never);
-    expect(registry.get("messages.never-registered")).toBeUndefined();
+    expect(registry.get("api.messages.list")).toBe(list as never);
+    expect(registry.get("internal.messages.compact")).toBe(compact as never);
+    // The group is not an alias: neither function answers under the other's.
+    expect(registry.get("messages.list")).toBeUndefined();
+    expect(registry.get("internal.messages.list")).toBeUndefined();
+    expect(registry.get("api.messages.compact")).toBeUndefined();
+  });
+
+  test("two groups hold one trailing name without colliding", () => {
+    // This is what the group buys by being part of the address: one module
+    // path and one export name in two groups are two functions at two
+    // addresses and two routes, so neither group can squat the other's names.
+    const grouped = { ...list, apiPath: "internal" } as never;
+    const registry = new Registry({ messages: { list, grouped } }, ["internal"]);
+    expect([...registry.functions.keys()].sort())
+      .toEqual(["api.messages.list", "internal.messages.grouped"]);
+    expect([...registry.exposed.keys()].sort())
+      .toEqual(["/api/messages/list", "/internal/messages/grouped"]);
+  });
+
+  test("the group is declared on the function, never inferred from a directory", () => {
+    // An application may keep a `functions/admin/` folder in the default
+    // group: the first directory segment is a module name, and only `apiPath`
+    // names a group.
+    const registry = new Registry({ "admin.messages": { list } });
+    expect([...registry.functions.keys()]).toEqual(["api.admin.messages.list"]);
+    expect([...registry.exposed.keys()]).toEqual(["/api/admin/messages/list"]);
   });
 
   test("an MCP tools record may name a function from any group", () => {
@@ -216,7 +241,7 @@ describe("the HTTP root a group owns", () => {
     });
     const registry = new Registry({
       messages: { list, compact },
-      admin: { endpoint },
+      tools: { endpoint },
     }, ["internal"]);
     expect(registry.mcpTool("admin", "list_index")?.fn).toBe(compact as never);
   });

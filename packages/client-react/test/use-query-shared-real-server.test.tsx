@@ -70,7 +70,7 @@ function createApp(): App {
 }
 
 type Message = { readonly id: bigint; readonly body: string };
-const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
+const messagesList = { $ref: "api.messages.list" } as QueryRef<Record<never, never>, Message[]>;
 
 const observed = new Map<string, AckerDBQueryState<Message[]>>();
 
@@ -144,7 +144,7 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
     expect(framesOf("sub")).toHaveLength(1);
 
     // One live mutation reaches both consumers as the same snapshot object.
-    await writer.mutation("messages.add", { body: "hello" });
+    await writer.mutation("api.messages.add", { body: "hello" });
     await until(
       () => container.textContent === "a=fresh:hello;b=fresh:hello;",
       "the shared live update",
@@ -154,7 +154,7 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
     // One board leaving keeps the shared subscription alive for the other.
     render(["a"]);
     expect(framesOf("unsub")).toHaveLength(0);
-    await writer.mutation("messages.add", { body: "again" });
+    await writer.mutation("api.messages.add", { body: "again" });
     await until(
       () => container.textContent === "a=fresh:hello,again;",
       "the update after one board left",

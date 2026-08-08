@@ -1,8 +1,14 @@
 /**
  * Function references: the typed, opaque addresses clients use to name server
  * functions. At runtime a reference is just a dot-joined address string
- * ("messages.list"); the generic parameters carry kind/args/data/error types so
- * every call is end-to-end typed through codegen.
+ * ("api.messages.list"); the generic parameters carry kind/args/data/error
+ * types so every call is end-to-end typed through codegen.
+ *
+ * **An address begins with its group.** `<apiPath>.<...module segments>.<export
+ * name>` is the whole rule, and it holds everywhere an address appears — the
+ * socket, the registry's keys, the URL. A group is therefore a namespace and
+ * not a label: `api.messages.list` and `internal.messages.list` are two
+ * functions, and one group's names can never be squatted from another.
  */
 
 import type { ErrResult, OkResult } from "./result.ts";
@@ -10,10 +16,11 @@ import type { ErrResult, OkResult } from "./result.ts";
 export type FunctionKind = "query" | "mutation" | "procedure" | "sse" | "event";
 
 /**
- * The API path every function without an explicit one is published in. It is
- * an ordinary group, not a privileged category: the framework names this one
- * so a declaration need not. It lives here because the generated trees below
- * and the server's declaration builders must agree on it exactly.
+ * The API path every function without an explicit one is published in, and so
+ * the first segment of its address. It is an ordinary group, not a privileged
+ * category: the framework names this one so a declaration need not. It lives
+ * here because the generated trees below and the server's declaration builders
+ * must agree on it exactly.
  */
 export const DEFAULT_API_PATH = "api";
 export type DefaultApiPath = typeof DEFAULT_API_PATH;
@@ -26,6 +33,15 @@ export type DefaultApiPath = typeof DEFAULT_API_PATH;
  * to.
  */
 export const EVENTS_NAMESPACE = "events";
+
+/**
+ * The address prefix every event-table reference carries. Event tables are not
+ * modules, but they are leaves of the default group's tree, so they are
+ * addressed like everything else in it. The subscription path that parses a
+ * table out of an address and the generated module that writes one must agree
+ * on this exactly, so it is spelled once.
+ */
+export const EVENTS_ADDRESS_PREFIX = `${DEFAULT_API_PATH}.${EVENTS_NAMESPACE}.`;
 
 /**
  * The character marking a name as the framework's own, across every namespace
@@ -48,8 +64,6 @@ export interface FunctionReference<
   Error = never,
 > {
   readonly $ref: string;
-  /** The group this reference was taken from; absent means the default. */
-  readonly $apiPath?: string;
   readonly _kind?: K;
   readonly _args?: A;
   readonly _ret?: Data;
@@ -156,25 +170,13 @@ export function getRef(
 }
 
 /**
- * The wire contract for an exposed function's URL: the group is the root and
- * address segments are the path after it. The listener claiming the path and
- * the client building it read this one rule, so the two cannot drift.
+ * The wire contract for an exposed function's URL: the address, segment for
+ * segment. The group needs no separate argument because it is already the
+ * first segment, so the listener claiming the path and the client building it
+ * read one rule over one value and cannot drift.
  */
-export function httpPathForAddress(apiPath: string, address: string): string {
-  return `/${apiPath}/${address.replaceAll(".", "/")}`;
-}
-
-/**
- * The group a reference was taken from, deciding the HTTP root its function
- * answers on. A raw address string carries no group and names the default
- * one — the same thing a hand-written address has always meant.
- */
-export function refApiPath(
-  ref: FunctionReference<FunctionKind, unknown, unknown, unknown> | string,
-): string {
-  if (typeof ref === "string") return DEFAULT_API_PATH;
-  const path = ref.$apiPath;
-  return typeof path === "string" && path.length > 0 ? path : DEFAULT_API_PATH;
+export function httpPathForAddress(address: string): string {
+  return `/${address.replaceAll(".", "/")}`;
 }
 
 export type ChannelArgs<Ref extends AnyChannelRef> =
@@ -242,15 +244,14 @@ export type RealtimeError<Ref extends AnyRealtimeRef> =
     infer Error
   > ? Error : never;
 
-function makeRefProxy(address: string, apiPath: string): unknown {
+function makeRefProxy(address: string): unknown {
   return new Proxy(
-    { $ref: address, $apiPath: apiPath },
+    { $ref: address },
     {
       get(target, prop) {
         if (prop === "$ref") return address;
-        if (prop === "$apiPath") return apiPath;
         if (typeof prop !== "string") return Reflect.get(target, prop);
-        return makeRefProxy(address === "" ? prop : `${address}.${prop}`, apiPath);
+        return makeRefProxy(`${address}.${prop}`);
       },
     },
   );
@@ -258,14 +259,14 @@ function makeRefProxy(address: string, apiPath: string): unknown {
 
 /**
  * Untyped reference builder for one group: `apiGroup("internal").messages.list`
- * yields the reference for address "messages.list", resolving under
- * `/internal/`. An address is unchanged by its group — the socket addresses
- * every function by the dotted name alone — so only the HTTP root differs.
+ * yields the reference for address "internal.messages.list", resolving under
+ * `/internal/messages/list`. The group is the address's first segment, so the
+ * builder is seeded with it and every property access appends the next.
  * Generated `api.ts` casts each group's builder to that group's typed tree.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apiGroup(apiPath: string): any {
-  return makeRefProxy("", apiPath);
+  return makeRefProxy(apiPath);
 }
 
 /** The same builder for the default group: `anyApi.messages.list`. */
@@ -334,8 +335,9 @@ export interface RegisteredServerOnly {
 }
 
 /**
- * The API path a registered function was published in, carried on its type so
- * a generated tree can select one group. Every registered function has one.
+ * The API path a registered function was published in — the first segment of
+ * its address — carried on its type so a generated tree can select one group.
+ * Every registered function has one.
  */
 export interface RegisteredApiPath<Path extends string> {
   readonly apiPath: Path;
@@ -360,8 +362,8 @@ type InApiPath<Export, Path extends string> = Export extends RegisteredServerOnl
       ? true
       : false
     : Export extends RegisteredChannelContract | RegisteredRealtimeContract
-      ? // Socket-addressed contracts have no HTTP root to group, so they live
-        // in the default group alone.
+      ? // Socket-addressed contracts refuse `apiPath`, so their addresses
+        // begin with the default group and they live in that tree alone.
         [Path] extends [DefaultApiPath]
         ? true
         : false

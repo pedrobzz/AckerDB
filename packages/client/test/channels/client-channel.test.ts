@@ -37,7 +37,7 @@ type Chat = ChannelRef<
   }
 >;
 
-const chat = { $ref: "chat.room" } as Chat;
+const chat = { $ref: "api.chat.room" } as Chat;
 
 describe("AckerDBClient channels", () => {
   test("uses the existing socket, shares one join, dispatches once per observer, and leaves once", () => {

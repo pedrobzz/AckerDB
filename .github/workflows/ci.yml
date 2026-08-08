@@ -80,7 +80,7 @@ jobs:
       - name: Check repository boundaries
         if: needs.changes.outputs.code == 'true'
         run: |
-          bun test scripts/ci scripts/release
+          bun test ./scripts/ci ./scripts/release
           bun test ./bench
           bun run typecheck:tooling
           bun run typecheck:bench

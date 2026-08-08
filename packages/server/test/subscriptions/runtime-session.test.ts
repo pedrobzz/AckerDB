@@ -551,7 +551,7 @@ async function reconnectTransitionEvidence(
       v: PROTOCOL_VERSION,
       t: "m",
       id: sequence,
-      ref: "messages.send",
+      ref: "api.messages.send",
       args,
       mutationRequestId: uuidV7(NOW, 100 + sequence),
       issuedAt: NOW,
@@ -585,15 +585,15 @@ async function reconnectTransitionEvidence(
     if (transition === "checkpoint") await write({ channelId: 1n, body: "seed" });
 
     if (transition === "checkpoint") {
-      client.subscribe("messages.nonempty", { channelId: 1n }, (value) => {
+      client.subscribe("api.messages.nonempty", { channelId: 1n }, (value) => {
         updates.push(String(value));
       }, onError);
     } else if (transition === "revoked") {
-      client.subscribe("messages.identity", {}, (value) => {
+      client.subscribe("api.messages.identity", {}, (value) => {
         updates.push((value as { readonly subject: string }).subject);
       }, onError);
     } else {
-      client.subscribe("messages.list", { channelId: 1n }, (value) => {
+      client.subscribe("api.messages.list", { channelId: 1n }, (value) => {
         const rows = value as readonly { readonly body: string }[];
         updates.push(rows.map(({ body }) => body).sort().join(","));
       }, onError);
@@ -719,7 +719,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "q" as const,
         id: 91,
-        ref: "messages.list",
+        ref: "api.messages.list",
         args: { channelId: 1n },
       };
       const canonical = encode(message);
@@ -820,7 +820,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "sub",
         id: 10,
-        ref: "messages.list",
+        ref: "api.messages.list",
         args: { channelId: 1n },
       });
       const initial = transitionMessages(sink.applications).at(-1);
@@ -839,7 +839,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "m" as const,
         id: 2,
-        ref: "messages.send",
+        ref: "api.messages.send",
         args: { channelId: 1n, body: "once" },
         mutationRequestId,
         issuedAt: NOW,
@@ -888,7 +888,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "sub",
         id: 20,
-        ref: "messages.identity",
+        ref: "api.messages.identity",
         args: {},
       });
       expect(transitionMessages(sink.applications).at(-1)).toMatchObject({
@@ -987,23 +987,23 @@ describe("Session + Runtime integration", () => {
 
     try {
       client.subscribeEvent<{ channelId: bigint }, { id: bigint; channelId: bigint }>(
-        "events.typing",
+        "api.events.typing",
         { channelId: 1n },
         (event) => publicOne.push(event),
       );
       client.subscribeEvent<{ channelId: bigint }, { id: bigint; channelId: bigint }>(
-        "events.typing",
+        "api.events.typing",
         { channelId: 2n },
         (event) => publicTwo.push(event),
       );
       client.subscribeEvent<{ channelId: bigint }, { id: bigint; channelId: bigint }>(
-        "events.privateTyping",
+        "api.events.privateTyping",
         { channelId: 1n },
         (event) => privateOne.push(event),
         (error) => privateErrors.push(error),
       );
       client.subscribeEvent<{ channelId: string }, unknown>(
-        "events.typing",
+        "api.events.typing",
         { channelId: "malformed" },
         () => {},
         (error) => malformedErrors.push(error),
@@ -1011,7 +1011,7 @@ describe("Session + Runtime integration", () => {
       await socket.settle();
       expect(malformedErrors).toMatchObject([{ code: "validation" }]);
 
-      const first = client.mutation("typing.emit", { channelId: 1n });
+      const first = client.mutation("api.typing.emit", { channelId: 1n });
       await socket.settle();
       await first;
       expect(publicOne.filter((event) => event.kind === "row")).toHaveLength(1);
@@ -1024,7 +1024,7 @@ describe("Session + Runtime integration", () => {
       expect(privateErrors).toHaveLength(0);
       expect(privateOne.filter((event) => event.kind === "reset")).toHaveLength(2);
 
-      const afterRefresh = client.mutation("typing.emit", { channelId: 1n });
+      const afterRefresh = client.mutation("api.typing.emit", { channelId: 1n });
       await socket.settle();
       await afterRefresh;
       expect(privateOne.filter((event) => event.kind === "row")).toHaveLength(2);
@@ -1035,7 +1035,7 @@ describe("Session + Runtime integration", () => {
       expect(privateErrors).toMatchObject([{ code: "unauthenticated" }]);
       const privateRows = privateOne.filter((event) => event.kind === "row").length;
 
-      const afterSignOut = client.mutation("typing.emit", { channelId: 1n });
+      const afterSignOut = client.mutation("api.typing.emit", { channelId: 1n });
       await socket.settle();
       await afterSignOut;
       expect(privateOne.filter((event) => event.kind === "row")).toHaveLength(privateRows);
@@ -1117,14 +1117,14 @@ describe("Session + Runtime integration", () => {
           v: PROTOCOL_VERSION,
           t: "sub",
           id: 10,
-          ref: "messages.list",
+          ref: "api.messages.list",
           args: { channelId: 1n },
         });
         await handle(session, {
           v: PROTOCOL_VERSION,
           t: "sub",
           id: 20,
-          ref: "events.typing",
+          ref: "api.events.typing",
           args: { channelId: 1n },
         });
       }
@@ -1136,7 +1136,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "m",
         id: 1,
-        ref: "messages.send",
+        ref: "api.messages.send",
         args: { channelId: 1n, body: "query-race" },
         mutationRequestId: uuidV7(NOW, 2),
         issuedAt: NOW,
@@ -1165,7 +1165,7 @@ describe("Session + Runtime integration", () => {
         v: PROTOCOL_VERSION,
         t: "m",
         id: 2,
-        ref: "typing.emit",
+        ref: "api.typing.emit",
         args: { channelId: 1n },
         mutationRequestId: uuidV7(NOW, 3),
         issuedAt: NOW,

@@ -77,8 +77,8 @@ class LoggingSocket extends FakeSocket {
 }
 
 type TodoArgs = { readonly list: bigint };
-const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
-const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
+const todos = { $ref: "api.todos.list" } as QueryRef<TodoArgs, string[]>;
+const uppercase = { $ref: "api.tools.uppercase" } as ProcedureRef<
   { readonly value: string },
   { readonly value: string }
 >;
@@ -88,7 +88,7 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
     generation: "generation-1",
     commitVersion,
     authEpoch: 0,
-    identity: "todos.list:{list:1}",
+    identity: "api.todos.list:{list:1}",
   };
 }
 
@@ -349,7 +349,7 @@ describe("native AppState lifecycle through the provider", () => {
     });
     const recovered = replacement.framesOf("p")[0]!;
     expect(recovered).toMatchObject({
-      ref: "tools.uppercase",
+      ref: "api.tools.uppercase",
       args: { value: "one" },
     });
     await act(async () => {

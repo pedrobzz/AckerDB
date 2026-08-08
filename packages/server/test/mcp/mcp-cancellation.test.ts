@@ -317,7 +317,7 @@ afterEach(async () => {
 async function callProcedure(mode: string, signal?: AbortSignal): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: ++requestId,
-    address: "app.runLocal",
+    address: "api.app.runLocal",
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
     ...(signal === undefined ? {} : { signal }),

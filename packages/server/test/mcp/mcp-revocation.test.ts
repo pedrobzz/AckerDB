@@ -278,7 +278,7 @@ async function createAgentToken(
       request(
         mutationMessage(id, String(id), {
           name,
-        }, "revocation.createRevocationAgentToken"),
+        }, "api.revocation.createRevocationAgentToken"),
       ),
     )
   ).value as { readonly id: string; readonly token: string };
@@ -298,7 +298,7 @@ async function createScopedToken(
           id,
           String(id),
           { name },
-          "revocation.createRevocationScopedToken",
+          "api.revocation.createRevocationScopedToken",
         ),
       ),
     )
@@ -352,8 +352,8 @@ describe("bounded live MCP credential invalidation", () => {
             "3",
             { id: target.id, key: `${authorityChange}-authority` },
             authorityChange === "revoke"
-              ? "revocation.gatedAgentRevoke"
-              : "revocation.gatedScopeReduction",
+              ? "api.revocation.gatedAgentRevoke"
+              : "api.revocation.gatedScopeReduction",
           ),
         ),
       );
@@ -460,7 +460,7 @@ describe("bounded live MCP credential invalidation", () => {
             12,
             "12",
             { id: agent.id },
-            "revocation.rollbackAgentRevoke",
+            "api.revocation.rollbackAgentRevoke",
           ),
         ),
       ),
@@ -472,7 +472,7 @@ describe("bounded live MCP credential invalidation", () => {
           13,
           "13",
           { id: agent.id, metadata: { renamed: true } },
-          "revocation.updateRevocationAgentMetadata",
+          "api.revocation.updateRevocationAgentMetadata",
         ),
       ),
     );
@@ -503,7 +503,7 @@ describe("bounded live MCP credential invalidation", () => {
             14,
             "14",
             { id: scoped.id },
-            "revocation.rollbackScopeReduction",
+            "api.revocation.rollbackScopeReduction",
           ),
         ),
       ),
@@ -593,7 +593,7 @@ describe("bounded live MCP credential invalidation", () => {
           23,
           "23",
           { id: revoked.id },
-          "revocation.revokeRevocationAgentToken",
+          "api.revocation.revokeRevocationAgentToken",
         ),
       ),
     );

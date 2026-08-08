@@ -203,7 +203,7 @@ describe("durable provider-neutral Identity", () => {
       v: PROTOCOL_VERSION,
       t: "m",
       id: 1,
-      ref: "owned.create",
+      ref: "api.owned.create",
       args: { value: "persisted" },
       mutationRequestId: uuidV7(1),
       issuedAt,
@@ -230,7 +230,7 @@ describe("durable provider-neutral Identity", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "owned.current",
+      ref: "api.owned.current",
       args: {},
     };
     expect(await second.runtime.query(secondSession, request(queryMessage))).toEqual({

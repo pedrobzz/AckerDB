@@ -56,7 +56,7 @@ async function issue(
 ): Promise<CreatedToken> {
   return (await runtime.mutation(
     owner,
-    request(mutationMessage(id, String(id), { name, scopes }, "tokens.createScopedToken")),
+    request(mutationMessage(id, String(id), { name, scopes }, "api.tokens.createScopedToken")),
   )).value as CreatedToken;
 }
 
@@ -90,7 +90,7 @@ describe("credential delegation lineage", () => {
 
     await runtime.mutation(
       aliceSession,
-      request(mutationMessage(3, "3", { id: child.id }, "tokens.revokeAgentToken")),
+      request(mutationMessage(3, "3", { id: child.id }, "api.tokens.revokeAgentToken")),
     );
 
     // Both rows are gone: a surviving grandchild would read as an application
@@ -116,7 +116,7 @@ describe("credential delegation lineage", () => {
     await runtime.mutation(
       aliceSession,
       request(mutationMessage(3, "3", { id: child.id, scopes: ["orders.get"] },
-        "tokens.updateScopedToken")),
+        "api.tokens.updateScopedToken")),
     );
 
     // The stored grandchild grant is untouched; its live authority is not.
@@ -257,7 +257,7 @@ describe("credential delegation lineage", () => {
         v: PROTOCOL_VERSION,
         t: "p" as const,
         id: 1,
-        ref: "tokens.revokeThenRollback",
+        ref: "api.tokens.revokeThenRollback",
         args: { id: child.id },
       })) as { readonly rolledBack: boolean };
       expect(attempt.rolledBack).toBe(true);
@@ -273,7 +273,7 @@ describe("credential delegation lineage", () => {
       // The same operation, committed, does cancel it.
       await runtime.mutation(
         aliceSession,
-        request(mutationMessage(2, "2", { id: child.id }, "tokens.revokeAgentToken")),
+        request(mutationMessage(2, "2", { id: child.id }, "api.tokens.revokeAgentToken")),
       );
       expect(lease.signal.aborted).toBe(true);
     } finally {

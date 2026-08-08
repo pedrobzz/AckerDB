@@ -50,9 +50,9 @@ const SESSION = "native-suspension-session";
 const APP = { url: "http://native-suspension.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly text: string };
-const todosAdd = { $ref: "todos.add" } as MutationRef<TodoArgs, bigint>;
+const todosAdd = { $ref: "api.todos.add" } as MutationRef<TodoArgs, bigint>;
 type PingRow = { readonly n: number };
-const pings = { $ref: "events.pings" } as EventRef<{ readonly min: number }, PingRow>;
+const pings = { $ref: "api.events.pings" } as EventRef<{ readonly min: number }, PingRow>;
 
 function eventCursor(
   sequence: bigint,

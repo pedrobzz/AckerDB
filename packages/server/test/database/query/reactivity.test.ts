@@ -266,7 +266,7 @@ describe("query prefix reactivity", () => {
     title: string,
     embedding: readonly number[] | null,
   ): Promise<bigint> {
-    const result = await session.mutation(requestId, "documents.insert", {
+    const result = await session.mutation(requestId, "api.documents.insert", {
       tenantId,
       status,
       score: requestId,
@@ -278,18 +278,18 @@ describe("query prefix reactivity", () => {
 
   test("updates across a filtered predicate on insert, patch, and delete", async () => {
     const outside = await insert(1, 2n, "active", "outside", null);
-    await session.subscribe(10, "documents.active", { tenantId: 1n });
+    await session.subscribe(10, "api.documents.active", { tenantId: 1n });
     expect(session.transitions(10).at(-1)).toMatchObject({
       transition: { kind: "reset", value: [] },
     });
 
-    const movedInside = await session.mutation(2, "documents.move", { id: outside, tenantId: 1n });
+    const movedInside = await session.mutation(2, "api.documents.move", { id: outside, tenantId: 1n });
     expect(movedInside.receipt.obligations).toEqual([10]);
     expect(session.transitions(10).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ title: "outside" })] },
     });
 
-    const removedByPredicate = await session.mutation(3, "documents.setStatus", {
+    const removedByPredicate = await session.mutation(3, "api.documents.setStatus", {
       id: outside,
       status: "archived",
     });
@@ -302,7 +302,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(10).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ id: inserted })] },
     });
-    const deleted = await session.mutation(5, "documents.remove", { id: inserted });
+    const deleted = await session.mutation(5, "api.documents.remove", { id: inserted });
     expect(deleted.receipt.obligations).toEqual([10]);
     expect(session.transitions(10).at(-1)).toMatchObject({
       transition: { kind: "update", value: [] },
@@ -313,11 +313,11 @@ describe("query prefix reactivity", () => {
     const unionCandidate = await insert(1, 1n, "archived", "union", null);
     const membershipCandidate = await insert(2, 9n, "active", "membership", null);
     const rangeCandidate = await insert(3, 5n, "active", "range", null);
-    await session.mutation(4, "documents.setScore", { id: rangeCandidate, score: 5 });
+    await session.mutation(4, "api.documents.setScore", { id: rangeCandidate, score: 5 });
 
-    await session.subscribe(40, "documents.unionBranches", {});
-    await session.subscribe(41, "documents.membership", {});
-    await session.subscribe(42, "documents.range", {});
+    await session.subscribe(40, "api.documents.unionBranches", {});
+    await session.subscribe(41, "api.documents.membership", {});
+    await session.subscribe(42, "api.documents.range", {});
     for (const id of [40, 41, 42]) {
       expect(session.transitions(id).at(-1)).toMatchObject({
         transition: { kind: "reset", value: [] },
@@ -325,14 +325,14 @@ describe("query prefix reactivity", () => {
     }
 
     const transitionCounts = [40, 41, 42].map((id) => session.transitions(id).length);
-    const irrelevant = await session.mutation(5, "documents.setTitle", {
+    const irrelevant = await session.mutation(5, "api.documents.setTitle", {
       id: membershipCandidate,
       title: "still outside",
     });
     expect(irrelevant.receipt.obligations).toEqual([]);
     expect([40, 41, 42].map((id) => session.transitions(id).length)).toEqual(transitionCounts);
 
-    const enteredFirstUnionBranch = await session.mutation(6, "documents.setStatus", {
+    const enteredFirstUnionBranch = await session.mutation(6, "api.documents.setStatus", {
       id: unionCandidate,
       status: "active",
     });
@@ -340,7 +340,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(40).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ id: unionCandidate })] },
     });
-    const leftFirstUnionBranch = await session.mutation(7, "documents.setStatus", {
+    const leftFirstUnionBranch = await session.mutation(7, "api.documents.setStatus", {
       id: unionCandidate,
       status: "archived",
     });
@@ -348,7 +348,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(40).at(-1)).toMatchObject({
       transition: { kind: "update", value: [] },
     });
-    const enteredSecondUnionBranch = await session.mutation(8, "documents.move", {
+    const enteredSecondUnionBranch = await session.mutation(8, "api.documents.move", {
       id: unionCandidate,
       tenantId: 2n,
     });
@@ -356,7 +356,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(40).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ id: unionCandidate })] },
     });
-    const leftSecondUnionBranch = await session.mutation(9, "documents.move", {
+    const leftSecondUnionBranch = await session.mutation(9, "api.documents.move", {
       id: unionCandidate,
       tenantId: 9n,
     });
@@ -365,7 +365,7 @@ describe("query prefix reactivity", () => {
       transition: { kind: "update", value: [] },
     });
 
-    const enteredMembership = await session.mutation(10, "documents.move", {
+    const enteredMembership = await session.mutation(10, "api.documents.move", {
       id: membershipCandidate,
       tenantId: 3n,
     });
@@ -373,7 +373,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(41).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ id: membershipCandidate })] },
     });
-    const leftMembership = await session.mutation(11, "documents.move", {
+    const leftMembership = await session.mutation(11, "api.documents.move", {
       id: membershipCandidate,
       tenantId: 9n,
     });
@@ -382,7 +382,7 @@ describe("query prefix reactivity", () => {
       transition: { kind: "update", value: [] },
     });
 
-    const enteredRange = await session.mutation(12, "documents.setScore", {
+    const enteredRange = await session.mutation(12, "api.documents.setScore", {
       id: rangeCandidate,
       score: 15,
     });
@@ -390,7 +390,7 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(42).at(-1)).toMatchObject({
       transition: { kind: "update", value: [expect.objectContaining({ id: rangeCandidate })] },
     });
-    const leftRange = await session.mutation(13, "documents.setScore", {
+    const leftRange = await session.mutation(13, "api.documents.setScore", {
       id: rangeCandidate,
       score: 25,
     });
@@ -403,10 +403,10 @@ describe("query prefix reactivity", () => {
   test("revokes a subscription when its database-backed access policy changes", async () => {
     const writer = new SessionHarness(runtime, "query-reactivity-writer");
     await writer.open();
-    const permission = await writer.mutation(1, "permissions.insert", { allowed: true });
+    const permission = await writer.mutation(1, "api.permissions.insert", { allowed: true });
     await insert(2, 1n, "active", "allowed", null);
 
-    await session.subscribe(30, "documents.allowedActive", {
+    await session.subscribe(30, "api.documents.allowedActive", {
       tenantId: 1n,
       permissionId: permission.value,
     });
@@ -417,7 +417,7 @@ describe("query prefix reactivity", () => {
       },
     });
 
-    await writer.mutation(3, "permissions.setAllowed", {
+    await writer.mutation(3, "api.permissions.setAllowed", {
       id: permission.value,
       allowed: false,
     });
@@ -431,7 +431,7 @@ describe("query prefix reactivity", () => {
   test("suppresses unrelated writes and re-ranks when a nonwinner becomes nearest", async () => {
     const winner = await insert(1, 1n, "active", "current winner", [0, 1]);
     const challenger = await insert(2, 1n, "active", "challenger", [-1, 0]);
-    await session.subscribe(20, "documents.nearest", { tenantId: 1n });
+    await session.subscribe(20, "api.documents.nearest", { tenantId: 1n });
     expect(session.transitions(20).at(-1)).toMatchObject({
       transition: {
         kind: "reset",
@@ -439,7 +439,7 @@ describe("query prefix reactivity", () => {
       },
     });
 
-    const renamed = await session.mutation(3, "documents.setTitle", {
+    const renamed = await session.mutation(3, "api.documents.setTitle", {
       id: winner,
       title: "renamed winner",
     });
@@ -460,7 +460,7 @@ describe("query prefix reactivity", () => {
     expect(unrelatedReceipt).toMatchObject({ receipt: { obligations: [] } });
     expect(session.transitions(20)).toHaveLength(transitionsBeforeUnrelatedWrite);
 
-    const reranked = await session.mutation(5, "documents.setEmbedding", {
+    const reranked = await session.mutation(5, "api.documents.setEmbedding", {
       id: challenger,
       embedding: [1, 0],
     });

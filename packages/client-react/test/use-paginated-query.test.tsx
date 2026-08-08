@@ -29,7 +29,7 @@ type LogArgs = {
   readonly pageSize: number;
 };
 type LogsGone = ApplicationError<"logs.gone", { readonly list: bigint }, 410>;
-const logs = { $ref: "logs.list" } as QueryRef<LogArgs, QueryPage<string>, LogsGone>;
+const logs = { $ref: "api.logs.list" } as QueryRef<LogArgs, QueryPage<string>, LogsGone>;
 
 function cursor(commitVersion: bigint, identity: string): SubscriptionCursor {
   return { generation: "generation-1", commitVersion, authEpoch: 0, identity };
@@ -112,7 +112,7 @@ async function deliverPage(
     transition: {
       kind: "reset",
       from: null,
-      to: cursor(commitVersion, `logs.list:${id}`),
+      to: cursor(commitVersion, `api.logs.list:${id}`),
       value: page,
     },
   });
@@ -141,7 +141,7 @@ describe("usePaginatedQuery", () => {
     await render(root, app(harness, { list: 1n }, 2));
     expect(container.textContent).toBe("pending");
     const first = harness.frames("sub")[0]!;
-    expect(first.ref).toBe("logs.list");
+    expect(first.ref).toBe("api.logs.list");
     expect(first.args).toEqual({ list: 1n, cursor: null, pageSize: 2 });
 
     await deliverPage(harness, first.id, 1n, { items: ["a", "b"], nextCursor: "c1" });
@@ -343,8 +343,8 @@ describe("usePaginatedQuery", () => {
       id: first.id,
       transition: {
         kind: "application-error",
-        from: cursor(1n, `logs.list:${first.id}`),
-        to: cursor(2n, `logs.list:${first.id}`),
+        from: cursor(1n, `api.logs.list:${first.id}`),
+        to: cursor(2n, `api.logs.list:${first.id}`),
         error: { kind: "application", code: "logs.gone", body: { list: 1n }, status: 410 },
       },
     });

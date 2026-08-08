@@ -81,7 +81,7 @@ function createApp(): App {
 }
 
 type PingRow = { readonly id: bigint; readonly n: number };
-const pings = { $ref: "events.pings" } as EventRef<{ min: number }, PingRow>;
+const pings = { $ref: "api.events.pings" } as EventRef<{ min: number }, PingRow>;
 
 interface SocketRecord {
   readonly socket: WebSocket;
@@ -141,7 +141,7 @@ describe("useEvent against a real ackerdb server", () => {
     });
     const emit = async (n: number): Promise<number> => {
       const result = await emitter.mutation<{ n: number }, number, never>(
-        "pings.emit",
+        "api.pings.emit",
         { n },
       );
       if (!result.ok) throw result.error;
@@ -196,7 +196,7 @@ describe("useEvent against a real ackerdb server", () => {
       (record) => record.socket.readyState === WebSocket.OPEN,
     );
     expect(openRecords).toHaveLength(1);
-    expect(subscriptionFrames(openRecords[0]!)).toMatchObject([{ t: "sub", ref: "events.pings" }]);
+    expect(subscriptionFrames(openRecords[0]!)).toMatchObject([{ t: "sub", ref: "api.events.pings" }]);
 
     // Disconnect. Events published while offline are gone for good: the hook
     // must surface one fresh reset boundary and only events after it.
@@ -220,7 +220,7 @@ describe("useEvent against a real ackerdb server", () => {
       (record) => record.socket !== dropped && record.socket.readyState === WebSocket.OPEN,
     )!;
     const resub = subscriptionFrames(reconnected);
-    expect(resub).toMatchObject([{ t: "sub", ref: "events.pings" }]);
+    expect(resub).toMatchObject([{ t: "sub", ref: "api.events.pings" }]);
     expect((resub[0] as Extract<ClientMessage, { t: "sub" }>).cursor).toBeUndefined();
 
     // Unmount closes the socket; later publications reach nobody.

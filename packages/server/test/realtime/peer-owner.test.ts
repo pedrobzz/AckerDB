@@ -111,7 +111,7 @@ async function prepare(
     body: encode({
       v: PROTOCOL_VERSION,
       t: "realtime_prepare",
-      ref: "assistant.live",
+      ref: "api.assistant.live",
       args: {},
     }),
   });

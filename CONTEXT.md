@@ -1331,12 +1331,22 @@ issuer's current grant on every use. A parent losing a scope narrows every
 descendant immediately, with no revocation sweep.
 _Avoid_: Sub-token, delegated key
 
-**API path** — The named group a function is published in, deciding its
-generated binding and its HTTP root together. It is a grouping choice and never
-an access rule: who may call a function is decided by its access policy alone.
-No group's name may carry the reserved marker; the framework's own routes live
-behind it inside the default group, not in a group of their own.
+**API path** — The named group a function is published in, and the first
+segment of its function address. It decides the generated binding and the HTTP
+root together, because both are read off that one address. It is a namespacing
+choice and never an access rule: who may call a function is decided by its
+access policy alone. No group's name may carry the reserved marker; the
+framework's own routes live behind it inside the default group, not in a group
+of their own.
 _Avoid_: Internal flag, private function, route prefix
+
+**Function address** — The one dotted name every registered function answers
+to, in process and over every transport: its API path, then the directory
+segments of the module declaring it, then the export name. The HTTP route is
+that address segment for segment. A file named `index.ts` contributes its
+directory's name rather than its own, so a directory may hold a module of its
+own name beside its siblings.
+_Avoid_: Function name, ref string, route
 
 **Admin scope** — A scope in the framework's own reserved vocabulary, naming one
 verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB

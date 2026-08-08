@@ -267,7 +267,7 @@ async function tokens(
         id,
         String(id),
         { name },
-        "ownership.createOwnershipToken",
+        "api.ownership.createOwnershipToken",
       )));
       created.push((result.value as { readonly token: string }).token);
     }
@@ -463,7 +463,7 @@ describe("MCP Runtime ownership", () => {
       span.function === "ownership:nested_ownership_write" && span.stage === "admission"
     );
     expect(root).toBeDefined();
-    for (const fn of ["ownership.insertOwnershipRecord", "ownership.countOwnershipRecords"]) {
+    for (const fn of ["api.ownership.insertOwnershipRecord", "api.ownership.countOwnershipRecords"]) {
       const nested = spans.find((span) => span.function === fn && span.stage === "handler");
       expect(nested, fn).toBeDefined();
       expect(nested?.traceId, fn).toBe(root?.traceId);
@@ -482,7 +482,7 @@ describe("MCP Runtime ownership", () => {
     expect(analytics).toHaveLength(1);
     expect(analytics[0]).toMatchObject({
       event: "ownership record inserted",
-      functionAddress: "ownership.insertOwnershipRecord",
+      functionAddress: "api.ownership.insertOwnershipRecord",
       identity: principal.identity,
     });
   });

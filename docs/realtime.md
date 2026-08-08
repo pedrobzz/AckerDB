@@ -1,6 +1,6 @@
 # Ordered realtime and mutation semantics
 
-Protocol 5 separates durable state subscriptions from live event delivery and
+Protocol 6 separates durable state subscriptions from live event delivery and
 also carries multiplexed application-channel memberships.
 Query subscriptions are authoritative state streams with resume-or-reset
 convergence. Event subscriptions are ordered, bounded, live-only signals and
@@ -155,7 +155,7 @@ subscription for reconstructible application state.
 or event subscription protocol. Its chunks have no subscription cursor or
 automatic replay; reconnect means starting a new procedure call.
 
-Each SSE event contains one strict Protocol 5 envelope:
+Each SSE event contains one strict Protocol 6 envelope:
 
 ```ts
 type SseMessage =
@@ -204,7 +204,7 @@ contract does not depend on Bun's hidden HTTP socket buffering.
 EOF before an acknowledged `sse_done` remains `indeterminate`, and EOF
 mid-event is `malformed`. Procedures and SSE procedures are never retried
 automatically. The acknowledgement proves that a peer holding the capability
-received and parsed the frame according to Protocol 5; it is not proof that
+received and parsed the frame according to Protocol 6; it is not proof that
 application side effects derived from the chunk were durably committed. A
 bearer credential lease remains held until the bounded response body completes,
 errors, or is canceled.

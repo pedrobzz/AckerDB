@@ -333,15 +333,15 @@ describe("public stateless MCP endpoint", () => {
     expect(agentMcp.path).toBe("/mcp");
     // An endpoint is server-only; the functions it publishes are ordinary
     // registered functions and keep their addresses.
-    expect(harness.registry.functions.has("agent.agentMcp")).toBe(false);
-    expect(harness.registry.functions.has("notes.writeNote")).toBe(true);
+    expect(harness.registry.functions.has("api.agent.agentMcp")).toBe(false);
+    expect(harness.registry.functions.has("api.notes.writeNote")).toBe(true);
     expect([...harness.registry.serverOnly.keys()]).toEqual([
-      "agent.agentMcp",
-      "operations.renamedEndpoint",
-      "titled.titledMcp",
-      "values.valuesMcp",
+      "api.agent.agentMcp",
+      "api.operations.renamedEndpoint",
+      "api.titled.titledMcp",
+      "api.values.valuesMcp",
     ]);
-    expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
+    expect(harness.registry.addressOf(writeNote)).toBe("api.notes.writeNote");
     // The tool wrapper itself is never addressed; only the function it names is.
     expect(harness.registry.addressOf(agentMcp.tools.write_note)).toBeUndefined();
 
@@ -446,7 +446,7 @@ describe("public stateless MCP endpoint", () => {
     expect(agentMcp.path).toBe("/mcp");
     expect(operationsMcp.path).toBe("/agents/operations");
     expect(operationsMcp.name).toBe("operations");
-    expect(harness.registry.addressOf(operationsMcp)).toBe("operations.renamedEndpoint");
+    expect(harness.registry.addressOf(operationsMcp)).toBe("api.operations.renamedEndpoint");
     expect(harness.registry.mcps.get("operations")).toBe(operationsMcp);
 
     const initialized = await rpcAt(operationsMcp.path, "initialize", {

@@ -58,13 +58,13 @@ type Ctx = any;
 // Typed references as codegen would emit them for the registry below.
 const api = {
   tools: {
-    echo: { $ref: "tools.echo" } as ProcedureRef<{ value: string }, string>,
-    observe: { $ref: "tools.observe" } as ProcedureRef<
+    echo: { $ref: "api.tools.echo" } as ProcedureRef<{ value: string }, string>,
+    observe: { $ref: "api.tools.observe" } as ProcedureRef<
       { value: string },
       { readonly run: number; readonly value: string }
     >,
-    fail: { $ref: "tools.fail" } as ProcedureRef<Record<never, never>, never>,
-    block: { $ref: "tools.block" } as ProcedureRef<Record<never, never>, string>,
+    fail: { $ref: "api.tools.fail" } as ProcedureRef<Record<never, never>, never>,
+    block: { $ref: "api.tools.block" } as ProcedureRef<Record<never, never>, string>,
   },
 };
 

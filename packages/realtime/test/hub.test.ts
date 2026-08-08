@@ -176,7 +176,7 @@ function prepareInput(
   overrides: Partial<RealtimePrepareInput> = {},
 ): RealtimePrepareInput {
   return {
-    address: "assistants.live",
+    address: "api.assistants.live",
     args: { assistantId: 1n },
     principal: ANONYMOUS_PRINCIPAL,
     owner: TEST_OWNER,

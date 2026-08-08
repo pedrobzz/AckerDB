@@ -103,7 +103,7 @@ type Assistant = RealtimeRef<
   never
 >;
 
-const assistant = { $ref: "assistant.live" } as Assistant;
+const assistant = { $ref: "api.assistant.live" } as Assistant;
 const results = new Map<string, UseRealtimeResult<Assistant>>();
 
 interface ProbeProps {

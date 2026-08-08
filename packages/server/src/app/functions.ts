@@ -335,9 +335,10 @@ type FunctionHandler<
 ) => unknown;
 
 /**
- * An API path is one URL segment and one generated binding name, so it obeys
- * the rule module segments already obey. The leading `_` is the framework's
- * reserved marker, which the identifier rule excludes at the first character.
+ * An API path is one address segment, one URL segment, and one generated
+ * binding name, so it obeys the rule module segments already obey. The leading
+ * `_` is the framework's reserved marker, which the identifier rule excludes
+ * at the first character.
  */
 const API_PATH = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
@@ -358,11 +359,11 @@ const UNBINDABLE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The one interpreter of `apiPath`: the group a function's address is
- * published in, deciding its generated binding and its HTTP root together.
- * Absent means {@link DEFAULT_API_PATH}. It is grouping and routing only —
- * who may call is `access` alone — so no value here widens or narrows
- * admission.
+ * The one interpreter of `apiPath`: the group a function is published in, and
+ * so the first segment of its address — which decides its generated binding
+ * and its HTTP root together. Absent means {@link DEFAULT_API_PATH}. It is
+ * namespacing and routing only — who may call is `access` alone — so no value
+ * here widens or narrows admission.
  */
 export function apiPath(value: unknown, where = "apiPath"): string {
   if (value === undefined) return DEFAULT_API_PATH;
@@ -382,7 +383,10 @@ export function apiPath(value: unknown, where = "apiPath"): string {
   return value;
 }
 
-/** Startup refusal for kinds addressed over the socket, which have no HTTP root. */
+/**
+ * Startup refusal for kinds addressed over the socket, which have no HTTP root
+ * to group. Their addresses therefore always begin with the default group.
+ */
 export function refuseApiPathDeclaration(def: object, what: string): void {
   if ((def as { readonly apiPath?: unknown }).apiPath !== undefined) {
     throw new TypeError(
@@ -397,10 +401,11 @@ interface ExposureDef {
   readonly description?: string;
   readonly title?: string;
   /**
-   * The group this function is published in: `"api"` by default, giving the
-   * binding `api.*` and the HTTP root `/api/*`; `"internal"` gives
-   * `internal.*` and `/internal/*`. Grouping and routing only — `access`
-   * alone decides who may call it. Names beginning with `_` are reserved.
+   * The group this function is published in, and the first segment of its
+   * address: `"api"` by default, giving `api.messages.list` and the route
+   * `/api/messages/list`; `"internal"` gives `internal.messages.list` and
+   * `/internal/messages/list`. Namespacing and routing only — `access` alone
+   * decides who may call it. Names beginning with `_` are reserved.
    */
   readonly apiPath?: string;
 }

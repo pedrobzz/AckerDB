@@ -13,7 +13,7 @@ import { callThroughCell, type LifetimeCell } from "../src/lifetime-call.ts";
 const fakeClient = {} as AckerDBClient;
 
 function liveCell(): LifetimeCell<string> {
-  return { ref: "tools.echo", client: null, ended: false, waiters: new Set() };
+  return { ref: "api.tools.echo", client: null, ended: false, waiters: new Set() };
 }
 
 describe("callThroughCell snapshot re-entrancy", () => {

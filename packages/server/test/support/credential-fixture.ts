@@ -401,7 +401,7 @@ export function mutationMessage(
   id: number,
   requestId: string,
   args: unknown,
-  ref = "tokens.createAgentToken",
+  ref = "api.tokens.createAgentToken",
 ): MutationMessage {
   const timestamp = Date.now().toString(16).padStart(12, "0");
   return {
@@ -415,10 +415,10 @@ export function mutationMessage(
   };
 }
 
-export function queryMessage(id: number, ref = "tokens.listAgentTokens"): QueryMessage {
+export function queryMessage(id: number, ref = "api.tokens.listAgentTokens"): QueryMessage {
   return { v: PROTOCOL_VERSION, t: "q", id, ref, args: {} };
 }
 
-export function subscribeMessage(id: number, ref = "tokens.listAgentTokens"): SubscribeMessage {
+export function subscribeMessage(id: number, ref = "api.tokens.listAgentTokens"): SubscribeMessage {
   return { v: PROTOCOL_VERSION, t: "sub", id, ref, args: {} };
 }

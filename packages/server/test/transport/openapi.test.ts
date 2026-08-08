@@ -29,17 +29,17 @@ const functions = () => ({
       args: { channel: v.string(), body: v.string() },
       returns: v.bigint(),
       errors: {
-        "messages.empty": { body: v.object({ reason: v.string() }), status: Status.Conflict },
-        "messages.rateLimited": { body: v.object({ retryAfterMs: v.int() }), status: Status.Conflict },
-        "messages.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
+        "api.messages.empty": { body: v.object({ reason: v.string() }), status: Status.Conflict },
+        "api.messages.rateLimited": { body: v.object({ retryAfterMs: v.int() }), status: Status.Conflict },
+        "api.messages.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
       },
       handler: (_ctx: Ctx, args: Ctx) =>
         args.body === ""
-          ? Err("messages.empty", { reason: "empty" }, Status.Conflict)
+          ? Err("api.messages.empty", { reason: "empty" }, Status.Conflict)
           : args.body === "!"
-            ? Err("messages.rateLimited", { retryAfterMs: 5 }, Status.Conflict)
+            ? Err("api.messages.rateLimited", { retryAfterMs: 5 }, Status.Conflict)
             : args.channel === ""
-              ? Err("messages.gone", { reason: "purged" }, Status.Gone)
+              ? Err("api.messages.gone", { reason: "purged" }, Status.Gone)
               : 1n,
     }),
     /** Callable over HTTP, deliberately absent from the document. */
@@ -250,8 +250,8 @@ describe("openapi document", () => {
   test("a query documents the GET args parameter and the POST body", () => {
     const list = document().paths["/api/messages/list"];
     expect(Object.keys(list)).toEqual(["get", "post"]);
-    expect(list.post.operationId).toBe("messages.list");
-    expect(list.get.operationId).toBe("messages.list.get");
+    expect(list.post.operationId).toBe("api.messages.list");
+    expect(list.get.operationId).toBe("api.messages.list.get");
     expect(list.get.summary).toBe("List messages");
     expect(list.post.description).toBe("List the newest messages in a channel.");
 
@@ -310,8 +310,8 @@ describe("openapi document", () => {
 
     const conflict = send.post.responses["409"].content["application/json"].schema;
     expect(conflict.oneOf.map((member: Ctx) => member.properties.code.const)).toEqual([
-      "messages.empty",
-      "messages.rateLimited",
+      "api.messages.empty",
+      "api.messages.rateLimited",
     ]);
     expect(conflict.oneOf[0].properties.kind).toEqual({ const: "application" });
     expect(conflict.oneOf[0].properties.status).toEqual({ const: 409 });
@@ -324,7 +324,7 @@ describe("openapi document", () => {
 
     const gone = send.post.responses["410"].content["application/json"].schema;
     expect(gone.oneOf).toBeUndefined();
-    expect(gone.properties.code).toEqual({ const: "messages.gone" });
+    expect(gone.properties.code).toEqual({ const: "api.messages.gone" });
     expect(send.post.responses["default"].content["application/json"].schema).toEqual({
       $ref: "#/components/schemas/Outcome",
     });
@@ -398,7 +398,7 @@ describe("openapi document", () => {
     });
     expect(registry.exposed.size).toBe(2);
     expect(() => openApiDocument(registry, info)).toThrow(
-      'functions "notes.list" and "notes.list.get" both document operationId "notes.list.get"',
+      'functions "api.notes.list" and "api.notes.list.get" both document operationId "api.notes.list.get"',
     );
   });
 
@@ -444,7 +444,7 @@ describe("openapi document", () => {
       },
     });
     expect(() => openApiDocument(registry, info)).toThrow(
-      /function "messages\.latest" returns cannot be documented/,
+      /function "api\.messages\.latest" returns cannot be documented/,
     );
   });
 });

@@ -23,14 +23,14 @@ type TodoNotFound = ApplicationError<
   { readonly list: bigint },
   404
 >;
-const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[], TodoNotFound>;
+const todos = { $ref: "api.todos.list" } as QueryRef<TodoArgs, string[], TodoNotFound>;
 
 function cursor(commitVersion: bigint): SubscriptionCursor {
   return {
     generation: "generation-1",
     commitVersion,
     authEpoch: 0,
-    identity: "todos.list:{list:1}",
+    identity: "api.todos.list:{list:1}",
   };
 }
 
@@ -549,7 +549,7 @@ describe("useQuery state transitions", () => {
   test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const first = harness.live();
     first.welcome(SESSION);
@@ -614,7 +614,7 @@ describe("useQuery state transitions", () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
     type BlobRow = { readonly name: string; readonly blob: Uint8Array };
-    const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
+    const entry = new QueryStoreEntry<BlobRow[]>(client, "api.todos.blobs", {});
     const stopListening = entry.listen(() => {});
     const first = harness.live();
     first.welcome(SESSION);
@@ -666,7 +666,7 @@ describe("useQuery state transitions", () => {
     const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    const numbers = { $ref: "todos.byScore" } as QueryRef<{ score: number }, string[]>;
+    const numbers = { $ref: "api.todos.byScore" } as QueryRef<{ score: number }, string[]>;
     let captured: AckerDBQueryState<string[]> | undefined;
 
     function BadArgs(): ReactNode {
@@ -709,7 +709,7 @@ describe("awaiting principal change", () => {
   test("a demand rejected while anonymous re-demands exactly once after sign-in", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const socket = harness.live();
     socket.welcome(SESSION);
@@ -759,7 +759,7 @@ describe("awaiting principal change", () => {
   test("an unauthorized rejection behaves identically to an unauthenticated one", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const socket = harness.live();
     socket.welcome(SESSION);
@@ -791,7 +791,7 @@ describe("awaiting principal change", () => {
   test("rejections are never retried on a timer, and an unchanged principal never re-demands", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const first = harness.live();
     first.welcome(SESSION);
@@ -828,7 +828,7 @@ describe("same-principal epoch advance", () => {
   test("a same-account re-presentation with changed claims revives parked demand", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config({ credential: { kind: "bearer", token: "viewer" } }));
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const socket = harness.live();
     const alice = {
@@ -879,7 +879,7 @@ describe("rejection during an in-flight presentation", () => {
   test("a rejection decided under the old principal still re-demands when the new one lands", async () => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
     const socket = harness.live();
     socket.welcome(SESSION);

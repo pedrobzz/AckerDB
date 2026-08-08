@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  EVENTS_ADDRESS_PREFIX,
   PROTOCOL_VERSION,
   decode,
   encode,
@@ -894,8 +895,8 @@ export class RuntimeSessionStore {
     args: unknown,
     cursor?: SubscribeMessage["cursor"],
   ): Promise<void> {
-    if (address.startsWith("events.")) {
-      const table = address.slice("events.".length);
+    if (address.startsWith(EVENTS_ADDRESS_PREFIX)) {
+      const table = address.slice(EVENTS_ADDRESS_PREFIX.length);
       const tableDefinition = this.options.engine.schema.tables[table];
       if (tableDefinition?.kind !== "event") {
         throw new AckerDBError("not_found", `unknown event table "${table}"`);

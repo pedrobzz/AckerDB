@@ -46,7 +46,7 @@ const replayRecord = Object.freeze({
   requestId: "backup-restore-request",
   issuedAt: 1_700_000_000_000,
   principalFingerprint: "backup-restore-principal",
-  functionRef: "messages.create",
+  functionRef: "api.messages.create",
   argsFingerprint: "backup-restore-args",
   result: replayResult,
   resultBytes: new TextEncoder().encode(replayResult).byteLength,

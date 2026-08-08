@@ -1,5 +1,10 @@
 # API paths group function addresses; access alone decides admission
 
+> Amended: the group is now the *first segment* of a function address rather
+> than a field beside it, which is what makes this document's title true. The
+> sections below already read that way; **The group is a namespace, not a
+> label** records what changed and what it deleted.
+
 **This decision replaces the erased-visibility model recorded in ADR-0021,
 "Internal functions are erased visibility, not a separate function kind."**
 That record is deleted rather than kept as a tombstone: the model it described
@@ -29,15 +34,20 @@ It also invited a scope, `internal:run`, whose only job was to let an
 administrator reach past the erasure.
 
 The decision: **`internal: true` is replaced by `apiPath`, a string defaulting
-to `"api"`.** It names the group a function is published in, and the group
-decides two things together — the generated binding a caller imports, and the
-HTTP root the function answers on.
+to `"api"`, and that string is the first segment of a function's address.** It
+names the group a function is published in, and the group decides two things
+together — the generated binding a caller imports, and the HTTP root the
+function answers on — because both are read off the one address.
 
-| `apiPath` | binding | URL |
-| --- | --- | --- |
-| `"api"` (default) | `api.*` | `/api/*` |
-| `"internal"` | `internal.*` | `/internal/*` |
-| `"admin"` | `admin.*` | `/admin/*` |
+A function address is `<apiPath>.<...directory segments>.<export name>`, and it
+is the same value everywhere: the socket names a function by it, the registry
+keys by it, and an exposed function's URL is it segment for segment.
+
+| `apiPath` | address | binding | URL |
+| --- | --- | --- | --- |
+| `"api"` (default) | `api.users.list` | `api.*` | `/api/*` |
+| `"internal"` | `internal.users.list` | `internal.*` | `/internal/*` |
+| `"admin"` | `admin.users.list` | `admin.*` | `/admin/*` |
 
 The framework does not decide that "internal" is a correct category: an
 application names its own groups, and may add its own functions to any of
@@ -50,8 +60,8 @@ an MCP endpoint chooses alike. Socket-addressed kinds (channels, realtime) have
 no HTTP root to group and refuse `apiPath` at startup.
 
 A group decides *where* a function answers, never *whether* it answers: plain
-HTTP still requires `http`, and over the socket a function is addressed by its
-dotted name alone, which the group does not touch.
+HTTP still requires `http`, and over the socket a function is addressed by the
+same dotted name the URL spells.
 
 **A group is never an access rule.** Who may call a function is decided by
 `access` alone — `"public" | "authenticated" | "system" | (ctx, args) =>
@@ -70,7 +80,7 @@ Three consequences follow, all deletions:
   the same lookup again, because there is no longer a class of function with a
   wire address that is deliberately absent.
 - **`internal:run` is gone.** It was invented so an administrator could invoke
-  an erased function remotely. With the group reduced to grouping, the
+  an erased function remotely. With the group reduced to namespacing, the
   function's own `access` decides: an administrative identity holds every
   scope and so satisfies any application requirement, while an `access:
   "system"` function stays unreachable — correctly, and for the same reason it
@@ -104,6 +114,72 @@ manifest disagreements are startup refusals here, as schema and plugin
 mismatches already are. Threading the declared groups through every builder as
 a sixth type parameter would buy an earlier error and pay for it in the
 signature of every kind.
+
+## The group is a namespace, not a label
+
+As first shipped, `apiPath` grouped nothing. `apiGroup("admin").logs.list`
+produced `{ $ref: "logs.list", $apiPath: "admin" }` — the group rode beside the
+address and only the URL builder ever read it. Two consequences followed, and
+both contradict the paragraphs above. `api.messages.list` and
+`internal.messages.list` were one function at two URLs, not two functions. And
+a group could be squatted: the framework declaring `admin.logs.list` would have
+claimed the bare address `logs.list`, so any application with a
+`functions/logs.ts` exporting `list` failed to start — which is the opposite of
+"a surface of their own that no application module can squat on".
+
+Making the group the address's first segment closes both, and it deletes rather
+than adds. `$apiPath` on the reference proxy and `refApiPath()` are gone; the
+group is `address.split(".")[0]` when anyone needs it, and nobody does.
+`httpPathForAddress` lost its group argument and is now one `replaceAll` over
+the address. The Registry keeps one flat key, and its duplicate rule becomes
+correct rather than over-broad: two groups may each hold a `messages.list`, and
+one group may not hold it twice.
+
+The address grammar is part of the wire envelope, so `PROTOCOL_VERSION` moves
+with it. It is the only surface where the string changed — an exposed
+function's URL is byte-identical before and after, because the group was
+already its first path segment — and a stale socket client would otherwise
+send a version-5 `ref` that names a different function here. One refusal at
+the decoder is the honest outcome; a call that lands somewhere else is not.
+
+Event-table references take the same treatment — `api.events.<table>` — because
+they are leaves of the default group's tree like everything else in it. The
+alternative, a group-free `events.` prefix, would be the one address in the
+system that does not begin with a group, which is a special case for nothing.
+
+The group is still declared on the function and never inferred from a
+directory. `functions/admin/users.ts` publishes into whatever group each of its
+functions declares — the default one included — because a directory is a module
+name and only `apiPath` names a group. Inferring it would make a rename of a
+folder a rename of a route, and would leave no way to publish two groups from
+one directory.
+
+## An index file takes its directory's name
+
+`functions/orders/index.ts` publishes `api.orders.*`, not `api.orders.index.*`.
+The collapse is the only reason two files can claim one module name, so two
+refusals stand at the manifest, where the name is decided, and both name the
+files involved: `functions/orders.ts` beside `functions/orders/index.ts`, and a
+`functions/index.ts` with no directory to be named after. The second could
+instead publish its exports directly under the group, but that is a module with
+no name at all — neither the generated tree nor an address can hold one.
+
+The layout this makes ordinary is an `index.ts` beside its siblings, which is a
+module and a namespace at one name. The generated tree intersects the two:
+`orders: typeof _m_orders & { refunds: typeof _m_orders_refunds }`. Keeping
+only one — which is what the tree did before, silently — leaves a registered
+address with no binding anybody can import, the exact failure the manifest
+reconciliation exists to prevent.
+
+## One path, one function
+
+A unique address does not imply a unique route. The projection joins segments
+with `/` where the address joined them with `.`, and an export named through a
+string literal may contain either, so `api.notes.a/b` and `api.notes.a.b` are
+two functions with two access policies at one URL. The path claim refuses the
+second rather than replacing the first, beside the reserved-marker and MCP
+refusals it already owned — the one place a path is claimed is the one place
+that can know a path is taken.
 
 ## Two costs accepted deliberately
 

@@ -1008,7 +1008,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
 
     const enqueued = await runtime.runMutation({
       id: 1,
-      address: "admin.enqueue",
+      address: "api.admin.enqueue",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
@@ -1018,7 +1018,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
 
     const patch = (field: string, requestId: number) => runtime.runMutation({
       id: requestId,
-      address: "admin.surgery",
+      address: "api.admin.surgery",
       args: { id, field },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),

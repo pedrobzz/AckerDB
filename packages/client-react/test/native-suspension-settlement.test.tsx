@@ -215,7 +215,7 @@ function recordingFetch(log: string[]): AckerDBFetch {
 }
 
 type Message = { readonly id: bigint; readonly body: string };
-const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
+const messagesList = { $ref: "api.messages.list" } as QueryRef<Record<never, never>, Message[]>;
 type StandardRef = SseRef<
   { trigger: string; chatId: string; messageId: string | null; messages: UIMessage[] },
   UIMessageChunk
@@ -251,7 +251,7 @@ beforeAll(async () => {
   app = createApp();
   // Real data behind the mounted query, seeded through an ordinary client.
   const writer = new AckerDBClient({ url: app.base, credential: { kind: "anonymous" } });
-  await writer.mutation("messages.add", { body: "one" });
+  await writer.mutation("api.messages.add", { body: "one" });
   writer.close();
 });
 afterAll(() => app.close());
@@ -288,7 +288,7 @@ describe("suspension settlement through the native entry against a real server",
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
       queryText = describeQuery(useQuery(messagesList, {}));
-      const transport = useChatTransport({ $ref: "ai.holdMidStream" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdMidStream" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-independence",
         transport,
@@ -366,7 +366,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-hold-before",
         transport,
@@ -411,7 +411,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdMidStream" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdMidStream" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-replacement",
         transport,
@@ -482,7 +482,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-send-suspended",
         transport,
@@ -543,7 +543,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-error-body",
         transport,
@@ -592,7 +592,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("stream.holdAfterFirst");
+      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
       return null;
     }
 
@@ -640,7 +640,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("stream.holdAfterFirst");
+      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
       return null;
     }
 

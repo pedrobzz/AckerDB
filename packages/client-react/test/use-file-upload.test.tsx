@@ -32,7 +32,7 @@ import {
 
 const SESSION = "react-file-session";
 const createUpload = {
-  $ref: "documents.createUpload",
+  $ref: "api.documents.createUpload",
 } as MutationRef<{ readonly folder: string }, FileUploadSession>;
 
 type MutationRequest = Extract<ClientMessage, { readonly t: "m" }>;

@@ -8,7 +8,7 @@ decides whether that principal may perform the operation.
 ## Credentials and principals
 
 `AckerDBClientOptions.credential` is required. A WebSocket sends that credential
-in its Protocol 5 `hello` frame and can replace it in-band with
+in its Protocol 6 `hello` frame and can replace it in-band with
 `client.refreshCredential(...)`. HTTP procedures and SSE procedures send the
 same credential as an `Authorization` header on every request.
 
@@ -410,7 +410,7 @@ with an exact expiry timer and a matching invalidation subscription. An
 anonymous request allocates neither a verifier listener nor an expiry timer.
 
 For an HTTP procedure, AckerDB holds the lease through Runtime execution,
-Protocol 5 encoding, and handoff of the constructed `Response`. Expiry, a
+Protocol 6 encoding, and handoff of the constructed `Response`. Expiry, a
 matching invalidation, or caller cancellation aborts the Runtime signal and
 prevents it from accepting a stale result. The lease releases at that encoded
 `Response` handoff, not at response-body or network completion.
@@ -421,14 +421,14 @@ Runtime-shutdown signal so long-running asynchronous work can cooperate;
 For SSE, ownership transfers to the response body. The lease remains held
 until that body completes, errors, or is canceled, and those same abort sources
 fail the Runtime producer closed. The response body itself remains open while
-the Runtime owns unacknowledged Protocol 5 frames: application chunks require a
+the Runtime owns unacknowledged Protocol 6 frames: application chunks require a
 valid capability/proof acknowledgement, and completion or failure requires a
 terminal acknowledgement or finite terminal-grace expiry. The acknowledgement
 endpoint deliberately carries no bearer credential and performs no second
 identity verification; its unguessable stream/frame capabilities authorize
 only byte release, while the original SSE lease continues to own the verified
 principal and revocation signal. This proves receiver participation in the
-Protocol 5 exchange, not durable processing of application side effects.
+Protocol 6 exchange, not durable processing of application side effects.
 
 ## Authentication telemetry
 
