@@ -18,7 +18,7 @@ There is no direct/provider mode, provider adapter, media WebSocket, automatic
 capture, or AckerDB media-player API.
 
 The client and React hooks remain in `@ackerdb/client` and
-`@ackerdb/client-react`. Only applications that declare realtime routes install
+`@ackerdb/client-react`. Only applications that declare realtime handlers install
 `@ackerdb/realtime`; the ordinary server package contains no native WebRTC
 binary or media runtime.
 
@@ -348,8 +348,8 @@ mutually exclusive.
 
 Omit the options when host candidates are enough:
 `createRealtimeRuntime()`. The CLI does this automatically when it finds
-realtime routes and no `realtime` module is configured. Apps without realtime
-routes never import the configured module or resolve the optional package. A
+realtime handlers and no `realtime` module is configured. Apps without realtime
+handlers never import the configured module or resolve the optional package. A
 runtime passed directly to `startApp(config, { realtime })` overrides the
 configured module without importing it. ICE and TURN configuration belongs at
 deployment scope, not on every route or React hook.

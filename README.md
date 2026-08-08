@@ -189,7 +189,8 @@ application `credentialVerifier` module path (resolved from the app directory),
 never both. A `realtime` module path may default-export
 `createRealtimeRuntime(options)` for deployment-owned ICE, TURN, network, and
 resource configuration; it is loaded only when the application declares
-realtime handlers. The protected status scope is configured there too.
+realtime handlers. The protected status scope is set in the same
+`.ackerdb.config.json` through `statusScope`.
 Durability and telemetry profiles are exact environment switches:
 
 ```sh

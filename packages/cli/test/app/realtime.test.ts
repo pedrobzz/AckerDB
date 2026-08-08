@@ -6,6 +6,7 @@ import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const REALTIME_DECLARATION = `
 import { realtime } from "@ackerdb/server";
@@ -27,13 +28,6 @@ afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function freePort(): number {
-  const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  probe.stop(true);
-  return port;
-}
-
 function fixture(files: Record<string, string>): string {
   const dir = makeFixture(files);
   dirs.push(dir);
@@ -51,7 +45,7 @@ describe("configured realtime runtime", () => {
         };
       `,
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./realtime.ts",
       }),
     });
@@ -65,13 +59,13 @@ describe("configured realtime runtime", () => {
       "app.ts": FIXTURE_APP,
       "functions/live.ts": REALTIME_DECLARATION,
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./missing-realtime.ts",
       }),
     });
     await expect(startApp(loadConfig(missing, { ACKERDB_TELEMETRY: "disabled" })))
       .rejects.toThrow(
-        `realtime module configured by "realtime" not found at ${join(missing, "missing-realtime.ts")}`,
+        `.ackerdb.config.json "realtime" module not found at ${join(missing, "missing-realtime.ts")}`,
       );
 
     const malformed = fixture({
@@ -79,13 +73,13 @@ describe("configured realtime runtime", () => {
       "functions/live.ts": REALTIME_DECLARATION,
       "realtime.ts": "export default {};",
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./realtime.ts",
       }),
     });
     await expect(startApp(loadConfig(malformed, { ACKERDB_TELEMETRY: "disabled" })))
       .rejects.toThrow(
-        `realtime module configured by "realtime" at ${join(malformed, "realtime.ts")} must default-export createRealtimeRuntime(...)`,
+        `.ackerdb.config.json "realtime" module at ${join(malformed, "realtime.ts")} must default-export the result of createRealtimeRuntime(...)`,
       );
 
     const failedImport = fixture({
@@ -93,14 +87,37 @@ describe("configured realtime runtime", () => {
       "functions/live.ts": REALTIME_DECLARATION,
       "realtime.ts": `throw new Error("missing TURN_SECRET");`,
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./realtime.ts",
       }),
     });
     await expect(startApp(loadConfig(failedImport, { ACKERDB_TELEMETRY: "disabled" })))
       .rejects.toThrow(
-        `failed to import realtime module configured by "realtime" at ${join(failedImport, "realtime.ts")}: missing TURN_SECRET`,
+        `failed to import .ackerdb.config.json "realtime" module at ${join(failedImport, "realtime.ts")}: missing TURN_SECRET`,
       );
+  });
+
+  test("uses the packaged default runtime when no module is configured", async () => {
+    const dir = fixture({
+      "app.ts": FIXTURE_APP,
+      "functions/live.ts": REALTIME_DECLARATION,
+      "node_modules/@ackerdb/realtime/package.json": JSON.stringify({
+        name: "@ackerdb/realtime",
+        type: "module",
+        exports: "./index.ts",
+      }),
+      "node_modules/@ackerdb/realtime/index.ts": `
+        export function createRealtimeRuntime() {
+          return {
+            create: () => { throw new Error("packaged default realtime selected"); },
+          };
+        }
+      `,
+      ".ackerdb.config.json": JSON.stringify({ port: await freePort() }),
+    });
+
+    await expect(startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" })))
+      .rejects.toThrow("packaged default realtime selected");
   });
 
   test("codegen never imports the serving-only realtime module", async () => {
@@ -120,7 +137,7 @@ describe("configured realtime runtime", () => {
     const dir = fixture({
       "app.ts": FIXTURE_APP,
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./missing-realtime.ts",
       }),
     });
@@ -135,7 +152,7 @@ describe("configured realtime runtime", () => {
       "functions/live.ts": REALTIME_DECLARATION,
       "realtime.ts": `throw new Error("configured realtime imported");`,
       ".ackerdb.config.json": JSON.stringify({
-        port: freePort(),
+        port: await freePort(),
         realtime: "./realtime.ts",
       }),
     });
