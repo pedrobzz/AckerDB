@@ -4,14 +4,12 @@
  * runtime endpoint is opt-in and off by default — so the export loads the app
  * exactly as a start does and needs no database, port, or credential authority.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { writeFileSync } from "node:fs";
 import {
   Registry,
   openApiBytes,
   openApiDocument,
   type OpenApiDocument,
-  type OpenApiInfo,
 } from "@ackerdb/server";
 import { runCodegen } from "./codegen.ts";
 import { importApp, importFunctionModules } from "./manifest.ts";
@@ -21,27 +19,6 @@ export interface OpenApiExport {
   readonly file: string;
   /** Documented operations, which is never the count of registered functions. */
   readonly operations: number;
-}
-
-/**
- * The document's identity is the application's own: its package name and
- * version when the app directory ships a package.json, since the document
- * describes that application's API rather than AckerDB's. Without one the
- * directory names itself.
- */
-function appInfo(config: AppConfig): OpenApiInfo {
-  const manifest = join(config.appDir, "package.json");
-  const packaged = existsSync(manifest)
-    ? JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown }
-    : {};
-  return {
-    title: typeof packaged.name === "string" && packaged.name.length > 0
-      ? packaged.name
-      : basename(config.appDir),
-    version: typeof packaged.version === "string" && packaged.version.length > 0
-      ? packaged.version
-      : "0.0.0",
-  };
 }
 
 function operationCount(document: OpenApiDocument): number {
@@ -54,9 +31,12 @@ export async function exportOpenApi(config: AppConfig, file: string): Promise<Op
   // as `acker start` does, so a fresh checkout exports in one pass.
   await runCodegen(config);
   const app = await importApp(config);
+  // The document's identity is the application's own, because it describes
+  // that application's API rather than AckerDB's — and it is the same name the
+  // Admin API reports, resolved once in the configuration.
   const document = openApiDocument(
-    new Registry(await importFunctionModules(config), app.apiPaths),
-    appInfo(config),
+    new Registry(await importFunctionModules(config), app.apiPaths, config.admin),
+    { title: config.admin.application.name, version: config.admin.application.version },
   );
   writeFileSync(file, openApiBytes(document));
   return { file, operations: operationCount(document) };

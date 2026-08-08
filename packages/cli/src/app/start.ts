@@ -420,7 +420,7 @@ export async function startApp<const A extends App = App>(
     });
     await awaitStartup(pluginRuntime.start());
     requireStartupOwnership();
-    const registry = new Registry(modules, app.apiPaths);
+    const registry = new Registry(modules, app.apiPaths, config.admin);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);

@@ -48,7 +48,10 @@ describe("HTTP-exposed function paths", () => {
       notes: { echo: exposed },
     });
 
+    // The framework's own group is registered in every application, so its
+    // routes are here beside the application's rather than in a second table.
     expect([...registry.exposed.keys()]).toEqual([
+      "/admin/system/info",
       "/api/admin/messages/purge",
       "/api/messages/list",
       "/api/notes/echo",

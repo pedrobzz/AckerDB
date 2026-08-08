@@ -1260,6 +1260,21 @@ It is the server side of administration, named for what it does rather than for
 any client that consumes it — Studio is one such client, not its owner.
 _Avoid_: Studio surface, system UDFs, dashboard API
 
+**Framework-declared function** — A function AckerDB declares on every
+application's behalf, contributed to the registry beside the application's own
+rather than injected into them. It is an ordinary registered function in every
+other respect: one address, one route, one access policy, one scope
+requirement, dispatched through the one funnel. Only a framework-declared
+function may require an admin scope.
+_Avoid_: Built-in function, system UDF, internal endpoint
+
+**Admin configuration** — The one object holding everything administrative,
+because an operator reasons about administration as one thing rather than as a
+setting beside each subsystem it touches. It is where the surface is
+configured, never where authority is decided — that is the grant a credential
+holds.
+_Avoid_: Studio config, dashboard settings
+
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
 across every namespace an application shares with it: API paths, HTTP roots, and
 scopes. An application may never declare a name carrying it, so the two
@@ -1309,9 +1324,12 @@ _Avoid_: Sub-token, delegated key
 segment of its function address. It decides the generated binding and the HTTP
 root together, because both are read off that one address. It is a namespacing
 choice and never an access rule: who may call a function is decided by its
-access policy alone. No group's name may carry the reserved marker; the
-framework's own routes live behind it inside the default group, not in a group
-of their own.
+access policy alone. No group's name may carry the reserved marker: the
+framework's protocol endpoints live at the reserved root, outside every group,
+and its administration functions live in the shared `admin` group, whose members
+are distinguished by the scopes they require rather than by any marking on the
+path. `api` and `admin` are the two groups every application publishes, so a
+manifest lists neither.
 _Avoid_: Internal flag, private function, route prefix
 
 **Function address** — The one dotted name every registered function answers

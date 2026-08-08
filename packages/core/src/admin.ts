@@ -1,0 +1,60 @@
+/**
+ * The Admin API's client contract: the typed reference tree for the
+ * framework's own administration functions, and the shapes they answer with.
+ *
+ * **The framework's declarations are statically known, so they have no
+ * business going through an application's code generation.** A group's tree is
+ * generated from a walk of the *consumer's* functions directory, and a shipped
+ * package has no such directory — so a package that only consumes the Admin
+ * API could never obtain typed references that way, however the generator were
+ * bent. Publishing the tree here, beside the reference builder that makes it,
+ * gives every consumer the same one; generated `api.ts` re-exports it as the
+ * `admin` binding, intersected with whatever the application itself published
+ * into that group.
+ *
+ * The contract lives in core rather than in the server package that implements
+ * it because core is what every client already depends on, and a browser
+ * bundle has no business importing a server. The two are held together by a
+ * compile-time proof on the server side, so a declaration that drifts from
+ * this file fails the build rather than a caller.
+ */
+import { ADMIN_API_PATH, apiGroup, type QueryRef } from "./refs.ts";
+
+/**
+ * What identifies one running application to an operator. Nothing else in the
+ * protocol carries it: the welcome frame describes authentication, and a
+ * client reached through a proxy sees the proxy's own origin, so this is the
+ * one answer to "which application am I looking at, on which version".
+ */
+export interface AdminSystemInfo {
+  /** The application's own name, as its package declares it. */
+  readonly name: string;
+  /** The application's own version, as its package declares it. */
+  readonly version: string;
+  /** The AckerDB version serving it. */
+  readonly ackerdb: string;
+  /** The wire protocol this server speaks; a client's own is `PROTOCOL_VERSION`. */
+  readonly protocol: number;
+}
+
+/** Arguments of a function that answers about the server and nothing else. */
+export type AdminSystemInfoArgs = Record<never, never>;
+
+/**
+ * The Admin API as a client addresses it. Every leaf is an ordinary function
+ * reference, called through the ordinary client with a credential holding the
+ * scope the declaration requires — there is no administrative transport and no
+ * second stack.
+ */
+export interface AdminApi {
+  readonly system: {
+    readonly info: QueryRef<AdminSystemInfoArgs, AdminSystemInfo>;
+  };
+}
+
+/**
+ * The Admin API's reference tree, identical in every application because the
+ * framework declares it. Generated `api.ts` re-exports this as its `admin`
+ * binding; a package with no code generation of its own imports it directly.
+ */
+export const adminApi: AdminApi = apiGroup(ADMIN_API_PATH) as AdminApi;

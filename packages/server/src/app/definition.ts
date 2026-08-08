@@ -6,7 +6,7 @@ import {
   type PluginMounts,
 } from "../plugins/assembly.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
-import { DEFAULT_API_PATH } from "@ackerdb/core";
+import { ADMIN_API_PATH, DEFAULT_API_PATH } from "@ackerdb/core";
 import { apiPath } from "./functions.ts";
 import { validateScopeVocabulary, type ScopeValues } from "../auth/scopes.ts";
 
@@ -21,7 +21,7 @@ export interface App<
 > {
   readonly schema: S;
   readonly plugins: Readonly<Plugins>;
-  /** Groups beyond `"api"` that this application publishes functions in. */
+  /** Groups beyond the framework's own that this application publishes in. */
   readonly apiPaths: readonly string[];
   /** The application's scope vocabulary; absent when it declares none. */
   readonly scopes: Scopes;
@@ -35,10 +35,10 @@ export interface AppDefinition<
   readonly schema: S;
   readonly plugins?: Plugins;
   /**
-   * The API paths this application publishes beyond the default `"api"`. Code
-   * generation reads only this manifest — never the function modules, which
-   * import what it writes — so a group earns its `internal.*` binding by being
-   * named here once.
+   * The API paths this application publishes beyond the framework's own
+   * `"api"` and `"admin"`. Code generation reads only this manifest — never
+   * the function modules, which import what it writes — so a group earns its
+   * `internal.*` binding by being named here once.
    */
   readonly apiPaths?: readonly string[];
   /**
@@ -79,10 +79,21 @@ export type AppPluginCapabilities<
 };
 
 /**
+ * The groups the framework publishes on every application's behalf: the
+ * default one every declaration falls back to, and the one the Admin API is
+ * declared in. Neither is listed in a manifest, and both are known to the
+ * Registry and to code generation without one.
+ */
+const FRAMEWORK_API_PATHS: ReadonlySet<string> = new Set([
+  DEFAULT_API_PATH,
+  ADMIN_API_PATH,
+]);
+
+/**
  * The extra groups, validated exactly as a declaration's own `apiPath` is and
  * sorted like every other list code generation reads, so reordering `app.ts`
- * never rewrites a generated file. `"api"` is not listed: every application
- * publishes it, and naming it would offer a way to leave it out.
+ * never rewrites a generated file. Neither framework group is listed: every
+ * application publishes both, and naming one would offer a way to leave it out.
  */
 function declaredApiPaths(value: unknown): readonly string[] {
   if (value === undefined) return Object.freeze([]);
@@ -92,12 +103,14 @@ function declaredApiPaths(value: unknown): readonly string[] {
   const declared = new Set<string>();
   for (const entry of value) {
     // `apiPath` refuses every name a binding cannot be, `events` included.
-    // Only `"api"` is legal on a declaration yet illegal here, because every
-    // application publishes it and listing it would offer a way to leave it out.
+    // Only the framework's two are legal on a declaration yet illegal here —
+    // an application publishes its own functions in either, and code
+    // generation emits both bindings whether or not a manifest says so, so
+    // listing one would emit it twice.
     const path = apiPath(entry, "application apiPaths entry");
-    if (path === DEFAULT_API_PATH) {
+    if (FRAMEWORK_API_PATHS.has(path)) {
       throw new TypeError(
-        `application apiPaths must not list "${DEFAULT_API_PATH}" — every application publishes it`,
+        `application apiPaths must not list "${path}" — every application publishes it`,
       );
     }
     if (declared.has(path)) {

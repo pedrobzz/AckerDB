@@ -32,6 +32,7 @@
  * two patterns.
  */
 import { RESERVED_MARKER } from "@ackerdb/core";
+import { ADMIN_SCOPES } from "../admin/scopes.ts";
 import type { Principal } from "./credentials.ts";
 import { AckerDBError } from "../shared/errors.ts";
 
@@ -44,12 +45,12 @@ export const MAX_SCOPE_PATTERNS = 128;
 export const SCOPE_WILDCARD = "*";
 
 /**
- * The framework's own vocabulary, pre-declared under the reserved marker. It
- * is empty until the Admin API declares `_admin:<domain>:<verb>`; the concept
- * is load-bearing before then, because `_*` is what an administrative grant
- * names and it must keep meaning "every framework scope" as this list grows.
+ * The framework's own vocabulary, pre-declared under the reserved marker: the
+ * Admin API's `_admin:<domain>:<verb>` names, declared beside the surface that
+ * requires them. It is named here because this is where a grant meets it —
+ * `_*` expands to exactly this list, and to nothing else.
  */
-export const FRAMEWORK_SCOPES: readonly string[] = Object.freeze([]);
+export const FRAMEWORK_SCOPES: readonly string[] = ADMIN_SCOPES;
 
 export type ScopeValues = readonly [string, ...string[]];
 

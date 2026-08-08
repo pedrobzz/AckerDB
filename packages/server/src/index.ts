@@ -7,6 +7,20 @@ export {
   type AppScope,
 } from "./app/definition.ts";
 export {
+  frameworkFunctionModules,
+  type FrameworkFunctionModules,
+} from "./admin/index.ts";
+export {
+  MAX_ADMIN_APPLICATION_BYTES,
+  normalizeAdminOptions,
+  type AdminApplicationOptions,
+  type AdminOptions,
+  type NormalizedAdminApplication,
+  type NormalizedAdminOptions,
+} from "./admin/options.ts";
+export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
+export { ACKERDB_VERSION } from "./shared/version.ts";
+export {
   expandScopeGrant,
   FRAMEWORK_SCOPES,
   isScopeGrant,
