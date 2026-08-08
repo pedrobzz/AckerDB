@@ -301,7 +301,7 @@ function mutationMessage(id: number, args: unknown, ref: string): MutationMessag
 }
 
 function subscribeMessage(id: number): SubscribeMessage {
-  return { v: PROTOCOL_VERSION, t: "sub", id, ref: "ownerTokens.listOwned", args: {} };
+  return { v: PROTOCOL_VERSION, t: "sub", id, ref: "api.ownerTokens.listOwned", args: {} };
 }
 
 type Action = NonNullable<typeof action._type>;
@@ -326,7 +326,7 @@ async function queueJob(
     scopes: input.scopes ?? [],
     tokenId: input.tokenId ?? null,
     at,
-  }, "systemTokens.queue")));
+  }, "api.systemTokens.queue")));
   return at;
 }
 
@@ -433,7 +433,7 @@ describe("system-managed identity credentials", () => {
       await expect(runtime.mutation(context, request(mutationMessage(
         id,
         { identity },
-        "systemTokens.attempt",
+        "api.systemTokens.attempt",
       )))).rejects.toMatchObject({ code: "unauthorized" });
     }
     await expect(runtime.runMcpTool({

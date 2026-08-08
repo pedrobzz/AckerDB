@@ -177,14 +177,14 @@ describe("useMutation", () => {
     });
     const send = probe.latest();
     void send({ text: "x" }).catch(() => {});
-    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("addTodo");
+    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("api.addTodo");
 
     // The callable's identity belongs to the hook instance, not the
     // reference; the commit-phase ref sync redirects it to the new address.
     await render(root, app("removeTodo"));
     expect(probe.latest()).toBe(send);
     void send({ text: "x" }).catch(() => {});
-    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("removeTodo");
+    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("api.removeTodo");
 
     await act(async () => {
       root.unmount();
@@ -209,7 +209,7 @@ describe("useMutation", () => {
 
     const result = probe.latest()({ text: "milk" });
     const frame = lastMutationFrame(socket);
-    expect(frame.ref).toBe("todos.add");
+    expect(frame.ref).toBe("api.todos.add");
     expect(frame.args).toEqual({ text: "milk" });
     expect(frame.mutationRequestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,

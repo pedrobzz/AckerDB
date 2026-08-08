@@ -1,7 +1,12 @@
 /**
- * The function registry: maps dot-joined addresses ("messages.list") to
- * registered functions. Addresses derive from module paths + export names,
- * exactly mirroring what codegen puts on the generated `api` object.
+ * The function registry: maps dot-joined addresses ("api.messages.list") to
+ * registered functions. An address is `<apiPath>.<...module segments>.<export
+ * name>`, exactly mirroring what codegen puts on the generated group bindings.
+ *
+ * **The group is part of the address, so one flat key is enough.** Two groups
+ * may each hold a `messages.list`; one group may not hold it twice. That falls
+ * out of the key rather than being a rule applied on top of it, which is why
+ * there is no per-group map here and no group argument on any lookup.
  */
 import {
   DEFAULT_API_PATH,
@@ -57,7 +62,13 @@ import {
 type ServerOnlyExport = AnyMcpDeclaration;
 
 interface ModuleExport {
-  readonly address: string;
+  /**
+   * Module path joined to export name — the address without its group, which
+   * only the export's own declaration knows. Error messages before the group
+   * is resolved name this, because it is the file and export a developer can
+   * go and edit.
+   */
+  readonly name: string;
   readonly value: unknown;
 }
 
@@ -105,10 +116,10 @@ export class Registry {
    *
    * `declaredApiPaths` is the manifest's `apiPaths`. A function published in a
    * group not named there is a startup refusal: code generation reads the
-   * manifest alone, so an undeclared group is a live route whose binding
-   * nobody can import, and a misspelled one is invisible in exactly the same
-   * way. Omitting the argument declares no group beyond the default rather
-   * than waiving the rule — the check has no off switch.
+   * manifest alone, so an undeclared group is a live address no binding can
+   * name, and a misspelled one is invisible in exactly the same way. Omitting
+   * the argument declares no group beyond the default rather than waiving the
+   * rule — the check has no off switch.
    */
   constructor(
     modules: Record<string, Record<string, unknown>>,
@@ -128,22 +139,29 @@ export class Registry {
       }
       for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
         a.localeCompare(b))) {
-        moduleExports.push({ address: `${modulePath}.${exportName}`, value });
+        moduleExports.push({ name: `${modulePath}.${exportName}`, value });
       }
     }
 
-    for (const { address, value } of moduleExports) {
+    for (const { name, value } of moduleExports) {
       if (!isRegisteredFunction(value)) continue;
+      // The group is resolved before the address exists, because it is the
+      // address's first segment. That also puts the manifest reconciliation on
+      // every function, exposed or not: a group decides the generated binding
+      // as well as the HTTP root, and a function with no binding is as broken
+      // as one with no route.
+      const address = `${this.groupOf(value.apiPath, name, "function")}.${name}`;
       this.registerAddress(address, value);
       this.functions.set(address, value);
     }
 
-    for (const { address, value } of moduleExports) {
+    for (const { name, value } of moduleExports) {
       if (!isHttpHandlerShaped(value)) continue;
       // The registry serves the validated snapshot, never the exported object:
       // an accessor cannot answer one way at registration and another at
       // dispatch. Addresses still key off the exported identity.
-      const registered = validateRegisteredHttpHandler(value, `http handler "${address}"`);
+      const registered = validateRegisteredHttpHandler(value, `http handler "${name}"`);
+      const address = `${this.groupOf(registered.apiPath, name, "http handler")}.${name}`;
       this.registerAddress(address, value);
       this.httpHandlersByAddress.set(address, registered);
     }
@@ -151,22 +169,29 @@ export class Registry {
     // The socket kinds' refusal is re-applied here for the same reason every
     // other field is re-read: the builder is bypassable, and a hand-built
     // export carrying `apiPath` would otherwise have it silently ignored.
-    for (const { address, value } of moduleExports) {
+    // Refusing it is what makes the default group their address prefix.
+    for (const { name, value } of moduleExports) {
       if (!isRegisteredChannel(value)) continue;
-      refuseApiPathDeclaration(value, `channel "${address}"`);
+      refuseApiPathDeclaration(value, `channel "${name}"`);
+      const address = `${DEFAULT_API_PATH}.${name}`;
       this.registerAddress(address, value);
       this.channels.set(address, value);
     }
 
-    for (const { address, value } of moduleExports) {
+    for (const { name, value } of moduleExports) {
       if (!isRegisteredRealtime(value)) continue;
-      refuseApiPathDeclaration(value, `realtime declaration "${address}"`);
+      refuseApiPathDeclaration(value, `realtime declaration "${name}"`);
+      const address = `${DEFAULT_API_PATH}.${name}`;
       this.registerAddress(address, value);
       this.realtime.set(address, value);
     }
 
-    for (const { address, value } of moduleExports) {
+    for (const { name, value } of moduleExports) {
       if (!isMcpDeclaration(value)) continue;
+      // An MCP endpoint is server-only: it has no reference in any group, so
+      // it takes the default group's prefix to occupy one name in the one
+      // address space every module export shares.
+      const address = `${DEFAULT_API_PATH}.${name}`;
       this.registerAddress(address, value);
       const existing = this.mcps.get(value.name);
       if (existing !== undefined) {
@@ -214,10 +239,6 @@ export class Registry {
     // Exposed paths are claimed after every MCP path, so the single collision
     // check below covers both declaration orders.
     for (const [address, fn] of this.functions) {
-      // Every function's group is checked, exposed or not: a group decides the
-      // generated binding as well as the HTTP root, and a function with no
-      // binding is as broken as one with no route.
-      const group = this.groupOf(fn.apiPath, address, "function");
       const exposure = httpExposure(fn.http, `function "${address}" http`);
       if (exposure === null) continue;
       // The kind is narrowed once, at load: an exposure no method serves is a
@@ -229,7 +250,7 @@ export class Registry {
           `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
         );
       }
-      const path = this.claimApplicationHttpPath(group, address, "HTTP-exposed function");
+      const path = this.claimApplicationHttpPath(address, "HTTP-exposed function");
       // The codec is compiled here, once: a contract that cannot cross the
       // surface's standard-JSON boundary fails the load, never a caller.
       const exposed = Object.freeze({
@@ -249,20 +270,22 @@ export class Registry {
     // with an exposed one — both derive from addresses, and addresses are
     // unique by construction.
     for (const [address, fn] of this.httpHandlersByAddress) {
-      const group = this.groupOf(fn.apiPath, address, "http handler");
-      const path = this.claimApplicationHttpPath(group, address, "http handler");
+      const path = this.claimApplicationHttpPath(address, "http handler");
       this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
     }
 
-    for (const { address, value } of moduleExports) {
+    // The two server-only kinds are the two the passes above recognize, so the
+    // refusal reads the value's shape rather than where it landed: a marked
+    // export the registry does not understand has no address to be named by.
+    for (const { name, value } of moduleExports) {
       if (
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
         (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
-        !this.serverOnly.has(address) &&
-        !this.httpHandlersByAddress.has(address)
+        !isMcpDeclaration(value) &&
+        !isHttpHandlerShaped(value)
       ) {
-        throw new Error(`unknown server-only export at "${address}"`);
+        throw new Error(`unknown server-only export at "${name}"`);
       }
     }
   }
@@ -295,24 +318,25 @@ export class Registry {
   }
 
   /**
-   * The one interpreter of a registered value's group. It is re-read, never
-   * trusted: an untyped export meets the same shape rule the builder applies,
-   * so a malformed group is a registration error rather than a route at
-   * `/undefined/...` or `/_admin/...`.
+   * The one interpreter of a registered value's group, and so of the first
+   * segment of its address. It is re-read, never trusted: an untyped export
+   * meets the same shape rule the builder applies, so a malformed group is a
+   * registration error rather than an address at `undefined.messages.list` or
+   * a route at `/_admin/...`.
    */
-  private groupOf(value: unknown, address: string, label: string): string {
-    const group = apiPath(value, `${label} "${address}" apiPath`);
+  private groupOf(value: unknown, name: string, label: string): string {
+    const group = apiPath(value, `${label} "${name}" apiPath`);
     if (!this.declaredApiPaths.has(group)) {
       throw new Error(
-        `${label} "${address}" declares apiPath "${group}", which the application manifest does not list in apiPaths`,
+        `${label} "${name}" declares apiPath "${group}", which the application manifest does not list in apiPaths`,
       );
     }
     return group;
   }
 
   /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
-  private claimApplicationHttpPath(group: string, address: string, label: string): string {
-    const path = httpPathForAddress(group, address);
+  private claimApplicationHttpPath(address: string, label: string): string {
+    const path = httpPathForAddress(address);
     // `claimsReservedName` does the work here: a validated group can never
     // begin with `_`, so an address-derived path cannot reach a built-in route
     // — the first arm is belt and braces against a future route shape.
@@ -328,6 +352,12 @@ export class Registry {
     return path;
   }
 
+  /**
+   * The one address space, checked once. Because the group is the address's
+   * first segment, `api.messages.list` and `internal.messages.list` are two
+   * keys and both may exist — the collision this refuses is one group holding
+   * a name twice, which is the only one that ever meant anything.
+   */
   private registerAddress(address: string, value: object): void {
     if (
       this.functions.has(address) ||
@@ -391,8 +421,8 @@ export class Registry {
 
   /**
    * Every registered function is addressable, in-process and remotely alike:
-   * the group it is published in decides where it answers, and `access` alone
-   * decides who it answers.
+   * its address begins with the group that decides where it answers, and
+   * `access` alone decides who it answers.
    */
   get(address: string): AnyRegistered | undefined {
     return this.functions.get(address);

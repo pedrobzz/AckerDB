@@ -74,7 +74,7 @@ describe("ChannelHub", () => {
     await hub.join({
       session: first.adapter,
       id: 1,
-      address: "chat.room",
+      address: "api.chat.room",
       args: { threadId: 1n },
       hasRoom: true,
       room: "support",
@@ -83,7 +83,7 @@ describe("ChannelHub", () => {
     await hub.join({
       session: second.adapter,
       id: 2,
-      address: "chat.room",
+      address: "api.chat.room",
       args: { threadId: 1n },
       hasRoom: true,
       room: "support",
@@ -92,7 +92,7 @@ describe("ChannelHub", () => {
     await hub.join({
       session: otherRoom.adapter,
       id: 3,
-      address: "chat.room",
+      address: "api.chat.room",
       args: { threadId: 1n },
       hasRoom: true,
       room: "sales",
@@ -135,7 +135,7 @@ describe("ChannelHub", () => {
     const result = await hub.join({
       session: client.adapter,
       id: 1,
-      address: "chat.guarded",
+      address: "api.chat.guarded",
       args: {},
       hasRoom: true,
       room: "closed",
@@ -180,7 +180,7 @@ describe("ChannelHub", () => {
     await expect(hub.join({
       session: client.adapter,
       id: 1,
-      address: "chat.roomless",
+      address: "api.chat.roomless",
       args: {},
       hasRoom: true,
       room: "unexpected",
@@ -189,7 +189,7 @@ describe("ChannelHub", () => {
     await expect(hub.join({
       session: client.adapter,
       id: 2,
-      address: "chat.roomed",
+      address: "api.chat.roomed",
       args: {},
       hasRoom: false,
       requestBytes: 1,
@@ -223,7 +223,7 @@ describe("ChannelHub", () => {
     await hub.join({
       session: client.adapter,
       id: 1,
-      address: "chat.ordered",
+      address: "api.chat.ordered",
       args: {},
       hasRoom: false,
       requestBytes: 1,
@@ -301,7 +301,7 @@ describe("ChannelHub", () => {
     await hub.join({
       session: adapter,
       id: 1,
-      address: "chat.hanging",
+      address: "api.chat.hanging",
       args: {},
       hasRoom: false,
       requestBytes: 1,

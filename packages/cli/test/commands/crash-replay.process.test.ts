@@ -346,7 +346,7 @@ describe("process crash replay", () => {
 
     let mutationSettled = false;
     const mutation = client.mutation<{ channelId: bigint; body: string }, bigint>(
-      "crash.crashBeforeCommit",
+      "api.crash.crashBeforeCommit",
       { channelId: 9n, body: "precommit-sigkill" },
     );
     void mutation.then(
@@ -474,7 +474,7 @@ describe("process crash replay", () => {
     client.subscribe<
       { channelId: bigint },
       Array<{ id: bigint; body: string }>
-    >("messages.list", { channelId: 7n }, (rows) => {
+    >("api.messages.list", { channelId: 7n }, (rows) => {
       if (rows.length === 0) {
         initialSnapshot();
         return;
@@ -490,7 +490,7 @@ describe("process crash replay", () => {
     let mutationSettled = false;
     let mutationResolvedAfterSubscription = false;
     const mutation = client.mutation<{ channelId: bigint; body: string }, bigint>(
-      "messages.send",
+      "api.messages.send",
       { channelId: 7n, body: "post-commit-sigkill" },
     );
     void mutation.then(
@@ -605,7 +605,7 @@ describe("process crash replay", () => {
         { channelId: bigint; body: string },
         bigint
       >(
-        "messages.send",
+        "api.messages.send",
         { channelId: 11n, body: "acknowledged-before-sigkill" },
       ), "acknowledged mutation");
       first.child.kill("SIGKILL");
@@ -644,7 +644,7 @@ describe("process crash replay", () => {
       const rows = await withTimeout(client.query<
         { channelId: bigint },
         Array<{ id: bigint; body: string }>
-      >("messages.list", { channelId: 11n }), "query after acknowledged crash");
+      >("api.messages.list", { channelId: 11n }), "query after acknowledged crash");
       expect(rows).toEqual([
         expect.objectContaining({ id: 1n, body: "acknowledged-before-sigkill" }),
       ]);
@@ -652,7 +652,7 @@ describe("process crash replay", () => {
       expect(await withTimeout(client.mutation<
         { channelId: bigint; body: string },
         bigint
-      >("messages.send", { channelId: 11n, body: "after-restart" }), "mutation after restart")).toBe(2n);
+      >("api.messages.send", { channelId: 11n, body: "after-restart" }), "mutation after restart")).toBe(2n);
       expect(observed.receipts.at(-1)).toMatchObject({
         commitVersion: 2n,
         durability,

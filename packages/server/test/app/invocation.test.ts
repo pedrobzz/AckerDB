@@ -219,12 +219,12 @@ describe("invocation instrumentation", () => {
       phase: observation.phase,
       outcome: observation.outcome,
     }))).toEqual([
-      { function: "functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "auth", outcome: "ok" },
-      { function: "functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "policy", outcome: "ok" },
-      { function: "functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "auth", outcome: "ok" },
-      { function: "functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "policy", outcome: "ok" },
-      { function: "functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "handler", outcome: "ok" },
-      { function: "functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "handler", outcome: "ok" },
+      { function: "api.functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "auth", outcome: "ok" },
+      { function: "api.functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "policy", outcome: "ok" },
+      { function: "api.functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "auth", outcome: "ok" },
+      { function: "api.functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "policy", outcome: "ok" },
+      { function: "api.functions.child", invocationId: 2, parentInvocationId: 1, depth: 1, phase: "handler", outcome: "ok" },
+      { function: "api.functions.parent", invocationId: 1, parentInvocationId: undefined, depth: 0, phase: "handler", outcome: "ok" },
     ]);
     for (const observation of observations) {
       expect(Object.isFrozen(observation)).toBe(true);
@@ -459,7 +459,7 @@ describe("Registry function identity", () => {
     const ownKeys = Reflect.ownKeys(exported);
     const registry = new Registry({ messages: { list: exported } });
 
-    expect(registry.addressOf(exported)).toBe("messages.list");
+    expect(registry.addressOf(exported)).toBe("api.messages.list");
     expect(registry.addressOf(unexported)).toBeUndefined();
     expect(Reflect.ownKeys(exported)).toEqual(ownKeys);
   });
@@ -469,6 +469,6 @@ describe("Registry function identity", () => {
     expect(() => new Registry({
       first: { value: shared },
       second: { alias: shared },
-    })).toThrow('registered function is exported at both "first.value" and "second.alias"');
+    })).toThrow('registered function is exported at both "api.first.value" and "api.second.alias"');
   });
 });

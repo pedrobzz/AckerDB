@@ -302,7 +302,7 @@ afterEach(async () => {
 async function callAi(mode: string): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: 1,
-    address: "app.runAi",
+    address: "api.app.runAi",
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
     respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -380,7 +380,7 @@ describe("MCP zero-hop AI SDK tools", () => {
       // address rather than "<endpoint>:<tool>". The local adapter dispatches
       // straight to the tool, so no operation-level tool name is emitted here.
       const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "tools.roundTrip" && span.requestId === "1"
+        span.stage === "handler" && span.function === "api.tools.roundTrip" && span.requestId === "1"
       );
       expect(admission).toBeDefined();
       expect(nested).toBeDefined();
@@ -479,7 +479,7 @@ describe("MCP zero-hop AI SDK tools", () => {
   test("keeps SSE tools active after handler return and revokes every completed lifecycle", async () => {
     const response = await runtime.runSse({
       id: 2,
-      address: "app.runAiSse",
+      address: "api.app.runAiSse",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });

@@ -25,7 +25,7 @@ type Chat = ChannelRef<
   }
 >;
 
-const chat = { $ref: "chat.room" } as Chat;
+const chat = { $ref: "api.chat.room" } as Chat;
 const results = new Map<string, UseChannelResult<Chat>>();
 
 interface ProbeProps {
@@ -85,7 +85,7 @@ describe("useChannel", () => {
     const joins = socket.framesOf("channel_join");
     expect(joins).toHaveLength(1);
     expect(joins[0]).toMatchObject({
-      ref: "chat.room",
+      ref: "api.chat.room",
       args: { threadId: 1n },
       room: "support",
     });

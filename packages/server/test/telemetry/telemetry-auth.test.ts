@@ -276,7 +276,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
   ): Promise<Response> => {
     const body = `${" ".repeat(padding)}${encode({ secret: PRIVATE_ARGUMENT })}`;
     receivedBytes.set(requestId, Buffer.byteLength(body));
-    return fetch(`${app.base}/api/${address.replaceAll(".", "/")}`, {
+    return fetch(`${app.base}/${address.replaceAll(".", "/")}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
       body,
@@ -284,17 +284,17 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
   };
 
   try {
-    const procedure = await call("ops.echo", "1", VALID_PROCEDURE_TOKEN, 37);
+    const procedure = await call("api.ops.echo", "1", VALID_PROCEDURE_TOKEN, 37);
     expect(procedure.status).toBe(200);
     expect(decode(await procedure.text())).toBe(PRIVATE_RESULT);
     expectTailBaseline(app.runtime);
 
-    const deniedProcedure = await call("ops.echo", "2", INVALID_PROCEDURE_TOKEN);
+    const deniedProcedure = await call("api.ops.echo", "2", INVALID_PROCEDURE_TOKEN);
     expect(deniedProcedure.status).toBe(503);
     expect(decode(await deniedProcedure.text())).toMatchObject({ code: "auth_unavailable" });
     expectTailBaseline(app.runtime);
 
-    const stream = await call("ops.stream", "3", VALID_SSE_TOKEN, 53);
+    const stream = await call("api.ops.stream", "3", VALID_SSE_TOKEN, 53);
     expect(stream.status).toBe(200);
     const streamId = stream.headers.get("x-ackerdb-sse-stream");
     if (streamId === null || stream.body === null) throw new Error("missing SSE response ownership");
@@ -320,7 +320,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
     await eventually(() => app.runtime.status().telemetry.traceRetention.activeTraces === 0);
     expectTailBaseline(app.runtime);
 
-    const deniedStream = await call("ops.stream", "4", INVALID_SSE_TOKEN, 53);
+    const deniedStream = await call("api.ops.stream", "4", INVALID_SSE_TOKEN, 53);
     expect(deniedStream.status).toBe(503);
     expect(decode(await deniedStream.text())).toMatchObject({ code: "auth_unavailable" });
     expectTailBaseline(app.runtime);
@@ -363,19 +363,19 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       oneSpan(retainedSpans, "procedure", "auth", "6", "operation"),
     ];
     expect(auth.map(({ function: fn, outcome }) => ({ fn, outcome }))).toEqual([
-      { fn: "ops.echo", outcome: "ok" },
-      { fn: "ops.echo", outcome: "auth_unavailable" },
-      { fn: "ops.stream", outcome: "ok" },
-      { fn: "ops.stream", outcome: "auth_unavailable" },
-      { fn: "ops.echo", outcome: "unauthenticated" },
-      { fn: "ops.publicEcho", outcome: "ok" },
+      { fn: "api.ops.echo", outcome: "ok" },
+      { fn: "api.ops.echo", outcome: "auth_unavailable" },
+      { fn: "api.ops.stream", outcome: "ok" },
+      { fn: "api.ops.stream", outcome: "auth_unavailable" },
+      { fn: "api.ops.echo", outcome: "unauthenticated" },
+      { fn: "api.ops.publicEcho", outcome: "ok" },
     ]);
 
     const procedureAdmission = oneSpan(retainedSpans, "procedure", "admission", "1");
     const procedureDelivery = oneSpan(retainedSpans, "procedure", "delivery", "1");
     expect(auth[0]!.traceId).toBe(procedureAdmission.traceId);
     expect(auth[0]!.traceId).toBe(procedureDelivery.traceId);
-    expect(procedureAdmission.function).toBe("ops.echo");
+    expect(procedureAdmission.function).toBe("api.ops.echo");
     expect(procedureAdmission.sizeBytes).toBe(receivedBytes.get("1"));
 
     const anonymousAdmission = oneSpan(retainedSpans, "procedure", "admission", "6");
@@ -391,7 +391,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       record.stage === "delivery" &&
       record.traceId === auth[2]!.traceId &&
       record.requestId === "3" &&
-      record.function === "ops.stream"
+      record.function === "api.ops.stream"
     )).toBe(true);
 
     for (const failed of [auth[1]!, auth[3]!, auth[4]!]) {
@@ -412,12 +412,12 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
     // Authentication and the path-owned function identity are established
     // before body parsing, so malformed input stays on the same sanitized trace.
     const malformedAuth = oneSpan(retainedSpans, "procedure", "auth", "7", "operation");
-    expect(malformedAuth).toMatchObject({ function: "ops.echo", outcome: "ok" });
+    expect(malformedAuth).toMatchObject({ function: "api.ops.echo", outcome: "ok" });
     const malformedSpans = retainedSpans.filter((record) =>
       record.operation === "procedure" &&
       record.stage === "admission" &&
       record.outcome === "malformed" &&
-      record.function === "ops.echo" &&
+      record.function === "api.ops.echo" &&
       record.requestId === "7"
     );
     expect(malformedSpans).toHaveLength(1);

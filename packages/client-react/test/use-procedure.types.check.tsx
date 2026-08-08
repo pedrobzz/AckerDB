@@ -31,7 +31,7 @@ function WrongKinds(): ReactNode {
   // @ts-expect-error an event reference is not a procedure
   useProcedure(changes);
   // @ts-expect-error raw addresses bypass generated typing and are rejected
-  useProcedure("tools.stats");
+  useProcedure("api.tools.stats");
   return null;
 }
 

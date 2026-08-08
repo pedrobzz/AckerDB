@@ -218,13 +218,14 @@ function apiTs(
       `    ${t}: _EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
   );
 
-  // One binding per group the manifest declares, each a reference builder that
-  // knows its own root. The addresses are identical — the socket names every
-  // function by its dotted address — so only the type a binding selects and
-  // the HTTP root its references resolve to differ.
+  // One binding per group the manifest declares, each a reference builder
+  // seeded with its own name. The module tree every binding types is the same
+  // one — the file list knows nothing about groups — but each is rooted at its
+  // group, so the addresses it produces begin there and two groups can hold
+  // one trailing name without naming one function.
   const groups = apiPaths.map(
     (path) =>
-      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, served under \`/${path}/\`. */\n` +
+      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, addressed and served under \`${path}\`. */\n` +
       `export const ${path} = _apiGroup(${JSON.stringify(path)}) as unknown as _ApiFromModules<_Modules, ${JSON.stringify(path)}>;\n`,
   );
 

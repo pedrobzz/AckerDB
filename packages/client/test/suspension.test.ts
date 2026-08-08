@@ -98,7 +98,7 @@ describe("AckerDBClient suspension", () => {
   test("background during ready atomically publishes suspended, retires socket and timers, and keeps logical state", () => {
     const { client, clock, sockets, port, phases } = createHarness();
     const updates: unknown[] = [];
-    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
@@ -147,7 +147,7 @@ describe("AckerDBClient suspension", () => {
   test("background during subscription application resumes with a fresh cursorless subscribe", () => {
     const { client, sockets, port } = createHarness();
     const updates: unknown[] = [];
-    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
@@ -167,7 +167,7 @@ describe("AckerDBClient suspension", () => {
 
   test("background clears a stale reconnect backoff so nothing dials before activation", () => {
     const { client, clock, sockets, port } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     first.close();
@@ -223,7 +223,7 @@ describe("AckerDBClient suspension", () => {
     const { client, clock, sockets, port, phases } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
 
@@ -248,7 +248,7 @@ describe("AckerDBClient suspension", () => {
 
   test("pending request deadlines stay absolute across suspension", async () => {
     const { client, clock, port } = createHarness();
-    const result = client.query("todos.list", { list: 1n }).then(mustErr);
+    const result = client.query("api.todos.list", { list: 1n }).then(mustErr);
     port.suspend();
     clock.advance(30_000);
     const rejection = (await result) as AckerDBClientError;
@@ -259,7 +259,7 @@ describe("AckerDBClient suspension", () => {
 
   test("in-flight procedures settle promptly at suspension and never restart", async () => {
     const { client, sockets, port } = createHarness();
-    const call = client.procedure("todos.tally", {}).then(mustErr);
+    const call = client.procedure("api.todos.tally", {}).then(mustErr);
     expect(sockets).toHaveLength(1);
     sockets[0]!.welcome(client.clientSessionId);
     const request = sockets[0]!.lastFrame("p");
@@ -283,7 +283,7 @@ describe("AckerDBClient suspension", () => {
         return new Promise<Response>(() => {});
       },
     });
-    const stream = client.sse("todos.watch", {});
+    const stream = client.sse("api.todos.watch", {});
     const first = stream.next().catch((error) => error);
     await Promise.resolve();
     port.suspend();
@@ -299,7 +299,7 @@ describe("AckerDBClient suspension", () => {
 describe("AckerDBClient activation", () => {
   test("activation with demand dials in the same event turn regardless of prior backoff depth", () => {
     const { client, clock, sockets, port, phases } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     // Deepen the backoff shape before suspending.
     sockets[0]!.close();
@@ -324,7 +324,7 @@ describe("AckerDBClient activation", () => {
     const updates: unknown[] = [];
     const errors: string[] = [];
     client.subscribe(
-      "todos.list",
+      "api.todos.list",
       { list: 1n },
       (value) => updates.push(value),
       (error) => errors.push(error.code),
@@ -383,7 +383,7 @@ describe("AckerDBClient activation", () => {
 
   test("rapid background/active cycles coalesce to one active generation with no parallel sockets", () => {
     const { client, clock, sockets, port, phases } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
 
     for (let cycle = 0; cycle < 3; cycle++) {
@@ -412,7 +412,7 @@ describe("AckerDBClient activation", () => {
 
   test("activation with the dial failing outright enters ordinary reconnect and recovers", () => {
     const { client, clock, sockets, port, phases, failNextDial } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
@@ -431,7 +431,7 @@ describe("AckerDBClient activation", () => {
 
   test("activation with the server down enters ordinary reconnect and recovers when it returns", () => {
     const { client, clock, sockets, port, phases } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
@@ -451,7 +451,7 @@ describe("AckerDBClient activation", () => {
 
   test("a server retry hint outlives suspension: activation honors the remaining pushback", () => {
     const { client, clock, sockets, port, phases } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     // The server sheds load with an explicit admission deadline.
     sockets[0]!.receive({
@@ -486,7 +486,7 @@ describe("AckerDBClient activation", () => {
 
   test("a server retry hint that elapsed during suspension no longer delays activation", () => {
     const { client, clock, sockets, port } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
@@ -514,7 +514,7 @@ describe("AckerDBClient activation", () => {
 
   test("new demand during a Retry-After window defers to the deadline instead of dialing", () => {
     const { client, clock, sockets } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
       v: PROTOCOL_VERSION,
@@ -534,11 +534,11 @@ describe("AckerDBClient activation", () => {
     // Every demand path funnels through the same dial boundary: none of them
     // may open a socket before the server's admission deadline, and the
     // already-scheduled floor timer is preserved rather than restarted.
-    client.subscribe("todos.list", { list: 2n }, () => {});
+    client.subscribe("api.todos.list", { list: 2n }, () => {});
     expect(sockets).toHaveLength(1);
     expect(clock.nextDueIn()).toBe(3_000);
     expect(sockets).toHaveLength(1);
-    void client.mutation("todos.add", { text: "milk" }).catch(() => {});
+    void client.mutation("api.todos.add", { text: "milk" }).catch(() => {});
     expect(sockets).toHaveLength(1);
     expect(clock.nextDueIn()).toBe(3_000);
 
@@ -553,7 +553,7 @@ describe("AckerDBClient activation", () => {
     const { client, clock, sockets, phases } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     const socket = sockets[0]!;
     socket.welcome(client.clientSessionId);
     // Real transports close asynchronously: queued frames can still arrive
@@ -604,7 +604,7 @@ describe("AckerDBClient activation", () => {
     const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     const socket = sockets[0]!;
     socket.welcome(client.clientSessionId);
     socket.deferClose = true;
@@ -636,7 +636,7 @@ describe("AckerDBClient activation", () => {
     });
     let refresh: Promise<unknown> | undefined;
     client.subscribe(
-      "todos.list",
+      "api.todos.list",
       { list: 1n },
       () => {},
       () => {
@@ -687,7 +687,7 @@ describe("AckerDBClient activation", () => {
 
   test("released operation demand does not cancel standing connection demand", () => {
     const { client, sockets, port } = createHarness();
-    const unsubscribe = client.subscribe("todos.list", { list: 1n }, () => {});
+    const unsubscribe = client.subscribe("api.todos.list", { list: 1n }, () => {});
     expect(sockets).toHaveLength(1);
     unsubscribe();
     port.suspend();
@@ -701,7 +701,7 @@ describe("AckerDBClient activation", () => {
     const { client, sockets, port } = createHarness();
     port.suspend();
     expect(sockets).toHaveLength(1);
-    const result = client.mutation("todos.add", { text: "milk" });
+    const result = client.mutation("api.todos.add", { text: "milk" });
     expect(sockets).toHaveLength(1);
 
     port.resume();
@@ -732,7 +732,7 @@ describe("AckerDBClient activation", () => {
   test("a mutation pending across suspension keeps its original identity on the fresh connection", () => {
     const { client, sockets, port } = createHarness();
     sockets[0]!.welcome(client.clientSessionId);
-    void client.mutation("todos.add", { text: "milk" }).catch(() => {});
+    void client.mutation("api.todos.add", { text: "milk" }).catch(() => {});
     const issued = sockets[0]!.lastFrame("m");
 
     port.suspend();
@@ -812,7 +812,7 @@ describe("suspension against a real ackerdb server", () => {
     });
     try {
       client.subscribe(
-        "messages.list",
+        "api.messages.list",
         { channelId: 1n },
         (value) => updates.push(value),
         undefined,

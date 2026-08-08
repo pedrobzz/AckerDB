@@ -86,14 +86,14 @@ describe("credential operations without an MCP endpoint", () => {
 
     await expect(runtime.query(
       session,
-      request(queryMessage(1, "ordinary.list")),
+      request(queryMessage(1, "api.ordinary.list")),
     )).rejects.toMatchObject({
       code: "unauthorized",
       message: "credential administration requires a user identity",
     });
     await expect(runtime.mutation(
       session,
-      request(mutationMessage(2, "2", {}, "ordinary.create")),
+      request(mutationMessage(2, "2", {}, "api.ordinary.create")),
     )).rejects.toMatchObject({
       code: "unauthorized",
       message: "credential administration requires a user identity",
@@ -101,7 +101,7 @@ describe("credential operations without an MCP endpoint", () => {
 
     const response = await runtime.runProcedure({
       id: 3,
-      address: "ordinary.transact",
+      address: "api.ordinary.transact",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),

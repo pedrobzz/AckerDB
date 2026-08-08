@@ -170,7 +170,7 @@ describe("step replay", () => {
                 externalCalls++;
                 return { receipt: `r-${externalCalls}` };
               });
-              const written = await ctx.step.run("fns.record", { line: charged.receipt });
+              const written = await ctx.step.run("internal.fns.record", { line: charged.receipt });
               expect(written).toMatchObject({ ok: true, data: "r-1" });
               attempts++;
               if (attempts < 3) throw new Error(`boom ${attempts}`);
@@ -200,7 +200,7 @@ describe("step replay", () => {
     // The external call and the mutation ran exactly once across 3 runs.
     expect(externalCalls).toBe(1);
     expect(logLines()).toEqual(["r-1"]);
-    expect(journalNames()).toEqual(["charge", "fns.record"]);
+    expect(journalNames()).toEqual(["charge", "internal.fns.record"]);
     expect(jobRows()[0]).toMatchObject({ state: "completed", runCount: 3n });
   });
 
@@ -252,8 +252,8 @@ describe("step.run", () => {
           observe: job({
             args: {},
             handler: async (ctx: Ctx) => {
-              const seen = await ctx.step.run("fns.snapshot", {});
-              const written = await ctx.step.run("fns.record", { line: seen.data });
+              const seen = await ctx.step.run("api.fns.snapshot", {});
+              const written = await ctx.step.run("internal.fns.record", { line: seen.data });
               return { seen: seen.data, wrote: written.data };
             },
           }),
@@ -279,7 +279,7 @@ describe("step.run", () => {
             retry: { attempts: 3, backoff: "fixed", delayMs: 1_000 },
             handler: async (ctx: Ctx) => {
               attempts++;
-              const payment = await ctx.step.run("fns.payInvoice", { invoiceId: "bad" });
+              const payment = await ctx.step.run("internal.fns.payInvoice", { invoiceId: "bad" });
               if (!payment.ok) return { failed: payment.error.code };
               return { paid: true };
             },
@@ -303,7 +303,7 @@ describe("step.run", () => {
         flows: {
           typo: job({
             args: {},
-            handler: async (ctx: Ctx) => await ctx.step.run("fns.doesNotExist", {}),
+            handler: async (ctx: Ctx) => await ctx.step.run("api.fns.doesNotExist", {}),
           }),
         },
       }),
@@ -355,7 +355,7 @@ describe("mismatch refusals", () => {
             handler: async (ctx: Ctx) => {
               // The classic bug: a value from outside any step feeds args.
               const line = `line-${nondeterministic++}`;
-              await ctx.step.run("fns.record", { line });
+              await ctx.step.run("internal.fns.record", { line });
               throw new Error("later step fails");
             },
           }),
@@ -690,7 +690,7 @@ describe("journal integrity", () => {
 
     const patched = await runtime.runMutation({
       id: 1,
-      address: "admin.surgery",
+      address: "api.admin.surgery",
       args: { id: handle.id, argsJson: '{"input":"replaced"}' },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),

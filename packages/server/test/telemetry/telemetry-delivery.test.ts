@@ -261,7 +261,7 @@ test("Runtime prepares one canonical query frame for WebSocket delivery", async 
       v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
-      ref: "probe.once",
+      ref: "api.probe.once",
       args: {},
     }));
 
@@ -341,7 +341,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       v: PROTOCOL_VERSION,
       t: "q",
       id: 41,
-      ref: "notes.list",
+      ref: "api.notes.list",
       args: {},
     });
     await settle();
@@ -355,7 +355,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       v: PROTOCOL_VERSION,
       t: "m",
       id: 42,
-      ref: "notes.add",
+      ref: "api.notes.add",
       args: { body: "safe" },
       mutationRequestId: mutationId,
       issuedAt,
@@ -369,7 +369,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       v: PROTOCOL_VERSION,
       t: "q",
       id: 43,
-      ref: "notes.missing",
+      ref: "api.notes.missing",
       args: {},
     });
     await settle();
@@ -380,7 +380,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       v: PROTOCOL_VERSION,
       t: "q",
       id: 44,
-      ref: "notes.large",
+      ref: "api.notes.large",
       args: { size: runtime.limits.maxFrameBytes + 1 },
     });
     await settle();
@@ -518,7 +518,7 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
       v: PROTOCOL_VERSION,
       t: "q",
       id: 51,
-      ref: "notes.list",
+      ref: "api.notes.list",
       args: {},
     });
     await settle();
@@ -545,7 +545,7 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
       v: PROTOCOL_VERSION,
       t: "q",
       id: 52,
-      ref: "notes.list",
+      ref: "api.notes.list",
       args: {},
     });
     await settle();
@@ -616,7 +616,7 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
   const call = async (id: number, address: string, args: unknown) => {
     const requestBody = `${" ".repeat(19)}${encode(args)}`;
     receivedBytes.set(id, encoder.encode(requestBody).byteLength);
-    const response = await fetch(`${base}/api/${address.replaceAll(".", "/")}`, {
+    const response = await fetch(`${base}/${address.replaceAll(".", "/")}`, {
       method: "POST",
       body: requestBody,
     });
@@ -625,10 +625,10 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
   };
 
   try {
-    const success = await call(1, "ops.echo", { body: "hello" });
-    const failure = await call(2, "ops.fail", {});
-    const boundedFailure = await call(3, "ops.failLarge", {});
-    const responderFailure = await call(4, "ops.echo", { body: "handoff" });
+    const success = await call(1, "api.ops.echo", { body: "hello" });
+    const failure = await call(2, "api.ops.fail", {});
+    const boundedFailure = await call(3, "api.ops.failLarge", {});
+    const responderFailure = await call(4, "api.ops.echo", { body: "handoff" });
 
     expect(success).toMatchObject({ status: 200, value: "hello" });
     expect(failure).toMatchObject({
@@ -674,9 +674,9 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
     await runtime.telemetry.flush();
     const retained = spans(exported);
     for (const [id, address] of [
-      [1, "ops.echo"],
-      [2, "ops.fail"],
-      [3, "ops.failLarge"],
+      [1, "api.ops.echo"],
+      [2, "api.ops.fail"],
+      [3, "api.ops.failLarge"],
     ] as const) {
       const owner = admission(retained, "procedure", String(id));
       const handoff = runtime.procedureHandoffs.get(id)!;
@@ -708,7 +708,7 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
       { stage: "delivery", outcome: "internal" },
     ]);
     expect(responderSpans.every((record) =>
-      record.requestId === "4" && record.function === "ops.echo"
+      record.requestId === "4" && record.function === "api.ops.echo"
     )).toBe(true);
     expect(responderSpans.every((record) => record.sizeBytes === failedHandoff!.bytes)).toBe(true);
   } finally {

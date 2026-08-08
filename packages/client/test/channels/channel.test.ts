@@ -59,7 +59,7 @@ type Chat = ChannelRef<
   }
 >;
 
-const chat = { $ref: "chat.room" } as Chat;
+const chat = { $ref: "api.chat.room" } as Chat;
 
 function framesOfType<T extends ClientMessage["t"]>(
   frames: readonly ClientMessage[],

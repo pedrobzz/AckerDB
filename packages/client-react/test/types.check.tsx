@@ -195,7 +195,7 @@ function StreamConsumer(): ReactNode {
   // @ts-expect-error the chunk type is the server-validated yield type
   const wrongChunks: ReadableStream<number> = start({ prompt: "hi" });
   // Raw addresses remain usable but infer nothing.
-  const untyped: ReadableStream<unknown> = useSseProcedure("chat.stream")({});
+  const untyped: ReadableStream<unknown> = useSseProcedure("api.chat.stream")({});
   void [stream, withSignal, wrongChunks, untyped, _call];
   return null;
 }

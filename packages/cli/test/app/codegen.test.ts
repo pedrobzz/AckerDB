@@ -198,16 +198,20 @@ export const tuya = service({
     const modules = await importFunctionModules(config);
     const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
-      "admin.users.compact",
-      "admin.users.count",
-      "messages.enqueueNote",
-      "messages.list",
-      "messages.send",
-      "messages.tail",
+      "api.admin.users.count",
+      "api.messages.enqueueNote",
+      "api.messages.list",
+      "api.messages.send",
+      "api.messages.tail",
+      "internal.admin.users.compact",
     ]);
-    // the group decides the HTTP root, never the address
-    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("messages.tail");
-    expect(registry.get("admin.users.compact")?.apiPath).toBe("internal");
+    // the group is the address's first segment, and the URL is the address
+    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("api.messages.tail");
+    expect(registry.get("internal.admin.users.compact")?.apiPath).toBe("internal");
+    // `functions/admin/` is a module directory, not a group: a directory named
+    // after a declared group still publishes into the group each function
+    // declares.
+    expect(registry.get("api.admin.users.count")?.apiPath).toBe("api");
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     expect(api).toContain("messages: typeof _m_messages;");
@@ -276,8 +280,8 @@ export const agentMcp = mcp({
     const registry = new Registry(await importFunctionModules(config), ["internal"]);
     // The tool is an ordinary function and keeps its address; the endpoint is
     // the only server-only export.
-    expect([...registry.functions.keys()]).toEqual(["agent.echo"]);
-    expect([...registry.serverOnly.keys()]).toEqual(["agent.agentMcp"]);
+    expect([...registry.functions.keys()]).toEqual(["api.agent.echo"]);
+    expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
   });
 
   test("derives exact local Plugin capabilities without exposing them remotely or to MCP", async () => {

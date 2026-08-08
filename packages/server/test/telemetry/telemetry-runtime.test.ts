@@ -588,14 +588,14 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_001,
-      ref: "items.logSequence",
+      ref: "api.items.logSequence",
       args: {},
     }))).toBe("logged");
 
     await expect(app.mutation(
       session.context,
       720_000_002,
-      "items.fail",
+      "api.items.fail",
       { room: 9n, body: "rollback" },
     )).rejects.toThrow(PRIVATE_FAILURE);
     await app.runtime.telemetryJournal.flush();
@@ -623,7 +623,7 @@ describe("Runtime telemetry acceptance", () => {
       kind: "log",
       level: "info",
       metadata: { index: 0 },
-      functionAddress: "items.logSequence",
+      functionAddress: "api.items.logSequence",
       functionKind: "query",
       requestId: "720000001",
     });
@@ -631,7 +631,7 @@ describe("Runtime telemetry acceptance", () => {
       kind: "log",
       level: "error",
       metadata: { room: 9n },
-      functionAddress: "items.fail",
+      functionAddress: "api.items.fail",
       functionKind: "mutation",
       requestId: "720000002",
     });
@@ -649,7 +649,7 @@ describe("Runtime telemetry acceptance", () => {
         v: PROTOCOL_VERSION,
         t: "q",
         id: 720_000_030 + index,
-        ref: "items.logSequence",
+        ref: "api.items.logSequence",
         args: {},
       }),
     )));
@@ -671,7 +671,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 720_000_011,
-      ref: "items.loggedList",
+      ref: "api.items.loggedList",
       args: { room: 11n },
     } as const;
 
@@ -680,13 +680,13 @@ describe("Runtime telemetry acceptance", () => {
     const added = await app.mutation(
       first.context,
       720_000_012,
-      "items.add",
+      "api.items.add",
       { room: 11n, body: "invalidate" },
     );
     await app.mutation(
       first.context,
       720_000_013,
-      "items.touch",
+      "api.items.touch",
       { id: added.value as bigint },
     );
 
@@ -695,9 +695,9 @@ describe("Runtime telemetry acceptance", () => {
       .filter((record) => record.kind === "log" && record.message === "listed room");
     expect(logs).toHaveLength(3);
     expect(logs.map((record) => record.functionAddress)).toEqual([
-      "items.loggedList",
-      "items.loggedList",
-      "items.loggedList",
+      "api.items.loggedList",
+      "api.items.loggedList",
+      "api.items.loggedList",
     ]);
   });
 
@@ -709,7 +709,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_015,
-      ref: "items.unsafeLog",
+      ref: "api.items.unsafeLog",
       args: {},
     }))).toBe("safe");
     await app.runtime.telemetryJournal.flush();
@@ -762,12 +762,12 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_016,
-      ref: "items.policyLog",
+      ref: "api.items.policyLog",
       args: {},
     }))).toBe("authorized");
     const response = await app.runtime.runProcedure({
       id: 720_000_017,
-      address: "ops.pipeline",
+      address: "api.ops.pipeline",
       args: { room: 13n, payload: "contexts" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -775,7 +775,7 @@ describe("Runtime telemetry acceptance", () => {
     expect(response.status).toBe(200);
     const stream = await app.runtime.runSse({
       id: 720_000_018,
-      address: "ops.stream",
+      address: "api.ops.stream",
       args: { payload: "contexts" },
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -792,10 +792,10 @@ describe("Runtime telemetry acceptance", () => {
       record.functionAddress,
       record.functionKind,
     ])).toEqual([
-      ["policy checked", "items.policyLog", "query"],
-      ["procedure started", "ops.pipeline", "procedure"],
-      ["transaction started", "ops.pipeline", "procedure"],
-      ["stream started", "ops.stream", "sse"],
+      ["policy checked", "api.items.policyLog", "query"],
+      ["procedure started", "api.ops.pipeline", "procedure"],
+      ["transaction started", "api.ops.pipeline", "procedure"],
+      ["stream started", "api.ops.stream", "sse"],
       ["system ran", "coverage.system", "system"],
     ]);
   });
@@ -819,7 +819,7 @@ describe("Runtime telemetry acceptance", () => {
     await app.mutation(
       session.context,
       720_000_021,
-      "items.track",
+      "api.items.track",
       {},
       mutationRequestId,
       issuedAt,
@@ -827,7 +827,7 @@ describe("Runtime telemetry acceptance", () => {
     await app.mutation(
       session.context,
       720_000_022,
-      "items.track",
+      "api.items.track",
       {},
       mutationRequestId,
       issuedAt,
@@ -835,13 +835,13 @@ describe("Runtime telemetry acceptance", () => {
     await expect(app.mutation(
       session.context,
       720_000_023,
-      "items.fail",
+      "api.items.fail",
       { room: 12n, body: "analytics rollback" },
     )).rejects.toThrow(PRIVATE_FAILURE);
     const rejected = await app.mutation(
       session.context,
       720_000_024,
-      "items.rejectTrack",
+      "api.items.rejectTrack",
       {},
     );
     expect(rejected.value).toMatchObject({ ok: false });
@@ -887,8 +887,8 @@ describe("Runtime telemetry acceptance", () => {
     const anonymousSession = await app.openSession("analytics-anonymous");
     const workloadSession = await app.openSession("analytics-workload", undefined, workload);
 
-    await app.mutation(anonymousSession.context, 720_000_026, "items.identityTrack", {});
-    await app.mutation(workloadSession.context, 720_000_027, "items.identityTrack", {});
+    await app.mutation(anonymousSession.context, 720_000_026, "api.items.identityTrack", {});
+    await app.mutation(workloadSession.context, 720_000_027, "api.items.identityTrack", {});
     await app.runtime.system.run("analytics.system", (ctx) => ctx.tx((tx) => {
       tx.analytics.track("identity tracked");
     }));
@@ -902,8 +902,8 @@ describe("Runtime telemetry acceptance", () => {
       undefined,
     ]);
     expect(events.map((event) => event.functionAddress)).toEqual([
-      "items.identityTrack",
-      "items.identityTrack",
+      "api.items.identityTrack",
+      "api.items.identityTrack",
       "analytics.system",
     ]);
     const serialized = JSON.stringify(events, (_key, value) =>
@@ -918,7 +918,7 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("analytics-scheduled");
     const dueAt = Date.now() + 60_000;
 
-    await app.mutation(session.context, 720_000_028, "jobs.schedule", {
+    await app.mutation(session.context, 720_000_028, "api.jobs.schedule", {
       label: "analytics",
       at: dueAt,
     });
@@ -972,7 +972,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_031,
-      ref: "items.logSequence",
+      ref: "api.items.logSequence",
       args: {},
     }))).toBe("logged");
     await app.runtime.telemetryJournal.flush();
@@ -1005,7 +1005,7 @@ describe("Runtime telemetry acceptance", () => {
     const held = app.mutation(
       session.context,
       700_000_001,
-      "items.holdAdd",
+      "api.items.holdAdd",
       { room: 7n, body: "held" },
       uuidV7(issuedAt, 701),
       issuedAt,
@@ -1013,7 +1013,7 @@ describe("Runtime telemetry acceptance", () => {
     await entered.promise;
     const procedure = app.runtime.runProcedure({
       id: 700_000_002,
-      address: "ops.pipeline",
+      address: "api.ops.pipeline",
       args: { room: 7n, payload: "queued" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -1046,21 +1046,21 @@ describe("Runtime telemetry acceptance", () => {
     const heldExecution = requiredSpan(retained, (span) =>
       span.operation === "mutation" &&
       span.stage === "execution" &&
-      span.function === "items.holdAdd"
+      span.function === "api.items.holdAdd"
     );
     const transactionExecution = requiredSpan(retained, (span) =>
       span.operation === "transaction" &&
       span.stage === "execution" &&
-      span.function === "ops.pipeline"
+      span.function === "api.ops.pipeline"
     );
     const nestedHandler = requiredSpan(retained, (span) =>
       span.stage === "handler" &&
-      span.function === "items.add" &&
+      span.function === "api.items.add" &&
       span.requestId === "700000002"
     );
     const nestedStatement = requiredSpan(retained, (span) =>
       span.stage === "statement" &&
-      span.function === "items.add" &&
+      span.function === "api.items.add" &&
       span.requestId === "700000002"
     );
     expect(heldExecution.traceId).toBe(heldAdmission.traceId);
@@ -1092,13 +1092,13 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 740_000_001,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 1n },
     }));
     await expect(app.mutation(
       session.context,
       740_000_002,
-      "items.fail",
+      "api.items.fail",
       { room: 1n, body: PRIVATE_FAILURE },
     )).rejects.toBeDefined();
 
@@ -1134,7 +1134,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 740_000_010,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 1n },
     } as const;
     const bytes = Buffer.byteLength(encode(message));
@@ -1162,7 +1162,7 @@ describe("Runtime telemetry acceptance", () => {
     });
     const stream = await app.runtime.runSse({
       id: 740_000_003,
-      address: "ops.stream",
+      address: "api.ops.stream",
       args: { payload: PRIVATE_STREAM },
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -1203,21 +1203,21 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "sub",
       id: QUERY_SUBSCRIPTION_ID,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 1n },
     }));
     await app.runtime.subscribe(primary.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: MATCHING_EVENT_SUBSCRIPTION_ID,
-      ref: "events.signals",
+      ref: "api.events.signals",
       args: { room: 1n },
     }));
     await app.runtime.subscribe(primary.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: NONMATCHING_EVENT_SUBSCRIPTION_ID,
-      ref: "events.signals",
+      ref: "api.events.signals",
       args: { room: 2n },
     }));
 
@@ -1226,7 +1226,7 @@ describe("Runtime telemetry acceptance", () => {
     const first = await app.mutation(
       primary.context,
       710_000_001,
-      "items.add",
+      "api.items.add",
       { room: 1n, body: PRIVATE_BODY },
       mutationId,
       issuedAt,
@@ -1234,7 +1234,7 @@ describe("Runtime telemetry acceptance", () => {
     const replay = await app.mutation(
       primary.context,
       710_000_002,
-      "items.add",
+      "api.items.add",
       { room: 1n, body: PRIVATE_BODY },
       mutationId,
       issuedAt,
@@ -1244,11 +1244,11 @@ describe("Runtime telemetry acceptance", () => {
       receipt: { replay: "replayed", commitVersion: first.receipt.commitVersion },
     });
 
-    await app.mutation(primary.context, 710_000_003, "items.touch", { id: first.value });
+    await app.mutation(primary.context, 710_000_003, "api.items.touch", { id: first.value });
 
     const procedureResponse = await app.runtime.runProcedure({
       id: 720_000_001,
-      address: "ops.pipeline",
+      address: "api.ops.pipeline",
       args: { room: 1n, payload: PRIVATE_FETCH },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -1258,7 +1258,7 @@ describe("Runtime telemetry acceptance", () => {
 
     const stream = await app.runtime.runSse({
       id: 730_000_001,
-      address: "ops.stream",
+      address: "api.ops.stream",
       args: { payload: PRIVATE_STREAM },
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -1269,7 +1269,7 @@ describe("Runtime telemetry acceptance", () => {
     const scheduleIssuedAt = Date.now();
     const scheduleMutationId = uuidV7(scheduleIssuedAt, 74);
     const dueAt = scheduleIssuedAt + 120_000;
-    const scheduled = await app.mutation(primary.context, 740_000_001, "jobs.schedule", {
+    const scheduled = await app.mutation(primary.context, 740_000_001, "api.jobs.schedule", {
       label: "acceptance",
       at: dueAt,
     }, scheduleMutationId, scheduleIssuedAt);
@@ -1287,7 +1287,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "sub",
       id: FAILING_SUBSCRIPTION_ID,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 3n },
     }));
     const deliveryIssuedAt = Date.now();
@@ -1295,7 +1295,7 @@ describe("Runtime telemetry acceptance", () => {
     const deliveredCommit = await app.mutation(
       primary.context,
       710_000_004,
-      "items.add",
+      "api.items.add",
       { room: 3n, body: "delivery-failure-still-commits" },
       deliveryMutationId,
       deliveryIssuedAt,
@@ -1305,7 +1305,7 @@ describe("Runtime telemetry acceptance", () => {
     await expect(app.mutation(
       primary.context,
       760_000_001,
-      "items.fail",
+      "api.items.fail",
       { room: 4n, body: PRIVATE_BODY },
       failedMutationId,
     )).rejects.toThrow(PRIVATE_FAILURE);
@@ -1314,7 +1314,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_001,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 1n },
     })) as Array<{ id: bigint; room: bigint; body: string }>;
     expect(roomOne.map((row) => row.body)).toEqual([PRIVATE_BODY, PRIVATE_FETCH]);
@@ -1322,21 +1322,21 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_002,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 3n },
     }))).toHaveLength(1);
     expect(await app.runtime.query(primary.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_003,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 4n },
     }))).toEqual([]);
     expect(await app.runtime.query(primary.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_004,
-      ref: "audit.list",
+      ref: "api.audit.list",
       args: {},
     }))).toMatchObject([
       { line: "sse:complete" },
@@ -1406,7 +1406,7 @@ describe("Runtime telemetry acceptance", () => {
       series.operation === "mutation" &&
       series.stage === "admission" &&
       series.outcome === "ok" &&
-      series.function === "items.add"
+      series.function === "api.items.add"
     )?.count).toBeGreaterThanOrEqual(3);
 
     const highCardinalityIds = [
@@ -1453,13 +1453,13 @@ describe("Runtime telemetry acceptance", () => {
     expect(mutationAdmission.connectionId).not.toBe(PRIMARY_SESSION);
     const mutationHandler = requiredSpan(retainedSpans, (span) =>
       span.stage === "handler" &&
-      span.function === "items.add" &&
+      span.function === "api.items.add" &&
       span.mutationId === mutationId
     );
     expect(mutationHandler.parentSpanId).toBe(mutationAdmission.spanId);
     const mutationStatement = requiredSpan(retainedSpans, (span) =>
       span.stage === "statement" &&
-      span.function === "items.add" &&
+      span.function === "api.items.add" &&
       span.mutationId === mutationId
     );
     expect(mutationStatement.parentSpanId).toBe(mutationHandler.spanId);
@@ -1503,12 +1503,12 @@ describe("Runtime telemetry acceptance", () => {
     );
     const procedureHandler = requiredSpan(retainedSpans, (span) =>
       span.stage === "handler" &&
-      span.function === "ops.pipeline" &&
+      span.function === "api.ops.pipeline" &&
       span.requestId === "720000001"
     );
     const nestedHandler = requiredSpan(retainedSpans, (span) =>
       span.stage === "handler" &&
-      span.function === "items.add" &&
+      span.function === "api.items.add" &&
       span.requestId === "720000001"
     );
     const fetchSpan = requiredSpan(retainedSpans, (span) =>
@@ -1537,7 +1537,7 @@ describe("Runtime telemetry acceptance", () => {
     const sseHandler = requiredSpan(retainedSpans, (span) =>
       span.operation === "sse" &&
       span.stage === "handler" &&
-      span.function === "ops.stream" &&
+      span.function === "api.ops.stream" &&
       span.requestId === "730000001"
     );
     const sseTransactionCommit = retainedSpans.find((span) =>
@@ -1576,16 +1576,16 @@ describe("Runtime telemetry acceptance", () => {
     expect(requiredSpan(retainedSpans, (span) =>
       span.operation === "subscription" &&
       span.stage === "changed" &&
-      span.function === "items.list"
+      span.function === "api.items.list"
     )).toBeDefined();
     expect(requiredSpan(retainedSpans, (span) =>
       span.operation === "subscription" &&
       span.stage === "unchanged" &&
-      span.function === "items.list"
+      span.function === "api.items.list"
     )).toBeDefined();
 
     const mutationRevalidation = retainedSpans.filter((span) =>
-      span.traceId === mutationAdmission.traceId && span.function === "items.list"
+      span.traceId === mutationAdmission.traceId && span.function === "api.items.list"
     );
     expect(mutationRevalidation.length).toBeGreaterThan(0);
 
@@ -1644,7 +1644,7 @@ describe("Runtime telemetry acceptance", () => {
       level: "error",
       operation: "mutation",
       outcome: "internal",
-      function: "items.fail",
+      function: "api.items.fail",
       mutationId: failedMutationId,
       errorClass: "Error",
     }));
@@ -1788,7 +1788,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 830_000_001,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 83n },
     }));
     const issuedAt = Date.now();
@@ -1796,7 +1796,7 @@ describe("Runtime telemetry acceptance", () => {
     await app.mutation(
       session.context,
       830_000_002,
-      "items.add",
+      "api.items.add",
       { room: 83n, body: "operator-sample" },
       mutationId,
       issuedAt,
@@ -1804,7 +1804,7 @@ describe("Runtime telemetry acceptance", () => {
     await app.mutation(
       session.context,
       830_000_003,
-      "items.add",
+      "api.items.add",
       { room: 83n, body: "operator-sample" },
       mutationId,
       issuedAt,
@@ -1834,7 +1834,7 @@ describe("Runtime telemetry acceptance", () => {
         v: PROTOCOL_VERSION,
         t: "q",
         id: 830_000_100 + index,
-        ref: "items.hold",
+        ref: "api.items.hold",
         args: {},
       })),
     );
@@ -2073,7 +2073,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "sub",
       id: QUERY_SUBSCRIPTION_ID,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 9n },
     }));
     mode = "stall";
@@ -2084,7 +2084,7 @@ describe("Runtime telemetry acceptance", () => {
     try {
       const { mutation, rows } = await Promise.race([
         (async () => {
-          const mutation = await app.mutation(session.context, 910_000_001, "items.add", {
+          const mutation = await app.mutation(session.context, 910_000_001, "api.items.add", {
             room: 9n,
             body: "application-remains-correct",
           });
@@ -2092,7 +2092,7 @@ describe("Runtime telemetry acceptance", () => {
             v: PROTOCOL_VERSION,
             t: "q",
             id: 910_000_002,
-            ref: "items.list",
+            ref: "api.items.list",
             args: { room: 9n },
           }));
           return { mutation, rows };
@@ -2157,7 +2157,7 @@ describe("Runtime telemetry acceptance", () => {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 920_000_001,
-      ref: "items.list",
+      ref: "api.items.list",
       args: { room: 1n },
     }))).toEqual([]);
     await app.runtime.telemetry.flush();
