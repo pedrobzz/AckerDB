@@ -35,9 +35,16 @@ export default defineApp({
 **Two vocabularies, one namespace.** Application scopes carry no `_`; framework
 scopes are pre-declared under it and an application may never declare one. That
 is what lets `*` mean "every application scope" and `_*` mean "every framework
-scope" without either side enumerating the other. The framework's list is empty
-until the Admin API declares `_admin:<domain>:<verb>`; `_*` still names it, and
-grows with it.
+scope" without either side enumerating the other. The framework's list is the
+[Admin API](admin-api.md)'s `_admin:<domain>:<verb>` names; `_*` names it, and
+grows with it, because a grant expands against the vocabulary known at the
+moment of the check.
+
+An application may not *require* a framework scope either. The generated `Scope`
+union refuses one at compile time, and startup refuses a `_`-prefixed scope on
+any function or MCP tool entry the framework does not own — including one your
+application published in the `admin` group, since publishing beside the
+framework's functions does not make a function the framework's.
 
 ## Requirements on functions
 
