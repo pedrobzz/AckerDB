@@ -6,6 +6,7 @@
   "exports": {
     "./async": "./src/async.ts",
     "./client-transport": "./src/client-transport.ts",
+    "./framework-functions": "./src/framework-functions.ts",
     "./telemetry": "./src/telemetry.ts"
   }
 }

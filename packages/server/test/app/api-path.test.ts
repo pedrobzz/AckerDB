@@ -13,6 +13,7 @@ import { channel } from "../../src/channels/definition.ts";
 import { realtime } from "../../src/realtime/definition.ts";
 import { mcp } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { applicationAddresses, applicationRoutes } from "ackerdb-test-support/framework-functions";
 
 describe("apiPath declarations", () => {
   test("defaults to the api group on every kind that owns an HTTP root", () => {
@@ -121,7 +122,7 @@ describe("apiPath declarations", () => {
       handler: () => null,
     });
     const registry = new Registry({ messages: { compact: fn } }, ["internal"]);
-    expect([...registry.exposed.keys()]).toEqual(["/internal/messages/compact"]);
+    expect(applicationRoutes(registry)).toEqual(["/internal/messages/compact"]);
   });
 });
 
@@ -145,8 +146,8 @@ describe("the HTTP root a group owns", () => {
   });
 
   test("serves each function under the root its group names", () => {
-    const registry = new Registry({ messages: { list, compact, audit } }, ["internal", "admin"]);
-    expect([...registry.exposed.keys()].sort()).toEqual([
+    const registry = new Registry({ messages: { list, compact, audit } }, ["internal"]);
+    expect(applicationRoutes(registry)).toEqual([
       "/admin/messages/audit",
       "/api/messages/list",
       "/internal/messages/compact",
@@ -189,7 +190,7 @@ describe("the HTTP root a group owns", () => {
     );
     const { apiPath: _absent, ...bare } = list as unknown as Record<string, unknown>;
     const registry = new Registry({ messages: { list: bare as never } });
-    expect([...registry.exposed.keys()]).toEqual(["/api/messages/list"]);
+    expect(applicationRoutes(registry)).toEqual(["/api/messages/list"]);
   });
 
   test("a raw handler hangs under its own group too", () => {
@@ -218,9 +219,9 @@ describe("the HTTP root a group owns", () => {
     // addresses and two routes, so neither group can squat the other's names.
     const grouped = { ...list, apiPath: "internal" } as never;
     const registry = new Registry({ messages: { list, grouped } }, ["internal"]);
-    expect([...registry.functions.keys()].sort())
+    expect(applicationAddresses(registry))
       .toEqual(["api.messages.list", "internal.messages.grouped"]);
-    expect([...registry.exposed.keys()].sort())
+    expect(applicationRoutes(registry))
       .toEqual(["/api/messages/list", "/internal/messages/grouped"]);
   });
 
@@ -229,8 +230,8 @@ describe("the HTTP root a group owns", () => {
     // group: the first directory segment is a module name, and only `apiPath`
     // names a group.
     const registry = new Registry({ "admin.messages": { list } });
-    expect([...registry.functions.keys()]).toEqual(["api.admin.messages.list"]);
-    expect([...registry.exposed.keys()]).toEqual(["/api/admin/messages/list"]);
+    expect(applicationAddresses(registry)).toEqual(["api.admin.messages.list"]);
+    expect(applicationRoutes(registry)).toEqual(["/api/admin/messages/list"]);
   });
 
   test("an MCP tools record may name a function from any group", () => {

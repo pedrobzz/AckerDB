@@ -26,6 +26,22 @@ export const DEFAULT_API_PATH = "api";
 export type DefaultApiPath = typeof DEFAULT_API_PATH;
 
 /**
+ * The group the framework publishes its own administration functions in, and
+ * so the first segment of every Admin API address. It is an ordinary group
+ * carrying no reserved marker — the marker belongs to roots and scopes, and a
+ * group's name becomes a generated binding, which the marker is reserved
+ * against. What keeps the surface unsquattable is the address rule itself: an
+ * application's `logs.list` is `api.logs.list`, never `admin.logs.list`, so
+ * the two can never name one function. An application may still publish its
+ * own functions here, which is why the group is shared rather than sealed.
+ *
+ * Like {@link DEFAULT_API_PATH} it lives here because the generated trees, the
+ * server's registry, and the declaration builders must agree on it exactly.
+ */
+export const ADMIN_API_PATH = "admin";
+export type AdminApiPath = typeof ADMIN_API_PATH;
+
+/**
  * The namespace the generated api module gives event-table references. It is
  * reserved in three places that must agree — a function module may not be
  * called it, an API path may not be named it, and code generation writes the

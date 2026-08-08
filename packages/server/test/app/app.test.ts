@@ -132,9 +132,9 @@ describe("defineApp", () => {
 
     // Sorted like every other list code generation reads, so reordering the
     // manifest never rewrites a generated file.
-    expect(defineApp({ schema, apiPaths: ["internal", "admin"] }).apiPaths).toEqual([
-      "admin",
+    expect(defineApp({ schema, apiPaths: ["reports", "internal"] }).apiPaths).toEqual([
       "internal",
+      "reports",
     ]);
     expect(Object.isFrozen(defineApp({ schema, apiPaths: [] }).apiPaths)).toBe(true);
   });
@@ -150,6 +150,11 @@ describe("defineApp", () => {
     );
     expect(() => defineApp({ schema, apiPaths: ["api"] })).toThrow(
       'application apiPaths must not list "api" — every application publishes it',
+    );
+    // The framework publishes `admin` on every application's behalf too, so
+    // listing it would emit the binding twice into one generated file.
+    expect(() => defineApp({ schema, apiPaths: ["admin"] })).toThrow(
+      'application apiPaths must not list "admin" — every application publishes it',
     );
     // `events` is refused by the group rule itself, wherever it is written, so
     // the manifest needs no separate carve-out for it.
