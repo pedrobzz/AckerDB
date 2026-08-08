@@ -22,6 +22,12 @@ import {
   type QueryOrder,
 } from "./predicate.ts";
 import { filterPredicate, tableFilterMeta } from "./filter.ts";
+import {
+  cursorPredicate,
+  opaqueCursor,
+  parseOpaqueCursor,
+  type CursorColumn,
+} from "../reads/cursor.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -75,155 +81,47 @@ interface PaginationResult {
   readonly nextCursor: string | null;
 }
 
-type EncodedCursorValue = null | string | number | { readonly bigint: string };
-
-interface CursorPayload {
-  readonly version: 1;
-  readonly values: readonly EncodedCursorValue[];
-}
-
-function encodeCursorValue(value: unknown): EncodedCursorValue {
-  if (value === null || typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "bigint") return { bigint: value.toString() };
-  throw new Error(`cannot encode query cursor value of type ${typeof value}`);
-}
-
-function decodeCursorValue(value: unknown, path: string): unknown {
-  if (value === null || typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 1 &&
-    typeof (value as { bigint?: unknown }).bigint === "string"
-  ) {
-    const encoded = (value as { bigint: string }).bigint;
-    if (!/^(?:0|-?[1-9]\d{0,18})$/.test(encoded)) {
-      throw new ValidationError(`${path}: invalid bigint`);
-    }
-    try {
-      return BigInt(encoded);
-    } catch {
-      throw new ValidationError(`${path}: invalid bigint`);
-    }
-  }
-  throw new ValidationError(`${path}: invalid value encoding`);
-}
-
-function opaqueCursor(payload: CursorPayload): string {
-  return Buffer.from(JSON.stringify(payload)).toString("base64url");
-}
-
-function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder[]): unknown[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-  } catch {
-    throw new ValidationError(`${plan.displayName}.paginate.cursor: malformed cursor`);
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    (parsed as { version?: unknown }).version !== 1 ||
-    !Array.isArray((parsed as { values?: unknown }).values) ||
-    Object.keys(parsed).some((key) => key !== "version" && key !== "values")
-  ) {
-    throw new ValidationError(`${plan.displayName}.paginate.cursor: malformed versioned cursor`);
-  }
-  const encodedValues = (parsed as { values: unknown[] }).values;
-  if (encodedValues.length !== order.length) {
-    throw new ValidationError(
-      `${plan.displayName}.paginate.cursor: expected ${order.length} ordering values, got ${encodedValues.length}`,
-    );
-  }
-  return encodedValues.map((encoded, position) => {
-    const path = `${plan.displayName}.paginate.cursor[${position}]`;
-    const value = decodeCursorValue(
-      encoded,
-      path,
-    );
-    const columnName = order[position]!.column;
-    const column = plan.columns.get(columnName)!;
-    if (value === null) {
-      if (!column.nullable) {
-        throw new ValidationError(
-          `${path}: ${column.jsName} is not nullable`,
-        );
-      }
-      return null;
-    }
-    const storageTypeValid = column.kind === "pk" || column.kind === "bigint" || column.kind === "identity"
-      ? typeof value === "bigint"
-      : column.kind === "string"
-        ? typeof value === "string"
-        : column.kind === "boolean"
-          ? value === 0 || value === 1
-          : column.kind === "enum"
-            ? typeof value === "number" && Number.isSafeInteger(value)
-            : typeof value === "number" && Number.isFinite(value);
-    if (!storageTypeValid) {
-      throw new ValidationError(
-        `${path}: value is incompatible with ${column.jsName}`,
-      );
-    }
-    if (column.kind === "pk") {
-      if (typeof value !== "bigint" || value < -(2n ** 63n) || value > 2n ** 63n - 1n) {
+/**
+ * A table column, seen as the cursor contract sees it: nullability plus the
+ * one question of whether a decoded storage value could have come out of this
+ * column. The storage-type test and the column's own validator both live here
+ * because both are facts about the declared schema, which the cursor codec
+ * deliberately knows nothing about.
+ */
+function cursorColumn(plan: TablePlan, name: string): CursorColumn {
+  const column = plan.columns.get(name)!;
+  return {
+    nullable: column.nullable,
+    admit: (value, path) => {
+      const storageTypeValid = column.kind === "pk" || column.kind === "bigint" || column.kind === "identity"
+        ? typeof value === "bigint"
+        : column.kind === "string"
+          ? typeof value === "string"
+          : column.kind === "boolean"
+            ? value === 0 || value === 1
+            : column.kind === "enum"
+              ? typeof value === "number" && Number.isSafeInteger(value)
+              : typeof value === "number" && Number.isFinite(value);
+      if (!storageTypeValid) {
         throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
       }
-    }
-    try {
-      const logical = column.fromSql([value]);
-      plan.table.columns[columnName]!.check(logical, path);
-    } catch (error) {
-      if (!isValidationError(error)) throw error;
-      throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
-    }
-    return value;
-  });
-}
-
-/** SQLite lexicographic `strictly after` for mixed directions and native null ordering. */
-function cursorPredicate(
-  order: readonly QueryOrder[],
-  values: readonly unknown[],
-): { readonly sql: string; readonly params: readonly unknown[] } {
-  const branches: string[] = [];
-  const params: unknown[] = [];
-  for (let position = 0; position < order.length; position++) {
-    const prefix: string[] = [];
-    for (let prior = 0; prior < position; prior++) {
-      const column = quote(order[prior]!.column);
-      const value = values[prior];
-      if (value === null) {
-        prefix.push(`${column} IS NULL`);
-      } else {
-        prefix.push(`${column} = ?`);
-        params.push(value);
+      // A primary key is stored as a SQLite 64-bit integer, so a bigint the
+      // column could never have produced is rejected before its validator is
+      // asked a question about a value it will never see.
+      if (
+        column.kind === "pk" &&
+        ((value as bigint) < -(2n ** 63n) || (value as bigint) > 2n ** 63n - 1n)
+      ) {
+        throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
       }
-    }
-    const current = order[position]!;
-    const column = quote(current.column);
-    const value = values[position];
-    let after: string;
-    if (current.direction === "asc") {
-      if (value === null) {
-        after = `${column} IS NOT NULL`;
-      } else {
-        after = `${column} > ?`;
-        params.push(value);
+      try {
+        plan.table.columns[name]!.check(column.fromSql([value]), path);
+      } catch (error) {
+        if (!isValidationError(error)) throw error;
+        throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
       }
-    } else if (value === null) {
-      after = "0";
-    } else {
-      after = `(${column} < ? OR ${column} IS NULL)`;
-      params.push(value);
-    }
-    branches.push(`(${[...prefix, after].join(" AND ")})`);
-  }
-  return { sql: `(${branches.join(" OR ")})`, params };
+    },
+  };
 }
 
 class TableQueryRuntime {
@@ -622,9 +520,15 @@ class TableQueryRuntime {
 
   private page(options: PaginationOptions): PaginationResult {
     const order = this.paginationOrder();
+    const cursorPath = `${this.plan.displayName}.paginate.cursor`;
     const cursor = options.cursor === undefined || options.cursor === null
       ? undefined
-      : cursorPredicate(order, parseCursor(options.cursor, this.plan, order));
+      : cursorPredicate(order, parseOpaqueCursor(
+          options.cursor,
+          order,
+          (name) => cursorColumn(this.plan, name),
+          cursorPath,
+        ));
     const raws = this.rawRows(options.pageSize + 1, cursor);
     const beyondPage = raws.length > options.pageSize;
     if (beyondPage) raws.pop();
@@ -648,12 +552,9 @@ class TableQueryRuntime {
     const last = items[items.length - 1];
     const nextCursor = (!beyondPage && !beyondBudget) || last === undefined
       ? null
-      : opaqueCursor({
-          version: 1,
-          values: order.map(({ column }) =>
-            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])[0]),
-          ),
-        });
+      : opaqueCursor(order.map(
+          ({ column }) => this.plan.columns.get(column)!.toSql(last[column])[0],
+        ));
     return { items, nextCursor };
   }
 }

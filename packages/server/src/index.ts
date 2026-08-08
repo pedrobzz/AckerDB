@@ -296,6 +296,20 @@ export {
   type FilterInvalid,
   type TableFilter,
 } from "./database/query/filter.ts";
+export {
+  foldFilterNode,
+  validateFilterExpression,
+  type FilterableField,
+  type ValidatedFilterNode,
+} from "./database/reads/filter.ts";
+export {
+  cursorPredicate,
+  encodeCursorValue,
+  opaqueCursor,
+  parseOpaqueCursor,
+  type CursorColumn,
+  type CursorOrder,
+} from "./database/reads/cursor.ts";
 // The read contract itself belongs to core, where the client shares it.
 export {
   DEFAULT_PAGE_SIZE,
