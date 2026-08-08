@@ -363,8 +363,9 @@ export const credentials: CredentialOperations = Object.freeze({
  * The Admin Credential, listed and rotated by the framework's own `admin`
  * functions.
  *
- * **Rotation mints a new credential and revokes every credential that was
- * administrative before the mint.** It cannot re-key the row in place: the
+ * **Rotation replaces the credential it was called with**, minting a new one
+ * and revoking every credential that was administrative before the mint. It
+ * cannot re-key the row in place: the
  * invalidation channel names a credential by its token id, so an old secret and
  * its replacement sharing one id would be one subject, and "revoke the leaked
  * secret's live sessions but not the new one's" would not be expressible. A
@@ -389,16 +390,33 @@ export const adminCredentials: AdminCredentialOperations = Object.freeze({
   },
   rotate(ctx: WriteContext, name: string): CreatedCredential {
     const owner = writing(ownerCapability(ctx));
-    // The subset invariant, at the one end a root credential has. Nothing will
-    // bound this credential at use, so a caller may only mint what it already
-    // holds — which is what stops an agent credential granted `_admin:*` from
-    // issuing itself a master carrying the application's scopes too.
-    delegable(owner, ADMINISTRATIVE_GRANT, "administrative grant");
     const superseded = owner.engine[credentialVaultOwner].listAdministrative(owner.connection);
+    // Rotation replaces the credential it was called with, so the caller has to
+    // be one of them. Holding a grant that covers the vocabulary is not the
+    // same claim and never was: a *child* holding `["*", "_*"]` covers it too,
+    // and minting a root from there would trade authority its parent can narrow
+    // at any moment for authority nobody can — an escalation in permanence
+    // rather than in reach. So would a resolver-backed user the application
+    // granted everything, who would additionally get to destroy the operator's
+    // master. Membership here is the strictly stronger statement, and it makes
+    // the subset invariant redundant rather than merely satisfied.
+    //
+    // The comparison is on the Identity, which is the credential row's own
+    // unique key, rather than on the token id an external provider also gets to
+    // choose the shape of.
+    const rotating = owner.principal.issuer === CREDENTIAL_ISSUER &&
+      superseded.some((credential) => credential.identity === owner.principal.identity);
+    if (!rotating) {
+      throw new AckerDBError(
+        "unauthorized",
+        "credential rotation replaces the Admin Credential it is called with," +
+          " and this caller presents none",
+      );
+    }
     const created = createCredential(owner, null, { name, scopes: ADMINISTRATIVE_GRANT });
     // Read before the mint, revoked after it: the replacement is never in the
-    // set it replaces, and the caller's own credential — normally one of these
-    // — is revoked with the response carrying the new secret already staged.
+    // set it replaces, and the caller's own credential — always one of these —
+    // is revoked with the response carrying the new secret already staged.
     for (const previous of superseded) revokeCredential(owner, null, previous.id);
     return created;
   },

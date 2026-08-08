@@ -205,11 +205,17 @@ const { id, token } = unwrap(await client.mutation(adminApi.credentials.rotate, 
 
 The two exist together for the length of that transaction, which is what makes
 the rotation downtime-free: the replacement already works when the old one stops.
-Requires `_admin:credentials:write`, **and** a caller whose own grant already
-covers everything it is about to mint — a root credential has nothing to bound it
-at use, so issuance is the only ceiling there is. An agent credential holding
-`_admin:*` therefore passes the scope requirement and is refused `unauthorized`,
-because it does not hold the application's own scopes.
+
+**It replaces the credential you called it with, so you have to be holding one.**
+Requires `_admin:credentials:write`, and the presented credential must itself be
+one of the Admin Credentials being replaced. Holding a grant that covers the
+whole vocabulary is a different and weaker claim: an Agent Credential issued
+`["*", "_*"]` beneath a master covers it too, and minting a root from there would
+trade authority its parent can narrow at any moment for authority nobody can —
+an escalation in permanence rather than in reach. A resolver-backed user the
+application granted `_admin:*` is refused for the same reason, and would
+otherwise have been able to destroy the operator's master as well. Both get
+`unauthorized`.
 
 Three consequences worth knowing before you rotate:
 
@@ -227,8 +233,11 @@ Three consequences worth knowing before you rotate:
   bounded by.
 - **It is not retryable.** The result is marked non-replayable, so a retry with
   the same `Idempotency-Key` answers a receipt and never a second secret — and
-  in any case the old credential is gone by then. If the response is lost in
-  transit, the recourse is break-glass.
+  in any case the old credential is gone by then. If the answer is lost after
+  the commit — a dropped connection, or a `convergence_unavailable` outcome,
+  which reports `committed: true` precisely so you can tell — the recourse is
+  break-glass. That is the cost of storing only a digest, and it is the reason
+  break-glass exists.
 
 `admin.credentials.list` answers with the masters — `id`, `name`, `createdAt` —
 and never a secret; no read can return one.

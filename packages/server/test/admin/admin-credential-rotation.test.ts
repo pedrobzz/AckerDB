@@ -255,6 +255,39 @@ describe("rotating the Admin Credential a caller is authenticated with", () => {
 });
 
 describe("who may mint administrative authority", () => {
+  test("refuses a child credential holding the administrative patterns", async () => {
+    const value = await fixture();
+    const vault = value.engine[credentialVaultOwner];
+    const master = vault.listAdministrative(value.engine.reader)[0]!;
+    // Its effective grant is its own expansion intersected with the master's,
+    // so it covers the whole vocabulary — and it is still a delegate. Minting a
+    // root from here would trade authority its parent can narrow at any moment
+    // for authority nobody can.
+    const child = value.engine.writer.transaction(() =>
+      vault.create(
+        master.identity,
+        { name: "full-scope delegate", scopes: ADMINISTRATIVE_GRANT },
+        VOCABULARY,
+        PRODUCTION_LIMITS.credentials,
+        Date.now(),
+      ))();
+
+    const response = await fetch(`${value.base}/admin/credentials/rotate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${child.token}` },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(403);
+    const listed = await listCredentials(value, value.token);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual([{
+      id: master.id,
+      name: "Admin Credential",
+      createdAt: expect.any(Number),
+    }]);
+  });
+
   test("refuses a caller whose own grant does not already cover it", async () => {
     const value = await fixture();
     // Every framework scope and nothing else — which includes

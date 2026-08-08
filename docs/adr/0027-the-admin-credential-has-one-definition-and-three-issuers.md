@@ -57,19 +57,35 @@ distorting the model for. And credentials delegated beneath the old master go
 with it, by the ordinary cascade: a child of a revoked parent has no source left
 to be bounded by.
 
-## Issuance is bounded at the only end a root credential has
+## Rotation replaces the credential it was called with, and only that
 
-A root credential has no parent to narrow it at use, so the subset invariant has
-to hold entirely at issuance: a caller may only mint what its own grant already
-expands to. This is not a new rule — it is `issueChildScopes`, the same one
-`credentials.create` uses — applied at the one place that can still hold the
-line.
+A root credential has no parent to narrow it at use, so whatever bounds it has
+to hold entirely at issuance. The first bound we reached for was the subset
+invariant — a caller may only mint what its own grant already expands to — and
+it is not enough.
 
-It is what stops the obvious escalation. `admin.credentials.rotate` requires
-`_admin:credentials:write`, and an Agent Credential granted `_admin:*` holds
-that scope. Without the issuance bound it would mint itself a master carrying
-the application's whole vocabulary too. With it, the funnel admits the caller
-and the invariant refuses it.
+It admits a *child* credential issued `["*", "_*"]` beneath a master. Its
+effective grant is intersected with its parent's, so it covers the whole
+vocabulary, and minting a root from there trades authority the parent can narrow
+at any moment for authority nobody can. That is an escalation in permanence
+rather than in reach, and it is exactly the persistence that
+[ADR-0026](0026-administration-is-a-first-class-surface.md)'s successor kept
+credential administration off the MCP tool record to prevent. It admits a
+resolver-backed user granted `_admin:*` too, who is not in the master set at
+all — so its own credential would survive a rotation that destroyed the
+operator's.
+
+**The caller must be one of the Admin Credentials being replaced.** That is a
+strictly stronger statement than covering the vocabulary — a root credential
+holding those two patterns covers it by construction — so it subsumes the subset
+check rather than adding to it, and there is one condition rather than two. It
+is also just what rotation means: the master replacing itself. The comparison is
+on the Identity, the credential row's own unique key, rather than on a token id
+whose shape an external provider also gets to choose.
+
+A consequence worth stating: with no master present, nobody can rotate. That is
+correct. There is no administrative credential to replace, and the path back is
+a restart, which mints one.
 
 ## The three issuers exist because they fail differently
 
@@ -118,6 +134,16 @@ marked non-replayable, so a retry answers with a receipt and never a second
 secret — and the old credential is already gone. Rotation is not retry-safe and
 was never going to be; it is response-handoff-safe instead, which is what the
 origin exclusion buys.
+
+One window stays open and we accept it: an answer lost *after* the commit — a
+dropped connection, or a post-commit convergence failure — takes the plaintext
+with it. Escrowing the secret until delivery was rejected, because it would put
+the one thing this design keeps out of storage into storage, and the property
+that only a digest is ever at rest is worth more than removing a window that
+break-glass already covers. The failure is at least legible: a committed outcome
+reports `committed: true`, so a caller can tell it apart from a call that never
+landed. It is why boot-mint prints before it checks for shutdown, and why the
+offline reset exists at all.
 
 ## A credential that does not expire discloses `null`, and the protocol says so
 

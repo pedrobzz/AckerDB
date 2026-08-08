@@ -458,24 +458,31 @@ export async function startApp<const A extends App = App>(
     // listener admits a request. A failure here is fatal by design: a server
     // nobody can administer, that printed nothing to say so, is discovered at
     // the moment administration is most needed.
+    //
+    // It is awaited rather than raced against shutdown, exactly as `reconcile`
+    // above is. Racing exists for work JavaScript cannot cancel — an import, a
+    // caller's preparation — and it abandons the promise rather than the work.
+    // Abandoning this one loses the plaintext of a credential that committed,
+    // which no later boot can print and only break-glass can undo. A bounded
+    // local transaction is the wrong thing to walk away from.
     server.advanceStartup("issuing-credential");
-    const adminCredential = await awaitStartup(
-      ensureAdminCredential(ownedEngine, runtime.system),
-    )
+    const adminCredential = await ensureAdminCredential(ownedEngine, runtime.system)
       .catch((cause: unknown) => {
-        throw cause instanceof StartupInterruptedError ? cause : new Error(
+        throw new Error(
           `the Admin Credential could not be issued: ${cause instanceof Error ? cause.message : String(cause)}`
             + "\n\nrecover with the server stopped:\n\n    acker credential reset",
           { cause },
         );
       });
-    requireStartupOwnership();
     if (adminCredential.token !== undefined) {
       // Printed once, and nowhere else: only the digest is stored, so no later
-      // command can show this again.
+      // command can show this again. It is printed before the shutdown check,
+      // because a committed credential the operator never saw is worse than a
+      // line printed by a process that is about to stop.
       console.log(`[ackerdb] Admin Credential ${adminCredential.id} issued — copy it now, it is shown once:`);
       console.log(`[ackerdb] ${adminCredential.token}`);
     }
+    requireStartupOwnership();
 
     // Services own trusted background work, so they start only once the Runtime
     // can serve `system.run`, and finish before the server admits its first
