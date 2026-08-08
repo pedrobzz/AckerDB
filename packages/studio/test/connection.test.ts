@@ -38,65 +38,81 @@ function input(overrides: Partial<StudioConnectionInput> = {}): StudioConnection
   };
 }
 
+const PHASES: readonly AckerDBAuthenticationState[] = [
+  { phase: "authenticating", credential: "source" },
+  { phase: "unauthenticated", authentication: { principal: "anonymous", authEpoch: 1 } },
+  AUTHENTICATED,
+  { phase: "refresh-required", error: clientError("rejected") },
+  { phase: "failed", error: clientError("stopped") },
+  { phase: "closed" },
+];
+
 describe("what Studio says about itself", () => {
-  test("an unanswered probe says only that it is asking", () => {
-    expect(studioConnection(input())).toEqual({ state: "connecting" });
+  test("nothing is claimed while the probe is unanswered, whatever the session says", () => {
+    // Every state names a settled fact about a live application; reporting one
+    // from an unanswered request would be a guess wearing a diagnosis.
+    for (const authentication of PHASES) {
+      for (const hasCredential of [true, false]) {
+        expect(studioConnection(input({ hasCredential, authentication })))
+          .toEqual({ state: "connecting" });
+      }
+    }
   });
 
   test("an application that is not answering is read before anything about credentials", () => {
     // The diagnosis `acker studio` exists to show: Studio is up, the
     // application is not, and no credential could be checked if one were typed.
     const probe: StudioProbe = { status: "unreachable", detail: "could not reach the app" };
-    expect(studioConnection(input({ hasCredential: false, probe })))
-      .toEqual({ state: "unreachable", detail: "could not reach the app" });
-    expect(studioConnection(input({ probe })))
-      .toEqual({ state: "unreachable", detail: "could not reach the app" });
+    for (const authentication of PHASES) {
+      expect(studioConnection(input({ hasCredential: false, probe, authentication })))
+        .toEqual({ state: "unreachable", detail: "could not reach the app" });
+      expect(studioConnection(input({ probe, authentication })))
+        .toEqual({ state: "unreachable", detail: "could not reach the app" });
+    }
   });
 
   test("an empty credential cell is a sign-in, never a refusal", () => {
-    expect(studioConnection(input({
-      hasCredential: false,
-      probe: { status: "refused", detail: "authentication required" },
-      authentication: {
-        phase: "unauthenticated",
-        authentication: { principal: "anonymous", authEpoch: 1 },
-      },
-    }))).toEqual({ state: "unconfigured" });
+    for (const probe of [OPEN, { status: "refused", detail: "authentication required" } as StudioProbe]) {
+      expect(studioConnection(input({ hasCredential: false, probe })))
+        .toEqual({ state: "unconfigured" });
+    }
   });
 
-  test("a credential that authenticates but holds no admin grant is refused", () => {
-    // Why the probe decides rather than the handshake: a credential can be
-    // perfectly valid and still reach nothing in the Admin API.
-    expect(studioConnection(input({ probe: { status: "refused", detail: "unauthorized" } })))
-      .toEqual({ state: "refused", detail: "unauthorized" });
+  test("the surface decides refusal, and it is the only thing that can", () => {
+    // A credential can authenticate perfectly and reach nothing in the Admin
+    // API; only the funnel that ran against it knows.
+    const probe: StudioProbe = { status: "refused", detail: "unauthorized" };
+    for (const authentication of PHASES) {
+      expect(studioConnection(input({ probe, authentication })))
+        .toEqual({ state: "refused", detail: "unauthorized" });
+    }
   });
 
-  test("a credential the server rejected on the socket is refused too", () => {
-    expect(studioConnection(input({
-      probe: OPEN,
-      authentication: { phase: "refresh-required", error: clientError("credential is not valid") },
-    }))).toEqual({ state: "refused", detail: "credential is not valid" });
-  });
-
-  test("a credential that opens the surface but cannot hold a session is not a refusal", () => {
-    // Calling this "credential refused" sends the operator hunting for a token
-    // that is already correct; it is the session that is broken, not the grant.
-    expect(studioConnection(input({
-      probe: OPEN,
-      authentication: { phase: "failed", error: clientError("internal error") },
-    }))).toEqual({ state: "session-failed", detail: "internal error" });
-  });
-
-  test("Connected needs both facts, because a request answers before a session exists", () => {
+  test("with the surface open, every session phase describes the session", () => {
+    // Not the grant: calling any of these a credential refusal would send the
+    // operator hunting for a token that is already correct.
     expect(studioConnection(input({ probe: OPEN })))
       .toEqual({ state: "authenticated", application: APPLICATION });
-    // The probe is open and the handshake has not finished: still connecting.
     expect(studioConnection(input({
       probe: OPEN,
       authentication: { phase: "authenticating", credential: "source" },
     }))).toEqual({ state: "connecting" });
-    // And a session with no answer from the surface is not Connected either.
-    expect(studioConnection(input({ probe: { status: "pending" } })))
-      .toEqual({ state: "connecting" });
+    expect(studioConnection(input({
+      probe: OPEN,
+      authentication: { phase: "refresh-required", error: clientError("credential is not valid") },
+    }))).toEqual({ state: "session-failed", detail: "credential is not valid" });
+    expect(studioConnection(input({
+      probe: OPEN,
+      authentication: { phase: "failed", error: clientError("internal error") },
+    }))).toEqual({ state: "session-failed", detail: "internal error" });
+    expect(studioConnection(input({
+      probe: OPEN,
+      authentication: { phase: "unauthenticated", authentication: { principal: "anonymous", authEpoch: 1 } },
+    }))).toEqual({
+      state: "session-failed",
+      detail: "the server confirmed an anonymous session for a credential that opens the Admin API",
+    });
+    expect(studioConnection(input({ probe: OPEN, authentication: { phase: "closed" } })))
+      .toEqual({ state: "session-failed", detail: "the Studio client was closed" });
   });
 });

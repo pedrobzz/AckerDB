@@ -15,10 +15,14 @@
  * proves Studio can hold a session, which is what every screen after this one
  * runs on. A request answers before a socket does, so the probe alone would
  * report Connected while the session is still being established — or never is —
- * and that is the plausible-looking answer nobody notices. Connected therefore
- * needs both. When they disagree the reducer names which half failed, because
- * "your credential was refused" and "Studio cannot hold a session with a
- * credential that plainly works" send an operator to entirely different places.
+ * and that is the plausible-looking answer nobody notices.
+ *
+ * **The probe decides refusal and the session decides nothing else.** Once the
+ * probe is open the credential demonstrably opens the surface, so every session
+ * phase other than `authenticated` describes the session and not the grant —
+ * including `refresh-required`, which the client also raises for an attempt
+ * that timed out. Calling any of those a credential refusal would send an
+ * operator hunting for a token that is already correct.
  */
 import type { AckerDBAuthenticationState } from "@ackerdb/client-react";
 import type { AdminSystemInfo } from "@ackerdb/core";
@@ -46,28 +50,37 @@ export interface StudioConnectionInput {
 }
 
 export function studioConnection(input: StudioConnectionInput): StudioConnection {
+  // Nothing is claimed until the probe answers. Every state below is a settled
+  // fact about a live application, and reporting one from an unanswered request
+  // would be a guess wearing a diagnosis.
+  if (input.probe.status === "pending") return { state: "connecting" };
   if (input.probe.status === "unreachable") {
     return { state: "unreachable", detail: input.probe.detail };
   }
   // Before any statement about a credential: an empty cell is "sign in", and
   // reporting it as a refusal would send the operator looking for a bad token.
   if (!input.hasCredential) return { state: "unconfigured" };
-  // Two ways to learn the credential is the problem, and both mean the same
-  // thing to the operator: the server rejected the presentation, or the surface
-  // would not run the function.
-  if (input.authentication.phase === "refresh-required") {
-    return { state: "refused", detail: input.authentication.error.message };
-  }
+  // The surface itself decides refusal, and it is the only thing that can: it
+  // ran the authorization funnel against this exact credential.
   if (input.probe.status === "refused") {
     return { state: "refused", detail: input.probe.detail };
   }
-  // A client that stopped permanently while the credential plainly opens the
-  // surface is not a refusal, and calling it one sends the operator hunting for
-  // a credential that is already correct.
-  if (input.authentication.phase === "failed") {
-    return { state: "session-failed", detail: input.authentication.error.message };
+  // The probe is open, so the credential opens the Admin API and cannot be the
+  // thing at fault. Whatever the session says now is about the session.
+  switch (input.authentication.phase) {
+    case "authenticated":
+      return { state: "authenticated", application: input.probe.application };
+    case "authenticating":
+      return { state: "connecting" };
+    case "refresh-required":
+    case "failed":
+      return { state: "session-failed", detail: input.authentication.error.message };
+    case "unauthenticated":
+      return {
+        state: "session-failed",
+        detail: "the server confirmed an anonymous session for a credential that opens the Admin API",
+      };
+    case "closed":
+      return { state: "session-failed", detail: "the Studio client was closed" };
   }
-  return input.probe.status === "open" && input.authentication.phase === "authenticated"
-    ? { state: "authenticated", application: input.probe.application }
-    : { state: "connecting" };
 }

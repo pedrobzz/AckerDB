@@ -22,16 +22,23 @@ import { studioCredential } from "./credential.ts";
 import { studioConnection, type StudioConnection } from "./connection.ts";
 import { probeAdminApi, type StudioProbe } from "./probe.ts";
 
-/**
- * How often an unsettled probe is repeated. Retrying only until the surface
- * opens keeps the steady state free of background work: once Studio is
- * connected, the client's own session is what reports liveness.
- */
+/** How often an unsettled probe is repeated. */
 const PROBE_RETRY_MS = 2_000;
 
 const PENDING: StudioProbe = { status: "pending" };
 
-function useAdminProbe(credential: string | null): StudioProbe {
+/**
+ * Ask the Admin API until the answer and the session agree that Studio is
+ * connected, and stop there.
+ *
+ * Stopping on the first open answer alone would be wrong in the case that
+ * matters most: an application that disappears afterwards leaves the session,
+ * and a retained `open` would hold the screen on a stale fact instead of
+ * reporting *application unreachable*. Tying the stop to both halves gives the
+ * steady state zero background work and still notices an outage, because a
+ * dropped session flips `sessionHealthy` and re-arms this effect.
+ */
+function useAdminProbe(credential: string | null, sessionHealthy: boolean): StudioProbe {
   const [probe, setProbe] = useState<StudioProbe>(PENDING);
   useEffect(() => {
     let live = true;
@@ -40,7 +47,9 @@ function useAdminProbe(credential: string | null): StudioProbe {
       const answer = await probeAdminApi((path, init) => fetch(path, init), credential);
       if (!live) return;
       setProbe(answer);
-      if (answer.status !== "open") timer = setTimeout(() => void ask(), PROBE_RETRY_MS);
+      if (answer.status !== "open" || !sessionHealthy) {
+        timer = setTimeout(() => void ask(), PROBE_RETRY_MS);
+      }
     };
     setProbe(PENDING);
     void ask();
@@ -48,14 +57,14 @@ function useAdminProbe(credential: string | null): StudioProbe {
       live = false;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [credential]);
+  }, [credential, sessionHealthy]);
   return probe;
 }
 
 function useStudioConnection(): StudioConnection {
   const held = useSyncExternalStore(studioCredential.subscribe, studioCredential.read, () => null);
-  const probe = useAdminProbe(held);
   const { state: authentication } = useAuthentication();
+  const probe = useAdminProbe(held, authentication.phase === "authenticated");
   return studioConnection({ hasCredential: held !== null, probe, authentication });
 }
 

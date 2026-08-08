@@ -5,9 +5,10 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { STUDIO_PATH_PREFIX } from "../src/origin.ts";
 import {
-  MAX_BUFFERED_FRAME_BYTES,
+  MAX_UNDELIVERED_BYTES,
   UPSTREAM_HANDSHAKE_TIMEOUT_MS,
   proxyWebSocketHandlers,
+  upstreamUrl,
   type ProxiedSocketData,
 } from "../src/launcher/proxy.ts";
 import { startStudio, type RunningStudio } from "../src/launcher/server.ts";
@@ -107,17 +108,28 @@ function origin(studio: RunningStudio): string {
 async function rawRequest(studio: RunningStudio, target: string): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<string>();
   let received = "";
+  // A proxied response carries no content-length — the launcher drops it,
+  // because fetch already decoded the body — so completeness is either the
+  // declared length or the chunked terminator, and a close settles the rest.
   const complete = (): boolean => {
     const headerEnd = received.indexOf("\r\n\r\n");
     if (headerEnd === -1) return false;
+    const body = received.slice(headerEnd + 4);
     const length = /content-length: (\d+)/i.exec(received.slice(0, headerEnd));
-    if (length === null) return false;
-    return received.length - (headerEnd + 4) >= Number(length[1]);
+    if (length !== null) return body.length >= Number(length[1]);
+    return body.endsWith("0\r\n\r\n");
   };
+  const request = `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`;
+  // Written from `open`, not after `Bun.connect` resolves: bytes handed to a
+  // socket that has not opened yet are dropped, which shows up as a request
+  // the server never sees and a test that hangs one time in five.
   const socket = await Bun.connect({
     hostname: "127.0.0.1",
     port: studio.port,
     socket: {
+      open: (opened) => {
+        opened.write(request);
+      },
       data: (_socket, chunk) => {
         received += chunk.toString();
         if (complete()) resolve(received);
@@ -125,7 +137,6 @@ async function rawRequest(studio: RunningStudio, target: string): Promise<string
       close: () => resolve(received),
     },
   });
-  socket.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
   try {
     return await promise;
   } finally {
@@ -141,6 +152,29 @@ function deadPort(): number {
 }
 
 const HTML = { accept: "text/html,application/xhtml+xml" } as const;
+
+describe("origin confinement", () => {
+  const target = new URL("http://127.0.0.1:3211");
+  const dialled = (path: string) =>
+    upstreamUrl(new Request(`http://127.0.0.1:4680${path}`), target).href;
+
+  test("a request path never changes the origin dialled", () => {
+    // `new URL("//elsewhere.example/x", target)` resolves to that host, so a
+    // proxy that resolved rather than assigned would send the caller's headers
+    // and body there. Every one of these stays on the configured application.
+    expect(dialled("//elsewhere.example/steal")).toBe("http://127.0.0.1:3211//elsewhere.example/steal");
+    expect(dialled("//elsewhere.example/steal?x=1"))
+      .toBe("http://127.0.0.1:3211//elsewhere.example/steal?x=1");
+    expect(dialled("/%2f%2felsewhere.example/steal"))
+      .toBe("http://127.0.0.1:3211/%2f%2felsewhere.example/steal");
+  });
+
+  test("the path and query reach the application exactly as they arrived", () => {
+    expect(dialled("/admin/system/info")).toBe("http://127.0.0.1:3211/admin/system/info");
+    expect(dialled("/api/messages/list?limit=2&after=a%20b"))
+      .toBe("http://127.0.0.1:3211/api/messages/list?limit=2&after=a%20b");
+  });
+});
 
 test("startStudio refuses a missing bundle and a non-http target", () => {
   expect(() =>
@@ -230,17 +264,6 @@ describe("everything outside the prefix", () => {
     const posted = await fetch(`${origin(started)}/`, { method: "POST", body: "{}" });
     expect(posted.status).toBe(404);
     expect(await posted.json()).toMatchObject({ outcome: "not_found", path: "/" });
-  });
-
-  test("a scheme-relative path cannot name a host of its own", async () => {
-    // `new URL("//elsewhere.example/x", target)` resolves to that host, so a
-    // proxy that resolves rather than assigns would dial it with the caller's
-    // headers and body. The request must reach the configured application with
-    // its path intact instead.
-    const started = studio();
-    const escaped = await rawRequest(started, "//elsewhere.example/steal?x=1");
-    expect(escaped).toContain("no-such-host-was-dialled");
-    expect(escaped).toContain("/elsewhere.example/steal");
   });
 
   test("ambient cookies never cross the hop, in either direction", async () => {
@@ -371,13 +394,13 @@ test("client frames waiting on a connecting upstream are bounded", () => {
   // exists for is milliseconds wide and cannot be held open from a socket.
   const { ws, data, closed } = bridged(WebSocket.CONNECTING);
   const frame = Buffer.alloc(64 * 1024);
-  for (let sent = 0; sent < MAX_BUFFERED_FRAME_BYTES; sent += frame.byteLength) {
+  for (let sent = 0; sent < MAX_UNDELIVERED_BYTES; sent += frame.byteLength) {
     proxyWebSocketHandlers.message(ws, frame);
   }
   expect(closed).toEqual([]);
-  expect(data.bufferedBytes).toBe(MAX_BUFFERED_FRAME_BYTES);
+  expect(data.bufferedBytes).toBe(MAX_UNDELIVERED_BYTES);
 
   proxyWebSocketHandlers.message(ws, frame);
   expect(closed).toEqual([1011]);
-  expect(data.bufferedBytes).toBe(MAX_BUFFERED_FRAME_BYTES);
+  expect(data.bufferedBytes).toBe(MAX_UNDELIVERED_BYTES);
 });

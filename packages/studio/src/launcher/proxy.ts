@@ -37,12 +37,19 @@ const HOP_BY_HOP_HEADERS = [
 ] as const;
 
 /**
- * How many bytes of client frames may wait while the upstream socket is still
- * connecting. The window is milliseconds wide, so a client that fills this is
- * not waiting — it is a per-connection buffer with no owner, which is the one
- * shape a proxy must never grow.
+ * The one budget a bridged connection may hold in undelivered frames, in either
+ * direction: the queue waiting on the upstream handshake, Bun's own outbound
+ * backpressure toward the browser, and the bytes the upstream socket has
+ * accepted but not yet written.
+ *
+ * One number, because a proxy has one job — move frames — and every place it
+ * can hold them is the same hazard: an unowned per-connection buffer growing
+ * behind a consumer that stopped reading. Saturation closes the bridge with
+ * 1011 rather than queueing or silently dropping, so a stalled peer is a
+ * bounded outcome instead of memory nobody accounts for. It matches the
+ * application server's own per-connection WebSocket budget.
  */
-export const MAX_BUFFERED_FRAME_BYTES = 1024 * 1024;
+export const MAX_UNDELIVERED_BYTES = 4 * 1024 * 1024;
 
 /**
  * How long an upstream WebSocket may stay in its handshake before the bridge
@@ -79,8 +86,14 @@ function withoutHopByHop(headers: Headers): Headers {
  * scheme-relative URL, and the proxy would dial that host with the caller's
  * headers and body. Assigning the components confines every request to the one
  * origin `acker studio` was pointed at, whatever the path says.
+ *
+ * Exported because that confinement is the module's security invariant and is
+ * proven here rather than through a socket: the only wire form that expresses
+ * the hazard is a `//`-prefixed request target, which HTTP servers may reject
+ * before any handler sees it, so a live test would be measuring the parser's
+ * tolerance instead of this rule.
  */
-function upstreamUrl(request: Request, target: URL): URL {
+export function upstreamUrl(request: Request, target: URL): URL {
   const url = new URL(request.url);
   const upstream = new URL(target);
   upstream.pathname = url.pathname;
@@ -219,12 +232,19 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
     const { upstream, buffered } = ws.data;
     const frame = typeof message === "string" ? message : new Uint8Array(message);
     if (upstream.readyState === WebSocket.OPEN) {
+      // The upstream socket queues whatever it is handed, so the budget is
+      // checked before handing it anything: an application that stopped
+      // reading must close this bridge, not grow inside it.
+      if (upstream.bufferedAmount > MAX_UNDELIVERED_BYTES) {
+        forwardClose(ws, 1011, "the application server stopped reading");
+        return;
+      }
       upstream.send(frame);
       return;
     }
     if (upstream.readyState !== WebSocket.CONNECTING) return;
     const size = typeof frame === "string" ? Buffer.byteLength(frame) : frame.byteLength;
-    if (ws.data.bufferedBytes + size > MAX_BUFFERED_FRAME_BYTES) {
+    if (ws.data.bufferedBytes + size > MAX_UNDELIVERED_BYTES) {
       forwardClose(ws, 1011, "buffered too much while the application server was connecting");
       return;
     }

@@ -315,11 +315,21 @@ try {
   // two tarballs it compares are packed from the released manifest, so their
   // agreeing is what the byte-identity republish rule needs. `release.yml` runs
   // the same check first, to fail before any manifest has moved.
-  await assertStudioDistReproducible();
+  const reproducibleStudio = await assertStudioDistReproducible();
 
   const tarballs = new Map<string, string>();
   for (const pkg of PACKAGES) {
     tarballs.set(pkg, await packPackage(pkg, temporary));
+  }
+  // The assertion above proved two tarballs agree; this proves the one about to
+  // be published is that tarball. Without it the check would describe bytes
+  // nobody ships, which is exactly the gap the byte-identity rule cannot have.
+  const publishedStudio = await sha256File(tarballs.get("studio")!);
+  if (publishedStudio !== reproducibleStudio) {
+    throw new Error(
+      `the @ackerdb/studio tarball about to be published (${publishedStudio}) is not the one ` +
+        `proven reproducible (${reproducibleStudio})`,
+    );
   }
   const completed: string[] = [];
   for (const pkg of PACKAGES) {

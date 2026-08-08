@@ -19,6 +19,7 @@ import { existsSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { STUDIO_METHODS, STUDIO_PATH_PREFIX, studioRoute } from "../origin.ts";
 import {
+  MAX_UNDELIVERED_BYTES,
   proxyHttp,
   proxyWebSocket,
   proxyWebSocketHandlers,
@@ -119,7 +120,13 @@ export function startStudio(options: StudioServerOptions): RunningStudio {
             : proxyHttp(request, target);
       }
     },
-    websocket: proxyWebSocketHandlers,
+    websocket: {
+      ...proxyWebSocketHandlers,
+      // The browser half of the same budget the bridge holds upstream: a tab
+      // that stopped reading closes rather than accumulating behind Bun.
+      backpressureLimit: MAX_UNDELIVERED_BYTES,
+      closeOnBackpressureLimit: true,
+    },
   });
   return {
     url: `http://${hostname}:${server.port}${STUDIO_PATH_PREFIX}`,
