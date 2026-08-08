@@ -14,7 +14,14 @@ import {
   TraceExemplarCollector,
   type CohortThresholdProvider,
 } from "../../src/telemetry/exemplars/collector.ts";
-import { EXPOSED_QUANTILES, RETENTION_QUANTILE } from "../../src/telemetry/aggregation/buckets.ts";
+import {
+  BODY_QUANTILES,
+  EXPOSED_QUANTILES,
+  MIN_SAMPLES_ABOVE_QUANTILE,
+  RETENTION_QUANTILE,
+  TAIL_QUANTILES,
+  isConfidentQuantile,
+} from "../../src/telemetry/aggregation/buckets.ts";
 import type { TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const HOUR_ALIGNED = Math.floor(1_700_000_000_000 / 3_600_000) * 3_600_000;
@@ -286,13 +293,53 @@ describe("trace exemplars", () => {
     expect(reported.warm).toBe(true);
     const threshold = reported.thresholdMs!;
 
-    // The policy retains at the LOWEST exposed quantile, so an exemplar at or
-    // above every exposed quantile — p99 included — exists by construction.
-    expect(RETENTION_QUANTILE).toBe(Math.min(...EXPOSED_QUANTILES));
-    for (const quantile of EXPOSED_QUANTILES) {
+    // Retention follows the lowest exposed TAIL quantile, so an exemplar at or
+    // above every tail quantile — p99 included — exists by construction.
+    expect(stored.some((durationMs) => durationMs >= threshold)).toBe(true);
+  });
+
+  test("retention follows the tail set, and a body percentile cannot move it", () => {
+    // A screen adding a TAIL percentile below the retention quantile has changed
+    // the retention policy, and this must fail rather than silently widen it.
+    expect(RETENTION_QUANTILE).toBe(Math.min(...TAIL_QUANTILES));
+    for (const quantile of TAIL_QUANTILES) {
       expect(quantile).toBeGreaterThanOrEqual(RETENTION_QUANTILE);
     }
-    expect(stored.some((durationMs) => durationMs >= threshold)).toBe(true);
+    // A screen adding a BODY percentile changes what is displayed and nothing
+    // about what is stored. Were the rule "lowest exposed quantile", exposing
+    // p50 would retain half of all traffic — "store everything" by the back door.
+    for (const quantile of BODY_QUANTILES) {
+      expect(quantile).toBeLessThan(RETENTION_QUANTILE);
+      expect(TAIL_QUANTILES).not.toContain(quantile);
+    }
+    expect(EXPOSED_QUANTILES).toEqual(
+      [...BODY_QUANTILES, ...TAIL_QUANTILES].sort((left, right) => left - right),
+    );
+    // Exposing p95 is the EXPENSIVE choice: retention follows the lower tail
+    // number, so ~5% of traces rather than ~1%. Kept deliberately.
+    expect(RETENTION_QUANTILE).toBe(0.95);
+  });
+
+  test("a window too small to speak to a quantile says so", () => {
+    const buckets = new TelemetryAggregateBuckets();
+    // A hundred observations put exactly one request above p99: an anecdote.
+    for (let index = 0; index < 100; index++) {
+      buckets.record(HOUR_ALIGNED, "query", "api.rare.call", "ok", 1 + (index % 30));
+    }
+    const thin = buckets.drain(HOUR_ALIGNED + MINUTE_MS)[0]!.rows[0]!;
+    expect(thin.count).toBe(100);
+    expect(thin.lowConfidenceQuantiles).toContain(0.99);
+    expect(thin.lowConfidenceQuantiles).not.toContain(0.5);
+
+    const busy = new TelemetryAggregateBuckets();
+    for (let index = 0; index < 5_000; index++) {
+      busy.record(HOUR_ALIGNED, "query", "api.busy.call", "ok", 1 + (index % 30));
+    }
+    const thick = busy.drain(HOUR_ALIGNED + MINUTE_MS)[0]!.rows[0]!;
+    expect(thick.lowConfidenceQuantiles).toEqual([]);
+
+    expect(isConfidentQuantile(MIN_SAMPLES_ABOVE_QUANTILE / 0.01, 0.99)).toBe(true);
+    expect(isConfidentQuantile(100, 0.99)).toBe(false);
   });
 
   test("a cold cohort retains rather than falling through to nothing", () => {

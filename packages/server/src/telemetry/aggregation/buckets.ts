@@ -33,25 +33,58 @@ export const MINUTE_MS = 60_000;
 export const HOUR_MS = 3_600_000;
 
 /**
- * The quantiles the aggregate exposes — and, by the same constant, the ones the
- * retention policy keeps exemplars for. They are one list on purpose.
+ * The quantiles the aggregate exposes, split by what they cost.
  *
- * A retention threshold expressed as a fixed millisecond constant has no
- * relationship to the number on the chart, so an operator clicks a p99 spike and
- * finds nothing behind it. That is OpenTelemetry Collector issue #30319, filed
- * in January 2024 and closed by a bot as stale with no fix, and it is Datadog's
- * shipped default: its retention filter covers p75, p90 and p95, so the most
- * watched number on the dashboard is the one whose exemplars are missing.
+ * **Tail quantiles drive retention.** A retention threshold expressed as a fixed
+ * millisecond constant has no relationship to the number on the chart, so an
+ * operator clicks a p99 spike and finds nothing behind it. That is OpenTelemetry
+ * Collector issue #30319, filed January 2024 and closed by a bot as stale with
+ * no fix, and it is Datadog's shipped default: its retention filter covers p75,
+ * p90 and p95, so the most watched number on the dashboard is the one whose
+ * exemplars are missing. Retaining at the lowest exposed TAIL quantile covers
+ * every higher one by construction, so "the chart shows p99, therefore a p99
+ * exemplar exists" holds at every load with no constant to tune.
  *
- * Retaining at the LOWEST exposed quantile covers every higher one by
- * construction — a trace at or above p99 is also at or above p95 — so "the chart
- * shows p99, therefore a p99 exemplar exists" holds at every load without anyone
- * tuning a constant. A screen that wants to surface a new percentile must add it
- * here, because exposing a quantile with no exemplars behind it is a policy
- * change, not a UI decision.
+ * **Body quantiles do not.** The rule must say *tail* and not merely *lowest*:
+ * the day a screen exposes p50, "retain at the lowest exposed quantile" would
+ * mean retaining half of all traffic, and the policy would quietly become "store
+ * everything" again. It is safe to leave the body out because the deterministic
+ * baseline already supplies typical traces — a uniform sample is representative
+ * by construction, so it contains median-ish traces at the right density. What a
+ * uniform sample almost never contains is a tail outlier at useful density: in a
+ * one-minute window of 100 requests, a 1% baseline is one trace, and the chance
+ * it is the slow one is 1%. The threshold rule exists for the tail, and only the
+ * tail.
+ *
+ * **Exposing p95 is the expensive choice, and it is deliberate.** Retention
+ * follows the LOWEST tail quantile, so exposing p95 retains roughly 5% of traces
+ * where exposing p99 alone would retain 1%. Showing the lower tail number costs
+ * five times more, not less. It is paid because p95 alone hides any incident
+ * affecting under 5% of traffic — the shape of most real ones — and because a
+ * page making twenty backend calls has only a 36% chance of dodging the slow 5%
+ * entirely. Do not "optimise" this by dropping p99; dropping p95 is what would
+ * save storage, and it is the number worth keeping least.
  */
-export const EXPOSED_QUANTILES: readonly number[] = Object.freeze([0.95, 0.99]);
-export const RETENTION_QUANTILE = Math.min(...EXPOSED_QUANTILES);
+export const TAIL_QUANTILES: readonly number[] = Object.freeze([0.95, 0.99]);
+export const BODY_QUANTILES: readonly number[] = Object.freeze([0.5]);
+export const EXPOSED_QUANTILES: readonly number[] = Object.freeze(
+  [...BODY_QUANTILES, ...TAIL_QUANTILES].sort((left, right) => left - right),
+);
+/** Derived from the TAIL set alone; a body quantile can never move it. */
+export const RETENTION_QUANTILE = Math.min(...TAIL_QUANTILES);
+
+/**
+ * Observations that must fall ABOVE a quantile before it is a statistic rather
+ * than an anecdote. At p99 with 100 observations in a window the answer is one
+ * request; reporting that as fact is how a dashboard manufactures an incident.
+ * Ten is the smallest count at which the estimate stops being a single sample.
+ */
+export const MIN_SAMPLES_ABOVE_QUANTILE = 10;
+
+/** Whether a window of `count` observations can speak to `quantile` at all. */
+export function isConfidentQuantile(count: number, quantile: number): boolean {
+  return count * (1 - quantile) >= MIN_SAMPLES_ABOVE_QUANTILE;
+}
 
 /** The overflow series' function name; no application function may collide. */
 export const OVERFLOW_FUNCTION = "\u0000overflow";
@@ -138,6 +171,13 @@ export interface AggregateSeriesRow {
   readonly minMs: number;
   readonly maxMs: number;
   readonly collapsed: boolean;
+  /**
+   * Exposed quantiles this window holds too few observations to answer as fact.
+   * Carried on the row rather than left for a screen to infer, for the same
+   * reason coverage is: a number presented without its confidence is read as
+   * certain.
+   */
+  readonly lowConfidenceQuantiles: readonly number[];
   readonly sketchOk: string;
   readonly sketchFailed: string;
 }
@@ -332,6 +372,9 @@ export class TelemetryAggregateBuckets {
           minMs: series.count === 0 ? 0 : series.minMs,
           maxMs: series.count === 0 ? 0 : series.maxMs,
           collapsed: series.ok.snapshot().collapsed || series.failed.snapshot().collapsed,
+          lowConfidenceQuantiles: Object.freeze(
+            EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(series.count, quantile)),
+          ),
           sketchOk: series.ok.encode(),
           sketchFailed: series.failed.encode(),
         })),
@@ -405,6 +448,9 @@ export function mergeIntoHour(
     minMs: entry.count === 0 ? 0 : entry.minMs,
     maxMs: entry.count === 0 ? 0 : entry.maxMs,
     collapsed: entry.collapsed || entry.ok.snapshot().collapsed || entry.failed.snapshot().collapsed,
+    lowConfidenceQuantiles: Object.freeze(
+      EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(entry.count, quantile)),
+    ),
     sketchOk: entry.ok.encode(),
     sketchFailed: entry.failed.encode(),
   }));
