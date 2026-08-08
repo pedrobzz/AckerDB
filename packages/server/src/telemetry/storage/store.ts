@@ -11,14 +11,19 @@
  * cannot in aggregate bound that disk.
  *
  * **The budget is a property of the store.** `maxStoredBytes` bounds the
- * sidecar and its write-ahead log together, sampled from the open connection
- * (`page_count * page_size`, a header read) plus the WAL file's size. Over
- * budget, maintenance escalates from expiring what the clocks say is old to
- * evicting oldest-first, shortest clock first — so runaway logging spends the
- * space of the data that matters least. `auto_vacuum = INCREMENTAL` is what
- * makes eviction actually return bytes: deleting rows alone only lengthens the
- * freelist, and a budget measured against a file that never shrinks is not a
- * budget. A sidecar that cannot provide it is discarded and recreated.
+ * sidecar's database, sampled from the open connection as `page_count *
+ * page_size` — a header read, free enough to take on the write path. That is
+ * the logical size, which is what eviction shrinks and what a checkpoint writes
+ * out; the write-ahead log is bounded separately by `journal_size_limit` and
+ * SQLite's own auto-checkpoint rather than added to this number, because before
+ * a checkpoint the same pages are counted in both and a budget that
+ * double-counts is not a measurement. Over budget, maintenance escalates from
+ * expiring what the clocks say is old to evicting oldest-first, shortest clock
+ * first — so runaway logging spends the space of the data that matters least.
+ * `auto_vacuum = INCREMENTAL` is what makes eviction actually return pages:
+ * deleting rows alone only lengthens the freelist, and a budget measured
+ * against a size that never falls is not a budget. A sidecar that cannot
+ * provide it is discarded and recreated.
  *
  * **Maintenance is bounded and lives on the write path.** Each pass expires a
  * bounded number of rows, round-robining the budget across registered sets so
@@ -31,7 +36,7 @@
  * matching driver error strings.
  */
 import { Database } from "bun:sqlite";
-import { rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import {
   resolveTelemetryRetention,
   TELEMETRY_RETENTION_CLASSES,
@@ -75,9 +80,9 @@ export interface TelemetryStoreLimits {
   /** Bound on rows one maintenance pass expires by the clocks. */
   readonly maxExpiredRowsPerPass: number;
   /**
-   * The hard disk guard over `<db>.telemetry` plus its write-ahead log. It is
-   * a convergence target, not an instantaneous ceiling: a burst may cross it
-   * and the next passes evict back under.
+   * The hard disk guard over the `<db>.telemetry` database. It is a convergence
+   * target, not an instantaneous ceiling: a burst may cross it and the next
+   * passes evict back under.
    */
   readonly maxStoredBytes: number;
   /**
@@ -100,7 +105,7 @@ export interface TelemetryStoreSnapshot {
   readonly path: string;
   readonly retention: TelemetryRetentionTtls;
   readonly maxStoredBytes: number;
-  /** Sidecar plus write-ahead log, as of the last sample. */
+  /** The sidecar database's logical size, as of the last sample. */
   readonly storedBytes: number;
   readonly overBudget: boolean;
   readonly expiredRecords: Readonly<Record<TelemetryRetentionClass, number>>;
@@ -129,6 +134,13 @@ const MAX_EVICTION_ESCALATION = 6;
 /** Pages one incremental vacuum returns to the filesystem per eviction round. */
 const VACUUM_PAGES_PER_ROUND = 1_024;
 
+/**
+ * What a checkpointed write-ahead log is truncated back to. SQLite's own
+ * auto-checkpoint keeps the live log near a thousand pages, so this is the bound
+ * on the high-water mark a burst leaves behind rather than on ordinary use.
+ */
+const WAL_BYTES_LIMIT = 32 * 1_024 * 1_024;
+
 /** A cutoff every stored row is older than: eviction is expiry with no clock. */
 const EVICT_EVERYTHING_CUTOFF = Number.MAX_SAFE_INTEGER;
 
@@ -138,14 +150,6 @@ export function positiveInteger(value: number, name: string): number {
     throw new RangeError(`${name} must be a positive integer`);
   }
   return value;
-}
-
-function fileBytes(path: string): number {
-  try {
-    return statSync(path).size;
-  } catch {
-    return 0;
-  }
 }
 
 export class TelemetryStore {
@@ -283,8 +287,7 @@ export class TelemetryStore {
     const page = this.database.query(
       "SELECT (SELECT * FROM pragma_page_count()) * (SELECT * FROM pragma_page_size()) AS bytes",
     ).get() as { readonly bytes: bigint | number };
-    this.storedBytes = Number(page.bytes) +
-      (this.path === ":memory:" ? 0 : fileBytes(`${this.path}-wal`));
+    this.storedBytes = Number(page.bytes);
   }
 
   /**
@@ -380,9 +383,11 @@ function openSidecar(path: string, maxStoredBytes: number): Database {
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA synchronous = NORMAL");
   // A checkpointed write-ahead log is truncated back to this bound instead of
-  // staying at its high-water mark, so the log cannot quietly own a share of the
-  // budget that the sampled page count never sees.
-  database.exec(`PRAGMA journal_size_limit = ${Math.max(1, Math.floor(maxStoredBytes / 8))}`);
+  // staying at its high-water mark, so the log holds a bounded share of the disk
+  // beside the database the budget above measures.
+  database.exec(
+    `PRAGMA journal_size_limit = ${Math.min(WAL_BYTES_LIMIT, Math.max(1, maxStoredBytes))}`,
+  );
   database.exec(`PRAGMA user_version = ${TELEMETRY_STORE_SCHEMA_VERSION}`);
   return database;
 }

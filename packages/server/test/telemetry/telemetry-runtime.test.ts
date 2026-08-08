@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { declareJobs, job } from "../../src/jobs/definition.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
+  Telemetry,
   v,
   defineEventTable,
   defineSchema,
@@ -731,6 +733,91 @@ describe("Runtime telemetry acceptance", () => {
       malformedRecords: 1,
       oversizedRecords: 0,
     });
+  });
+
+  test("persists every span durably, sampled by nothing", async () => {
+    const app = harness({ localSink: false });
+    const session = await app.openSession("durable-spans");
+
+    for (let index = 0; index < 3; index++) {
+      expect(await app.runtime.query(session.context, request({
+        v: PROTOCOL_VERSION,
+        t: "q",
+        id: 720_000_050 + index,
+        ref: "items.logSequence",
+        args: {},
+      }))).toBe("logged");
+    }
+    await app.runtime.telemetrySpans.flush();
+
+    const spans = app.runtime.telemetryStore.database.query(`
+      SELECT operation, stage, outcome FROM _ackerdb_telemetry_spans
+    `).all() as { readonly operation: string; readonly stage: string }[];
+    // Fast, successful, in-memory-discarded spans are exactly the ones the
+    // deleted fast path used to skip; every one of them is on disk.
+    expect(spans.length).toBeGreaterThanOrEqual(3);
+    expect(spans.some((span) => span.operation === "query" && span.stage === "handler")).toBe(true);
+    expect(app.runtime.telemetrySpans.snapshot().droppedRecords).toBe(0);
+  });
+
+  test("routes framework events into the journal as framework-sourced rows", async () => {
+    const app = harness({ localSink: false });
+    await app.runtime.telemetryJournal.flush();
+
+    const framework = app.runtime.telemetryStore.database.query(`
+      SELECT level, payload FROM _ackerdb_telemetry_journal WHERE source = 'framework'
+    `).all() as { readonly level: string; readonly payload: string }[];
+    expect(framework.length).toBeGreaterThan(0);
+    expect(framework.some((row) => row.payload.includes('"message":"lifecycle"'))).toBe(true);
+  });
+
+  test("writes the terminal lifecycle row last, after every queue has quiesced", async () => {
+    const app = harness({ localSink: false });
+    const session = await app.openSession("terminal-row");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_060,
+      ref: "items.logSequence",
+      args: {},
+    }))).toBe("logged");
+
+    const path = app.runtime.telemetryStore.path;
+    await app.runtime.drain(Date.now() + 5_000);
+    // Reopened after the drain closed it: the row has to be durable on disk,
+    // not merely observed through the connection that wrote it.
+    const reopened = new Database(path, { safeIntegers: true, strict: true });
+    try {
+      const last = reopened.query(`
+        SELECT payload FROM _ackerdb_telemetry_journal ORDER BY id DESC LIMIT 1
+      `).get() as { readonly payload: string };
+      expect(last.payload).toContain('"lifecycleState":"stopped"');
+    } finally {
+      reopened.close(false);
+    }
+  });
+
+  test("attaches its durable pipeline to an injected Telemetry and releases it at drain", async () => {
+    const injected = new Telemetry({ localSink: false });
+    const app = harness(injected);
+    const session = await app.openSession("injected-telemetry");
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_070,
+      ref: "items.logSequence",
+      args: {},
+    }))).toBe("logged");
+    await app.runtime.telemetrySpans.flush();
+    expect(app.runtime.telemetrySpans.snapshot().persistedSpans).toBeGreaterThan(0);
+
+    // Two owners of one durable pipeline is a loud error, not a silent divergence.
+    expect(() => injected.attachDurableSink({})).toThrow(/already carries a durable sink/);
+
+    await app.runtime.drain(Date.now() + 5_000);
+    // The lease is released, so the drained Runtime's closed stores are no
+    // longer this instance's problem and a later one may claim it.
+    expect(() => injected.attachDurableSink({})).not.toThrow();
   });
 
   test("counts one kind's rejected write as a drop and keeps serving", async () => {
