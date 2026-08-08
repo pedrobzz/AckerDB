@@ -542,6 +542,7 @@ async function httpToolCall(
     principal,
     signal: new AbortController().signal,
     fairnessKey: "test:mcp-ai-delegation",
+    invalidations: runtime.authInvalidation.publisher(principal),
   });
 }
 

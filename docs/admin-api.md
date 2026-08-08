@@ -19,6 +19,8 @@ begin with `admin`:
 
 | binding | address | HTTP route | scope |
 | --- | --- | --- | --- |
+| `admin.credentials.list` | `admin.credentials.list` | `/admin/credentials/list` | `_admin:credentials:read` |
+| `admin.credentials.rotate` | `admin.credentials.rotate` | `/admin/credentials/rotate` | `_admin:credentials:write` |
 | `admin.system.info` | `admin.system.info` | `/admin/system/info` | `_admin:system:read` |
 
 The group carries no reserved marker, because a group's name becomes a
@@ -59,6 +61,7 @@ Every admin function declares its requirement from the framework's own
 vocabulary, `_admin:<domain>:<verb>`:
 
 ```
+_admin:credentials:read  _admin:credentials:write
 _admin:database:read     _admin:database:write
 _admin:errors:read       _admin:errors:write
 _admin:functions:run     _admin:impersonate
@@ -157,6 +160,109 @@ Everything administrative is configured in one `admin` object, in
 the application package's own `name` and `version`, then to the app directory's
 name and `0.0.0`. The same values are the OpenAPI document's title and version,
 resolved once, so an application never has two names.
+
+## The Admin Credential
+
+Administration authenticates with an ordinary identity credential — a random
+secret, only its SHA-256 digest stored, presented as `Authorization: Bearer` —
+that happens to hold the administrative grant. There is no second auth story:
+the vault verifier exists whether or not an application configures one, so this
+works on an application with **no authentication authority at all**, which is
+what makes `acker dev` zero-config.
+
+What makes one is defined once, in the vault: a root credential whose stored
+patterns are exactly `["*", "_*"]`. See
+[Scopes and identity credentials](scopes.md#the-admin-credential).
+
+### Boot-mint
+
+A server whose vault holds no Admin Credential issues one during startup and
+prints the plaintext, once:
+
+```
+[ackerdb] Admin Credential kJ8nQ2wR7pL4vX1cB9tY3a issued — copy it now, it is shown once:
+[ackerdb] ackerdb_credential.kJ8nQ2wR7pL4vX1cB9tY3a.<secret>
+```
+
+Copy it and paste it into the connect screen. Only the digest is stored, so no
+later command can show it again — `acker credential reset` below is the recourse.
+
+A start that finds a master already there prints nothing and writes nothing: the
+existence test is the same one the reset uses, and a boot with nothing to do
+touches no rows. A start that *cannot* issue one **fails**. A server nobody can
+administer, that printed nothing to say so, is discovered at the moment
+administration is needed most; the message names `acker credential reset` as the
+way out.
+
+### Rotation
+
+`admin.credentials.rotate` issues a new Admin Credential and revokes every
+credential that was administrative before the mint, in one transaction:
+
+```ts
+const { id, token } = unwrap(await client.mutation(adminApi.credentials.rotate, {}));
+```
+
+The two exist together for the length of that transaction, which is what makes
+the rotation downtime-free: the replacement already works when the old one stops.
+
+**It replaces the credential you called it with, so you have to be holding one.**
+Requires `_admin:credentials:write`, and the presented credential must itself be
+one of the Admin Credentials being replaced. Holding a grant that covers the
+whole vocabulary is a different and weaker claim: an Agent Credential issued
+`["*", "_*"]` beneath a master covers it too, and minting a root from there would
+trade authority its parent can narrow at any moment for authority nobody can —
+an escalation in permanence rather than in reach. A resolver-backed user the
+application granted `_admin:*` is refused for the same reason, and would
+otherwise have been able to destroy the operator's master as well. Both get
+`unauthorized`.
+
+Three consequences worth knowing before you rotate:
+
+- **The administrative Identity changes.** A credential *is* an Identity, and
+  the replacement is a new credential. Anything keyed on the old Identity —
+  Files it owns, analytics attributed to it — keeps pointing at an Identity no
+  credential answers to any more. Re-keying the row instead was considered and
+  rejected: the invalidation channel names a credential by its token id, so an
+  old secret and its replacement sharing one id would be one subject, and
+  "revoke the leaked secret's sessions but not the new one's" would not be
+  expressible. A rotation whose purpose is to defeat a leaked secret has to
+  produce a different subject.
+- **Credentials delegated beneath the old master go with it**, by the ordinary
+  revocation cascade: a child of a revoked parent has no source left to be
+  bounded by.
+- **It is not retryable.** The result is marked non-replayable, so a retry with
+  the same `Idempotency-Key` answers a receipt and never a second secret — and
+  in any case the old credential is gone by then. If the answer is lost after
+  the commit — a dropped connection, or a `convergence_unavailable` outcome,
+  which reports `committed: true` precisely so you can tell — the recourse is
+  break-glass. That is the cost of storing only a digest, and it is the reason
+  break-glass exists.
+
+`admin.credentials.list` answers with the masters — `id`, `name`, `createdAt` —
+and never a secret; no read can return one.
+
+**Neither is an MCP tool.** The subset invariant blocks escalation but not
+persistence: an agent holding credential-write mints a second credential with its
+own scopes and survives revocation of the first. Issuing authority is the one
+operation whose product is authority, and it requires a human.
+
+### Break-glass
+
+For a lost secret, or an application that no longer starts:
+
+```sh
+acker credential reset [app-dir]
+```
+
+It clears every Admin Credential — and everything delegated beneath them — so
+the next start issues a fresh one and prints it. It opens the database file
+directly: no application is imported, no schema is needed, and nothing about it
+depends on the code that may be what broke.
+
+**It works only with the server stopped**, and that is a lock rather than a
+check: it takes the same database ownership every AckerDB process takes, so a
+running server makes it fail before anything is read.
 
 ## `admin.system.info`
 

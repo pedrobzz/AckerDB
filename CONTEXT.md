@@ -1355,10 +1355,18 @@ _Avoid_: Role, superuser flag, permission group
 **Admin Credential** — The opaque credential that authenticates an
 administrative identity, distinct from any application user and from the system
 principal. Its authority is nothing more than the grant it holds: the patterns
-covering both the application vocabulary and the framework's reserved one. An
-application manages a single master Admin Credential by default, though the
-model admits more.
+covering both the application vocabulary and the framework's reserved one. It is
+a root credential — one with no parent — because nothing may narrow
+administrative authority at use; a child holding the same patterns is a delegate,
+not a master. An application manages a single master Admin Credential by default,
+though the model admits more.
 _Avoid_: admin token, API key, master key
+
+**Credential rotation** — Replacing an Admin Credential with a newly issued one
+and revoking what it replaced, as a single change. The credential's Identity
+changes with it, because a credential is an Identity: rotation issues, it does
+not re-key.
+_Avoid_: key rotation, re-issue, refresh
 
 **Agent Credential** — A credential issued for one external agent host, holding
 a chosen subset of an Admin Credential's authority. It is an ordinary child

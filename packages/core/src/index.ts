@@ -86,6 +86,9 @@ export {
 export {
   adminApi,
   type AdminApi,
+  type AdminCredential,
+  type AdminCredentialIssued,
+  type AdminCredentialsArgs,
   type AdminSystemInfo,
   type AdminSystemInfoArgs,
 } from "./admin.ts";
