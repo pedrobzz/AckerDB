@@ -51,6 +51,8 @@ describe("HTTP-exposed function paths", () => {
     // The framework's own group is registered in every application, so its
     // routes are here beside the application's rather than in a second table.
     expect([...registry.exposed.keys()]).toEqual([
+      "/admin/credentials/list",
+      "/admin/credentials/rotate",
       "/admin/system/info",
       "/api/admin/messages/purge",
       "/api/messages/list",

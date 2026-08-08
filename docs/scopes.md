@@ -125,6 +125,21 @@ Two consequences follow from expanding against the *current* vocabulary:
 There is no `admin: true`. An administrative identity holds `["*", "_*"]`;
 creating another is creating another identity with those two patterns.
 
+### The Admin Credential
+
+A **root** credential — one with no parent — whose stored grant is exactly those
+two patterns is the [Admin Credential](admin-api.md#the-admin-credential). That
+is the whole definition, it lives in the vault, and every path that asks the
+question calls it: boot-mint, `admin.credentials.*`, and `acker credential
+reset`. Two things follow from the shape of the test:
+
+- It is on the patterns **as written**, not on what they expand to. A grant that
+  happens to cover today's vocabulary stops covering it the moment a scope is
+  declared, and a credential's kind must not change because an application grew.
+- A **child** holding the same patterns is not one. Its live authority is
+  intersected with its parent's, so it is bounded by a master rather than being
+  one; counting it would make a rotation revoke credentials that never were.
+
 ## Grants on Identity
 
 Every `user` principal carries `scopes: readonly string[]` — the expanded grant.
@@ -192,6 +207,16 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   `ackerdb:credentials` issuer. Live WebSocket sessions and HTTP leases holding
   that credential are cancelled immediately; the next verification reads the new
   grant.
+- **The caller that made the change is the one exception, and only until its
+  answer has left.** A commit carries the originating principal's own
+  subscription, and an invalidation naming that principal is withheld from it
+  until the transport has handed off the response — the same deferral
+  `ctx.unlinkAccount` uses. Without it, revoking the credential you are
+  authenticated with would close the connection carrying the result from inside
+  your own commit: on a WebSocket the session terminates before the result
+  frame, and on the MCP endpoint the tool call's own signal aborts. Every other
+  holder is still cancelled at commit, and the origin follows immediately after.
+  Every subscriber is addressable, so no door is exempt from the exclusion.
 - One change publishes for **every credential it reaches** — the credential
   itself and every credential delegated beneath it. A descendant's live session
   matches on its own token id, so publishing only for the changed credential

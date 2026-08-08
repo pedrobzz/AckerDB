@@ -21,6 +21,7 @@ import {
   assertCredentialVerifier,
   assemblePlugins,
   createOidcVerifier,
+  ensureAdminCredential,
   desiredPluginMounts,
   type CredentialVerifier,
   type EngineCloseDisposition,
@@ -451,6 +452,30 @@ export async function startApp<const A extends App = App>(
         ? {}
         : { telemetryExporters: options.telemetryExporters }),
     });
+
+    // Administration must exist before anything can be administered, so the
+    // master credential is settled before services run and long before the
+    // listener admits a request. A failure here is fatal by design: a server
+    // nobody can administer, that printed nothing to say so, is discovered at
+    // the moment administration is most needed.
+    server.advanceStartup("issuing-credential");
+    const adminCredential = await awaitStartup(
+      ensureAdminCredential(ownedEngine, runtime.system),
+    )
+      .catch((cause: unknown) => {
+        throw cause instanceof StartupInterruptedError ? cause : new Error(
+          `the Admin Credential could not be issued: ${cause instanceof Error ? cause.message : String(cause)}`
+            + "\n\nrecover with the server stopped:\n\n    acker credential reset",
+          { cause },
+        );
+      });
+    requireStartupOwnership();
+    if (adminCredential.token !== undefined) {
+      // Printed once, and nowhere else: only the digest is stored, so no later
+      // command can show this again.
+      console.log(`[ackerdb] Admin Credential ${adminCredential.id} issued — copy it now, it is shown once:`);
+      console.log(`[ackerdb] ${adminCredential.token}`);
+    }
 
     // Services own trusted background work, so they start only once the Runtime
     // can serve `system.run`, and finish before the server admits its first

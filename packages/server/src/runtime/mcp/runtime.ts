@@ -1,5 +1,6 @@
 import { isResult, type Result } from "@ackerdb/core";
-import type { ExternalAccount, Principal } from "../../auth/credentials.ts";
+import type { Principal } from "../../auth/credentials.ts";
+import type { AuthInvalidationPublisher } from "../../auth/invalidation.ts";
 import { invokeFunction } from "../../app/invocation.ts";
 import type { ProcedureCtx } from "../../app/functions.ts";
 import type { Registry } from "../../app/registry.ts";
@@ -56,7 +57,8 @@ export interface RuntimeMcpOptions {
   readonly now: () => number;
   readonly operationSignal: (signal?: AbortSignal) => AbortSignal;
   readonly admittedRequestBytes: (request: unknown, receivedBytes?: number) => number;
-  readonly publishAccountInvalidation: (account: ExternalAccount) => void;
+  /** The origin-less publisher a tool call arriving without transport ownership uses. */
+  readonly immediateInvalidations: AuthInvalidationPublisher;
 }
 
 /**
@@ -147,6 +149,12 @@ export class RuntimeMcp {
           ),
           fairnessKey,
           requestBytes,
+          // The endpoint's credential lease is a direct subscriber to the same
+          // boundary, so a tool that revokes the caller's own credential would
+          // abort the very signal its own answer is being produced under. The
+          // listener owns the release, because the JSON-RPC response is
+          // assembled after this call returns.
+          provenance?.invalidations ?? this.options.immediateInvalidations,
         );
       },
       {
@@ -197,6 +205,10 @@ export class RuntimeMcp {
           ),
           fairnessKey,
           requestBytes,
+          // A locally delegated tool call has no response of its own: it runs
+          // inside a procedure that owns one, and that procedure's own origin
+          // already governs whatever it publishes.
+          this.options.immediateInvalidations,
         );
       },
     } satisfies McpAiRuntimeCapability);
@@ -208,6 +220,7 @@ export class RuntimeMcp {
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
+    invalidations: AuthInvalidationPublisher,
   ): Promise<McpCallToolResult> {
     const toolContext = Object.freeze({
       auth: context.auth,
@@ -225,6 +238,7 @@ export class RuntimeMcp {
           toolContext,
           fairnessKey,
           requestBytes,
+          invalidations,
         ),
       );
       const finalized = finalizeMcpToolResult(tool, result);
@@ -247,6 +261,7 @@ export class RuntimeMcp {
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
+    invalidations: AuthInvalidationPublisher,
   ): Promise<Result<unknown, unknown>> {
     const fn = tool.fn;
     const signal = this.options.operationSignal(context.abortSignal);
@@ -275,6 +290,7 @@ export class RuntimeMcp {
         fn,
         principal: context.auth,
         args,
+        publishAuthInvalidation: invalidations.publish,
       });
       return restoreMutationResult(committed.value);
     }
@@ -284,7 +300,7 @@ export class RuntimeMcp {
       signal,
       requestBytes,
       context.timestamp,
-      this.options.publishAccountInvalidation,
+      invalidations.publish,
     );
     try {
       const value = await invokeSideEffectingHandler(

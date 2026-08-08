@@ -10,6 +10,7 @@ import { startApp, StartupInterruptedError } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+import { CLI_ENV } from "../support/process.ts";
 import { within } from "ackerdb-test-support/async";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
@@ -226,10 +227,13 @@ describe("ackerdb CLI", () => {
     const app = await startApp(config, { prepare: runCodegen, credentialVerifier });
     try {
       const client = authenticatedClientFor(port);
+      // Identity 1 is the Admin Credential minted at boot — it is a credential,
+      // so it is a first-class Identity, and it is the first one this database
+      // ever had. The application's first user follows it.
       expect(mustOk(await client.procedure<Record<string, never>, bigint>(
         "api.identity.current",
         {},
-      ))).toBe(1n);
+      ))).toBe(2n);
       client.close();
     } finally {
       await app.drain();
@@ -486,6 +490,50 @@ describe("ackerdb CLI", () => {
     expect(existsSync(database)).toBe(false);
     expect(existsSync(`${database}.ackerdb-coordination`)).toBe(true);
     expect(readFileSync(unrelated, "utf8")).toBe("unrelated");
+  });
+
+  test("prints the Admin Credential once, and break-glass makes the next start reissue it", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const first = spawnCli(["start", dir], CLI_ENV);
+    const issued = await first.waitFor("[ackerdb] ackerdb_credential.");
+    const token = /\[ackerdb\] (ackerdb_credential\.[\w-]+\.[\w-]+)/.exec(issued)?.[1];
+    expect(token).toBeString();
+    await first.waitFor("ready on");
+    first.child.kill("SIGTERM");
+    expect(await first.child.exited).toBe(0);
+
+    // A restart finds the master and says nothing: the plaintext existed for
+    // one moment, and nothing can print it again.
+    const second = spawnCli(["start", dir], CLI_ENV);
+    await second.waitFor("ready on");
+    expect(second.output()).not.toContain("ackerdb_credential.");
+    const authorized = await fetch(`http://127.0.0.1:${port}/admin/credentials/list`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({}),
+    });
+    expect(authorized.status).toBe(200);
+    second.child.kill("SIGTERM");
+    expect(await second.child.exited).toBe(0);
+
+    // Break-glass needs no application, only the stopped database file.
+    const cleared = spawnCli(["credential", "reset", dir]);
+    await cleared.child.exited;
+    expect(cleared.output()).toContain("cleared 1 credential(s)");
+
+    const third = spawnCli(["start", dir], CLI_ENV);
+    const reissued = await third.waitFor("[ackerdb] ackerdb_credential.");
+    expect(reissued).not.toContain(token!);
+    await third.waitFor("ready on");
+    const stale = await fetch(`http://127.0.0.1:${port}/admin/credentials/list`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({}),
+    });
+    expect(stale.status).toBe(401);
+    third.child.kill("SIGTERM");
+    expect(await third.child.exited).toBe(0);
   });
 
   test("start confirms the effective balanced/no-telemetry profile exactly once before readiness", async () => {

@@ -48,6 +48,10 @@ export interface AuthInvalidationScope {
 }
 
 export interface AuthInvalidationSubscription {
+  /**
+   * Absent only for a subscriber that reached an application verifier directly,
+   * which the boundary does not own and therefore cannot name.
+   */
   readonly scope?: AuthInvalidationScope;
   unsubscribe(): void;
 }
@@ -79,11 +83,18 @@ export function subscribeAuthInvalidation(
   return Object.freeze({ unsubscribe });
 }
 
-/** Composes provider revocations with Runtime-owned exact-account invalidations. */
+/**
+ * Composes provider revocations with Runtime-owned exact-account invalidations.
+ *
+ * **One registry, so every subscriber is addressable.** A subscriber that the
+ * publisher cannot name is a subscriber no origin exclusion can spare, and an
+ * unsparable door is exactly where a caller loses the response describing the
+ * change it just made. Every subscription therefore mints a scope, whichever
+ * door opened it, and `except` covers all of them.
+ */
 export class AuthInvalidationBoundary {
   readonly verifier: CredentialVerifier | undefined;
   private readonly listeners = new Map<AuthInvalidationScope, InvalidationListener>();
-  private readonly directListeners = new Set<InvalidationListener>();
   private readonly source: CredentialVerifier | undefined;
 
   constructor(source: CredentialVerifier | undefined) {
@@ -97,9 +108,9 @@ export class AuthInvalidationBoundary {
           revocationBound: source.revocationBound,
           verify: (credential: string) => source.verify(credential),
           subscribeInvalidation: (listener: InvalidationListener) =>
-            this.subscribe(source, listener).unsubscribe,
+            this.subscribe(listener).unsubscribe,
           [SUBSCRIBE_AUTH_INVALIDATION]: (listener: InvalidationListener) =>
-            this.subscribe(source, listener),
+            this.subscribe(listener),
         } satisfies ScopedCredentialVerifier);
   }
 
@@ -117,7 +128,6 @@ export class AuthInvalidationBoundary {
       }
       this.deliver(listener, invalidation);
     }
-    for (const listener of [...this.directListeners]) this.deliver(listener, invalidation);
     return excluded;
   }
 
@@ -134,21 +144,17 @@ export class AuthInvalidationBoundary {
    * a correct predicate over events it never receives, which is the same as
    * having no predicate: the in-flight holder would keep authority its parent
    * has already lost. Both doors, or neither.
+   *
+   * It differs from the verifier-facing door in one thing only: it exists
+   * without a provider. It is otherwise the same subscription, with the same
+   * scope, because the MCP endpoint reaches the runtime through here and a
+   * revocation it performs itself must be excludable exactly as any other
+   * caller's is.
    */
-  subscribeDirect(listener: InvalidationListener): () => void {
-    this.directListeners.add(listener);
-    const stopSource = this.source?.subscribeInvalidation(listener);
-    if (this.source !== undefined && typeof stopSource !== "function") {
-      this.directListeners.delete(listener);
-      throw new TypeError("verifier returned an invalid unsubscribe callback");
-    }
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      this.directListeners.delete(listener);
-      stopSource?.();
-    };
+  subscribeDirect(listener: InvalidationListener): AuthInvalidationSubscription & {
+    readonly scope: AuthInvalidationScope;
+  } {
+    return this.subscribe(listener);
   }
 
   /** Deliver after response handoff only if the exact originating subscription is still active. */
@@ -193,15 +199,14 @@ export class AuthInvalidationBoundary {
   }
 
   private subscribe(
-    source: CredentialVerifier,
     listener: InvalidationListener,
   ): AuthInvalidationSubscription & { readonly scope: AuthInvalidationScope } {
     const scope = Object.freeze({ [AUTH_INVALIDATION_SCOPE]: true as const });
     this.listeners.set(scope, listener);
-    let unsubscribe: () => void;
+    let unsubscribe: (() => void) | undefined;
     try {
-      unsubscribe = source.subscribeInvalidation(listener);
-      if (typeof unsubscribe !== "function") {
+      unsubscribe = this.source?.subscribeInvalidation(listener);
+      if (this.source !== undefined && typeof unsubscribe !== "function") {
         throw new TypeError("verifier returned an invalid unsubscribe callback");
       }
     } catch (error) {
@@ -215,7 +220,7 @@ export class AuthInvalidationBoundary {
         if (!active) return;
         active = false;
         this.listeners.delete(scope);
-        unsubscribe();
+        unsubscribe?.();
       },
     });
   }

@@ -45,6 +45,31 @@ export const MAX_SCOPE_PATTERNS = 128;
 export const SCOPE_WILDCARD = "*";
 
 /**
+ * Administrative authority, written out: every application scope and every
+ * framework scope, which is what `*` and `_*` mean together and what no other
+ * pattern set can say. There is no flag behind it — this array *is* the
+ * definition, and holding it is what makes an identity administrative.
+ */
+export const ADMINISTRATIVE_GRANT: readonly string[] = Object.freeze([
+  SCOPE_WILDCARD,
+  `${RESERVED_MARKER}${SCOPE_WILDCARD}`,
+]);
+
+/**
+ * Whether one stored grant is the administrative one. The test is on the
+ * patterns as written, not on what they expand to: an expansion that happens to
+ * cover today's vocabulary stops covering it the moment a scope is added, so a
+ * credential's kind would change under it without anyone touching the
+ * credential. Order is not part of the claim.
+ */
+export function isAdministrativeGrant(patterns: readonly string[]): boolean {
+  return (
+    patterns.length === ADMINISTRATIVE_GRANT.length &&
+    ADMINISTRATIVE_GRANT.every((pattern) => patterns.includes(pattern))
+  );
+}
+
+/**
  * The framework's own vocabulary, pre-declared under the reserved marker: the
  * Admin API's `_admin:<domain>:<verb>` names, declared beside the surface that
  * requires them. It is named here because this is where a grant meets it —
