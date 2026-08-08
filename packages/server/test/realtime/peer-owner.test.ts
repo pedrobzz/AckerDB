@@ -82,7 +82,7 @@ function fixture(trustedProxy?: string | readonly string[]): Fixture {
     engine,
     registry: new Registry({ assistant: { live: assistant } }),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     realtime: realtimeRuntime,
   });
   const server = serve({

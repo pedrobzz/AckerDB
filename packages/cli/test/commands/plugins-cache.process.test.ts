@@ -7,7 +7,7 @@ import * as ts from "typescript";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { steps } from "../support/process.ts";
+import { QUIET_ADMIN, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -223,7 +223,6 @@ function spawnServer(dir: string, port: number) {
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);
@@ -258,7 +257,6 @@ async function runCli(args: string[]) {
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);
@@ -339,7 +337,7 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
     const dir = makeFixture({
       "app.ts": APP,
       "functions/state.ts": FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 

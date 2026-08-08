@@ -191,7 +191,7 @@ interface Harness {
 function startHarness(
   maxOperations = 8,
   maxOperationsPerCaller = 4,
-  telemetry: RuntimeOptions["telemetry"] = false,
+  telemetry?: RuntimeOptions["telemetry"],
 ): Harness {
   const limits = defineServiceLimits({
     ...PRODUCTION_LIMITS,
@@ -207,7 +207,12 @@ function startHarness(
     databasePath("ackerdb-mcp-runtime-"),
     undefined,
     ownershipModules,
-    { limits, telemetry },
+    {
+      limits,
+      ...(telemetry === undefined
+        ? { admin: { telemetry: { enabled: false } } }
+        : { telemetry }),
+    },
   );
   const server = serve({ runtime: value.runtime, port: 0 });
   trackCleanup(() => server.drain());

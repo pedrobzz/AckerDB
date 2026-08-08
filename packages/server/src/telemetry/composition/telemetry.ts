@@ -59,6 +59,7 @@ import type {
   TelemetrySpanRecord,
   TelemetryRecord,
   TelemetryScheduler,
+  TelemetryDurableSink,
   TelemetryOptions,
   TelemetryTraceRetentionSnapshot,
   TelemetrySnapshot,
@@ -290,6 +291,32 @@ export class Telemetry {
         this.observeExportFailure(state);
       }
     }
+  }
+
+  /**
+   * Attach the durable span/event pipeline after construction. The Runtime owns
+   * the read-model stores, which exist only after the Telemetry they observe —
+   * so the sink composes onto WHICHEVER Telemetry the Runtime uses, injected or
+   * constructed. An instance already carrying a sink has two would-be owners and
+   * is rejected loudly; silent read-model divergence is not a mode. Disabled
+   * telemetry records nothing, durable or otherwise, so attaching is a no-op.
+   *
+   * Returns an idempotent detach lease: the attaching Runtime releases it when
+   * its stores stop accepting writes (drain, or a failed construction), so a
+   * caller-owned instance keeps recording cleanly and can serve a later Runtime.
+   */
+  attachDurableSink(sink: TelemetryDurableSink): () => void {
+    const state = this.state;
+    if (!state) return () => {};
+    if (state.durableSink !== undefined) {
+      throw new TypeError(
+        "this Telemetry already carries a durable sink — the Runtime owns the durable pipeline",
+      );
+    }
+    state.durableSink = sink;
+    return () => {
+      if (state.durableSink === sink) state.durableSink = undefined;
+    };
   }
 
   [OPEN_OPERATION_TRACE](input: OperationTraceInput): OperationTraceHandle {
@@ -549,25 +576,13 @@ export class Telemetry {
     const safeMutationId = safeId(mutationId);
     const safeCommitId = safeId(commitId);
     const safeSubscriptionId = safeId(subscriptionId);
-    const retain = durationMs >= state.limits.slowOperationMs || outcome !== "ok";
     let trace = handle.retention;
     if (trace?.owner !== state || trace.phase === "settled") trace = undefined;
-    if (state.limits.slowOperationMs > 0 && trace === undefined && !retain) {
-      this.aggregateSpanValues(
-        state,
-        operation,
-        stage,
-        outcome,
-        safeFunction,
-        resource,
-        durationMs,
-        safeSize,
-        safeRows,
-        safeResults,
-        safeDependencies,
-      );
-      return true;
-    }
+    // There is one span path. An aggregate-only shortcut used to exist here for
+    // the fast, successful, untraced span — it skipped id materialization for a
+    // record nothing would keep. Durable capture keeps every one of them
+    // (#194: no sampling), so materialization is no longer avoidable and the
+    // shortcut was a second path that could only be dead weight.
     const resolvedNode = node === NO_SLOT ? handle.childNode(parentNode) : node;
     const span: SanitizedTelemetrySpan = {
       timestampMs,
@@ -655,6 +670,17 @@ export class Telemetry {
     span: SanitizedTelemetrySpan,
     associatedTrace?: MutableTraceRetention,
   ): boolean {
+    // Durability precedes every in-memory retention decision: the sink is what
+    // makes "the trace you are looking for is always there" true, so it cannot
+    // sit behind the sampling this method exists to perform.
+    const sink = state.durableSink;
+    if (sink?.span !== undefined) {
+      try {
+        sink.span(materializeSpan(span));
+      } catch {
+        // Durable capture must never poison the recording path.
+      }
+    }
     const retain = span.durationMs >= state.limits.slowOperationMs || span.outcome !== "ok";
     if (state.limits.slowOperationMs === 0) return this.retain(materializeSpan(span), true);
 
@@ -721,6 +747,14 @@ export class Telemetry {
           ? input.errorClass
           : undefined,
     });
+    const sink = state.durableSink;
+    if (sink?.event !== undefined) {
+      try {
+        sink.event(record);
+      } catch {
+        // Durable capture must never poison the recording path.
+      }
+    }
     if (
       state.limits.slowOperationMs > 0 &&
       record.traceId &&
@@ -1037,8 +1071,7 @@ export class Telemetry {
   }
 
   private aggregateSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
-    this.aggregateSpanValues(
-      state,
+    state.aggregation.record(
       span.operation,
       span.stage,
       span.outcome,
@@ -1049,33 +1082,6 @@ export class Telemetry {
       span.rowCount,
       span.resultCount,
       span.dependencyCount,
-    );
-  }
-
-  private aggregateSpanValues(
-    state: TelemetryState,
-    operation: TelemetryOperation,
-    stage: TelemetryStage,
-    outcome: TelemetryOutcome,
-    functionName: string | undefined,
-    resource: TelemetryResource | undefined,
-    durationMs: number,
-    sizeBytes: number | undefined,
-    rowCount: number | undefined,
-    resultCount: number | undefined,
-    dependencyCount: number | undefined,
-  ): void {
-    state.aggregation.record(
-      operation,
-      stage,
-      outcome,
-      functionName,
-      resource,
-      durationMs,
-      sizeBytes,
-      rowCount,
-      resultCount,
-      dependencyCount,
     );
   }
 

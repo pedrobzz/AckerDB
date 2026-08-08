@@ -212,7 +212,7 @@ function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking
     engine,
     registry: new Registry(functions),
     verifier,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     now: () => NOW,
   });
   const harness = { directory, engine, runtime, verifier };

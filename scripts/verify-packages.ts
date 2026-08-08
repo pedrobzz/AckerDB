@@ -669,7 +669,6 @@ await verifyPublicRealtimeSession(createBundledRealtimeEngine);
     ], consumerDir, {
       ...process.env,
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
     });
     await runCommand([process.execPath, "verify-runtime.ts"], consumerDir);
     await runCommand([

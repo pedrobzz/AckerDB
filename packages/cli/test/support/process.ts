@@ -4,10 +4,14 @@ import { within } from "ackerdb-test-support/async";
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 
 /**
- * Durable writes with telemetry off, for suites whose subject is neither.
- * A suite that asserts on telemetry or durability must pass its own instead.
+ * Durable writes, for suites whose subject is not durability. Telemetry is not
+ * an environment setting: it is configured in the manifest, so a suite that
+ * wants it off writes `admin: QUIET_ADMIN` into its own `.ackerdb.config.json`.
  */
-export const CLI_ENV = { ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" } as const;
+export const CLI_ENV = { ACKERDB_DURABILITY: "production" } as const;
+
+/** Telemetry off in the manifest, for suites whose subject is not telemetry. */
+export const QUIET_ADMIN = { telemetry: { enabled: false } } as const;
 
 /**
  * A settled `Result` yields its data; anything else passes through. Process

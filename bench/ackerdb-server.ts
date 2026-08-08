@@ -46,10 +46,14 @@ const exporterMode = process.env.ACKERDB_BENCH_EXPORTER;
 if (exporterMode !== "disabled" && exporterMode !== "in-process") {
   throw new Error("ACKERDB_BENCH_EXPORTER must be disabled or in-process");
 }
-const profile = benchmarkProfileFromConfig(
-  config.telemetry,
-  exporterMode,
-);
+// The harness chooses each leg's telemetry mode, so it is a harness variable
+// like the exporter mode beside it. The framework's own switch is
+// `admin.telemetry.enabled`, which this file passes to the Runtime below.
+const telemetryMode = process.env.ACKERDB_BENCH_TELEMETRY;
+if (telemetryMode !== "enabled" && telemetryMode !== "disabled") {
+  throw new Error("ACKERDB_BENCH_TELEMETRY must be enabled or disabled");
+}
+const profile = benchmarkProfileFromConfig(telemetryMode, exporterMode);
 const startupMode = expectedAckerDBStartupMode(profile, config.durability);
 const schema = (await importApp(config)).schema;
 const modules = await importFunctionModules(config);
@@ -66,7 +70,7 @@ try {
     engine,
     registry,
     ...(profile === "disabled"
-      ? { telemetry: false }
+      ? { admin: { telemetry: { enabled: false } } }
       : profile === "exporter"
         ? { telemetry: { exporter: BENCHMARK_EXPORTER } }
         : {}),

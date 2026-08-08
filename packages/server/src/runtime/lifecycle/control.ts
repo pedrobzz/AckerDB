@@ -7,6 +7,9 @@ import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
 import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";
+import type { TelemetryErrorStore } from "../../telemetry/errors/store.ts";
+import type { TelemetrySpanStore } from "../../telemetry/storage/spans.ts";
+import type { TelemetryStore } from "../../telemetry/storage/store.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { RuntimeStatus } from "../contracts/status.ts";
 import type { RuntimeLifecycleState } from "../contracts/lifecycle.ts";
@@ -28,16 +31,73 @@ import type { FileCleanupRuntime } from "../../files/cleanup.ts";
 import type { RuntimeFiles } from "../../files/namespace.ts";
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+/**
+ * How long past the shutdown deadline a cooperative store drain may take to
+ * acknowledge quiescence — enough for its one in-flight synchronous batch,
+ * without letting a zombie drain hold the caller's drain hostage.
+ */
+const QUIESCENCE_GRACE_MS = 500;
+/**
+ * The 32-bit timer horizon: a longer setTimeout delay overflows to ~1 ms and
+ * fires almost immediately. Each ARM clamps to it; a wake at the horizon is
+ * not expiry — the scheduler below re-arms until the budget is spent.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** One timer delay: non-negative and inside the 32-bit horizon. */
+function timerDelay(remainingMs: number): number {
+  return Math.min(MAX_TIMER_DELAY_MS, Math.max(0, remainingMs));
+}
+
+/**
+ * Schedule one expiry against a monotonic target. Every wake recomputes the
+ * remaining budget: positive re-arms (a horizon wake is a re-arm, never an
+ * expiry), non-positive fires `onExpire` — synchronously at scheduling when
+ * the target is already past. Returns a cancel that clears the armed timer;
+ * `maxDelayMs` exists so tests can exercise horizon wakes without waiting
+ * 24.8 days.
+ */
+export function scheduleMonotonicDeadline(
+  targetMonotonicMs: number,
+  onExpire: () => void,
+  maxDelayMs = MAX_TIMER_DELAY_MS,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+  const arm = (): void => {
+    if (cancelled) return;
+    const remainingMs = targetMonotonicMs - performance.now();
+    if (remainingMs <= 0) {
+      onExpire();
+      return;
+    }
+    timer = setTimeout(arm, Math.min(maxDelayMs, timerDelay(remainingMs)));
+    timer.unref?.();
+  };
+  arm();
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  };
+}
 const utf8 = new TextEncoder();
 
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
   readonly telemetry: Telemetry;
+  readonly telemetryStore: TelemetryStore;
   readonly telemetryJournal: TelemetryJournal;
+  readonly telemetrySpans: TelemetrySpanStore;
+  readonly telemetryErrors: TelemetryErrorStore;
   readonly telemetryExporters?: TelemetryJournalExporters;
   readonly ownsTelemetry: boolean;
-  readonly ownsTelemetryJournal: boolean;
+  /**
+   * Whether this Runtime opened the sidecar. An injected journal brings its own
+   * store, and a store this Runtime did not open is neither stopped nor closed
+   * by it — one fact, one flag.
+   */
+  readonly ownsTelemetryStore: boolean;
   readonly pluginRuntime?: PluginRuntime;
   readonly realtime?: RealtimeRuntime;
   readonly reads: RuntimeReadExecutor;
@@ -50,7 +110,16 @@ export interface RuntimeControlOptions {
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
-  readonly stopSampler: () => void;
+  /** Stops the sampler and every other periodic telemetry emitter at drain start. */
+  readonly stopPeriodicTelemetry: () => void;
+  /** Releases the durable-sink lease before the read-model store closes. */
+  readonly releaseDurableSink: () => void;
+  /** Appends the terminal lifecycle row synchronously — the last durable record. */
+  readonly appendTerminalLifecycle: (record: {
+    readonly lifecycleState: "stopped" | "failed";
+    readonly outcome?: ReturnType<typeof outcomeFromError>["code"];
+    readonly errorClass?: string;
+  }) => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -60,13 +129,21 @@ export class RuntimeControl {
   private readonly activeWaiters = new Set<() => void>();
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
-  private readonly releaseTelemetryJournalFailure: () => void;
+  private readonly releaseTelemetryStoreFailure: () => void;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
+  /** The one shared finalization every drain path awaits — never re-run. */
+  private finalization: Promise<unknown[]> | null = null;
+  /** The first registered terminal failure; the deadline registers synchronously. */
+  private terminalFailure: unknown;
 
   constructor(private readonly options: RuntimeControlOptions) {
-    this.releaseTelemetryJournalFailure = options.telemetryJournal.onFailure((error) => {
+    // ADR-0017 as amended: a sidecar the runtime cannot write to at all makes
+    // the runtime unhealthy, because it cannot honestly accept new records. One
+    // kind's write failing is an accounted drop inside that kind — the store
+    // proves which of the two happened before this listener ever runs.
+    this.releaseTelemetryStoreFailure = options.telemetryStore.onFailure((error) => {
       options.telemetry.recordEvent({
         name: "failure",
         level: "error",
@@ -231,7 +308,10 @@ export class RuntimeControl {
       sseBudget: this.options.sseBudget.snapshot(),
       telemetry: this.options.telemetry.snapshot(),
       telemetryAggregates: this.options.telemetry.aggregateSnapshot(),
+      telemetryStore: this.options.telemetryStore.snapshot(),
       telemetryJournal: this.options.telemetryJournal.snapshot(),
+      telemetrySpans: this.options.telemetrySpans.snapshot(),
+      telemetryErrors: this.options.telemetryErrors.snapshot(),
       telemetryExporters: this.options.telemetryExporters?.snapshot() ?? null,
       storage: this.options.engine.status(),
     });
@@ -243,11 +323,19 @@ export class RuntimeControl {
     if (!Number.isFinite(deadlineAtMs)) {
       throw new RangeError("runtime shutdown deadline must be finite");
     }
+    // The epoch deadline converts ONCE into a monotonic budget: every
+    // scheduling, classification, and recheck below compares against the
+    // monotonic clock, so a wall-clock adjustment mid-drain (VM resume,
+    // NTP sync) can neither launder a late settlement as in-time nor
+    // inflate a grace timer. The offset stays SIGNED — an already-expired
+    // deadline must overrun immediately, not earn a fresh grace window;
+    // timer delays clamp to zero only where they are scheduled.
+    const deadlineMonotonicMs = performance.now() + (deadlineAtMs - Date.now());
     this.lifecycle = "draining";
-    this.releaseTelemetryJournalFailure();
+    this.releaseTelemetryStoreFailure();
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
-    this.options.stopSampler();
+    this.options.stopPeriodicTelemetry();
     this.options.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",
@@ -295,21 +383,11 @@ export class RuntimeControl {
     const shutdownWork = coreShutdown.then(async () => {
       if (deadlineReached) return;
       this.options.flushDeliveryFailures();
-      this.options.telemetry.recordEvent({
-        name: "lifecycle",
-        level: "info",
-        operation: "lifecycle",
-        lifecycleState: "stopped",
-      });
-      await this.options.telemetryExporters?.drain();
-      if (this.options.ownsTelemetryJournal) {
-        await this.options.telemetryJournal.drain();
-      } else {
-        await this.options.telemetryJournal.flush();
+      const errors = await this.finalizeTelemetry(undefined, deadlineAtMs, deadlineMonotonicMs);
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Runtime telemetry finalization failed");
       }
-      return this.options.ownsTelemetry
-        ? this.options.telemetry.drain(deadlineAtMs)
-        : this.options.telemetry.flush();
     });
 
     const deadlineError = new AckerDBError(
@@ -317,56 +395,42 @@ export class RuntimeControl {
       "runtime graceful shutdown deadline exceeded",
       { resource: "operation" },
     );
-    let timeout!: ReturnType<typeof setTimeout>;
+    let cancelDeadline!: () => void;
     const deadline = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
+      cancelDeadline = scheduleMonotonicDeadline(deadlineMonotonicMs, () => {
         deadlineReached = true;
+        // Synchronous: an in-flight finalization that has not yet frozen its
+        // terminal outcome must see this deadline as the failure.
+        this.registerTerminalFailure(deadlineError);
         this.shutdownController.abort(deadlineError);
         void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
-      }, Math.max(0, deadlineAtMs - Date.now()));
+      });
     });
     this.drainPromise = Promise.race([shutdownWork, deadline]).then(
       () => {
-        clearTimeout(timeout);
+        cancelDeadline();
         this.shutdownController.abort(draining);
         this.lifecycle = "stopped";
       },
       async (error) => {
-        clearTimeout(timeout);
+        cancelDeadline();
         deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
-        this.options.telemetry.recordEvent({
-          name: "lifecycle",
-          level: "error",
-          operation: "lifecycle",
-          lifecycleState: "failed",
-          outcome: outcomeFromError(error).code,
-          errorClass: error instanceof Error ? error.name : "UnknownError",
-        });
-        const cleanupErrors: unknown[] = [];
-        try {
-          await this.options.telemetryExporters?.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (this.options.ownsTelemetryJournal) {
-            await this.options.telemetryJournal.drain();
-          } else {
-            await this.options.telemetryJournal.flush();
-          }
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        if (this.options.ownsTelemetry) {
-          try {
-            await this.options.telemetry.drain(deadlineAtMs);
-          } catch (cleanupError) {
-            cleanupErrors.push(cleanupError);
-          }
-        }
+        // Awaits the SAME shared finalization: the drain never settles while
+        // the owning finalizer is active, and this failure was registered
+        // synchronously before the finalizer could freeze its outcome. The
+        // shared errors may include the very failure that reached us — and
+        // the shutdown deadline is one cause however many steps it expired —
+        // so keep each cause once.
+        const isDeadline = (candidate: unknown): boolean =>
+          candidate instanceof AckerDBError && candidate.code === "deadline_exceeded";
+        const finalizationErrors = await this.finalizeTelemetry(error, deadlineAtMs, deadlineMonotonicMs);
+        const cleanupErrors = finalizationErrors.filter((cleanup) =>
+          cleanup !== error &&
+          !(error instanceof AggregateError && error.errors.includes(cleanup)) &&
+          !(isDeadline(cleanup) && isDeadline(error)));
         if (cleanupErrors.length === 0) throw error;
         throw new AggregateError(
           [error, ...cleanupErrors],
@@ -375,6 +439,213 @@ export class RuntimeControl {
       },
     );
     return this.drainPromise;
+  }
+
+  /**
+   * Register one failure and share the single finalization. Every drain path
+   * — clean, core-shutdown failure, deadline — registers its failure
+   * synchronously and awaits the SAME promise, so the drain never settles
+   * while the owning finalizer is still active, and a deadline expiring
+   * mid-finalization flips the terminal outcome instead of racing it.
+   */
+  private finalizeTelemetry(
+    failure: unknown,
+    deadlineAtMs: number,
+    deadlineMonotonicMs: number,
+  ): Promise<unknown[]> {
+    this.registerTerminalFailure(failure);
+    this.finalization ??= this.runFinalization(deadlineAtMs, deadlineMonotonicMs);
+    return this.finalization;
+  }
+
+  private registerTerminalFailure(failure: unknown): void {
+    if (failure !== undefined && this.terminalFailure === undefined) {
+      this.terminalFailure = failure;
+    }
+  }
+
+  /**
+   * One telemetry finalization for every drain outcome. All fallible durable
+   * flushing runs FIRST, each step bounded by the shutdown deadline so a
+   * hung flush cannot hold the terminal write (or the caller's drain)
+   * hostage; only then is the terminal lifecycle outcome frozen — read and
+   * written in ONE synchronous stretch, so an expiring deadline either
+   * registered its failure before the freeze or arrives too late to matter.
+   * Exactly one `stopped`/`failed` event: recorded into the exporter stream
+   * and appended synchronously into the journal as the structurally LAST
+   * durable record before the sidecar closes. Errors are collected, never
+   * thrown. Failures discovered after the freeze — a terminal append that
+   * cannot write, store-close, export-flush — still reject the drain and
+   * surface in accounting, but cannot flip the durable row: nothing can be
+   * written into a sidecar that already failed.
+   */
+  private async runFinalization(
+    deadlineAtMs: number,
+    deadlineMonotonicMs: number,
+  ): Promise<unknown[]> {
+    const errors: unknown[] = [];
+    const attempt = async (work: () => unknown): Promise<void> => {
+      try {
+        await this.boundedBy(work(), deadlineMonotonicMs);
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    // Ordinary concurrent records bypass cleanly while the queues flush:
+    // never accepted by Telemetry yet dropped by a not-ready store.
+    await attempt(() => this.options.releaseDurableSink());
+    // The exporter and in-memory telemetry flushes guard their own post-stop
+    // store writes, so Promise-race abandonment at the deadline is safe for
+    // them. The journal and span stores are different: their drains are
+    // COOPERATIVE — the monotonic deadline is passed in, they drop the
+    // unpersisted tail and settle only once the sidecar is guaranteed
+    // quiescent.
+    await attempt(() => this.options.telemetryExporters?.drain());
+    const graceMonotonicMs = deadlineMonotonicMs + QUIESCENCE_GRACE_MS;
+    const journalAck = await this.acknowledged(
+      this.options.ownsTelemetryStore
+        ? this.options.telemetryJournal.drain(deadlineMonotonicMs)
+        : this.options.telemetryJournal.flush(deadlineMonotonicMs),
+      graceMonotonicMs,
+    );
+    if (journalAck.error !== undefined) errors.push(journalAck.error);
+    const spansAck = await this.acknowledged(
+      this.options.ownsTelemetryStore
+        ? this.options.telemetrySpans.drain(deadlineMonotonicMs)
+        : this.options.telemetrySpans.flush(deadlineMonotonicMs),
+      graceMonotonicMs,
+    );
+    if (spansAck.error !== undefined) errors.push(spansAck.error);
+    const quiescent = journalAck.ack !== "none" && spansAck.ack !== "none";
+    if (!quiescent) {
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry stores did not acknowledge quiescence by the shutdown deadline",
+        { resource: "operation" },
+      ));
+    } else if (journalAck.ack === "late" || spansAck.ack === "late") {
+      // Quiescence arrived, but past the bound: safe to append and close —
+      // never clean to claim.
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry stores acknowledged quiescence after the shutdown deadline",
+        { resource: "operation" },
+      ));
+    }
+    // FREEZE: synchronous from here through the terminal append. Monotonic
+    // recheck first — a blocked event loop can deliver every settlement
+    // before the overdue deadline timer, and a finalization past its
+    // deadline must never freeze a clean outcome.
+    if (performance.now() > deadlineMonotonicMs && this.terminalFailure === undefined && errors.length === 0) {
+      errors.push(new AckerDBError(
+        "deadline_exceeded",
+        "telemetry finalization completed after the shutdown deadline",
+        { resource: "operation" },
+      ));
+    }
+    const terminal = this.terminalFailure ?? errors[0];
+    const outcome = terminal === undefined
+      ? { lifecycleState: "stopped" as const }
+      : {
+          lifecycleState: "failed" as const,
+          outcome: outcomeFromError(terminal).code,
+          errorClass: terminal instanceof Error ? terminal.name : "UnknownError",
+        };
+    try {
+      // Exporter-stream parity; the detached sink makes this non-durable.
+      this.options.telemetry.recordEvent({
+        name: "lifecycle",
+        level: outcome.lifecycleState === "stopped" ? "info" : "error",
+        operation: "lifecycle",
+        ...outcome,
+      });
+    } catch (error) {
+      errors.push(error);
+    }
+    // The deadline-overrun form: without acknowledged quiescence, a zombie
+    // flush may still touch the sidecar — never append the terminal row
+    // into it and never close it under active owners. The drain rejects
+    // with the deadline error instead; a late-resuming flush is then a
+    // clean write into a store that was deliberately left open.
+    if (quiescent) {
+      try {
+        this.options.appendTerminalLifecycle(outcome);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    await attempt(() => this.options.ownsTelemetry
+      ? this.options.telemetry.drain(deadlineAtMs)
+      : this.options.telemetry.flush());
+    if (quiescent) {
+      await attempt(() => {
+        if (this.options.ownsTelemetryStore) this.options.telemetryStore.close();
+      });
+    }
+    return errors;
+  }
+
+  /**
+   * Await one cooperative store drain up to the grace bound. Settlement —
+   * resolution OR rejection — is the quiescence acknowledgement; only a
+   * drain that answers nothing at all leaves the store unacknowledged.
+   * Timers alone cannot judge lateness: a synchronously blocked event loop
+   * delivers every settlement microtask before any overdue timer macrotask,
+   * so the settlement handlers check the clock themselves — the MONOTONIC
+   * clock, which no wall-clock adjustment can rewind under a settlement.
+   * A late REAL settlement is still quiescent (safe to append and close),
+   * it just must never be called clean.
+   */
+  private acknowledged(
+    work: Promise<void>,
+    graceMonotonicMs: number,
+  ): Promise<{ readonly ack: "in-time" | "late" | "none"; readonly error?: unknown }> {
+    const ackNow = (): "in-time" | "late" =>
+      performance.now() > graceMonotonicMs ? "late" : "in-time";
+    return Promise.race([
+      work.then(
+        () => ({ ack: ackNow() }),
+        (error: unknown) => ({ ack: ackNow(), error }),
+      ),
+      new Promise<{ readonly ack: "none" }>((resolve) => {
+        scheduleMonotonicDeadline(graceMonotonicMs, () => {
+          // Expiry yields one turn: work that has already settled (or
+          // settles within it) classifies by its own settlement — "none" is
+          // only for a drain that answers nothing at all.
+          const yielded = setTimeout(() => resolve({ ack: "none" as const }), 0);
+          yielded.unref?.();
+        });
+      }),
+    ]);
+  }
+
+  /** Bound one finalization step by the monotonic shutdown deadline. */
+  private boundedBy<T>(work: T | Promise<T>, deadlineMonotonicMs: number): Promise<T> {
+    if (!(work instanceof Promise)) return Promise.resolve(work);
+    return new Promise<T>((resolve, reject) => {
+      const cancel = scheduleMonotonicDeadline(deadlineMonotonicMs, () => {
+        // Expiry yields one turn: work already settled (or settling within
+        // it) wins its own race instead of being rejected retroactively.
+        const yielded = setTimeout(() => {
+          reject(new AckerDBError(
+            "deadline_exceeded",
+            "telemetry finalization exceeded the shutdown deadline",
+            { resource: "operation" },
+          ));
+        }, 0);
+        yielded.unref?.();
+      });
+      work.then(
+        (value) => {
+          cancel();
+          resolve(value);
+        },
+        (error) => {
+          cancel();
+          reject(error);
+        },
+      );
+    });
   }
 
   private waitForActiveOperations(): Promise<void> {

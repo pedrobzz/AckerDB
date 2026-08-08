@@ -72,7 +72,7 @@ export async function observeStorageOperation<T>(
   work: () => Promise<T>,
   details: (value: T) => OperationTelemetryDetails,
 ): Promise<T> {
-  const telemetry = new Telemetry(config.telemetry === "disabled"
+  const telemetry = new Telemetry(config.admin.telemetry?.enabled === false
     ? { enabled: false }
     : { limits: { slowOperationMs: 0 } });
   const context: TelemetryTraceContext = {

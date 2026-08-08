@@ -16,7 +16,7 @@ import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { CLI_ENV, runCli, steps } from "../support/process.ts";
+import { CLI_ENV, QUIET_ADMIN, runCli, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
@@ -124,7 +124,7 @@ function spawnServer(dir: string): { child: CliProcess; waitReady(): Promise<voi
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -193,7 +193,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -251,7 +251,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -331,7 +331,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -359,7 +359,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
@@ -405,7 +405,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
@@ -431,7 +431,7 @@ describe("acker generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
     await seedV1(dir, port);

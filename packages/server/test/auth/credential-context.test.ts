@@ -62,7 +62,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-no-mcp-context-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const runtime = new Runtime({ engine, registry, telemetry: false });
+  const runtime = new Runtime({ engine, registry, admin: { telemetry: { enabled: false } } });
   const session = Object.freeze({
     clientSessionId: "no-mcp-context",
     principal: ANONYMOUS_PRINCIPAL,

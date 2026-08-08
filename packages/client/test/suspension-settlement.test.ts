@@ -767,7 +767,7 @@ describe("suspension settlement against a real ackerdb server", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, admin: { telemetry: { enabled: false } } });
     const server = serve({ runtime, port: 0 });
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.

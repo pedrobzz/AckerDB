@@ -102,7 +102,6 @@ class FixtureController {
         ...process.env,
         ACKERDB_ACCEPTANCE_DB: join(consumerDir, "acceptance.db"),
         ACKERDB_DURABILITY: "balanced",
-        ACKERDB_TELEMETRY: "disabled",
       },
       stdin: "pipe",
       stdout: "pipe",

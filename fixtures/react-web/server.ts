@@ -38,7 +38,7 @@ const registry = new Registry({
     }),
   },
 });
-const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, admin: { telemetry: { enabled: false } } });
 serve({ runtime, port: 3211 });
 
 Bun.serve({ port: 3210, routes: { "/": index }, development: true });

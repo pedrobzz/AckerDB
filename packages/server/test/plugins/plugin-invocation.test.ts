@@ -470,7 +470,7 @@ async function makeHarness(
     engine,
     registry: new Registry(functions),
     pluginRuntime,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     now: () => ++clock,
   });
   const controller = new AbortController();

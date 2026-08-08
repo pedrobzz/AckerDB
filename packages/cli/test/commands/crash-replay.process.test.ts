@@ -16,7 +16,7 @@ import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { steps } from "../support/process.ts";
+import { QUIET_ADMIN, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 30_000;
@@ -95,7 +95,7 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
 const runtime = new Runtime({
   engine,
   registry: new Registry({ messages }),
-  telemetry: false,
+  admin: { telemetry: { enabled: false } },
   ...(hooks === undefined ? {} : { hooks }),
 });
 const server = serve({ runtime, port });
@@ -182,7 +182,6 @@ function spawnProcess(
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
       ...env,
     },
   }) as CliProcess;
@@ -307,7 +306,7 @@ async function makeCommitFaultFixture(port: number): Promise<string> {
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "commit-fault-server.ts": COMMIT_FAULT_SERVER,
-    ".ackerdb.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
   });
   dirs.push(dir);
   await runCodegen(loadConfig(dir));
@@ -322,7 +321,7 @@ describe("process crash replay", () => {
       "app.ts": FIXTURE_APP,
       "functions/messages.ts": FIXTURE_MESSAGES,
       "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
     const sentinel = join(dir, ".precommit-crash-reached");

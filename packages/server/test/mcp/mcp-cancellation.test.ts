@@ -277,7 +277,7 @@ beforeEach(() => {
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     hooks: {
       wait: async () => {
         if (!pauseAfterCommit) return;

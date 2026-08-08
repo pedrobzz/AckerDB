@@ -235,7 +235,7 @@ describe("File HTTP flow", () => {
       engine,
       registry: new Registry(functions),
       verifier: new TestVerifier(),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       files: {
         publicUrl: "https://files.example.test/",
         store: fileStore,

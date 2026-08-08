@@ -323,7 +323,9 @@ export function fixture(
     // Parent identities hold the full vocabulary unless a test narrows it,
     // so child-credential intersections read a real issuer grant.
     resolveScopes: options.resolveScopes ?? (() => FIXTURE_SCOPES),
-    telemetry: options.telemetry ?? false,
+    ...(options.telemetry === undefined
+      ? { admin: { telemetry: { enabled: false } } }
+      : { telemetry: options.telemetry }),
     ...(options.now === undefined ? {} : { now: options.now }),
     limits: options.limits ?? {
       ...PRODUCTION_LIMITS,

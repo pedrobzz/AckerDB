@@ -362,7 +362,7 @@ async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMe
       stderr: "pipe",
       env: {
         ...process.env,
-        ACKERDB_TELEMETRY: telemetry,
+        ACKERDB_BENCH_TELEMETRY: telemetry,
         ACKERDB_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
         ACKERDB_DURABILITY: "balanced",
         ACKERDB_BENCH_TELEMETRY_REPORT: reportPath,
@@ -731,12 +731,7 @@ if (
   throw new Error("BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles");
 }
 
-await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
-  ACKERDB_DURABILITY: "balanced",
-  ACKERDB_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
-    ? "disabled"
-    : "enabled",
-}));
+await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), { ACKERDB_DURABILITY: "balanced" }));
 const executionOrder = benchmarkExecutionOrder(requestedProfiles, 0);
 const profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>> = {};
 for (let index = 0; index < executionOrder.length; index++) {

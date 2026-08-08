@@ -92,7 +92,12 @@ export interface StartAppOptions<A extends App = App> {
   holdPendingMigrations?: boolean;
   /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
   realtime?: RealtimeRuntimeModule;
-  /** Optional local-journal bounds for application logs and analytics. */
+  /**
+   * A caller-owned telemetry journal, primarily for embedding and tests. Its
+   * store becomes the application's telemetry store; the configured `admin`
+   * block then describes a sidecar this process did not open, so the caller
+   * owns those bounds too.
+   */
   telemetryJournal?: RuntimeOptions["telemetryJournal"];
   /** Provider adapters consuming the local telemetry journal independently. */
   telemetryExporters?: RuntimeOptions["telemetryExporters"];
@@ -433,7 +438,7 @@ export async function startApp<const A extends App = App>(
       ...(resolveScopes === undefined ? {} : { resolveScopes }),
       ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
-      telemetry: config.telemetry === "disabled" ? false : undefined,
+      admin: config.admin,
       ...(options.telemetryJournal === undefined
         ? {}
         : { telemetryJournal: options.telemetryJournal }),
@@ -461,7 +466,7 @@ export async function startApp<const A extends App = App>(
     activated = true;
 
     console.log(`@@ackerdb-startup ${JSON.stringify({
-      telemetry: config.telemetry,
+      telemetry: config.admin.telemetry?.enabled === false ? "disabled" : "enabled",
       durability: config.durability,
     })}`);
     const displayHostname = server.hostname.includes(":")

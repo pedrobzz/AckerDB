@@ -232,7 +232,7 @@ async function main(): Promise<void> {
   const runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
   });
   const server = serve({ runtime, port: 0 });
 

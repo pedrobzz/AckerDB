@@ -4,6 +4,7 @@
  * on setup failure, and shutdown that releases services while `system.run` is
  * still live.
  */
+import { QUIET_ADMIN } from "../support/process.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -12,7 +13,7 @@ import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
-import { TelemetryJournal } from "@ackerdb/server";
+import { TelemetryJournal, TelemetryStore } from "@ackerdb/server";
 
 const dirs: string[] = [];
 
@@ -65,7 +66,7 @@ function rows(dir: string): string[] {
 function fixture(services: Record<string, string>, port: number): string {
   const dir = makeFixture({
     "app.ts": APP,
-    ".ackerdb.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     "lib/record.ts": RECORDER,
     ...services,
   });
@@ -126,7 +127,9 @@ export const tcl = service({
       "cleanup:tuya",
       "cleanup:tcl",
     ]);
-    const journal = new TelemetryJournal({ path: join(dir, ".ackerdb", "data.db.telemetry") });
+    const journal = new TelemetryJournal({
+      store: new TelemetryStore({ path: join(dir, ".ackerdb", "data.db.telemetry") }),
+    });
     expect(journal.readBatch(0n, 10).filter((entry) => entry.kind === "log").map((entry) => ({
       message: entry.message,
       metadata: entry.metadata,

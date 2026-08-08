@@ -137,8 +137,9 @@ function fixture(
     registry: new Registry(functions),
     verifier,
     ...(limits === undefined ? {} : { limits }),
-    telemetry: telemetryEnabled
-      ? {
+    ...(telemetryEnabled ? {} : { admin: { telemetry: { enabled: false } } }),
+    ...(telemetryEnabled ? {
+      telemetry: {
           enabled: true,
           exporter: {
             export(batch) {
@@ -157,8 +158,8 @@ function fixture(
             slowOperationMs,
             sampleIntervalMs,
           },
-        }
-      : false,
+      },
+    } : {}),
   });
   const server = serve({ runtime, port: 0 });
   return {

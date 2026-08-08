@@ -1,18 +1,44 @@
-import { Database } from "bun:sqlite";
+/**
+ * Application logs and analytics events, homed as one kind inside the shared
+ * telemetry store (ADR-0017).
+ *
+ * **The row is not opaque any more.** Level, source, function, correlation ids,
+ * event name and identity are real columns written at insert from the typed
+ * record, never re-parsed out of the payload. Per-level retention is the
+ * ticket's core requirement and it cannot be enforced through an index that
+ * does not exist; the same columns are what the Admin API reads on.
+ *
+ * **Size is not this kind's business.** The sidecar's byte budget belongs to
+ * the store, which can see the whole file; a per-kind record or byte cap would
+ * be one of several guesses at a share of one disk, and several such guesses
+ * cannot bound that disk. What stays here are the bounds on *this* kind's own
+ * resources: the in-memory queue, the batch, and the single record.
+ *
+ * **Failure is the store's judgement.** A batch that cannot be written is an
+ * accounted drop unless the store's probe proves the shared connection is gone;
+ * only then does this journal stop.
+ */
+import type { Database, Statement } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
-import type { TelemetryJournalEntry, TelemetryJournalRecord } from "./types.ts";
+import { AckerDBError } from "../../shared/errors.ts";
+import { DAY_MS } from "../storage/retention.ts";
+import { positiveInteger, type TelemetryStore } from "../storage/store.ts";
+import type {
+  ApplicationLogLevel,
+  TelemetryJournalEntry,
+  TelemetryJournalRecord,
+} from "./types.ts";
 
 export interface TelemetryJournalLimits {
   readonly maxQueuedRecords: number;
   readonly maxQueuedBytes: number;
   readonly maxBatchRecords: number;
   readonly maxRecordBytes: number;
-  readonly maxStoredRecords: number;
-  readonly maxStoredBytes: number;
 }
 
 export interface TelemetryJournalOptions {
-  readonly path: string;
+  /** The shared telemetry sidecar this journal homes its tables in. */
+  readonly store: TelemetryStore;
   readonly limits?: Partial<TelemetryJournalLimits>;
 }
 
@@ -58,8 +84,6 @@ const DEFAULT_LIMITS: TelemetryJournalLimits = Object.freeze({
   maxQueuedBytes: 8 * 1_024 * 1_024,
   maxBatchRecords: 256,
   maxRecordBytes: 64 * 1_024,
-  maxStoredRecords: 100_000,
-  maxStoredBytes: 256 * 1_024 * 1_024,
 });
 
 interface QueuedRecord {
@@ -68,15 +92,53 @@ interface QueuedRecord {
   readonly bytes: number;
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer`);
-  return value;
+const LOG_LEVELS: readonly ApplicationLogLevel[] = Object.freeze([
+  "debug",
+  "info",
+  "warn",
+  "error",
+]);
+
+const INSERT_JOURNAL_ROW = `
+  INSERT INTO _ackerdb_telemetry_journal (
+    process_generation, sequence, timestamp, kind, level, source,
+    function_address, trace_id, span_id, request_id, event, identity,
+    payload_bytes, payload
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+function journalRowValues(
+  record: TelemetryJournalRecord,
+  bytes: number,
+  encoded: string,
+): readonly (string | number | bigint | null)[] {
+  return [
+    record.processGeneration,
+    record.sequence,
+    record.timestamp,
+    record.kind,
+    record.kind === "log" ? record.level : null,
+    record.kind === "log" ? record.source : null,
+    record.functionAddress,
+    record.traceId ?? null,
+    record.spanId ?? null,
+    record.requestId ?? null,
+    record.kind === "analytics" ? record.event : null,
+    record.kind === "analytics" ? record.identity ?? null : null,
+    bytes,
+    encoded,
+  ];
 }
 
 export class TelemetryJournal {
-  readonly path: string;
+  readonly store: TelemetryStore;
   readonly limits: TelemetryJournalLimits;
   private readonly database: Database;
+  private readonly insertRow: Statement;
+  private readonly deleteExpiredLog: Statement;
+  private readonly deleteExpiredAnalytics: Statement;
+  private readonly deleteExpiredRollups: Statement;
+  private readonly upsertAnalyticsRollup: Statement;
   private readonly queue: QueuedRecord[] = [];
   private queuedBytes = 0;
   private persistedRecords = 0;
@@ -89,7 +151,6 @@ export class TelemetryJournal {
   private saturatedRecords = 0;
   private evictedRecords = 0;
   private lastRecordId = 0n;
-  private readonly failureListeners = new Set<(error: unknown) => void>();
   private readonly persistListeners = new Set<() => void>();
   private pumpScheduled = false;
   private pumpHandle?: ReturnType<typeof setImmediate>;
@@ -98,7 +159,7 @@ export class TelemetryJournal {
   private failure: unknown;
 
   constructor(options: TelemetryJournalOptions) {
-    this.path = options.path;
+    this.store = options.store;
     this.limits = Object.freeze({
       maxQueuedRecords: positiveInteger(
         options.limits?.maxQueuedRecords ?? DEFAULT_LIMITS.maxQueuedRecords,
@@ -116,59 +177,74 @@ export class TelemetryJournal {
         options.limits?.maxRecordBytes ?? DEFAULT_LIMITS.maxRecordBytes,
         "telemetry journal maxRecordBytes",
       ),
-      maxStoredRecords: positiveInteger(
-        options.limits?.maxStoredRecords ?? DEFAULT_LIMITS.maxStoredRecords,
-        "telemetry journal maxStoredRecords",
-      ),
-      maxStoredBytes: positiveInteger(
-        options.limits?.maxStoredBytes ?? DEFAULT_LIMITS.maxStoredBytes,
-        "telemetry journal maxStoredBytes",
-      ),
     });
-    this.database = new Database(options.path, {
-      create: true,
-      safeIntegers: true,
-      strict: true,
+    this.database = this.store.database;
+    this.store.register({
+      name: "application-signals",
+      initialize: (database) => {
+        createJournalSchema(database);
+        return [
+          // One set per level: the level clocks differ, and a set is exactly
+          // the pairing of a deletable slice with the clock it expires on.
+          ...LOG_LEVELS.map((level) => Object.freeze({
+            retention: level,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.expire(this.deleteExpiredLog, [level, cutoffMs, limit]),
+          })),
+          Object.freeze({
+            retention: "analytics" as const,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.expire(this.deleteExpiredAnalytics, [cutoffMs, limit]),
+          }),
+          Object.freeze({
+            retention: "rollups" as const,
+            deleteExpired: (cutoffMs: number, limit: number) =>
+              this.deleteExpiredRollups.all(cutoffMs, limit).length,
+          }),
+        ];
+      },
     });
-    this.database.exec("PRAGMA journal_mode = WAL");
-    this.database.exec("PRAGMA synchronous = NORMAL");
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_journal (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        process_generation TEXT NOT NULL,
-        sequence INTEGER NOT NULL,
-        timestamp REAL NOT NULL,
-        kind TEXT NOT NULL,
-        payload_bytes INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        UNIQUE(process_generation, sequence)
+    this.insertRow = this.database.query(INSERT_JOURNAL_ROW);
+    this.deleteExpiredLog = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_journal
+      WHERE id IN (
+        SELECT id FROM _ackerdb_telemetry_journal
+        WHERE kind = 'log' AND level = ? AND timestamp < ?
+        ORDER BY timestamp
+        LIMIT ?
       )
+      RETURNING payload_bytes AS bytes
     `);
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        stored_records INTEGER NOT NULL,
-        stored_bytes INTEGER NOT NULL,
-        evicted_records INTEGER NOT NULL,
-        last_record_id INTEGER NOT NULL
+    this.deleteExpiredAnalytics = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_journal
+      WHERE id IN (
+        SELECT id FROM _ackerdb_telemetry_journal
+        WHERE kind = 'analytics' AND timestamp < ?
+        ORDER BY timestamp
+        LIMIT ?
       )
+      RETURNING payload_bytes AS bytes
     `);
-    this.database.query(`
-      INSERT OR IGNORE INTO _ackerdb_telemetry_state (
-        singleton, stored_records, stored_bytes, evicted_records, last_record_id
-      ) VALUES (1, 0, 0, 0, 0)
-    `).run();
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_consumers (
-        name TEXT PRIMARY KEY,
-        cursor INTEGER NOT NULL,
-        exported_records INTEGER NOT NULL,
-        skipped_unsupported INTEGER NOT NULL,
-        skipped_identity INTEGER NOT NULL,
-        evicted_records INTEGER NOT NULL,
-        failures INTEGER NOT NULL,
-        timed_out INTEGER NOT NULL
+    this.deleteExpiredRollups = this.database.query(`
+      DELETE FROM _ackerdb_telemetry_analytics_rollup
+      WHERE rowid IN (
+        SELECT rowid FROM _ackerdb_telemetry_analytics_rollup
+        WHERE day < ?
+        ORDER BY day
+        LIMIT ?
       )
+      RETURNING rowid
+    `);
+    // The daily rollup outlives raw events by an order of magnitude, so it is
+    // maintained by increment rather than recomputed: recomputing one bucket
+    // from raw rows would cost a scan of that day's events on every batch,
+    // which grows with the day's volume — super-linear work for a number that
+    // an increment already knows exactly. The rollup doubles as the registry of
+    // distinct event names.
+    this.upsertAnalyticsRollup = this.database.query(`
+      INSERT INTO _ackerdb_telemetry_analytics_rollup (day, event, count)
+      VALUES (?, ?, ?)
+      ON CONFLICT(day, event) DO UPDATE SET count = count + excluded.count
     `);
     const retained = this.database.query(`
       SELECT COUNT(*) AS records, COALESCE(SUM(payload_bytes), 0) AS bytes
@@ -183,7 +259,15 @@ export class TelemetryJournal {
     this.storedBytes = Number(retained.bytes);
     this.evictedRecords = Number(state.evictedRecords);
     this.lastRecordId = state.lastRecordId;
-    this.enforceRetention();
+  }
+
+  /** Bounded per-class expiry; the caller's transaction owns durability. */
+  private expire(statement: Statement, parameters: readonly (string | number)[]): number {
+    const rows = statement.all(...parameters) as { readonly bytes: bigint }[];
+    for (const row of rows) this.storedBytes -= Number(row.bytes);
+    this.storedRecords -= rows.length;
+    this.evictedRecords += rows.length;
+    return rows.length;
   }
 
   append(record: TelemetryJournalRecord): boolean {
@@ -201,11 +285,7 @@ export class TelemetryJournal {
       return false;
     }
     const bytes = Buffer.byteLength(encoded);
-    if (
-      bytes > this.limits.maxRecordBytes ||
-      bytes > this.limits.maxStoredBytes ||
-      bytes > this.limits.maxQueuedBytes
-    ) {
+    if (bytes > this.limits.maxRecordBytes || bytes > this.limits.maxQueuedBytes) {
       this.droppedRecords++;
       this.oversizedRecords++;
       return false;
@@ -241,17 +321,12 @@ export class TelemetryJournal {
     const bytes = batch.reduce((total, item) => total + item.bytes, 0);
     this.queuedBytes -= bytes;
     this.tail = this.tail.then(() => this.persist(batch)).catch((error) => {
-      this.markFailed(error, batch.length);
+      this.observeStorageFailure(error, batch.length);
     });
     if (this.queue.length > 0) this.schedulePump();
   }
 
   private persist(batch: readonly QueuedRecord[]): void {
-    const insert = this.database.query(`
-      INSERT INTO _ackerdb_telemetry_journal (
-        process_generation, sequence, timestamp, kind, payload_bytes, payload
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `);
     const before = {
       storedRecords: this.storedRecords,
       storedBytes: this.storedBytes,
@@ -260,20 +335,28 @@ export class TelemetryJournal {
     };
     try {
       this.database.transaction(() => {
+        const buckets = new Map<string, { readonly day: number; readonly event: string; count: number }>();
         for (const item of batch) {
-          const inserted = insert.run(
-            item.record.processGeneration,
-            item.record.sequence,
-            item.record.timestamp,
-            item.record.kind,
-            item.bytes,
-            item.encoded,
+          const record = item.record;
+          if (record.kind === "analytics") {
+            const day = Math.floor(record.timestamp / DAY_MS) * DAY_MS;
+            const key = `${day}\0${record.event}`;
+            const bucket = buckets.get(key);
+            if (bucket === undefined) buckets.set(key, { day, event: record.event, count: 1 });
+            else bucket.count++;
+          }
+          const inserted = this.insertRow.run(
+            ...journalRowValues(record, item.bytes, item.encoded),
           );
           this.lastRecordId = inserted.lastInsertRowid as bigint;
           this.storedRecords++;
           this.storedBytes += item.bytes;
         }
-        this.enforceRetention();
+        for (const bucket of buckets.values()) {
+          this.upsertAnalyticsRollup.run(bucket.day, bucket.event, bucket.count);
+        }
+        this.store.maintain();
+        this.writeAccounting();
       })();
     } catch (error) {
       this.storedRecords = before.storedRecords;
@@ -292,8 +375,34 @@ export class TelemetryJournal {
     }
   }
 
-  async flush(): Promise<void> {
+  private writeAccounting(): void {
+    this.database.query(`
+      UPDATE _ackerdb_telemetry_state
+      SET stored_records = ?, stored_bytes = ?, evicted_records = ?, last_record_id = ?
+      WHERE singleton = 1
+    `).run(this.storedRecords, this.storedBytes, this.evictedRecords, this.lastRecordId);
+  }
+
+  /**
+   * Flush the queue; an optional MONOTONIC deadline (performance.now() basis —
+   * immune to wall-clock adjustments) makes the flush COOPERATIVE: once it
+   * passes, the unpersisted tail is dropped instead of written, the in-flight
+   * batch still settles, and the journal is guaranteed quiescent when this
+   * resolves — reported as a deadline error carrying the loss.
+   */
+  async flush(deadlineMonotonicMs?: number): Promise<void> {
+    let deadlineDropped = 0;
     for (;;) {
+      if (
+        deadlineMonotonicMs !== undefined &&
+        this.queue.length > 0 &&
+        performance.now() >= deadlineMonotonicMs
+      ) {
+        deadlineDropped += this.queue.length;
+        this.droppedRecords += this.queue.length;
+        this.queue.length = 0;
+        this.queuedBytes = 0;
+      }
       if (this.pumpScheduled) {
         if (this.pumpHandle !== undefined) clearImmediate(this.pumpHandle);
         this.pumpScheduled = false;
@@ -305,6 +414,13 @@ export class TelemetryJournal {
       if (!this.pumpScheduled && this.queue.length === 0 && tail === this.tail) break;
     }
     if (this.failure !== undefined) throw this.failure;
+    if (deadlineDropped > 0) {
+      throw new AckerDBError(
+        "deadline_exceeded",
+        `telemetry journal dropped ${deadlineDropped} queued records at the shutdown deadline`,
+        { resource: "operation" },
+      );
+    }
   }
 
   readBatch(afterId: bigint, limit: number): readonly TelemetryJournalEntry[] {
@@ -340,11 +456,6 @@ export class TelemetryJournal {
       evictedRecords: this.evictedRecords,
       ...(this.failure === undefined ? {} : { failure: this.failure }),
     });
-  }
-
-  onFailure(listener: (error: unknown) => void): () => void {
-    this.failureListeners.add(listener);
-    return () => this.failureListeners.delete(listener);
   }
 
   onPersist(listener: () => void): () => void {
@@ -386,18 +497,30 @@ export class TelemetryJournal {
     validateConsumerName(name);
     return this.withStorage(() => {
       this.ensureConsumer(name);
+      const previous = this.consumerSnapshot(name);
+      // Cursor-aware loss accounting: every id crossed by this advance was
+      // exported, skipped, or no longer in storage. Per-class retention deletes
+      // arbitrary rows, so holes between retained records are evictions too —
+      // not only the prefix before MIN(id).
+      const accounted = (advance.exportedRecords ?? 0) +
+        (advance.skippedUnsupported ?? 0) +
+        (advance.skippedIdentity ?? 0);
+      const crossed = cursor > previous.cursor ? Number(cursor - previous.cursor) : 0;
+      const evicted = Math.max(crossed - accounted, 0);
       this.database.query(`
         UPDATE _ackerdb_telemetry_consumers
         SET cursor = ?,
             exported_records = exported_records + ?,
             skipped_unsupported = skipped_unsupported + ?,
-            skipped_identity = skipped_identity + ?
+            skipped_identity = skipped_identity + ?,
+            evicted_records = evicted_records + ?
         WHERE name = ?
       `).run(
         cursor,
         advance.exportedRecords ?? 0,
         advance.skippedUnsupported ?? 0,
         advance.skippedIdentity ?? 0,
+        evicted,
         name,
       );
       return this.consumerSnapshot(name);
@@ -456,14 +579,21 @@ export class TelemetryJournal {
     try {
       return work();
     } catch (error) {
-      this.markFailed(error);
+      this.observeStorageFailure(error, 0);
       throw error;
     }
   }
 
-  private markFailed(error: unknown, lostRecords = 0): void {
+  /**
+   * Account one storage loss and let the store decide what it meant. A batch
+   * that could not be written is lost either way; whether this journal is
+   * finished depends on whether the shared connection survived, which is the
+   * store's probe to run and not this kind's to guess.
+   */
+  private observeStorageFailure(error: unknown, lostRecords: number): void {
     this.droppedRecords += lostRecords;
     if (this.state === "failed" || this.state === "stopped") return;
+    if (this.store.observeFailure(error)) return;
     this.failure = error;
     this.state = "failed";
     if (this.pumpHandle !== undefined) clearImmediate(this.pumpHandle);
@@ -472,13 +602,6 @@ export class TelemetryJournal {
     this.droppedRecords += this.queue.length;
     this.queue.length = 0;
     this.queuedBytes = 0;
-    for (const listener of this.failureListeners) {
-      try {
-        listener(error);
-      } catch {
-        // A health observer cannot replace the journal's original failure.
-      }
-    }
   }
 
   private ensureConsumer(name: string): void {
@@ -490,61 +613,133 @@ export class TelemetryJournal {
     `).run(name);
   }
 
-  private enforceRetention(): void {
-    while (
-      this.storedRecords > this.limits.maxStoredRecords ||
-      this.storedBytes > this.limits.maxStoredBytes
-    ) {
-      const rows = this.database.query(`
-        SELECT id, payload_bytes AS bytes
-        FROM _ackerdb_telemetry_journal
-        ORDER BY id
-        LIMIT ?
-      `).all(this.limits.maxBatchRecords) as {
-        readonly id: bigint;
-        readonly bytes: bigint;
-      }[];
-      if (rows.length === 0) break;
-      let removedRecords = 0;
-      let removedBytes = 0;
-      let lastId = 0n;
-      for (const row of rows) {
-        removedRecords++;
-        removedBytes += Number(row.bytes);
-        lastId = row.id;
-        if (
-          this.storedRecords - removedRecords <= this.limits.maxStoredRecords &&
-          this.storedBytes - removedBytes <= this.limits.maxStoredBytes
-        ) break;
-      }
-      this.database.query(
-        "DELETE FROM _ackerdb_telemetry_journal WHERE id <= ?",
-      ).run(lastId);
-      this.storedRecords -= removedRecords;
-      this.storedBytes -= removedBytes;
-      this.evictedRecords += removedRecords;
-    }
-    this.database.query(`
-      UPDATE _ackerdb_telemetry_state
-      SET stored_records = ?, stored_bytes = ?, evicted_records = ?, last_record_id = ?
-      WHERE singleton = 1
-    `).run(this.storedRecords, this.storedBytes, this.evictedRecords, this.lastRecordId);
-  }
-
-  async drain(): Promise<void> {
+  async drain(deadlineMonotonicMs?: number): Promise<void> {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "draining";
     try {
-      await this.flush();
+      await this.flush(deadlineMonotonicMs);
     } finally {
-      try {
-        this.database.close(false);
-      } catch (error) {
-        if (this.failure === undefined) throw error;
-      }
+      // A deadline overrun still quiesced (its loss is the thrown error); only
+      // a failed journal keeps its failed state. The shared connection belongs
+      // to the store, which closes it after every kind has quiesced.
+      if (this.state === "draining") this.state = "stopped";
     }
-    this.state = "stopped";
   }
+
+  /**
+   * One synchronous terminal append — the structurally LAST durable record,
+   * written after the queue drains and before the sidecar closes. Bypasses the
+   * queue and the ready-state gate deliberately: the drain that stopped this
+   * journal is exactly what made the terminal outcome known. A terminal row
+   * that cannot be written fails LOUD: the error escapes and rejects the drain,
+   * because a clean resolution with zero terminal rows is not a mode.
+   */
+  appendFinal(record: TelemetryJournalRecord): void {
+    const before = {
+      storedRecords: this.storedRecords,
+      storedBytes: this.storedBytes,
+      lastRecordId: this.lastRecordId,
+    };
+    try {
+      const encoded = encode(record);
+      const bytes = Buffer.byteLength(encoded);
+      this.database.transaction(() => {
+        const inserted = this.insertRow.run(...journalRowValues(record, bytes, encoded));
+        this.lastRecordId = inserted.lastInsertRowid as bigint;
+        this.storedRecords++;
+        this.storedBytes += bytes;
+        this.writeAccounting();
+      })();
+      this.persistedRecords++;
+    } catch (error) {
+      // The transaction rolled back: accounting must describe the durable
+      // truth, not the row that never landed.
+      this.storedRecords = before.storedRecords;
+      this.storedBytes = before.storedBytes;
+      this.lastRecordId = before.lastRecordId;
+      this.droppedRecords++;
+      this.failure ??= error;
+      this.state = "failed";
+      throw error;
+    }
+  }
+}
+
+function createJournalSchema(database: Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      process_generation TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      timestamp REAL NOT NULL,
+      kind TEXT NOT NULL,
+      level TEXT,
+      source TEXT,
+      function_address TEXT,
+      trace_id TEXT,
+      span_id TEXT,
+      request_id TEXT,
+      event TEXT,
+      identity INTEGER,
+      payload_bytes INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      UNIQUE(process_generation, sequence)
+    )
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_retention
+    ON _ackerdb_telemetry_journal (kind, level, timestamp)
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_trace
+    ON _ackerdb_telemetry_journal (trace_id, id) WHERE trace_id IS NOT NULL
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_level
+    ON _ackerdb_telemetry_journal (level, id) WHERE kind = 'log'
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_event
+    ON _ackerdb_telemetry_journal (event, timestamp) WHERE kind = 'analytics'
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS _ackerdb_telemetry_journal_identity
+    ON _ackerdb_telemetry_journal (identity, timestamp) WHERE identity IS NOT NULL
+  `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_analytics_rollup (
+      day INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      PRIMARY KEY (day, event)
+    )
+  `);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      stored_records INTEGER NOT NULL,
+      stored_bytes INTEGER NOT NULL,
+      evicted_records INTEGER NOT NULL,
+      last_record_id INTEGER NOT NULL
+    )
+  `);
+  database.query(`
+    INSERT OR IGNORE INTO _ackerdb_telemetry_state (
+      singleton, stored_records, stored_bytes, evicted_records, last_record_id
+    ) VALUES (1, 0, 0, 0, 0)
+  `).run();
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS _ackerdb_telemetry_consumers (
+      name TEXT PRIMARY KEY,
+      cursor INTEGER NOT NULL,
+      exported_records INTEGER NOT NULL,
+      skipped_unsupported INTEGER NOT NULL,
+      skipped_identity INTEGER NOT NULL,
+      evicted_records INTEGER NOT NULL,
+      failures INTEGER NOT NULL,
+      timed_out INTEGER NOT NULL
+    )
+  `);
 }
 
 function validateConsumerName(name: string): void {

@@ -207,7 +207,9 @@ async function server(dbDir: string, telemetryMode: TelemetryMode): Promise<neve
     runtime = new Runtime({
       engine,
       registry: new Registry(modules),
-      telemetry: telemetryMode === "enabled" ? { localSink: false } : false,
+      ...(telemetryMode === "enabled"
+        ? { telemetry: { localSink: false } }
+        : { admin: { telemetry: { enabled: false } } }),
     });
     listener = serve({ runtime, port: PORT });
     console.log("@@ready");

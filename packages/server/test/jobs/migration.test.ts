@@ -667,7 +667,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     const runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       limits: PRODUCTION_LIMITS,
       jobs: declareJobs({
         work: {
@@ -721,7 +721,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
     const runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       limits: PRODUCTION_LIMITS,
       jobs: declared,
       now: () => clock,

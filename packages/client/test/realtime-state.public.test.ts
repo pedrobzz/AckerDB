@@ -380,7 +380,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
     registry,
     verifier: new TestVerifier(),
     limits,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     hooks,
   });
   const server = serve({ runtime, port: 0 });

@@ -162,7 +162,7 @@ const runtime = new Runtime({
   registry: new Registry(functions),
   verifier,
   limits,
-  telemetry: false,
+  admin: { telemetry: { enabled: false } },
 });
 const server = serve({ runtime, port });
 

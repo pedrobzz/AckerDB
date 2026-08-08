@@ -509,7 +509,7 @@ async function reconnectTransitionEvidence(
     registry,
     verifier,
     limits,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     now: () => NOW,
   });
   const writerSink = new DeterministicSink();
@@ -790,7 +790,7 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier: new UserVerifier(),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       now: () => NOW,
     });
     const sink = new DeterministicSink();
@@ -956,7 +956,7 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier: new UserVerifier(),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       now: () => NOW,
     });
     const clock = new FixedClock();
@@ -1083,7 +1083,7 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier,
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       now: () => NOW,
     });
     const slowSink = new DeterministicSink();

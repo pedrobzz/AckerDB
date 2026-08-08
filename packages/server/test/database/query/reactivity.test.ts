@@ -246,7 +246,7 @@ describe("query prefix reactivity", () => {
       engine,
       registry: new Registry(functions),
       limits: PRODUCTION_LIMITS,
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
     });
     session = new SessionHarness(runtime);
     await session.open();

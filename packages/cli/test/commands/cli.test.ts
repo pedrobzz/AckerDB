@@ -1,3 +1,4 @@
+import { QUIET_ADMIN } from "../support/process.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -84,13 +85,13 @@ const reservePort = async (): Promise<{ port: number; release(): Promise<void> }
   };
 };
 
-const fixture = (port: number) => {
+const fixture = (port: number, admin: object | null = QUIET_ADMIN) => {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "jobs/notes.ts": FIXTURE_JOBS,
     "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
-    ".ackerdb.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port, ...(admin === null ? {} : { admin }) }),
   });
   dirs.push(dir);
   return dir;
@@ -177,13 +178,14 @@ describe("ackerdb CLI", () => {
       "functions/messages.ts": FIXTURE_MESSAGES,
       "credential-verifier.ts": CREDENTIAL_VERIFIER_MODULE,
       ".ackerdb.config.json": JSON.stringify({
+        admin: QUIET_ADMIN,
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
     });
     dirs.push(dir);
 
-    const first = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const first = spawnCli(["start", dir], {});
     await first.waitFor("ready on");
     const firstClient = authenticatedClientFor(port);
     const firstIdentity = mustOk(
@@ -196,7 +198,7 @@ describe("ackerdb CLI", () => {
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(0);
 
-    const second = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const second = spawnCli(["start", dir], {});
     await second.waitFor("ready on");
     const secondClient = authenticatedClientFor(port);
     expect(
@@ -218,10 +220,10 @@ describe("ackerdb CLI", () => {
       "app.ts": FIXTURE_APP,
       "functions/identity.ts": IDENTITY_PROCEDURE,
       "functions/messages.ts": FIXTURE_MESSAGES,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
-    const config = loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" });
+    const config = loadConfig(dir, {});
     const credentialVerifier = verifierFor("injected-user");
     const app = await startApp(config, { prepare: runCodegen, credentialVerifier });
     try {
@@ -260,7 +262,7 @@ describe("ackerdb CLI", () => {
     };
 
     const running = await startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, {}),
       { prepare: runCodegen },
     );
     try {
@@ -282,7 +284,7 @@ describe("ackerdb CLI", () => {
     lifecycle.abort();
 
     const outcome = await startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, {}),
       { signal: lifecycle.signal, prepare: runCodegen },
     ).then(
       async (running) => {
@@ -308,7 +310,7 @@ describe("ackerdb CLI", () => {
       sigterm: process.listeners("SIGTERM"),
     };
     const startup = startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, {}),
       {
         signal: lifecycle.signal,
         prepare: async (_config, signal) => {
@@ -345,7 +347,7 @@ describe("ackerdb CLI", () => {
     await reservation.release();
     const dir = fixture(port);
     const running = await startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, {}),
       { prepare: runCodegen },
     );
     try {
@@ -382,7 +384,7 @@ describe("ackerdb CLI", () => {
     await reservation.release();
     const dir = fixture(port);
     const running = await startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, {}),
       { prepare: runCodegen },
     );
     const entered = Promise.withResolvers<void>();
@@ -427,13 +429,14 @@ describe("ackerdb CLI", () => {
       "app.ts": FIXTURE_APP,
       "credential-verifier.ts": "export default { revocationBound: { kind: 'token-expiration' } };",
       ".ackerdb.config.json": JSON.stringify({
+        admin: QUIET_ADMIN,
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
     });
     dirs.push(dir);
 
-    await expect(startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }))).rejects.toThrow(
+    await expect(startApp(loadConfig(dir, {}))).rejects.toThrow(
       "must implement verify(credential)",
     );
 
@@ -447,7 +450,8 @@ describe("ackerdb CLI", () => {
 
   test("start: codegen + serve, functions callable, reset clears only exact database artifacts", async () => {
     const port = freePort();
-    const dir = fixture(port);
+    // No `admin` block at all: this is the default profile, telemetry included.
+    const dir = fixture(port, null);
     const started = spawnCli(["start", dir]);
     await started.waitFor("ready on");
     expect(started.output()).toContain(
@@ -493,7 +497,6 @@ describe("ackerdb CLI", () => {
     const dir = fixture(port);
     const started = spawnCli(["start", dir], {
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
     });
     const output = await started.waitFor("ready on");
     const marker = '@@ackerdb-startup {"telemetry":"disabled","durability":"balanced"}';
@@ -518,10 +521,10 @@ describe("ackerdb CLI", () => {
         const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
         export default defineApp({ schema });
       `,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
-    const config = loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" });
+    const config = loadConfig(dir, {});
     const failed = await startApp(config);
     const failure = new Error("injected drain failure");
     const drainServer = failed.server.drain.bind(failed.server);
@@ -552,11 +555,11 @@ describe("ackerdb CLI", () => {
         const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
         export default defineApp({ schema });
       `,
-      ".ackerdb.config.json": JSON.stringify({ hostname: "0.0.0.0", port }),
+      ".ackerdb.config.json": JSON.stringify({ hostname: "0.0.0.0", port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
-    const running = await startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }));
+    const running = await startApp(loadConfig(dir, {}));
     try {
       expect(running.server.hostname).toBe("0.0.0.0");
       expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
@@ -579,7 +582,7 @@ describe("ackerdb CLI", () => {
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
 ${FIXTURE_APP}`,
     );
-    const started = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const started = spawnCli(["start", dir], {});
 
     const deadline = Date.now() + 5_000;
     let starting: Response | undefined;
@@ -651,7 +654,7 @@ ${FIXTURE_APP}`,
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
 ${FIXTURE_APP}`,
     );
-    const started = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const started = spawnCli(["start", dir], {});
 
     const deadline = Date.now() + 5_000;
     let observedStartup = false;
@@ -686,13 +689,13 @@ ${FIXTURE_APP}`,
   test("a startup failure releases Runtime and storage ownership before retry", async () => {
     const reservation = await reservePort();
     const dir = fixture(reservation.port);
-    const failed = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const failed = spawnCli(["start", dir], {});
     expect(await failed.child.exited).toBe(1);
     await failed.drained;
     expect(failed.output()).not.toContain("@@ackerdb-startup");
 
     await reservation.release();
-    const retried = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const retried = spawnCli(["start", dir], {});
     await retried.waitFor("ready on");
     retried.child.kill("SIGTERM");
     expect(await retried.child.exited).toBe(0);
@@ -701,7 +704,7 @@ ${FIXTURE_APP}`,
   test("start exits without readiness when the live database schema is corrupt", async () => {
     const port = freePort();
     const dir = fixture(port);
-    const first = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const first = spawnCli(["start", dir], {});
     await first.waitFor("ready on");
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(0);
@@ -710,7 +713,7 @@ ${FIXTURE_APP}`,
     db.exec("DROP INDEX ix_messages_s_n_b_9_channelId");
     db.close();
 
-    const failed = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
+    const failed = spawnCli(["start", dir], {});
     expect(await failed.child.exited).toBe(1);
     await failed.drained;
     expect(failed.output()).not.toContain("@@ackerdb-startup");

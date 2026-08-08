@@ -11,7 +11,7 @@ import { inspectDatabase, type StatusReport } from "../../src/commands/operation
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { steps } from "../support/process.ts";
+import { QUIET_ADMIN, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
@@ -129,7 +129,7 @@ function spawnServer(dir: string): {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -197,7 +197,7 @@ describe("ackerdb startup migrations", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -259,7 +259,7 @@ describe("ackerdb startup migrations", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -321,7 +321,7 @@ throw new Error("runtime-only verifier failure");
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 
@@ -366,7 +366,7 @@ throw new Error("runtime-only verifier failure");
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".ackerdb.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     });
     dirs.push(dir);
 

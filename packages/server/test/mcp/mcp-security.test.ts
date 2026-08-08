@@ -75,7 +75,9 @@ function fixture(options: {
     engine,
     registry: new Registry(modules),
     limits: options.limits,
-    telemetry: options.telemetry ?? false,
+    ...(options.telemetry === undefined
+      ? { admin: { telemetry: { enabled: false } } }
+      : { telemetry: options.telemetry }),
   });
   const server = serve({
     runtime,
@@ -207,7 +209,7 @@ describe("MCP HTTP security boundary", () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-deployment-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
-    const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
+    const runtime = new Runtime({ engine, registry: new Registry(modules), admin: { telemetry: { enabled: false } } });
     expect(() => serve({ runtime, port: 0, hostname: "0.0.0.0" })).toThrow(
       'mcpHttp.transport "trusted-https-proxy"',
     );
@@ -250,7 +252,7 @@ describe("MCP HTTP security boundary", () => {
     const noMcpRuntime = new Runtime({
       engine: noMcpEngine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
     });
     const noMcpServer = serve({ runtime: noMcpRuntime, port: 0, hostname: "0.0.0.0" });
     cleanups.push(async () => {
@@ -321,7 +323,7 @@ describe("MCP HTTP security boundary", () => {
         ...PRODUCTION_LIMITS,
         mcp: { ...PRODUCTION_LIMITS.mcp, maxToolsPerEndpoint: 1 },
       },
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
     })).toThrow("mcp.maxToolsPerEndpoint");
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });

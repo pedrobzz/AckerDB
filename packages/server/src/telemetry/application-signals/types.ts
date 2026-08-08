@@ -3,6 +3,9 @@ import type { Identity } from "@ackerdb/core";
 
 export type ApplicationLogLevel = "debug" | "info" | "warn" | "error";
 
+/** Producer of one journal log row: application `ctx.log` or a framework event. */
+export type ApplicationLogSource = "app" | "framework";
+
 export interface ApplicationLogger {
   debug(message: string, metadata?: TelemetryMetadata): void;
   info(message: string, metadata?: TelemetryMetadata): void;
@@ -20,6 +23,7 @@ export interface ApplicationLogRecord {
   readonly sequence: bigint;
   readonly timestamp: number;
   readonly level: ApplicationLogLevel;
+  readonly source: ApplicationLogSource;
   readonly message: string;
   readonly metadata?: TelemetryMetadata;
   readonly truncated: boolean;

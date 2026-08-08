@@ -6,22 +6,45 @@ import { join } from "node:path";
 import {
   TelemetryJournal,
   TelemetryJournalExporters,
+  TelemetryStore,
   type Identity,
   type TelemetryJournalRecord,
   type TelemetrySignalExporter,
+  type TelemetryStoreOptions,
 } from "@ackerdb/server";
 
+/** Fresh by every clock: a suite about cursors must not race retention. */
+const NOW = Date.now();
+
 const directories = new Set<string>();
+const stores = new Map<TelemetryJournal, TelemetryStore>();
 
 afterEach(() => {
+  for (const store of stores.values()) {
+    try {
+      store.close();
+    } catch {
+      // A suite that already closed its store owns that outcome.
+    }
+  }
+  stores.clear();
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   directories.clear();
 });
 
-function journal(limits?: ConstructorParameters<typeof TelemetryJournal>[0]["limits"]): TelemetryJournal {
+function journal(
+  limits?: ConstructorParameters<typeof TelemetryJournal>[0]["limits"],
+  storeOptions?: Omit<TelemetryStoreOptions, "path">,
+): TelemetryJournal {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-exporters-"));
   directories.add(directory);
-  return new TelemetryJournal({ path: join(directory, "telemetry.db"), limits });
+  const store = new TelemetryStore({
+    path: join(directory, "data.db.telemetry"),
+    ...storeOptions,
+  });
+  const created = new TelemetryJournal({ store, ...(limits === undefined ? {} : { limits }) });
+  stores.set(created, store);
+  return created;
 }
 
 function log(sequence: bigint, message: string): TelemetryJournalRecord {
@@ -29,8 +52,9 @@ function log(sequence: bigint, message: string): TelemetryJournalRecord {
     kind: "log",
     processGeneration: "export-test",
     sequence,
-    timestamp: Number(sequence),
+    timestamp: NOW + Number(sequence),
     level: "info",
+    source: "app",
     message,
     truncated: false,
     malformed: false,
@@ -48,7 +72,7 @@ function analytics(
     kind: "analytics",
     processGeneration: "export-test",
     sequence,
-    timestamp: Number(sequence),
+    timestamp: NOW + Number(sequence),
     event,
     ...(identity === undefined ? {} : { identity }),
     truncated: false,
@@ -199,7 +223,7 @@ describe("TelemetryJournalExporters", () => {
     const storage = journal();
     storage.append(log(1n, "corrupt me"));
     await storage.flush();
-    const corruption = new Database(storage.path);
+    const corruption = new Database(storage.store.path);
     corruption.query(
       "UPDATE _ackerdb_telemetry_journal SET payload = ? WHERE id = 1",
     ).run("not a wire value");
@@ -218,14 +242,20 @@ describe("TelemetryJournalExporters", () => {
     });
 
     await Bun.sleep(0);
-    expect(storage.snapshot().state).toBe("failed");
+    // A payload that cannot be decoded is one record's problem: the shared
+    // connection answered its probe, so the journal keeps serving.
+    expect(storage.snapshot().state).toBe("ready");
+    expect(storage.store.snapshot()).toMatchObject({ state: "ready", containedFailures: 1 });
     expect(warnings).toHaveLength(1);
     await exporters.drain();
-    await expect(storage.drain()).rejects.toBeDefined();
+    await storage.drain();
   });
 
   test("advances an offline provider over observable journal eviction", async () => {
-    const storage = journal({ maxStoredRecords: 2, maxStoredBytes: 64 * 1_024 });
+    // Two of the four records expire on the info clock before the provider
+    // recovers; the consumer must cross that gap as eviction, not as delivery.
+    let clock = NOW + 4;
+    const storage = journal(undefined, { retention: { info: 2 }, now: () => clock });
     let available = false;
     const delivered: string[] = [];
     const exporters = new TelemetryJournalExporters({
@@ -246,8 +276,9 @@ describe("TelemetryJournalExporters", () => {
     storage.append(log(2n, "evicted-2"));
     await storage.flush();
     await exporters.flush();
-    storage.append(log(3n, "retained-3"));
-    storage.append(log(4n, "retained-4"));
+    clock = NOW + 6;
+    storage.append(log(5n, "retained-3"));
+    storage.append(log(6n, "retained-4"));
     await storage.flush();
 
     available = true;

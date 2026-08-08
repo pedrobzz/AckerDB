@@ -13,7 +13,7 @@ import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { steps } from "../support/process.ts";
+import { QUIET_ADMIN, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -51,7 +51,7 @@ afterEach(async () => {
 function fixture(port: number): string {
   const dir = makeFixture({
     "app.ts": APP_SOURCE,
-    ".ackerdb.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
   });
   dirs.push(dir);
   return dir;
@@ -62,7 +62,7 @@ function spawnStart(dir: string) {
     cwd: REPO,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   }) as CliProcess;
   children.add(child);
   let output = "";

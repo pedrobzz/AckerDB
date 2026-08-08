@@ -178,7 +178,7 @@ describe("HTTP and SSE credential leases", () => {
       engine,
       registry: new Registry(functions),
       verifier,
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
     });
     server = serve({ runtime, port: 0 });
     base = `http://127.0.0.1:${server.port}`;
@@ -212,7 +212,7 @@ describe("HTTP and SSE credential leases", () => {
       engine,
       registry: new Registry(functions),
       verifier: invalid,
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
     })).toThrow(
       "verifier invalidation deadlineMs cannot exceed revocationDeadlineMs",
     );

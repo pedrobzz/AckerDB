@@ -1,3 +1,4 @@
+import { QUIET_ADMIN } from "../support/process.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
@@ -556,7 +557,12 @@ describe("acker backup, restore, and status", () => {
     expect(failed.stdout).not.toContain(secret);
 
     const artifact = join(source, "disabled-backup.db");
-    const disabled = await runCli(["backup", artifact, source], { ACKERDB_TELEMETRY: "disabled" });
+    // Telemetry is a manifest setting now: the same command, one config away.
+    writeFileSync(
+      join(source, ".ackerdb.config.json"),
+      JSON.stringify({ admin: QUIET_ADMIN }),
+    );
+    const disabled = await runCli(["backup", artifact, source], {});
     expect(disabled.code).toBe(0);
     expect(disabled.stderr).toBe("");
     expect(disabled.stdout.trim().split("\n")).toHaveLength(1);

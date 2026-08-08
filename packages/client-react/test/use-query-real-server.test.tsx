@@ -56,7 +56,7 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, admin: { telemetry: { enabled: false } } });
   const server = serve({ runtime, port: 0 });
   return {
     base: `http://127.0.0.1:${server.port}`,

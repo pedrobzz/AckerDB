@@ -245,7 +245,7 @@ function startHarness(limits?: ServiceLimits): Harness {
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry(modules);
-  const runtime = new Runtime({ engine, registry, limits, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits, admin: { telemetry: { enabled: false } } });
   const server = serve({
     runtime,
     port: 0,

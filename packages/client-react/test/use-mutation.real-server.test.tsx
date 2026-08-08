@@ -85,7 +85,7 @@ async function createApp(): Promise<App> {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, admin: { telemetry: { enabled: false } } });
   const server = serve({ runtime, port: 0 });
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({

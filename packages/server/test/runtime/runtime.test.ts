@@ -751,7 +751,7 @@ class HangingTelemetry extends Telemetry {
 
 function start(
   customLimits = limits(),
-  telemetry: RuntimeOptions["telemetry"] = false,
+  telemetry?: RuntimeOptions["telemetry"],
 ): void {
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -759,7 +759,9 @@ function start(
     engine,
     registry: new Registry(functions),
     limits: customLimits,
-    telemetry,
+    ...(telemetry === undefined
+      ? { admin: { telemetry: { enabled: false } } }
+      : { telemetry }),
     jobs: declaredJobs(),
     now: () => currentTime ?? Date.now(),
   });
@@ -768,7 +770,7 @@ function start(
 
 async function restart(
   customLimits: ServiceLimits,
-  telemetry: RuntimeOptions["telemetry"] = false,
+  telemetry?: RuntimeOptions["telemetry"],
 ): Promise<void> {
   await runtime.drain().catch(() => {});
   engine.close("clean");

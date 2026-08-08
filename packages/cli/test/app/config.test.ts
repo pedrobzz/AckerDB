@@ -11,7 +11,7 @@ describe("production profile configuration", () => {
       dbDir: resolve(".ackerdb"),
       hostname: "127.0.0.1",
       durability: "production",
-      telemetry: "enabled",
+      admin: {},
       statusScope: "ackerdb:status",
       files: {
         backend: "filesystem",
@@ -45,14 +45,9 @@ describe("production profile configuration", () => {
     }
   });
 
-  test("accepts only the named durability and telemetry profiles", () => {
-    expect(loadConfig(".", {
-      ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
-    })).toMatchObject({
-      durability: "balanced",
-      telemetry: "disabled",
-    });
+  test("accepts only the named durability profiles", () => {
+    expect(loadConfig(".", { ACKERDB_DURABILITY: "balanced" }))
+      .toMatchObject({ durability: "balanced" });
   });
 
   test("rejects an unknown durability profile without normalization", () => {
@@ -61,10 +56,46 @@ describe("production profile configuration", () => {
     );
   });
 
-  test("rejects an unknown telemetry profile without normalization", () => {
-    expect(() => loadConfig(".", { ACKERDB_TELEMETRY: "off" })).toThrow(
-      'ACKERDB_TELEMETRY must be exactly enabled or disabled; received "off"',
-    );
+  test("takes administration from the manifest and refuses anything it does not name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        admin: {
+          telemetry: {
+            enabled: false,
+            retention: { debug: 3_600_000 },
+            storage: { maxStoredBytes: 8 * 1024 ** 2 },
+          },
+        },
+      }));
+      expect(loadConfig(dir, {})).toMatchObject({
+        admin: {
+          telemetry: {
+            enabled: false,
+            retention: { debug: 3_600_000 },
+            storage: { maxStoredBytes: 8 * 1024 ** 2 },
+          },
+        },
+      });
+
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        admin: { telemetry: { enabled: "no" } },
+      }));
+      expect(() => loadConfig(dir, {})).toThrow("admin.telemetry.enabled must be a boolean");
+
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        admin: { telemetry: { retention: { debug: 0 } } },
+      }));
+      expect(() => loadConfig(dir, {}))
+        .toThrow("admin.telemetry.retention.debug must be a positive integer");
+
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        admin: { telemetry: {}, mcp: {} },
+      }));
+      expect(() => loadConfig(dir, {})).toThrow("unknown admin field: mcp");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("loads external OIDC providers and one exact workload status scope", () => {

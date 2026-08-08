@@ -10,7 +10,7 @@ import type { Subprocess } from "bun";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
-import { steps } from "../support/process.ts";
+import { QUIET_ADMIN, steps } from "../support/process.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 90_000;
@@ -65,7 +65,7 @@ function events(dir: string): string[] {
 function fixture(files: Record<string, string>, port: number): string {
   const dir = makeFixture({
     "app.ts": APP,
-    ".ackerdb.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port, admin: QUIET_ADMIN }),
     "lib/record.ts": RECORDER,
     ...files,
   });
@@ -80,7 +80,7 @@ function spawnCli(args: string[], dir: string, capture: boolean) {
     stdin: "ignore",
     stdout: "ignore",
     stderr: capture ? Bun.file(stderrPath) : "inherit",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   });
   children.add(child);
   return {

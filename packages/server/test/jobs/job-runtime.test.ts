@@ -71,7 +71,7 @@ function start(
   runtime = new Runtime({
     engine,
     registry: new Registry(functions),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     limits: customLimits,
     jobs,
     now: () => clock,
@@ -87,7 +87,7 @@ async function restart(jobs: DeclaredJob[], customLimits = limits()): Promise<vo
   runtime = new Runtime({
     engine,
     registry: new Registry({}),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     limits: customLimits,
     jobs,
     now: () => clock,
@@ -664,7 +664,7 @@ describe("durability", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       limits: limits({ leaseMs: 30_000 }),
       jobs: jobs(false),
       now: () => clock,
@@ -719,7 +719,7 @@ describe("durability", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       limits: limits({ leaseMs: 30_000 }),
       jobs: jobs(),
       now: () => clock,

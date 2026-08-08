@@ -223,7 +223,7 @@ async function httpAuthReject(): Promise<void> {
     engine,
     registry: new Registry(functions),
     verifier,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
   });
   const server = serve({ runtime, port: 0 });
   const body = JSON.stringify({ value: "x".repeat(HTTP_BODY_BYTES - 12) });
@@ -279,7 +279,7 @@ async function schedulerRearm(): Promise<void> {
   const runtime = new Runtime({
     engine,
     registry: new Registry({}),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     jobs: declareJobs({
       jobs: {
         fire: job({

@@ -73,7 +73,7 @@ describe("File observability", () => {
     const runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       files: { store },
     });
     runtimes.push(runtime);
@@ -103,7 +103,7 @@ describe("File observability", () => {
     const restarted = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       files: { store },
     });
     runtimes.push(restarted);
@@ -126,7 +126,7 @@ describe("File observability", () => {
     const runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
+      admin: { telemetry: { enabled: false } },
       files: { store },
     });
     runtimes.push(runtime);

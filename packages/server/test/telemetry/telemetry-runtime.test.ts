@@ -339,14 +339,16 @@ class RuntimeHarness {
   private closed = false;
 
   constructor(
-    telemetry: RuntimeOptions["telemetry"],
+    telemetry: RuntimeOptions["telemetry"] | false,
     options: Pick<RuntimeOptions, "now" | "telemetryExporters"> = {},
   ) {
     reconcile(this.engine);
     this.runtime = new Runtime({
       engine: this.engine,
       registry: new Registry(functions),
-      telemetry,
+      ...(telemetry === false
+        ? { admin: { telemetry: { enabled: false } } }
+        : { telemetry }),
       jobs: declaredJobs(),
       now: () => jobsClock ?? Date.now(),
       ...options,
@@ -414,7 +416,7 @@ class RuntimeHarness {
 const harnesses = new Set<RuntimeHarness>();
 
 function harness(
-  telemetry: RuntimeOptions["telemetry"],
+  telemetry: RuntimeOptions["telemetry"] | false,
   options?: Pick<RuntimeOptions, "now" | "telemetryExporters">,
 ): RuntimeHarness {
   const created = new RuntimeHarness(telemetry, options);
@@ -731,7 +733,7 @@ describe("Runtime telemetry acceptance", () => {
     });
   });
 
-  test("makes local journal failure unhealthy without escaping through ctx.log", async () => {
+  test("counts one kind's rejected write as a drop and keeps serving", async () => {
     const app = harness(false);
     const duplicate = Object.freeze({
       kind: "log" as const,
@@ -739,6 +741,7 @@ describe("Runtime telemetry acceptance", () => {
       sequence: 1n,
       timestamp: Date.now(),
       level: "error" as const,
+      source: "app" as const,
       message: "duplicate",
       truncated: false,
       malformed: false,
@@ -747,11 +750,42 @@ describe("Runtime telemetry acceptance", () => {
     });
 
     expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
+    await app.runtime.telemetryJournal.flush();
+    // The second copy violates UNIQUE(process_generation, sequence): the batch
+    // is lost, the shared connection is not.
     expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
-    await expect(app.runtime.telemetryJournal.flush()).rejects.toBeDefined();
+    await app.runtime.telemetryJournal.flush();
 
-    expect(app.runtime.state).not.toBe("ready");
+    expect(app.runtime.state).toBe("ready");
+    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({
+      state: "ready",
+      droppedRecords: 1,
+    });
+    expect(app.runtime.telemetryStore.snapshot()).toMatchObject({
+      state: "ready",
+      containedFailures: 1,
+    });
+  });
+
+  test("makes an unusable telemetry sidecar unhealthy without escaping through ctx.log", async () => {
+    const app = harness(false);
+    const session = await app.openSession("telemetry-store-failure");
+    // The shared connection, not one kind's row, is what ADR-0017's unhealthy
+    // rule is about: nothing observable can be accepted honestly any more.
+    app.runtime.telemetryStore.database.close(false);
+
+    expect(await app.runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 720_000_040,
+      ref: "items.logSequence",
+      args: {},
+    }))).toBe("logged");
+    await app.runtime.telemetryJournal.flush().catch(() => {});
+
+    expect(app.runtime.telemetryStore.snapshot()).toMatchObject({ state: "failed" });
     expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({ state: "failed" });
+    expect(app.runtime.state).not.toBe("ready");
   });
 
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {

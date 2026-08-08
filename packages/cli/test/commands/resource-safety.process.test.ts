@@ -192,7 +192,7 @@ function spawnFixture(dir: string, port: number): ProcessHarness {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   }) as FixtureProcess;
   let stdout = "";
   let stderr = "";

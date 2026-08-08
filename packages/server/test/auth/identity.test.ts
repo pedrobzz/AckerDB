@@ -78,7 +78,7 @@ function open(path: string): { engine: Engine; runtime: Runtime } {
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
   });
   instances.set(runtime, engine);
   return { engine, runtime };

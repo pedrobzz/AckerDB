@@ -5,15 +5,18 @@ import type {
   ApplicationLogger,
   ApplicationLogCallContext,
   ApplicationLogLevel,
+  TelemetryJournalRecord,
 } from "./types.ts";
 import type { TelemetryJournal } from "./journal.ts";
 import {
   prepareTelemetryMessage,
   prepareTelemetryMetadata,
   type TelemetryMetadata,
+  type TelemetryValue,
 } from "./value.ts";
 import type { Principal } from "../../auth/credentials.ts";
 import { stageAnalyticsEvent } from "../../runtime/invocation-state.ts";
+import type { TelemetryEventRecord } from "../contracts/types.ts";
 
 export class ApplicationSignals {
   readonly log: ApplicationLogger;
@@ -73,6 +76,63 @@ export class ApplicationSignals {
     });
   }
 
+  /**
+   * Routes one already-sanitized framework event into the durable journal as a
+   * `source: "framework"` log row, expiring on the level clock it carries.
+   * Framework and application logs share one table because they share one
+   * question — what happened, in order — and separating them would mean two
+   * retention paths and two reads for one answer.
+   */
+  framework(record: TelemetryEventRecord): void {
+    try {
+      this.journal.append(this.frameworkRecord(record));
+    } catch {
+      // Durable framework capture must never escape into the recording path.
+    }
+  }
+
+  /**
+   * The terminal lifecycle row: appended synchronously after the journal
+   * drained, as the structurally last durable record before the sidecar closes.
+   * Unlike the recording path this one fails LOUD — the error escapes so the
+   * drain rejects instead of resolving clean with zero terminal rows.
+   */
+  frameworkFinal(record: TelemetryEventRecord): void {
+    this.journal.appendFinal(this.frameworkRecord(record));
+  }
+
+  private frameworkRecord(record: TelemetryEventRecord): TelemetryJournalRecord {
+    const sequence = ++this.sequence;
+    const metadata: Record<string, TelemetryValue> = {};
+    if (record.operation !== undefined) metadata.operation = record.operation;
+    if (record.stage !== undefined) metadata.stage = record.stage;
+    if (record.outcome !== undefined) metadata.outcome = record.outcome;
+    if (record.resource !== undefined) metadata.resource = record.resource;
+    if (record.lifecycleState !== undefined) metadata.lifecycleState = record.lifecycleState;
+    if (record.errorClass !== undefined) metadata.errorClass = record.errorClass;
+    if (record.connectionId !== undefined) metadata.connectionId = record.connectionId;
+    if (record.mutationId !== undefined) metadata.mutationId = record.mutationId;
+    if (record.commitId !== undefined) metadata.commitId = record.commitId;
+    if (record.subscriptionId !== undefined) metadata.subscriptionId = record.subscriptionId;
+    return Object.freeze({
+      kind: "log" as const,
+      processGeneration: this.processGeneration,
+      sequence,
+      timestamp: record.timestampMs,
+      level: record.level,
+      source: "framework" as const,
+      message: record.name,
+      ...(Object.keys(metadata).length === 0 ? {} : { metadata: Object.freeze(metadata) }),
+      truncated: false,
+      malformed: false,
+      functionAddress: record.function ?? "framework",
+      functionKind: "framework",
+      ...(record.traceId === undefined ? {} : { traceId: record.traceId }),
+      ...(record.spanId === undefined ? {} : { spanId: record.spanId }),
+      ...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+    }) as TelemetryJournalRecord;
+  }
+
   commitAnalytics(events: readonly AnalyticsEventRecord[], commitVersion: bigint): void {
     for (const event of events) {
       this.journal.append(Object.freeze({ ...event, commitId: String(commitVersion) }));
@@ -99,6 +159,7 @@ export class ApplicationSignals {
           sequence,
           timestamp,
           level,
+          source: "app",
           message: preparedMessage.message,
           ...(preparedMetadata.metadata === undefined
             ? {}

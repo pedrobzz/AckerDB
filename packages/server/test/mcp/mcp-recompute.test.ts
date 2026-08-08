@@ -135,7 +135,7 @@ function fixture(): { runtime: Runtime } {
       mcp: { actionsMcp },
       records: { addRecord, listRecords, commitRecord, emitSignal },
     }),
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     limits: PRODUCTION_LIMITS,
   });
   cleanups.push(async () => {

@@ -1,3 +1,4 @@
+import { QUIET_ADMIN } from "../support/process.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -85,7 +86,7 @@ function runCli(args: string[]): number {
   const child = Bun.spawnSync([process.execPath, CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   });
   return child.exitCode;
 }
@@ -188,7 +189,7 @@ describe("Plugin storage CLI boundary", () => {
 
     const safeDir = makeFixture({
       "app.ts": APP("v.string()", "", "note: v.string().nullable(),"),
-      ".ackerdb.config.json": JSON.stringify({ db: unsafe.config.dbDir }),
+      ".ackerdb.config.json": JSON.stringify({ db: unsafe.config.dbDir, admin: QUIET_ADMIN }),
     });
     dirs.push(safeDir);
     const safe = loadConfig(safeDir);

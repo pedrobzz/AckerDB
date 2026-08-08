@@ -148,7 +148,7 @@ function open(): Harness {
     engine,
     registry: new Registry(functions),
     verifier,
-    telemetry: false,
+    admin: { telemetry: { enabled: false } },
     now: () => NOW,
   });
   const harness = { directory, engine, runtime, verifier };

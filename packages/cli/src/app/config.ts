@@ -6,12 +6,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DurabilityPolicy } from "@ackerdb/core";
 import type {
+  AdminOptions,
   OidcVerifierOptions,
   S3FileStoreChecksum,
   S3FileStoreEncryption,
 } from "@ackerdb/server";
-
-export type TelemetryMode = "enabled" | "disabled";
 
 export type AuthenticationConfig =
   | {
@@ -63,7 +62,12 @@ export interface AppConfig {
   hostname: string;
   port: number;
   durability: DurabilityPolicy;
-  telemetry: TelemetryMode;
+  /**
+   * Administration configuration, mirroring `RuntimeOptions.admin` field for
+   * field. It is the one place telemetry is switched off and the one place its
+   * retention and disk budget are set.
+   */
+  admin: AdminOptions;
   /** The application's one configured authentication authority. Bearer credentials fail closed when omitted. */
   authentication?: AuthenticationConfig;
   /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
@@ -89,6 +93,7 @@ interface RawConfig {
   scopeResolver?: string;
   statusScope?: string;
   files?: unknown;
+  admin?: unknown;
 }
 
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
@@ -106,6 +111,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "scopeResolver",
   "statusScope",
   "files",
+  "admin",
 ]);
 const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 
@@ -206,6 +212,56 @@ function exactObject(value: unknown, allowed: readonly string[], path: string): 
   const unknown = Object.keys(value).filter((field) => !allowed.includes(field));
   if (unknown.length > 0) throw new Error(`unknown ${path} field: ${unknown.join(", ")}`);
   return value as Record<string, unknown>;
+}
+
+/**
+ * Validate the `admin` block the same way `files` is validated: every key is
+ * named, an unknown one is a startup error, and every number is checked before
+ * the Runtime sees it. Retention class names are left to the telemetry store,
+ * which owns the registry and refuses an unknown one with the list of the ones
+ * it has.
+ */
+function resolveAdminConfig(value: unknown): AdminOptions {
+  if (value === undefined) return {};
+  const admin = exactObject(value, ["telemetry"], "admin");
+  if (admin.telemetry === undefined) return {};
+  const telemetry = exactObject(
+    admin.telemetry,
+    ["enabled", "retention", "storage", "journal", "spans"],
+    "admin.telemetry",
+  );
+  if (telemetry.enabled !== undefined && typeof telemetry.enabled !== "boolean") {
+    throw new Error("admin.telemetry.enabled must be a boolean");
+  }
+  return {
+    telemetry: {
+      ...(telemetry.enabled === undefined ? {} : { enabled: telemetry.enabled as boolean }),
+      ...(telemetry.retention === undefined
+        ? {}
+        : { retention: positiveIntegerRecord(telemetry.retention, "admin.telemetry.retention") }),
+      ...(telemetry.storage === undefined
+        ? {}
+        : { storage: positiveIntegerRecord(telemetry.storage, "admin.telemetry.storage") }),
+      ...(telemetry.journal === undefined
+        ? {}
+        : { journal: positiveIntegerRecord(telemetry.journal, "admin.telemetry.journal") }),
+      ...(telemetry.spans === undefined
+        ? {}
+        : { spans: positiveIntegerRecord(telemetry.spans, "admin.telemetry.spans") }),
+    },
+  };
+}
+
+function positiveIntegerRecord(value: unknown, path: string): Record<string, number> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${path} must be a JSON object`);
+  }
+  for (const [field, entry] of Object.entries(value)) {
+    if (!Number.isSafeInteger(entry) || (entry as number) <= 0) {
+      throw new Error(`${path}.${field} must be a positive integer`);
+    }
+  }
+  return value as Record<string, number>;
 }
 
 export interface FilesConfigContext {
@@ -362,7 +418,7 @@ export function loadConfig(
     hostname,
     port,
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
-    telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
+    admin: resolveAdminConfig(raw.admin),
     ...(authentication === undefined ? {} : { authentication }),
     ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
     statusScope: statusScope(raw.statusScope),

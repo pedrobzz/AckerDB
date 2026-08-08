@@ -420,6 +420,7 @@ export {
   type TelemetryAggregateSeries,
   type TelemetryAggregateSnapshot,
   type TelemetryDropSnapshot,
+  type TelemetryDurableSink,
   type TelemetryEventInput,
   type TelemetryEventName,
   type TelemetryEventRecord,
@@ -453,6 +454,43 @@ export {
   type TelemetryJournalSnapshot,
 } from "./telemetry/application-signals/journal.ts";
 export {
+  TELEMETRY_STORE_SCHEMA_VERSION,
+  TelemetryStore,
+  type TelemetryExpirableSet,
+  type TelemetryStoredKind,
+  type TelemetryStoreLimits,
+  type TelemetryStoreOptions,
+  type TelemetryStoreSnapshot,
+} from "./telemetry/storage/store.ts";
+export {
+  DAY_MS,
+  DEFAULT_TELEMETRY_RETENTION,
+  TELEMETRY_RETENTION_CLASSES,
+  isTelemetryRetentionClass,
+  resolveTelemetryRetention,
+  type TelemetryRetentionClass,
+  type TelemetryRetentionTtls,
+} from "./telemetry/storage/retention.ts";
+export {
+  TelemetrySpanStore,
+  type TelemetrySpanStoreLimits,
+  type TelemetrySpanStoreOptions,
+  type TelemetrySpanStoreSnapshot,
+} from "./telemetry/storage/spans.ts";
+export {
+  TelemetryErrorStore,
+  type TelemetryErrorIngest,
+  type TelemetryErrorResolveOutcome,
+  type TelemetryErrorStoreOptions,
+  type TelemetryErrorStoreSnapshot,
+} from "./telemetry/errors/store.ts";
+export {
+  ERROR_FINGERPRINT_ALGO_VERSION,
+  fingerprintError,
+  parameterizeErrorMessage,
+  type FingerprintedError,
+} from "./telemetry/errors/fingerprint.ts";
+export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,
   type TelemetryExportersSnapshot,
@@ -468,6 +506,7 @@ export type {
   AnalyticsEventRecord,
   ApplicationLogLevel,
   ApplicationLogRecord,
+  ApplicationLogSource,
   TelemetryJournalEntry,
   TelemetryJournalRecord,
 } from "./telemetry/application-signals/types.ts";
@@ -727,6 +766,10 @@ export {
   type RuntimeHookStage,
   type RuntimeLifecycleState,
 } from "./runtime/contracts/lifecycle.ts";
+export {
+  type AdminOptions,
+  type AdminTelemetryOptions,
+} from "./runtime/contracts/admin.ts";
 export {
   type RuntimeOptions,
 } from "./runtime/contracts/options.ts";
