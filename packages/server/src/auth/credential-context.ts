@@ -34,6 +34,7 @@ import {
 } from "./credential-vault.ts";
 import { CREDENTIAL_ISSUER } from "./credential-token.ts";
 import { issueChildScopes } from "./child-credentials.ts";
+import { SCOPE_WILDCARD } from "./scopes.ts";
 import { markOneTimeResult } from "../runtime/one-time-result.ts";
 
 export type {
@@ -202,6 +203,43 @@ function delegable(
 }
 
 /**
+ * The issuance half of the child invariant, for an issuer that has no grant of
+ * its own to be bounded against.
+ *
+ * System authority is the framework's unrestricted own, so there is no set to
+ * compare a request against the way {@link delegable} compares one. What can
+ * still be held is the property the invariant exists for: a concrete grant's
+ * expansion is fixed the moment it is stored, so the scopes an operator names
+ * are the most that child can ever reach — bounded at use by its parent, and
+ * never widened later by the parent growing.
+ *
+ * An open-ended pattern is precisely the construct that would widen, and under
+ * an unbounded issuer nothing would ever have consented to the widening. It
+ * belongs to the bounded door: `credentials.create`, where the issuer is the
+ * parent and its own expansion is the ceiling.
+ *
+ * A root credential has no parent to outgrow, so it keeps patterns.
+ */
+function namedOutright(
+  capability: CredentialContextCapability,
+  parentIdentity: Identity | null,
+  scopes: unknown,
+  where: string,
+): void {
+  if (scopes === undefined) return;
+  const patterns = normalizeGrantPatterns(scopes, capability.vocabulary, where);
+  if (parentIdentity === null) return;
+  for (const pattern of patterns) {
+    if (!pattern.endsWith(SCOPE_WILDCARD)) continue;
+    throw new AckerDBError(
+      "unauthorized",
+      `${where}: ${JSON.stringify(pattern)} is open-ended, and system authority has no grant` +
+        " to bound it against — name the scopes outright, or issue from the parent identity",
+    );
+  }
+}
+
+/**
  * The administration itself, written once against a resolved capability and an
  * owner. User and system authority differ in exactly two things: who is allowed
  * to ask, and whether the request is bounded by a grant the asker holds. Both
@@ -318,7 +356,11 @@ export const systemCredentials: SystemCredentialOperations = Object.freeze({
     parentIdentity: Identity | null,
     input: CredentialCreateInput,
   ): CreatedCredential {
-    return createCredential(writing(systemCapability(ctx)), parentIdentity, input);
+    const system = writing(systemCapability(ctx));
+    if (input !== null && typeof input === "object") {
+      namedOutright(system, parentIdentity, input.scopes, "credential scopes");
+    }
+    return createCredential(system, parentIdentity, input);
   },
   list(ctx: ReadContext, parentIdentity: Identity | null): readonly CredentialDescriptor[] {
     return listCredentials(systemCapability(ctx), parentIdentity);
@@ -329,7 +371,9 @@ export const systemCredentials: SystemCredentialOperations = Object.freeze({
     tokenId: string,
     scopes: readonly string[],
   ): void {
-    updateCredentialScopes(writing(systemCapability(ctx)), parentIdentity, tokenId, scopes);
+    const system = writing(systemCapability(ctx));
+    namedOutright(system, parentIdentity, scopes, "credential scopes");
+    updateCredentialScopes(system, parentIdentity, tokenId, scopes);
   },
   revoke(ctx: WriteContext, parentIdentity: Identity | null, tokenId: string): void {
     revokeCredential(writing(systemCapability(ctx)), parentIdentity, tokenId);
