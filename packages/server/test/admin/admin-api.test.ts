@@ -171,6 +171,28 @@ describe("an application may not require a framework scope", () => {
     expect(() => new Registry({ notes: { list: borrowed } })).toThrow(TypeError);
   });
 
+  test("cannot be dodged by rewriting the declaration after it is built", () => {
+    // Dispatch compiles the requirement into a private snapshot at
+    // declaration. A writable declaration would let the registry read one
+    // policy while the funnel enforced another — so it is frozen, and what is
+    // registered is what is enforced.
+    expect(Object.isFrozen(borrowed)).toBe(true);
+    expect(() => {
+      (borrowed as unknown as { scopes: unknown }).scopes = {
+        kind: "anyOf",
+        scopes: ["notes:read"],
+      };
+    }).toThrow(TypeError);
+    expect(() => new Registry({ notes: { list: borrowed } }))
+      .toThrow(/belongs to the framework's own vocabulary/);
+
+    // A hand-built copy carries no snapshot, so it is compiled from what it
+    // says — and what it says is what this rule reads.
+    const copied = { ...borrowed } as never;
+    expect(() => new Registry({ notes: { list: copied } }))
+      .toThrow(/belongs to the framework's own vocabulary/);
+  });
+
   test("publishing in the framework's group does not make a function the framework's", () => {
     const inside = query({
       apiPath: ADMIN_API_PATH,

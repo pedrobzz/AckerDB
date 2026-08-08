@@ -780,6 +780,12 @@ function register<K extends string>(kind: K) {
       ResultOfDefinition<Definition>,
       DefinitionReturn<Definition>
     > & ApiPathOf<Definition>;
+    // Frozen before it is compiled, so what is registered is what is enforced.
+    // Dispatch compiles `args`, `access` and `scopes` into a private snapshot
+    // here, once; a writable declaration would let a later assignment show the
+    // registry — and every load-time rule reading it — a policy the funnel is
+    // not enforcing.
+    Object.freeze(registered);
     compileInvocation(registered);
     return registered;
   };
@@ -865,6 +871,7 @@ export function sseProcedure<
     handler: def.handler,
   }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema> &
     ApiPathOf<Definition>;
+  Object.freeze(registered);
   compileInvocation(registered);
   return registered;
 }

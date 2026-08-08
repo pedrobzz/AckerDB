@@ -100,6 +100,17 @@ performs any work or discloses any data without a grant covering its scope:
   callable over plain HTTP and absent from `GET /_openapi.json`, so fetching the
   schema does not hand out a map of the administrative surface.
 
+**It does not mean unlistable.** A live route answers `401` or `403` where an
+absent one answers `404`, so a caller who guesses an address learns whether it
+exists — and this page names the addresses anyway. That is deliberate: answering
+*not found* for a route that is there would be a lie a caller cannot act on.
+Arguments are also validated before the scope requirement is enforced, as they
+are for every function in the framework, because an access policy callback
+receives validated arguments — so an authenticated caller holding no admin scope
+can learn an admin function's argument shape from a validation error. What no
+caller without a grant can do is reach a handler, read a row, or change
+anything.
+
 ## Typed references
 
 The framework's declarations are statically known, so they do not go through
