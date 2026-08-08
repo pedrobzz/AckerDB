@@ -68,6 +68,8 @@ export interface AppConfig {
   authentication?: AuthenticationConfig;
   /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
   scopeResolver?: string;
+  /** Serving-only module whose default export is a configured realtime runtime. */
+  realtime?: string;
   /** Workload-principal OAuth scope required by the operational status endpoint. */
   statusScope: string;
   /** One active immutable File byte backend. */
@@ -87,6 +89,7 @@ interface RawConfig {
   oidc?: Omit<OidcVerifierOptions, "fetch">;
   credentialVerifier?: string;
   scopeResolver?: string;
+  realtime?: string;
   statusScope?: string;
   files?: unknown;
 }
@@ -104,6 +107,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "oidc",
   "credentialVerifier",
   "scopeResolver",
+  "realtime",
   "statusScope",
   "files",
 ]);
@@ -350,6 +354,7 @@ export function loadConfig(
       ? undefined
       : { kind: "credential-verifier-module", path: abs(credentialVerifier) };
   const scopeResolver = optionalModulePath(raw.scopeResolver, "scopeResolver");
+  const realtime = optionalModulePath(raw.realtime, "realtime");
   return {
     appDir: dir,
     appPath: abs(raw.app ?? "./app.ts"),
@@ -365,6 +370,7 @@ export function loadConfig(
     telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(authentication === undefined ? {} : { authentication }),
     ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
+    ...(realtime === undefined ? {} : { realtime: abs(realtime) }),
     statusScope: statusScope(raw.statusScope),
     files: resolveFilesConfig(raw.files, {
       appDir: dir,
