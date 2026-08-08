@@ -1230,4 +1230,52 @@ describe("administration transitions", () => {
     expect(jobRows()).toHaveLength(0);
     expect(runRows()).toHaveLength(0);
   });
+
+  test("a mutation Job whose stored arguments no longer decode fails instead of wedging", async () => {
+    // ADR-0018 promises an admitted Job is durable, and durable includes
+    // reaching an end. Arguments that cannot be decoded — bytes corrupted
+    // underneath us, or an encoding this version no longer reads — used to
+    // throw out of the claim transaction before any savepoint existed, rolling
+    // the claim back and leaving the Job due: claimed again, thrown out of
+    // again, forever, with no run to show for it. It must fail once, durably.
+    //
+    // The kind matters. A procedure-kind Job decodes inside its settlement
+    // boundary and always failed correctly; the mutation envelope collapses
+    // claim, handler and settle into one transaction, and decoding before the
+    // savepoint took the claim down with it. The two envelopes had drifted.
+    clock = 31_000_000;
+    let ran = 0;
+    start(declareJobs({
+      work: {
+        readArgs: job({
+          kind: "mutation",
+          args: { note: v.string() },
+          handler: async () => {
+            ran++;
+            return "ok";
+          },
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.readArgs", { note: "fine" }, {
+      delayMs: 60_000,
+    });
+    engine.writer.query(`UPDATE ${JOBS_TABLE} SET argsJson = ?, nextRunAt = ? WHERE id = ?`)
+      .run("{ not canonical json", clock, handle.id);
+
+    await runtime.runJobs();
+    await Bun.sleep(10);
+
+    expect(ran).toBe(0);
+    expect(runRows()).toHaveLength(1);
+    expect(runRows()[0]).toMatchObject({ state: "failed" });
+    expect(jobRows()[0]).toMatchObject({ state: "failed" });
+    // And it stays settled: a second sweep adds no run, which is the assertion
+    // that would have failed forever before — a wedged Job produces a claim
+    // every sweep and a run from none of them.
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    expect(runRows()).toHaveLength(1);
+    expect(ran).toBe(0);
+  });
 });
