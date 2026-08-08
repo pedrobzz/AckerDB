@@ -68,11 +68,17 @@ export interface ComparisonPolicy {
 export const DEFAULT_FLOOR_PERCENT = 12;
 
 /**
- * Eight repetitions is the smallest even count whose two-sided sign test still
- * clears a five-percent false-positive budget while every pair gets to lead
- * exactly four times. Even matters: the pair driver alternates which side runs
- * first on each repetition, so an odd count would hand one side an extra turn
- * in the colder slot.
+ * Repetitions buy both confidence and sensitivity, and eight is where the
+ * measured trade sits. Relabelling which side is base within each repetition —
+ * a valid permutation under the null — puts the false-failure rate at 3.6% of
+ * runs here, while injecting a known effect into the harness's own recorded
+ * noise detects 60% of twenty-percent regressions and 94% of fifty-percent
+ * ones. More repetitions raise both at proportional wall-clock cost;
+ * `BENCH_REPETITIONS` is the knob, and `docs/releases.md` carries the curve.
+ *
+ * Even matters independently of the count: the pair driver alternates which
+ * side runs first on each repetition, so an odd number would hand one side an
+ * extra turn in the leading, colder slot.
  */
 export const DEFAULT_REPETITIONS = 8;
 
