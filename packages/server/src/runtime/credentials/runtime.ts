@@ -12,6 +12,7 @@
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import type { Identity } from "@ackerdb/core";
 import {
+  resolvedGrant,
   unauthenticated,
   type CredentialVerifier,
   type ExternalAccount,
@@ -95,14 +96,17 @@ export class RuntimeCredentials {
         this.options.vocabulary,
       );
     }
+    // The lineage travels with the grant. Every transport resolves a vault
+    // credential through here, so this is the one place that can guarantee a
+    // delegated principal knows the accounts an invalidation may narrow it by.
     return this.options.reads().submit(
-      async (connection) => (await this.options.engine[credentialVaultOwner].effectiveGrant(
+      (connection) => this.options.engine[credentialVaultOwner].effectiveGrant(
         connection,
         identity,
         this.options.vocabulary,
         (ancestor) => this.resolveIdentityGrant(ancestor),
         (open, root) => this.options.engine.accountsForIdentity(open, root),
-      )).scopes,
+      ),
       {
         operation: "procedure",
         bytes: 1,
@@ -225,10 +229,15 @@ export class RuntimeCredentials {
     }
   }
 
+  /**
+   * The grant patterns an application-owned Identity holds. Only the scopes
+   * are wanted here: this resolves an *ancestor* for the child intersection,
+   * and the lineage the walk is building is the caller's, not the ancestor's.
+   */
   private async resolveIdentityGrant(identity: Identity): Promise<readonly string[]> {
     const resolve = this.options.resolveAppScopes;
     if (resolve === undefined) return EMPTY_SCOPES;
-    return resolve(identity, null);
+    return resolvedGrant(await resolve(identity, null)).scopes;
   }
 
   private async verify(

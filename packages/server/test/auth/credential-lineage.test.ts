@@ -6,9 +6,10 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@ackerdb/core";
-import type {
-  PrincipalInvalidation,
-  UserPrincipal,
+import {
+  verifyClientCredential,
+  type PrincipalInvalidation,
+  type UserPrincipal,
 } from "../../src/auth/credentials.ts";
 import { invalidationReaches } from "../../src/auth/invalidation.ts";
 import {
@@ -171,6 +172,35 @@ describe("credential delegation lineage", () => {
       subject: "alice",
       tokenId: "external-alice",
     })).toBe(false);
+  });
+
+  test("both authentication doors hand back the same lineage", async () => {
+    // A vault token reaches the server two ways: the MCP door authenticates it
+    // directly, and every ordinary HTTP call and WebSocket handshake goes
+    // through the generic verifier contract, which resolves identity and scopes
+    // as separate steps. Two doors that build the principal differently are two
+    // chances to drop the lineage, and a principal that drops it is one an
+    // upstream invalidation cannot reach. They must agree.
+    const { runtime } = start();
+    const alice = await user(runtime, "two-doors", FIXTURE_SCOPES);
+    const aliceSession = session(alice, "two-doors");
+    await runtime.openSession(aliceSession);
+    const child = await issue(runtime, aliceSession, 1, "Agent", ["orders.all"]);
+    const upstream = [{ issuer: "https://issuer.test/", subject: "two-doors" }];
+
+    const direct = await runtime.authenticateCredential(child.token, "direct") as UserPrincipal;
+    expect(direct.derivedFrom).toEqual(upstream);
+
+    const generic = await verifyClientCredential(
+      { kind: "bearer", token: child.token },
+      runtime.credentialVerifier,
+      (account, signal) => runtime.resolveIdentity(account, signal),
+      Date.now,
+      runtime.resolveScopes,
+    ) as UserPrincipal;
+    expect(generic.derivedFrom).toEqual(upstream);
+    expect(generic.identity).toBe(direct.identity);
+    expect(generic.scopes).toEqual(direct.scopes);
   });
 
   test("a revocation that rolls back invalidates nothing", async () => {

@@ -80,6 +80,20 @@ export type IdentityResolver = (
   signal?: AbortSignal,
 ) => Promise<Identity>;
 /**
+ * A resolved grant. An application answers with the scopes alone, which is the
+ * whole answer for an identity it owns outright. The framework's own resolution
+ * answers with the second half too: the accounts a delegated credential's grant
+ * is bounded by, so an invalidation upstream can reach it. Both shapes exist
+ * because only one side of this contract has a lineage to report.
+ */
+export type ResolvedGrant =
+  | readonly string[]
+  | {
+      readonly scopes: readonly string[];
+      readonly derivedFrom: readonly ExternalAccount[];
+    };
+
+/**
  * Resolves the grant patterns an Identity holds. `account` is the verified
  * external account at credential verification, and null when the framework
  * re-derives an issuer's grant for the child-credential intersection. An
@@ -88,7 +102,7 @@ export type IdentityResolver = (
 export type ScopeResolver = (
   identity: Identity,
   account: ExternalAccount | null,
-) => readonly string[] | Promise<readonly string[]>;
+) => ResolvedGrant | Promise<ResolvedGrant>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
 export const SYSTEM_PRINCIPAL: SystemPrincipal = Object.freeze({ kind: "system" });
@@ -545,6 +559,19 @@ export async function verifyUserBearerCredential(
 }
 
 const EMPTY_SCOPE_GRANT: readonly string[] = Object.freeze([]);
+const EMPTY_DERIVED_FROM: readonly ExternalAccount[] = Object.freeze([]);
+
+/**
+ * Both answer shapes as the one pair every consumer wants. An application
+ * answering with scopes alone reports no lineage, which is the truth: an
+ * identity it owns outright is bounded by nothing upstream.
+ */
+export function resolvedGrant(value: ResolvedGrant): {
+  readonly scopes: readonly string[];
+  readonly derivedFrom: readonly ExternalAccount[];
+} {
+  return "derivedFrom" in value ? value : { scopes: value, derivedFrom: EMPTY_DERIVED_FROM };
+}
 
 /**
  * One fail-closed credential path shared by WebSocket, HTTP, and SSE.
@@ -587,18 +614,25 @@ export async function verifyClientCredential(
     throw authUnavailable(new Error("identity resolver returned an invalid Identity"));
   }
   let scopes: readonly string[] = EMPTY_SCOPE_GRANT;
+  let derivedFrom: readonly ExternalAccount[] = EMPTY_DERIVED_FROM;
   if (resolveScopes !== undefined) {
-    let resolved: readonly string[];
+    let resolved: ResolvedGrant;
     try {
       resolved = await resolveScopes(identity, account);
     } catch (error) {
       if (isAckerDBError(error)) throw error;
       throw authUnavailable(error);
     }
-    if (!isScopeGrant(resolved)) {
+    const grant = resolvedGrant(resolved);
+    if (!isScopeGrant(grant.scopes)) {
       throw authUnavailable(new Error("scope resolver returned an invalid scope grant"));
     }
-    scopes = Object.freeze([...resolved]);
+    scopes = Object.freeze([...grant.scopes]);
+    // Only the framework's own resolution reports a lineage, and it reports the
+    // same one this credential would get through any other door. Every
+    // authenticated principal must carry it, or an invalidation would reach a
+    // delegated credential over one transport and miss it over another.
+    derivedFrom = grant.derivedFrom;
   }
   const resolvedAt = now();
   if (!Number.isFinite(resolvedAt)) {
@@ -614,6 +648,7 @@ export async function verifyClientCredential(
     claims: verified.claims,
     expiresAt: verified.expiresAt,
     tokenId: verified.tokenId,
+    ...(derivedFrom.length === 0 ? {} : { derivedFrom }),
   });
 }
 
