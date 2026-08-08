@@ -186,9 +186,13 @@ All `.ackerdb.config.json` fields are optional. The path defaults are
 `0.0.0.0` only when clients must connect through a trusted private development
 network. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
-never both. The protected status scope is configured there too. Durability is an
-exact environment switch; everything administrative, telemetry included, is one
-`admin` block in the manifest:
+never both. A `realtime` module path may default-export
+`createRealtimeRuntime(options)` for deployment-owned ICE, TURN, network, and
+resource configuration; it is loaded only when the application declares
+realtime handlers. The protected status scope is set in the same
+`.ackerdb.config.json` through `statusScope`.
+Durability is an exact environment switch; everything administrative, telemetry
+included, is one `admin` block in the manifest:
 
 ```sh
 ACKERDB_DURABILITY=production acker start ./apps/server

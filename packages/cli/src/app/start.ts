@@ -2,7 +2,7 @@
  * Loading a ackerdb app: the application manifest, the function modules, and the
  * assembled server (engine + reconcile + runtime + transport).
  */
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -42,6 +42,7 @@ import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import type { AppConfig } from "./config.ts";
 import {
   importApp,
+  importConfiguredDefault,
   importFunctionModules,
   importJobModules,
   importServiceModules,
@@ -105,14 +106,35 @@ export interface StartAppOptions<A extends App = App> {
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
 
-async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeModule> {
+async function importConfiguredRealtimeRuntime(path: string): Promise<RealtimeRuntimeModule> {
+  const owner = `.ackerdb.config.json "realtime" module`;
+  const runtime = await importConfiguredDefault(path, owner);
+  if (
+    typeof runtime !== "object" ||
+    runtime === null ||
+    typeof (runtime as { create?: unknown }).create !== "function"
+  ) {
+    throw new TypeError(
+      `${owner} at ${path} must default-export the result of createRealtimeRuntime(...)`,
+    );
+  }
+  return runtime as RealtimeRuntimeModule;
+}
+
+async function importRealtimeRuntime(
+  appDir: string,
+  configuredPath?: string,
+): Promise<RealtimeRuntimeModule> {
+  if (configuredPath !== undefined) {
+    return importConfiguredRealtimeRuntime(configuredPath);
+  }
   const require = createRequire(join(appDir, "package.json"));
   let entry: string;
   try {
     entry = require.resolve("@ackerdb/realtime");
   } catch (error) {
     throw new Error(
-      "this app declares realtime routes but @ackerdb/realtime is not installed",
+      "this app declares realtime handlers but @ackerdb/realtime is not installed",
       { cause: error },
     );
   }
@@ -128,35 +150,21 @@ async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeMod
 }
 
 async function importCredentialVerifier(path: string): Promise<CredentialVerifier> {
-  if (!existsSync(path)) throw new Error(`credential verifier not found at ${path}`);
-  let module: { default?: unknown };
-  try {
-    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new Error(`failed to import credential verifier at ${path}${detail}`, { cause: error });
-  }
+  const exported = await importConfiguredDefault(path, "credential verifier");
   assertCredentialVerifier(
-    module.default,
+    exported,
     PRODUCTION_LIMITS.auth.revocationDeadlineMs,
     `credential verifier default export from ${path}`,
   );
-  return module.default;
+  return exported;
 }
 
 async function importScopeResolver(path: string): Promise<ScopeResolver> {
-  if (!existsSync(path)) throw new Error(`scope resolver not found at ${path}`);
-  let module: { default?: unknown };
-  try {
-    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new Error(`failed to import scope resolver at ${path}${detail}`, { cause: error });
-  }
-  if (typeof module.default !== "function") {
+  const exported = await importConfiguredDefault(path, "scope resolver");
+  if (typeof exported !== "function") {
     throw new TypeError(`scope resolver default export from ${path} must be a function`);
   }
-  return module.default as ScopeResolver;
+  return exported as ScopeResolver;
 }
 
 function scopeResolverLoader(
@@ -423,7 +431,9 @@ export async function startApp<const A extends App = App>(
     registry.checkScopeRequirements(app.scopes);
     const realtime = registry.realtime.size === 0
       ? undefined
-      : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));
+      : options.realtime ?? await awaitStartup(
+        importRealtimeRuntime(config.appDir, config.realtime),
+      );
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
