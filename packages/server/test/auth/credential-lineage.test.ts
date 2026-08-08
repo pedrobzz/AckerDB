@@ -6,7 +6,11 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@ackerdb/core";
-import type { UserPrincipal } from "../../src/auth/credentials.ts";
+import type {
+  PrincipalInvalidation,
+  UserPrincipal,
+} from "../../src/auth/credentials.ts";
+import { invalidationReaches } from "../../src/auth/invalidation.ts";
 import {
   CREDENTIAL_ISSUER,
   parseCredentialToken,
@@ -124,6 +128,49 @@ describe("credential delegation lineage", () => {
       .query("SELECT scopes FROM _ackerdb_credentials WHERE token_id = ?")
       .get(grandchild.id) as { scopes: string };
     expect(stored.scopes).toContain("orders.all");
+  });
+
+  test("an external issuer's invalidation reaches the credentials delegated from it", async () => {
+    // The delegated credential is live under `ackerdb:credentials` with its own
+    // subject, so nothing about its own account resembles the external one it
+    // was minted from. It carries that account instead, recorded when the
+    // lineage was walked — which is why an application narrowing or revoking a
+    // grant upstream terminates the delegate now. A vault principal never
+    // expires, so "at its next authentication" would have meant never.
+    const { runtime } = start();
+    const alice = await user(runtime, "alice", FIXTURE_SCOPES);
+    const aliceSession = session(alice, "alice");
+    await runtime.openSession(aliceSession);
+    const child = await issue(runtime, aliceSession, 1, "Agent", ["orders.all"]);
+
+    const principal = await runtime.authenticateCredential(
+      child.token,
+      "delegated",
+    ) as UserPrincipal;
+    expect(principal.issuer).toBe(CREDENTIAL_ISSUER);
+    expect(principal.subject).toBe(child.id);
+    expect(principal.derivedFrom).toEqual([
+      { issuer: "https://issuer.test/", subject: "alice" },
+    ]);
+
+    const reaches = (invalidation: PrincipalInvalidation): boolean =>
+      invalidationReaches(principal, invalidation);
+    // The account upstream, whole or by issuer alone.
+    expect(reaches({ issuer: "https://issuer.test/", subject: "alice" })).toBe(true);
+    expect(reaches({ issuer: "https://issuer.test/" })).toBe(true);
+    // Its own account, as before.
+    expect(reaches({ issuer: CREDENTIAL_ISSUER, subject: child.id })).toBe(true);
+    // A different subject at the same issuer, and an unrelated issuer.
+    expect(reaches({ issuer: "https://issuer.test/", subject: "bob" })).toBe(false);
+    expect(reaches({ issuer: "https://other.test/" })).toBe(false);
+    // An invalidation naming an exact token names one credential. It must not
+    // travel down the lineage, or revoking a parent's token would revoke
+    // descendants the vault deliberately keeps.
+    expect(reaches({
+      issuer: "https://issuer.test/",
+      subject: "alice",
+      tokenId: "external-alice",
+    })).toBe(false);
   });
 
   test("a revocation that rolls back invalidates nothing", async () => {

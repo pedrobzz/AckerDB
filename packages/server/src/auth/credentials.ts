@@ -54,6 +54,17 @@ export interface UserPrincipal extends ExternalPrincipal {
    * authorization funnel does a plain membership test per call.
    */
   readonly scopes: readonly string[];
+  /**
+   * The external accounts this principal's authority is bounded by, beyond its
+   * own. A delegated credential is live under `ackerdb:credentials` with its
+   * own subject, but its grant is intersected with the account its lineage
+   * roots in, so an invalidation for that account must reach it too.
+   *
+   * The lineage is walked once, at authentication, and the roots recorded
+   * here. That is what keeps the invalidation channel synchronous: matching an
+   * ancestor costs a comparison, where resolving one would cost an Engine read.
+   */
+  readonly derivedFrom?: readonly ExternalAccount[];
 }
 
 export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;

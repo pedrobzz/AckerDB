@@ -10,6 +10,7 @@ import {
   type ScopeResolver,
 } from "./credentials.ts";
 import {
+  invalidationReaches,
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "./invalidation.ts";
@@ -73,14 +74,6 @@ function revoked(): AckerDBError {
 
 function expired(): AckerDBError {
   return new AckerDBError("unauthenticated", "credential expired");
-}
-
-function matches(principal: AuthenticatedPrincipal, invalidation: PrincipalInvalidation): boolean {
-  return (
-    principal.issuer === invalidation.issuer &&
-    (invalidation.subject === undefined || principal.subject === invalidation.subject) &&
-    (invalidation.tokenId === undefined || principal.tokenId === invalidation.tokenId)
-  );
 }
 
 export function validateCredentialVerifierRevocation(
@@ -215,7 +208,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   }
 
   const onInvalidation = (invalidation: PrincipalInvalidation): void => {
-    if (principal === undefined || matches(principal, invalidation)) abort(revoked());
+    if (principal === undefined || invalidationReaches(principal, invalidation)) abort(revoked());
   };
 
   const scheduleExpiry = (verified: AuthenticatedPrincipal): void => {

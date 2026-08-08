@@ -64,6 +64,7 @@ import {
   credentialVaultOwner,
   verifyCredentialVaultState,
 } from "../auth/credential-vault.ts";
+import type { ExternalAccount } from "../auth/credentials.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
 import { JOBS_TABLE } from "../jobs/table.ts";
@@ -1641,6 +1642,18 @@ export class Engine {
       .query("SELECT identity FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .get(issuer, subject) as { identity: bigint } | null;
     return account === null ? null : account.identity as Identity;
+  }
+
+  /**
+   * Every external account one Identity answers to, read through the identity
+   * index. It is the inverse of {@link identityForAccount}, and it is how a
+   * delegated credential learns which upstream accounts bound its authority —
+   * an invalidation names an account, never an Identity.
+   */
+  accountsForIdentity(connection: Database, identity: Identity): readonly ExternalAccount[] {
+    return connection
+      .query("SELECT issuer, subject FROM _ackerdb_identity_accounts WHERE identity = ?")
+      .all(identity) as ExternalAccount[];
   }
 
   /** Resolve or provision one exact account. The caller must own the writer transaction. */

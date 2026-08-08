@@ -28,6 +28,7 @@ import {
   type ParsedCredentialToken,
 } from "../../auth/credential-token.ts";
 import { credentialVaultOwner } from "../../auth/credential-vault.ts";
+import { invalidationReaches } from "../../auth/invalidation.ts";
 import { expandScopeGrant } from "../../auth/scopes.ts";
 import type { Engine } from "../../database/engine.ts";
 import { externalAccountFairnessKey } from "../caller.ts";
@@ -95,12 +96,13 @@ export class RuntimeCredentials {
       );
     }
     return this.options.reads().submit(
-      (connection) => this.options.engine[credentialVaultOwner].effectiveScopes(
+      async (connection) => (await this.options.engine[credentialVaultOwner].effectiveGrant(
         connection,
         identity,
         this.options.vocabulary,
         (ancestor) => this.resolveIdentityGrant(ancestor),
-      ),
+        (open, root) => this.options.engine.accountsForIdentity(open, root),
+      )).scopes,
       {
         operation: "procedure",
         bytes: 1,
@@ -143,21 +145,26 @@ export class RuntimeCredentials {
       async (connection) => {
         const vault = this.options.engine[credentialVaultOwner];
         const credential = vault.authenticate(connection, parsed);
-        const scopes = await vault.effectiveScopes(
+        const grant = await vault.effectiveGrant(
           connection,
           credential.identity,
           this.options.vocabulary,
           (ancestor) => this.resolveIdentityGrant(ancestor),
+          (open, root) => this.options.engine.accountsForIdentity(open, root),
         );
         return Object.freeze({
           kind: "user" as const,
           identity: credential.identity,
-          scopes,
+          scopes: grant.scopes,
           issuer: CREDENTIAL_ISSUER,
           subject: credential.tokenId,
           claims: Object.freeze({}),
           expiresAt: Number.POSITIVE_INFINITY,
           tokenId: credential.tokenId,
+          // The accounts upstream of this credential, so narrowing a grant
+          // there terminates this session now rather than at a next
+          // authentication a non-expiring principal never reaches.
+          derivedFrom: grant.derivedFrom,
         });
       },
       {
@@ -180,20 +187,27 @@ export class RuntimeCredentials {
   ): Promise<CredentialLease> {
     this.options.assertReady();
     const controller = new AbortController();
+    // The subscription opens before verification so an invalidation racing it
+    // fails closed, which is why the listener has two shapes. Until the
+    // principal exists there is nothing to match on but the token being
+    // verified; once it exists, the one predicate every holder of a live
+    // principal shares takes over — and that is what carries the upstream
+    // accounts a delegated credential is bounded by.
+    let leased: UserPrincipal | undefined;
     const unsubscribe = this.options.subscribeInvalidation((invalidation) => {
-      if (
-        invalidation.issuer === CREDENTIAL_ISSUER &&
-        (invalidation.subject === undefined || invalidation.subject === parsed.id) &&
-        !controller.signal.aborted
-      ) {
-        controller.abort(new AckerDBError("unauthenticated", "credential revoked"));
-      }
+      if (controller.signal.aborted) return;
+      const reached = leased === undefined
+        ? invalidation.issuer === CREDENTIAL_ISSUER &&
+          (invalidation.subject === undefined || invalidation.subject === parsed.id)
+        : invalidationReaches(leased, invalidation);
+      if (reached) controller.abort(new AckerDBError("unauthenticated", "credential revoked"));
     });
     const leaseSignal = signal === undefined
       ? controller.signal
       : AbortSignal.any([signal, controller.signal]);
     try {
       const principal = await this.authenticate(parsed, fairnessKey, leaseSignal);
+      leased = principal;
       throwIfAborted(leaseSignal);
       let active = true;
       return Object.freeze({

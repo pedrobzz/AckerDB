@@ -28,6 +28,7 @@ import {
   validateCredentialVerifierRevocation,
 } from "../../auth/lease.ts";
 import {
+  invalidationReaches,
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "../../auth/invalidation.ts";
@@ -678,9 +679,7 @@ export class Session {
       this.phase === "closed" ||
       principal === null ||
       (principal.kind !== "user" && principal.kind !== "workload") ||
-      principal.issuer !== invalidation.issuer ||
-      (invalidation.subject !== undefined && principal.subject !== invalidation.subject) ||
-      (invalidation.tokenId !== undefined && principal.tokenId !== invalidation.tokenId)
+      !invalidationReaches(principal, invalidation)
     ) {
       return;
     }

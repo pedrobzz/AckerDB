@@ -19,6 +19,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { decode, encode, type Identity } from "@ackerdb/core";
+import type { ExternalAccount } from "./credentials.ts";
 import { CorruptDatabaseError, AckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { CREDENTIAL_TOKEN_PREFIX, type ParsedCredentialToken } from "./credential-token.ts";
@@ -290,6 +291,25 @@ export type IdentityGrantResolver = (
   identity: Identity,
 ) => readonly string[] | Promise<readonly string[]>;
 
+/**
+ * Reads the external accounts one Identity answers to. The Engine owns
+ * `_ackerdb_identity_accounts`, so the vault asks rather than queries — the
+ * same shape `IdentityGrantResolver` already uses for the other question the
+ * lineage walk must ask about an Identity it does not own.
+ */
+export type IdentityAccountResolver = (
+  connection: Database,
+  identity: Identity,
+) => readonly ExternalAccount[];
+
+/** A resolved grant and the upstream accounts an invalidation may narrow it through. */
+export interface EffectiveGrant {
+  readonly scopes: readonly string[];
+  readonly derivedFrom: readonly ExternalAccount[];
+}
+
+const EMPTY_ACCOUNTS: readonly ExternalAccount[] = Object.freeze([]);
+
 /** Engine-owned identity-credential storage. Every caller owns its SQLite transaction. */
 export class CredentialVault {
   constructor(private readonly writer: Database) {}
@@ -537,31 +557,49 @@ export class CredentialVault {
   }
 
   /**
-   * The live expanded grant an Identity holds through the vault: its stored
-   * patterns expanded, then narrowed by every ancestor's current expansion up
-   * the delegation chain, ending at a non-credential Identity resolved by the
-   * application. Identity creation order makes the chain acyclic.
+   * The live grant an Identity holds through the vault, and the external
+   * accounts that bound it: its stored patterns expanded, then narrowed by
+   * every ancestor's current expansion up the delegation chain, ending at a
+   * non-credential Identity resolved by the application. Identity creation
+   * order makes the chain acyclic.
+   *
+   * The walk also collects `derivedFrom` — the accounts of that root Identity.
+   * A delegated credential is live under its own `ackerdb:credentials`
+   * subject, so an invalidation for the account upstream would otherwise miss
+   * it, and a vault principal never expires out of the stale authority.
+   * Collecting the roots here is what keeps the invalidation channel
+   * synchronous: the read happens once, where a read already happens.
    */
-  async effectiveScopes(
+  async effectiveGrant(
     connection: Database,
     identity: Identity,
     vocabulary: readonly string[],
     resolveIdentityGrant: IdentityGrantResolver,
-  ): Promise<readonly string[]> {
+    accountsForIdentity: IdentityAccountResolver,
+  ): Promise<EffectiveGrant> {
     const row = connection.query(
       "SELECT parent_identity, scopes FROM _ackerdb_credentials WHERE identity = ?",
     ).get(identity) as Pick<StoredCredentialRow, "parent_identity" | "scopes"> | null;
     if (row === null) {
-      return expandScopeGrant(await resolveIdentityGrant(identity), vocabulary);
+      return Object.freeze({
+        scopes: expandScopeGrant(await resolveIdentityGrant(identity), vocabulary),
+        derivedFrom: accountsForIdentity(connection, identity),
+      });
     }
     const stored = expandScopeGrant(storedScopes(row.scopes), vocabulary);
-    if (row.parent_identity === null) return stored;
-    const parent = await this.effectiveScopes(
+    if (row.parent_identity === null) {
+      return Object.freeze({ scopes: stored, derivedFrom: EMPTY_ACCOUNTS });
+    }
+    const parent = await this.effectiveGrant(
       connection,
       row.parent_identity as Identity,
       vocabulary,
       resolveIdentityGrant,
+      accountsForIdentity,
     );
-    return effectiveChildScopes(stored, parent);
+    return Object.freeze({
+      scopes: effectiveChildScopes(stored, parent.scopes),
+      derivedFrom: parent.derivedFrom,
+    });
   }
 }

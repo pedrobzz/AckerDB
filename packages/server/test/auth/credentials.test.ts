@@ -734,6 +734,9 @@ describe("Identity credentials", () => {
       claims: {},
       expiresAt: Number.POSITIVE_INFINITY,
       tokenId: created.id,
+      // The issuing account travels with the principal: it is what an
+      // invalidation for alice matches on to reach this delegated credential.
+      derivedFrom: [{ issuer: "https://issuer.test/", subject: "alice" }],
     });
     expect(await second.runtime.authenticateCredential(
       secondCreated.token,

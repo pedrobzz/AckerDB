@@ -192,15 +192,14 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   vault principal never expires out of it.
 - Resolver-backed user grants re-authorize through the same path when the
   application publishes an invalidation for the account.
-
-One boundary is deliberate: when an *external* identity's grant changes, the
-application publishes an invalidation for that account, and credentials
-delegated from it are live under `ackerdb:credentials` with their own subjects.
-They therefore re-derive their intersection at their next authentication rather
-than instantly. Closing that would mean resolving an external account to an
-Identity, and that Identity to its credentials, inside the invalidation path —
-an Engine read on a channel that must stay synchronous. Revoke or narrow the
-credential itself when the change must be immediate.
+- An **external** identity's grant change reaches the credentials delegated
+  from it too. A delegate is live under `ackerdb:credentials` with its own
+  subject, so nothing about its account resembles the external one — it
+  therefore carries that account, recorded when its lineage was walked at
+  authentication. Matching an ancestor then costs a comparison, where resolving
+  one would cost an Engine read on a channel that must stay synchronous.
+  An invalidation naming an exact `tokenId` is the one that does not travel
+  down the lineage: it names a single credential, and a descendant is another.
 
 Shipping enforcement without live invalidation would be a security regression;
 this propagation is part of the feature's contract, not an optimization.
