@@ -63,6 +63,13 @@ export interface WriteCollector {
   fileCleanupAt: number | null;
   /** Framework File state staged until the enclosing database COMMIT succeeds. */
   fileObservability: FileObservabilityDelta;
+  /**
+   * Credential token ids whose authority this transaction changed, published as
+   * account invalidations after commit. They live here, with every other
+   * staged effect, so a nested rollback un-stages them: an invalidation for a
+   * revocation that never committed would terminate a valid session.
+   */
+  credentialInvalidations: string[];
 }
 
 export interface WriteCollectorCheckpoint {
@@ -71,6 +78,7 @@ export interface WriteCollectorCheckpoint {
   readonly scheduledTables: number;
   readonly fileCleanupAt: number | null;
   readonly fileObservability: FileObservabilityCheckpoint;
+  readonly credentialInvalidations: number;
 }
 
 class JournaledSet<T> extends Set<T> {
@@ -107,6 +115,7 @@ export function checkpointWriteCollector(
     scheduledTables: scheduledTables.checkpoint(),
     fileCleanupAt: writes.fileCleanupAt,
     fileObservability: checkpointFileObservability(writes.fileObservability),
+    credentialInvalidations: writes.credentialInvalidations.length,
   };
 }
 
@@ -124,6 +133,7 @@ export function rollbackWriteCollector(
   scheduledTables.rollback(checkpoint.scheduledTables);
   writes.fileCleanupAt = checkpoint.fileCleanupAt;
   rollbackFileObservability(writes.fileObservability, checkpoint.fileObservability);
+  writes.credentialInvalidations.length = checkpoint.credentialInvalidations;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,5 +855,6 @@ export function newWriteCollector(): WriteCollector {
     scheduledTables: new JournaledSet(),
     fileCleanupAt: null,
     fileObservability: newFileObservabilityDelta(),
+    credentialInvalidations: [],
   };
 }

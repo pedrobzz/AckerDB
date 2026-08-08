@@ -86,7 +86,7 @@ jobs:
           bun run typecheck:bench
       - name: Audit production dependencies
         if: needs.changes.outputs.verify_packages == 'true'
-        run: bun audit --prod
+        run: bun scripts/ci/audit-production.ts
       - name: Check MCP conformance
         if: needs.changes.outputs.mcp == 'true'
         run: bun run test:mcp:conformance

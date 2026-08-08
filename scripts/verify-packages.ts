@@ -432,11 +432,11 @@ const schema = defineSchema({
   }),
 });
 
-export default defineApp({ schema });
+export default defineApp({ schema, scopes: ["orders.all", "orders.get"] as const });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
 import { v } from "@ackerdb/server";
-import { mcp, mcpAuth, query, type QueryCtx } from "../_generated/server.ts";
+import { mcp, query, type QueryCtx, type Scope } from "../_generated/server.ts";
 
 export const getOrder = query({
   description: "Get an order by ID.",
@@ -450,21 +450,15 @@ export const getOrder = query({
   },
 });
 
-export const agentAuth = mcpAuth({
-  name: "agent",
-  scopes: ["orders.all", "orders.get"] as const,
-});
 export const agentMcp = mcp({
   name: "agent",
-  auth: agentAuth,
   tools: { orders_get: { fn: getOrder, access: { anyOf: ["orders.all", "orders.get"] } } },
 });
 
-type AgentScope = NonNullable<typeof agentAuth.scopes._type>;
-const scope: AgentScope = "orders.get";
+const scope: Scope = "orders.get";
 void scope;
-// @ts-expect-error generated MCP scopes remain the exact declared union
-const invalidScope: AgentScope = "orders.delete";
+// @ts-expect-error generated scopes remain the exact declared vocabulary union
+const invalidScope: Scope = "orders.delete";
 void invalidScope;
 `);
     if (verifyNativeRuntime) {
@@ -490,7 +484,6 @@ import {
   type FileGrantId,
   makeDbWriter,
   mcp as mcpFromRoot,
-  mcpAuth as mcpAuthFromRoot,
   mcpContent as mcpContentFromRoot,
   newWriteCollector,
   procedure,
@@ -509,7 +502,6 @@ import {
 } from "@ackerdb/server/files/s3";
 import {
   mcp as mcpFromSubpath,
-  mcpAuth as mcpAuthFromSubpath,
   mcpContent as mcpContentFromSubpath,
 } from "@ackerdb/server/mcp";
 import { cachePlugin, defineCacheStore } from "@ackerdb/cache";
@@ -554,9 +546,6 @@ if (!(new S3FileStore(s3Config) instanceof S3FileStore)) {
 if (mcpFromRoot !== mcpFromSubpath) {
   throw new Error("@ackerdb/server/mcp resolves a different mcp implementation");
 }
-if (mcpAuthFromRoot !== mcpAuthFromSubpath) {
-  throw new Error("@ackerdb/server/mcp resolves a different mcpAuth implementation");
-}
 if (mcpContentFromRoot !== mcpContentFromSubpath) {
   throw new Error("@ackerdb/server/mcp resolves a different mcpContent implementation");
 }
@@ -569,7 +558,6 @@ const probe = procedure({
 });
 const endpoint = mcpFromSubpath({
   name: "package_probe",
-  auth: mcpAuthFromSubpath({ name: "package_probe" }),
   tools: { package_probe: { fn: probe, access: "public" } },
 });
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");

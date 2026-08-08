@@ -1,7 +1,7 @@
 # Durable jobs supersede scheduled tables
 
 > The storage half of this decision is refined by
-> [ADR-0023](0023-a-job-and-its-runs-are-separate-rows.md): the single
+> [ADR-0024](0024-a-job-and-its-runs-are-separate-rows.md): the single
 > `_ackerdb_jobs` table below is now a Job row plus one `_ackerdb_job_runs` row
 > per handler execution. Everything else here stands — including the promise
 > that an admitted job is durable, which is why that change transforms the old

@@ -14,14 +14,13 @@ import {
   Registry,
   Runtime,
   serve,
-  type McpAuthBuilder,
   type McpBuilder,
   type MutationBuilder,
   type ProcedureBuilder,
   type SessionRuntimeContext,
   type UserPrincipal,
 } from "@ackerdb/server";
-import { mcp, mcpAuth, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
+import { credentials, mcp, mcpContent, type McpToolResult } from "@ackerdb/server";
 
 const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
@@ -29,18 +28,7 @@ const ADMIN_SCOPE = "acceptance.admin";
 const schema = defineSchema({});
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = mcp as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-
-/**
- * Scopes and tokens belong to the provider, not the endpoint: the acceptance
- * controller reduces and revokes credentials through it while the endpoint
- * below only decides which scope each published tool demands.
- */
-const acceptanceAuth = typedMcpAuth({
-  name: "acceptance",
-  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
-});
+const typedMcp = mcp as McpBuilder<typeof schema, typeof READ_SCOPE | typeof ADMIN_SCOPE>;
 
 function emit(value: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -75,7 +63,9 @@ const authenticatedStatus = typedProcedure({
   returns: mcpContent(),
   handler: (ctx): McpToolResult => {
     called("authenticated_status");
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     return { content: [{ type: "text", text: `authenticated:${ctx.auth.identity}` }] };
   },
 });
@@ -91,7 +81,9 @@ const structuredStatus = typedProcedure({
   }),
   handler: (ctx, args) => {
     called("structured_status");
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     return { kind: "structured" as const, value: args.value, identity: ctx.auth.identity };
   },
 });
@@ -180,7 +172,9 @@ const recordDiscovery = typedProcedure({
   },
   returns: v.object({ accepted: v.boolean(), count: v.int() }),
   handler: (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     const expected = ctx.auth.scopes.includes(ADMIN_SCOPE)
       ? [...READ_TOOLS, "admin_only"].sort()
       : [...READ_TOOLS];
@@ -195,7 +189,6 @@ const recordDiscovery = typedProcedure({
 
 const acceptanceMcp = typedMcp({
   name: "acceptance",
-  auth: acceptanceAuth,
   instructions:
     `AckerDB host acceptance endpoint. When record_discovery is requested, pass marker ` +
     `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
@@ -214,8 +207,8 @@ const acceptanceMcp = typedMcp({
 
 const createToken = typedMutation({
   access: "authenticated",
-  args: { name: v.string(), scopes: v.array(acceptanceAuth.scopes) },
-  handler: (ctx, args) => acceptanceAuth.tokens.create(ctx, {
+  args: { name: v.string(), scopes: v.array(v.string()) },
+  handler: (ctx, args) => credentials.create(ctx, {
     name: args.name,
     metadata: { fixture: "host-acceptance" },
     scopes: args.scopes,
@@ -224,19 +217,18 @@ const createToken = typedMutation({
 
 const updateTokenScopes = typedMutation({
   access: "authenticated",
-  args: { id: v.string(), scopes: v.array(acceptanceAuth.scopes) },
-  handler: (ctx, args) => acceptanceAuth.tokens.updateScopes(ctx, args.id, args.scopes),
+  args: { id: v.string(), scopes: v.array(v.string()) },
+  handler: (ctx, args) => credentials.updateScopes(ctx, args.id, args.scopes),
 });
 
 const revokeToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => acceptanceAuth.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => credentials.revoke(ctx, args.id),
 });
 
 const modules = {
   acceptance: {
-    acceptanceAuth,
     acceptanceMcp,
   },
   tokens: { createToken, revokeToken, updateTokenScopes },
@@ -272,7 +264,13 @@ async function main(): Promise<void> {
   if (path === undefined || path === "") throw new Error("ACKERDB_ACCEPTANCE_DB is required");
   const engine = new Engine(schema, path);
   reconcile(engine);
-  const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
+  const runtime = new Runtime({
+    engine,
+    registry: new Registry(modules),
+    scopes: [READ_SCOPE, ADMIN_SCOPE],
+    resolveScopes: () => [READ_SCOPE, ADMIN_SCOPE],
+    telemetry: false,
+  });
   const identity = await runtime.resolveIdentity({
     issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
@@ -280,6 +278,7 @@ async function main(): Promise<void> {
   const principal: UserPrincipal = Object.freeze({
     kind: "user",
     identity,
+    scopes: Object.freeze([READ_SCOPE, ADMIN_SCOPE]),
     issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
     claims: Object.freeze({}),

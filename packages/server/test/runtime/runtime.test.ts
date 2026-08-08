@@ -78,6 +78,7 @@ function user(subject: string): UserPrincipal {
   return Object.freeze({
     kind: "user",
     identity,
+    scopes: [],
     issuer: "https://issuer.example",
     subject,
     claims: Object.freeze({ role: "member" }),

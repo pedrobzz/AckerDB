@@ -390,8 +390,9 @@ AckerDB publishes: `argsJsonSchema(args)` for an `ObjectShape` and
 output. The standard-JSON codec keeps only decode/encode. This is the only MCP
 change in this feature. Tool-from-function derivation — registering an app
 function directly as an MCP tool — has since shipped; see
-[MCP exposure](mcp-exposure.md) for the endpoint, its `mcpAuth` provider, and
-how a tool's scopes sit alongside the function's own access policy.
+[MCP exposure](mcp-exposure.md) for the endpoint and
+[Scopes](scopes.md) for how a tool's scopes sit alongside the function's own
+access policy.
 
 ## Registration-time validation
 

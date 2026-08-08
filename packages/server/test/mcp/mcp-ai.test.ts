@@ -21,13 +21,11 @@ import {
 } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpAiToolSet,
   type McpBuilder,
-  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
+import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -48,8 +46,6 @@ const schema = defineSchema({
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedSse = sseProcedure as SseBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const agentAuth = typedMcpAuth({ name: "agent" });
 const choice = v.union("AiChoice", {
   text: v.string(),
   nothing: v.tag(),
@@ -144,7 +140,6 @@ const hidden = typedProcedure({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   path: "/agent/mcp",
   tools: {
     fail: { fn: fail, access: "public" },
@@ -351,7 +346,7 @@ async function eventually(check: () => boolean): Promise<void> {
 describe("MCP zero-hop AI SDK tools", () => {
   test("passes the returned tools directly to AI SDK v7 with lossless structured values", async () => {
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[mcpTokenVaultOwner], "authenticate");
+    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
     try {
       const result = await callAi("structured");
 

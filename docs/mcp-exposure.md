@@ -1,10 +1,11 @@
 # MCP exposure
 
 Status: implemented. This document is the contract for exposing
-registered queries, mutations, and procedures as MCP tools, and for the auth
-provider that owns the scope vocabulary and the tokens which carry it.
-Implementation issues reference this document; divergences discovered during
-implementation must update it.
+registered queries, mutations, and procedures as MCP tools. Authentication
+and scopes are not MCP-local: endpoints authenticate ordinary identity
+credentials and tool requirements draw from the application scope vocabulary
+— see `docs/scopes.md`. Divergences discovered during implementation must
+update this document.
 
 ## Motivation
 
@@ -58,45 +59,24 @@ Reachability is unchanged on every other transport. Naming a function as a
 tool does not alter its WebSocket or HTTP behaviour, and access control
 remains auth plus function policy everywhere.
 
-## The auth provider
+## Authentication and scopes
 
-Scopes and tokens live on a standalone declaration, not on the endpoint:
+There is no MCP-local auth system. An MCP endpoint authenticates ordinary
+identity credentials (`ackerdb_credential.<id>.<secret>` bearers issued
+through the app-wide `credentials` / `systemCredentials` API), and every tool
+entry's scope requirement draws from the one application vocabulary declared
+in `defineApp({ scopes })` — see `docs/scopes.md` for the vocabulary, the
+grant model, the child-credential subset invariant, and live invalidation.
 
-```ts
-// mcp/auth.ts — a leaf module. Nothing here imports an endpoint.
-import { mcpAuth } from "../_generated/server";
+Consequences for this surface:
 
-export const adminAuth = mcpAuth({
-  name: "admin",
-  scopes: ["read", "write"] as const,
-});
-```
-
-The extraction is structural, not cosmetic. An endpoint imports its tools; a
-tool must name a scope; scopes used to live on the endpoint. That is a cycle,
-and a cycle is why scope names could only ever be checked at runtime. A leaf
-module both sides import breaks it, and breaking it is what makes a mis-typed
-scope a compile error.
-
-`name` is the token realm: it is the key stored against every token this
-provider mints, so it is declared rather than derived from an export path that
-the registry only learns later.
-
-The provider owns token issuance and verification — `adminAuth.tokens` and
-`adminAuth.systemTokens`, moved off the endpoint. A token is therefore bound
-to the **provider**, not to one endpoint: two endpoints sharing a provider
-accept the same credentials, and scopes are the only thing separating them.
-
-- The stored `mcp` column holds the provider name, and `McpPrincipal.mcp`
-  becomes the provider. The declarative internal-objects list is otherwise
-  unchanged; pre-1.0 the workflow is wipe and reseed, so there is no
-  migration step.
-- `authorizeMcpTool`'s `principal.mcp === mcp` endpoint-isolation check
-  dissolves into the scope check. **Two endpoints on one provider must be
-  same-trust.** An endpoint with materially different authority takes its own
-  provider.
-- `maxTokensPerIdentity` becomes a per-provider limit rather than a
-  per-endpoint one.
+- A credential is not endpoint-bound: any endpoint accepts any valid
+  credential, and tool `access` requirements are the separation. Scopes are
+  checked against the caller Identity's effective grant.
+- Credentials are first-class Identities: the same bearer also authenticates
+  the WebSocket client API and exposed HTTP functions, as an ordinary `user`
+  principal carrying the credential's own child Identity.
+- `limits.credentials.maxPerIdentity` bounds credentials per issuing Identity.
 
 ## Declaring an endpoint
 
@@ -104,11 +84,9 @@ accept the same credentials, and scopes are the only thing separating them.
 // mcp/admin.ts
 import { mcp } from "../_generated/server";
 import { api } from "../_generated/api";
-import { adminAuth } from "./auth.ts";
 
 export const admin = mcp({
   name: "admin",
-  auth: adminAuth,
   tools: {
     get_order: {
       fn: api.orders.get,
@@ -164,9 +142,10 @@ Two costs are accepted deliberately:
 
 ### Access
 
-The entry's `access` and the function's own `accessPolicy` both run; both must
-pass. Note that `"authenticated"` on the function is satisfied by *any* valid
-token on the provider — the entry's `access` is where real separation happens.
+The entry's `access` and the function's own `accessPolicy` (including its own
+`scopes` requirement, if any) both run; both must pass. Note that
+`"authenticated"` on the function is satisfied by *any* valid credential —
+the entry's `access` is where per-tool separation happens.
 
 `access` defaults to `"authenticated"`, so a forgotten entry is reachable by
 any token but never anonymously. `"public"` exists and must be written
@@ -185,7 +164,6 @@ Two levels, both meaning "reachable in-app, never over the wire":
 ```ts
 export const agentTools = mcp({
   name: "agent",
-  auth: adminAuth,
   private: true,          // claims no path, never served
   tools: { ... },
 });
@@ -204,20 +182,12 @@ Enforcement is at `authorizeMcpTool`, the single choke point for `tools/call`
 inaccessible names"). Filtering `toolsFor` alone would hide a tool from
 `tools/list` while leaving it callable by name, which is security theatre.
 
-The local/remote discriminator already exists: `mcpLocalGrant` returns
-`undefined` when there is no ambient local authority, which is exactly "this
-call came from outside the app".
-
-One edge must be handled explicitly. `mcpLocalGrant` returns `EMPTY_SCOPES` —
-not `undefined` — when a local authority exists but belongs to a *different*
-principal or endpoint. That case must be treated as remote. Otherwise endpoint
-A's AI context could reach endpoint B's private tool whenever that tool's
-`access` is `"public"` or `"authenticated"` and the scope check therefore does
-not save it.
+The local/remote discriminator is the explicit local grant an `aiTools`
+delegation passes into `authorizeMcpTool`: absent means "this call came from
+outside the app".
 
 `aiTools` includes private tools; serving them is its entire purpose. It stays
-on the endpoint, since it is typed by the tool set. Only `tokens` and
-`systemTokens` move to the provider.
+on the endpoint, since it is typed by the tool set.
 
 ## Wire format
 
@@ -283,7 +253,7 @@ HTTP `status` is unused on this surface.
 
 Compile errors, in preference order:
 
-- a scope name not declared by the endpoint's provider;
+- a scope name not declared by the application vocabulary;
 - an `sseProcedure` as an entry's `fn`;
 - `path` on an endpoint declared `private: true`;
 - a missing `access` is *not* an error — it defaults to `"authenticated"`.
@@ -321,9 +291,10 @@ No compatibility shim, in either direction.
 - `mcpTool`, `McpToolBlueprint`, `McpToolCtx`, the blueprint `WeakMap`, and the
   endpoint scope descriptor are deleted. Every existing tool is rewritten as a
   `query`, `mutation`, or `procedure` declaring `description` and `returns`.
-- `createMcp` becomes `mcp`; `scopes` moves from the endpoint to `mcpAuth`.
-- `endpoint.tokens` / `endpoint.systemTokens` become
-  `provider.tokens` / `provider.systemTokens`.
+- `createMcp` becomes `mcp`; the scope vocabulary lives in
+  `defineApp({ scopes })`.
+- Token administration is the app-wide `credentials` / `systemCredentials`
+  API; there is no per-provider surface.
 - `McpToolCtx.tx` returning a raw `Awaited<R>` disappears with it; a tool now
   gets its kind's own context, so `ctx.tx` follows `ProcedureCtx`'s
   `FunctionResult<R>` contract like everything else.
@@ -343,23 +314,23 @@ No compatibility shim, in either direction.
 ## Implementation anchors
 
 Reused unchanged: `compileStandardJsonCodec`, `validation/json-schema.ts`,
-`authorizeMcpTool` as the single `tools/call` choke point, `mcpLocalGrant` as
-the local/remote discriminator, `isMcpToolAuthorized`, the token vault's
-declarative internal objects, and the invocation path's existing access
-enforcement — a tool runs through `invokeFunction` like every other call, so
-argument validation and policy cannot be skipped.
+`authorizeMcpTool` as the single `tools/call` choke point (its explicit local
+grant is the local/remote discriminator), `isMcpToolAuthorized`, the
+credential vault's declarative internal objects, and the invocation path's
+existing access enforcement — a tool runs through `invokeFunction` like every
+other call, so argument validation, policy, and function-level scope
+requirements cannot be skipped.
 
-New work: the `mcpAuth` declaration and its token operations; `mcpContent()`
+New work: `mcpContent()`
 and the codec branch that skips the structured path for it; a tool dispatch that
 runs in its own invocation root, so a canceled transaction inside a tool cannot
 poison the caller; the tools-record
-entry type, including the conditional requirement that makes an undeclared
-scope name a compile error (the technique `McpTokenCreateInput` already uses
-for its own `scopes` field); the output codec's object-passthrough/wrap
-branch; the `isError` mapping for declared application errors; `private`
-filtering in `authorizeMcpTool` and `toolsFor`; endpoint-level `private` in
-the registry's path claiming; and the codegen emitters for `mcp` and
-`mcpAuth`.
+entry type, whose `Scope` parameter codegen binds to `AppScope<App>` so an
+undeclared scope name is a compile error; the output codec's
+object-passthrough/wrap branch; the `isError` mapping for declared
+application errors; `private` filtering in `authorizeMcpTool` and `toolsFor`;
+endpoint-level `private` in the registry's path claiming; and the codegen
+emitter for `mcp`.
 
 Deleted: `mcpTool` and its blueprint machinery, `McpToolCtx`, the per-endpoint
 scope descriptor, and the tests that pin them.

@@ -5,12 +5,10 @@ import {
   defineSchema,
   defineTable,
   mcp,
-  mcpAuth,
   procedure,
   query,
   sseProcedure,
   v,
-  type McpAuthBuilder,
   type McpBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
@@ -19,12 +17,9 @@ import {
 const schema = defineSchema({
   rows: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
-const typedMcp = mcp as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const typedMcp = mcp as McpBuilder<typeof schema, "read" | "operate">;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
-
-const auth = typedMcpAuth({ name: "typed", scopes: ["read", "operate"] as const });
 
 const echo = typedQuery({
   description: "Echo lossless protocol values.",
@@ -66,7 +61,6 @@ const streamed = sseProcedure({
 
 const endpoint = typedMcp({
   name: "typed",
-  auth,
   tools: {
     counted_value: { fn: counted, access: { anyOf: ["read"] } },
     echo_values: { fn: echo, access: { anyOf: ["read"] } },
@@ -75,16 +69,14 @@ const endpoint = typedMcp({
 
 typedMcp({
   name: "invalid_scope",
-  auth,
   tools: {
-    // @ts-expect-error a scope the provider never declared cannot be named
+    // @ts-expect-error a scope the vocabulary never declared cannot be named
     admin_only: { fn: echo, access: { anyOf: ["admin"] } },
   },
 });
 
 typedMcp({
   name: "streaming",
-  auth,
   tools: {
     // @ts-expect-error an sseProcedure is not a tool kind
     streamed: { fn: streamed },
@@ -93,7 +85,6 @@ typedMcp({
 
 typedMcp({
   name: "private_with_path",
-  auth,
   private: true,
   // @ts-expect-error a private endpoint claims no path
   path: "/private",
@@ -103,7 +94,6 @@ typedMcp({
 // A private endpoint is reachable only through `aiTools`, and its path is null.
 const privateEndpoint = typedMcp({
   name: "private_agent",
-  auth,
   private: true,
   tools: { echo_values: { fn: echo, access: { anyOf: ["read"] } } },
 });
@@ -155,7 +145,7 @@ const useTools = typedProcedure({
 void useTools;
 
 type GeneratedApi = ApiFromModules<{
-  mcp: { endpoint: typeof endpoint; auth: typeof auth };
+  mcp: { endpoint: typeof endpoint };
   app: { useTools: typeof useTools; echo: typeof echo };
 }>;
 declare const api: GeneratedApi;
@@ -164,5 +154,3 @@ void api.app.useTools;
 void api.app.echo;
 // @ts-expect-error endpoint declarations are server-only
 void api.mcp.endpoint;
-// @ts-expect-error auth providers are server-only
-void api.mcp.auth;

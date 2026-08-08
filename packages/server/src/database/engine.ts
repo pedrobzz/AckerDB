@@ -59,11 +59,12 @@ import {
   type MutationReplaySnapshot,
 } from "./mutation-replay.ts";
 import {
-  MCP_TOKEN_INTERNAL_OBJECTS,
-  McpTokenVault,
-  mcpTokenVaultOwner,
-  verifyMcpTokenVaultState,
-} from "../mcp/token-vault.ts";
+  CREDENTIAL_INTERNAL_OBJECTS,
+  CredentialVault,
+  credentialVaultOwner,
+  verifyCredentialVaultState,
+} from "../auth/credential-vault.ts";
+import type { ExternalAccount } from "../auth/credentials.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
 import { JOBS_TABLE } from "../jobs/table.ts";
@@ -279,7 +280,7 @@ export interface RestorePublicationHook {
   rollback(): void | Promise<void>;
 }
 
-const ENGINE_SCHEMA_VERSION = 12;
+const ENGINE_SCHEMA_VERSION = 13;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
@@ -410,7 +411,7 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     table: "_ackerdb_migrations",
     sql: "CREATE TABLE _ackerdb_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
   },
-  ...MCP_TOKEN_INTERNAL_OBJECTS,
+  ...CREDENTIAL_INTERNAL_OBJECTS,
 ];
 
 const INTERNAL_OBJECT_NAMES = new Set(INTERNAL_OBJECTS.map((object) => object.name));
@@ -1254,7 +1255,7 @@ export class Engine {
   readonly writer: Database;
   readonly reader: Database;
   readonly [mutationReplayOwner]: MutationReplayLedger;
-  readonly [mcpTokenVaultOwner]: McpTokenVault;
+  readonly [credentialVaultOwner]: CredentialVault;
   readonly path: string;
   readonly durability: DurabilityPolicy;
   /** Maximum bind parameters accepted by one statement in the active SQLite library. */
@@ -1333,7 +1334,7 @@ export class Engine {
       }
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
-      this[mcpTokenVaultOwner] = new McpTokenVault(writer);
+      this[credentialVaultOwner] = new CredentialVault(writer);
       // The root scope plans straight into the Engine's own tag store: it is
       // the application's own schema, so there is no consent step to wait for.
       this.rootScope = this.buildStorageScope(null, schema, this.tags);
@@ -1617,7 +1618,7 @@ export class Engine {
       )
       .get();
     if (invalidMigration !== null) throw new CorruptDatabaseError("AckerDB migration history is invalid");
-    verifyMcpTokenVaultState(connection);
+    verifyCredentialVaultState(connection);
   }
 
   commitVersion(connection: Database = this.writer): bigint {
@@ -1641,6 +1642,18 @@ export class Engine {
       .query("SELECT identity FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .get(issuer, subject) as { identity: bigint } | null;
     return account === null ? null : account.identity as Identity;
+  }
+
+  /**
+   * Every external account one Identity answers to, read through the identity
+   * index. It is the inverse of {@link identityForAccount}, and it is how a
+   * delegated credential learns which upstream accounts bound its authority —
+   * an invalidation names an account, never an Identity.
+   */
+  accountsForIdentity(connection: Database, identity: Identity): readonly ExternalAccount[] {
+    return connection
+      .query("SELECT issuer, subject FROM _ackerdb_identity_accounts WHERE identity = ?")
+      .all(identity) as ExternalAccount[];
   }
 
   /** Resolve or provision one exact account. The caller must own the writer transaction. */

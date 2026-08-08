@@ -1,0 +1,337 @@
+/**
+ * `credentials`: issuance and administration of identity credentials from
+ * application functions.
+ *
+ * An authenticated user issues credentials for its agents. Each one is an
+ * Identity whose grant is a subset of the issuer's at issuance
+ * (`issueChildScopes`) and is intersected with the issuer's current grant at
+ * use. `systemCredentials` is the explicitly privileged surface: it may issue
+ * standalone identities (no parent) whose grants come straight from the
+ * vocabulary, which is how an administrative `["*", "_*"]` credential is
+ * minted without any identity holding that authority first.
+ *
+ * Revocations and grant changes are staged on the write set and published
+ * after commit as account invalidations on the one generic auth-invalidation
+ * path (`issuer: ackerdb:credentials`, subject = token id), so live sessions
+ * and leases re-authorize immediately.
+ */
+import type { Database } from "bun:sqlite";
+import { stableEncode, type Identity } from "@ackerdb/core";
+import type { ExternalAccount, Principal, UserPrincipal } from "./credentials.ts";
+import type { ReadRecorder, WriteCollector } from "../database/access.ts";
+import type { Engine } from "../database/engine.ts";
+import { AckerDBError } from "../shared/errors.ts";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { MutationCtx, QueryCtx, TxCtx } from "../app/functions.ts";
+import {
+  credentialVaultOwner,
+  normalizeGrantPatterns,
+  type CreatedCredential,
+  type CredentialCreateInput,
+  type CredentialDescriptor,
+  type CredentialLimits,
+  type CredentialUpdateInput,
+} from "./credential-vault.ts";
+import { CREDENTIAL_ISSUER } from "./credential-token.ts";
+import { issueChildScopes } from "./child-credentials.ts";
+import { markOneTimeResult } from "../runtime/one-time-result.ts";
+
+export type {
+  CreatedCredential,
+  CredentialCreateInput,
+  CredentialDescriptor,
+  CredentialUpdateInput,
+};
+
+/** Any mutation or transaction context, whatever its exact schema. */
+export type WriteContext = MutationCtx<any, object, object> | TxCtx<any, object, object>;
+/** Any invocation context that can read, whatever its exact schema. */
+export type ReadContext = QueryCtx<any, object, object> | WriteContext;
+
+export interface CredentialOperations {
+  create(ctx: WriteContext, input: CredentialCreateInput): CreatedCredential;
+  list(ctx: ReadContext): readonly CredentialDescriptor[];
+  update(ctx: WriteContext, tokenId: string, input: CredentialUpdateInput): void;
+  updateScopes(ctx: WriteContext, tokenId: string, scopes: readonly string[]): void;
+  revoke(ctx: WriteContext, tokenId: string): void;
+}
+
+/** Explicitly privileged administration for backend-managed and standalone identities. */
+export interface SystemCredentialOperations {
+  create(
+    ctx: WriteContext,
+    parentIdentity: Identity | null,
+    input: CredentialCreateInput,
+  ): CreatedCredential;
+  list(ctx: ReadContext, parentIdentity: Identity | null): readonly CredentialDescriptor[];
+  updateScopes(
+    ctx: WriteContext,
+    parentIdentity: Identity | null,
+    tokenId: string,
+    scopes: readonly string[],
+  ): void;
+  revoke(ctx: WriteContext, parentIdentity: Identity | null, tokenId: string): void;
+}
+
+export interface CredentialContextCapability {
+  readonly engine: Engine;
+  readonly connection: Database;
+  readonly principal: Principal;
+  readonly reads: ReadRecorder | null;
+  readonly writes: WriteCollector | null;
+  readonly limits: CredentialLimits;
+  /** Application scopes plus the framework's; grants expand against it. */
+  readonly vocabulary: readonly string[];
+  readonly now: () => number;
+}
+
+const capabilities = new WeakMap<object, CredentialContextCapability>();
+const NO_INVALIDATIONS: readonly ExternalAccount[] = Object.freeze([]);
+
+/**
+ * Stage transaction-local authority changes on the write set, where the
+ * savepoint journal already covers them: a nested revoke that rolls back must
+ * not invalidate anything. One change carries every token id it reaches — a
+ * credential and its delegates — because a live descendant matches on its own
+ * subject and would otherwise keep an authority its source no longer has.
+ */
+function stageCredentialInvalidations(
+  writes: WriteCollector,
+  tokenIds: readonly string[],
+): void {
+  for (const tokenId of tokenIds) writes.credentialInvalidations.push(tokenId);
+}
+
+/** Consume one committed transaction's staged authority changes exactly once. */
+export function takeCredentialInvalidations(
+  writes: WriteCollector,
+): readonly ExternalAccount[] {
+  const tokenIds = writes.credentialInvalidations;
+  if (tokenIds.length === 0) return NO_INVALIDATIONS;
+  const accounts = tokenIds.map((subject) =>
+    Object.freeze({ issuer: CREDENTIAL_ISSUER, subject }));
+  tokenIds.length = 0;
+  return Object.freeze(accounts);
+}
+
+/** Expose reserved Engine state only while one exact Runtime invocation is active. */
+export async function withCredentialContext<T extends object, R>(
+  context: T,
+  capability: CredentialContextCapability,
+  work: (ctx: T) => R | Promise<R>,
+): Promise<Awaited<R>> {
+  const ctx = Object.freeze(context);
+  capabilities.set(ctx, capability);
+  try {
+    return await work(ctx);
+  } finally {
+    capabilities.delete(ctx);
+  }
+}
+
+function invocationCapability(ctx: object): CredentialContextCapability {
+  const found = capabilities.get(ctx);
+  if (found === undefined) {
+    throw new AckerDBError(
+      "unauthorized",
+      "credential operations require an AckerDB invocation context",
+    );
+  }
+  return found;
+}
+
+/**
+ * A capability whose write authority is settled. Resolving one is the only way
+ * to obtain it, so the write operations below never test for a write set and
+ * never assert one — the type is the check, and a future operation cannot
+ * forget it.
+ */
+type WriteCapability = CredentialContextCapability & { readonly writes: WriteCollector };
+
+function ownerCapability(ctx: object): CredentialContextCapability & {
+  readonly principal: Principal & { readonly kind: "user"; readonly identity: Identity };
+} {
+  const found = invocationCapability(ctx);
+  if (found.principal.kind !== "user") {
+    throw new AckerDBError(
+      "unauthorized",
+      "credential administration requires a user identity",
+    );
+  }
+  return found as CredentialContextCapability & {
+    readonly principal: Principal & { readonly kind: "user"; readonly identity: Identity };
+  };
+}
+
+function systemCapability(ctx: object): CredentialContextCapability {
+  const found = invocationCapability(ctx);
+  if (found.principal.kind !== "system") {
+    throw new AckerDBError(
+      "unauthorized",
+      "system credential administration requires system authority",
+    );
+  }
+  return found;
+}
+
+function writing<T extends CredentialContextCapability>(capability: T): T & WriteCapability {
+  if (capability.writes === null) {
+    throw new AckerDBError("validation", "credential writes require a mutation or transaction");
+  }
+  return capability as T & WriteCapability;
+}
+
+function ownerKey(parentIdentity: Identity | null): string {
+  return `internal:credentials:${stableEncode([parentIdentity])}`;
+}
+
+/**
+ * The subset invariant at issuance: whatever the issuer asks for must expand
+ * inside the grant the issuer itself currently holds.
+ */
+function delegable(
+  owner: { readonly principal: UserPrincipal; readonly vocabulary: readonly string[] },
+  scopes: unknown,
+  where: string,
+): void {
+  issueChildScopes(
+    owner.principal.scopes,
+    normalizeGrantPatterns(scopes, owner.vocabulary, where),
+    owner.vocabulary,
+  );
+}
+
+/**
+ * The administration itself, written once against a resolved capability and an
+ * owner. User and system authority differ in exactly two things: who is allowed
+ * to ask, and whether the request is bounded by a grant the asker holds. Both
+ * are settled before these run.
+ *
+ * Keeping the orchestration here is what stops the two surfaces from drifting.
+ * Every operation owes the same three things beyond its vault call — record the
+ * owner key so a reactive list re-runs, mark a token-bearing result one-time,
+ * and stage the invalidations the change reaches — and an invariant added to
+ * one surface but forgotten on the other is a security bug, not an
+ * inconsistency.
+ */
+function createCredential(
+  capability: WriteCapability,
+  owner: Identity | null,
+  input: CredentialCreateInput,
+): CreatedCredential {
+  const created = capability.engine[credentialVaultOwner].create(
+    owner,
+    input,
+    capability.vocabulary,
+    capability.limits,
+    capability.now(),
+  );
+  capability.writes.keys.add(ownerKey(owner));
+  markOneTimeResult(capability.writes);
+  return created;
+}
+
+function listCredentials(
+  capability: CredentialContextCapability,
+  owner: Identity | null,
+): readonly CredentialDescriptor[] {
+  capability.reads?.add(ownerKey(owner));
+  return capability.engine[credentialVaultOwner].list(capability.connection, owner);
+}
+
+function updateCredentialScopes(
+  capability: WriteCapability,
+  owner: Identity | null,
+  tokenId: string,
+  scopes: readonly string[],
+): void {
+  // Any grant change re-authorizes live holders: narrowing must revoke
+  // authority immediately, and widening is only visible after re-auth.
+  const reached = capability.engine[credentialVaultOwner].updateScopes(
+    owner,
+    tokenId,
+    scopes,
+    capability.vocabulary,
+    capability.now(),
+  );
+  capability.writes.keys.add(ownerKey(owner));
+  stageCredentialInvalidations(capability.writes, reached);
+}
+
+function revokeCredential(
+  capability: WriteCapability,
+  owner: Identity | null,
+  tokenId: string,
+): void {
+  const revoked = capability.engine[credentialVaultOwner].revoke(owner, tokenId);
+  capability.writes.keys.add(ownerKey(owner));
+  stageCredentialInvalidations(capability.writes, revoked);
+}
+
+/**
+ * Credential issuance and administration for the calling user identity. Its
+ * owner is always itself, and every grant it asks for is bounded by the grant
+ * it holds — the subset invariant at issuance.
+ */
+export const credentials: CredentialOperations = Object.freeze({
+  create(ctx: WriteContext, input: CredentialCreateInput): CreatedCredential {
+    const owner = writing(ownerCapability(ctx));
+    if (input !== null && typeof input === "object" && input.scopes !== undefined) {
+      delegable(owner, input.scopes, "credential scopes");
+    }
+    return createCredential(owner, owner.principal.identity, input);
+  },
+  list(ctx: ReadContext): readonly CredentialDescriptor[] {
+    const owner = ownerCapability(ctx);
+    return listCredentials(owner, owner.principal.identity);
+  },
+  update(ctx: WriteContext, tokenId: string, input: CredentialUpdateInput): void {
+    const owner = writing(ownerCapability(ctx));
+    owner.engine[credentialVaultOwner].update(
+      owner.principal.identity,
+      tokenId,
+      input,
+      owner.limits,
+      owner.now(),
+    );
+    owner.writes.keys.add(ownerKey(owner.principal.identity));
+  },
+  updateScopes(ctx: WriteContext, tokenId: string, scopes: readonly string[]): void {
+    const owner = writing(ownerCapability(ctx));
+    delegable(owner, scopes, "credential scopes");
+    updateCredentialScopes(owner, owner.principal.identity, tokenId, scopes);
+  },
+  revoke(ctx: WriteContext, tokenId: string): void {
+    const owner = writing(ownerCapability(ctx));
+    revokeCredential(owner, owner.principal.identity, tokenId);
+  },
+});
+
+/**
+ * System-authority credential administration, including standalone identities.
+ * It names its owner rather than being one, and nothing bounds what it may
+ * grant: system authority is the framework's own, already unrestricted.
+ */
+export const systemCredentials: SystemCredentialOperations = Object.freeze({
+  create(
+    ctx: WriteContext,
+    parentIdentity: Identity | null,
+    input: CredentialCreateInput,
+  ): CreatedCredential {
+    return createCredential(writing(systemCapability(ctx)), parentIdentity, input);
+  },
+  list(ctx: ReadContext, parentIdentity: Identity | null): readonly CredentialDescriptor[] {
+    return listCredentials(systemCapability(ctx), parentIdentity);
+  },
+  updateScopes(
+    ctx: WriteContext,
+    parentIdentity: Identity | null,
+    tokenId: string,
+    scopes: readonly string[],
+  ): void {
+    updateCredentialScopes(writing(systemCapability(ctx)), parentIdentity, tokenId, scopes);
+  },
+  revoke(ctx: WriteContext, parentIdentity: Identity | null, tokenId: string): void {
+    revokeCredential(writing(systemCapability(ctx)), parentIdentity, tokenId);
+  },
+});

@@ -42,9 +42,7 @@ export class ApplicationSignals {
     principal: Principal,
     override?: Pick<ApplicationLogCallContext, "functionAddress" | "functionKind">,
   ): AnalyticsTracker {
-    const identity = principal.kind === "user" || principal.kind === "mcp"
-      ? principal.identity
-      : undefined;
+    const identity = principal.kind === "user" ? principal.identity : undefined;
     return Object.freeze({
       track: (event: string, properties?: TelemetryMetadata): void => {
         try {

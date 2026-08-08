@@ -2,20 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { v } from "../../src/validation/v.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { serve } from "../../src/transport/server.ts";
+import { credentials } from "../../src/auth/credential-context.ts";
 import {
-  cleanupMcpTokenFixtures,
+  cleanupCredentialFixtures,
   databasePath,
   fixture,
+  FIXTURE_SCOPES,
   mutationMessage,
   request,
   session,
   trackCleanup,
   typedMutation,
   typedMcp,
-  typedMcpAuth,
   typedProcedure,
   user,
-} from "../support/mcp-token-fixture.ts";
+} from "../support/credential-fixture.ts";
 import { deferred, within, type Deferred } from "ackerdb-test-support/async";
 
 interface ToolGate {
@@ -101,7 +102,9 @@ const queueAgentWrite = typedProcedure({
   args: { key: v.string() },
   returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     const identity = ctx.auth.identity;
     requiredGate(args.key).started.resolve();
     const written = await ctx.tx((tx) =>
@@ -117,7 +120,9 @@ const queueScopedWrite = typedProcedure({
   args: { key: v.string() },
   returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
+      throw new Error("expected a credential-backed principal");
+    }
     const identity = ctx.auth.identity;
     requiredGate(args.key).started.resolve();
     const written = await ctx.tx((tx) =>
@@ -127,10 +132,8 @@ const queueScopedWrite = typedProcedure({
   },
 });
 
-const revocationAgentAuth = typedMcpAuth({ name: "revocation_agent" });
 const revocationAgentMcp = typedMcp({
   name: "revocation_agent",
-  auth: revocationAgentAuth,
   path: "/revocation/agent/mcp",
   tools: {
     hold_agent: { fn: holdAgent },
@@ -138,13 +141,8 @@ const revocationAgentMcp = typedMcp({
   },
 });
 
-const revocationScopedAuth = typedMcpAuth({
-  name: "revocation_scoped",
-  scopes: ["orders.get"] as const,
-});
 const revocationScopedMcp = typedMcp({
   name: "revocation_scoped",
-  auth: revocationScopedAuth,
   path: "/revocation/scoped/mcp",
   tools: {
     hold_scoped: { fn: holdScoped, access: { anyOf: ["orders.get"] } },
@@ -156,7 +154,7 @@ const rollbackAgentRevoke = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    revocationAgentAuth.tokens.revoke(ctx, args.id);
+    credentials.revoke(ctx, args.id);
     throw new Error("roll back agent revoke");
   },
 });
@@ -165,7 +163,7 @@ const rollbackScopeReduction = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    revocationScopedAuth.tokens.updateScopes(ctx, args.id, []);
+    credentials.updateScopes(ctx, args.id, []);
     throw new Error("roll back scope reduction");
   },
 });
@@ -177,7 +175,7 @@ const gatedAgentRevoke = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    revocationAgentAuth.tokens.revoke(ctx, args.id);
+    credentials.revoke(ctx, args.id);
   },
 });
 
@@ -188,14 +186,14 @@ const gatedScopeReduction = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    revocationScopedAuth.tokens.updateScopes(ctx, args.id, []);
+    credentials.updateScopes(ctx, args.id, []);
   },
 });
 
 const createRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => revocationAgentAuth.tokens.create(ctx, {
+  handler: (ctx, args) => credentials.create(ctx, {
     name: args.name,
     metadata: {},
   }),
@@ -204,7 +202,7 @@ const createRevocationAgentToken = typedMutation({
 const createRevocationScopedToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => revocationScopedAuth.tokens.create(ctx, {
+  handler: (ctx, args) => credentials.create(ctx, {
     name: args.name,
     metadata: {},
     scopes: ["orders.get"],
@@ -214,7 +212,7 @@ const createRevocationScopedToken = typedMutation({
 const updateRevocationAgentMetadata = typedMutation({
   access: "authenticated",
   args: { id: v.string(), metadata: v.jsonb<Readonly<Record<string, unknown>>>() },
-  handler: (ctx, args) => revocationAgentAuth.tokens.update(ctx, args.id, {
+  handler: (ctx, args) => credentials.update(ctx, args.id, {
     metadata: args.metadata,
   }),
 });
@@ -222,7 +220,7 @@ const updateRevocationAgentMetadata = typedMutation({
 const revokeRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => revocationAgentAuth.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => credentials.revoke(ctx, args.id),
 });
 
 const extraModules = {
@@ -310,7 +308,7 @@ async function createScopedToken(
 afterEach(async () => {
   for (const gate of gates.values()) gate.release.resolve();
   gates.clear();
-  await cleanupMcpTokenFixtures();
+  await cleanupCredentialFixtures();
 });
 
 describe("bounded live MCP credential invalidation", () => {
@@ -323,7 +321,7 @@ describe("bounded live MCP credential invalidation", () => {
         undefined,
         extraModules,
       );
-      const principal = await user(runtime, `owner-${authorityChange}`);
+      const principal = await user(runtime, `owner-${authorityChange}`, FIXTURE_SCOPES);
       const owner = session(principal, `owner-${authorityChange}`);
       await runtime.openSession(owner);
       const target =
@@ -419,13 +417,9 @@ describe("bounded live MCP credential invalidation", () => {
       expect(fresh.status).toBe(authorityChange === "revoke" ? 401 : 403);
       if (authorityChange === "scope reduction") {
         expect(
-          (
-            await runtime.authenticateMcpToken(
-              "revocation_scoped",
-              target.token,
-              "fresh-reduced-grant",
-            )
-          ).scopes,
+          (await runtime.authenticateCredential(target.token, "fresh-reduced-grant") as {
+            readonly scopes: readonly string[];
+          }).scopes,
         ).toEqual([]);
       }
     });
@@ -437,7 +431,7 @@ describe("bounded live MCP credential invalidation", () => {
       undefined,
       extraModules,
     );
-    const principal = await user(runtime, "rollback-owner");
+    const principal = await user(runtime, "rollback-owner", FIXTURE_SCOPES);
     const owner = session(principal, "rollback-owner");
     await runtime.openSession(owner);
     const agent = await createAgentToken(runtime, owner, 10, "Agent");
@@ -516,13 +510,9 @@ describe("bounded live MCP credential invalidation", () => {
     ).rejects.toThrow("roll back scope reduction");
     expect(scopedGate.aborted).toBe(false);
     expect(
-      (
-        await runtime.authenticateMcpToken(
-          "revocation_scoped",
-          scoped.token,
-          "fresh-after-rollback",
-        )
-      ).scopes,
+      (await runtime.authenticateCredential(scoped.token, "fresh-after-rollback") as {
+        readonly scopes: readonly string[];
+      }).scopes,
     ).toEqual(["orders.get"]);
     scopedGate.release.resolve();
     expect((await within(activeScoped)).status).toBe(200);
@@ -533,8 +523,14 @@ describe("bounded live MCP credential invalidation", () => {
       databasePath("ackerdb-mcp-isolation-"),
       undefined,
       extraModules,
+      {
+        limits: {
+          ...PRODUCTION_LIMITS,
+          credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 8 },
+        },
+      },
     );
-    const principal = await user(runtime, "isolation-owner");
+    const principal = await user(runtime, "isolation-owner", FIXTURE_SCOPES);
     const owner = session(principal, "isolation-owner");
     await runtime.openSession(owner);
     const revoked = await createAgentToken(runtime, owner, 20, "Revoked");

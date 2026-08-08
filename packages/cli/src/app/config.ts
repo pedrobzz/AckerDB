@@ -66,6 +66,8 @@ export interface AppConfig {
   telemetry: TelemetryMode;
   /** The application's one configured authentication authority. Bearer credentials fail closed when omitted. */
   authentication?: AuthenticationConfig;
+  /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
+  scopeResolver?: string;
   /** Workload-principal OAuth scope required by the operational status endpoint. */
   statusScope: string;
   /** One active immutable File byte backend. */
@@ -84,6 +86,7 @@ interface RawConfig {
   port?: number;
   oidc?: Omit<OidcVerifierOptions, "fetch">;
   credentialVerifier?: string;
+  scopeResolver?: string;
   statusScope?: string;
   files?: unknown;
 }
@@ -100,6 +103,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "port",
   "oidc",
   "credentialVerifier",
+  "scopeResolver",
   "statusScope",
   "files",
 ]);
@@ -146,10 +150,10 @@ function listenerHostname(value: unknown): string {
   return hostname;
 }
 
-function optionalModulePath(value: unknown): string | undefined {
+function optionalModulePath(value: unknown, name: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error("credentialVerifier must be a non-empty module path");
+    throw new Error(`${name} must be a non-empty module path`);
   }
   return value;
 }
@@ -339,12 +343,13 @@ export function loadConfig(
   const dbDir = abs(raw.db ?? "./.ackerdb");
   const hostname = listenerHostname(raw.hostname);
   const port = listenerPort(raw.port);
-  const credentialVerifier = optionalModulePath(raw.credentialVerifier);
+  const credentialVerifier = optionalModulePath(raw.credentialVerifier, "credentialVerifier");
   const authentication: AuthenticationConfig | undefined = raw.oidc !== undefined
     ? { kind: "oidc", options: raw.oidc }
     : credentialVerifier === undefined
       ? undefined
       : { kind: "credential-verifier-module", path: abs(credentialVerifier) };
+  const scopeResolver = optionalModulePath(raw.scopeResolver, "scopeResolver");
   return {
     appDir: dir,
     appPath: abs(raw.app ?? "./app.ts"),
@@ -359,6 +364,7 @@ export function loadConfig(
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(authentication === undefined ? {} : { authentication }),
+    ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
     statusScope: statusScope(raw.statusScope),
     files: resolveFilesConfig(raw.files, {
       appDir: dir,

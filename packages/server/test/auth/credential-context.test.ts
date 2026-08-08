@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
+import { credentials } from "../../src/auth/credential-context.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
   mutation,
@@ -15,8 +16,6 @@ import {
 } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
-  type McpAuthBuilder,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -25,13 +24,11 @@ import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session/contract.ts";
-import { mutationMessage, queryMessage, request } from "../support/mcp-token-fixture.ts";
+import { mutationMessage, queryMessage, request } from "../support/credential-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 const schema = defineSchema({});
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const hiddenAuth = typedMcpAuth({ name: "hidden" });
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
@@ -41,23 +38,23 @@ afterEach(async () => {
 });
 
 function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionRuntimeContext } {
-  const hiddenMcp = typedMcp({ name: "hidden", auth: hiddenAuth, tools: {} });
+  const hiddenMcp = typedMcp({ name: "hidden", tools: {} });
   void hiddenMcp;
   const list = typedQuery({
     access: "public",
     args: {},
-    handler: (ctx) => hiddenAuth.tokens.list(ctx),
+    handler: (ctx) => credentials.list(ctx),
   });
   const create = typedMutation({
     access: "public",
     args: {},
-    handler: (ctx) => hiddenAuth.tokens.create(ctx, { name: "hidden", metadata: {} }),
+    handler: (ctx) => credentials.create(ctx, { name: "hidden", metadata: {} }),
   });
   const transact = typedProcedure({
     access: "public",
     http: true,
     args: {},
-    handler: (ctx) => ctx.tx((tx) => hiddenAuth.tokens.list(tx)),
+    handler: (ctx) => ctx.tx((tx) => credentials.list(tx)),
   });
   const registry = new Registry({ ordinary: { create, list, transact } });
   expect(registry.mcps.size).toBe(0);
@@ -82,8 +79,8 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   return { runtime, session };
 }
 
-describe("zero-MCP Runtime context", () => {
-  test("keeps query, mutation, and procedure transactions on the direct invocation path", async () => {
+describe("credential operations without an MCP endpoint", () => {
+  test("binds credential operations everywhere while denying anonymous administration", async () => {
     const { runtime, session } = noMcpRuntime();
     await runtime.openSession(session);
 
@@ -92,14 +89,14 @@ describe("zero-MCP Runtime context", () => {
       request(queryMessage(1, "ordinary.list")),
     )).rejects.toMatchObject({
       code: "unauthorized",
-      message: "MCP token operations require a AckerDB invocation context",
+      message: "credential administration requires a user identity",
     });
     await expect(runtime.mutation(
       session,
       request(mutationMessage(2, "2", {}, "ordinary.create")),
     )).rejects.toMatchObject({
       code: "unauthorized",
-      message: "MCP token operations require a AckerDB invocation context",
+      message: "credential administration requires a user identity",
     });
 
     const response = await runtime.runProcedure({
@@ -111,7 +108,7 @@ describe("zero-MCP Runtime context", () => {
     });
     expect(decode(await response.text())).toMatchObject({
       code: "unauthorized",
-      message: "MCP token operations require a AckerDB invocation context",
+      message: "credential administration requires a user identity",
     });
   });
 });

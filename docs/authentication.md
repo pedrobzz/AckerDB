@@ -222,6 +222,12 @@ of principal, and its cause is not exposed. Access is checked after argument
 validation and before the handler starts. Nested calls run the callee's
 validation and policy too.
 
+A function may additionally declare a `scopes` requirement, enforced at this
+same funnel immediately after the policy above. The policy decides whether a
+caller is admitted at all; the requirement decides what an admitted caller may
+reach. See [Scopes and identity credentials](scopes.md) for the vocabulary,
+wildcard grants, and the credential vault that issues them.
+
 ## External OIDC configuration
 
 The CLI reads OIDC configuration from `.ackerdb.config.json` and passes it to

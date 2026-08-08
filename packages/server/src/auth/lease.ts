@@ -7,8 +7,10 @@ import {
   type CredentialVerifier,
   type IdentityResolver,
   type PrincipalInvalidation,
+  type ScopeResolver,
 } from "./credentials.ts";
 import {
+  invalidationReaches,
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "./invalidation.ts";
@@ -32,6 +34,7 @@ export interface AcquireAuthLeaseOptions {
   readonly credential: Credential;
   readonly verifier?: CredentialVerifier;
   readonly resolveIdentity: IdentityResolver;
+  readonly resolveScopes?: ScopeResolver;
   readonly signal?: AbortSignal;
   readonly revocationDeadlineMs: number;
   readonly clock?: AuthLeaseClock;
@@ -71,14 +74,6 @@ function revoked(): AckerDBError {
 
 function expired(): AckerDBError {
   return new AckerDBError("unauthenticated", "credential expired");
-}
-
-function matches(principal: AuthenticatedPrincipal, invalidation: PrincipalInvalidation): boolean {
-  return (
-    principal.issuer === invalidation.issuer &&
-    (invalidation.subject === undefined || principal.subject === invalidation.subject) &&
-    (invalidation.tokenId === undefined || principal.tokenId === invalidation.tokenId)
-  );
 }
 
 export function validateCredentialVerifierRevocation(
@@ -150,6 +145,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
       undefined,
       options.resolveIdentity,
       () => clock.now(),
+      options.resolveScopes,
     );
     throw new Error("unreachable credential verification result");
   }
@@ -212,10 +208,12 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   }
 
   const onInvalidation = (invalidation: PrincipalInvalidation): void => {
-    if (principal === undefined || matches(principal, invalidation)) abort(revoked());
+    if (principal === undefined || invalidationReaches(principal, invalidation)) abort(revoked());
   };
 
   const scheduleExpiry = (verified: AuthenticatedPrincipal): void => {
+    // Vault credentials never expire; invalidation revokes them instead.
+    if (!Number.isFinite(verified.expiresAt)) return;
     try {
       const now = clock.now();
       if (!Number.isFinite(now)) throw new RangeError("auth lease clock must return finite milliseconds");
@@ -265,6 +263,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         verifier,
         (account) => options.resolveIdentity(account, controller.signal),
         () => clock.now(),
+        options.resolveScopes,
       ),
       interrupted,
     ]);

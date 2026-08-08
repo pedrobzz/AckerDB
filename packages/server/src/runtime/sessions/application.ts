@@ -297,7 +297,13 @@ export class RuntimeSessionApplication {
           sessionId: context.clientSessionId,
           requestId: message.mutationRequestId,
           issuedAt: message.issuedAt,
-          principalFingerprint: digest(context.principal),
+          // The caller's ownership key, exactly as the HTTP path already uses:
+          // a replay is the same caller's when the Identity matches, not when
+          // its credential's expiry and claims happen to match too. Digesting
+          // the whole principal would make a token refresh — or a non-expiring
+          // vault credential, whose deadline is not even encodable — look like
+          // a different caller.
+          principalFingerprint: context.fairnessKey,
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },

@@ -155,7 +155,7 @@ export class RuntimeSessionStore {
         "new sessions must start at auth epoch 0",
       );
     }
-    if (context.principal.kind === "system" || context.principal.kind === "mcp") {
+    if (context.principal.kind === "system") {
       throw new AckerDBError(
         "unauthorized",
         "principal cannot authenticate the AckerDB client API",
