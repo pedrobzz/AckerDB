@@ -18,6 +18,18 @@ import { adminApi, getRef, httpPathForAddress, type AdminSystemInfo } from "@ack
 /** The proxy's answer when it cannot reach the application; see the launcher. */
 const PROXY_UNREACHABLE_STATUS = 502;
 
+/**
+ * How long the probe waits for an answer.
+ *
+ * The proxy deliberately imposes no deadline of its own — SSE streams and live
+ * tails are unbounded by design, and a blanket timeout there would cut them —
+ * so a target that accepts a connection and never answers would leave this
+ * request outstanding forever, and the screen would sit on "connecting" while
+ * describing the exact situation the operator ran the command to diagnose. The
+ * bound belongs to the one request that owes a prompt answer.
+ */
+const PROBE_TIMEOUT_MS = 8_000;
+
 export const ADMIN_SYSTEM_INFO_PATH = httpPathForAddress(getRef(adminApi.system.info));
 
 export type StudioProbe =
@@ -49,7 +61,10 @@ function refusal(status: number, body: unknown): StudioProbe {
  */
 export type StudioFetch = (
   path: string,
-  init?: { readonly headers?: Readonly<Record<string, string>> },
+  init?: {
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly signal?: AbortSignal;
+  },
 ) => Promise<Response>;
 
 /** Ask the Admin API whether this credential opens it. */
@@ -61,10 +76,11 @@ export async function probeAdminApi(
   try {
     response = await request(ADMIN_SYSTEM_INFO_PATH, {
       headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
   } catch (error) {
-    // Studio answered the page, so a failed request here is the hop to the
-    // application, not the browser's connection to Studio.
+    // Studio answered the page, so a failed or abandoned request here is the
+    // hop to the application, not the browser's connection to Studio.
     return {
       status: "unreachable",
       detail: error instanceof Error ? error.message : "the request did not complete",

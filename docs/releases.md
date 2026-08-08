@@ -170,14 +170,15 @@ would not fire, and re-enabling one for a single package would trade away the
 supply-chain posture those flags exist to hold.
 
 **The stage proves the bundle packs reproducibly, not merely that it builds.**
-It builds and packs twice and compares tarball digests, because byte-identity
-is what decides whether an existing version is skipped or collides: a bundle
-that changed for no reason would make a resumed or re-dispatched publication
-unrecoverable. Every path that packs Studio — the npm publisher, the local beta
-publisher, and the packed-package gate — builds the bundle first, so a tarball
-always carries a bundle built from the tree it was packed from. The gate then
-asserts the packed `dist/index.html` shipped and that every asset it references
-shipped beside it.
+It builds and packs twice and compares tarball digests, because byte-identity is
+what decides whether an existing version is skipped or collides: a bundle that
+changed for no reason would make a resumed or re-dispatched publication
+unrecoverable. The publisher runs the same check again, after the manifests
+carry the version being released, so the compared tarballs are the artifact that
+run will actually send rather than a same-shaped stand-in; the workflow stage is
+what fails first, before any manifest has moved. The packed-package gate builds
+the bundle the same way and then asserts that `dist/index.html` shipped and that
+every asset it references shipped beside it.
 
 The workflow's manual dispatch exists only to bootstrap or resume delivery from
 the current protected `canary` or `main` commit. It crosses the same environment,

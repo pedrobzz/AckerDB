@@ -74,6 +74,22 @@ The single exception is a browser landing on the bare origin: a `GET` of `/`
 redirects into `/_studio/`. It is restricted to navigations because `/` is a
 legal MCP endpoint path and MCP speaks `POST`.
 
+Every request is confined to the one origin `acker studio` was pointed at,
+whatever its path claims. Sharing an origin also has two consequences the proxy
+holds deliberately:
+
+- **Every proxied response carries `Content-Security-Policy: sandbox`**, so an
+  application document rendered on the Studio origin runs in an opaque origin
+  with scripting off and cannot read the credential Studio holds. It is a
+  document directive: the SPA's own `fetch` and WebSocket calls to those same
+  routes are untouched, and the shell — served from the bundle, never proxied —
+  keeps its full origin.
+- **Cookies do not cross the hop in either direction.** They are host-scoped and
+  ignore the port, so forwarding them would carry another local service's cookie
+  out to a remote `--url` target and land that target's `Set-Cookie` on every
+  local service sharing the host. AckerDB authenticates with bearer credentials
+  and sets no cookies, so nothing is lost.
+
 ### While the application is down
 
 Studio serves anyway. The shell loads, the connect screen shows *application
@@ -98,22 +114,34 @@ which is what makes signing in and later rotations reconnect nothing: a fixed
 credential would make the React provider close its client and construct a new
 one on every change, dropping every live subscription.
 
-The connect screen has five honest states:
+The connect screen has six honest states:
 
-| state | what it means |
-| --- | --- |
-| connecting | the first connect attempt has not settled |
-| application unreachable | the application is not answering; no credential can be checked |
-| sign in | the application answers and Studio holds no credential |
-| credential refused | the credential Studio holds does not open the Admin API |
-| connected | signed in, showing the application `admin.system.info` named |
+| state | what it means | what to do |
+| --- | --- | --- |
+| connecting | nothing has settled yet | wait |
+| application unreachable | the application is not answering Studio | start it, or check the target |
+| sign in | the application answers and Studio holds no credential | sign in |
+| credential refused | the credential was rejected, or holds no admin grant | use another credential |
+| signed in, no session | the credential opens the Admin API and the client still cannot hold a session | report it; another credential will not help |
+| connected | signed in, showing what `admin.system.info` named | proceed |
 
-The transport is read before anything about credentials, because a stopped
-application makes every statement about a credential unknowable. And the state
-is decided by an authenticated probe against `admin.system.info` rather than by
-the handshake alone: a credential can authenticate perfectly and still hold no
-`_admin:` grant, and reaching a real admin function is the only proof Studio is
-usable.
+Reachability is read before anything about credentials, because a stopped
+application makes every statement about a credential unknowable.
+
+The verdict comes from an **authenticated probe** — one request to
+`admin.system.info` on the Studio origin — rather than from a live subscription,
+because it has to answer *before* a session exists. A client that has never
+connected reports "connecting" indefinitely, which is exactly the
+application-down case the screen must diagnose; the proxy's own `502` is a
+first-class answer instead of a silence. It is also why the probe rather than
+the handshake decides refusal: a credential can authenticate perfectly and hold
+no `_admin:` grant.
+
+"Connected" needs both facts, though. A request answers before a socket does, so
+the probe alone would report connected while the session is still being
+established — or never is. When the two disagree the screen names which half
+failed, because "your credential was refused" and "Studio cannot hold a session
+with a credential that plainly works" send you to entirely different places.
 
 ## What the application sees
 

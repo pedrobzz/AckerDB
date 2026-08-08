@@ -148,6 +148,19 @@ export function ConnectScreen() {
           <CredentialForm busy={busy} onSubmit={signIn} />
         </>
       )}
+      {connection.state === "session-failed" && (
+        <>
+          <h2>Signed in, but Studio cannot hold a session</h2>
+          <p>{connection.detail}</p>
+          <p>
+            This credential opens the Admin API, so another one will not help.
+            Report the message above.
+          </p>
+          <button type="button" onClick={forget} disabled={busy}>
+            Forget this credential
+          </button>
+        </>
+      )}
       {connection.state === "authenticated" && (
         <>
           <h2>Connected</h2>

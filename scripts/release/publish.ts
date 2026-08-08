@@ -35,7 +35,7 @@ import {
 } from "../../packages/realtime/native/webrtc/evidence.ts";
 import { WEBRTC_TARGETS } from "../../packages/realtime/native/webrtc/provenance.ts";
 import { ensureNativeArtifacts } from "./native-artifacts.ts";
-import { buildStudioDist } from "./studio-dist.ts";
+import { assertStudioDistReproducible } from "./studio-dist.ts";
 import {
   assertStableVersion,
   nextBetaVersion,
@@ -309,11 +309,13 @@ try {
     await Bun.write(path, `${JSON.stringify({ ...manifest, version, loader }, null, 2)}\n`);
   }
   assertWebRtcDistribution();
-  // Studio's dist/ is git-ignored and built at release time. `release.yml` runs
-  // the build stage before this script and proves it reproducible; building
-  // again here is what makes the local beta path and a resumed dispatch pack a
-  // bundle from this tree rather than whatever happened to be on disk.
-  buildStudioDist();
+  // Studio's dist/ is git-ignored and built at release time. Building it here —
+  // after the manifests carry the version about to be published — is what makes
+  // the assertion evidence about the artifact this run will actually send: the
+  // two tarballs it compares are packed from the released manifest, so their
+  // agreeing is what the byte-identity republish rule needs. `release.yml` runs
+  // the same check first, to fail before any manifest has moved.
+  await assertStudioDistReproducible();
 
   const tarballs = new Map<string, string>();
   for (const pkg of PACKAGES) {

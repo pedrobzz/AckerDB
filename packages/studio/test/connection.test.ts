@@ -71,22 +71,32 @@ describe("what Studio says about itself", () => {
       .toEqual({ state: "refused", detail: "unauthorized" });
   });
 
-  test("a credential the client cannot hold a session with is refused, even when the probe opens", () => {
-    // The two facts disagreeing is the case this ordering exists for: saying
-    // "connected" while no session can be established is the plausible-looking
-    // answer nobody notices.
+  test("a credential the server rejected on the socket is refused too", () => {
     expect(studioConnection(input({
       probe: OPEN,
       authentication: { phase: "refresh-required", error: clientError("credential is not valid") },
     }))).toEqual({ state: "refused", detail: "credential is not valid" });
+  });
+
+  test("a credential that opens the surface but cannot hold a session is not a refusal", () => {
+    // Calling this "credential refused" sends the operator hunting for a token
+    // that is already correct; it is the session that is broken, not the grant.
     expect(studioConnection(input({
       probe: OPEN,
       authentication: { phase: "failed", error: clientError("internal error") },
-    }))).toEqual({ state: "refused", detail: "internal error" });
+    }))).toEqual({ state: "session-failed", detail: "internal error" });
   });
 
-  test("an open probe and a held session is what makes Studio authenticated", () => {
+  test("Connected needs both facts, because a request answers before a session exists", () => {
     expect(studioConnection(input({ probe: OPEN })))
       .toEqual({ state: "authenticated", application: APPLICATION });
+    // The probe is open and the handshake has not finished: still connecting.
+    expect(studioConnection(input({
+      probe: OPEN,
+      authentication: { phase: "authenticating", credential: "source" },
+    }))).toEqual({ state: "connecting" });
+    // And a session with no answer from the surface is not Connected either.
+    expect(studioConnection(input({ probe: { status: "pending" } })))
+      .toEqual({ state: "connecting" });
   });
 });

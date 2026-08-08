@@ -76,6 +76,11 @@ async function packedDigest(destination: string): Promise<string> {
  * Build and pack twice, and refuse a bundle whose tarball differs between the
  * two. It leaves a freshly built `dist/` behind, which is the state the
  * publication that follows expects.
+ *
+ * `publish.ts` calls this *after* retargeting manifests to the version being
+ * released, so the tarballs it compares are the artifact that run will publish
+ * rather than a same-shaped stand-in. The release workflow calls it first as
+ * well, to fail before any manifest has moved.
  */
 export async function assertStudioDistReproducible(): Promise<string> {
   const scratch = mkdtempSync(join(tmpdir(), "ackerdb-studio-reproducible-"));

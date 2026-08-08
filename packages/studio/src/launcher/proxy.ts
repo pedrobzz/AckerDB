@@ -7,6 +7,12 @@
  * **A down application is an answer, not a crash.** HTTP gets a 502 naming the
  * target, a WebSocket closes with 1011, and Studio keeps serving — an operator
  * who typed the wrong port reads a diagnosis instead of finding a dead port.
+ *
+ * **Sharing an origin is paid for here.** The application's documents land in
+ * the origin holding an Admin Credential, its cookies would ride a hop they
+ * were never scoped for, and a request path can name a host of its own if it is
+ * resolved rather than assigned. Each of the three is closed below, at the one
+ * place every byte crosses.
  */
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 
@@ -20,6 +26,14 @@ const HOP_BY_HOP_HEADERS = [
   "trailer",
   "transfer-encoding",
   "upgrade",
+  // Cookies are scoped by host and ignore the port, so an ambient cookie set by
+  // any other service on this host would ride out to a remote `--url` target,
+  // and that target's `Set-Cookie` would land on every local service sharing
+  // the host. AckerDB authenticates with bearer credentials and sets no
+  // cookies, so forwarding them buys nothing and crosses a trust boundary in
+  // both directions.
+  "cookie",
+  "set-cookie",
 ] as const;
 
 /**
@@ -30,15 +44,48 @@ const HOP_BY_HOP_HEADERS = [
  */
 export const MAX_BUFFERED_FRAME_BYTES = 1024 * 1024;
 
+/**
+ * How long an upstream WebSocket may stay in its handshake before the bridge
+ * gives up. A target that accepts the connection and never completes fires
+ * neither open nor close, leaving a client socket waiting on an event that will
+ * not come — the silent version of the dead port Studio exists to replace.
+ */
+export const UPSTREAM_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/**
+ * The policy every proxied response carries.
+ *
+ * Studio deliberately serves the application on its own origin, which means an
+ * application document rendered here would execute in the origin holding the
+ * operator's Admin Credential. `sandbox` puts every proxied document in an
+ * opaque origin of its own with scripting off, so nothing the application
+ * returns can read Studio's storage. It is a document directive: the SPA's own
+ * `fetch` and WebSocket calls to these same routes are untouched, and the
+ * shell — served from the bundle, never proxied — keeps its full origin.
+ */
+const PROXIED_DOCUMENT_POLICY = "sandbox";
+
 function withoutHopByHop(headers: Headers): Headers {
   const filtered = new Headers(headers);
   for (const header of HOP_BY_HOP_HEADERS) filtered.delete(header);
   return filtered;
 }
 
+/**
+ * The target URL for one request, with the path assigned rather than resolved.
+ *
+ * Resolving `pathname` against the target as a *relative reference* would let a
+ * request path beginning with `//` name a host: `//elsewhere.example/x` is a
+ * scheme-relative URL, and the proxy would dial that host with the caller's
+ * headers and body. Assigning the components confines every request to the one
+ * origin `acker studio` was pointed at, whatever the path says.
+ */
 function upstreamUrl(request: Request, target: URL): URL {
   const url = new URL(request.url);
-  return new URL(url.pathname + url.search, target);
+  const upstream = new URL(target);
+  upstream.pathname = url.pathname;
+  upstream.search = url.search;
+  return upstream;
 }
 
 export async function proxyHttp(request: Request, target: URL): Promise<Response> {
@@ -47,6 +94,9 @@ export async function proxyHttp(request: Request, target: URL): Promise<Response
   headers.delete("host");
   let upstream: Response;
   try {
+    // No deadline on purpose: SSE streams and live tails are unbounded by
+    // design, and a blanket timeout here would cut them. The one request that
+    // owes a prompt answer — the connect probe — carries its own.
     upstream = await fetch(upstreamUrl(request, target), {
       method: request.method,
       headers,
@@ -63,6 +113,7 @@ export async function proxyHttp(request: Request, target: URL): Promise<Response
   // fetch already decoded the body; the original framing headers would lie.
   responseHeaders.delete("content-encoding");
   responseHeaders.delete("content-length");
+  responseHeaders.set("content-security-policy", PROXIED_DOCUMENT_POLICY);
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
@@ -76,6 +127,8 @@ export interface ProxiedSocketData {
   readonly buffered: (string | Uint8Array)[];
   /** Bytes held in {@link ProxiedSocketData.buffered}, against the bound above. */
   bufferedBytes: number;
+  /** Armed while the upstream handshake is outstanding; cleared once it settles. */
+  handshakeDeadline?: ReturnType<typeof setTimeout>;
 }
 
 /** 1005/1006 are reserved close statuses a close frame may not carry. */
@@ -118,7 +171,12 @@ export function proxyWebSocket(
 export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
   open(ws: ServerWebSocket<ProxiedSocketData>) {
     const { upstream } = ws.data;
+    const settled = () => {
+      if (ws.data.handshakeDeadline !== undefined) clearTimeout(ws.data.handshakeDeadline);
+      ws.data.handshakeDeadline = undefined;
+    };
     const flush = () => {
+      settled();
       const { buffered } = ws.data;
       while (buffered.length > 0) upstream.send(buffered.shift()!);
       ws.data.bufferedBytes = 0;
@@ -129,16 +187,33 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
         typeof event.data === "string" ? event.data : new Uint8Array(event.data as ArrayBuffer),
       );
     };
-    upstream.onclose = (event) => forwardClose(ws, event.code, event.reason);
-    upstream.onerror = () => forwardClose(ws, 1011, "application server unreachable");
-    // The upstream connect races this upgrade, and a refused connection wins
-    // it whenever the application is down on loopback. Reading the state here
-    // is what turns that race into the same 1011 the handlers above produce —
-    // without it the client socket waits on events that already fired.
-    if (upstream.readyState === WebSocket.OPEN) flush();
-    else if (upstream.readyState !== WebSocket.CONNECTING) {
+    upstream.onclose = (event) => {
+      settled();
+      forwardClose(ws, event.code, event.reason);
+    };
+    upstream.onerror = () => {
+      settled();
       forwardClose(ws, 1011, "application server unreachable");
+    };
+    // The upstream connect races this upgrade, and a refused connection wins it
+    // whenever the application is down on loopback. Reading the state here is
+    // what turns that race into the same 1011 the handlers above produce —
+    // without it the client socket waits on events that already fired.
+    if (upstream.readyState === WebSocket.OPEN) {
+      flush();
+      return;
     }
+    if (upstream.readyState !== WebSocket.CONNECTING) {
+      forwardClose(ws, 1011, "application server unreachable");
+      return;
+    }
+    const deadline = setTimeout(() => {
+      if (upstream.readyState !== WebSocket.CONNECTING) return;
+      upstream.close();
+      forwardClose(ws, 1011, "the application server did not complete the handshake");
+    }, UPSTREAM_HANDSHAKE_TIMEOUT_MS);
+    deadline.unref?.();
+    ws.data.handshakeDeadline = deadline;
   },
   message(ws, message) {
     const { upstream, buffered } = ws.data;
@@ -158,6 +233,8 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
   },
   close(ws) {
     const { upstream } = ws.data;
+    if (ws.data.handshakeDeadline !== undefined) clearTimeout(ws.data.handshakeDeadline);
+    ws.data.handshakeDeadline = undefined;
     if (
       upstream.readyState === WebSocket.OPEN ||
       upstream.readyState === WebSocket.CONNECTING

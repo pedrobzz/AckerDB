@@ -53,6 +53,30 @@ origin opens Studio. It is restricted to navigations because `/` is a legal MCP
 endpoint path and MCP speaks `POST` and `OPTIONS` — a redirect answering every
 method would be exactly the silent shadow the prefix exists to prevent.
 
+## Sharing an origin is paid for at the proxy
+
+Putting the application on Studio's origin is what removes CORS and the URL
+field, and it hands three things back that have to be paid for explicitly.
+
+An application document rendered on the Studio origin would run in the origin
+holding the operator's Admin Credential — an application XSS would become
+administrative access. Every proxied response therefore carries
+`Content-Security-Policy: sandbox`: an opaque origin, no scripting, no access to
+Studio's storage. It is a document directive, so the SPA's own `fetch` and
+WebSocket calls to those same routes are untouched, and the shell — served from
+the bundle, never proxied — keeps its full origin.
+
+Cookies do not cross the hop in either direction. They are scoped by host and
+ignore the port, so forwarding them would carry an unrelated local service's
+cookie out to a remote `--url` target and land that target's `Set-Cookie` on
+every local service sharing the host. AckerDB authenticates with bearer
+credentials and sets none, so this costs nothing and closes both directions.
+
+And every request is confined to the configured origin by assignment rather than
+resolution: a path beginning with `//` is a scheme-relative URL, so resolving it
+against the target would let a request name a host of its own and be dialled
+with the caller's headers and body.
+
 ## Studio serves while the application does not
 
 A down application is an answer, not a crash: the shell loads, proxied HTTP
@@ -78,10 +102,21 @@ client and construct a new one, dropping every live subscription for a value the
 client is built to re-pull on its own.
 
 The connect state is decided by an authenticated probe against
-`admin.system.info`, not by the handshake. A credential can authenticate
-perfectly and hold no `_admin:` grant, and reaching a real admin function is the
-only proof Studio is usable. The transport is read before any of it, because a
-stopped application makes every statement about a credential unknowable.
+`admin.system.info` — one request, not a subscription. Deciding whether a
+credential can open a session by watching a session open is circular: a client
+that has never connected reports "connecting" indefinitely, which is exactly the
+stopped application the operator ran the command to diagnose. A request either
+comes back or does not, and the proxy's own `502` is part of the answer rather
+than a silence. It is also why the probe rather than the handshake decides
+refusal: a credential can authenticate perfectly and hold no `_admin:` grant.
+
+Connected needs the client's own authentication phase as well. A request answers
+before a socket does, so the probe alone would report connected while the
+session is still being established — or never is, which is the plausible-looking
+answer this whole design refuses elsewhere. When the two facts disagree the
+screen names which half failed, because "your credential was refused" and
+"Studio cannot hold a session with a credential that plainly works" send an
+operator to entirely different places.
 
 ## The bundle is built by an explicit release stage
 

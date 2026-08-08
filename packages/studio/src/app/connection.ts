@@ -13,23 +13,28 @@
  * Both facts are kept, because they can disagree and the disagreement matters.
  * The probe proves the credential opens the Admin API; the client's phase
  * proves Studio can hold a session, which is what every screen after this one
- * runs on. A credential that opens the surface over one transport and cannot
- * establish a session over the other is broken, and saying "connected" would
- * be the plausible-looking answer nobody notices.
+ * runs on. A request answers before a socket does, so the probe alone would
+ * report Connected while the session is still being established — or never is —
+ * and that is the plausible-looking answer nobody notices. Connected therefore
+ * needs both. When they disagree the reducer names which half failed, because
+ * "your credential was refused" and "Studio cannot hold a session with a
+ * credential that plainly works" send an operator to entirely different places.
  */
 import type { AckerDBAuthenticationState } from "@ackerdb/client-react";
 import type { AdminSystemInfo } from "@ackerdb/core";
 import type { StudioProbe } from "./probe.ts";
 
 export type StudioConnection =
-  /** The probe has not answered yet; nothing is known. */
+  /** Nothing has settled yet. */
   | { readonly state: "connecting" }
   /** The application is not answering Studio. `detail` is why. */
   | { readonly state: "unreachable"; readonly detail: string }
   /** The application answers and Studio holds no credential. */
   | { readonly state: "unconfigured" }
-  /** The credential Studio holds does not open Studio. `detail` is why. */
+  /** The credential Studio holds was refused. Try another one. */
   | { readonly state: "refused"; readonly detail: string }
+  /** The credential opens the Admin API and the client still cannot hold a session. */
+  | { readonly state: "session-failed"; readonly detail: string }
   /** Signed in, with the application the credential opened. */
   | { readonly state: "authenticated"; readonly application: AdminSystemInfo };
 
@@ -47,19 +52,22 @@ export function studioConnection(input: StudioConnectionInput): StudioConnection
   // Before any statement about a credential: an empty cell is "sign in", and
   // reporting it as a refusal would send the operator looking for a bad token.
   if (!input.hasCredential) return { state: "unconfigured" };
-  switch (input.authentication.phase) {
-    case "refresh-required":
-    case "failed":
-      return { state: "refused", detail: input.authentication.error.message };
-    default:
-      break;
+  // Two ways to learn the credential is the problem, and both mean the same
+  // thing to the operator: the server rejected the presentation, or the surface
+  // would not run the function.
+  if (input.authentication.phase === "refresh-required") {
+    return { state: "refused", detail: input.authentication.error.message };
   }
-  switch (input.probe.status) {
-    case "pending":
-      return { state: "connecting" };
-    case "refused":
-      return { state: "refused", detail: input.probe.detail };
-    case "open":
-      return { state: "authenticated", application: input.probe.application };
+  if (input.probe.status === "refused") {
+    return { state: "refused", detail: input.probe.detail };
   }
+  // A client that stopped permanently while the credential plainly opens the
+  // surface is not a refusal, and calling it one sends the operator hunting for
+  // a credential that is already correct.
+  if (input.authentication.phase === "failed") {
+    return { state: "session-failed", detail: input.authentication.error.message };
+  }
+  return input.probe.status === "open" && input.authentication.phase === "authenticated"
+    ? { state: "authenticated", application: input.probe.application }
+    : { state: "connecting" };
 }
