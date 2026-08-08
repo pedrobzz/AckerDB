@@ -22,6 +22,7 @@ import {
   sanitizeSpan,
 } from "../records/codec.ts";
 import { TelemetryAggregation } from "../aggregation/series.ts";
+import { TelemetryAggregateBuckets } from "../aggregation/buckets.ts";
 import {
   SAFE_ERROR_CLASS,
   OVERFLOW_METRIC_NAME,
@@ -215,6 +216,7 @@ export class Telemetry {
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
+      aggregateBuckets: new TelemetryAggregateBuckets(),
       publicTraceIndex: new Map(),
       publicTraceDeletions: 0,
       activeTraces: { size: 0 },
@@ -553,6 +555,7 @@ export class Telemetry {
     let trace = handle.retention;
     if (trace?.owner !== state || trace.phase === "settled") trace = undefined;
     if (state.limits.slowOperationMs > 0 && trace === undefined && !retain) {
+      state.aggregateBuckets.record(timestampMs, operation, safeFunction, outcome, durationMs);
       this.aggregateSpanValues(
         state,
         operation,
@@ -1037,6 +1040,13 @@ export class Telemetry {
   }
 
   private aggregateSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
+    state.aggregateBuckets.record(
+      span.timestampMs,
+      span.operation,
+      span.function,
+      span.outcome,
+      span.durationMs,
+    );
     this.aggregateSpanValues(
       state,
       span.operation,

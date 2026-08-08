@@ -1,6 +1,7 @@
 import type { TelemetryLimits } from "../../runtime/limits.ts";
 import type { TraceJournal } from "../journal.ts";
 import type { TelemetryAggregation } from "../aggregation/series.ts";
+import type { TelemetryAggregateBuckets } from "../aggregation/buckets.ts";
 import type {
   TelemetryExporter,
   TelemetryScheduler,
@@ -51,6 +52,12 @@ export interface TelemetryState {
   readonly localSink?: (safeJsonLine: string) => void;
   readonly metricSeries: Set<string>;
   readonly aggregation: TelemetryAggregation;
+  /**
+   * The time-bucketed distribution every valid observation reaches, before any
+   * retention decision. Counts and totals here are exact for covered buckets;
+   * the trace store beside it keeps a tail-sampled minority.
+   */
+  readonly aggregateBuckets: TelemetryAggregateBuckets;
   publicTraceIndex: Map<string, MutableTraceRetention>;
   publicTraceDeletions: number;
   readonly activeTraces: MutableTraceList;
