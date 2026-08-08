@@ -68,26 +68,26 @@ describe("function scope declarations", () => {
       scopes: { anyOf: ["notes:read"] },
       handler: () => null,
     });
-    expect(scoped.scopes).toEqual({ anyOf: ["notes:read"] });
+    expect(scoped.scopes).toEqual({ kind: "anyOf", scopes: ["notes:read"] });
     expect(mutation({
       args: {},
       access: "authenticated",
       scopes: { allOf: ["notes:write"] },
       handler: () => null,
-    }).scopes).toEqual({ allOf: ["notes:write"] });
+    }).scopes).toEqual({ kind: "allOf", scopes: ["notes:write"] });
     expect(procedure({
       args: {},
       access: "authenticated",
       scopes: { anyOf: ["notes:read"] },
       handler: () => null,
-    }).scopes).toEqual({ anyOf: ["notes:read"] });
+    }).scopes).toEqual({ kind: "anyOf", scopes: ["notes:read"] });
     expect(sseProcedure({
       args: {},
       yields: v.string(),
       access: "authenticated",
       scopes: { anyOf: ["notes:read"] },
       handler: async function* () {},
-    }).scopes).toEqual({ anyOf: ["notes:read"] });
+    }).scopes).toEqual({ kind: "anyOf", scopes: ["notes:read"] });
   });
 
   test('scopes contradict "public" and are dead under "system"', () => {

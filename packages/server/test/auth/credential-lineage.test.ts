@@ -203,6 +203,44 @@ describe("credential delegation lineage", () => {
     expect(generic.scopes).toEqual(direct.scopes);
   });
 
+  test("an in-flight credential lease hears the provider revoke its parent account", async () => {
+    // The sequence that motivates the whole lineage: an external identity
+    // delegates a credential, the credential is in the middle of an operation
+    // holding a lease, and the *application's* provider revokes the parent
+    // account. That event is published by the provider, never by this
+    // boundary — so a lease subscribed only to what the boundary publishes
+    // carries a correct predicate over events it never receives, and the
+    // in-flight holder goes on using authority its parent has already lost.
+    let fire: ((invalidation: PrincipalInvalidation) => void) | undefined;
+    const provider = {
+      revocationBound: { kind: "invalidation" as const, deadlineMs: 5_000 },
+      subscribeInvalidation: (listener: (i: PrincipalInvalidation) => void) => {
+        fire = listener;
+        return () => { fire = undefined; };
+      },
+      verify: async () => { throw new Error("no provider bearer in this test"); },
+    };
+    const { runtime } = fixture(databasePath("ackerdb-credential-upstream-"), provider);
+    const alice = await user(runtime, "upstream-parent", FIXTURE_SCOPES);
+    const aliceSession = session(alice, "upstream-parent");
+    await runtime.openSession(aliceSession);
+    const child = await issue(runtime, aliceSession, 1, "Agent", ["orders.all"]);
+
+    const lease = await runtime.acquireCredentialLease(
+      parseCredentialToken(child.token)!,
+      "upstream",
+    );
+    expect(lease.signal.aborted).toBe(false);
+    expect(lease.principal.derivedFrom)
+      .toEqual([{ issuer: "https://issuer.test/", subject: "upstream-parent" }]);
+
+    // The provider revokes the parent account, not the credential.
+    fire?.({ issuer: "https://issuer.test/", subject: "upstream-parent" });
+
+    expect(lease.signal.aborted).toBe(true);
+    lease.release();
+  });
+
   test("a revocation that rolls back invalidates nothing", async () => {
     const { runtime, engine } = start();
     const alice = await user(runtime, "rollback-owner", FIXTURE_SCOPES);
