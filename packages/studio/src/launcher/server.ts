@@ -123,9 +123,11 @@ export function startStudio(options: StudioServerOptions): RunningStudio {
     websocket: {
       ...proxyWebSocketHandlers,
       // The browser half of the same budget the bridge holds upstream: a tab
-      // that stopped reading closes rather than accumulating behind Bun.
+      // that stopped reading closes rather than accumulating behind Bun, and a
+      // single frame may never exceed what the bridge will ever hold.
       backpressureLimit: MAX_UNDELIVERED_BYTES,
       closeOnBackpressureLimit: true,
+      maxPayloadLength: MAX_UNDELIVERED_BYTES,
     },
   });
   return {

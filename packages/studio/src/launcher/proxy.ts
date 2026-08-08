@@ -52,12 +52,18 @@ const HOP_BY_HOP_HEADERS = [
 export const MAX_UNDELIVERED_BYTES = 4 * 1024 * 1024;
 
 /**
- * How long an upstream WebSocket may stay in its handshake before the bridge
- * gives up. A target that accepts the connection and never completes fires
- * neither open nor close, leaving a client socket waiting on an event that will
- * not come — the silent version of the dead port Studio exists to replace.
+ * How long the application has to *begin* answering — response headers for a
+ * request, an open frame for a socket — before the proxy gives up on it.
+ *
+ * One number for both, because it answers one question. It is deliberately not
+ * a limit on an answer's length: SSE streams and live tails are unbounded by
+ * design, so the deadline is cleared the moment headers arrive and can never
+ * truncate a body. What it bounds is the target that accepts a connection and
+ * then says nothing, which fires no event at all — the silent version of the
+ * dead port Studio exists to replace, and the shape that would otherwise leave
+ * one abandoned request behind per probe attempt.
  */
-export const UPSTREAM_HANDSHAKE_TIMEOUT_MS = 10_000;
+export const UPSTREAM_ANSWER_TIMEOUT_MS = 10_000;
 
 /**
  * The policy every proxied response carries.
@@ -105,22 +111,27 @@ export async function proxyHttp(request: Request, target: URL): Promise<Response
   const headers = withoutHopByHop(request.headers);
   // fetch derives Host from the target URL; the Studio origin's must not leak.
   headers.delete("host");
+  // The deadline covers getting an answer, never carrying one: it is cleared as
+  // soon as headers arrive, so a stream it is not watching can run as long as
+  // the application keeps it open.
+  const answer = new AbortController();
+  const deadline = setTimeout(() => answer.abort(), UPSTREAM_ANSWER_TIMEOUT_MS);
   let upstream: Response;
   try {
-    // No deadline on purpose: SSE streams and live tails are unbounded by
-    // design, and a blanket timeout here would cut them. The one request that
-    // owes a prompt answer — the connect probe — carries its own.
     upstream = await fetch(upstreamUrl(request, target), {
       method: request.method,
       headers,
       body: request.body,
       redirect: "manual",
+      signal: answer.signal,
     });
   } catch {
     return new Response(
       `AckerDB Studio could not reach the application server at ${target.origin} — start it and retry`,
       { status: 502 },
     );
+  } finally {
+    clearTimeout(deadline);
   }
   const responseHeaders = withoutHopByHop(upstream.headers);
   // fetch already decoded the body; the original framing headers would lie.
@@ -224,18 +235,22 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
       if (upstream.readyState !== WebSocket.CONNECTING) return;
       upstream.close();
       forwardClose(ws, 1011, "the application server did not complete the handshake");
-    }, UPSTREAM_HANDSHAKE_TIMEOUT_MS);
+    }, UPSTREAM_ANSWER_TIMEOUT_MS);
     deadline.unref?.();
     ws.data.handshakeDeadline = deadline;
   },
   message(ws, message) {
     const { upstream, buffered } = ws.data;
     const frame = typeof message === "string" ? message : new Uint8Array(message);
+    // The frame being accepted counts against the budget, always: checking only
+    // what is already held would let one oversized frame through whenever the
+    // queue happens to be empty.
+    const size = typeof frame === "string" ? Buffer.byteLength(frame) : frame.byteLength;
     if (upstream.readyState === WebSocket.OPEN) {
       // The upstream socket queues whatever it is handed, so the budget is
-      // checked before handing it anything: an application that stopped
-      // reading must close this bridge, not grow inside it.
-      if (upstream.bufferedAmount > MAX_UNDELIVERED_BYTES) {
+      // checked before handing it anything: an application that stopped reading
+      // must close this bridge, not grow inside it.
+      if (upstream.bufferedAmount + size > MAX_UNDELIVERED_BYTES) {
         forwardClose(ws, 1011, "the application server stopped reading");
         return;
       }
@@ -243,7 +258,6 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
       return;
     }
     if (upstream.readyState !== WebSocket.CONNECTING) return;
-    const size = typeof frame === "string" ? Buffer.byteLength(frame) : frame.byteLength;
     if (ws.data.bufferedBytes + size > MAX_UNDELIVERED_BYTES) {
       forwardClose(ws, 1011, "buffered too much while the application server was connecting");
       return;

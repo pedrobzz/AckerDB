@@ -6,7 +6,7 @@ import type { Server } from "bun";
 import { STUDIO_PATH_PREFIX } from "../src/origin.ts";
 import {
   MAX_UNDELIVERED_BYTES,
-  UPSTREAM_HANDSHAKE_TIMEOUT_MS,
+  UPSTREAM_ANSWER_TIMEOUT_MS,
   proxyWebSocketHandlers,
   upstreamUrl,
   type ProxiedSocketData,
@@ -18,6 +18,13 @@ const APP_JS = "console.log('studio-asset');";
 
 let distDir: string;
 let upstream: Server<undefined>;
+/**
+ * One Studio for every test that needs a live application. Ephemeral ports are
+ * reused quickly, and `fetch` keeps connections alive per origin, so a server
+ * per test occasionally hands the next one a socket into a listener that has
+ * already stopped — a stall that says nothing about the launcher.
+ */
+let live: RunningStudio;
 const running: RunningStudio[] = [];
 
 beforeAll(() => {
@@ -47,7 +54,7 @@ beforeAll(() => {
             authorization: request.headers.get("authorization"),
             cookie: request.headers.get("cookie"),
           },
-          { headers: { "x-upstream": "yes", "set-cookie": "upstream=1; Path=/" } },
+          { headers: { "x-upstream": "yes" } },
         );
       }
       if (url.pathname === "/api/stream") {
@@ -74,9 +81,16 @@ beforeAll(() => {
       },
     },
   });
+
+  live = startStudio({
+    target: `http://127.0.0.1:${upstream.port}`,
+    port: 0,
+    distDir,
+  });
 });
 
 afterAll(() => {
+  live.stop();
   upstream.stop(true);
   rmSync(distDir, { recursive: true, force: true });
 });
@@ -85,12 +99,9 @@ afterEach(() => {
   while (running.length > 0) running.pop()!.stop();
 });
 
-function studio(options: { target?: string } = {}): RunningStudio {
-  const started = startStudio({
-    target: options.target ?? `http://127.0.0.1:${upstream.port}`,
-    port: 0,
-    distDir,
-  });
+/** A Studio pointed somewhere other than the live application, stopped after the test. */
+function studioTargeting(target: string): RunningStudio {
+  const started = startStudio({ target, port: 0, distDir });
   running.push(started);
   return started;
 }
@@ -105,7 +116,11 @@ function origin(studio: RunningStudio): string {
  * all. Written by hand because `fetch` normalizes a path before it is sent, and
  * the paths worth testing here are exactly the ones it would normalize away.
  */
-async function rawRequest(studio: RunningStudio, target: string): Promise<string> {
+async function rawRequest(
+  studio: RunningStudio,
+  target: string,
+  extraHeaders: readonly string[] = [],
+): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<string>();
   let received = "";
   // A proxied response carries no content-length — the launcher drops it,
@@ -119,7 +134,14 @@ async function rawRequest(studio: RunningStudio, target: string): Promise<string
     if (length !== null) return body.length >= Number(length[1]);
     return body.endsWith("0\r\n\r\n");
   };
-  const request = `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`;
+  const request = [
+    `GET ${target} HTTP/1.1`,
+    "Host: 127.0.0.1",
+    ...extraHeaders,
+    "Connection: close",
+    "",
+    "",
+  ].join("\r\n");
   // Written from `open`, not after `Bun.connect` resolves: bytes handed to a
   // socket that has not opened yet are dropped, which shows up as a request
   // the server never sees and a test that hangs one time in five.
@@ -187,13 +209,12 @@ test("startStudio refuses a missing bundle and a non-http target", () => {
 });
 
 test("the printed URL is the origin plus the SPA prefix", () => {
-  const started = studio();
-  expect(new URL(started.url).pathname).toBe(STUDIO_PATH_PREFIX);
+  expect(new URL(live.url).pathname).toBe(STUDIO_PATH_PREFIX);
 });
 
 describe("the SPA prefix", () => {
   test("serves the shell, the bundled assets, and every client-side route under it", async () => {
-    const started = studio();
+    const started = live;
     const index = await fetch(started.url, { headers: HTML });
     expect(await index.text()).toBe(INDEX_HTML);
 
@@ -206,7 +227,7 @@ describe("the SPA prefix", () => {
   });
 
   test("a browser landing on the bare origin is redirected into it", async () => {
-    const started = studio();
+    const started = live;
     const landing = await fetch(origin(started), { headers: HTML, redirect: "manual" });
     expect(landing.status).toBe(302);
     expect(landing.headers.get("location")).toBe(STUDIO_PATH_PREFIX);
@@ -221,7 +242,7 @@ describe("the SPA prefix", () => {
     const outside = join(distDir, "..", "ackerdb-studio-outside.txt");
     writeFileSync(outside, "SECRET-OUTSIDE-THE-BUNDLE");
     try {
-      const started = studio();
+      const started = live;
       const escaped = await rawRequest(
         started,
         `${STUDIO_PATH_PREFIX}assets/..%2f..%2fackerdb-studio-outside.txt`,
@@ -235,7 +256,7 @@ describe("the SPA prefix", () => {
   });
 
   test("refuses a method the bundle has no answer for instead of proxying it", async () => {
-    const started = studio();
+    const started = live;
     const posted = await fetch(new URL("assets/app.js", started.url), { method: "POST" });
     expect(posted.status).toBe(405);
     expect(posted.headers.get("allow")).toBe("GET, HEAD");
@@ -246,21 +267,21 @@ describe("everything outside the prefix", () => {
   test("reaches the application even when the browser asks for HTML", async () => {
     // The shadowing failure this rule exists to prevent: queries and Admin API
     // addresses answer GET, so a navigation to one must not open the shell.
-    const started = studio();
+    const started = live;
     const info = await fetch(`${origin(started)}/admin/system/info`, { headers: HTML });
     expect(info.headers.get("x-upstream")).toBe("yes");
     expect(await info.json()).toMatchObject({ method: "GET", path: "/admin/system/info" });
   });
 
   test("an unknown path comes back as the application's visible 404", async () => {
-    const started = studio();
+    const started = live;
     const missing = await fetch(`${origin(started)}/logs`, { headers: HTML });
     expect(missing.status).toBe(404);
     expect(await missing.json()).toMatchObject({ outcome: "not_found", path: "/logs" });
   });
 
   test("a POST to the origin root is the application's, so an MCP endpoint there survives", async () => {
-    const started = studio();
+    const started = live;
     const posted = await fetch(`${origin(started)}/`, { method: "POST", body: "{}" });
     expect(posted.status).toBe(404);
     expect(await posted.json()).toMatchObject({ outcome: "not_found", path: "/" });
@@ -270,18 +291,31 @@ describe("everything outside the prefix", () => {
     // Cookies are host-scoped and ignore the port, so forwarding them would
     // carry another local service's cookie out to a remote `--url` target and
     // land that target's Set-Cookie on every local service sharing the host.
-    const started = studio();
-    const answered = await fetch(`${origin(started)}/api/echo`, {
-      headers: { cookie: "session=someone-elses" },
+    // Read off the wire, because what a client would report is exactly the
+    // header handling under test, and against a target of its own, because a
+    // cookie-setting response must not reach any other test's client.
+    const setter = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => Response.json(
+        { cookie: request.headers.get("cookie") },
+        { headers: { "set-cookie": "upstream=1; Path=/" } },
+      ),
     });
-    expect((await answered.json()).cookie).toBeNull();
-    expect(answered.headers.get("set-cookie")).toBeNull();
+    try {
+      const started = studioTargeting(`http://127.0.0.1:${setter.port}`);
+      const answered = await rawRequest(started, "/api/echo", ["Cookie: session=someone-elses"]);
+      expect(answered).toContain('"cookie":null');
+      expect(answered.toLowerCase()).not.toContain("set-cookie");
+    } finally {
+      setter.stop(true);
+    }
   });
 
   test("every proxied response is sandboxed, so no application document runs in this origin", async () => {
     // Studio's storage holds an Admin Credential and the application shares the
     // origin; a sandboxed document has an opaque origin and no scripting.
-    const started = studio();
+    const started = live;
     const proxied = await fetch(`${origin(started)}/api/echo`, { headers: HTML });
     expect(proxied.headers.get("content-security-policy")).toBe("sandbox");
     const shell = await fetch(started.url, { headers: HTML });
@@ -289,7 +323,7 @@ describe("everything outside the prefix", () => {
   });
 
   test("carries method, query, body, and credential through unchanged", async () => {
-    const started = studio();
+    const started = live;
     const posted = await fetch(`${origin(started)}/api/echo?limit=2`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer admin" },
@@ -305,15 +339,23 @@ describe("everything outside the prefix", () => {
     });
   });
 
+  test("a target that accepts and never answers becomes the unreachable diagnosis", async () => {
+    // The one window a deadline belongs in. Past the headers a response is a
+    // stream the application owns, which is why the SSE case below still runs
+    // unbounded through the same code path.
+    expect(UPSTREAM_ANSWER_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(Number.isFinite(UPSTREAM_ANSWER_TIMEOUT_MS)).toBe(true);
+  });
+
   test("streams SSE responses through unbuffered", async () => {
-    const started = studio();
+    const started = live;
     const response = await fetch(`${origin(started)}/api/stream`, { method: "POST" });
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     expect(await response.text()).toBe("data: one\n\ndata: two\n\n");
   });
 
   test("bridges WebSockets in both directions", async () => {
-    const started = studio();
+    const started = live;
     const socket = new WebSocket(`${origin(started).replace("http:", "ws:")}/_ws`);
     const opened = new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
@@ -332,7 +374,7 @@ describe("everything outside the prefix", () => {
 describe("while the application is down", () => {
   test("the shell still opens, so the operator reads a diagnosis and not a dead port", async () => {
     const port = deadPort();
-    const started = studio({ target: `http://127.0.0.1:${port}` });
+    const started = studioTargeting(`http://127.0.0.1:${port}`);
     const index = await fetch(started.url, { headers: HTML });
     expect(index.status).toBe(200);
     expect(await index.text()).toBe(INDEX_HTML);
@@ -343,7 +385,7 @@ describe("while the application is down", () => {
   });
 
   test("a proxied WebSocket closes with 1011 rather than hanging open", async () => {
-    const started = studio({ target: `http://127.0.0.1:${deadPort()}` });
+    const started = studioTargeting(`http://127.0.0.1:${deadPort()}`);
     const socket = new WebSocket(`${origin(started).replace("http:", "ws:")}/_ws`);
     const closed = await new Promise<{ code: number }>((resolve) => {
       socket.onclose = (event) => resolve({ code: event.code });
@@ -360,7 +402,7 @@ function bridged(readyState: number): {
 } {
   const closed: number[] = [];
   const data: ProxiedSocketData = {
-    upstream: { readyState, close: () => {} } as unknown as WebSocket,
+    upstream: { readyState, bufferedAmount: 0, close: () => {}, send: () => {} } as unknown as WebSocket,
     buffered: [],
     bufferedBytes: 0,
   };
@@ -378,7 +420,7 @@ test("an upstream that never finishes its handshake is closed rather than left o
   const connecting = bridged(WebSocket.CONNECTING);
   proxyWebSocketHandlers.open!(connecting.ws as never);
   expect(connecting.data.handshakeDeadline).toBeDefined();
-  expect(UPSTREAM_HANDSHAKE_TIMEOUT_MS).toBeGreaterThan(0);
+  expect(UPSTREAM_ANSWER_TIMEOUT_MS).toBeGreaterThan(0);
   proxyWebSocketHandlers.close!(connecting.ws as never, 1000, "");
   expect(connecting.data.handshakeDeadline).toBeUndefined();
 
@@ -387,6 +429,42 @@ test("an upstream that never finishes its handshake is closed rather than left o
   proxyWebSocketHandlers.open!(open.ws as never);
   expect(open.data.handshakeDeadline).toBeUndefined();
   expect(open.closed).toEqual([]);
+});
+
+test("a frame larger than the budget is refused even when nothing is queued", () => {
+  // Checking only what is already held would let one oversized frame through
+  // whenever the queue happens to be empty, in either direction.
+  const connecting = bridged(WebSocket.CONNECTING);
+  proxyWebSocketHandlers.message(connecting.ws, Buffer.alloc(MAX_UNDELIVERED_BYTES + 1));
+  expect(connecting.closed).toEqual([1011]);
+  expect(connecting.data.bufferedBytes).toBe(0);
+
+  const open = bridged(WebSocket.OPEN);
+  let sent = 0;
+  (open.data.upstream as unknown as { bufferedAmount: number; send: (f: unknown) => void })
+    .bufferedAmount = 0;
+  (open.data.upstream as unknown as { send: (f: unknown) => void }).send = () => {
+    sent += 1;
+  };
+  proxyWebSocketHandlers.message(open.ws, Buffer.alloc(MAX_UNDELIVERED_BYTES + 1));
+  expect(open.closed).toEqual([1011]);
+  expect(sent).toBe(0);
+});
+
+test("an application that stopped reading closes the bridge instead of growing it", () => {
+  const open = bridged(WebSocket.OPEN);
+  const upstream = open.data.upstream as unknown as {
+    bufferedAmount: number;
+    send: (frame: unknown) => void;
+  };
+  upstream.bufferedAmount = MAX_UNDELIVERED_BYTES;
+  let sent = 0;
+  upstream.send = () => {
+    sent += 1;
+  };
+  proxyWebSocketHandlers.message(open.ws, Buffer.alloc(1));
+  expect(open.closed).toEqual([1011]);
+  expect(sent).toBe(0);
 });
 
 test("client frames waiting on a connecting upstream are bounded", () => {
