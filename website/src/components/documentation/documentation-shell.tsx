@@ -133,7 +133,10 @@ export function DocumentationShell({
   unavailableRoute,
 }: DocumentationShellProps) {
   const [commandOpen, setCommandOpen] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+
+  useEffect(() => setHydrated(true), []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -220,7 +223,7 @@ export function DocumentationShell({
             id="docs-content"
             tabIndex={-1}
           >
-            {unavailableRoute && (
+            {hydrated && unavailableRoute && (
               <Alert
                 className="mb-8 border-l-sky-500 bg-sky-500/8 text-sky-900 dark:text-sky-100"
                 role="status"

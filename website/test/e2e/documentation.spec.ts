@@ -23,6 +23,15 @@ async function openDocumentation(page: Page, path: string) {
   return response;
 }
 
+function captureBrowserErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+  return errors;
+}
+
 test("renders static documentation dark-first with the complete accordion navigation", async ({
   page,
 }, testInfo) => {
@@ -30,7 +39,7 @@ test("renders static documentation dark-first with the complete accordion naviga
 
   expect(response?.ok()).toBe(true);
   await expect(page.locator("html")).toHaveClass(/\bdark\b/);
-  await expect(page.getByRole("button", { name: "Switch to light theme" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Toggle site theme" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "Introduction" })).toBeVisible();
 
   const sidebar = page.getByTestId("docs-sidebar");
@@ -173,6 +182,29 @@ test("searches pages from the command palette and runs the theme command", async
   await palette.getByText("View page as Markdown", { exact: true }).click();
   await expect(page).toHaveURL(/\/docs\/index\.md$/);
   await expect(page.locator("body")).toContainText("# Introduction");
+});
+
+test("hydrates a persisted light theme without replacing static markup", async ({ page }) => {
+  const browserErrors = captureBrowserErrors(page);
+  await openDocumentation(page, "/docs");
+
+  await page.getByRole("button", { name: "Toggle site theme" }).click();
+  await expect(page.locator("html")).not.toHaveClass(/\bdark\b/);
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+
+  await expect(page.locator("html")).not.toHaveClass(/\bdark\b/);
+  expect(browserErrors).toEqual([]);
+});
+
+test("hydrates a direct missing-version fallback without replacing static markup", async ({
+  page,
+}) => {
+  const browserErrors = captureBrowserErrors(page);
+  await openDocumentation(page, "/docs?unavailable=%2Ffuture-page");
+
+  await expect(page.getByText("This page is unavailable")).toBeVisible();
+  expect(browserErrors).toEqual([]);
 });
 
 test("switches between Latest and Canary while preserving the page route", async ({ page }) => {

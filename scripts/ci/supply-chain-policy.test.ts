@@ -12,6 +12,19 @@ describe("public repository CI boundaries", () => {
     expect(ciWorkflow).toContain("BENCH_EXECUTION_HOST: github-hosted");
   });
 
+  test("only the protected repository Canary branch is a promotion", () => {
+    expect(ciWorkflow).toContain(
+      "promotion: ${{ github.base_ref == 'main' && github.head_ref == 'canary' && github.event.pull_request.head.repo.full_name == github.repository }}",
+    );
+    expect(ciWorkflow).not.toContain("github.head_ref != 'canary'");
+    expect(ciWorkflow).toContain(
+      "if: needs.changes.outputs.promotion != 'true' && needs.changes.outputs.native == 'true'",
+    );
+    expect(ciWorkflow).toContain(
+      "if: needs.changes.outputs.promotion != 'true' && needs.changes.outputs.website == 'true'",
+    );
+  });
+
   test("keeps the release job cache-free and read-only", () => {
     expect(releaseWorkflow).toContain("contents: read");
     expect(releaseWorkflow).not.toContain("contents: write");

@@ -160,7 +160,6 @@ export function DocumentationSidebar({
   }, [currentUrl, folders]);
   const [expanded, setExpanded] = useState<string[]>(activeFolder ? [activeFolder] : []);
   const { resolvedTheme, setTheme } = useTheme();
-  const isLight = resolvedTheme === "light";
 
   useEffect(() => {
     if (!activeFolder) return;
@@ -243,17 +242,15 @@ export function DocumentationSidebar({
 
       <div className="flex shrink-0 items-center border-t border-border p-2">
         <Button
-          aria-label={`Switch to ${isLight ? "dark" : "light"} theme`}
+          aria-label="Toggle site theme"
           className="w-full justify-start gap-3 text-muted-foreground"
-          onClick={() => setTheme(isLight ? "dark" : "light")}
+          onClick={() => setTheme(resolvedTheme === "light" ? "dark" : "light")}
           variant="ghost"
         >
-          {isLight ? (
-            <Sun aria-hidden="true" className="size-4" />
-          ) : (
-            <Moon aria-hidden="true" className="size-4" />
-          )}
-          {isLight ? "Light theme" : "Dark theme"}
+          <Sun aria-hidden="true" className="size-4 dark:hidden" />
+          <Moon aria-hidden="true" className="hidden size-4 dark:block" />
+          <span className="dark:hidden">Light theme</span>
+          <span className="hidden dark:inline">Dark theme</span>
         </Button>
       </div>
     </div>

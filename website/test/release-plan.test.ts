@@ -55,6 +55,7 @@ describe("Documentation publication plan", () => {
     expect(publicationEntryPaths(plan)).not.toContain("/docs");
     expect(publicationOwnsPath(plan, "/docs/canary/installation.md")).toBe(true);
     expect(publicationOwnsPath(plan, "/")).toBe(false);
+    expect(publicationOwnsPath(plan, "/404")).toBe(false);
     expect(publicationOwnsPath(plan, "/docs")).toBe(false);
   });
 

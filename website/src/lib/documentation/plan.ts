@@ -159,7 +159,7 @@ export function publicationOwnsPath(
   value: string,
 ): boolean {
   const pathname = new URL(value, "https://ackerdb.dev").pathname;
-  if (pathname === "/404") return true;
+  if (pathname === "/404") return plan.kind !== "canary";
   if (pathname === "/") return plan.kind !== "canary";
   if (pathname === "/llms.txt" || pathname === "/llms-full.txt") {
     return plan.kind !== "canary";
