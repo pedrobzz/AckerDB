@@ -40,9 +40,9 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 5 envelopes", () => {
+describe("protocol 6 envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(5);
+    expect(PROTOCOL_VERSION).toBe(6);
     expect(
       parseClientMessage({
         v: PROTOCOL_VERSION,
@@ -129,6 +129,13 @@ describe("protocol 5 envelopes", () => {
 
   test("rejects old versions, unknown frame types, unknown fields, and unbounded IDs", () => {
     expectProtocolError(() => parseClientMessage({ v: 1, t: "ping" }), "unsupported_protocol");
+    // The version before this one spoke group-free addresses, so a `ref` it
+    // sends can name a different function here. It is refused as a version,
+    // never dispatched and answered with not_found.
+    expectProtocolError(
+      () => parseClientMessage({ v: 5, t: "q", id: 1, ref: "internal.messages.list", args: null }),
+      "unsupported_protocol",
+    );
     expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "wat" }), "malformed");
     expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "ping", legacy: true }), "malformed");
     expectProtocolError(

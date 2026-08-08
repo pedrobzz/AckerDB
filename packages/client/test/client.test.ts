@@ -181,14 +181,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
     first.open();
     expect(first.frames()).toEqual([
       {
-        v: 5,
+        v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "stable-session",
         credential: { kind: "bearer", token: "token-a" },
       },
     ]);
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
@@ -205,7 +205,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const secondResult = client.query("api.todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: auth.attemptId + 10,
       authEpoch: 5,
@@ -218,7 +218,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       );
 
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 5,
@@ -237,7 +237,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const second = sockets[1]!;
     second.open();
     expect(second.lastFrame("hello")).toEqual({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "hello",
       clientSessionId: "stable-session",
       credential: { kind: "anonymous" },
@@ -259,7 +259,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
 
     socket.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -269,7 +269,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
@@ -294,7 +294,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const c3 = cursor(3n);
 
     const initial: ServerMessage = {
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -304,14 +304,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ v: PROTOCOL_VERSION, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c1, to: c2, value: ["two-too-late"] },
@@ -319,7 +319,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -344,7 +344,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: [] },
@@ -361,7 +361,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "ok",
       id: firstMutation.id,
       kind: "mutation",
@@ -377,7 +377,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -387,7 +387,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const discharged = client.mutation("api.todos.add", { text: "bread" });
     const secondMutation = first.lastFrame("m");
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "ok",
       id: secondMutation.id,
       kind: "mutation",
@@ -413,7 +413,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "ok",
       id: resent.id,
       kind: "mutation",
@@ -437,7 +437,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     socket.welcome(client.clientSessionId);
     const query = socket.lastFrame("q");
     socket.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: query.id,
       outcome: {
@@ -462,7 +462,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const malformedFrame = socket.lastFrame("q");
     socket.receiveRaw(
       encode({
-        v: 5,
+        v: PROTOCOL_VERSION,
         t: "ok",
         id: malformedFrame.id,
         kind: "query",
@@ -592,7 +592,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     sockets[1]!.welcome(client.clientSessionId);
     sockets[1]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -684,19 +684,19 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "event",
       id: subscription.id,
       event: {
@@ -706,7 +706,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
     });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "event",
       id: subscription.id,
       event: {
@@ -737,9 +737,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
     unsubscribe();
     expect(
       sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
-    ).toEqual([{ v: 5, t: "unsub", id }]);
+    ).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id }]);
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "event",
       id,
       event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
@@ -905,8 +905,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
         streamUrl = url;
         streamBody = decode(String(init?.body));
         return sseResponse([
-          { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
-          { v: 5, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
+          { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
+          { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
         ]);
       }
       expect(url.endsWith(SSE_ACK_PATH)).toBe(true);
@@ -943,7 +943,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     await eventually(() => acknowledgments.length === 1, "the first chunk acknowledgment");
     expect(secondSettled).toBe(false);
     expect(acknowledgments).toEqual([
-      { v: 5, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
     expect(streamAuthorization as string | null).toBe("Bearer receiver-token");
     expect(acknowledgmentAuthorizations).toEqual([null]);
@@ -968,8 +968,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
       if (isSseCall(url)) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
-          { v: 5, t: "sse_done", seq: 2, proof: "proof-2" },
+          { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
+          { v: PROTOCOL_VERSION, t: "sse_done", seq: 2, proof: "proof-2" },
         ]);
       }
       const acknowledgment = parseSseAckRequest(decode(String(init?.body)));
@@ -983,7 +983,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         if (firstSequenceAttempts === 2) {
           return new Response(
             encode({
-              v: 5,
+              v: PROTOCOL_VERSION,
               t: "err",
               id: null,
               outcome: {
@@ -1051,12 +1051,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const cases = [
       {
         name: "done",
-        frame: { v: 5, t: "sse_done", seq: 1, proof: "done-proof" },
+        frame: { v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "done-proof" },
       },
       {
         name: "error",
         frame: {
-          v: 5,
+          v: PROTOCOL_VERSION,
           t: "sse_error",
           seq: 1,
           proof: "error-proof",
@@ -1120,7 +1120,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "missing stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: null,
             close: false,
             onCancel,
@@ -1129,7 +1129,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "oversized stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: "x".repeat(129),
             close: false,
             onCancel,
@@ -1138,7 +1138,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "missing stall header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stallMs: null,
             close: false,
             onCancel,
@@ -1156,7 +1156,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "sequence does not begin at one",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 2, proof: "proof-2" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 2, proof: "proof-2" }], {
             close: false,
             onCancel,
           }),
@@ -1164,7 +1164,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "empty proof",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "" }], {
             close: false,
             onCancel,
           }),
@@ -1172,7 +1172,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "unexpected successful status",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             status: 201,
             close: false,
             onCancel,
@@ -1230,7 +1230,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client } = createHarness({
       fetch: async (url) => {
         streamUrl = url;
-        return sseResponse([{ v: 5, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
+        return sseResponse([{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
       },
     });
     // A generated binding seeds the address with its group, so the URL is the
@@ -1251,7 +1251,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url) =>
         isSseCall(url)
           ? sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => cancellations++ },
             )
           : new Response("", { status: 200 }),
@@ -1289,7 +1289,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (isSseCall(url)) {
             return sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
@@ -1371,7 +1371,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     for (const behavior of ["pending", "reject"] as const) {
       const abort = new AbortController();
       const bytes = sseUtf8.encode(sseEvent({
-        v: 5,
+        v: PROTOCOL_VERSION,
         t: "sse_chunk",
         seq: 1,
         proof: "proof-1",
@@ -1579,7 +1579,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
+                [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
                 {
                   close: false,
                   onCancel: () => {
@@ -1625,7 +1625,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false, onCancel: () => cancellations++ },
           );
         }
@@ -1673,7 +1673,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (isSseCall(url)) {
             return sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
@@ -1731,7 +1731,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 {
                   stallMs: "100",
                   close: false,
@@ -1781,7 +1781,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 { stallMs: "100", close: false },
               );
             }
@@ -1810,7 +1810,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
         late.resolve(openResponse(
           encode({
-            v: 5,
+            v: PROTOCOL_VERSION,
             t: "err",
             id: null,
             outcome: {
@@ -1843,7 +1843,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { stallMs: "100", close: false },
           );
         }
@@ -1886,7 +1886,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false },
           );
         }
@@ -2022,7 +2022,7 @@ describe("AckerDBClient connection state", () => {
       message: "credential expired",
     });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2039,7 +2039,7 @@ describe("AckerDBClient connection state", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2089,7 +2089,7 @@ describe("AckerDBClient connection state", () => {
     const { client, clock, sockets } = createHarness();
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2152,7 +2152,7 @@ describe("subscription cursor confirmations", () => {
 
     // Value deliveries keep flowing through onUpdate alone.
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2162,7 +2162,7 @@ describe("subscription cursor confirmations", () => {
 
     // A checkpoint silently advances the cursor and confirms the held value.
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -2178,7 +2178,7 @@ describe("subscription cursor confirmations", () => {
     second.welcome(client.clientSessionId);
     expect(second.lastFrame("sub").cursor).toEqual(c2);
     second.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "resume", from: c2, to: c2 },
@@ -2208,7 +2208,7 @@ describe("subscription cursor confirmations", () => {
     const c3 = cursor(3n);
 
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2217,14 +2217,14 @@ describe("subscription cursor confirmations", () => {
     // A mismatched predecessor makes the client demand a reset; deliveries
     // landing on the held cursor are no longer trusted as confirmations.
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ v: PROTOCOL_VERSION, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
@@ -2234,7 +2234,7 @@ describe("subscription cursor confirmations", () => {
     // The authoritative reset delivers through onUpdate; a duplicate of it
     // landing on the now-held cursor confirms again.
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2242,7 +2242,7 @@ describe("subscription cursor confirmations", () => {
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
     expect(confirmations).toBe(0);
     first.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2346,7 +2346,7 @@ describe("AckerDBClient authentication state", () => {
     });
     sockets[0]!.open();
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 4,
@@ -2409,7 +2409,7 @@ describe("AckerDBClient authentication state", () => {
     const signOutFrame = sockets[0]!.lastFrame("auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: signOutFrame.attemptId,
       authEpoch: 1,
@@ -2433,7 +2433,7 @@ describe("AckerDBClient authentication state", () => {
     const refreshFrame = sockets[0]!.lastFrame("auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
@@ -2463,7 +2463,7 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
     const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2479,7 +2479,7 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
     const signOutAttempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: signOutAttempt.attemptId,
       authEpoch: 2,
@@ -2497,7 +2497,7 @@ describe("AckerDBClient authentication state", () => {
     // welcome verifies that value once for both.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 2,
@@ -2515,7 +2515,7 @@ describe("AckerDBClient authentication state", () => {
     const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2569,7 +2569,7 @@ describe("AckerDBClient authentication state", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 3,
@@ -2590,7 +2590,7 @@ describe("AckerDBClient authentication state", () => {
     const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     sockets[0]!.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2615,7 +2615,7 @@ describe("AckerDBClient authentication state", () => {
     // The reconnect hello presents the refreshed credential, so its welcome
     // is the verification: one round-trip, no separate auth frame.
     second.receive({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,

@@ -462,7 +462,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.queries).toHaveLength(0);
     expect(sink.controls).toEqual([
       {
-        v: 5,
+        v: PROTOCOL_VERSION,
         t: "err",
         id: null,
         outcome: { code: "malformed", retryable: false, message: "hello must be the first frame" },
@@ -478,12 +478,12 @@ describe("Session Protocol-2 ownership", () => {
     expect(session.currentClientSessionId).toBeNull();
 
     await handle(session, hello());
-    await handle(session, { v: 5, t: "sub", id: 1, ref: "messages.list", args: {} });
-    await handle(session, { v: 5, t: "reset", id: 1, cursor: cursor(0) });
+    await handle(session, { v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "messages.list", args: {} });
+    await handle(session, { v: PROTOCOL_VERSION, t: "reset", id: 1, cursor: cursor(0) });
     await handle(session, query(2));
     await handle(session, mutation(3));
-    await handle(session, { v: 5, t: "unsub", id: 1 });
-    await handle(session, { v: 5, t: "ping" });
+    await handle(session, { v: PROTOCOL_VERSION, t: "unsub", id: 1 });
+    await handle(session, { v: PROTOCOL_VERSION, t: "ping" });
     await settle();
 
     expect(session.snapshot()).toMatchObject({
@@ -576,7 +576,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const subscriptions = [1, 2].map((id) => handle(session, {
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "sub",
       id,
       ref: "messages.list",
@@ -1221,7 +1221,7 @@ describe("Session Protocol-2 ownership", () => {
       "err",
     )[0];
     expect(error).toEqual({
-      v: 5,
+      v: PROTOCOL_VERSION,
       t: "err",
       id: 7,
       outcome: { code: "unauthorized", retryable: false, message: "access denied" },

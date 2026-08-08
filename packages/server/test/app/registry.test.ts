@@ -143,6 +143,26 @@ describe("HTTP-exposed function paths", () => {
     expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
   });
 
+  test("refuses two addresses projecting onto one path", () => {
+    // Unique addresses do not imply unique paths: the projection joins on `/`
+    // where the address joined on `.`, and a string-named export may contain
+    // either. Two functions with two access policies at one URL would
+    // otherwise be settled by whichever was registered second.
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: listing } })
+    ).toThrow(
+      'HTTP-exposed function "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+    // A raw handler meets the same check: handler paths are claimed after
+    // exposed ones, so one check covers both orders and both kinds.
+    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: hook } })
+    ).toThrow(
+      'http handler "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+  });
+
   test("refuses a malformed http field from an untyped export", () => {
     const untyped = { ...exposed, http: { openapi: "yes" } } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(

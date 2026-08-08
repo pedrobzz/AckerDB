@@ -266,9 +266,9 @@ export class Registry {
     }
 
     // Raw handler paths are claimed with the same nets as exposed functions:
-    // the reserved prefix and MCP collisions. A raw path can never collide
-    // with an exposed one — both derive from addresses, and addresses are
-    // unique by construction.
+    // the reserved prefix, MCP collisions, and any path already claimed. They
+    // are claimed second, so one check covers a raw path colliding with an
+    // exposed one as well as with another raw one.
     for (const [address, fn] of this.httpHandlersByAddress) {
       const path = this.claimApplicationHttpPath(address, "http handler");
       this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
@@ -334,7 +334,7 @@ export class Registry {
     return group;
   }
 
-  /** One owner for the application-path invariants: the `_` reserve and MCP collisions. */
+  /** One owner for the application-path invariants: the `_` reserve and every path collision. */
   private claimApplicationHttpPath(address: string, label: string): string {
     const path = httpPathForAddress(address);
     // `claimsReservedName` does the work here: a validated group can never
@@ -348,6 +348,15 @@ export class Registry {
     const mcp = this.mcpByPath.get(path);
     if (mcp !== undefined) {
       throw new Error(`${label} "${address}" and MCP "${mcp.name}" both use path "${path}"`);
+    }
+    // Unique addresses do not imply unique paths: the projection joins on `/`
+    // where the address joined on `.`, and an export named through a string
+    // literal may contain either. `api.notes.a/b` and `api.notes.a.b` are two
+    // functions with two access policies at one URL, and the second insertion
+    // would otherwise replace the first in silence.
+    const owner = this.exposed.get(path)?.address ?? this.httpRoutes.get(path)?.address;
+    if (owner !== undefined) {
+      throw new Error(`${label} "${address}" and "${owner}" both claim path "${path}"`);
     }
     return path;
   }

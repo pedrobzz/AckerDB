@@ -135,6 +135,13 @@ the address. The Registry keeps one flat key, and its duplicate rule becomes
 correct rather than over-broad: two groups may each hold a `messages.list`, and
 one group may not hold it twice.
 
+The address grammar is part of the wire envelope, so `PROTOCOL_VERSION` moves
+with it. It is the only surface where the string changed — an exposed
+function's URL is byte-identical before and after, because the group was
+already its first path segment — and a stale socket client would otherwise
+send a version-5 `ref` that names a different function here. One refusal at
+the decoder is the honest outcome; a call that lands somewhere else is not.
+
 Event-table references take the same treatment — `api.events.<table>` — because
 they are leaves of the default group's tree like everything else in it. The
 alternative, a group-free `events.` prefix, would be the one address in the
@@ -163,6 +170,16 @@ module and a namespace at one name. The generated tree intersects the two:
 only one — which is what the tree did before, silently — leaves a registered
 address with no binding anybody can import, the exact failure the manifest
 reconciliation exists to prevent.
+
+## One path, one function
+
+A unique address does not imply a unique route. The projection joins segments
+with `/` where the address joined them with `.`, and an export named through a
+string literal may contain either, so `api.notes.a/b` and `api.notes.a.b` are
+two functions with two access policies at one URL. The path claim refuses the
+second rather than replacing the first, beside the reserved-marker and MCP
+refusals it already owned — the one place a path is claimed is the one place
+that can know a path is taken.
 
 ## Two costs accepted deliberately
 
