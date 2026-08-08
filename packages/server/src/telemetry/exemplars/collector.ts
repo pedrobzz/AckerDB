@@ -24,6 +24,19 @@
  * never produce, because it looks exactly like a small trace.
  */
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
+import type { TelemetryOperation } from "../contracts/schema.ts";
+import type { CohortThreshold } from "../aggregation/buckets.ts";
+
+/**
+ * How the policy learns what "slow" currently means for one cohort. It is the
+ * aggregate's own distribution — the same one the chart is drawn from — which is
+ * what makes "the chart shows p99, therefore a p99 exemplar exists" true by
+ * construction instead of by luck.
+ */
+export type CohortThresholdProvider = (
+  operation: TelemetryOperation | undefined,
+  functionAddress: string | undefined,
+) => CohortThreshold;
 
 /**
  * Bump when the thresholds or the shape of the selection change. Stored with
@@ -32,7 +45,13 @@ import type { TelemetrySpanRecord } from "../contracts/types.ts";
  */
 export const TRACE_POLICY_VERSION = 1;
 
-export type ExemplarReason = "error" | "slow" | "baseline";
+/**
+ * `cold` is its own reason rather than a flavour of baseline: a cohort with too
+ * little history has no quantile, and retaining its first traces is a different
+ * claim from retaining a random share of a known population. A reader filtering
+ * for representative traces must be able to exclude them.
+ */
+export type ExemplarReason = "error" | "slow" | "baseline" | "cold";
 
 export interface TraceExemplarLimits {
   /** Spans one exemplar may carry before it becomes `oversized`. */
@@ -66,6 +85,12 @@ export interface TraceExemplar {
   /** Why this trace is stored. Never absent, never inferred by a reader. */
   readonly reason: ExemplarReason;
   readonly policyVersion: number;
+  /**
+   * The cohort quantile this trace was measured against, in milliseconds —
+   * absent while the cohort was still cold. Stored so a reader can tell a trace
+   * kept under a 40 ms threshold from one kept under 4 s.
+   */
+  readonly thresholdMs: number | undefined;
   /** The chance a trace like this one had of being kept: 1 for error and slow. */
   readonly inclusionProbability: number;
   /** False when the payload is not the whole trace. */
@@ -135,7 +160,10 @@ export class TraceExemplarCollector {
   private discardedTraces = 0;
   private discardedSpans = 0;
 
-  constructor(limits: Partial<TraceExemplarLimits> = {}) {
+  constructor(
+    private readonly thresholdFor: CohortThresholdProvider,
+    limits: Partial<TraceExemplarLimits> = {},
+  ) {
     this.limits = Object.freeze({ ...DEFAULT_EXEMPLAR_LIMITS, ...limits });
   }
 
@@ -199,23 +227,31 @@ export class TraceExemplarCollector {
    * Close a trace. Returns an exemplar when the policy kept it, `undefined`
    * when it did not — and forgetting is the common case by design.
    */
-  settle(
-    traceId: string,
-    slowOperationMs: number,
-  ): TraceExemplar | undefined {
+  settle(traceId: string): TraceExemplar | undefined {
     const trace = this.open.get(traceId);
     if (trace === undefined) return undefined;
     this.open.delete(traceId);
     this.openBytes -= trace.bytes;
     const durationMs = Math.max(0, trace.endedAtMs - trace.startedAtMs);
-    const slow = slowOperationMs > 0 && durationMs >= slowOperationMs;
+    const root = trace.spans.find((candidate) => candidate.parentSpanId === undefined) ??
+      trace.spans[0];
+    // The threshold is this cohort's own current high quantile, never a
+    // constant: a fixed millisecond value drifts away from the number on the
+    // chart the moment the application's latency changes, and the operator is
+    // the one who discovers it.
+    const cohort = this.thresholdFor(root?.operation, root?.function);
+    const slow = cohort.warm &&
+      cohort.thresholdMs !== undefined &&
+      durationMs >= cohort.thresholdMs;
     const reason: ExemplarReason | undefined = trace.errorCount > 0
       ? "error"
       : slow
         ? "slow"
-        : trace.baselineSelected
-          ? "baseline"
-          : undefined;
+        : !cohort.warm
+          ? "cold"
+          : trace.baselineSelected
+            ? "baseline"
+            : undefined;
     if (reason === undefined) {
       this.discardedTraces++;
       this.discardedSpans += trace.observed;
@@ -223,7 +259,6 @@ export class TraceExemplarCollector {
     }
     this.retainedTraces++;
     if (trace.oversized) this.oversizedTraces++;
-    const root = trace.spans.find((span) => span.parentSpanId === undefined) ?? trace.spans[0];
     // An oversized exemplar carries the root, every error span it kept, and the
     // slowest of the rest — the parts an operator opened it for.
     const carried = trace.oversized
@@ -243,6 +278,7 @@ export class TraceExemplarCollector {
       errorCount: trace.errorCount,
       reason,
       policyVersion: TRACE_POLICY_VERSION,
+      thresholdMs: cohort.warm ? cohort.thresholdMs : undefined,
       inclusionProbability: reason === "baseline" ? this.limits.baselineProbability : 1,
       complete: !trace.oversized,
       oversized: trace.oversized,

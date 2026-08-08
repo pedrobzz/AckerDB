@@ -12,10 +12,16 @@ import {
 import {
   TRACE_POLICY_VERSION,
   TraceExemplarCollector,
+  type CohortThresholdProvider,
 } from "../../src/telemetry/exemplars/collector.ts";
+import { EXPOSED_QUANTILES, RETENTION_QUANTILE } from "../../src/telemetry/aggregation/buckets.ts";
 import type { TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const HOUR_ALIGNED = Math.floor(1_700_000_000_000 / 3_600_000) * 3_600_000;
+
+/** A cohort that is always warm at a fixed threshold, for the policy tests. */
+const warmAt = (thresholdMs: number): CohortThresholdProvider =>
+  () => ({ thresholdMs, warm: true, observations: 10_000 });
 
 function span(overrides: Record<string, unknown> = {}): TelemetrySpanRecord {
   return Object.freeze({
@@ -129,7 +135,7 @@ describe("trace exemplars", () => {
   );
 
   test("keeps a declared share of healthy traces, decided from the trace id", () => {
-    const collector = new TraceExemplarCollector({ baselineProbability: 0.01 });
+    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
     const kept = ids.filter((id) => collector.isBaseline(id)).length / ids.length;
     expect(kept).toBeGreaterThan(0.005);
     expect(kept).toBeLessThan(0.02);
@@ -141,19 +147,19 @@ describe("trace exemplars", () => {
   });
 
   test("forgets a healthy trace outside the baseline share", () => {
-    const collector = new TraceExemplarCollector();
+    const collector = new TraceExemplarCollector(warmAt(500));
     const id = ids.find((candidate) => !collector.isBaseline(candidate))!;
     collector.observe(id, span());
-    expect(collector.settle(id, 500)).toBeUndefined();
+    expect(collector.settle(id)).toBeUndefined();
     expect(collector.snapshot().discardedTraces).toBe(1);
   });
 
   test("every stored trace says why it was kept and how likely that was", () => {
-    const collector = new TraceExemplarCollector();
+    const collector = new TraceExemplarCollector(warmAt(500));
     const failed = ids.find((candidate) => !collector.isBaseline(candidate))!;
     collector.observe(failed, span());
     collector.observe(failed, span({ spanId: "s2", parentSpanId: "s1", outcome: "internal" }));
-    const errored = collector.settle(failed, 500)!;
+    const errored = collector.settle(failed)!;
     expect(errored.reason).toBe("error");
     expect(errored.inclusionProbability).toBe(1);
     expect(errored.policyVersion).toBe(TRACE_POLICY_VERSION);
@@ -163,19 +169,19 @@ describe("trace exemplars", () => {
     const slowId = ids.find((candidate) =>
       !collector.isBaseline(candidate) && candidate !== failed)!;
     collector.observe(slowId, span({ durationMs: 900 }));
-    const slow = collector.settle(slowId, 500)!;
+    const slow = collector.settle(slowId)!;
     expect(slow.reason).toBe("slow");
     expect(slow.inclusionProbability).toBe(1);
 
     const baselineId = ids.find((candidate) => collector.isBaseline(candidate))!;
     collector.observe(baselineId, span());
-    const baseline = collector.settle(baselineId, 500)!;
+    const baseline = collector.settle(baselineId)!;
     expect(baseline.reason).toBe("baseline");
     expect(baseline.inclusionProbability).toBe(collector.limits.baselineProbability);
   });
 
   test("a trace past its budget is typed oversized, never quietly truncated", () => {
-    const collector = new TraceExemplarCollector({ maxSpansPerTrace: 128 });
+    const collector = new TraceExemplarCollector(warmAt(500), { maxSpansPerTrace: 128 });
     const id = ids.find((candidate) => !collector.isBaseline(candidate))!;
     for (let index = 0; index < 5_000; index++) {
       collector.observe(id, span({
@@ -185,7 +191,7 @@ describe("trace exemplars", () => {
         outcome: index === 4_999 ? "internal" : "ok",
       }));
     }
-    const exemplar = collector.settle(id, 500)!;
+    const exemplar = collector.settle(id)!;
     expect(exemplar.oversized).toBe(true);
     expect(exemplar.complete).toBe(false);
     expect(exemplar.observedSpans).toBe(5_000);
@@ -198,7 +204,7 @@ describe("trace exemplars", () => {
   });
 
   test("global staging exhaustion discards whole traces, not parts of them", () => {
-    const collector = new TraceExemplarCollector({ maxOpenTraces: 4 });
+    const collector = new TraceExemplarCollector(warmAt(500), { maxOpenTraces: 4 });
     for (let index = 0; index < 50; index++) {
       collector.observe(index.toString(16).padStart(32, "0"), span());
     }
@@ -207,7 +213,7 @@ describe("trace exemplars", () => {
   });
 
   test("the retained cohort is not a sample, and its error rate proves it", () => {
-    const collector = new TraceExemplarCollector({ baselineProbability: 0.01 });
+    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
     let stored = 0;
     let storedErrors = 0;
     const produced = 10_000;
@@ -215,7 +221,7 @@ describe("trace exemplars", () => {
       const id = index.toString(16).padStart(32, "0");
       const failed = index % 100 === 0;
       collector.observe(id, span({ outcome: failed ? "internal" : "ok" }));
-      const exemplar = collector.settle(id, 500);
+      const exemplar = collector.settle(id);
       if (exemplar !== undefined) {
         stored++;
         if (exemplar.errorCount > 0) storedErrors++;
@@ -229,14 +235,78 @@ describe("trace exemplars", () => {
   });
 
   test("a rare healthy function may honestly have no exemplar at all", () => {
-    const collector = new TraceExemplarCollector({ baselineProbability: 0.01 });
+    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
     const rare = ids.filter((candidate) => !collector.isBaseline(candidate)).slice(0, 5);
     for (const id of rare) {
       collector.observe(id, span({ function: "api.rare.call" }));
-      expect(collector.settle(id, 500)).toBeUndefined();
+      expect(collector.settle(id)).toBeUndefined();
     }
     // "Show me a normal trace" has no answer here, and the absence is a fact the
     // reader must be told rather than a gap it should fill by implication.
     expect(collector.snapshot().retainedTraces).toBe(0);
+  });
+
+  test("a trace at or above the reported p99 exists for the window the chart covers", () => {
+    // The scenario an operator feels at 3 a.m.: the chart shows a p99 spike,
+    // they click it, and either a trace is there or the policy was measuring
+    // something unrelated to the number on screen.
+    const buckets = new TelemetryAggregateBuckets({
+      warmObservations: 50,
+      referenceWindowMs: MINUTE_MS,
+    });
+    const collector = new TraceExemplarCollector(
+      (operation, fn) => buckets.thresholdFor(operation ?? "query", fn),
+      { baselineProbability: 0 },
+    );
+    const stored: number[] = [];
+    let traceIndex = 0;
+
+    const drive = (minute: number, durations: readonly number[]) => {
+      for (const durationMs of durations) {
+        const at = HOUR_ALIGNED + minute * MINUTE_MS;
+        buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
+        const traceId = (traceIndex++).toString(16).padStart(32, "0");
+        collector.observe(traceId, span({
+          operation: "procedure",
+          function: "api.checkout.submit",
+          timestampMs: at,
+          durationMs,
+        }));
+        const exemplar = collector.settle(traceId);
+        if (exemplar !== undefined) stored.push(exemplar.durationMs);
+      }
+    };
+
+    const baseline = Array.from({ length: 400 }, (_, index) => 10 + (index % 20));
+    for (const minute of [0, 1, 2, 3]) drive(minute, baseline);
+    // Then latency climbs by an order of magnitude — the spike on the chart.
+    drive(4, Array.from({ length: 400 }, (_, index) => 100 + (index % 400)));
+
+    const reported = buckets.thresholdFor("procedure", "api.checkout.submit");
+    expect(reported.warm).toBe(true);
+    const threshold = reported.thresholdMs!;
+
+    // The policy retains at the LOWEST exposed quantile, so an exemplar at or
+    // above every exposed quantile — p99 included — exists by construction.
+    expect(RETENTION_QUANTILE).toBe(Math.min(...EXPOSED_QUANTILES));
+    for (const quantile of EXPOSED_QUANTILES) {
+      expect(quantile).toBeGreaterThanOrEqual(RETENTION_QUANTILE);
+    }
+    expect(stored.some((durationMs) => durationMs >= threshold)).toBe(true);
+  });
+
+  test("a cold cohort retains rather than falling through to nothing", () => {
+    const buckets = new TelemetryAggregateBuckets({ warmObservations: 50 });
+    const collector = new TraceExemplarCollector(
+      (operation, fn) => buckets.thresholdFor(operation ?? "query", fn),
+      { baselineProbability: 0 },
+    );
+    const id = (1).toString(16).padStart(32, "0");
+    collector.observe(id, span({ function: "api.newly.deployed", durationMs: 3 }));
+    const exemplar = collector.settle(id)!;
+    // A function nobody has called yet has no quantile; retaining its first
+    // traces is why a fresh deploy has something to look at at all.
+    expect(exemplar.reason).toBe("cold");
+    expect(exemplar.thresholdMs).toBeUndefined();
   });
 });
