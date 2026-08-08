@@ -186,15 +186,21 @@ All `.ackerdb.config.json` fields are optional. The path defaults are
 `0.0.0.0` only when clients must connect through a trusted private development
 network. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
-never both. The protected status scope is configured there too. Durability and
-telemetry profiles are exact environment switches:
+never both. The protected status scope is configured there too. Durability is an
+exact environment switch; everything administrative, telemetry included, is one
+`admin` block in the manifest:
 
 ```sh
-ACKERDB_DURABILITY=production ACKERDB_TELEMETRY=enabled acker start ./apps/server
+ACKERDB_DURABILITY=production acker start ./apps/server
 ```
 
-`production` and `enabled` are the defaults. See the linked contract documents
-before selecting `balanced` durability or disabling telemetry.
+```jsonc
+// .ackerdb.config.json
+{ "admin": { "telemetry": { "enabled": false } } }
+```
+
+`production` and enabled telemetry are the defaults. See the linked contract
+documents before selecting `balanced` durability or disabling telemetry.
 
 The CLI listener is plaintext HTTP/WebSocket and does not terminate TLS. Keep
 the default loopback listener or place a non-loopback listener behind a private

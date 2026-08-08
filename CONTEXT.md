@@ -1260,6 +1260,32 @@ It is the server side of administration, named for what it does rather than for
 any client that consumes it — Studio is one such client, not its owner.
 _Avoid_: Studio surface, system UDFs, dashboard API
 
+**Telemetry store** — The one framework-owned SQLite file beside the
+application database, `<db>.telemetry`, holding every observable kind: logs,
+analytics events, spans, the per-trace summary, error groups and occurrences,
+and rollups. It is excluded from application backup and restore, and it is
+recreated rather than migrated when its stored shape changes.
+_Avoid_: Telemetry journal, log database, observability sidecar
+
+**Retention class** — One named clock stored telemetry expires on, such as
+`debug`, `spans`, or `rollups`. Retention is retroactive: a row never stamps a
+deadline, so the configured clock is the one every maintenance pass deletes by,
+including for rows written under an earlier configuration.
+_Avoid_: TTL policy, expiry rule
+
+**Error group** — The identity of one recurring failure, keyed by a fingerprint
+of the error's name and its in-app stack frames rather than its message, holding
+the occurrence count, the first and last time it was seen, and its latest
+sanitized sample. Groups never expire; their occurrences do. A new occurrence on
+a resolved group reopens it and marks it regressed.
+_Avoid_: Issue, error bucket, exception class
+
+**Contained failure** — A telemetry write that failed while the shared sidecar
+connection stayed usable. It is an accounted drop inside the kind that wrote it
+and never a reason to stop the application; only a connection that cannot answer
+a probe makes the runtime unhealthy.
+_Avoid_: Soft error, swallowed failure
+
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
 across every namespace an application shares with it: API paths, HTTP roots, and
 scopes. An application may never declare a name carrying it, so the two

@@ -457,8 +457,8 @@ JSON telemetry records: one `storage` span with duration/outcome and, on
 failure, one sanitized event. Successful spans may include artifact byte count
 and commit-version correlation, but never paths, contents, schema literals, or
 error messages. The final line remains the operation report. Setting
-`ACKERDB_TELEMETRY=disabled` removes those records exactly and leaves only the
-report.
+`admin.telemetry.enabled` to `false` in `.ackerdb.config.json` removes those
+records exactly and leaves only the report.
 
 `status` and `backup` require an existing database and never create a missing
 one. The engine's canonical ownership transaction means these CLI operations
@@ -617,7 +617,7 @@ With telemetry enabled, the command first emits one bounded `file_migration`
 and commit correlation on success. Failure also emits one sanitized `failure`
 event; paths, object keys, contents, and error messages are never telemetry.
 The telemetry is drained before the final report, and
-`ACKERDB_TELEMETRY=disabled` removes it exactly.
+`admin.telemetry.enabled: false` removes it exactly.
 
 ## Remaining limitations
 

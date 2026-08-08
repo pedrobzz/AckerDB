@@ -53,14 +53,58 @@ workload, and system principals contribute none. AckerDB never fabricates an
 identity or exports raw issuer, subject, or claims, and an exporter that
 requires identity skips an identity-less event with an observable count.
 
-Both signals persist through one dedicated framework-owned SQLite journal
-outside the application database and its transactions. The journal has
-configurable finite storage, evicts oldest records first, survives application
-schema changes, and is excluded from application backup and restore. Failure of
-this local persistence boundary makes the runtime unhealthy because it cannot
-honestly accept new records. Each telemetry exporter consumes committed journal
-batches in order through its own bounded state. A slow or unavailable provider
-cannot block application work, local registration, or another exporter; it
-produces bounded console warnings or errors plus health telemetry. A prolonged
-outage may outlive journal retention and lose unexported records, which remains
-visible through provider and eviction drop counts.
+Both signals persist through one dedicated framework-owned SQLite sidecar
+outside the application database and its transactions. The sidecar has
+configurable finite storage, survives application schema changes, and is
+excluded from application backup and restore. Each telemetry exporter consumes
+committed journal batches in order through its own bounded state. A slow or
+unavailable provider cannot block application work, local registration, or
+another exporter; it produces bounded console warnings or errors plus health
+telemetry. A prolonged outage may outlive retention and lose unexported records,
+which remains visible through provider and eviction drop counts.
+
+## Amendment: the sidecar holds every observable kind, and it owns both bounds
+
+Logs and analytics were the only things in that file when this decision was
+written, so its bounds and its health rule were written as the journal's. The
+file now also holds every span, every error group and occurrence, the per-trace
+summary, and the rollups that outlive raw data. Both statements move up to the
+sidecar, because neither was ever really about one kind.
+
+**Storage is bounded once, for the file.** A record cap and a byte cap per kind
+are several independent guesses at a share of one disk, and several such guesses
+cannot bound that disk: three kinds each under their own cap can still fill it.
+The sidecar carries one `maxStoredBytes`, sampled from its own connection, and
+bounded write-path maintenance that first expires what the per-kind and
+per-level clocks say is old and then, only while over budget, evicts oldest
+first from the shortest clock outward. Retention is retroactive: a row never
+stamps a deadline, so the configuration that is there is the one that counts,
+including for rows written under an older one. Eviction returns bytes rather
+than only lengthening a freelist, because a budget measured against a size that
+never falls is not a budget.
+
+**Failure is judged for the file, not for a row.** "Failure of this local
+persistence boundary makes the runtime unhealthy" was correct when one kind
+wrote to the file and any write failure meant the boundary was gone. With five
+kinds and orders of magnitude more writes, a rejected row is an ordinary event
+and a full disk is not. The sidecar probes its own connection when a kind
+reports a failure: a connection that still answers means the loss belongs to
+that kind and is an accounted drop, and only a connection that cannot answer
+makes the runtime unhealthy. Classification is by that evidence rather than by
+matching driver error text, because a constraint violation and a full disk
+arrive as the same kind of exception and only one of them means the file is
+gone. Every kind's drops stay observable in its own snapshot, and the sidecar's
+contained-failure count stays observable in its own.
+
+**Spans are durable and unsampled.** Every span the runtime records is written,
+independent of the in-memory retention decision that governs what an exporter
+and a local sink see — the trace an operator is looking for is always there.
+That durability costs measurable work on the recording path for every operation,
+whether or not anyone is watching, and this ADR records the trade rather than
+hiding it: the cost is stated in the pull request that introduced it and the
+decision to keep paying it is revisited on that evidence.
+
+**The sidecar is disposable, so it is never migrated.** It is stamped with the
+shape this version writes; a file stamped with any other is deleted and
+recreated. Nothing durable is promised about its contents, so a compatibility
+path would buy nothing and cost a permanent second way for the file to exist.

@@ -11,15 +11,30 @@ instrumented.
 
 ## Enable, disable, and configure
 
-The CLI accepts an exact `ACKERDB_TELEMETRY` value:
+Telemetry is configured in the `admin` block of `.ackerdb.config.json`, which
+mirrors `RuntimeOptions.admin` field for field. There is one off switch and it
+lives there:
 
-```sh
-ACKERDB_TELEMETRY=enabled acker start ./apps/server   # default
-ACKERDB_TELEMETRY=disabled acker start ./apps/server
+```jsonc
+{
+  "admin": {
+    "telemetry": {
+      "enabled": true,
+      "retention": { "debug": 259200000, "spans": 604800000 },
+      "storage": { "maxStoredBytes": 536870912 },
+      "journal": { "maxQueuedRecords": 4096 },
+      "spans": { "maxQueuedRecords": 8192 }
+    }
+  }
+}
 ```
 
-Programmatic `Runtime` construction accepts `telemetry: false`, an existing
-`Telemetry` instance, or `TelemetryOptions`. The options are:
+Programmatic `Runtime` construction takes the same object as
+`RuntimeOptions.admin`. `RuntimeOptions.telemetry` is composition rather than
+configuration: it supplies an existing `Telemetry` instance or the
+`TelemetryOptions` the Runtime should construct one from. An injected instance
+brings its own enabled-ness; `admin.telemetry.enabled` governs the one the
+Runtime builds. The options are:
 
 ```ts
 interface TelemetryOptions {
@@ -45,7 +60,8 @@ When Runtime constructs Telemetry from `TelemetryOptions`, it starts with the
 `sampleIntervalMs`: Runtime schedules its sampler from the resulting
 `Telemetry.sampleIntervalMs`. A caller-supplied `Telemetry` instance instead
 keeps its own effective limits. The CLI exposes only the exact enabled/disabled
-switch, not numeric telemetry tuning.
+switch and the storage bounds under `admin.telemetry`, not the in-memory
+recorder's numeric tuning.
 
 The default local sink is `console.log`. Telemetry enqueues every valid event
 and every retained diagnostic span as a safe schema-v1 JSON line, subject to
@@ -325,7 +341,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Channel disconnect cleanup | `runtime.channel_disconnect_timeouts` counts optional `onDisconnect` handlers that ignored their cancellation deadline. Membership and connection admission are released before this cleanup finishes. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP value response | The call's own operation (`query`, `mutation`, `procedure`) `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
-| CLI storage maintenance | Standalone `acker backup`, `acker restore`, and `acker files migrate` commands emit one `backup`/`restore`/`file_migration` `storage` span with duration, sanitized outcome, relevant verified byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
+| CLI storage maintenance | Standalone `acker backup`, `acker restore`, and `acker files migrate` commands emit one `backup`/`restore`/`file_migration` `storage` span with duration, sanitized outcome, relevant verified byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `admin.telemetry.enabled: false` removes it exactly. |
 | Telemetry export | `exporter_degraded` events at the `export` stage; exporter attempts and durations are also metrics/status fields. |
 
 ### Credential verification correlation
@@ -511,6 +527,69 @@ configuration/in-flight/attempt/failure/timeout/delivery timestamps, including
 pending/exported/failed aggregate snapshots. It does not contain queued or
 staged record payloads.
 
+## Telemetry storage
+
+Everything observable lives in one framework-owned SQLite file beside the
+application database, `<db>.telemetry`. Logs, analytics events, spans, the
+per-trace summary, error groups and occurrences, and the rollups that outlive
+raw data all register against one connection. Nothing observable lands in the
+application database, so an application backup never drags telemetry and losing
+telemetry is never losing business data.
+
+**Retention is per kind, per level, and retroactive.** A row never stamps a
+deadline at write; each maintenance pass deletes by the cutoff the current
+configuration implies, so changing a clock applies to data already stored.
+
+| Clock | Default | Holds |
+| --- | --- | --- |
+| `debug` | 3 days | `ctx.log.debug` and framework debug rows |
+| `info` | 14 days | `ctx.log.info` and framework info rows |
+| `warn` | 14 days | `ctx.log.warn` and framework warn rows |
+| `error` | 30 days | `ctx.log.error`, framework error rows, error occurrences |
+| `spans` | 7 days | raw spans and the per-trace summary |
+| `analytics` | 90 days | raw `ctx.analytics.track` events |
+| `rollups` | 365 days | the hourly span rollup and the daily analytics rollup |
+
+Error *groups* deliberately have no clock: they are the index of every failure
+the application has ever seen, each keeping its latest sanitized sample so an
+old group still shows a stack after its occurrences expire. Rollups outliving
+raw data is what makes six-month trends work against one-week spans.
+
+**Maintenance is bounded and lives on the write path.** Every batch that
+persists also expires up to `maxExpiredRowsPerPass` rows, round-robining across
+the registered sets so one hot kind cannot starve the others. There are no
+timers and no background sweeps, so an idle application spends nothing.
+
+**The disk guard belongs to the file.** `admin.telemetry.storage.maxStoredBytes`
+(512 MiB by default) bounds the sidecar's database, sampled from the open
+connection rather than per write. Over budget, a pass escalates from expiring by
+the clocks to evicting oldest-first, shortest clock first — so runaway logging
+spends the space of the data that matters least, and error groups are never
+spent. It is a convergence target rather than an instantaneous ceiling: a burst
+crosses it and the following passes evict back under. `RuntimeStatus`
+(`GET /status`) reports `telemetryStore.storedBytes`, `maxStoredBytes`, and
+`overBudget`, so the guard is observable rather than assumed.
+
+**Failure is judged for the file.** When a kind reports a write it could not
+complete, the store probes its own connection. A connection that still answers
+means the loss belongs to that kind: the record is an accounted drop in that
+kind's snapshot, the sidecar's `containedFailures` counter advances, and the
+application keeps serving. Only a connection that cannot answer makes the
+runtime unhealthy and drains it — the amended rule in ADR-0017.
+
+**Spans are durable and unsampled.** Every span the runtime records is written,
+independent of the in-memory retention decision that governs the local sink and
+exporters, so the trace you are looking for is always there. That is not free:
+on the repository's hot-path microbenchmark, durable span capture cost roughly
+50–110 µs of CPU per operation and cut throughput on a near-empty procedure by
+about half. Turning telemetry off with `admin.telemetry.enabled: false` removes
+it entirely.
+
+**The file is disposable and never migrated.** It is stamped with the shape the
+running version writes; a sidecar stamped with any other is deleted and
+recreated on open. Nothing durable is promised about its contents, which is the
+same reason it is excluded from backup and restore.
+
 ## Current telemetry limitations
 
 - HTTP credential verification has one `auth` span, but Authorization parsing,
@@ -521,10 +600,12 @@ staged record payloads.
 - `fetch` coverage applies to `globalThis.fetch` while a traced runtime scope is
   active; other HTTP clients are not automatically observed.
 - There is no bundled OTLP/OpenTelemetry SDK exporter, remote endpoint config,
-  dashboard, or durable telemetry spool. The exporter callback is the current
-  backend-neutral boundary.
+  or dashboard. The exporter callback is the current backend-neutral boundary.
 - The default CLI configuration has local safe JSON output but no remote
-  exporter. Retained records are in memory and disappear on process loss.
+  exporter. The in-memory retained records disappear on process loss; the
+  telemetry store below is what survives it.
+- Durable span capture costs measurable work on the recording path for every
+  operation, whether or not anyone is reading. See the storage section.
 - CLI backup/restore/FileStore-migration telemetry is local JSON only. It does not yet share a
   remote exporter configuration or a persistent trace with the fresh-process
   verification child.
