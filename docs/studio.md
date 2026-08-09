@@ -197,13 +197,14 @@ gap to fix rather than a reason to reach past it. The one deliberate exception
 is the connect probe, and it exists because it has to answer before a session
 does — see above.
 
-**Interface components are vendored, not depended on.** Code from the
-[shadcn/ui](https://ui.shadcn.com) registry is copied into `src/app/ui/` to be
-modified and maintained by hand; each file names its origin and licence in its
-header and records what was changed and why. Copying costs an update we perform
-deliberately and buys freedom from anyone's release cadence — and the freedom to
-delete what we do not use, which is why Studio's button carries no polymorphic
-`asChild` and no Radix dependency behind it.
+**Components come from a registry.** [shadcn/ui](https://ui.shadcn.com)
+publishes source rather than a package — `shadcn add button` writes the
+component into `src/app/ui/`, which is how the tool is meant to be used. Because
+the code arrives as a starting point, Studio trims it to what it renders: its
+button carries no polymorphic `asChild` and no Radix dependency behind it. Each
+file names where it came from and what changed, so it can be diffed against
+upstream later. Everything else — Tailwind, the router, the icon set, the table,
+the chart family — is an ordinary pinned dependency.
 
 **Dark only.** There is no theme toggle and no `prefers-color-scheme` branch. A
 second theme doubles visual review over every screen for a tool that runs beside
@@ -218,9 +219,9 @@ sitting in the page as a differently-coloured rectangle.
 
 Dependencies arrive with the screen that needs them rather than ahead of it: the
 stack decided in the UI-stack resolution — the data-table registry, the chart
-family, the code and JSON viewers, the form library — is installed and vendored
-by the pull request that first renders one. Nothing is carried in the bundle for
-a screen that does not exist yet.
+family, the code and JSON viewers, the form library — is installed by the pull
+request that first renders one. Nothing is carried in the bundle for a screen
+that does not exist yet.
 
 ### Bounded tables and a grow-only window
 

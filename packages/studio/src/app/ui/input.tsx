@@ -1,5 +1,5 @@
 /**
- * Vendored from the shadcn/ui registry (MIT, `new-york-v4/ui/input`).
+ * From the shadcn/ui registry (`new-york-v4/ui/input`).
  *
  * The registry's `dark:` variants and its `file:` affordances are dropped —
  * Studio sets no `.dark` class and uploads nothing through a bare input — and

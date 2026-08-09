@@ -1,5 +1,5 @@
 /**
- * Vendored from the shadcn/ui registry (MIT, `new-york-v4/ui/skeleton`).
+ * From the shadcn/ui registry (`new-york-v4/ui/skeleton`).
  *
  * Unchanged but for the surface token: the registry pulses `bg-accent`, which
  * against Studio's near-black page reads as a filled block rather than an

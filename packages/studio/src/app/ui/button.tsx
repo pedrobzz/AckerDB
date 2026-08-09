@@ -1,5 +1,5 @@
 /**
- * Vendored from the shadcn/ui registry (MIT, `new-york-v4/ui/button`).
+ * From the shadcn/ui registry (`new-york-v4/ui/button`).
  *
  * Two edits, both consequences of decisions this package already made:
  *

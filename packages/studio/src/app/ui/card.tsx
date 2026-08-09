@@ -1,5 +1,5 @@
 /**
- * Vendored from the shadcn/ui registry (MIT, `new-york-v4/ui/card`).
+ * From the shadcn/ui registry (`new-york-v4/ui/card`).
  *
  * Trimmed to the five parts Studio renders. The registry's `CardAction` and
  * `CardFooter` are dropped rather than kept against a future need — an unused
