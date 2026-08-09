@@ -194,9 +194,18 @@ never which mixes might be legal.
 Changing the wire therefore costs nothing and needs no permission. Do not add a
 field to avoid reshaping one, do not preserve an old frame shape, and do not
 reintroduce a protocol number to describe a compatibility this contract does
-not offer. Every wire entry point is guarded by the same rule: an envelope that
-reaches a decoder without a version on it is the defect, not the version that
-would have refused it.
+not offer.
+
+The rule covers every **framework-owned envelope**, and all of them carry the
+version rather than only the handshake pair, because several reach a decoder
+through a door with no handshake to put it on: SSE frames and realtime
+signaling are HTTP, where the first frame is the greeting. A framework envelope
+that reaches a decoder without a version on it is the defect, not the version
+that would have refused it. The exposed HTTP surface is the deliberate
+exception and not a gap: its request and response bodies are the application's
+own arguments and results, published in its OpenAPI document for callers who
+are not AckerDB builds at all, so it has no framework envelope to version and
+must not grow one. Its compatibility contract belongs to the application.
 
 The `Benchmark` check gates every pull request that touches a measured input,
 on the way into `canary` and again on the `canary` → `main` promotion, where it

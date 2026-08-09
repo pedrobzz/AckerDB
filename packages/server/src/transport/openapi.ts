@@ -214,7 +214,9 @@ function sseStreamSchema(chunk: JsonObject): JsonObject {
 const SSE_STREAM_DESCRIPTION = [
   "The stream. Every event's `data` is one whole frame below, never a bare chunk.",
   "It is credited one frame at a time: for each frame the receiver must POST",
-  `\`{"v":${ACKERDB_VERSION},"t":"${SSE_FRAME_TYPES.ack}","stream":"<${SSE_STREAM_HEADERS.stream}>","seq":<seq>,"proof":"<proof>"}\``,
+  // The version is a string, and this is a literal body a caller copies, so it
+  // is quoted the way it will be sent rather than interpolated bare.
+  `\`{"v":${JSON.stringify(ACKERDB_VERSION)},"t":"${SSE_FRAME_TYPES.ack}","stream":"<${SSE_STREAM_HEADERS.stream}>","seq":<seq>,"proof":"<proof>"}\``,
   `to ${ACKERDB_HTTP_ROUTES.sseAck} — acknowledging a \`seq\` acknowledges every frame through it —`,
   `or the producer writes nothing further and the stream fails after \`${SSE_STREAM_HEADERS.maxStallMs}\`.`,
 ].join(" ");
