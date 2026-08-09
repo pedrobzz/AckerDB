@@ -19,6 +19,8 @@ import type { TelemetryJournalRecord } from "../application-signals/types.ts";
 import { kindCounters, type TelemetryRecordKind } from "./worker/protocol.ts";
 import {
   sealLoss,
+  TRACE_STORAGE_DISABLED,
+  TRACE_STORAGE_ENABLED,
   sidecarQueueLimits,
   type TelemetryExportPort,
   type TelemetrySidecarQueueLimits,
@@ -33,6 +35,8 @@ export interface TelemetryInlineWriterOptions {
   readonly retention?: Readonly<Record<string, number>>;
   readonly maxStoredBytes?: number;
   readonly generation?: string;
+  /** Whether durable trace storage is on, so the snapshot can disclose it. */
+  readonly traceStorage?: boolean;
 }
 
 interface Pending {
@@ -48,6 +52,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
   private readonly drops = kindCounters();
   private readonly persistListeners = new Set<() => void>();
   private readonly admission = new TelemetryAdmission();
+  private readonly traceStorage: boolean;
   private commitTimer?: ReturnType<typeof setTimeout>;
   private acceptedRecords = 0;
   private droppedRecords = 0;
@@ -77,6 +82,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
 
   constructor(options: TelemetryInlineWriterOptions) {
     this.limits = sidecarQueueLimits(options.queue);
+    this.traceStorage = options.traceStorage === true;
     this.stores = new TelemetrySidecarStores({
       path: options.path,
       generation: options.generation ?? randomUUID(),
@@ -176,6 +182,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
       storedBytes: store.storedBytes,
       walBytes: store.walBytes,
       shed: this.admission.snapshot(),
+      traceStorage: this.traceStorage ? TRACE_STORAGE_ENABLED : TRACE_STORAGE_DISABLED,
       containedFailures: store.containedFailures,
       failed: store.state === "failed",
     });

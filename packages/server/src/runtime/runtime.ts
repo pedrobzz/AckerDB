@@ -62,6 +62,7 @@ import {
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
 import { Telemetry } from "../telemetry/telemetry.ts";
+import type { TraceExemplar } from "../telemetry/exemplars/collector.ts";
 import { randomUUID } from "node:crypto";
 import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
 import { TelemetryInlineWriter } from "../telemetry/storage/inline-writer.ts";
@@ -271,10 +272,16 @@ export class Runtime implements RuntimePort {
         : {
             ...options.telemetry,
             ...(admin?.aggregate === undefined ? {} : { aggregate: admin.aggregate }),
-            // A retained trace becomes a durable exemplar. The sidecar is built
-            // a few lines below and no span can be recorded before it exists, so
-            // the closure is safe and keeps the two constructions independent.
-            exemplar: (exemplar) => void this.telemetrySidecar.accept("exemplar", exemplar),
+            // A retained trace becomes a durable exemplar — but only when the
+            // operator asked for trace storage. Absent the capability there is
+            // no sink, and with no sink nothing downstream builds, allocates or
+            // decides: the aggregate still sees every observation and the store
+            // simply never learns about individual traces.
+            ...(admin?.traces === undefined ? {} : {
+              exemplar: (exemplar: TraceExemplar) =>
+                void this.telemetrySidecar.accept("exemplar", exemplar),
+              exemplarLimits: admin.traces,
+            }),
             limits: {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
@@ -300,6 +307,7 @@ export class Runtime implements RuntimePort {
     // in-memory engine has no file to isolate, so it writes inline.
     const sidecar = {
       generation: randomUUID(),
+      traceStorage: admin?.traces !== undefined,
       ...(admin?.queue === undefined ? {} : { queue: admin.queue }),
       ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
       ...(admin?.storage?.maxStoredBytes === undefined

@@ -39,9 +39,41 @@ export interface TelemetrySidecarSnapshot {
   readonly walBytes: number;
   /** Admission's own accounting: what pressure shed, by reason and by kind. */
   readonly shed: TelemetryShedSnapshot;
+  /**
+   * Whether durable trace storage is on, and the exact setting that turns it on.
+   *
+   * Reported because a surface that renders nothing has to be able to say WHY.
+   * Studio is opt-in and so is this, so an operator who installs Studio and
+   * opens a trace screen would otherwise see a blank page and conclude the
+   * product is broken. The screen must instead say that trace storage is off,
+   * name this setting, and say that enabling it stores traces from then forward
+   * rather than retroactively — the same disclosure rule as configured-versus-
+   * effective retention.
+   */
+  readonly traceStorage: TelemetryTraceStorageSnapshot;
   readonly containedFailures: number;
   readonly failed: boolean;
 }
+
+export interface TelemetryTraceStorageSnapshot {
+  readonly enabled: boolean;
+  /** The setting an operator sets, verbatim, so a surface can quote it. */
+  readonly setting: "admin.telemetry.traces";
+  /** True always: enabling stores traces from that point, never backwards. */
+  readonly retroactive: false;
+}
+
+export const TRACE_STORAGE_DISABLED: TelemetryTraceStorageSnapshot = Object.freeze({
+  enabled: false,
+  setting: "admin.telemetry.traces",
+  retroactive: false,
+});
+
+export const TRACE_STORAGE_ENABLED: TelemetryTraceStorageSnapshot = Object.freeze({
+  enabled: true,
+  setting: "admin.telemetry.traces",
+  retroactive: false,
+});
 
 export interface TelemetrySidecarSeal {
   readonly snapshot: TelemetrySidecarSnapshot;

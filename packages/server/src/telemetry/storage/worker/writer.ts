@@ -37,6 +37,8 @@ import {
 } from "./protocol.ts";
 import {
   sealLoss,
+  TRACE_STORAGE_DISABLED,
+  TRACE_STORAGE_ENABLED,
   sidecarQueueLimits,
   type TelemetryExportPort,
   type TelemetrySidecarQueueLimits,
@@ -58,6 +60,8 @@ export interface TelemetryWorkerWriterOptions {
   readonly maxStoredBytes?: number;
   /** Identifies this process in the aggregate's coverage record. */
   readonly generation: string;
+  /** Whether durable trace storage is on, so the snapshot can disclose it. */
+  readonly traceStorage?: boolean;
 }
 
 export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
@@ -73,6 +77,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   private readonly droppedByKind = kindCounters();
   private handoffs = 0;
   private readonly admission = new TelemetryAdmission();
+  private readonly traceStorage: boolean;
   /** Per handoff: the oldest accept time it carries, awaiting its watermark. */
   private readonly awaitingAck: { seq: number; oldestAcceptMs: number }[] = [];
   private oldestAcceptInRing: number | undefined;
@@ -122,6 +127,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
 
   constructor(options: TelemetryWorkerWriterOptions) {
     this.limits = sidecarQueueLimits(options.queue);
+    this.traceStorage = options.traceStorage === true;
     this.worker = new Worker(new URL("./entry.ts", import.meta.url).href);
     let resolveReady!: () => void;
     this.ready = new Promise<void>((resolve) => {
@@ -352,6 +358,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
       storedBytes: worker?.storedBytes ?? 0,
       walBytes: worker?.walBytes ?? 0,
       shed: this.admission.snapshot(),
+      traceStorage: this.traceStorage ? TRACE_STORAGE_ENABLED : TRACE_STORAGE_DISABLED,
       containedFailures: worker?.containedFailures ?? 0,
       failed: worker?.failed ?? false,
     });

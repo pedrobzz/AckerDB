@@ -17,6 +17,35 @@ import type { TelemetryAggregateLimits } from "../../telemetry/aggregation/bucke
 import type { TelemetrySidecarQueueLimits } from "../../telemetry/storage/writer.ts";
 import type { TelemetryStoreLimits } from "../../telemetry/storage/store.ts";
 
+/**
+ * Durable trace storage: retained traces stored as exemplars in the sidecar,
+ * for Studio to read.
+ *
+ * **Presence is the switch.** Absent, no trace is ever stored and no exemplar is
+ * ever built. There is deliberately no `enabled` boolean here — that would be a
+ * second off switch overlapping `AdminTelemetryOptions.enabled`, and their
+ * interaction is one more thing an operator has to hold in their head. The
+ * relationship is containment and not overlap: `enabled: false` stops the
+ * runtime recording anything at all, and this capability decides whether what is
+ * recorded is also KEPT.
+ *
+ * **It is off by default because it is not free.** The aggregate is always on —
+ * it is what `/status` and the runtime metrics are made of, and it is bounded by
+ * cardinality rather than by traffic. Storing whole traces is a different cost,
+ * it exists to serve Studio, and Studio is itself opt-in. An application that
+ * ships without Studio must not pay for a trace store nobody will open, which is
+ * the "zero cost when nobody is looking" constraint applied literally.
+ *
+ * Turning it on is not retroactive: traces are stored from that point forward.
+ */
+export interface AdminTelemetryTraceOptions {
+  /**
+   * Share of healthy traces kept so "show me a normal one" has an answer.
+   * Errors and the tail are kept regardless; this is the remainder.
+   */
+  readonly baselineProbability?: number;
+}
+
 export interface AdminTelemetryOptions {
   /**
    * The one telemetry off switch. Disabled, the runtime records no spans,
@@ -25,6 +54,11 @@ export interface AdminTelemetryOptions {
    * regardless of whether anyone is watching operations.
    */
   readonly enabled?: boolean;
+  /**
+   * Durable trace storage, off unless present. See `AdminTelemetryTraceOptions`
+   * for why this is a capability rather than a second boolean.
+   */
+  readonly traces?: AdminTelemetryTraceOptions;
   /**
    * Milliseconds each class of stored telemetry survives, by the class names
    * the store registers. Retention is retroactive: a change applies to data

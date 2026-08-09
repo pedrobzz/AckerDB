@@ -11,6 +11,7 @@ import {
 } from "@ackerdb/server";
 import { admittedShare, TelemetryAdmission } from "../../src/telemetry/storage/admission.ts";
 import { Sketch } from "../../src/telemetry/aggregation/sketch.ts";
+import { Telemetry } from "../../src/telemetry/telemetry.ts";
 
 const directories = new Set<string>();
 
@@ -271,5 +272,57 @@ describe("aggregate coverage across a crash", () => {
     await next.exports.batch("primer", 1);
     expect(next.stores.aggregate.incompleteMinutes()).toEqual([minute]);
     await next.seal(undefined, 0);
+  });
+});
+
+describe("durable trace storage is opt-in", () => {
+  test("off by default, and the snapshot says so and names the setting", async () => {
+    const writer = new TelemetryInlineWriter({
+      path: sidecarPath(),
+      generation: "traces-off",
+    });
+    const storage = writer.snapshot().traceStorage;
+    // A surface that renders nothing must be able to say why, and quote the
+    // exact setting. Blank trace screens with no explanation read as broken.
+    expect(storage.enabled).toBe(false);
+    expect(storage.setting).toBe("admin.telemetry.traces");
+    // Enabling stores traces from that point on; it cannot produce history.
+    expect(storage.retroactive).toBe(false);
+    await writer.seal(undefined, 0);
+  });
+
+  test("on when the operator asked for it", async () => {
+    const writer = new TelemetryInlineWriter({
+      path: sidecarPath(),
+      generation: "traces-on",
+      traceStorage: true,
+    });
+    expect(writer.snapshot().traceStorage.enabled).toBe(true);
+    await writer.seal(undefined, 0);
+  });
+
+  test("with no sink, a trace costs nothing beyond the aggregate", () => {
+    // The aggregate still sees every observation — that is always on, and it is
+    // what /status and the runtime metrics are made of. What must not happen is
+    // any exemplar work: no verdict, no span collection, no row.
+    const stored: unknown[] = [];
+    const off = new Telemetry({ localSink: false, limits: { retentionMs: 1 } });
+    const traceId = "0".repeat(31) + "1";
+    off.beginTrace({ traceId }, 1_000);
+    off.recordSpan({
+      context: { traceId, spanId: "a".repeat(32) },
+      timestampMs: 1_000,
+      operation: "procedure",
+      stage: "handler",
+      outcome: "internal",
+      functionName: "api.checkout.submit",
+      durationMs: 5,
+    });
+    off.finishTrace({ traceId }, 1_005);
+    off.finishTrace({ traceId: "f".repeat(32) }, 1_020);
+    expect(stored).toHaveLength(0);
+    // The observation still reached the aggregate.
+    const drained = off.drainAggregateBuckets(true);
+    expect(drained.reduce((total, one) => total + one.observations, 0)).toBe(1);
   });
 });

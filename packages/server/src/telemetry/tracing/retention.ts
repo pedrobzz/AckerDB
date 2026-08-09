@@ -205,10 +205,14 @@ export class TraceRetention {
    * reporting zero errors: every one of its spans took the other branch.
    */
   observeSpan(trace: MutableTraceRetention, span: SanitizedTelemetrySpan): void {
-    trace.observedSpans++;
-    if (span.timestampMs < trace.startedAtMs) trace.startedAtMs = span.timestampMs;
+    // The trace's extent is maintained either way — it is what a settled trace
+    // stamps its released spans with. Everything below it exists only to answer
+    // a question about storing the trace, so with no store it is not asked.
     const endedAt = span.timestampMs + span.durationMs;
     if (endedAt > trace.endedAtMs) trace.endedAtMs = endedAt;
+    if (this.sinks.exemplar === undefined) return;
+    trace.observedSpans++;
+    if (span.timestampMs < trace.startedAtMs) trace.startedAtMs = span.timestampMs;
     if (span.outcome !== "ok") trace.errorSpans++;
     if (trace.rootFunction === undefined && span.context.parentSpanId === undefined) {
       trace.rootFunction = span.function;
@@ -223,10 +227,14 @@ export class TraceRetention {
     // Past that the exemplar becomes oversized and SAYS so, because a silently
     // truncated tree looks exactly like a genuinely small one.
     if (!this.canStageSpan(trace)) {
-      trace.omittedSpans++;
+      if (this.sinks.exemplar !== undefined) trace.omittedSpans++;
       return;
     }
-    if (!this.stageJournalSpan(trace, span, stagedSpanBytes(span))) trace.omittedSpans++;
+    if (!this.stageJournalSpan(trace, span, stagedSpanBytes(span)) &&
+      this.sinks.exemplar !== undefined
+    ) {
+      trace.omittedSpans++;
+    }
   }
 
   /**
