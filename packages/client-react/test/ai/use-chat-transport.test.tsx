@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "../support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -266,7 +266,7 @@ const SSE_ACK_PATH = "/_sse/ack";
 
 // Counts SSE request traffic so reconnect/cancellation tests can prove no
 // hidden second stream ever starts. Resolves `fetch` at call time: after
-// support/dom.ts registers happy-dom it restores Bun's native fetch.
+// ackerdb-test-support/dom registers happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     if (new URL(url).pathname !== SSE_ACK_PATH) log.push("sse");

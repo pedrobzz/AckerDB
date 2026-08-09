@@ -16,7 +16,7 @@ import {
 } from "@ackerdb/client-react";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 
 class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AckerDBAuthenticationState, AckerDBClientError } from "@ackerdb/client-react";
 import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
-import { studioConnection, type StudioConnectionInput } from "../src/app/connection.ts";
-import type { StudioProbe } from "../src/app/probe.ts";
+import { studioConnection, type StudioConnectionInput } from "../../../src/app/connect/connection.ts";
+import type { StudioProbe } from "../../../src/app/connect/probe.ts";
 
 // The derivation reads a client error's message and nothing else, so a message
 // is the whole double; constructing a real one would need the client package,

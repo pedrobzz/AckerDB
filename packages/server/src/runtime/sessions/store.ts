@@ -16,7 +16,7 @@ import {
   type SubscriptionTransition,
   type TransitionMessage,
 } from "@ackerdb/core";
-import type { Principal } from "../../auth/credentials.ts";
+import { policyScope, type Principal } from "../../auth/credentials.ts";
 import { authorizeInvocation } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { OwnedProcedureContext } from "../../app/functions.ts";
@@ -948,7 +948,7 @@ export class RuntimeSessionStore {
       id,
       address,
       args,
-      policyScopeFingerprint: digest(state.context.principal),
+      policyScopeFingerprint: digest(policyScope(state.context.principal)),
       fairnessKey: state.context.fairnessKey,
       context: { principal: state.context.principal },
       authEpoch: state.context.authEpoch,

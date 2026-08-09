@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {

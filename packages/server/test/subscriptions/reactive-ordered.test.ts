@@ -16,6 +16,8 @@ import {
   type Subscriber,
 } from "../../src/subscriptions/reactive/contract.ts";
 import { OrderedReactive } from "../../src/subscriptions/reactive/ordered.ts";
+import { policyScope, type Principal } from "../../src/auth/credentials.ts";
+import type { Identity } from "@ackerdb/core";
 import { deferred } from "ackerdb-test-support/async";
 
 class RecordingSubscriber implements Subscriber {
@@ -1925,5 +1927,66 @@ describe("ordered reactive ownership", () => {
     for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
       expect(serialized).not.toContain(`\"${forbidden}\"`);
     }
+  });
+});
+
+describe("who a shared query may be shared with", () => {
+  // The composition these prove: `policyScope` is what the session store keys a
+  // shared entry by, so a fact it drops is a fact two principals can differ in
+  // while receiving one evaluation. Every one of them is visible to a handler
+  // as `ctx.auth`, so dropping any of them lets one caller read a result
+  // computed from another's credential.
+  const ADMIN: Principal = {
+    kind: "user",
+    issuer: "ackerdb:credentials",
+    subject: "cred_1",
+    claims: {},
+    expiresAt: Number.POSITIVE_INFINITY,
+    tokenId: null,
+    identity: 1n as Identity,
+    scopes: ["*", "_*"],
+  };
+
+  async function entriesFor(principals: readonly Principal[]): Promise<number> {
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation("rows", 0n, "messages"),
+    });
+    let id = 0;
+    for (const principal of principals) {
+      id += 1;
+      await reactive.subscribeQuery({
+        address: "admin.logs.list",
+        args: null,
+        policyScopeFingerprint: stableEncode(policyScope(principal)),
+        context: { principal },
+        authEpoch: 0,
+        fairnessKey: `caller-${id}`,
+        subscriber: new RecordingSubscriber(),
+        id,
+      });
+    }
+    const { sharedEntries } = reactive.snapshot() as { sharedEntries: number };
+    await reactive.close();
+    return sharedEntries;
+  }
+
+  test("one principal subscribing twice shares one evaluation", async () => {
+    // The point of sharing: a credential that never expires is re-presented on
+    // every reconnect, so a Studio tab that reloads must not multiply entries.
+    expect(await entriesFor([ADMIN, { ...ADMIN }])).toBe(1);
+  });
+
+  test("two credentials of one identity do not", async () => {
+    // They differ only in what a handler would read as `ctx.auth.tokenId` and
+    // `ctx.auth.expiresAt` — which is precisely why they may not share.
+    expect(await entriesFor([ADMIN, { ...ADMIN, tokenId: "jti-2" }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, expiresAt: 1_800_000 }])).toBe(2);
+  });
+
+  test("two identities never do", async () => {
+    expect(await entriesFor([ADMIN, { ...ADMIN, identity: 2n as Identity }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, scopes: ["_admin:logs:read"] }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, claims: { tenant: "b" } }])).toBe(2);
   });
 });
