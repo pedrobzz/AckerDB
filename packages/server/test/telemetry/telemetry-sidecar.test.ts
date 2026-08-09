@@ -12,6 +12,7 @@ import {
 import { admittedShare, TelemetryAdmission } from "../../src/telemetry/storage/admission.ts";
 import { Sketch } from "../../src/telemetry/aggregation/sketch.ts";
 import { Telemetry } from "../../src/telemetry/telemetry.ts";
+import type { TraceExemplar } from "../../src/telemetry/exemplars/collector.ts";
 
 const directories = new Set<string>();
 
@@ -324,5 +325,56 @@ describe("durable trace storage is opt-in", () => {
     // The observation still reached the aggregate.
     const drained = off.drainAggregateBuckets(true);
     expect(drained.reduce((total, one) => total + one.observations, 0)).toBe(1);
+  });
+});
+
+describe("a long-lived trace is bounded by bytes and count, never by assumed duration", () => {
+  test("an SSE-shaped trace that never ends cannot grow the staging pool", () => {
+    // Scenario 2: SSE streams, delivery leases and stalled procedures produce
+    // traces that stay open for minutes or hours. Nothing may assume a trace
+    // ends, so what bounds it has to be size — per trace and globally — and the
+    // pool has to stay flat however long the trace runs.
+    const kept: TraceExemplar[] = [];
+    const telemetry = new Telemetry({
+      localSink: false,
+      exporter: { export: () => {} },
+      exemplar: (settled) => kept.push(settled as unknown as TraceExemplar),
+      scheduler: {
+        setTimeout: (callback: () => void) => {
+          callback();
+          return 0;
+        },
+        clearTimeout: () => {},
+        setInterval: () => 0,
+        clearInterval: () => {},
+      },
+      limits: { retentionMs: 1, slowOperationMs: 500, maxBatchRecords: 64 },
+    });
+    const traceId = "5".repeat(32);
+    const openedAt = 1_700_000_000_000;
+    telemetry.beginTrace({ traceId }, openedAt);
+
+    // An hour of delivery spans on one open trace.
+    for (let index = 0; index < 4_000; index++) {
+      telemetry.recordSpan({
+        context: { traceId, spanId: `${traceId.slice(0, 24)}${index.toString(16).padStart(8, "0")}` },
+        timestampMs: openedAt + index * 900,
+        operation: "sse",
+        stage: "delivery",
+        outcome: "ok",
+        functionName: "api.orders.stream",
+        durationMs: 1,
+      });
+    }
+
+    const staged = telemetry.snapshot().traceRetention;
+    // Per trace: at most one export batch, whatever the trace's duration.
+    expect(staged.stagedRecords).toBeLessThanOrEqual(64);
+    expect(staged.stagedBytes).toBeLessThanOrEqual(staged.maxStagedBytes);
+    // The trace is still open — nothing settled it because time passed.
+    expect(staged.activeTraces).toBe(1);
+    expect(kept).toHaveLength(0);
+    // What did not fit was refused and counted, not quietly forgotten.
+    expect(staged.dropped.stagedOverflow).toBeGreaterThan(0);
   });
 });
