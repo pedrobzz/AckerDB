@@ -21,17 +21,26 @@ export { ProtocolError } from "./protocol-validation.ts";
  * types; every framework-owned field is validated after wire decode.
  *
  * The version covers the grammar of every framework-owned field, `ref`
- * included: 6 is where a function address began with its API path, so a
- * version-5 `ref` naming one function could name a different one here. 7 is
- * where the credential TTL disclosure gained `null`, for the identity
- * credentials that do not expire; a version-6 decoder refuses that value as
- * malformed, so the skew has to be one refusal at the handshake rather than a
- * session that dies on its own welcome frame. A decoder that refuses the
- * version is what turns skew into one refusal instead of a call that lands
- * somewhere else.
+ * included. 6 carries two changes from the 0.16 wire: a function address now
+ * begins with its API path, so a version-5 `ref` naming one function could name
+ * a different one here, and the credential TTL disclosure gained `null` for the
+ * identity credentials that do not expire, which a version-5 decoder refuses as
+ * malformed. A decoder that refuses the version is what turns skew into one
+ * refusal instead of a call that lands somewhere else, or a session that dies
+ * on its own welcome frame.
+ *
+ * **It moves once per released version, not once per wire change.** Its
+ * consumers are released builds: packages ship lockstep, so a 0.16 client meets
+ * a 0.17 server as one refusal at the handshake, and that is the whole job.
+ * Incrementing again for a second change inside one unreleased cycle would
+ * publish a number no stable build ever spoke, and leave a released user asking
+ * where it went. Prerelease-to-prerelease skew is deliberately not this field's
+ * problem — a canary is unstable by definition, and the version could not
+ * describe that skew anyway, since most breaking changes between canaries never
+ * touch the wire at all.
  */
 
-export const PROTOCOL_VERSION = 7 as const;
+export const PROTOCOL_VERSION = 6 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;

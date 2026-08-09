@@ -40,9 +40,11 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 7 envelopes", () => {
+describe("protocol 6 envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(7);
+    // Pinned so a bump is deliberate: it moves once per released version, and
+    // `0.17.0` already spent its step on the address grammar.
+    expect(PROTOCOL_VERSION).toBe(6);
     expect(
       parseClientMessage({
         v: PROTOCOL_VERSION,

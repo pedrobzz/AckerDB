@@ -156,7 +156,9 @@ identity credential could authenticate over WebSocket at all, though the
 documentation said all three transports worked.
 
 The disclosure is now `number | null`, `null` meaning the credential does not
-expire, and the protocol version is 7. A finite stand-in was rejected: it is a
+expire. It rides the same protocol step as the address-grammar change earlier in
+this cycle: the version moves once per released version, so both land on 6 and
+`0.17.0` publishes one number rather than two. A finite stand-in was rejected: it is a
 lie the client schedules a pointless re-pull against, and clamping to a large
 integer hides the one fact the field exists to communicate. Omitting the field
 was rejected too — a client must never have to read silence as a value — so it
@@ -200,8 +202,9 @@ as shrinking any other limit under live data.
   than a runtime assertion, and it was not widened for uniformity.
 - Every fresh database now spends Identity 1 and one commit version on the
   master. Subsequent starts write nothing.
-- The protocol version is 7. Packages ship lockstep, so a 0.17 client meets a
-  0.18 server as one refusal at the handshake.
+- The protocol version is 6, shared with this cycle's other wire change. Packages
+  ship lockstep, so a 0.16 client meets a 0.17 server as one refusal at the
+  handshake.
 - `AuthInvalidationBoundary.subscribeDirect` returns a subscription with a scope,
   like every other subscription. `publishCredentialInvalidations` is gone; a
   commit request carries `publishAuthInvalidation` instead, defaulting to the

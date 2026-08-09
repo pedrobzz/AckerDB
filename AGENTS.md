@@ -172,6 +172,17 @@ Pedro-authored `hotfix/*` pull request to `main` carrying
 `release:urgent`. There are no direct-push, force-push, local-merge, or
 administrator-bypass release paths.
 
+`PROTOCOL_VERSION` moves **once per released version, never once per wire
+change**. Its consumers are released builds: packages ship lockstep, so a `0.16`
+client meets a `0.17` server as one refusal at the handshake, and that is the
+whole job. If a cycle changes the wire twice, both changes ride the same number —
+incrementing again would publish a version no stable build ever spoke and leave a
+released user asking where it went. A canary is unstable by definition, so
+prerelease-to-prerelease skew is deliberately not this field's problem, and it
+could not describe that skew anyway: most breaking changes between canaries never
+touch the wire. When you change the wire, check whether the current version has
+already moved since `main`, and if it has, leave it alone.
+
 A `canary` pull request may keep the current source version — every merge
 still publishes a distinct `X.Y.Z-canary.N` — and declares exactly one major,
 minor, or patch step with `bun run release:prepare <level>` only when it
