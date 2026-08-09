@@ -288,12 +288,34 @@ industry emits a plain span attribute, so an OTLP export maps an exemplar's
 
 ## Cost
 
-The serving thread's share of an operation was measured at roughly 16 µs, about
-13% of a 126 µs baseline, and flat from healthy to total outage — measured on a
-synthetic driver rather than the framework's own benchmark. Scenario 1 measured
-the isolation claim it exists for: serving cost 16.8 → 15.5 µs/op from healthy to
-total outage, acknowledgement p99.5 rising only 44.6 → 60.4 ms, 674,575 accepted
-and 674,575 committed, zero dropped, queue slope 0.000.
+The synthetic driver measured the serving thread's share of an operation at
+roughly 16 µs, about 13% of a 126 µs baseline, and flat from healthy to total
+outage. Scenario 1 measured the isolation claim it exists for: serving cost
+16.8 → 15.5 µs/op from healthy to total outage, acknowledgement p99.5 rising only
+44.6 → 60.4 ms, 674,575 accepted and 674,575 committed, zero dropped, queue slope
+0.000.
+
+**The framework's own benchmark is the number that counts, and it is what it
+gives, not what the driver predicted.** Against `canary` over eight interleaved
+repetitions in all three telemetry profiles: no gated metric regressed. Query
+latency throughput −2.4%, query saturation −5.1%, uncontended mutation latency
+−0.8%, contended mutation latency +0.9%, procedure latency −3.1% — every one
+inside an interval spanning zero, against a run whose own median absolute paired
+delta was 3.1% and whose p90 was 8.0%. The honest reading is that this change is
+not distinguishable from noise on throughput at this harness's sensitivity, which
+detects roughly 60% of twenty-percent regressions and almost nothing below ten.
+
+The one cost that is *not* noise is idle memory: **82 → 95 MB RSS**, consistently
+across profiles. That is the sidecar's worker thread and its SQLite connection,
+which did not exist on `canary`, and it is the price of the isolation the whole
+design rests on.
+
+A first comparison gated `connection:1000 p95` in the exporter profile at +21.8%.
+It was re-run once, against a written prediction that it would not reproduce,
+because the branch modifies no file in the connection path, because that path
+accepts no records, because the same metric moved −15.6% in the `disabled`
+profile of the same run, and because the run was contaminated by a review process
+started inside it. Quiet re-run: +5.0%, interval −5.9% … +16.2%, no signal.
 
 ## Commodity and policy
 
