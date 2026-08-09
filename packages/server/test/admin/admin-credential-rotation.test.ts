@@ -8,12 +8,13 @@
  * published the revocation from inside the commit would fail the first half,
  * and a door that never published it would fail the second.
  */
+import { parseReceivedFrame } from "ackerdb-test-support/client-transport";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseServerMessage,
@@ -141,8 +142,11 @@ function connect(base: string, token: string): Promise<WsClient> {
   const waiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors a client's own two phases: the first frame a server
+  // sends is its handshake, and only a welcome opens the session parser.
+  let received = 0;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const frame = parseReceivedFrame(String(event.data), received++);
     const waiter = waiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -166,7 +170,7 @@ function connect(base: string, token: string): Promise<WsClient> {
           : Promise.resolve(closeEvent),
       };
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "admin-rotation",
         credential: { kind: "bearer", token },
@@ -207,7 +211,6 @@ describe("rotating the Admin Credential a caller is authenticated with", () => {
     expect(await within(client.next())).toMatchObject({ t: "welcome", principal: "user" });
 
     client.send({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 1,
       ref: "admin.credentials.rotate",

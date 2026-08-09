@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseSseMessage,
@@ -60,7 +60,7 @@ function acknowledgeSse(
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream,
       seq: message.seq,

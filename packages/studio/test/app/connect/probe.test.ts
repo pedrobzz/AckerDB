@@ -14,7 +14,7 @@ function answering(reply: Response | Error): {
   return { request, calls };
 }
 
-const APPLICATION = { name: "savoria-eu", version: "2.1.0", ackerdb: "0.17.0", protocol: 6 };
+const APPLICATION = { name: "savoria-eu", version: "2.1.0", ackerdb: "0.17.0" };
 
 describe("the Admin API probe", () => {
   test("asks the address the reference resolves to, on the page's own origin", async () => {

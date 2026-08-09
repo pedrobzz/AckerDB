@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, decode, encode, type Outcome } from "@ackerdb/core";
+import { ACKERDB_VERSION, decode, encode, type Outcome } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyClientCredential,
@@ -333,7 +333,7 @@ class RecordingSink implements SessionSink {
 
 function hello(session: Session, token: string, clientSessionId: string): Promise<void> {
   return session.handle(encode({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId,
     credential: { kind: "bearer", token },

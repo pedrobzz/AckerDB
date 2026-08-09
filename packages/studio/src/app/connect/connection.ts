@@ -25,7 +25,7 @@
  * operator hunting for a token that is already correct.
  */
 import type { AckerDBAuthenticationState } from "@ackerdb/client-react";
-import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
+import { ACKERDB_VERSION, type AdminSystemInfo } from "@ackerdb/core";
 import type { StudioProbe } from "./probe.ts";
 
 export type StudioConnection =
@@ -39,10 +39,10 @@ export type StudioConnection =
   | { readonly state: "refused"; readonly detail: string }
   /**
    * The credential opens the Admin API and the client still cannot hold a
-   * session. A protocol Studio and the application do not share is the cause
-   * this reaches in practice — the Admin API answers over plain HTTP, which
-   * negotiates no version, while the socket handshake refuses one it cannot
-   * speak.
+   * session. A Studio built from a different AckerDB version than the
+   * application is the cause this reaches in practice — the Admin API answers
+   * over plain HTTP, which carries no version, while the socket refuses a
+   * frame from any build but its own.
    */
   | { readonly state: "session-failed"; readonly detail: string }
   /** Signed in, with the application the credential opened. */
@@ -97,14 +97,16 @@ export function studioConnection(input: StudioConnectionInput): StudioConnection
 /**
  * Why a credential that opens the Admin API cannot hold a session.
  *
- * The probe already reported the application's protocol, so a mismatch can be
- * named outright instead of handed over as whatever the transport called it.
- * That is the difference between an operator upgrading one package and an
- * operator reading "internal error" and filing a bug.
+ * The probe already reported the application's AckerDB version, and that
+ * version is the whole compatibility contract — packages ship lockstep, so a
+ * Studio built from any other one is a mixed install and every socket it opens
+ * is refused. Naming it here is the difference between an operator installing
+ * one matching package and an operator reading "internal error" and filing a
+ * bug.
  */
 function sessionDetail(application: AdminSystemInfo, reported: string): string {
-  return application.protocol === PROTOCOL_VERSION
+  return application.ackerdb === ACKERDB_VERSION
     ? reported
-    : `this application speaks protocol ${application.protocol} and Studio speaks ` +
-      `${PROTOCOL_VERSION} — install the Studio matching AckerDB ${application.ackerdb}`;
+    : `this application runs AckerDB ${application.ackerdb} and this Studio is ` +
+      `${ACKERDB_VERSION} — install @ackerdb/studio@${application.ackerdb}`;
 }

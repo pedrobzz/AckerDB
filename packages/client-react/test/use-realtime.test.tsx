@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   encode,
   encodeRealtimeEvent,
   type RealtimeRef,
@@ -176,7 +176,7 @@ describe("useRealtime", () => {
         const path = new URL(url).pathname;
         if (path === "/_realtime/prepare" && init?.method === "POST") {
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_prepared",
             ticket: "A".repeat(43),
             configuration: {},
@@ -185,7 +185,7 @@ describe("useRealtime", () => {
         if (path === "/_realtime" && init?.method === "POST") {
           offers++;
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_answer",
             sessionId: "abcdefghijklmnopqrstuvwxyzABCDEF",
             answer: { type: "answer", sdp: "v=0\r\nserver" },
@@ -197,7 +197,7 @@ describe("useRealtime", () => {
         if (init?.method === "PATCH") {
           patches++;
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_candidates",
             candidates: [],
             complete: true,

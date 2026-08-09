@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Err,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   decode,
   encode,
+  parseServerHandshake,
   parseServerMessage,
   parseSseMessage,
   type ServerMessage,
@@ -398,8 +399,13 @@ function rawWebSocket(url: string): Promise<WsClient> {
   const waiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors the client's own two phases: nothing but the versioned
+  // handshake pair decodes until a welcome has landed.
+  let open = false;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const text = decode(String(event.data));
+    const frame = open ? parseServerMessage(text) : parseServerHandshake(text);
+    if (frame.t === "welcome") open = true;
     const waiter = waiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -435,14 +441,14 @@ async function connectWebSocket(
 ): Promise<WsClient> {
   const client = await rawWebSocket(url);
   client.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId: `serve-test-${++sessionSequence}`,
     credential,
   });
   const welcome = await within(client.next());
   expect(welcome).toMatchObject({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "welcome",
     authEpoch: 0,
     principal: credential.kind === "anonymous" ? "anonymous" : "user",
@@ -452,7 +458,6 @@ async function connectWebSocket(
 
 function sendHeldMutation(client: WsClient, id: number): void {
   client.send({
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
     ref: "api.notes.hold",
@@ -575,7 +580,7 @@ function acknowledgeSse(
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: overrides.stream ?? stream,
       seq: overrides.seq ?? message.seq,
@@ -618,7 +623,7 @@ describe("health and protected status", () => {
         const response = await fetch(`${earlyBase}${path}`);
         expect(response.status).toBe(503);
         expect(parseServerMessage(decode(await response.text()))).toEqual({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "err",
           id: null,
           outcome: unavailable,
@@ -780,7 +785,7 @@ describe("health and protected status", () => {
     const text = await response.text();
     expect(text).not.toContain("secret stack detail");
     expect(parseServerMessage(decode(text))).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "internal", retryable: false, message: "internal server error" },
@@ -853,7 +858,7 @@ describe("exposed HTTP procedures", () => {
     }
     // The unexposed procedure keeps working over the WebSocket session.
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
-    client.send({ v: PROTOCOL_VERSION, t: "p", id: 1, ref: "api.notes.hidden", args: { value: "ws" } });
+    client.send({ t: "p", id: 1, ref: "api.notes.hidden", args: { value: "ws" } });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1, value: "ws" });
     client.socket.close();
     await within(client.closed());
@@ -914,10 +919,9 @@ describe("exposed HTTP procedures", () => {
     // the same one name reaches the function on both surfaces — and the same
     // policy answers.
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
-    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "internal.ops.count", args: {} });
+    client.send({ t: "q", id: 1, ref: "internal.ops.count", args: {} });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1 });
     client.send({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 2,
       ref: "internal.ops.purge",
@@ -984,7 +988,7 @@ describe("exposed HTTP procedures", () => {
       kind: "bearer",
       token: "user-token",
     });
-    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "api.notes.identityQuery", args: {} });
+    client.send({ t: "q", id: 1, ref: "api.notes.identityQuery", args: {} });
     const websocket = await within(client.next());
     expect(websocket).toMatchObject({ t: "ok", id: 1, kind: "query" });
     if (websocket.t !== "ok") throw new Error("expected WebSocket query success");
@@ -1699,7 +1703,7 @@ describe("SSE", () => {
     const malformed = await fetch(`${base}/_sse/ack`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "sse_ack",
         stream: reader.streamId,
         seq: terminal!.seq,
@@ -1752,7 +1756,7 @@ describe("SSE", () => {
     // The envelope route is gone; nothing owns `/api/sse` any more.
     const envelope = await fetch(`${base}/api/sse`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "api.notes.chat", args: { text: "no" } }),
+      body: encode({ t: "call", id: 1, ref: "api.notes.chat", args: { text: "no" } }),
     });
     expect(envelope.status).toBe(404);
 
@@ -1914,23 +1918,22 @@ describe("WebSocket Session transport", () => {
     });
     expect(verifier.verified).toEqual(["user-token"]);
 
-    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "api.notes.list", args: { rank: 1n } });
+    client.send({ t: "q", id: 1, ref: "api.notes.list", args: { rank: 1n } });
     expect(await within(client.next())).toEqual({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 1,
       kind: "query",
       value: [],
     });
 
-    client.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "api.notes.list", args: { rank: 1n } });
+    client.send({ t: "sub", id: 2, ref: "api.notes.list", args: { rank: 1n } });
     expect(await within(client.next())).toMatchObject({
       t: "transition",
       id: 2,
       transition: { kind: "reset", value: [] },
     });
 
-    client.send({ v: PROTOCOL_VERSION, t: "sub", id: 3, ref: "api.events.beeps", args: {} });
+    client.send({ t: "sub", id: 3, ref: "api.events.beeps", args: {} });
     expect(await within(client.next())).toMatchObject({
       t: "event",
       id: 3,
@@ -1939,7 +1942,6 @@ describe("WebSocket Session transport", () => {
 
     const mutationRequestId = uuidV7(1);
     client.send({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 4,
       ref: "api.notes.add",
@@ -1979,7 +1981,7 @@ describe("WebSocket Session transport", () => {
   test("accepts exact-limit noncanonical text and rejects the next received byte", async () => {
     const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "raw-request-byte-limit",
       credential: { kind: "anonymous" },
@@ -1987,7 +1989,6 @@ describe("WebSocket Session transport", () => {
     expect(await within(client.next())).toMatchObject({ t: "welcome" });
 
     const canonical = encode({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
       ref: "api.notes.list",
@@ -2000,7 +2001,6 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(exact);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 1,
       kind: "query",
@@ -2013,7 +2013,7 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(oneByteOver);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "overloaded", resource: "operation" },
@@ -2024,7 +2024,7 @@ describe("WebSocket Session transport", () => {
   test("accepts valid binary UTF-8 at the exact request limit", async () => {
     const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "binary-request-byte-limit",
       credential: { kind: "anonymous" },
@@ -2033,7 +2033,6 @@ describe("WebSocket Session transport", () => {
 
     const mutationRequestId = uuidV7(2);
     const canonical = encode({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 2,
       ref: "api.notes.add",
@@ -2047,7 +2046,6 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(binary);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 2,
       kind: "mutation",
@@ -2063,7 +2061,7 @@ describe("WebSocket Session transport", () => {
     client.socket.send(new Uint8Array([0xc3, 0x28]));
 
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "malformed" },
@@ -2075,7 +2073,7 @@ describe("WebSocket Session transport", () => {
     const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     malformed.socket.send("{");
     expect(await within(malformed.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "malformed" },
@@ -2086,7 +2084,7 @@ describe("WebSocket Session transport", () => {
     const oneByteOver = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     oneByteOver.socket.send("x".repeat(limits.maxFrameBytes + 1));
     expect(await within(oneByteOver.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "overloaded", resource: "connection" },
@@ -2102,6 +2100,44 @@ describe("WebSocket Session transport", () => {
     ]));
     expect(result.kind).toBe("closed");
     if (result.kind === "closed") expect(result.event.code).toBe(1006);
+  });
+
+  test("refuses another build's hello as a mixed install, before anything is dispatched", async () => {
+    // The handshake parser is the whole pre-session surface, so a mismatched
+    // build is turned away on its greeting and never reaches a dispatch.
+    const mixed = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    mixed.socket.send(encode({
+      v: "0.0.1",
+      t: "hello",
+      clientSessionId: "mixed-install",
+      credential: { kind: "anonymous" },
+    }));
+    expect(await within(mixed.next())).toMatchObject({
+      v: ACKERDB_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "version_mismatch",
+        retryable: false,
+        message: `this application runs AckerDB ${ACKERDB_VERSION} and this client is 0.0.1` +
+          " — install matching versions",
+      },
+    });
+    expect((await within(mixed.closed())).code).toBe(1002);
+    await eventually(() => server.status().connections === 0);
+
+    // A connection that opens with anything else never reaches the version
+    // comparison, and should not pretend to: a session frame carries no
+    // version, so the honest refusal is that it did not greet.
+    const ungreeted = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    ungreeted.socket.send(encode({ t: "q", id: 1, ref: "api.notes.list", args: {} }));
+    expect(await within(ungreeted.next())).toMatchObject({
+      t: "err",
+      id: null,
+      outcome: { code: "malformed", message: "the first client frame must be a hello" },
+    });
+    expect((await within(ungreeted.closed())).code).toBe(1002);
+    await eventually(() => server.status().connections === 0);
   });
 
   test("counts upgraded pre-hello sockets against connection admission", async () => {
@@ -2163,7 +2199,7 @@ describe("WebSocket Session transport", () => {
         activeOperationCallers: 1,
       });
 
-      excess.send({ v: PROTOCOL_VERSION, t: "q", id: 103, ref: "api.notes.list", args: { rank: 1n } });
+      excess.send({ t: "q", id: 103, ref: "api.notes.list", args: { rank: 1n } });
       expect(await within(excess.next())).toMatchObject({
         t: "err",
         id: 103,
@@ -2182,7 +2218,7 @@ describe("WebSocket Session transport", () => {
         resource: "operation",
       });
 
-      cold.send({ v: PROTOCOL_VERSION, t: "q", id: 105, ref: "api.notes.list", args: { rank: 1n } });
+      cold.send({ t: "q", id: 105, ref: "api.notes.list", args: { rank: 1n } });
       expect(await within(cold.next())).toMatchObject({ t: "ok", id: 105, kind: "query", value: [] });
       expect(fairRuntime.status()).toMatchObject({
         activeOperations: 2,
@@ -2266,7 +2302,7 @@ describe("WebSocket Session transport", () => {
     const open = async (): Promise<WsClient> => {
       const client = await rawWebSocket(url);
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: sessionId,
         credential: { kind: "anonymous" },
@@ -2496,7 +2532,7 @@ describe("lifecycle drain", () => {
     const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     try {
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "stalled-session",
         credential: { kind: "bearer", token: "blocked-token" },

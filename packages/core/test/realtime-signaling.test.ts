@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   ProtocolError,
   parseRealtimeCandidatesMessage,
   parseRealtimeOfferRequest,
@@ -13,7 +13,7 @@ import {
 describe("realtime signaling protocol", () => {
   test("parses preparation, ticketed offer, answer, and trickled candidates", () => {
     expect(parseRealtimePrepareRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
       ref: "assistant.voice",
       args: { id: 1n },
@@ -24,7 +24,7 @@ describe("realtime signaling protocol", () => {
       recovery: true,
     });
     expect(parseRealtimePrepareResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepared",
       ticket: "A".repeat(43),
       configuration: {
@@ -32,13 +32,13 @@ describe("realtime signaling protocol", () => {
       },
     })).toMatchObject({ t: "realtime_prepared" });
     expect(parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket: "A".repeat(43),
       offer: { type: "offer", sdp: "v=0\r\n" },
     })).toMatchObject({ t: "realtime_offer" });
     expect(parseRealtimeOfferResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_answer",
       sessionId: "abcdefghijklmnopqrstuvwxyzABCDEF",
       answer: { type: "answer", sdp: "v=0\r\n" },
@@ -54,16 +54,16 @@ describe("realtime signaling protocol", () => {
       complete: false,
     })).toMatchObject({ t: "realtime_answer", complete: false });
     expect(parseRealtimeCandidatesMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [],
       complete: true,
-    })).toMatchObject({ t: "realtime_candidates", complete: true });
+    }, "client")).toMatchObject({ t: "realtime_candidates", complete: true });
   });
 
   test("parses typed rejection and terminal generation outcomes", () => {
     expect(parseRealtimeOfferResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_rejected",
       error: {
         kind: "application",
@@ -73,7 +73,7 @@ describe("realtime signaling protocol", () => {
       },
     })).toMatchObject({ t: "realtime_rejected" });
     expect(parseRealtimePatchResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_ended",
       outcome: {
         code: "unavailable",
@@ -84,40 +84,77 @@ describe("realtime signaling protocol", () => {
     })).toMatchObject({ t: "realtime_ended" });
   });
 
+  test("refuses a signaling frame from another build as a mixed install", () => {
+    // Signaling is HTTP and has no handshake, so its first frame is its
+    // greeting and the version on it is the whole guard. The sender is the
+    // frame's own direction, so a prepare names the client and a prepared
+    // names the application.
+    try {
+      parseRealtimePrepareRequest({
+        v: "0.0.1",
+        t: "realtime_prepare",
+        ref: "api.assistant.voice",
+        args: {},
+      });
+      throw new Error("expected a ProtocolError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProtocolError);
+      expect((error as ProtocolError).code).toBe("version_mismatch");
+      expect((error as ProtocolError).message).toBe(
+        `this application runs AckerDB ${ACKERDB_VERSION} and this client is 0.0.1` +
+          " — install matching versions",
+      );
+    }
+    try {
+      parseRealtimePrepareResponse({
+        v: "0.0.1",
+        t: "realtime_prepared",
+        ticket: "A".repeat(43),
+        configuration: {},
+      });
+      throw new Error("expected a ProtocolError");
+    } catch (error) {
+      expect((error as ProtocolError).message).toBe(
+        `this application runs AckerDB 0.0.1 and this client is ${ACKERDB_VERSION}` +
+          " — install matching versions",
+      );
+    }
+  });
+
   test("rejects legacy configuration fields, malformed tickets, and invalid session IDs", () => {
     expect(() => parseRealtimePrepareRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_config",
       configuration: {},
     })).toThrow(ProtocolError);
     expect(() => parseRealtimePrepareResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepared",
       ticket: "too-short",
       configuration: {},
     })).toThrow("ticket");
     expect(() => parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket: "A".repeat(43),
       offer: { type: "answer", sdp: "v=0\r\n" },
     })).toThrow(ProtocolError);
     expect(() => parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket: "A".repeat(43),
       offer: { type: "offer", sdp: "v=0\r\n" },
       ref: "assistant.voice",
     })).toThrow("unknown field ref");
     expect(() => parseRealtimeCandidatesMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [],
       complete: true,
       extra: true,
-    })).toThrow("unknown field extra");
+    }, "client")).toThrow("unknown field extra");
     expect(() => parseRealtimeOfferResponse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_answer",
       sessionId: "../not-a-capability",
       answer: { type: "answer", sdp: "v=0\r\n" },

@@ -3,7 +3,7 @@ import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ClientMessage,
   type ServerMessage,
 } from "@ackerdb/core";
@@ -63,7 +63,6 @@ function mutationOk(
   replay: "executed" | "replayed" = "executed",
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",
@@ -241,7 +240,7 @@ describe("useMutation", () => {
     // Determinate failure: the server's exact outcome is the rejection.
     const failed = probe.latest()({ text: "rejected" });
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: lastMutationFrame(socket).id,
       outcome: {
@@ -267,7 +266,7 @@ describe("useMutation", () => {
     const blocked = probe.latest()({ text: "blocked" });
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: {

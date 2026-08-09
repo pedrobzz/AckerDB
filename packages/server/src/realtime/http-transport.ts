@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   parseRealtimeCandidatesMessage,
   parseRealtimeOfferRequest,
   parseRealtimePrepareRequest,
@@ -95,7 +95,7 @@ export class RealtimeHttpTransport {
       });
       if (!result.ok) {
         return this.options.json({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_rejected",
           error: result.error,
         }, result.error.status);
@@ -103,7 +103,7 @@ export class RealtimeHttpTransport {
       preparedTicket = result.ticket;
       preparedOwner = owner;
       const response = this.options.json({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_prepared",
         ticket: result.ticket,
         configuration: result.configuration,
@@ -158,13 +158,13 @@ export class RealtimeHttpTransport {
       });
       if (!result.ok) {
         return this.options.json({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_rejected",
           error: result.error,
         }, result.error.status);
       }
       return this.options.json({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_answer",
         sessionId: result.sessionId,
         answer: result.answer,
@@ -203,7 +203,7 @@ export class RealtimeHttpTransport {
           request,
           runtime.limits.maxRequestBytes,
           runtime.limits.readQueue.maxAgeMs,
-          parseRealtimeCandidatesMessage,
+          (value) => parseRealtimeCandidatesMessage(value, "client"),
         ));
       }
       lease = await this.options.authenticate(request);
@@ -224,13 +224,13 @@ export class RealtimeHttpTransport {
       );
       if (!result.ok) {
         return this.options.json({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_ended",
           outcome: result.outcome,
         }, outcomeHttpStatus(result.outcome));
       }
       return this.options.json({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: result.candidates,
         complete: result.complete,

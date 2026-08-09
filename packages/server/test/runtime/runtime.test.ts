@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Err,
   Status,
   encode,
@@ -652,7 +652,6 @@ class SessionHarness {
     issuedAt = Date.now(),
   ) {
     const message: MutationMessage = {
-      v: PROTOCOL_VERSION,
       t: "m",
       id,
       ref,
@@ -703,7 +702,7 @@ async function collectSse(
   response: RuntimeSseResponse,
   acknowledge: (message: SseMessage) => void = (message) => {
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: message.seq,
@@ -825,7 +824,6 @@ describe("application channels", () => {
       [otherRoom, 3, "sales"],
     ] as const) {
       await runtime.joinChannel(target.context, request({
-        v: PROTOCOL_VERSION,
         t: "channel_join",
         id,
         ref: "api.chat.room",
@@ -840,7 +838,6 @@ describe("application channels", () => {
     }
 
     await runtime.sendChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_send",
       id: 1,
       event: "message",
@@ -864,7 +861,6 @@ describe("application channels", () => {
     )).toEqual([]);
 
     const stored = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 4,
       ref: "api.messages.list",
@@ -875,12 +871,10 @@ describe("application channels", () => {
     ]);
 
     await runtime.leaveChannel(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_leave",
       id: 2,
     }));
     await runtime.sendChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_send",
       id: 1,
       event: "message",
@@ -912,7 +906,6 @@ describe("runtime commit and replay ownership", () => {
   test("publishes one safe error when a query result is not wire-representable", async () => {
     await session.open();
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "api.messages.nonWireQuery",
@@ -930,7 +923,6 @@ describe("runtime commit and replay ownership", () => {
   test("answers one query's declared error identically over the session and HTTP", async () => {
     await session.open();
     const framed = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 20,
       ref: "api.messages.missing",
@@ -981,7 +973,6 @@ describe("runtime commit and replay ownership", () => {
   test("publishes application errors separately and uses a procedure's named HTTP status", async () => {
     await session.open();
     const queryResult = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 10,
       ref: "api.messages.missing",
@@ -1021,7 +1012,6 @@ describe("runtime commit and replay ownership", () => {
     expect(first.receipt).toMatchObject({ replay: "executed", durability: "production" });
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "api.messages.list",
@@ -1031,7 +1021,6 @@ describe("runtime commit and replay ownership", () => {
     await expect(session.mutation(4, "api.messages.composeFail", { channelId: 2n })).rejects.toThrow("compose failed");
 
     const rolledBack = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 5,
       ref: "api.messages.list",
@@ -1046,7 +1035,6 @@ describe("runtime commit and replay ownership", () => {
     const handled = await session.mutation(20, "api.messages.handleChildErr", { channelId: 20n });
     expect(handled.value).toBe("queued");
     const handledRows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 21,
       ref: "api.messages.list",
@@ -1101,7 +1089,6 @@ describe("runtime commit and replay ownership", () => {
     });
     expect(writeThenErrCalls).toBe(callsAfterErr);
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 24,
       ref: "api.messages.list",
@@ -1114,7 +1101,6 @@ describe("runtime commit and replay ownership", () => {
       { channelId: 24n },
     )).rejects.toThrow("storage exploded");
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 26,
       ref: "api.messages.list",
@@ -1135,7 +1121,6 @@ describe("runtime commit and replay ownership", () => {
       "concurrent database access crossed a nested mutation boundary",
     );
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 28,
       ref: "api.messages.list",
@@ -1151,7 +1136,6 @@ describe("runtime commit and replay ownership", () => {
       { channelId: 29n },
     )).rejects.toThrow("row 9999 not found");
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 30,
       ref: "api.messages.list",
@@ -1191,7 +1175,6 @@ describe("runtime commit and replay ownership", () => {
     )).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
 
     const rows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 4,
       ref: "api.messages.list",
@@ -1207,7 +1190,6 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const subscribing = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 40,
       ref: "api.messages.parallelList",
@@ -1218,7 +1200,6 @@ describe("ordered convergence", () => {
     let resetSettled = false;
     let unsubscribeSettled = false;
     const resetting = runtime.reset(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "reset",
       id: 40,
       cursor: { generation: "stale", commitVersion: 0n, authEpoch: 0, identity: "stale" },
@@ -1226,14 +1207,12 @@ describe("ordered convergence", () => {
       resetSettled = true;
     });
     const unsubscribing = runtime.unsubscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "unsub",
       id: 40,
     })).finally(() => {
       unsubscribeSettled = true;
     });
     const independent = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 41,
       ref: "api.messages.list",
@@ -1256,7 +1235,6 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const priorSubscription = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 50,
       ref: "api.messages.parallelList",
@@ -1266,7 +1244,6 @@ describe("ordered convergence", () => {
 
     const mutation = session.mutation(51, "api.messages.send", { channelId: 3n, body: "after-control" });
     const laterSubscription = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 52,
       ref: "api.messages.list",
@@ -1285,7 +1262,6 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const subscribing = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 60,
       ref: "api.messages.parallelList",
@@ -1315,7 +1291,6 @@ describe("ordered convergence", () => {
     });
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 89,
       ref: "api.messages.parallelList",
@@ -1324,7 +1299,6 @@ describe("ordered convergence", () => {
     queryFailureGate = deferred<void>();
     queryFailureEntered = deferred<void>();
     const failedQuery = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 90,
       ref: "api.messages.blockFail",
@@ -1382,7 +1356,6 @@ describe("ordered convergence", () => {
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 10,
       ref: "api.messages.list",
@@ -1412,14 +1385,12 @@ describe("ordered convergence", () => {
     const secondSession = new SessionHarness(runtime, "session-b");
     await secondSession.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 60,
       ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await runtime.subscribe(secondSession.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 61,
       ref: "api.messages.parallelList",
@@ -1480,14 +1451,12 @@ describe("ordered convergence", () => {
   test("event subscriptions receive reset then committed rows", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 20,
       ref: "api.events.typing",
       args: { channelId: 7n },
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 21,
       ref: "api.events.typing",
@@ -1504,7 +1473,6 @@ describe("ordered convergence", () => {
   test("authorizes and freezes event subscriptions across refresh and terminal sign-out", async () => {
     await session.open(user("alice"));
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 22,
       ref: "api.events.privateTyping",
@@ -1512,7 +1480,6 @@ describe("ordered convergence", () => {
     }))).rejects.toMatchObject({ code: "validation" });
 
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 23,
       ref: "api.events.privateTyping",
@@ -1544,7 +1511,6 @@ describe("ordered convergence", () => {
   test("denies an event policy before listener attachment", async () => {
     await session.open();
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 24,
       ref: "api.events.privateTyping",
@@ -1556,7 +1522,6 @@ describe("ordered convergence", () => {
   test("auth rotation revokes then re-evaluates saved subscriptions under the new identity", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 30,
       ref: "api.messages.secure",
@@ -1579,21 +1544,18 @@ describe("ordered convergence", () => {
   test("reattaches the reactive-owned query and event definitions in id order", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 32,
       ref: "api.messages.secure",
       args: {},
     }));
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 32,
       ref: "api.events.privateTyping",
       args: { channelId: 8n },
     }))).rejects.toMatchObject({ code: "conflict" });
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 31,
       ref: "api.events.privateTyping",
@@ -1619,14 +1581,12 @@ describe("ordered convergence", () => {
   test("disconnect releases query and event ownership at the reactive boundary", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 33,
       ref: "api.messages.secure",
       args: {},
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 34,
       ref: "api.events.privateTyping",
@@ -1884,7 +1844,6 @@ describe("system execution root", () => {
     await expect(held).resolves.toMatchObject({ ok: true });
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 305,
       ref: "api.messages.list",
@@ -1939,7 +1898,6 @@ describe("system execution root", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 306,
       ref: "api.messages.list",
@@ -1991,7 +1949,6 @@ describe("system execution root", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 304,
       ref: "api.messages.list",
@@ -2160,7 +2117,6 @@ describe("system execution root", () => {
   test("rolls back application Err and publishes successful transaction effects", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 302,
       ref: "api.messages.list",
@@ -2178,7 +2134,6 @@ describe("system execution root", () => {
       error: { code: "stock-unavailable" },
     });
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 303,
       ref: "api.messages.list",
@@ -2215,7 +2170,6 @@ describe("procedures and bounded SSE", () => {
       externalProcedureRelease = deferred<void>();
       const controller = new AbortController();
       const message: ProcedureMessage = {
-        v: PROTOCOL_VERSION,
         t: "p",
         id: index + 1,
         ref,
@@ -2309,7 +2263,6 @@ describe("procedures and bounded SSE", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 31,
       ref: "api.messages.list",
@@ -2401,21 +2354,21 @@ describe("procedures and bounded SSE", () => {
         const before = runtime.status().sseBudget.bytes;
         expect(runtime.status().activeSse).toBe(1);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: "AAAAAAAAAAAAAAAAAAAAAA",
           seq: message.seq,
           proof: message.proof,
         })).toBe(false);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: response.streamId,
           seq: message.seq,
           proof: `${message.proof}x`,
         })).toBe(false);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: response.streamId,
           seq: message.seq + 100,
@@ -2425,7 +2378,7 @@ describe("procedures and bounded SSE", () => {
       }
       if (message.t !== "sse_chunk") expect(runtime.status().activeSse).toBe(1);
       expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "sse_ack",
         stream: response.streamId,
         seq: message.seq,
@@ -2439,7 +2392,7 @@ describe("procedures and bounded SSE", () => {
     ]);
     expect(messages.at(-1)?.t).toBe("sse_done");
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: messages.at(-1)!.seq,
@@ -2505,14 +2458,12 @@ describe("direct ingress", () => {
     };
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 81,
       ref: oversized,
       args: {},
     }, 0))).rejects.toMatchObject(expected);
     await expect(runtime.mutation(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 82,
       ref: "api.messages.send",
@@ -2551,7 +2502,6 @@ describe("direct ingress", () => {
     await session.open();
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 87,
       ref: "api.messages.list",
@@ -2706,7 +2656,6 @@ describe("jobs runner and lifecycle", () => {
   test("job rows are live: a subscription over the jobs table updates on enqueue and settle", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 70,
       ref: "api.reminders.pending",
@@ -2798,7 +2747,7 @@ describe("jobs runner and lifecycle", () => {
     });
     expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: acknowledged.response.streamId,
       seq: acknowledgedTerminal.seq,
@@ -2824,7 +2773,7 @@ describe("jobs runner and lifecycle", () => {
     await eventually(() => runtime.status().activeSse === 0);
     await eventually(() => runtime.status().activeOperations === 0);
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: forced.response.streamId,
       seq: forcedTerminal.seq,
@@ -2846,7 +2795,6 @@ describe("jobs runner and lifecycle", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const attaching = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 85,
       ref: "api.messages.parallelList",
@@ -2860,7 +2808,6 @@ describe("jobs runner and lifecycle", () => {
       activeOperations: 1,
     });
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 86,
       ref: "api.messages.list",
@@ -2882,7 +2829,6 @@ describe("jobs runner and lifecycle", () => {
     await restart(limits({ gracefulShutdownMs: 500 }));
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 86,
       ref: "api.messages.parallelList",
@@ -2904,7 +2850,6 @@ describe("jobs runner and lifecycle", () => {
       reactive: { queryListeners: 1, eventListeners: 0 },
     });
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 88,
       ref: "api.messages.list",
@@ -2977,7 +2922,6 @@ describe("jobs runner and lifecycle", () => {
     await session.open();
     queryGate = deferred<void>();
     const accepted = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
       ref: "api.messages.block",
@@ -2987,7 +2931,6 @@ describe("jobs runner and lifecycle", () => {
     const drain = runtime.drain();
     expect(runtime.status().state).toBe("draining");
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "api.messages.block",
@@ -3058,7 +3001,6 @@ describe("configured capacity", () => {
     queryGate = gate;
     const blocked = (owner: SessionHarness, id: number) =>
       runtime.query(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "q",
         id,
         ref: "api.messages.block",
@@ -3117,7 +3059,6 @@ describe("configured capacity", () => {
     };
 
     const held = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 70,
       ref: "api.messages.block",
@@ -3125,7 +3066,6 @@ describe("configured capacity", () => {
     }));
     await eventually(() => runtime.status().activeOperations === 1);
     const rejectedControl = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 71,
       ref: "api.messages.list",
@@ -3177,7 +3117,6 @@ describe("configured capacity", () => {
     await Promise.all([session.open(), second.open(), third.open()]);
     const subscribe = (owner: SessionHarness, id: number, channelId: bigint) =>
       runtime.subscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "sub",
         id,
         ref: "api.messages.list",
@@ -3185,7 +3124,6 @@ describe("configured capacity", () => {
       }));
     const unsubscribe = (owner: SessionHarness, id: number) =>
       runtime.unsubscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "unsub",
         id,
       }));
@@ -3237,7 +3175,6 @@ describe("configured capacity", () => {
     await Promise.all([session.open(), second.open()]);
 
     await runtime.joinChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_join",
       id: 1,
       ref: "api.chat.room",
@@ -3245,7 +3182,6 @@ describe("configured capacity", () => {
       room: "support",
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 2,
       ref: "api.messages.list",
@@ -3253,7 +3189,6 @@ describe("configured capacity", () => {
     }));
 
     await expect(runtime.joinChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_join",
       id: 3,
       ref: "api.chat.room",
@@ -3265,7 +3200,6 @@ describe("configured capacity", () => {
       resource: "subscription",
     });
     await expect(runtime.subscribe(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 1,
       ref: "api.messages.list",
@@ -3277,12 +3211,10 @@ describe("configured capacity", () => {
     });
 
     await runtime.leaveChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_leave",
       id: 1,
     }));
     await expect(runtime.subscribe(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 1,
       ref: "api.messages.list",
@@ -3298,7 +3230,6 @@ describe("configured capacity", () => {
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     expect(engine.commitVersion()).toBe(0n);
     const rows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "api.messages.list",
@@ -3310,7 +3241,6 @@ describe("configured capacity", () => {
   test("publishes an error instead of an oversized query success frame", async () => {
     await session.open();
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 3,
       ref: "api.messages.largeQuery",
@@ -3339,7 +3269,6 @@ describe("configured capacity", () => {
     }));
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 50,
       ref: "api.messages.secure",
@@ -3359,7 +3288,6 @@ describe("configured capacity", () => {
     await restart(limits({ maxConnections: 2, maxFrameBytes }));
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 51,
       ref: "api.messages.secure",
@@ -3387,7 +3315,6 @@ describe("configured capacity", () => {
     await Promise.all([first.open(user("alice")), second.open(user("alice"))]);
     for (const owner of [first, second]) {
       await runtime.subscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "sub",
         id: 51,
         ref: "api.messages.secure",

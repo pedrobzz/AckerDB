@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   isRealtimeSessionId,
@@ -226,7 +226,7 @@ function json(value: unknown, status = 200): Response {
  */
 function protocolError(error: unknown): Response {
   const outcome = outcomeFromError(error);
-  const frame: ErrorMessage = { v: PROTOCOL_VERSION, t: "err", id: null, outcome };
+  const frame: ErrorMessage = { v: ACKERDB_VERSION, t: "err", id: null, outcome };
   return json(frame, outcomeHttpStatus(outcome));
 }
 

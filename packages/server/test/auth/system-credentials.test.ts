@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   encode,
   type MutationMessage,
   type SubscribeMessage,
@@ -290,7 +290,6 @@ function request<Message>(message: Message): RuntimeRequest<Message> {
 function mutationMessage(id: number, args: unknown, ref: string): MutationMessage {
   const timestamp = Date.now().toString(16).padStart(12, "0");
   return {
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
     ref,
@@ -301,7 +300,7 @@ function mutationMessage(id: number, args: unknown, ref: string): MutationMessag
 }
 
 function subscribeMessage(id: number): SubscribeMessage {
-  return { v: PROTOCOL_VERSION, t: "sub", id, ref: "api.ownerTokens.listOwned", args: {} };
+  return { t: "sub", id, ref: "api.ownerTokens.listOwned", args: {} };
 }
 
 type Action = NonNullable<typeof action._type>;

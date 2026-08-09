@@ -1,3 +1,4 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -121,8 +122,9 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
       createWebSocket: (url: string) => {
         const socket = new NativeWebSocket(url);
         const send = socket.send.bind(socket);
+        let sent = 0;
         socket.send = (data) => {
-          frames.push(parseClientMessage(decode(data as string)));
+          frames.push(parseSentFrame(data as string, sent++));
           send(data);
         };
         sockets.push(socket);

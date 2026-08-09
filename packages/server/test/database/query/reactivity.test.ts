@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage } from "@ackerdb/core";
+import { ACKERDB_VERSION, encode, type MutationMessage } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   Engine,
@@ -206,7 +206,6 @@ class SessionHarness {
   mutation(id: number, ref: string, args: unknown) {
     const issuedAt = Date.now();
     const message: MutationMessage = {
-      v: PROTOCOL_VERSION,
       t: "m",
       id,
       ref,
@@ -219,7 +218,6 @@ class SessionHarness {
 
   subscribe(id: number, ref: string, args: unknown): Promise<void> {
     return this.runtime.subscribe(this.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id,
       ref,

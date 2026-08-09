@@ -80,7 +80,7 @@ export function outcomeHttpStatus(outcome: Outcome): number {
   switch (outcome.code) {
     case "malformed":
     case "validation":
-    case "unsupported_protocol":
+    case "version_mismatch":
       return 400;
     case "unauthenticated":
     case "auth_stale":
@@ -109,7 +109,7 @@ export function outcomeHttpStatus(outcome: Outcome): number {
 }
 
 export function outcomeWebSocketClose(outcome: Outcome): 1002 | 1008 | 1013 {
-  if (outcome.code === "malformed" || outcome.code === "unsupported_protocol") return 1002;
+  if (outcome.code === "malformed" || outcome.code === "version_mismatch") return 1002;
   if (
     outcome.code === "overloaded" ||
     outcome.code === "slow_consumer" ||

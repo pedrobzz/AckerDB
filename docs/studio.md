@@ -127,7 +127,7 @@ The connect screen has six honest states:
 | application unreachable | the application is not answering Studio | start it, or check the target |
 | sign in | the application answers and Studio holds no credential | sign in |
 | credential refused | the credential was rejected, or holds no admin grant | use another credential |
-| signed in, no session | the credential opens the Admin API and Studio still cannot hold a session — a protocol the two do not share is the cause this reaches in practice | install the Studio matching the application's AckerDB |
+| signed in, no session | the credential opens the Admin API and Studio still cannot hold a session — a Studio on a different AckerDB version than the application is the cause this reaches in practice | install the Studio matching the application's AckerDB |
 | connected | signed in, showing what `admin.system.info` named | proceed |
 
 Reachability is read before anything about credentials, because a stopped
@@ -149,11 +149,12 @@ failed, because "your credential was refused" and "Studio cannot hold a session
 with a credential that plainly works" send you to entirely different places.
 
 The second of those has one cause in practice, and the screen names it outright:
-the Admin API answers over plain HTTP, which negotiates no protocol version,
-while the socket handshake refuses one it cannot speak. `admin.system.info`
-already reported the application's protocol, so a Studio built against a
-different one says which package to install rather than passing along whatever
-the transport called the failure.
+the Admin API answers over plain HTTP, which carries no version, while the
+socket refuses a frame from any build but its own. `admin.system.info` already
+reported the application's AckerDB version, and that version is the whole
+compatibility contract, so a Studio built from a different one names the exact
+package to install rather than passing along whatever the transport called the
+failure.
 
 ## The shell
 

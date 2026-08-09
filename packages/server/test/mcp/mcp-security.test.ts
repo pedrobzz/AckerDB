@@ -14,7 +14,7 @@ import { defineSchema } from "../../src/schema/definition.ts";
 import { AckerDBServer, serve, type McpHttpOptions } from "../../src/transport/server.ts";
 import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 
-const PROTOCOL_VERSION = "2025-11-25";
+const ACKERDB_VERSION = "2025-11-25";
 const ARGUMENT_CANARY = "private-mcp-argument-canary";
 const RESULT_CANARY = "private-mcp-result-canary";
 const HANDLER_ERROR_CANARY = "private-mcp-handler-error-canary";
@@ -103,7 +103,7 @@ function headers(overrides: Record<string, string> = {}): Record<string, string>
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
-    "mcp-protocol-version": PROTOCOL_VERSION,
+    "mcp-protocol-version": ACKERDB_VERSION,
     ...overrides,
   };
 }

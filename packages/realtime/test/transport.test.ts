@@ -21,7 +21,7 @@ import {
   type TelemetryRecord,
 } from "@ackerdb/server";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   RealtimeDataPlane,
   decode,
   encode,
@@ -150,7 +150,7 @@ async function prepare(recovery = false) {
   const response = await fetch(`${base}/_realtime/prepare`, {
     method: "POST",
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
       ref: "api.assistant.live",
       args: {},
@@ -168,7 +168,7 @@ async function offer(ticket: string) {
   const response = await fetch(`${base}/_realtime`, {
     method: "POST",
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket,
       offer: { type: "offer", sdp: "v=0\r\noffer" },
@@ -192,7 +192,7 @@ describe("realtime HTTP signaling", () => {
     const response = await fetch(`${base}/_realtime/prepare`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_prepare",
         ref: "api.assistant.live",
         args: {},
@@ -283,7 +283,7 @@ describe("realtime HTTP signaling", () => {
     const preparedResponse = await fetch(`${base}/_realtime/prepare`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_prepare",
         ref: "api.assistant.live",
         args: {},
@@ -295,7 +295,7 @@ describe("realtime HTTP signaling", () => {
       decode(await preparedResponse.text()),
     );
     expect(prepared).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepared",
       configuration: {
         iceServers: [{ urls: "turn:relay.example.test" }],
@@ -318,7 +318,7 @@ describe("realtime HTTP signaling", () => {
     const patched = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: true,
@@ -343,7 +343,7 @@ describe("realtime HTTP signaling", () => {
     const patched = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [{
           candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ srflx",
@@ -368,7 +368,7 @@ describe("realtime HTTP signaling", () => {
     const response = await fetch(`${base}/_realtime/not-a-session`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: true,

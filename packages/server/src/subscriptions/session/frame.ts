@@ -1,12 +1,12 @@
-import { ProtocolError, decode, parseClientMessage, type ClientMessage } from "@ackerdb/core";
+import { ProtocolError, decode } from "@ackerdb/core";
 import { AckerDBError } from "../../shared/errors.ts";
 
 /** One raw WebSocket message whose byte ownership remains inside Session. */
 export type SessionWireFrame = string | Uint8Array;
 
 /** An admitted frame and the exact transport bytes its operation owns. */
-export interface DecodedClientFrame {
-  readonly message: ClientMessage;
+export interface DecodedClientFrame<Message> {
+  readonly message: Message;
   readonly bytes: number;
 }
 
@@ -20,12 +20,19 @@ function protocolError(error: ProtocolError): AckerDBError {
  * Admits one raw frame against the session's byte limits and decodes Protocol-2.
  * Admission is all-or-nothing: on success the caller owns exactly `bytes`, and
  * every rejection throws the AckerDBError the session must terminate on.
+ *
+ * The parser is the caller's to choose because it is the caller that knows
+ * whether this connection has a verified peer yet. A session passes the
+ * handshake parser until its hello is accepted and the session parser
+ * afterwards, so the phase decides which vocabulary a frame is read against
+ * instead of one parser deciding it from the frame's own contents.
  */
-export function decodeClientFrame(
+export function decodeClientFrame<Message>(
   raw: SessionWireFrame,
   maxFrameBytes: number,
   maxRequestBytes: number,
-): DecodedClientFrame {
+  parse: (value: unknown) => Message,
+): DecodedClientFrame<Message> {
   let bytes: number;
   if (typeof raw === "string") {
     bytes = Buffer.byteLength(raw);
@@ -54,7 +61,7 @@ export function decodeClientFrame(
     throw new AckerDBError("malformed", "client frame is not valid UTF-8", { cause });
   }
   try {
-    return { message: parseClientMessage(decode(text)), bytes };
+    return { message: parse(decode(text)), bytes };
   } catch (cause) {
     throw cause instanceof ProtocolError
       ? protocolError(cause)

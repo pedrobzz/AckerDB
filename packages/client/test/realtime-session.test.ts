@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   anyApi,
   decode,
   decodeRealtimeFrame,
@@ -10,7 +10,6 @@ import {
   parseRealtimeCandidatesMessage,
   parseRealtimeOfferRequest,
   parseRealtimePrepareRequest,
-  REALTIME_PROTOCOL_VERSION,
   RealtimeStreamInterruptedError,
   type RealtimeCandidatesMessage,
   type RealtimeRef,
@@ -253,7 +252,7 @@ function fixture(reconnect?: {
         recoveryPreparations.push(request.recovery === true);
         if (rejectPrepare) {
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_rejected",
             error: {
               kind: "application",
@@ -266,7 +265,7 @@ function fixture(reconnect?: {
         const ticket = String(preparations).padStart(43, "A");
         tickets.push(ticket);
         return new Response(encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_prepared",
           ticket,
           configuration: { iceServers: [] },
@@ -281,7 +280,7 @@ function fixture(reconnect?: {
         expect(request.ticket).toBe(ticket);
         offers++;
         return new Response(encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_answer",
           sessionId: "abcdefghijklmnopqrstuvwxyzABCDEF",
           answer: { type: "answer", sdp: "v=0\r\nserver" },
@@ -300,10 +299,11 @@ function fixture(reconnect?: {
         patches++;
         const request = parseRealtimeCandidatesMessage(
           decode(String(init.body)),
+          "client",
         );
         if (onPatch !== undefined) return onPatch(request);
         return new Response(encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_candidates",
           candidates: [],
           complete: true,
@@ -452,7 +452,7 @@ describe("AckerDB realtime client sessions", () => {
 
     expect(session.send("prompt", { text: "hello" })).toBe(true);
     expect(peers[0]!.channel.sent
-      .map(decodeRealtimeFrame)
+      .map((packet) => decodeRealtimeFrame(packet, "client"))
       .filter((frame) => frame.t === "event")).toHaveLength(1);
     expect(() => session.openStream(
       "photo",
@@ -474,7 +474,7 @@ describe("AckerDB realtime client sessions", () => {
     await eventually(() => peers[0]!.offers === 2);
     expect(peers[0]!.offers).toBe(2);
     const description = peers[0]!.channel.sent
-      .map(decodeRealtimeFrame)
+      .map((packet) => decodeRealtimeFrame(packet, "client"))
       .find((frame) => frame.t === "signal_description");
     expect(description).toMatchObject({
       t: "signal_description",
@@ -499,13 +499,13 @@ describe("AckerDB realtime client sessions", () => {
     } as RTCSessionDescription;
 
     peer.channel.receive(encodeRealtimeFrame({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_description",
       description: { type: "offer", sdp: "v=0\r\nserver-offer" },
     }));
     await eventually(() =>
       peer.channel.sent
-        .map(decodeRealtimeFrame)
+        .map((packet) => decodeRealtimeFrame(packet, "client"))
         .some((frame) => frame.t === "signal_description")
     );
 
@@ -514,7 +514,7 @@ describe("AckerDB realtime client sessions", () => {
       "remote:offer",
       "local:answer",
     ]);
-    expect(peer.channel.sent.map(decodeRealtimeFrame).find((frame) =>
+    expect(peer.channel.sent.map((packet) => decodeRealtimeFrame(packet, "client")).find((frame) =>
       frame.t === "signal_description"
     )).toMatchObject({
       t: "signal_description",
@@ -540,7 +540,7 @@ describe("AckerDB realtime client sessions", () => {
     peers[0]!.completeIce();
     await eventually(() =>
       peers[0]!.channel.sent
-        .map(decodeRealtimeFrame)
+        .map((packet) => decodeRealtimeFrame(packet, "client"))
         .some((frame) =>
           frame.t === "signal_candidate" && frame.candidate === null
         )
@@ -557,7 +557,7 @@ describe("AckerDB realtime client sessions", () => {
     const requests: RealtimeCandidatesMessage[] = [];
     let resolveFirst!: (response: Response) => void;
     const response = (complete: boolean) => new Response(encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [],
       complete,
@@ -593,7 +593,7 @@ describe("AckerDB realtime client sessions", () => {
     peer.emitIceCandidate(second);
     await Promise.resolve();
     expect(requests).toEqual([{
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [first],
       complete: false,
@@ -602,7 +602,7 @@ describe("AckerDB realtime client sessions", () => {
     resolveFirst(response(false));
     await eventually(() => requests.length === 2);
     expect(requests[1]).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [second],
       complete: false,
@@ -628,7 +628,7 @@ describe("AckerDB realtime client sessions", () => {
         requests.push(request);
         if (requests.length === 1) {
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_candidates",
             candidates: [serverCandidate],
             complete: false,
@@ -644,13 +644,13 @@ describe("AckerDB realtime client sessions", () => {
     await eventually(() => requests.length === 2);
     expect(requests).toEqual([
       {
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: true,
       },
       {
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: false,
@@ -659,7 +659,7 @@ describe("AckerDB realtime client sessions", () => {
 
     peers[0]!.channel.open();
     resolveContinuation(new Response(encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_candidates",
       candidates: [],
       complete: false,
@@ -822,7 +822,7 @@ describe("AckerDB realtime client sessions", () => {
         expect(new URL(url).pathname).toBe("/_realtime/prepare");
         expect(init?.method).toBe("POST");
         return new Response(encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_prepared",
           ticket: "A".repeat(43),
           configuration: { iceServers: [] },
@@ -846,6 +846,50 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
+  test("decodes a realtime HTTP failure on the connection surface, not the session one", async () => {
+    // Prepare is its own HTTP exchange with no handshake behind it, so its
+    // framework failure is a connection-level refusal. An error naming an
+    // operation this exchange never issued is not one, and must not be handed
+    // through as an authoritative realtime outcome.
+    for (const [body, expected] of [
+      [
+        { v: ACKERDB_VERSION, t: "err", id: 7, outcome: { code: "unavailable", retryable: true, message: "operation scoped" } },
+        { code: "malformed", message: "a connection error must not name an operation" },
+      ],
+      [
+        { v: "0.0.1", t: "err", id: null, outcome: { code: "unavailable", retryable: true, message: "other build" } },
+        {
+          code: "version_mismatch",
+          message: `this application runs AckerDB 0.0.1 and this client is ${ACKERDB_VERSION}` +
+            " — install matching versions",
+        },
+      ],
+      [
+        { v: ACKERDB_VERSION, t: "err", id: null, outcome: { code: "unauthorized", retryable: false, message: "no grant" } },
+        { code: "unauthorized", message: "no grant" },
+      ],
+    ] as const) {
+      const client = new AckerDBClient({
+        url: "https://ackerdb.example.test",
+        credential: { kind: "anonymous" },
+        clientSessionId: "01890a5d-ac96-774b-b4c0-123456789abc",
+        createWebSocket: () => {
+          throw new Error("realtime must not open the application WebSocket");
+        },
+        createPeerConnection: () => ({}),
+        fetch: async () => new Response(encode(body), { status: 400 }),
+      });
+      const session = client.realtime(assistant, { assistantId: 1n });
+      await eventually(() => session.currentState.phase === "failed");
+      const state = session.currentState;
+      if (state.phase !== "failed") throw new Error(`unexpected ${state.phase}`);
+      expect(state.error.code).toBe(expected.code);
+      expect(state.error.message).toBe(expected.message);
+      session.release();
+      client.close();
+    }
+  });
+
   test("validates reserved peer capabilities before the offer", async () => {
     let requests = 0;
     const client = new AckerDBClient({
@@ -861,7 +905,7 @@ describe("AckerDB realtime client sessions", () => {
         expect(new URL(url).pathname).toBe("/_realtime/prepare");
         expect(init?.method).toBe("POST");
         return new Response(encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_prepared",
           ticket: "A".repeat(43),
           configuration: { iceServers: [] },
