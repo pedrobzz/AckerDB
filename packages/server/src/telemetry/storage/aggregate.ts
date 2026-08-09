@@ -16,8 +16,15 @@
  */
 import type { Database, Statement } from "bun:sqlite";
 import type { AggregateSeriesRow } from "../aggregation/buckets.ts";
-import { HOUR_MS, MINUTE_MS, mergeIntoHour } from "../aggregation/buckets.ts";
-import type { TelemetryStore } from "./store.ts";
+import {
+  EXPOSED_QUANTILES,
+  HOUR_MS,
+  isConfidentQuantile,
+  MINUTE_MS,
+  mergeIntoHour,
+} from "../aggregation/buckets.ts";
+import { Sketch } from "../aggregation/sketch.ts";
+import { expirableSet, type TelemetryStore } from "./store.ts";
 
 export interface TelemetryAggregateStoreSnapshot {
   readonly writtenMinuteRows: number;
@@ -34,9 +41,8 @@ export class TelemetryAggregateStore {
   private readonly upsertHour: Statement;
   private readonly announceMinute: Statement;
   private readonly closeMinute: Statement;
-  private readonly deleteExpiredMinutes: Statement;
-  private readonly deleteExpiredHours: Statement;
-  private readonly deleteExpiredCoverage: Statement;
+  private readonly selectMinute: Statement;
+  private readonly selectHour: Statement;
   private writtenMinuteRows = 0;
   private writtenHourRows = 0;
   private announcedMinutes = 0;
@@ -50,39 +56,36 @@ export class TelemetryAggregateStore {
       name: "aggregate",
       initialize: (database) => {
         createAggregateSchema(database);
+        const count = (removed: number): void => {
+          this.expiredRows += removed;
+        };
         return [
-          Object.freeze({
-            retention: "minutes" as const,
-            deleteExpired: (cutoffMs: number, limit: number) => {
-              const removed = this.deleteExpiredMinutes.all(cutoffMs, limit).length;
-              this.expiredRows += removed;
-              return removed;
-            },
+          expirableSet(this.store, "minutes", {
+            table: "_ackerdb_telemetry_aggregate_minute",
+            key: "rowid",
+            timestamp: "bucket_start",
+          }, count),
+          expirableSet(this.store, "minutes", {
+            table: "_ackerdb_telemetry_aggregate_coverage",
+            key: "minute",
+            timestamp: "minute",
           }),
-          Object.freeze({
-            retention: "minutes" as const,
-            deleteExpired: (cutoffMs: number, limit: number) =>
-              this.deleteExpiredCoverage.all(cutoffMs, limit).length,
-          }),
-          Object.freeze({
-            retention: "rollups" as const,
-            deleteExpired: (cutoffMs: number, limit: number) => {
-              const removed = this.deleteExpiredHours.all(cutoffMs, limit).length;
-              this.expiredRows += removed;
-              return removed;
-            },
-          }),
+          expirableSet(this.store, "rollups", {
+            table: "_ackerdb_telemetry_aggregate_hour",
+            key: "rowid",
+            timestamp: "bucket_start",
+          }, count),
         ];
       },
     });
     const columns = `
       bucket_start, operation, function_address, overflow, count, error_count,
-      total_ms, min_ms, max_ms, collapsed, low_confidence, sketch_ok, sketch_failed
+      total_ms, min_ms, max_ms, mapping_scale, low_confidence, sketch_ok, sketch_failed
     `;
     // A minute is written once, but a forced handover at drain can revisit one
     // that already has a row; adding rather than replacing keeps the row the sum
     // of everything the generation observed in it.
-    this.upsertMinute = this.database.query(`
+    this.upsertMinute = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_aggregate_minute (${columns})
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(bucket_start, operation, function_address) DO UPDATE SET
@@ -91,12 +94,12 @@ export class TelemetryAggregateStore {
         total_ms = total_ms + excluded.total_ms,
         min_ms = MIN(min_ms, excluded.min_ms),
         max_ms = MAX(max_ms, excluded.max_ms),
-        collapsed = MAX(collapsed, excluded.collapsed),
+        mapping_scale = excluded.mapping_scale,
         low_confidence = excluded.low_confidence,
         sketch_ok = excluded.sketch_ok,
         sketch_failed = excluded.sketch_failed
     `);
-    this.upsertHour = this.database.query(`
+    this.upsertHour = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_aggregate_hour (${columns})
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(bucket_start, operation, function_address) DO UPDATE SET
@@ -105,41 +108,63 @@ export class TelemetryAggregateStore {
         total_ms = total_ms + excluded.total_ms,
         min_ms = MIN(min_ms, excluded.min_ms),
         max_ms = MAX(max_ms, excluded.max_ms),
-        collapsed = MAX(collapsed, excluded.collapsed),
+        mapping_scale = excluded.mapping_scale,
         low_confidence = excluded.low_confidence,
         sketch_ok = excluded.sketch_ok,
         sketch_failed = excluded.sketch_failed
     `);
-    this.announceMinute = this.database.query(`
+    this.announceMinute = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_aggregate_coverage (minute, generation, closed)
       VALUES (?, ?, 0)
       ON CONFLICT(minute) DO NOTHING
     `);
-    this.closeMinute = this.database.query(`
+    this.closeMinute = this.store.prepare(`
       UPDATE _ackerdb_telemetry_aggregate_coverage SET closed = 1, generation = ?
       WHERE minute = ?
     `);
-    this.deleteExpiredMinutes = this.database.query(`
-      DELETE FROM _ackerdb_telemetry_aggregate_minute
-      WHERE rowid IN (
-        SELECT rowid FROM _ackerdb_telemetry_aggregate_minute
-        WHERE bucket_start < ? ORDER BY bucket_start LIMIT ?
-      ) RETURNING rowid
-    `);
-    this.deleteExpiredHours = this.database.query(`
-      DELETE FROM _ackerdb_telemetry_aggregate_hour
-      WHERE rowid IN (
-        SELECT rowid FROM _ackerdb_telemetry_aggregate_hour
-        WHERE bucket_start < ? ORDER BY bucket_start LIMIT ?
-      ) RETURNING rowid
-    `);
-    this.deleteExpiredCoverage = this.database.query(`
-      DELETE FROM _ackerdb_telemetry_aggregate_coverage
-      WHERE minute IN (
-        SELECT minute FROM _ackerdb_telemetry_aggregate_coverage
-        WHERE minute < ? ORDER BY minute LIMIT ?
-      ) RETURNING minute
-    `);
+    const existing = `
+      SELECT count, sketch_ok AS sketchOk, sketch_failed AS sketchFailed
+      FROM %TABLE% WHERE bucket_start = ? AND operation = ? AND function_address = ?
+    `;
+    this.selectMinute = this.store.prepare(
+      existing.replace("%TABLE%", "_ackerdb_telemetry_aggregate_minute"),
+    );
+    this.selectHour = this.store.prepare(
+      existing.replace("%TABLE%", "_ackerdb_telemetry_aggregate_hour"),
+    );
+  }
+
+  /**
+   * Fold one row into whatever the table already holds for its key.
+   *
+   * Counts, totals and extremes combine in SQL. Sketches do not: merging them is
+   * a bucket-wise fold SQLite has no operator for, so the merge happens here and
+   * the statement writes the result. An hour row is written sixty times, once per
+   * minute, so replacing its sketch instead of merging it would leave the hourly
+   * quantiles describing the last minute while the hourly count describes the
+   * hour — one row disagreeing with itself.
+   */
+  private folded(select: Statement, row: AggregateSeriesRow): AggregateSeriesRow {
+    const stored = select.get(row.startMs, row.operation, row.functionAddress) as {
+      readonly count: bigint;
+      readonly sketchOk: string;
+      readonly sketchFailed: string;
+    } | null;
+    if (stored === null) return row;
+    const ok = Sketch.decode(stored.sketchOk);
+    ok.merge(Sketch.decode(row.sketchOk));
+    const failed = Sketch.decode(stored.sketchFailed);
+    failed.merge(Sketch.decode(row.sketchFailed));
+    const count = Number(stored.count) + row.count;
+    return Object.freeze({
+      ...row,
+      mappingScale: Math.min(ok.scale, failed.scale),
+      lowConfidenceQuantiles: Object.freeze(
+        EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(count, quantile)),
+      ),
+      sketchOk: ok.encode(),
+      sketchFailed: failed.encode(),
+    });
   }
 
   /**
@@ -152,11 +177,11 @@ export class TelemetryAggregateStore {
     this.announceMinute.run(startMs, this.generation);
     this.announcedMinutes++;
     for (const row of rows) {
-      this.upsertMinute.run(...values(row));
+      this.upsertMinute.run(...values(this.folded(this.selectMinute, row)));
       this.writtenMinuteRows++;
     }
     for (const hour of mergeIntoHour(rows)) {
-      this.upsertHour.run(...values(hour));
+      this.upsertHour.run(...values(this.folded(this.selectHour, hour)));
       this.writtenHourRows++;
     }
     if (closed) {
@@ -172,7 +197,7 @@ export class TelemetryAggregateStore {
    * silently read as the whole window.
    */
   incompleteMinutes(limit = 64): readonly number[] {
-    return (this.database.query(`
+    return (this.store.prepare(`
       SELECT minute FROM _ackerdb_telemetry_aggregate_coverage
       WHERE closed = 0 AND generation <> ?
       ORDER BY minute DESC LIMIT ?
@@ -202,7 +227,7 @@ function values(row: AggregateSeriesRow): readonly (string | number)[] {
     row.totalMs,
     row.minMs,
     row.maxMs,
-    row.collapsed ? 1 : 0,
+    row.mappingScale,
     JSON.stringify(row.lowConfidenceQuantiles),
     row.sketchOk,
     row.sketchFailed,
@@ -226,7 +251,7 @@ function createAggregateSchema(database: Database): void {
         total_ms REAL NOT NULL,
         min_ms REAL NOT NULL,
         max_ms REAL NOT NULL,
-        collapsed INTEGER NOT NULL,
+        mapping_scale INTEGER NOT NULL,
         low_confidence TEXT NOT NULL,
         sketch_ok TEXT NOT NULL,
         sketch_failed TEXT NOT NULL,

@@ -14,6 +14,20 @@
  * change, no configuration break. A kind naming a clock the registry does not
  * carry is refused at registration rather than silently never expiring.
  *
+ * **Time is the control; bytes are the guard; whichever fires first.** Sixteen
+ * products were surveyed and nobody partitions bytes per signal: outside four
+ * single-node stores nobody has a byte budget at all, and the closest structural
+ * analog — Netdata — runs bytes and time together, deleting on whichever fires
+ * first, and documents the byte limit as a soft target rather than a hard cap.
+ * Netdata also shipped size-only first and had operators demand time back
+ * (netdata#13424), because bytes alone make retention unpredictable exactly when
+ * volume varies. What stops one signal eating another is a limit at ingest, not
+ * a partition in storage — Loki, Datadog and Sentry all place it there.
+ *
+ * Defaults are generous on purpose. At the 316 bytes a log row measures, seven
+ * days at a hundred operations a second is about nineteen gigabytes; a one-gibibyte
+ * budget would promise a week and deliver hours. Disk is the cheap resource here.
+ *
  * Error groups deliberately have no clock. They are the index of every failure
  * the application has ever seen, and an index that forgets is not one.
  *
@@ -34,17 +48,29 @@ export const DAY_MS = 86_400_000;
  */
 export const DEFAULT_TELEMETRY_RETENTION = Object.freeze({
   debug: 3 * DAY_MS,
-  info: 14 * DAY_MS,
-  warn: 14 * DAY_MS,
+  info: 7 * DAY_MS,
+  warn: 7 * DAY_MS,
   error: 30 * DAY_MS,
   /** Retained trace exemplars — a tail-sampled minority, not every trace. */
   traces: 7 * DAY_MS,
-  analytics: 90 * DAY_MS,
+  analytics: 365 * DAY_MS,
   /** Minute-resolution aggregate buckets: what a 15-minute window reads. */
   minutes: 7 * DAY_MS,
   /** Hourly merged aggregate buckets and the analytics day rollup. */
-  rollups: 365 * DAY_MS,
+  rollups: 730 * DAY_MS,
 });
+
+/**
+ * The most recent window eviction may never take, whatever the byte guard says.
+ *
+ * A store that is over its ceiling and keeps deleting until it is under can
+ * delete the hour an operator is currently looking at — and the incident that
+ * blew the budget is exactly when that hour matters. VictoriaLogs keeps the last
+ * two days regardless of its retention size; this is the same floor. Over budget
+ * with the floor holding, the store grows and says so rather than erasing the
+ * evidence.
+ */
+export const DEFAULT_MIN_RETAINED_MS = 2 * DAY_MS;
 
 export type TelemetryRetentionClass = keyof typeof DEFAULT_TELEMETRY_RETENTION;
 

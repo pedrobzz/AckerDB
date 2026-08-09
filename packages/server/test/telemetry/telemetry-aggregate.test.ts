@@ -23,21 +23,32 @@ import {
   TARGET_TAIL_RATE,
   isConfidentQuantile,
 } from "../../src/telemetry/aggregation/buckets.ts";
+import {
+  bucketKey,
+  DEFAULT_MAPPING_SCALE,
+  scaleMultiplier,
+} from "../../src/telemetry/aggregation/sketch.ts";
 import type { TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const HOUR_ALIGNED = Math.floor(1_700_000_000_000 / 3_600_000) * 3_600_000;
 
-/** A cohort that is always warm at a fixed threshold, for the policy tests. */
+/**
+ * A cohort that is always warm at a fixed threshold, for the policy tests.
+ *
+ * The boundary is the threshold's OWN bucket on the default grid, computed the
+ * same way the aggregate computes it. An earlier fixture supplied hand-written
+ * boundary bounds that put every trace inside the boundary bucket — the same
+ * fail-open as the code it was testing, one layer up — so the fixture derives
+ * them now instead of asserting them.
+ */
 const warmAt = (thresholdMs: number): CohortThresholdProvider =>
   () => ({
     thresholdMs,
     warm: true,
     observations: 10_000,
     boundaryAdmitProbability: 1,
-    // A degenerate boundary bucket: the fixture is a hard threshold, so nothing
-    // sits "inside" it and everything above is retained.
-    boundaryLowerMs: thresholdMs,
-    boundaryUpperMs: thresholdMs,
+    boundaryKey: bucketKey(thresholdMs, scaleMultiplier(DEFAULT_MAPPING_SCALE)),
+    mappingScale: DEFAULT_MAPPING_SCALE,
   });
 
 function span(overrides: Record<string, unknown> = {}): TelemetrySpanRecord {

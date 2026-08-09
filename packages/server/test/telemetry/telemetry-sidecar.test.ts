@@ -1,0 +1,221 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  TelemetryInlineWriter,
+  TelemetryWorkerWriter,
+  type ApplicationLogRecord,
+  type TelemetrySidecarWriter,
+} from "@ackerdb/server";
+import { admittedShare, TelemetryAdmission } from "../../src/telemetry/storage/admission.ts";
+
+const directories = new Set<string>();
+
+afterEach(() => {
+  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+  directories.clear();
+});
+
+function sidecarPath(): string {
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-sidecar-"));
+  directories.add(directory);
+  return join(directory, "data.db.telemetry");
+}
+
+function log(sequence: bigint, message = `log-${sequence}`): ApplicationLogRecord {
+  return Object.freeze({
+    kind: "log",
+    processGeneration: "sidecar-test",
+    sequence,
+    timestamp: Date.now(),
+    level: "info",
+    source: "app",
+    message,
+    truncated: false,
+    malformed: false,
+    functionAddress: "tests.log",
+    functionKind: "query",
+  });
+}
+
+function storedRows(path: string, table: string): number {
+  const database = new Database(path, { safeIntegers: true, strict: true });
+  try {
+    return Number((database.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: bigint }).n);
+  } finally {
+    database.close(false);
+  }
+}
+
+describe("the telemetry sidecar", () => {
+  test("every accepted record is committed before the seal resolves, on the worker", async () => {
+    const path = sidecarPath();
+    const writer = new TelemetryWorkerWriter({ path, generation: "worker-generation" });
+    await writer.whenReady();
+    for (let sequence = 1n; sequence <= 400n; sequence++) {
+      expect(writer.accept("log", log(sequence))).toBe(true);
+    }
+    const seal = await writer.seal(undefined, Date.now() + 10_000);
+
+    expect(seal.timedOut).toBe(false);
+    expect(seal.snapshot.droppedRecords).toBe(0);
+    expect(seal.snapshot.acceptedRecords).toBe(400);
+    expect(seal.snapshot.committedRecords).toBe(400);
+    // Quiescence is the sidecar's watermark, never this thread's promise.
+    expect(seal.snapshot.durableSeq).toBe(seal.snapshot.acceptedSeq);
+    expect(storedRows(path, "_ackerdb_telemetry_journal")).toBe(400);
+  });
+
+  test("the export port round-trips a cursor through the worker and never rewinds it", async () => {
+    const path = sidecarPath();
+    const writer = new TelemetryWorkerWriter({ path, generation: "worker-cursor" });
+    await writer.whenReady();
+    for (let sequence = 1n; sequence <= 8n; sequence++) writer.accept("log", log(sequence));
+
+    const first = await writer.exports.batch("reader", 4);
+    expect(first.records.map((record) => record.sequence)).toEqual([1n, 2n, 3n, 4n]);
+    expect(first.consumer.cursor).toBe(0n);
+
+    const advanced = await writer.exports.advance("reader", first.records.at(-1)!.id, {
+      exportedRecords: 4,
+    });
+    expect(advanced.exportedRecords).toBe(4);
+
+    const second = await writer.exports.batch("reader", 4);
+    expect(second.records.map((record) => record.sequence)).toEqual([5n, 6n, 7n, 8n]);
+
+    // A late advance for an earlier batch — the shape a timed-out export takes
+    // when its closure finally settles — must not re-deliver everything since.
+    await writer.exports.advance("reader", second.records.at(-1)!.id, { exportedRecords: 4 });
+    await writer.exports.advance("reader", first.records.at(-1)!.id, { exportedRecords: 0 });
+    expect((await writer.exports.batch("reader", 4)).records).toHaveLength(0);
+
+    await writer.seal(undefined, Date.now() + 10_000);
+  });
+
+  test("a request outstanding when the sidecar closes rejects rather than hanging", async () => {
+    const writer = new TelemetryWorkerWriter({
+      path: sidecarPath(),
+      generation: "worker-close",
+    });
+    await writer.whenReady();
+    writer.accept("log", log(1n));
+    const pending = writer.exports.batch("reader", 4).catch((error: unknown) => error);
+    await writer.seal(undefined, Date.now() + 10_000);
+    const settled = await pending;
+    // Either the reply landed before the seal or the seal rejected it; what must
+    // never happen is a promise nobody ever settles.
+    expect(settled).toBeDefined();
+    await expect(writer.exports.batch("reader", 4)).rejects.toThrow(/sealed/);
+  });
+
+  test("an oversized record and a full ring are refused and counted by reason", async () => {
+    const writer = new TelemetryWorkerWriter({
+      path: sidecarPath(),
+      generation: "worker-bounds",
+      // A ring of one, so the second record in the same tick has nowhere to go.
+      queue: { maxRecordBytes: 512, maxQueuedRecords: 1, handoffBatch: 1_000 },
+    });
+    await writer.whenReady();
+
+    expect(writer.accept("log", log(1n, "x".repeat(4_096)))).toBe(false);
+    expect(writer.accept("log", log(2n))).toBe(true);
+    expect(writer.accept("log", log(3n))).toBe(false);
+    const snapshot = writer.snapshot();
+    expect(snapshot.shed.shedByReason).toMatchObject({ line_too_long: 1, queue_full: 1 });
+    expect(snapshot.droppedRecords).toBe(2);
+    await writer.seal(undefined, Date.now() + 10_000);
+  });
+
+  test("a rejected transaction is contained and the watermark still advances", async () => {
+    const writer = new TelemetryInlineWriter({
+      path: sidecarPath(),
+      generation: "inline-contained",
+      queue: { commitBatch: 2 },
+    });
+    // Two rows sharing (processGeneration, sequence) violate the journal's
+    // uniqueness constraint, so the transaction carrying them rolls back.
+    writer.accept("log", log(1n, "first"));
+    writer.accept("log", log(1n, "duplicate"));
+    const snapshot = writer.snapshot();
+
+    expect(snapshot.rejectedRecords).toBe(2);
+    expect(snapshot.committedRecords).toBe(0);
+    expect(snapshot.failed).toBe(false);
+    expect(snapshot.containedFailures).toBeGreaterThan(0);
+    expect(snapshot.durableSeq).toBe(snapshot.acceptedSeq);
+    await writer.seal(undefined, 0);
+  });
+
+  test("the terminal row is the last row in the file", async () => {
+    const path = sidecarPath();
+    const writer: TelemetrySidecarWriter = new TelemetryInlineWriter({
+      path,
+      generation: "inline-terminal",
+    });
+    writer.accept("log", log(1n, "before"));
+    await writer.seal(log(2n, "terminal"), 0);
+
+    const database = new Database(path, { safeIntegers: true, strict: true });
+    const rows = database.query(
+      "SELECT payload FROM _ackerdb_telemetry_journal ORDER BY id",
+    ).all() as { readonly payload: string }[];
+    database.close(false);
+    expect(rows).toHaveLength(2);
+    expect(rows.at(-1)!.payload).toContain("terminal");
+  });
+
+  test("the retention span reports what is actually stored, not what was configured", async () => {
+    const writer = new TelemetryInlineWriter({
+      path: sidecarPath(),
+      generation: "inline-spans",
+      queue: { commitBatch: 1 },
+    });
+    const oldest = Date.now() - 60_000;
+    writer.accept("log", { ...log(1n), timestamp: oldest });
+    writer.accept("log", { ...log(2n), timestamp: oldest + 30_000 });
+    await writer.exports.batch("primer", 1);
+
+    const info = writer.stores.store.snapshot().spans.find((span) => span.retention === "info");
+    expect(info?.oldestMs).toBe(oldest);
+    expect(info?.newestMs).toBe(oldest + 30_000);
+    expect(info?.configuredMs).toBeGreaterThan(0);
+    await writer.seal(undefined, 0);
+  });
+});
+
+describe("telemetry admission", () => {
+  test("the aggregate never sheds and exemplars shed first", () => {
+    expect(admittedShare("aggregate", 0.99)).toBe(1);
+    expect(admittedShare("exemplar", 0.9)).toBeCloseTo(0.5, 6);
+    expect(admittedShare("error", 0.9)).toBe(1);
+    expect(admittedShare("log", 0.9)).toBe(1);
+    // At the floor everything sheddable is shed.
+    expect(admittedShare("exemplar", 1)).toBe(0);
+    expect(admittedShare("log", 1)).toBe(0);
+    expect(admittedShare("aggregate", 1)).toBe(1);
+  });
+
+  test("the realized rate matches the admitted share", () => {
+    const admission = new TelemetryAdmission();
+    admission.observe(0.9, false);
+    let admitted = 0;
+    for (let index = 0; index < 1_000; index++) {
+      if (admission.admit("exemplar") === undefined) admitted++;
+    }
+    // The credit accumulator realizes the share exactly rather than in
+    // distribution, so this is an equality and not a tolerance.
+    expect(admitted).toBe(500);
+    expect(admission.snapshot().shedByReason.rate_limited).toBe(500);
+  });
+
+  test("below the free-space floor nothing is written, aggregate included", () => {
+    const admission = new TelemetryAdmission();
+    admission.observe(1, true);
+    expect(admission.admit("aggregate")).toBe("read_only");
+    expect(admission.admit("log")).toBe("read_only");
+    expect(admission.snapshot().shedByReason.read_only).toBe(2);
+  });
+});

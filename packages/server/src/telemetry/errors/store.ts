@@ -7,11 +7,12 @@
  * what turns the list from a museum into an inbox.
  */
 import type { Database, Statement } from "bun:sqlite";
-import type { TelemetryStore } from "../storage/store.ts";
-import { fingerprintError } from "./fingerprint.ts";
+import { expirableSet, type TelemetryStore } from "../storage/store.ts";
+import { fingerprintError, type FlatError } from "./fingerprint.ts";
 
 export interface TelemetryErrorIngest {
-  readonly error: unknown;
+  /** Already flattened by `flattenError` on the thread that caught it. */
+  readonly error: FlatError;
   readonly timestampMs: number;
   readonly functionAddress?: string;
   readonly traceId?: string;
@@ -24,7 +25,6 @@ export interface TelemetryErrorStoreOptions {
 
 export interface TelemetryErrorStoreSnapshot {
   readonly ingestedErrors: number;
-  readonly droppedErrors: number;
 }
 
 /** A stale resolve is a conflict as data — the caller re-reads and decides. */
@@ -35,9 +35,7 @@ export class TelemetryErrorStore {
   private readonly database: Database;
   private readonly upsertGroup: Statement;
   private readonly insertOccurrence: Statement;
-  private readonly deleteExpiredOccurrences: Statement;
   private ingestedErrors = 0;
-  private droppedErrors = 0;
 
   constructor(options: TelemetryErrorStoreOptions) {
     this.store = options.store;
@@ -46,16 +44,14 @@ export class TelemetryErrorStore {
       name: "errors",
       initialize: (database) => {
         createErrorSchema(database);
-        return [
-          Object.freeze({
-            retention: "error" as const,
-            deleteExpired: (cutoffMs: number, limit: number) =>
-              this.deleteExpiredOccurrences.all(cutoffMs, limit).length,
-          }),
-        ];
+        return [expirableSet(this.store, "error", {
+          table: "_ackerdb_telemetry_error_occurrences",
+          key: "id",
+          timestamp: "timestamp",
+        })];
       },
     });
-    this.upsertGroup = this.database.query(`
+    this.upsertGroup = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_error_groups (
         hash, algo_version, name, message, times_seen, first_seen, last_seen,
         status, regressed, revision, sample_stack, sample_trace_id
@@ -72,41 +68,11 @@ export class TelemetryErrorStore {
         regressed = CASE WHEN status = 'resolved' THEN 1 ELSE regressed END,
         status = CASE WHEN status = 'resolved' THEN 'unresolved' ELSE status END
     `);
-    this.insertOccurrence = this.database.query(`
+    this.insertOccurrence = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_error_occurrences (
         timestamp, group_hash, trace_id, function_address
       ) VALUES (?, ?, ?, ?)
     `);
-    this.deleteExpiredOccurrences = this.database.query(`
-      DELETE FROM _ackerdb_telemetry_error_occurrences
-      WHERE id IN (
-        SELECT id FROM _ackerdb_telemetry_error_occurrences
-        WHERE timestamp < ?
-        ORDER BY timestamp
-        LIMIT ?
-      )
-      RETURNING id
-    `);
-  }
-
-  /**
-   * The failure funnel's ingest: fingerprint the live error, upsert its group,
-   * record the occurrence. Total — a storage failure is an accounted drop and
-   * never escapes into the operation that was already failing. Whether the
-   * sidecar itself is finished is the store's judgement, not this kind's.
-   */
-  ingest(input: TelemetryErrorIngest): boolean {
-    try {
-      this.database.transaction(() => {
-        this.ingestDirect(input);
-        this.store.maintain();
-      })();
-      return true;
-    } catch (error) {
-      this.droppedErrors++;
-      this.store.observeFailure(error);
-      return false;
-    }
   }
 
   /** Group one error inside a transaction the CALLER owns. */
@@ -144,23 +110,20 @@ export class TelemetryErrorStore {
     resolved: boolean,
     observedRevision: bigint,
   ): TelemetryErrorResolveOutcome {
-    const changes = this.database.query(`
+    const changes = this.store.prepare(`
       UPDATE _ackerdb_telemetry_error_groups
       SET status = ?, regressed = CASE WHEN ? THEN 0 ELSE regressed END
       WHERE hash = ? AND revision = ?
     `).run(resolved ? "resolved" : "unresolved", resolved ? 1 : 0, hash, observedRevision);
     if (changes.changes > 0) return "applied";
-    const exists = this.database.query(
+    const exists = this.store.prepare(
       "SELECT 1 FROM _ackerdb_telemetry_error_groups WHERE hash = ?",
     ).get(hash);
     return exists === null ? "not_found" : "conflict";
   }
 
   snapshot(): TelemetryErrorStoreSnapshot {
-    return Object.freeze({
-      ingestedErrors: this.ingestedErrors,
-      droppedErrors: this.droppedErrors,
-    });
+    return Object.freeze({ ingestedErrors: this.ingestedErrors });
   }
 }
 

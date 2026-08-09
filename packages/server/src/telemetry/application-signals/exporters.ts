@@ -1,8 +1,24 @@
+/**
+ * The export pump: durable journal rows delivered to application-supplied
+ * exporters, at least once, with the cursor in the file.
+ *
+ * The exporters run HERE, on the serving thread, because a
+ * `TelemetrySignalExporter` is a closure the application wrote and a closure
+ * does not cross a thread. The journal they read runs on the thread that owns
+ * the sidecar's connection. So the two halves are split at the only seam that
+ * survives both facts: batches travel up over the sidecar channel, the closure
+ * runs here, and the advance travels back down. Nothing about durability moves —
+ * a cursor is only ever written by the thread that owns the file it describes.
+ *
+ * The delivery contract is unchanged by the split, and it is at-least-once: the
+ * advance follows the export. A process that dies between them re-delivers that
+ * batch, which is the failure worth having; advancing first would lose it.
+ */
 import type {
   TelemetryConsumerAdvance,
   TelemetryConsumerSnapshot,
-  TelemetryJournal,
 } from "./journal.ts";
+import type { TelemetryExportPort } from "../storage/writer.ts";
 import type {
   TelemetryJournalEntry,
   TelemetryJournalRecord,
@@ -32,7 +48,8 @@ export interface TelemetryJournalExporterLimits {
 }
 
 export interface TelemetryJournalExportersOptions {
-  readonly journal: TelemetryJournal;
+  /** The sidecar's consumer side; every cursor operation is a round trip. */
+  readonly port: TelemetryExportPort;
   readonly exporters: readonly TelemetrySignalExporter[];
   readonly limits?: Partial<TelemetryJournalExporterLimits>;
   readonly warn?: (message: string) => void;
@@ -65,6 +82,16 @@ interface Worker {
   retryDelayMs: number;
   retryAtMs: number;
 }
+
+const EMPTY_CONSUMER: TelemetryConsumerSnapshot = Object.freeze({
+  cursor: 0n,
+  exportedRecords: 0,
+  skippedUnsupported: 0,
+  skippedIdentity: 0,
+  evictedRecords: 0,
+  failures: 0,
+  timedOut: 0,
+});
 
 type ExportOutcome =
   | { readonly kind: "ok" }
@@ -104,7 +131,7 @@ function exporterLimits(
 }
 
 export function validateTelemetryJournalExportersOptions(
-  options: Omit<TelemetryJournalExportersOptions, "journal">,
+  options: Omit<TelemetryJournalExportersOptions, "port">,
 ): void {
   exporterLimits(options.limits);
   const names = new Set<string>();
@@ -128,32 +155,31 @@ export function validateTelemetryJournalExportersOptions(
 
 export class TelemetryJournalExporters {
   readonly limits: TelemetryJournalExporterLimits;
-  private readonly journal: TelemetryJournal;
+  private readonly port: TelemetryExportPort;
   private readonly workers: readonly Worker[];
   private readonly warn: (message: string) => void;
-  private readonly releaseJournal: () => void;
+  private readonly releasePort: () => void;
   private stopped = false;
 
   constructor(options: TelemetryJournalExportersOptions) {
-    this.journal = options.journal;
+    this.port = options.port;
     this.warn = options.warn ?? ((message) => console.warn(message));
     validateTelemetryJournalExportersOptions(options);
     this.limits = exporterLimits(options.limits);
-    this.workers = Object.freeze(options.exporters.map((exporter): Worker => {
-      const signals = new Set(exporter.signals);
-      const consumer = this.journal.consumerSnapshot(exporter.name);
-      return {
-        exporter,
-        signals,
-        consumer,
-        scheduled: false,
-        stopped: false,
-        inFlight: false,
-        retryDelayMs: this.limits.retryMinMs,
-        retryAtMs: 0,
-      };
-    }));
-    this.releaseJournal = this.journal.onPersist(() => this.scheduleAll());
+    this.workers = Object.freeze(options.exporters.map((exporter): Worker => ({
+      exporter,
+      signals: new Set(exporter.signals),
+      // Seeded empty rather than read: the durable cursor lives in the sidecar
+      // and the first batch brings it back. A synchronous read here is exactly
+      // what a constructor cannot do once the journal is on another thread.
+      consumer: EMPTY_CONSUMER,
+      scheduled: false,
+      stopped: false,
+      inFlight: false,
+      retryDelayMs: this.limits.retryMinMs,
+      retryAtMs: 0,
+    })));
+    this.releasePort = this.port.onPersist(() => this.scheduleAll());
     this.scheduleAll();
   }
 
@@ -178,7 +204,7 @@ export class TelemetryJournalExporters {
   async drain(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    this.releaseJournal();
+    this.releasePort();
     for (const worker of this.workers) {
       worker.stopped = true;
       if (worker.retryTimer !== undefined) clearTimeout(worker.retryTimer);
@@ -201,11 +227,31 @@ export class TelemetryJournalExporters {
     worker.scheduled = true;
     queueMicrotask(() => {
       worker.scheduled = false;
-      void this.flushWorker(worker).catch((error) => this.containWorkerFailure(worker, error));
+      void this.startWorker(worker).catch((error) => this.containWorkerFailure(worker, error));
     });
   }
 
+  /**
+   * Deliver everything readable AS OF THIS CALL, which is more than joining an
+   * attempt that happens to be running.
+   *
+   * Reading a batch is a round trip to the thread that owns the journal, so an
+   * attempt started a moment ago may already have read — and found nothing —
+   * before the records this caller is flushing for were accepted. Awaiting that
+   * attempt alone resolves with a clean answer about a read that never saw them,
+   * which for a drain is silently unexported data. So a flush joins whatever is
+   * in flight and then reads again.
+   */
   private flushWorker(worker: Worker): Promise<void> {
+    if (this.stopped || worker.stopped) return Promise.resolve();
+    const inFlight = worker.attempt;
+    return inFlight === undefined
+      ? this.startWorker(worker)
+      : inFlight.then(() => this.startWorker(worker));
+  }
+
+  /** One attempt at a time per consumer; a second caller joins the first. */
+  private startWorker(worker: Worker): Promise<void> {
     if (this.stopped || worker.stopped || worker.inFlight) return Promise.resolve();
     if (worker.attempt !== undefined) return worker.attempt;
     const attempt = this.runWorker(worker).finally(() => {
@@ -217,10 +263,8 @@ export class TelemetryJournalExporters {
 
   private async runWorker(worker: Worker): Promise<void> {
     while (!this.stopped && !worker.stopped && !worker.inFlight) {
-      const batch = this.journal.consumerBatch(
-        worker.exporter.name,
-        this.limits.batchRecords,
-      );
+      const batch = await this.port.batch(worker.exporter.name, this.limits.batchRecords);
+      if (this.stopped || worker.stopped) return;
       worker.consumer = batch.consumer;
       if (batch.records.length === 0) return;
       const advance: {
@@ -249,7 +293,7 @@ export class TelemetryJournalExporters {
       advance.exportedRecords = delivered.length;
       const cursor = batch.records.at(-1)!.id;
       if (delivered.length === 0) {
-        worker.consumer = this.journal.advanceConsumer(worker.exporter.name, cursor, advance);
+        worker.consumer = await this.port.advance(worker.exporter.name, cursor, advance);
         await new Promise<void>((resolve) => setImmediate(resolve));
         continue;
       }
@@ -291,13 +335,13 @@ export class TelemetryJournalExporters {
     }
     if (outcome.kind === "timeout") {
       controller.abort(new Error(`telemetry exporter "${worker.exporter.name}" timed out`));
-      worker.consumer = this.journal.recordConsumerFailure(worker.exporter.name, true);
+      worker.consumer = await this.port.failure(worker.exporter.name, true);
       this.warnFailure(worker, "timed out");
-      void settled.then((late) => {
+      void settled.then(async (late) => {
         settle();
         if (this.stopped || worker.stopped) return;
         if (late.kind === "ok") {
-          worker.consumer = this.journal.advanceConsumer(worker.exporter.name, cursor, advance);
+          worker.consumer = await this.port.advance(worker.exporter.name, cursor, advance);
           this.resetRetry(worker);
           this.schedule(worker);
         } else {
@@ -308,7 +352,7 @@ export class TelemetryJournalExporters {
     }
     settle();
     if (outcome.kind === "failed") {
-      worker.consumer = this.journal.recordConsumerFailure(worker.exporter.name, false);
+      worker.consumer = await this.port.failure(worker.exporter.name, false);
       this.warnFailure(
         worker,
         `failed (${outcome.error instanceof Error ? outcome.error.name : "UnknownError"})`,
@@ -316,7 +360,7 @@ export class TelemetryJournalExporters {
       this.scheduleRetry(worker);
       return "stop";
     }
-    worker.consumer = this.journal.advanceConsumer(worker.exporter.name, cursor, advance);
+    worker.consumer = await this.port.advance(worker.exporter.name, cursor, advance);
     this.resetRetry(worker);
     return "continue";
   }

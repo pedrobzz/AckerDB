@@ -14,22 +14,17 @@
  * group upsert and an occurrence insert per failure. The thread is incident
  * isolation, not an optimisation for the good case.
  *
- * Every signal crosses here. Leaving any of them on the serving thread would put
- * two writers on one file and split the accounting that makes the disk budget
- * mean anything.
+ * Every signal crosses here, and so does every cursor. Leaving any of them on
+ * the serving thread would put two writers on one file and split the accounting
+ * that makes the disk budget mean anything.
  */
-import { TelemetryStore } from "../store.ts";
-import { TelemetryJournal } from "../../application-signals/journal.ts";
-import { TelemetryErrorStore } from "../../errors/store.ts";
-import { TelemetryExemplarStore } from "../exemplars.ts";
-import { TelemetryAggregateStore } from "../aggregate.ts";
+import { TelemetrySidecarStores } from "../kinds.ts";
 import type { TelemetryJournalRecord } from "../../application-signals/types.ts";
-import type { TraceExemplar } from "../../exemplars/collector.ts";
-import type { AggregateSeriesRow } from "../../aggregation/buckets.ts";
 import {
   decodeRecordValue,
   FIELD_SEPARATOR,
   RECORD_SEPARATOR,
+  type TelemetryExportRequest,
   type TelemetryRecordKind,
   type TelemetryWorkerCommand,
   type TelemetryWorkerEvent,
@@ -43,17 +38,7 @@ interface Pending {
   readonly acceptedAtMs: number;
 }
 
-interface AggregateHandoffPayload {
-  readonly startMs: number;
-  readonly closed: boolean;
-  readonly rows: readonly AggregateSeriesRow[];
-}
-
-let store: TelemetryStore | undefined;
-let journal: TelemetryJournal | undefined;
-let errors: TelemetryErrorStore | undefined;
-let exemplars: TelemetryExemplarStore | undefined;
-let aggregate: TelemetryAggregateStore | undefined;
+let stores: TelemetrySidecarStores | undefined;
 let commitBatch = 512;
 let commitDelayMs = 25;
 let commitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +57,7 @@ function post(message: TelemetryWorkerEvent): void {
 }
 
 function stats(): TelemetryWorkerStats {
-  const snapshot = store?.snapshot();
+  const snapshot = stores?.store.snapshot();
   return {
     durableSeq,
     pendingRecords: pending.length,
@@ -85,6 +70,9 @@ function stats(): TelemetryWorkerStats {
     rejectedRecords,
     storedBytes: snapshot?.storedBytes ?? 0,
     walBytes: snapshot?.walBytes ?? 0,
+    freeBytes: snapshot?.freeBytes ?? Number.POSITIVE_INFINITY,
+    pressure: snapshot?.pressure ?? 0,
+    readOnly: snapshot?.readOnly ?? false,
     containedFailures: snapshot?.containedFailures ?? 0,
     failed: failed || snapshot?.state === "failed",
   };
@@ -101,70 +89,27 @@ function commit(): void {
     clearTimeout(commitTimer);
     commitTimer = undefined;
   }
-  if (pending.length === 0 || store === undefined) return;
+  if (pending.length === 0 || stores === undefined) return;
   const batch = pending.splice(0, pending.length);
   pendingBytes = 0;
   const highest = acceptedSeq;
+  const open = stores;
   try {
-    store.database.transaction(() => {
-      for (const item of batch) {
-        switch (item.kind) {
-          case "log":
-          case "analytics":
-            journal!.appendDirect(item.value as TelemetryJournalRecord);
-            break;
-          case "error": {
-            // A live Error does not survive JSON, so the serving thread sends
-            // its sanitized shape and the fingerprinter is handed an Error
-            // again — it groups on name and in-app frames, both of which are
-            // here.
-            const raw = item.value as {
-              readonly error: {
-                readonly name: string;
-                readonly message: string;
-                readonly stack?: string;
-              };
-              readonly timestampMs: number;
-              readonly functionAddress?: string;
-              readonly traceId?: string;
-            };
-            const rebuilt = new Error(raw.error.message);
-            rebuilt.name = raw.error.name;
-            if (raw.error.stack !== undefined) rebuilt.stack = raw.error.stack;
-            errors!.ingestDirect({
-              error: rebuilt,
-              timestampMs: raw.timestampMs,
-              ...(raw.functionAddress === undefined
-                ? {}
-                : { functionAddress: raw.functionAddress }),
-              ...(raw.traceId === undefined ? {} : { traceId: raw.traceId }),
-            });
-            break;
-          }
-          case "exemplar":
-            exemplars!.writeDirect(item.value as TraceExemplar);
-            break;
-          case "aggregate": {
-            const handoff = item.value as AggregateHandoffPayload;
-            aggregate!.writeDirect(handoff.startMs, handoff.closed, handoff.rows);
-            break;
-          }
-        }
-      }
-      store!.maintain();
+    open.store.database.transaction(() => {
+      for (const item of batch) open.write(item.kind, item.value);
+      open.store.maintain();
     })();
     committedRecords += batch.length;
     committedTransactions++;
-    durableSeq = highest;
   } catch (error) {
     // One transaction's loss is accounted; whether the connection itself is
     // gone is the store's probe to answer, exactly as on the serving thread.
     rejectedRecords += batch.length;
-    if (store !== undefined && !store.observeFailure(error)) failed = true;
-    // The sequence still advances: these records will never become durable, and
-    // a watermark that never moves would wedge every future drain.
-    durableSeq = highest;
+    if (!open.store.observeFailure(error)) failed = true;
   }
+  // The sequence advances either way: records that will never become durable
+  // must not wedge every future drain.
+  durableSeq = highest;
 }
 
 function parse(payload: string): void {
@@ -197,17 +142,14 @@ self.onmessage = (event: MessageEvent<TelemetryWorkerCommand>): void => {
       case "open": {
         commitBatch = command.commitBatch;
         commitDelayMs = command.commitDelayMs;
-        store = new TelemetryStore({
+        stores = new TelemetrySidecarStores({
           path: command.path,
+          generation: command.generation,
           ...(command.retention === undefined ? {} : { retention: command.retention }),
           ...(command.maxStoredBytes === undefined
             ? {}
-            : { limits: { maxStoredBytes: command.maxStoredBytes } }),
+            : { maxStoredBytes: command.maxStoredBytes }),
         });
-        journal = new TelemetryJournal({ store });
-        errors = new TelemetryErrorStore({ store });
-        exemplars = new TelemetryExemplarStore(store);
-        aggregate = new TelemetryAggregateStore(store, command.generation);
         post({ type: "ready" });
         return;
       }
@@ -232,9 +174,9 @@ self.onmessage = (event: MessageEvent<TelemetryWorkerCommand>): void => {
         commit();
         let terminalWritten = false;
         let error: string | undefined;
-        if (command.terminal !== undefined && journal !== undefined) {
+        if (command.terminal !== undefined && stores !== undefined) {
           try {
-            journal.appendFinal(
+            stores.journal.appendFinal(
               JSON.parse(command.terminal, decodeRecordValue) as TelemetryJournalRecord,
             );
             terminalWritten = true;
@@ -242,7 +184,12 @@ self.onmessage = (event: MessageEvent<TelemetryWorkerCommand>): void => {
             error = cause instanceof Error ? cause.message : String(cause);
           }
         }
+        // The stats are read while the connection is open and the connection is
+        // closed BEFORE the acknowledgement: a seal that answers first hands the
+        // serving thread a promise that resolves while this thread still holds
+        // the file, and the next process to open it gets SQLITE_BUSY.
         const sealed = stats();
+        stores?.store.close();
         post({
           type: "sealed",
           through: command.through,
@@ -250,7 +197,6 @@ self.onmessage = (event: MessageEvent<TelemetryWorkerCommand>): void => {
           terminalWritten,
           ...(error === undefined ? {} : { error }),
         });
-        store?.close();
         return;
       }
       case "stats": {
@@ -260,9 +206,67 @@ self.onmessage = (event: MessageEvent<TelemetryWorkerCommand>): void => {
         post({ type: "stats", token: command.token, stats: stats() });
         return;
       }
+      case "export": {
+        exportRequest(command.token, command.name, command.request);
+        return;
+      }
     }
   } catch (cause) {
     failed = true;
     post({ type: "failure", message: cause instanceof Error ? cause.message : String(cause) });
   }
 };
+
+/**
+ * Run one cursor operation for the export pump and answer it. A failure is
+ * reported on the reply rather than as a process failure: the pump has a waiter
+ * for this token, and a waiter that never settles wedges that consumer for the
+ * life of the process. A batch commits first, so a consumer never has to wait
+ * for unrelated traffic to push a record it already accepted over the threshold.
+ */
+function exportRequest(token: number, name: string, request: TelemetryExportRequest): void {
+  const open = stores;
+  if (open === undefined) {
+    post({ type: "export", token, error: "telemetry sidecar is not open" });
+    return;
+  }
+  try {
+    if (request.kind === "batch" && pending.length > 0) {
+      commit();
+      post({ type: "watermark", stats: stats() });
+    }
+    switch (request.kind) {
+      case "batch": {
+        const batch = open.journal.consumerBatch(name, request.limit);
+        post({ type: "export", token, consumer: batch.consumer, records: batch.records });
+        return;
+      }
+      case "advance": {
+        post({
+          type: "export",
+          token,
+          consumer: open.journal.advanceConsumer(name, request.cursor, {
+            exportedRecords: request.exportedRecords,
+            skippedUnsupported: request.skippedUnsupported,
+            skippedIdentity: request.skippedIdentity,
+          }),
+        });
+        return;
+      }
+      case "failure": {
+        post({
+          type: "export",
+          token,
+          consumer: open.journal.recordConsumerFailure(name, request.timedOut),
+        });
+        return;
+      }
+    }
+  } catch (cause) {
+    post({
+      type: "export",
+      token,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+}

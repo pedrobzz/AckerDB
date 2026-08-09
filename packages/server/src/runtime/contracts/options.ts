@@ -6,10 +6,6 @@ import type { RealtimeRuntimeModule } from "../../realtime/host.ts";
 import type {
   TelemetryJournalExportersOptions,
 } from "../../telemetry/application-signals/exporters.ts";
-import type {
-  TelemetryJournal,
-  TelemetryJournalOptions,
-} from "../../telemetry/application-signals/journal.ts";
 import type { Telemetry, TelemetryOptions } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { AdminOptions } from "./admin.ts";
@@ -38,8 +34,7 @@ export interface RuntimeOptions {
    */
   readonly admin?: AdminOptions;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
-  readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
-  readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;
+  readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "port">;
   readonly hooks?: RuntimeHooks;
   /** Declared jobs, named and ordered by declareJobs(...). */
   readonly jobs?: readonly DeclaredJob[];

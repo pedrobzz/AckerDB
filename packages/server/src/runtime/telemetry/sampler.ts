@@ -29,6 +29,8 @@ export interface RuntimeSamplerOptions {
   readonly isReady: () => boolean;
   readonly state: () => RuntimeSamplerState;
   readonly sampleRealtime: () => void;
+  /** Hands every aggregate minute that has ended to the durable sidecar. */
+  readonly persistAggregates: () => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -236,6 +238,7 @@ export class RuntimeSampler {
       });
     }
     this.options.sampleRealtime();
+    this.options.persistAggregates();
     this.options.flushDeliveryFailures();
   }
 }

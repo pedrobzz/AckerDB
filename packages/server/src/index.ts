@@ -472,10 +472,28 @@ export {
 } from "./telemetry/telemetry.ts";
 export {
   TelemetryJournal,
-  type TelemetryJournalLimits,
+  type TelemetryConsumerAdvance,
+  type TelemetryConsumerBatch,
+  type TelemetryConsumerSnapshot,
   type TelemetryJournalOptions,
-  type TelemetryJournalSnapshot,
 } from "./telemetry/application-signals/journal.ts";
+export {
+  DEFAULT_SIDECAR_QUEUE_LIMITS,
+  type TelemetryExportPort,
+  type TelemetrySidecarQueueLimits,
+  type TelemetrySidecarSeal,
+  type TelemetrySidecarSnapshot,
+  type TelemetrySidecarWriter,
+} from "./telemetry/storage/writer.ts";
+export {
+  TelemetryStore,
+  type TelemetryStoreLimits,
+  type TelemetryStoreOptions,
+  type TelemetryStoreSnapshot,
+} from "./telemetry/storage/store.ts";
+export { TelemetryInlineWriter } from "./telemetry/storage/inline-writer.ts";
+export { TelemetryWorkerWriter } from "./telemetry/storage/worker/writer.ts";
+export type { TelemetryRecordKind } from "./telemetry/storage/worker/protocol.ts";
 export {
   TelemetryJournalExporters,
   type TelemetryExporterSnapshot,

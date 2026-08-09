@@ -26,6 +26,7 @@
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
 import type { TelemetryOperation } from "../contracts/schema.ts";
 import type { CohortThreshold } from "../aggregation/buckets.ts";
+import { bucketKey, scaleMultiplier } from "../aggregation/sketch.ts";
 
 /**
  * How the policy learns what "slow" currently means for one cohort. It is the
@@ -252,9 +253,17 @@ export class TraceExemplarCollector {
     // timeout — retains the entire pile, because `>=` keeps every tie. That is
     // the same shape as every other way this policy has failed: a rule of the
     // form "retain when X" whose X quietly stopped discriminating.
-    const slow = cohort.warm && cohort.thresholdMs !== undefined && (
-      (cohort.boundaryUpperMs !== undefined && durationMs > cohort.boundaryUpperMs) ||
-      ((cohort.boundaryLowerMs === undefined || durationMs > cohort.boundaryLowerMs) &&
+    // Classified in the aggregate's own integer key space. Comparing the
+    // duration against reconstructed millisecond edges is the fail-open this
+    // component keeps rediscovering: a float bucket edge just below an exact
+    // power of two puts every observation of a constant-latency endpoint
+    // "above" its own bucket, and the whole endpoint retains.
+    const key = cohort.boundaryKey === undefined || durationMs <= 0
+      ? undefined
+      : bucketKey(durationMs, scaleMultiplier(cohort.mappingScale));
+    const slow = cohort.warm && cohort.thresholdMs !== undefined && key !== undefined && (
+      key > cohort.boundaryKey! ||
+      (key === cohort.boundaryKey &&
         traceFraction(traceId, BOUNDARY_SALT) < cohort.boundaryAdmitProbability)
     );
     const reason: ExemplarReason | undefined = trace.errorCount > 0

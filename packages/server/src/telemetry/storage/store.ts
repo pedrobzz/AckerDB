@@ -10,16 +10,48 @@
  * unaccountable — three per-kind caps each guessing at a share of one disk
  * cannot in aggregate bound that disk.
  *
- * **The budget is a property of the store.** `maxStoredBytes` bounds the
- * sidecar's database, sampled from the open connection as `page_count *
- * page_size` — a header read, free enough to take on the write path. That is
- * the logical size, which is what eviction shrinks and what a checkpoint writes
- * out; the write-ahead log is bounded separately by `journal_size_limit` and
- * SQLite's own auto-checkpoint rather than added to this number, because before
- * a checkpoint the same pages are counted in both and a budget that
- * double-counts is not a measurement. Over budget, maintenance escalates from
- * expiring what the clocks say is old to evicting oldest-first, shortest clock
- * first — so runaway logging spends the space of the data that matters least.
+ * **Time is the control; bytes are the guard; whichever fires first.** Each class
+ * of data has a clock, and that is what an operator sets and reads. The byte
+ * ceiling exists so a burst cannot fill a disk, not as the way retention is
+ * expressed — Netdata, the closest single-node analog, runs both and calls its
+ * byte limit a soft target. Over the ceiling, maintenance escalates from expiring
+ * what the clocks say is old to evicting oldest-first, shortest clock first, so
+ * runaway logging spends the space of the data that matters least.
+ *
+ * **The guard counts everything on disk, including the write-ahead log.** Pages
+ * before a checkpoint are counted in both the database and the log, so this
+ * over-reports — deliberately. A guard that over-reports fires early; a guard
+ * that under-reports lets the volume fill while its own arithmetic says there is
+ * room, which is VictoriaLogs#841 exactly: ingestion stopped on a full disk while
+ * the computed size sat under the limit, because the accounting covered rows and
+ * not the scratch beside them.
+ *
+ * **The ceiling is a target; the free-space floor is the guard.** Netdata's own
+ * documentation says its size cap is soft, that it does not block or reject
+ * writes as the cap approaches, and that no mechanism enforces a true hard cap.
+ * What the industry actually trusts is a floor that REFUSES: Elasticsearch's
+ * flood-stage read-only block at 95%, VictoriaMetrics and VictoriaLogs going
+ * read-only below `minFreeDiskSpaceBytes`, Datadog's daily quota stopping
+ * indexing. So eviction chases `maxStoredBytes`, and admission is what the free
+ * space governs.
+ *
+ * **A minimum-data floor stops eviction taking the most recent window**, whatever
+ * the ceiling says: the incident that blew the budget is exactly when the last
+ * two days matter, so the store goes over and DISCLOSES it rather than erasing
+ * the evidence.
+ *
+ * **Pressure is one number and it drives admission.** journald multiplies its
+ * effective rate by a factor derived from remaining free space; the same shape
+ * here means the budget and the limiter are one mechanism instead of two that
+ * can disagree. What that protects against is specific and measured: retaining
+ * every error as a full exemplar is correct at a 1% error rate and catastrophic
+ * at 100%, and a flood makes it 100% — 2,099 bytes an exemplar against 316 a log
+ * row, so the store fills about seven times faster precisely when the
+ * application is under attack. Under pressure the exemplars stop and the
+ * aggregate keeps counting, because the aggregate is bounded by CARDINALITY and
+ * no amount of traffic makes it grow. Nothing about the incident's shape is lost;
+ * only the individual specimens are.
+ *
  * `auto_vacuum = INCREMENTAL` is what makes eviction actually return pages:
  * deleting rows alone only lengthens the freelist, and a budget measured
  * against a size that never falls is not a budget. A sidecar that cannot
@@ -38,8 +70,10 @@
  * probe deliberately crosses the boundary that failed.
  */
 import { Database, type Statement } from "bun:sqlite";
-import { rmSync, statSync } from "node:fs";
+import { rmSync, statfsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import {
+  DEFAULT_MIN_RETAINED_MS,
   resolveTelemetryRetention,
   TELEMETRY_RETENTION_CLASSES,
   type TelemetryRetentionClass,
@@ -53,7 +87,7 @@ import {
  * telemetry, so migrating it would buy nothing and cost a compatibility path.
  * Bump this in the same change that changes any stored telemetry shape.
  */
-export const TELEMETRY_STORE_SCHEMA_VERSION = 1;
+export const TELEMETRY_STORE_SCHEMA_VERSION = 2;
 
 /**
  * One deletable slice of a stored kind, bound to the clock its rows expire on.
@@ -65,6 +99,13 @@ export const TELEMETRY_STORE_SCHEMA_VERSION = 1;
 export interface TelemetryExpirableSet {
   readonly retention: TelemetryRetentionClass;
   deleteExpired(cutoffMs: number, limit: number): number;
+  /**
+   * The oldest and newest timestamps still stored, or `undefined` on an empty
+   * set. Two numbers, not an accounting subsystem: they are what makes the
+   * EFFECTIVE window observable to an operator who configured seven days and is
+   * being given two by eviction.
+   */
+  span(): { readonly oldestMs?: number; readonly newestMs?: number };
 }
 
 /**
@@ -82,11 +123,19 @@ export interface TelemetryStoreLimits {
   /** Bound on rows one maintenance pass expires by the clocks. */
   readonly maxExpiredRowsPerPass: number;
   /**
-   * The hard disk guard over the `<db>.telemetry` database. It is a convergence
-   * target, not an instantaneous ceiling: a burst may cross it and the next
-   * passes evict back under.
+   * The disk guard over the whole sidecar — database plus write-ahead log. It is
+   * a convergence target, not an instantaneous ceiling: a burst may cross it and
+   * the next passes evict back under.
    */
   readonly maxStoredBytes: number;
+  /** The most recent window eviction may never take, whatever the guard says. */
+  readonly minRetainedMs: number;
+  /**
+   * Share of the filesystem the sidecar refuses to consume the last of. Below
+   * it, eviction runs whether or not the byte ceiling was reached, because a
+   * telemetry file is never worth a full volume.
+   */
+  readonly keepFreeRatio: number;
 }
 
 export interface TelemetryStoreOptions {
@@ -96,20 +145,54 @@ export interface TelemetryStoreOptions {
   readonly now?: () => number;
 }
 
+/**
+ * The two timestamps a reader needs to know what retention a signal is ACTUALLY
+ * getting: the oldest row still stored and the newest. The configured window is
+ * already in `retention`, so the effective one is a subtraction the caller does.
+ *
+ * Deliberately two gauges and not an accounting subsystem. VictoriaLogs exposes
+ * exactly this as `vl_storage_log_min_timestamp_seconds` and its max, and Netdata
+ * ships per-tier space and time retention; the shape is validated and it is
+ * cheap. What it buys is the thing configuration alone cannot say — an operator
+ * who set seven days and is being given two by eviction has no other way to
+ * learn it, and a green "7 days" that eviction quietly made two hours is the
+ * failure being avoided.
+ */
+export interface TelemetryRetentionSpan {
+  readonly retention: TelemetryRetentionClass;
+  readonly configuredMs: number;
+  readonly oldestMs: number | null;
+  readonly newestMs: number | null;
+}
+
 export interface TelemetryStoreSnapshot {
   readonly state: "ready" | "failed" | "stopped";
   readonly path: string;
   readonly retention: TelemetryRetentionTtls;
   readonly maxStoredBytes: number;
-  /** The sidecar database's logical size, as of the last maintenance pass. */
-  readonly storedBytes: number;
   /**
-   * The write-ahead log beside it. Reported rather than budgeted: before a
-   * checkpoint its frames and the database's pages are the same data, so adding
-   * the two would double-count. Total sidecar footprint is these two summed.
+   * Everything the sidecar occupies: the database's pages plus the write-ahead
+   * log beside it. Pre-checkpoint pages appear in both, so this over-reports on
+   * purpose — a guard that over-reports fires early, and one that under-reports
+   * fills the volume while its own arithmetic says there is room.
    */
+  readonly storedBytes: number;
+  readonly databaseBytes: number;
   readonly walBytes: number;
+  /** Free space on the sidecar's filesystem, as of the last maintenance pass. */
+  readonly freeBytes: number;
   readonly overBudget: boolean;
+  /** True when the byte guard wants to evict and the minimum window forbids it. */
+  readonly floorHeld: boolean;
+  /**
+   * What the free-space floor and the byte target jointly say about headroom,
+   * from 0 (ample) to 1 (out). This is the number admission is scaled by.
+   */
+  readonly pressure: number;
+  /** Below the free-space floor the sidecar refuses every write, and says so. */
+  readonly readOnly: boolean;
+  /** Per signal: configured window, and the span actually retained. */
+  readonly spans: readonly TelemetryRetentionSpan[];
   readonly expiredRecords: Readonly<Record<TelemetryRetentionClass, number>>;
   readonly evictedRecords: Readonly<Record<TelemetryRetentionClass, number>>;
   /** Failures a probe proved the connection survived — contained to one kind. */
@@ -119,7 +202,13 @@ export interface TelemetryStoreSnapshot {
 
 const DEFAULT_LIMITS: TelemetryStoreLimits = Object.freeze({
   maxExpiredRowsPerPass: 256,
-  maxStoredBytes: 512 * 1_024 * 1_024,
+  // Generous, because the clocks are the control and this only has to stop a
+  // burst from filling a volume. A budget small enough to bind in ordinary use
+  // would promise a week of logs and deliver hours of them.
+  maxStoredBytes: 8 * 1_024 * 1_024 * 1_024,
+  minRetainedMs: DEFAULT_MIN_RETAINED_MS,
+  // journald's SystemKeepFree, which is the same job on the same kind of file.
+  keepFreeRatio: 0.15,
 });
 
 /**
@@ -142,9 +231,6 @@ const VACUUM_PAGES_PER_ROUND = 1_024;
  */
 const WAL_BYTES_LIMIT = 32 * 1_024 * 1_024;
 
-/** A cutoff every stored row is older than: eviction is expiry with no clock. */
-const EVICT_EVERYTHING_CUTOFF = Number.MAX_SAFE_INTEGER;
-
 /** The write-ahead log's size, for the snapshot; a missing file is zero bytes. */
 function fileBytes(path: string): number {
   try {
@@ -153,6 +239,98 @@ function fileBytes(path: string): number {
     return 0;
   }
 }
+
+/** Free bytes on the filesystem holding `path`, and its total size. */
+function volume(path: string): { readonly freeBytes: number; readonly totalBytes: number } {
+  try {
+    const stats = statfsSync(dirname(path));
+    return {
+      freeBytes: Number(stats.bsize) * Number(stats.bavail),
+      totalBytes: Number(stats.bsize) * Number(stats.blocks),
+    };
+  } catch {
+    // An unreadable filesystem must not be read as an empty one: a floor that
+    // fires because it could not measure would refuse every write on a healthy
+    // disk. Unknown free space is treated as ample and the byte target alone
+    // governs, which is the failure that loses telemetry rather than service.
+    return { freeBytes: Number.POSITIVE_INFINITY, totalBytes: Number.POSITIVE_INFINITY };
+  }
+}
+
+/** Where one expirable slice lives: a table, its key, and the clock column. */
+export interface TelemetrySource {
+  readonly table: string;
+  /** The column the delete selects on — `rowid` where there is no better one. */
+  readonly key: string;
+  readonly timestamp: string;
+  /** An extra predicate narrowing the table to this slice, bound before the cutoff. */
+  readonly filter?: string;
+  readonly bind?: readonly (string | number)[];
+}
+
+/**
+ * Build one expirable set from a table and its clock column.
+ *
+ * Every kind needs the same two statements — delete the oldest rows before a
+ * cutoff, and read the extremes still stored — and writing them per kind is one
+ * chance per kind to order a delete by the wrong column or to forget the second
+ * statement entirely. Both go through an index the kind's DDL declares.
+ */
+export function expirableSet(
+  store: TelemetryStore,
+  retention: TelemetryRetentionClass,
+  source: TelemetrySource,
+  onDeleted?: (removed: number) => void,
+): TelemetryExpirableSet {
+  const where = source.filter === undefined ? "" : `${source.filter} AND `;
+  const bind = source.bind ?? [];
+  const remove = store.prepare(`
+    DELETE FROM ${source.table}
+    WHERE ${source.key} IN (
+      SELECT ${source.key} FROM ${source.table}
+      WHERE ${where}${source.timestamp} < ?
+      ORDER BY ${source.timestamp}
+      LIMIT ?
+    )
+    RETURNING ${source.key}
+  `);
+  const extremes = store.prepare(`
+    SELECT MIN(${source.timestamp}) AS oldest, MAX(${source.timestamp}) AS newest
+    FROM ${source.table}${source.filter === undefined ? "" : ` WHERE ${source.filter}`}
+  `);
+  return Object.freeze({
+    retention,
+    deleteExpired: (cutoffMs: number, limit: number): number => {
+      const removed = remove.all(...bind, cutoffMs, limit).length;
+      onDeleted?.(removed);
+      return removed;
+    },
+    span: () => {
+      const row = extremes.get(...bind) as {
+        readonly oldest: number | bigint | null;
+        readonly newest: number | bigint | null;
+      };
+      return Object.freeze({
+        ...(row.oldest === null ? {} : { oldestMs: Number(row.oldest) }),
+        ...(row.newest === null ? {} : { newestMs: Number(row.newest) }),
+      });
+    },
+  });
+}
+
+/**
+ * The free-space share must leave room to write. At 1 the sidecar would demand
+ * the whole volume be free and refuse every write on an empty disk, which is a
+ * configuration that can only be a mistake.
+ */
+function keepFreeRatio(value: number): number {
+  if (!(value >= 0 && value < 1)) {
+    throw new RangeError("telemetry store keepFreeRatio must be at least 0 and below 1");
+  }
+  return value;
+}
+
+const NO_SPANS: readonly TelemetryRetentionSpan[] = Object.freeze([]);
 
 /** Guard for the storage substrate's limit and budget options. */
 export function positiveInteger(value: number, name: string): number {
@@ -176,10 +354,16 @@ export class TelemetryStore {
   private readonly expiredRecords: Record<TelemetryRetentionClass, number>;
   private readonly evictedRecords: Record<TelemetryRetentionClass, number>;
   private readonly failureListeners = new Set<(error: unknown) => void>();
+  private readonly statements = new Map<string, Statement>();
   private readonly sampleBytes: Statement;
   private readonly probeWrite: Statement;
   private cursor = 0;
   private storedBytes = 0;
+  private databaseBytes = 0;
+  private walBytes = 0;
+  private freeBytes = Number.POSITIVE_INFINITY;
+  private minFreeBytes = 0;
+  private floorHeld = false;
   private overBudgetPasses = 0;
   private containedFailures = 0;
   /** The last failure already judged; the same throw reaching two frames is one event. */
@@ -199,6 +383,13 @@ export class TelemetryStore {
         options.limits?.maxStoredBytes ?? DEFAULT_LIMITS.maxStoredBytes,
         "telemetry store maxStoredBytes",
       ),
+      minRetainedMs: positiveInteger(
+        options.limits?.minRetainedMs ?? DEFAULT_LIMITS.minRetainedMs,
+        "telemetry store minRetainedMs",
+      ),
+      keepFreeRatio: keepFreeRatio(
+        options.limits?.keepFreeRatio ?? DEFAULT_LIMITS.keepFreeRatio,
+      ),
     });
     this.now = options.now ?? Date.now;
     const expired = {} as Record<TelemetryRetentionClass, number>;
@@ -212,13 +403,13 @@ export class TelemetryStore {
     this.database = openSidecar(this.path, this.limits.maxStoredBytes);
     // Prepared once: a maintenance pass samples on every batch, so re-preparing
     // the pragma read would cost more than the read it performs.
-    this.sampleBytes = this.database.query(
+    this.sampleBytes = this.prepare(
       "SELECT (SELECT * FROM pragma_page_count()) * (SELECT * FROM pragma_page_size()) AS bytes",
     );
-    this.probeWrite = this.database.query(
+    this.probeWrite = this.prepare(
       "UPDATE _ackerdb_telemetry_health SET probes = probes + 1 WHERE singleton = 1",
     );
-    this.sampleStoredBytes();
+    this.sampleUsage();
   }
 
   register(kind: TelemetryStoredKind): void {
@@ -245,9 +436,9 @@ export class TelemetryStore {
   /**
    * One bounded write-path pass, run inside the caller's transaction so its
    * deletions are durable with the writes that provoked them. Expires by the
-   * clocks first, then — only while the sidecar is over its byte budget —
-   * evicts oldest-first from the shortest clock outward. Returns the rows it
-   * removed.
+   * clocks first, then — only while the sidecar is over its byte target —
+   * evicts oldest-first from the shortest clock outward, down to but never
+   * inside the minimum retained window. Returns the rows it removed.
    */
   maintain(nowMs = this.now()): number {
     if (this.sets.length === 0) return 0;
@@ -261,44 +452,94 @@ export class TelemetryStore {
       removed += deleted;
       this.expiredRecords[set.retention] += deleted;
     }
-    // Every pass samples. The read is the database header SQLite already holds
-    // in memory through a statement prepared once, so sampling on a schedule
-    // would trade a negligible cost for a window in which the store is over
-    // budget, reports that it is not, and — if writes then stop — stays there.
-    this.sampleStoredBytes();
+    // Every pass samples. The reads are a database header SQLite already holds
+    // and one filesystem stat, so sampling on a schedule would trade a
+    // negligible cost for a window in which the store is over budget, reports
+    // that it is not, and — if writes then stop — stays there.
+    this.sampleUsage();
     if (this.storedBytes <= this.limits.maxStoredBytes) {
       this.overBudgetPasses = 0;
+      this.floorHeld = false;
       return removed;
     }
     const budget = this.limits.maxExpiredRowsPerPass *
       2 ** Math.min(this.overBudgetPasses, MAX_EVICTION_ESCALATION);
     this.overBudgetPasses++;
-    return removed + this.evict(budget);
+    // Eviction is expiry with a shorter clock, and the minimum retained window
+    // IS that clock. Nothing newer than it is ever taken, so the store goes over
+    // its target and discloses it rather than deleting the hour an operator is
+    // looking at during the incident that caused the overrun.
+    const evicted = this.evict(budget, nowMs - this.limits.minRetainedMs);
+    this.floorHeld = evicted === 0 && this.storedBytes > this.limits.maxStoredBytes;
+    return removed + evicted;
   }
 
   /** Oldest-first across every clock, shortest clock first, up to `budget` rows. */
-  private evict(budget: number): number {
+  private evict(budget: number, cutoffMs: number): number {
     let evicted = 0;
     for (const set of this.evictionOrder) {
       while (evicted < budget && this.storedBytes > this.limits.maxStoredBytes) {
         const chunk = Math.min(budget - evicted, this.limits.maxExpiredRowsPerPass);
-        const deleted = set.deleteExpired(EVICT_EVERYTHING_CUTOFF, chunk);
+        const deleted = set.deleteExpired(cutoffMs, chunk);
         if (deleted === 0) break;
         evicted += deleted;
         this.evictedRecords[set.retention] += deleted;
         // Deleting rows only lengthens the freelist; returning those pages is
         // what makes the next sample tell the truth about the file on disk.
         this.database.exec(`PRAGMA incremental_vacuum(${VACUUM_PAGES_PER_ROUND})`);
-        this.sampleStoredBytes();
+        this.sampleUsage();
       }
       if (evicted >= budget || this.storedBytes <= this.limits.maxStoredBytes) break;
     }
     return evicted;
   }
 
-  private sampleStoredBytes(): void {
+  /**
+   * Everything the sidecar occupies, and how close the volume is to the floor.
+   *
+   * The write-ahead log is added rather than reported beside: before a
+   * checkpoint the same pages appear in both, so this over-reports — which is
+   * the safe direction for a guard. Under-reporting is VictoriaLogs#841, where
+   * ingestion stopped on a full disk while the computed size sat under the
+   * limit because the accounting covered rows and not the scratch beside them.
+   */
+  private sampleUsage(): void {
     const page = this.sampleBytes.get() as { readonly bytes: bigint | number };
-    this.storedBytes = Number(page.bytes);
+    this.databaseBytes = Number(page.bytes);
+    this.walBytes = this.path === ":memory:" ? 0 : fileBytes(`${this.path}-wal`);
+    this.storedBytes = this.databaseBytes + this.walBytes;
+    if (this.path === ":memory:") {
+      this.freeBytes = Number.POSITIVE_INFINITY;
+      this.minFreeBytes = 0;
+      return;
+    }
+    const disk = volume(this.path);
+    this.freeBytes = disk.freeBytes;
+    this.minFreeBytes = Number.isFinite(disk.totalBytes)
+      ? disk.totalBytes * this.limits.keepFreeRatio
+      : 0;
+  }
+
+  /**
+   * How close the sidecar is to being unable to write, from 0 to 1. The byte
+   * target and the free-space floor are two ways of running out, so pressure is
+   * whichever is nearer: the target scales linearly to 1 at `maxStoredBytes`,
+   * and the floor starts counting when free space falls to twice it and reaches
+   * 1 at the floor itself.
+   */
+  get pressure(): number {
+    const budget = this.limits.maxStoredBytes <= 0
+      ? 1
+      : this.storedBytes / this.limits.maxStoredBytes;
+    const disk = this.minFreeBytes <= 0 || !Number.isFinite(this.freeBytes)
+      ? 0
+      : (2 * this.minFreeBytes - this.freeBytes) / this.minFreeBytes;
+    return Math.min(1, Math.max(0, budget, disk));
+  }
+
+  /** Below the free-space floor nothing may be written. Elasticsearch flood stage. */
+  get readOnly(): boolean {
+    return this.minFreeBytes > 0 && this.freeBytes < this.minFreeBytes;
   }
 
   /**
@@ -361,8 +602,16 @@ export class TelemetryStore {
       retention: this.retention,
       maxStoredBytes: this.limits.maxStoredBytes,
       storedBytes: this.storedBytes,
-      walBytes: this.path === ":memory:" ? 0 : fileBytes(`${this.path}-wal`),
+      databaseBytes: this.databaseBytes,
+      walBytes: this.walBytes,
+      freeBytes: this.freeBytes,
       overBudget: this.storedBytes > this.limits.maxStoredBytes,
+      floorHeld: this.floorHeld,
+      pressure: this.pressure,
+      readOnly: this.readOnly,
+      // Reading the file is only possible while the connection is open, and a
+      // snapshot has to keep answering after close — the drain takes one.
+      spans: this.state === "ready" ? this.retentionSpans() : NO_SPANS,
       expiredRecords: Object.freeze({ ...this.expiredRecords }),
       evictedRecords: Object.freeze({ ...this.evictedRecords }),
       containedFailures: this.containedFailures,
@@ -370,9 +619,66 @@ export class TelemetryStore {
     });
   }
 
+  /**
+   * The oldest and newest row per clock. Two gauges, read on a status call and
+   * never on the write path, from which a caller subtracts the window it is
+   * actually being given and compares it against the one it configured.
+   */
+  private retentionSpans(): readonly TelemetryRetentionSpan[] {
+    const spans = new Map<TelemetryRetentionClass, { oldest: number | null; newest: number | null }>();
+    for (const set of this.sets) {
+      const observed = set.span();
+      const merged = spans.get(set.retention) ?? { oldest: null, newest: null };
+      if (observed.oldestMs !== undefined) {
+        merged.oldest = merged.oldest === null
+          ? observed.oldestMs
+          : Math.min(merged.oldest, observed.oldestMs);
+      }
+      if (observed.newestMs !== undefined) {
+        merged.newest = merged.newest === null
+          ? observed.newestMs
+          : Math.max(merged.newest, observed.newestMs);
+      }
+      spans.set(set.retention, merged);
+    }
+    return Object.freeze([...spans].map(([retention, observed]) => Object.freeze({
+      retention,
+      configuredMs: this.retention[retention],
+      oldestMs: observed.oldest,
+      newestMs: observed.newest,
+    })));
+  }
+
+  /**
+   * Prepare a statement this store will finalize when it closes.
+   *
+   * SQLite will not release a connection while a statement prepared on it is
+   * still live, and `close(false)` swallows that refusal silently — so a sidecar
+   * whose kinds prepared their own statements stays locked for the life of the
+   * process, its write-ahead log never goes away, and the next store to open the
+   * same file gets SQLITE_BUSY. Every kind prepares through here so that closing
+   * actually closes. Repeated SQL returns the same statement, so callers may
+   * prepare freely.
+   */
+  prepare(sql: string): Statement {
+    const existing = this.statements.get(sql);
+    if (existing !== undefined) return existing;
+    const prepared = this.database.query(sql);
+    this.statements.set(sql, prepared);
+    return prepared;
+  }
+
   close(): void {
     if (this.state === "stopped") return;
     if (this.state === "ready") this.state = "stopped";
+    for (const statement of this.statements.values()) {
+      try {
+        statement.finalize();
+      } catch {
+        // A statement that cannot be finalized must not stop the others.
+      }
+    }
+    this.statements.clear();
     this.database.close(false);
   }
 }

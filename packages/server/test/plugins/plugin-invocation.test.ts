@@ -19,6 +19,7 @@ import { definePlugin } from "../../src/plugins/definition.ts";
 import { assemblePlugins } from "../../src/plugins/assembly.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
+import { journalRecords } from "../support/telemetry-journal.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -504,9 +505,7 @@ describe("Plugin invocation boundaries", () => {
       value: "value",
     });
     await callProcedure(harness, "api.plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
+    const records = (await journalRecords(harness.runtime, 64))
       .filter((record) => record.kind === "log");
     expect(records.map((record) => [record.message, record.functionAddress])).toEqual([
       ["facade read", "facade.read"],
@@ -529,9 +528,7 @@ describe("Plugin invocation boundaries", () => {
       value: "value",
     });
     await callProcedure(harness, "api.plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
+    const records = (await journalRecords(harness.runtime, 64))
       .filter((record) => record.kind === "analytics");
     expect(records.map((record) => [record.event, record.functionAddress])).toEqual([
       ["plugin set tracked", "store.set"],
@@ -741,7 +738,7 @@ describe("Plugin invocation boundaries", () => {
     expect((failure as AggregateError).errors).toEqual([coreError, cleanupError]);
     expect(cleanups).toBe(1);
     expect(harness.plugins.state).toBe("failed");
-    expect(harness.runtime.telemetryJournal.snapshot().state).toBe("stopped");
+    expect(harness.runtime.telemetrySidecar.snapshot().queuedRecords).toBe(0);
     expect(await harness.runtime.drain().catch((error: unknown) => error)).toBe(failure);
     expect(cleanups).toBe(1);
   });

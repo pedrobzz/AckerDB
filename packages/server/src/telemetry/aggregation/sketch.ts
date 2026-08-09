@@ -1,74 +1,143 @@
 /**
- * A mergeable, bounded distribution with a declared relative error.
+ * A mergeable, bounded distribution with a declared relative error, on the grid
+ * OpenTelemetry already speaks.
  *
- * This is DDSketch: bucket `i` holds values in `(γ^(i-1), γ^i]` where
- * `γ = (1+α)/(1−α)`, so every bucket is a constant *relative* width and a
- * quantile answered from bucket `i` is within `α` of the true value. That is the
- * property a latency distribution needs — an absolute-width histogram either
- * wastes thousands of buckets on the millisecond range or cannot tell 900 ms
- * from 1,400 ms — and it is the property that makes two sketches mergeable by
- * adding their counts, which is what lets a minute bucket roll up into an hour
- * without going back to the raw observations.
+ * Bucket `i` holds values in `(γ^(i-1), γ^i]`, so every bucket is a constant
+ * *relative* width and a quantile answered from bucket `i` is within `α` of the
+ * true value. That is the property a latency distribution needs — an
+ * absolute-width histogram either wastes thousands of buckets on the millisecond
+ * range or cannot tell 900 ms from 1,400 ms — and it is the property that makes
+ * two sketches mergeable by adding their counts, which is what lets a minute
+ * bucket roll up into an hour without going back to the raw observations.
  *
- * **The sketch sees 100% of observations, and is still numerically approximate.**
+ * **γ is not a free parameter.** OTLP's `ExponentialHistogramDataPoint` fixes
+ * `γ = 2^(2^-scale)` for an INTEGER scale, and its exemplar list carrying
+ * `trace_id` is exactly this model's aggregate-plus-exemplar shape. Choosing γ
+ * from a target α instead — α = 0.01 gives γ = 1.020202, which is scale 5.115 —
+ * lands the grid between two legal scales, and then every export is a lossy
+ * re-bucket of numbers we computed exactly. So the scale is the parameter and α
+ * is derived from it. Scale 6 declares 0.5415%, which is a tighter guarantee
+ * than the 1% it replaces.
+ *
+ * **Over the bin budget it DOWNSCALES; it never collapses.** Halving the scale
+ * merges adjacent bucket pairs exactly — `key → ceil(key/2)` — so the shape
+ * survives and only the declared error widens, and the widened bound is reported
+ * with the data. The alternative, folding the lowest buckets together, destroys
+ * the body of the distribution to protect the tail and leaves a p50 that is
+ * wrong by an unstated amount. Downscaling is also what every OTLP consumer
+ * does: Grafana Mimir silently downscales samples above its bucket limit, which
+ * would void a declared bound computed here with nothing raised. Staying inside
+ * the budget ourselves means the number on the wire is the number we measured.
+ *
+ * **The sketch sees 100% of observations and is still numerically approximate.**
  * Those are different properties and conflating them is how a percentile becomes
- * a lie. Count, error count and total are exact; quantiles carry `α`. Both
- * facts travel with the data rather than living in someone's memory.
- *
- * Bins are capped. Over the cap the LOWEST buckets collapse together, because
- * losing resolution among the fastest observations costs an operator nothing
- * while losing it in the tail costs them the only number they were looking at.
- * A collapsed sketch reports it, so a p50 computed inside the collapsed region
- * is known to be worse than `α` rather than quietly wrong.
+ * a lie. Count, error count and total are exact; quantiles carry `α`. Both facts
+ * travel with the data rather than living in someone's memory.
  */
 
-/** Datadog's production trace-metrics configuration; ~2 kB per sketch. */
-export const DEFAULT_RELATIVE_ACCURACY = 0.01;
-export const DEFAULT_MAX_BINS = 2_048;
+/**
+ * OTLP exponential-histogram scale. 6 gives γ = 2^(1/64) = 1.01089 and a 0.5415%
+ * relative bound — one integer step finer than Datadog's production 1% shape and,
+ * unlike it, expressible on the wire without re-bucketing.
+ */
+export const DEFAULT_MAPPING_SCALE = 6;
+
+/**
+ * OTel's SDK default bucket budget, and below Grafana Mimir's tenant limit. It
+ * is affordable at this scale only because the sketch downscales: 160 buckets at
+ * scale 6 span 5.66×, which is nothing for latency, so a busy series simply ends
+ * up at a coarser scale and says so.
+ */
+export const DEFAULT_MAX_BINS = 160;
+
+/** OTLP's floor. At scale −10 one bucket covers the whole double range. */
+export const MIN_MAPPING_SCALE = -10;
+
+export function mappingGamma(scale: number): number {
+  return 2 ** (2 ** -scale);
+}
+
+/** The bound a scale declares: α = (γ−1)/(γ+1). */
+export function mappingRelativeAccuracy(scale: number): number {
+  const gamma = mappingGamma(scale);
+  return (gamma - 1) / (gamma + 1);
+}
+
+export const DEFAULT_RELATIVE_ACCURACY = mappingRelativeAccuracy(DEFAULT_MAPPING_SCALE);
+
+/** `1 / ln(γ)`, cached by callers that place many values on one scale. */
+export function scaleMultiplier(scale: number): number {
+  return 1 / Math.log(mappingGamma(scale));
+}
+
+/**
+ * The bucket a value belongs to. It is the ONE definition, exported because
+ * anything comparing a value against a bucket boundary has to do it here, in
+ * integer key space, and never against a reconstructed edge.
+ *
+ * Reconstructing the edge is a fail-open. Bucket `k` covers `(γ^(k-1), γ^k]`, so
+ * "above the boundary bucket" reads naturally as `value > γ^k` — but `γ^k` is
+ * computed in floating point, and at scale 6 every power of two is an exact
+ * bucket edge, so `Math.pow(2 ** (1/64), 64)` is 1.9999999999999964 and a
+ * constant 2 ms endpoint tests as ABOVE its own bucket. Every observation then
+ * retains, which is the third time a rule of the form "retain when X" in this
+ * component has had its X quietly stop discriminating.
+ */
+export function bucketKey(value: number, multiplier: number): number {
+  return Math.ceil(Math.log(value) * multiplier);
+}
 
 export interface SketchSnapshot {
   readonly count: number;
   readonly sum: number;
   readonly min: number;
   readonly max: number;
+  /** The scale this sketch ended at; it only ever coarsens. */
+  readonly mappingScale: number;
+  /** Derived from the scale, so it is always the bound that currently holds. */
   readonly relativeAccuracy: number;
-  /** True once the lowest buckets were merged; quantiles below `collapsedBelow` are coarser. */
-  readonly collapsed: boolean;
   readonly bins: number;
 }
 
 export class Sketch {
-  readonly relativeAccuracy: number;
   readonly maxBins: number;
-  private readonly gamma: number;
-  private readonly multiplier: number;
+  private mappingScale: number;
+  private gamma: number;
+  private multiplier: number;
   /** Dense counts from `offset` upward; index 0 is bucket key `offset`. */
   private counts: Float64Array;
   private offset = 0;
   private used = 0;
   private zeroCount = 0;
-  private collapsedFlag = false;
   count = 0;
   sum = 0;
   min = Number.POSITIVE_INFINITY;
   max = Number.NEGATIVE_INFINITY;
 
-  constructor(relativeAccuracy = DEFAULT_RELATIVE_ACCURACY, maxBins = DEFAULT_MAX_BINS) {
-    if (!(relativeAccuracy > 0 && relativeAccuracy < 1)) {
-      throw new RangeError("sketch relativeAccuracy must be between 0 and 1");
+  constructor(scale = DEFAULT_MAPPING_SCALE, maxBins = DEFAULT_MAX_BINS) {
+    if (!Number.isSafeInteger(scale) || scale < MIN_MAPPING_SCALE || scale > 20) {
+      throw new RangeError(`sketch scale must be an integer in [${MIN_MAPPING_SCALE}, 20]`);
     }
     if (!Number.isSafeInteger(maxBins) || maxBins < 2) {
       throw new RangeError("sketch maxBins must be an integer of at least 2");
     }
-    this.relativeAccuracy = relativeAccuracy;
     this.maxBins = maxBins;
-    this.gamma = (1 + relativeAccuracy) / (1 - relativeAccuracy);
+    this.mappingScale = scale;
+    this.gamma = mappingGamma(scale);
     this.multiplier = 1 / Math.log(this.gamma);
     this.counts = new Float64Array(Math.min(maxBins, 64));
   }
 
+  get scale(): number {
+    return this.mappingScale;
+  }
+
+  get relativeAccuracy(): number {
+    return mappingRelativeAccuracy(this.mappingScale);
+  }
+
   private key(value: number): number {
-    return Math.ceil(Math.log(value) * this.multiplier);
+    return bucketKey(value, this.multiplier);
   }
 
   /**
@@ -98,14 +167,16 @@ export class Sketch {
       this.counts[0] = weight;
       return;
     }
+    const lowest = Math.min(key, this.offset);
+    const highest = Math.max(key, this.offset + this.used - 1);
+    const steps = this.stepsToFit(lowest, highest);
+    if (steps > 0) {
+      this.downscale(steps);
+      this.addToKey(Math.ceil(key / 2 ** steps), weight);
+      return;
+    }
     if (key < this.offset) {
       const growth = this.offset - key;
-      if (this.used + growth > this.maxBins) {
-        // Below the window: collapse into the lowest retained bucket.
-        this.counts[0] = (this.counts[0] ?? 0) + weight;
-        this.collapsedFlag = true;
-        return;
-      }
       this.reserve(this.used + growth, growth);
       this.offset = key;
       this.used += growth;
@@ -113,30 +184,46 @@ export class Sketch {
       return;
     }
     const index = key - this.offset;
-    if (index < this.used) {
-      this.counts[index] = (this.counts[index] ?? 0) + weight;
-      return;
+    if (index >= this.used) {
+      this.reserve(index + 1, 0);
+      this.used = index + 1;
     }
-    const needed = index + 1;
-    if (needed > this.maxBins) {
-      // Above the window: shift the window up, folding what falls off the bottom
-      // into the new lowest bucket. The tail keeps its resolution.
-      const shift = needed - this.maxBins;
-      let folded = 0;
-      for (let i = 0; i < Math.min(shift, this.used); i++) folded += this.counts[i] ?? 0;
-      const next = new Float64Array(this.maxBins);
-      for (let i = shift; i < this.used; i++) next[i - shift] = this.counts[i] ?? 0;
-      next[0] = (next[0] ?? 0) + folded;
-      this.counts = next;
-      this.offset += shift;
-      this.used = this.maxBins;
-      this.collapsedFlag = true;
-      this.counts[key - this.offset] = (this.counts[key - this.offset] ?? 0) + weight;
-      return;
-    }
-    this.reserve(needed, 0);
-    this.used = needed;
     this.counts[index] = (this.counts[index] ?? 0) + weight;
+  }
+
+  /**
+   * How many halvings the mapping needs before `[lowest, highest]` fits the bin
+   * budget. Each step is exact — `key → ceil(key/2)` is the bucket pairing OTLP
+   * defines — so this widens the declared bound and nothing else.
+   */
+  private stepsToFit(lowest: number, highest: number): number {
+    let steps = 0;
+    while (
+      this.mappingScale - steps > MIN_MAPPING_SCALE &&
+      Math.ceil(highest / 2 ** steps) - Math.ceil(lowest / 2 ** steps) + 1 > this.maxBins
+    ) {
+      steps++;
+    }
+    return steps;
+  }
+
+  private downscale(steps: number): void {
+    const divisor = 2 ** steps;
+    const nextOffset = Math.ceil(this.offset / divisor);
+    const nextTop = Math.ceil((this.offset + this.used - 1) / divisor);
+    const next = new Float64Array(Math.max(1, nextTop - nextOffset + 1));
+    for (let index = 0; index < this.used; index++) {
+      const weight = this.counts[index] ?? 0;
+      if (weight === 0) continue;
+      const slot = Math.ceil((this.offset + index) / divisor) - nextOffset;
+      next[slot] = (next[slot] ?? 0) + weight;
+    }
+    this.counts = next;
+    this.offset = nextOffset;
+    this.used = next.length;
+    this.mappingScale -= steps;
+    this.gamma = mappingGamma(this.mappingScale);
+    this.multiplier = 1 / Math.log(this.gamma);
   }
 
   private reserve(needed: number, shiftBy: number): void {
@@ -147,21 +234,32 @@ export class Sketch {
     this.counts = next;
   }
 
-  /** Fold `other` in. Both must share a relative accuracy for the bound to hold. */
+  /**
+   * Fold `other` in. Scales are reconciled to the coarser of the two, which is
+   * OTLP's own merge rule: the finer sketch can always be expressed on the
+   * coarser grid exactly, and never the other way round.
+   */
   merge(other: Sketch): void {
-    if (other.relativeAccuracy !== this.relativeAccuracy) {
-      throw new TypeError("sketches merge only at one relative accuracy");
-    }
     if (other.count === 0) return;
+    if (other.mappingScale < this.mappingScale) {
+      this.downscale(this.mappingScale - other.mappingScale);
+    }
     this.count += other.count;
     this.sum += other.sum;
     if (other.min < this.min) this.min = other.min;
     if (other.max > this.max) this.max = other.max;
     this.zeroCount += other.zeroCount;
-    if (other.collapsedFlag) this.collapsedFlag = true;
     for (let i = 0; i < other.used; i++) {
       const weight = other.counts[i] ?? 0;
-      if (weight > 0) this.addToKey(other.offset + i, weight);
+      if (weight === 0) continue;
+      // Recomputed per bucket: folding these in can itself force a downscale,
+      // and a shift captured before the loop would map the rest onto the grid
+      // this sketch has already left.
+      const shift = other.mappingScale - this.mappingScale;
+      this.addToKey(
+        shift === 0 ? other.offset + i : Math.ceil((other.offset + i) / 2 ** shift),
+        weight,
+      );
     }
   }
 
@@ -179,7 +277,7 @@ export class Sketch {
       seen += this.counts[i] ?? 0;
       if (seen > target) {
         const key = this.offset + i;
-        return (2 * Math.pow(this.gamma, key)) / (this.gamma + 1);
+        return (2 * this.gamma ** key) / (this.gamma + 1);
       }
     }
     return this.max;
@@ -216,19 +314,20 @@ export class Sketch {
   shareAtAndAbove(value: number): {
     readonly at: number;
     readonly above: number;
-    readonly lower: number;
-    readonly upper: number;
+    /** The boundary bucket, so a caller compares keys and never float edges. */
+    readonly key: number;
+    readonly mappingScale: number;
   } | undefined {
     if (this.count === 0 || !Number.isFinite(value) || value < 0) return undefined;
+    const key = value === 0 ? Number.NEGATIVE_INFINITY : this.key(value);
     if (value === 0) {
       return {
         at: this.zeroCount / this.count,
         above: (this.count - this.zeroCount) / this.count,
-        lower: 0,
-        upper: 0,
+        key,
+        mappingScale: this.mappingScale,
       };
     }
-    const key = this.key(value);
     let at = 0;
     let above = 0;
     for (let i = 0; i < this.used; i++) {
@@ -238,13 +337,11 @@ export class Sketch {
       if (bucket === key) at += weight;
       else if (bucket > key) above += weight;
     }
-    // Bucket `key` covers (γ^(key−1), γ^key]; the caller needs those edges to
-    // tell "inside the boundary bucket" from "above it".
     return {
       at: at / this.count,
       above: above / this.count,
-      lower: Math.pow(this.gamma, key - 1),
-      upper: Math.pow(this.gamma, key),
+      key,
+      mappingScale: this.mappingScale,
     };
   }
 
@@ -254,43 +351,41 @@ export class Sketch {
       sum: this.sum,
       min: this.count === 0 ? 0 : this.min,
       max: this.count === 0 ? 0 : this.max,
+      mappingScale: this.mappingScale,
       relativeAccuracy: this.relativeAccuracy,
-      collapsed: this.collapsedFlag,
       bins: this.used + (this.zeroCount > 0 ? 1 : 0),
     });
   }
 
-  /** Compact wire form: offset, zero count, and the dense run of counts. */
+  /** Compact wire form: scale, offset, zero count, and the dense run of counts. */
   encode(): string {
     const bins: number[] = [];
     for (let i = 0; i < this.used; i++) bins.push(this.counts[i] ?? 0);
     return JSON.stringify({
-      v: 1,
-      a: this.relativeAccuracy,
+      v: 2,
+      sc: this.mappingScale,
       o: this.offset,
       z: this.zeroCount,
       c: this.count,
       s: this.sum,
       mn: this.count === 0 ? 0 : this.min,
       mx: this.count === 0 ? 0 : this.max,
-      x: this.collapsedFlag ? 1 : 0,
       b: bins,
     });
   }
 
   static decode(encoded: string, maxBins = DEFAULT_MAX_BINS): Sketch {
     const raw = JSON.parse(encoded) as {
-      a: number; o: number; z: number; c: number; s: number;
-      mn: number; mx: number; x: number; b: number[];
+      sc: number; o: number; z: number; c: number; s: number;
+      mn: number; mx: number; b: number[];
     };
-    const sketch = new Sketch(raw.a, maxBins);
+    const sketch = new Sketch(raw.sc, Math.max(maxBins, raw.b.length));
     sketch.offset = raw.o;
     sketch.zeroCount = raw.z;
     sketch.count = raw.c;
     sketch.sum = raw.s;
     sketch.min = raw.c === 0 ? Number.POSITIVE_INFINITY : raw.mn;
     sketch.max = raw.c === 0 ? Number.NEGATIVE_INFINITY : raw.mx;
-    sketch.collapsedFlag = raw.x === 1;
     sketch.used = raw.b.length;
     sketch.counts = new Float64Array(Math.max(raw.b.length, 1));
     for (let i = 0; i < raw.b.length; i++) sketch.counts[i] = raw.b[i]!;

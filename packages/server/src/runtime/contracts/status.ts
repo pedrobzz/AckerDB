@@ -6,9 +6,7 @@ import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type {
   TelemetryExportersSnapshot,
 } from "../../telemetry/application-signals/exporters.ts";
-import type {
-  TelemetryJournalSnapshot,
-} from "../../telemetry/application-signals/journal.ts";
+import type { TelemetrySidecarSnapshot } from "../../telemetry/storage/writer.ts";
 import type {
   TelemetryAggregateSnapshot,
   TelemetrySnapshot,
@@ -41,7 +39,7 @@ export interface RuntimeStatus {
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly telemetry: TelemetrySnapshot;
   readonly telemetryAggregates: TelemetryAggregateSnapshot;
-  readonly telemetryJournal: TelemetryJournalSnapshot;
+  readonly telemetrySidecar: TelemetrySidecarSnapshot;
   readonly telemetryExporters: TelemetryExportersSnapshot | null;
   readonly storage: ReturnType<Engine["status"]>;
 }

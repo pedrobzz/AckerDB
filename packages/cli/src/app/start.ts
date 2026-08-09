@@ -94,8 +94,8 @@ export interface StartAppOptions<A extends App = App> {
   holdPendingMigrations?: boolean;
   /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
   realtime?: RealtimeRuntimeModule;
-  /** Optional local-journal bounds for application logs and analytics. */
-  telemetryJournal?: RuntimeOptions["telemetryJournal"];
+  /** Operator configuration for the framework's own surfaces — telemetry storage and retention. */
+  admin?: RuntimeOptions["admin"];
   /** Provider adapters consuming the local telemetry journal independently. */
   telemetryExporters?: RuntimeOptions["telemetryExporters"];
 }
@@ -439,9 +439,7 @@ export async function startApp<const A extends App = App>(
       ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
-      ...(options.telemetryJournal === undefined
-        ? {}
-        : { telemetryJournal: options.telemetryJournal }),
+      ...(options.admin === undefined ? {} : { admin: options.admin }),
       ...(options.telemetryExporters === undefined
         ? {}
         : { telemetryExporters: options.telemetryExporters }),

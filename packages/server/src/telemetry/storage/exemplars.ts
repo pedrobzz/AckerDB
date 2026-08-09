@@ -14,7 +14,7 @@
  */
 import type { Database, Statement } from "bun:sqlite";
 import type { TraceExemplar } from "../exemplars/collector.ts";
-import type { TelemetryStore } from "./store.ts";
+import { expirableSet, type TelemetryStore } from "./store.ts";
 
 export interface TelemetryExemplarStoreSnapshot {
   readonly storedExemplars: number;
@@ -26,7 +26,6 @@ export class TelemetryExemplarStore {
   readonly store: TelemetryStore;
   private readonly database: Database;
   private readonly insert: Statement;
-  private readonly deleteExpired: Statement;
   private storedExemplars = 0;
   private writtenExemplars = 0;
   private expiredExemplars = 0;
@@ -38,20 +37,17 @@ export class TelemetryExemplarStore {
       name: "exemplars",
       initialize: (database) => {
         createExemplarSchema(database);
-        return [
-          Object.freeze({
-            retention: "traces" as const,
-            deleteExpired: (cutoffMs: number, limit: number) => {
-              const removed = this.deleteExpired.all(cutoffMs, limit).length;
-              this.storedExemplars -= removed;
-              this.expiredExemplars += removed;
-              return removed;
-            },
-          }),
-        ];
+        return [expirableSet(this.store, "traces", {
+          table: "_ackerdb_telemetry_exemplars",
+          key: "trace_id",
+          timestamp: "started_at",
+        }, (removed) => {
+          this.storedExemplars -= removed;
+          this.expiredExemplars += removed;
+        })];
       },
     });
-    this.insert = this.database.query(`
+    this.insert = this.store.prepare(`
       INSERT INTO _ackerdb_telemetry_exemplars (
         trace_id, started_at, duration_ms, root_function, root_operation, outcome,
         error_count, reason, policy_version, threshold_ms, inclusion_probability,
@@ -59,18 +55,8 @@ export class TelemetryExemplarStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(trace_id) DO NOTHING
     `);
-    this.deleteExpired = this.database.query(`
-      DELETE FROM _ackerdb_telemetry_exemplars
-      WHERE trace_id IN (
-        SELECT trace_id FROM _ackerdb_telemetry_exemplars
-        WHERE started_at < ?
-        ORDER BY started_at
-        LIMIT ?
-      )
-      RETURNING trace_id
-    `);
     this.storedExemplars = Number(
-      (this.database.query(
+      (this.store.prepare(
         "SELECT COUNT(*) AS n FROM _ackerdb_telemetry_exemplars",
       ).get() as { readonly n: bigint }).n,
     );

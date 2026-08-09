@@ -471,8 +471,8 @@ describe("MCP Runtime ownership", () => {
     expect(observed).not.toContain(token!);
     expect(observed).not.toContain("private-nested-value");
     expect(value.runtime.status().telemetryAggregates.series.length).toBeLessThanOrEqual(32);
-    await value.runtime.telemetryJournal.flush();
-    const analytics = value.runtime.telemetryJournal.readBatch(0n, 16)
+    const analytics = (await value.runtime.telemetrySidecar.exports.batch("test-reader", 16))
+      .records
       .filter((record) => record.kind === "analytics");
     expect(analytics).toHaveLength(1);
     expect(analytics[0]).toMatchObject({

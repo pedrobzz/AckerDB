@@ -1,6 +1,6 @@
 /**
- * PROTOTYPE (proto/telemetry-worker). The message contract between the serving
- * thread and the thread that owns the telemetry sidecar's SQLite connection.
+ * The message contract between the serving thread and the thread that owns the
+ * telemetry sidecar's SQLite connection.
  *
  * Records cross as ONE pre-serialized string per batch, newline framed. A
  * structured clone of an object graph costs about four microseconds per
@@ -16,6 +16,10 @@
  * therefore never "the promise resolved" — it is "the worker acknowledged a
  * durable watermark at or past the sequence this drain sealed at".
  */
+import type {
+  TelemetryConsumerSnapshot,
+} from "../../application-signals/journal.ts";
+import type { TelemetryJournalEntry } from "../../application-signals/types.ts";
 
 /**
  * One accepted record's kind; the worker routes on it. Every signal crosses the
@@ -25,12 +29,22 @@
  * traces, and aggregate buckets because the thread that owns the connection is
  * the only one allowed to write it.
  */
-export type TelemetryRecordKind =
-  | "log"
-  | "analytics"
-  | "error"
-  | "exemplar"
-  | "aggregate";
+export const TELEMETRY_RECORD_KINDS = Object.freeze([
+  "log",
+  "analytics",
+  "error",
+  "exemplar",
+  "aggregate",
+] as const);
+
+export type TelemetryRecordKind = (typeof TELEMETRY_RECORD_KINDS)[number];
+
+/** Every kind starts at zero, so a signal that never arrived reads as zero. */
+export function kindCounters(): Record<string, number> {
+  const counters: Record<string, number> = {};
+  for (const kind of TELEMETRY_RECORD_KINDS) counters[kind] = 0;
+  return counters;
+}
 
 export interface TelemetryWorkerOpen {
   readonly type: "open";
@@ -66,11 +80,41 @@ export interface TelemetryWorkerStatsRequest {
   readonly token: number;
 }
 
+/**
+ * One export consumer's cursor operation, run against the journal by the thread
+ * that owns it. The exporter closure itself stays on the serving thread — an
+ * application-supplied function cannot cross a thread — so only the cursor work
+ * comes here, which is exactly the part that must be durable.
+ *
+ * The three requests share one command because they share one reply: every one
+ * of them answers with the consumer's resulting cursor row, and a batch answers
+ * with records besides. Splitting them would be three tokens, three waiter maps
+ * and three failure paths for one round trip.
+ */
+export type TelemetryExportRequest =
+  | { readonly kind: "batch"; readonly limit: number }
+  | {
+    readonly kind: "advance";
+    readonly cursor: bigint;
+    readonly exportedRecords: number;
+    readonly skippedUnsupported: number;
+    readonly skippedIdentity: number;
+  }
+  | { readonly kind: "failure"; readonly timedOut: boolean };
+
+export interface TelemetryWorkerExport {
+  readonly type: "export";
+  readonly token: number;
+  readonly name: string;
+  readonly request: TelemetryExportRequest;
+}
+
 export type TelemetryWorkerCommand =
   | TelemetryWorkerOpen
   | TelemetryWorkerRecords
   | TelemetryWorkerSeal
-  | TelemetryWorkerStatsRequest;
+  | TelemetryWorkerStatsRequest
+  | TelemetryWorkerExport;
 
 /** Accounting the worker owns and the serving thread can only observe. */
 export interface TelemetryWorkerStats {
@@ -86,6 +130,11 @@ export interface TelemetryWorkerStats {
   readonly rejectedRecords: number;
   readonly storedBytes: number;
   readonly walBytes: number;
+  readonly freeBytes: number;
+  /** How close the sidecar is to being unable to write; admission scales by it. */
+  readonly pressure: number;
+  /** Below the free-space floor, nothing is written at all. */
+  readonly readOnly: boolean;
   readonly containedFailures: number;
   readonly failed: boolean;
 }
@@ -118,12 +167,27 @@ export interface TelemetryWorkerFailure {
   readonly message: string;
 }
 
+/**
+ * The answer to one export request. `error` and `consumer` are exclusive: a
+ * cursor operation that threw must never reply with a cursor row, because the
+ * pump would read it as the operation having happened.
+ */
+export interface TelemetryWorkerExportReply {
+  readonly type: "export";
+  readonly token: number;
+  readonly consumer?: TelemetryConsumerSnapshot;
+  /** Present only for a batch request that succeeded. */
+  readonly records?: readonly TelemetryJournalEntry[];
+  readonly error?: string;
+}
+
 export type TelemetryWorkerEvent =
   | TelemetryWorkerReady
   | TelemetryWorkerWatermark
   | TelemetryWorkerSealed
   | TelemetryWorkerStatsReply
-  | TelemetryWorkerFailure;
+  | TelemetryWorkerFailure
+  | TelemetryWorkerExportReply;
 
 export const RECORD_SEPARATOR = "\n";
 export const FIELD_SEPARATOR = "\t";

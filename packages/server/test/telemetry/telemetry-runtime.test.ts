@@ -42,6 +42,7 @@ import {
   type Principal,
 } from "@ackerdb/server";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
+import { journalRecords } from "../support/telemetry-journal.ts";
 
 const PRIMARY_SESSION = "telemetry-acceptance-primary-session";
 const FAILING_SESSION = "telemetry-acceptance-failing-session";
@@ -596,8 +597,7 @@ describe("Runtime telemetry acceptance", () => {
       "api.items.fail",
       { room: 9n, body: "rollback" },
     )).rejects.toThrow(PRIVATE_FAILURE);
-    await app.runtime.telemetryJournal.flush();
-    const records = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+    const records = (await journalRecords(app.runtime, 32))
       .filter((record) => record.kind === "log");
 
     expect(records.map((record) => record.message)).toEqual([
@@ -650,9 +650,7 @@ describe("Runtime telemetry acceptance", () => {
         args: {},
       }),
     )));
-    await app.runtime.telemetryJournal.flush();
-
-    const records = (await app.runtime.telemetryJournal.readBatch(0n, 64))
+    const records = (await journalRecords(app.runtime, 64))
       .filter((record) => record.kind === "log");
     expect(records).toHaveLength(40);
     expect(records.map((record) => record.sequence)).toEqual(
@@ -686,8 +684,7 @@ describe("Runtime telemetry acceptance", () => {
       { id: added.value as bigint },
     );
 
-    await app.runtime.telemetryJournal.flush();
-    const logs = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+    const logs = (await journalRecords(app.runtime, 32))
       .filter((record) => record.kind === "log" && record.message === "listed room");
     expect(logs).toHaveLength(3);
     expect(logs.map((record) => record.functionAddress)).toEqual([
@@ -707,8 +704,7 @@ describe("Runtime telemetry acceptance", () => {
       ref: "api.items.unsafeLog",
       args: {},
     }))).toBe("safe");
-    await app.runtime.telemetryJournal.flush();
-    const record = (await app.runtime.telemetryJournal.readBatch(0n, 4))[0];
+    const record = (await journalRecords(app.runtime, 4))[0];
     expect(record?.kind).toBe("log");
     if (record?.kind !== "log") throw new Error("expected application log");
     expect(record.truncated).toBe(true);
@@ -719,14 +715,10 @@ describe("Runtime telemetry acceptance", () => {
       date: "[Unsupported telemetry value]",
       throwing: { value: "[Unsupported telemetry value]" },
     });
-    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({
-      truncatedRecords: 1,
-      malformedRecords: 1,
-      oversizedRecords: 0,
-    });
+    expect(app.runtime.telemetrySidecar.snapshot().droppedRecords).toBe(0);
   });
 
-  test("makes local journal failure unhealthy without escaping through ctx.log", async () => {
+  test("contains one rejected batch without taking the runtime down", async () => {
     const app = harness(false);
     const duplicate = Object.freeze({
       kind: "log" as const,
@@ -741,12 +733,23 @@ describe("Runtime telemetry acceptance", () => {
       functionKind: "query",
     });
 
-    expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
-    expect(app.runtime.telemetryJournal.append(duplicate)).toBe(true);
-    await expect(app.runtime.telemetryJournal.flush()).rejects.toBeDefined();
+    // Two rows with the same (processGeneration, sequence) violate the journal's
+    // uniqueness constraint, so the transaction carrying them rolls back. That is
+    // one batch lost and accounted, not a dead connection: the store proves the
+    // connection survives by committing a probe, so the runtime stays ready and
+    // ctx.log keeps working. Only a probe that throws is fatal.
+    expect(app.runtime.telemetrySidecar.accept("log", duplicate)).toBe(true);
+    expect(app.runtime.telemetrySidecar.accept("log", duplicate)).toBe(true);
+    await journalRecords(app.runtime, 4);
 
-    expect(app.runtime.state).not.toBe("ready");
-    expect(app.runtime.telemetryJournal.snapshot()).toMatchObject({ state: "failed" });
+    expect(app.runtime.state).toBe("ready");
+    const snapshot = app.runtime.telemetrySidecar.snapshot();
+    expect(snapshot.rejectedRecords).toBe(2);
+    expect(snapshot.containedFailures).toBeGreaterThan(0);
+    expect(snapshot.failed).toBe(false);
+    // The watermark still advanced: a batch that will never become durable must
+    // not wedge every future drain.
+    expect(snapshot.durableSeq).toBe(snapshot.acceptedSeq);
   });
 
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {
@@ -778,8 +781,7 @@ describe("Runtime telemetry acceptance", () => {
       ctx.log.warn("system ran");
     });
 
-    await app.runtime.telemetryJournal.flush();
-    const records = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+    const records = (await journalRecords(app.runtime, 16))
       .filter((record) => record.kind === "log");
     expect(records.map((record) => [
       record.message,
@@ -840,8 +842,7 @@ describe("Runtime telemetry acceptance", () => {
     );
     expect(rejected.value).toMatchObject({ ok: false });
 
-    await app.runtime.telemetryJournal.flush();
-    const events = (await app.runtime.telemetryJournal.readBatch(0n, 32))
+    const events = (await journalRecords(app.runtime, 32))
       .filter((record) => record.kind === "analytics");
     expect(events.map((event) => event.event)).toEqual([
       "parent before",
@@ -887,8 +888,7 @@ describe("Runtime telemetry acceptance", () => {
       tx.analytics.track("identity tracked");
     }));
 
-    await app.runtime.telemetryJournal.flush();
-    const events = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+    const events = (await journalRecords(app.runtime, 16))
       .filter((record) => record.kind === "analytics");
     expect(events.map((event) => event.identity)).toEqual([
       undefined,
@@ -920,8 +920,7 @@ describe("Runtime telemetry acceptance", () => {
     await app.runtime.runJobs();
     jobsClock = null;
 
-    await app.runtime.telemetryJournal.flush();
-    const events = (await app.runtime.telemetryJournal.readBatch(0n, 16))
+    const events = (await journalRecords(app.runtime, 16))
       .filter((record) => record.kind === "analytics");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -968,8 +967,7 @@ describe("Runtime telemetry acceptance", () => {
       ref: "api.items.logSequence",
       args: {},
     }))).toBe("logged");
-    await app.runtime.telemetryJournal.flush();
-    await app.runtime.telemetryExporters!.flush();
+        await app.runtime.telemetryExporters!.flush();
 
     expect(exported).toEqual(Array.from({ length: 10 }, (_, index) => `step-${index}`));
     expect(warnings.length).toBeGreaterThanOrEqual(1);

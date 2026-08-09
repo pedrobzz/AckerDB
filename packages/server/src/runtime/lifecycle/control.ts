@@ -6,7 +6,11 @@ import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
 import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
-import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";
+import type { TelemetryJournalRecord } from "../../telemetry/application-signals/types.ts";
+import type {
+  TelemetrySidecarSeal,
+  TelemetrySidecarWriter,
+} from "../../telemetry/storage/writer.ts";
 import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { RuntimeStatus } from "../contracts/status.ts";
 import type { RuntimeLifecycleState } from "../contracts/lifecycle.ts";
@@ -34,10 +38,11 @@ export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
   readonly telemetry: Telemetry;
-  readonly telemetryJournal: TelemetryJournal;
+  readonly telemetrySidecar: TelemetrySidecarWriter;
   readonly telemetryExporters?: TelemetryJournalExporters;
+  /** The structurally last durable row, built when the ring has drained. */
+  readonly terminalRecord: () => TelemetryJournalRecord;
   readonly ownsTelemetry: boolean;
-  readonly ownsTelemetryJournal: boolean;
   readonly pluginRuntime?: PluginRuntime;
   readonly realtime?: RealtimeRuntime;
   readonly reads: RuntimeReadExecutor;
@@ -51,6 +56,8 @@ export interface RuntimeControlOptions {
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
   readonly stopSampler: () => void;
+  /** Hands the aggregate's open minute over before the sidecar is sealed. */
+  readonly persistAggregates: () => void;
   readonly flushDeliveryFailures: () => void;
 }
 
@@ -60,13 +67,14 @@ export class RuntimeControl {
   private readonly activeWaiters = new Set<() => void>();
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
-  private readonly releaseTelemetryJournalFailure: () => void;
+  private readonly releaseSidecarFailure: () => void;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
+  private sealed = false;
 
   constructor(private readonly options: RuntimeControlOptions) {
-    this.releaseTelemetryJournalFailure = options.telemetryJournal.onFailure((error) => {
+    this.releaseSidecarFailure = options.telemetrySidecar.onFailure((error: unknown) => {
       options.telemetry.recordEvent({
         name: "failure",
         level: "error",
@@ -231,7 +239,7 @@ export class RuntimeControl {
       sseBudget: this.options.sseBudget.snapshot(),
       telemetry: this.options.telemetry.snapshot(),
       telemetryAggregates: this.options.telemetry.aggregateSnapshot(),
-      telemetryJournal: this.options.telemetryJournal.snapshot(),
+      telemetrySidecar: this.options.telemetrySidecar.snapshot(),
       telemetryExporters: this.options.telemetryExporters?.snapshot() ?? null,
       storage: this.options.engine.status(),
     });
@@ -244,7 +252,7 @@ export class RuntimeControl {
       throw new RangeError("runtime shutdown deadline must be finite");
     }
     this.lifecycle = "draining";
-    this.releaseTelemetryJournalFailure();
+    this.releaseSidecarFailure();
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
     this.options.stopSampler();
@@ -302,10 +310,15 @@ export class RuntimeControl {
         lifecycleState: "stopped",
       });
       await this.options.telemetryExporters?.drain();
-      if (this.options.ownsTelemetryJournal) {
-        await this.options.telemetryJournal.drain();
-      } else {
-        await this.options.telemetryJournal.flush();
+      const seal = await this.sealSidecar(deadlineAtMs);
+      if (seal?.timedOut === true) {
+        throw new AckerDBError(
+          "deadline_exceeded",
+          `telemetry sidecar did not commit ${
+            seal.snapshot.acceptedSeq - seal.snapshot.durableSeq
+          } accepted records before the shutdown deadline`,
+          { resource: "operation" },
+        );
       }
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
@@ -352,11 +365,10 @@ export class RuntimeControl {
           cleanupErrors.push(cleanupError);
         }
         try {
-          if (this.options.ownsTelemetryJournal) {
-            await this.options.telemetryJournal.drain();
-          } else {
-            await this.options.telemetryJournal.flush();
-          }
+          // The sidecar still has to close, but a seal that does not acknowledge
+          // in time here is the deadline already being reported above, not a
+          // second failure: the same expired clock produced both.
+          await this.sealSidecar(deadlineAtMs);
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
@@ -375,6 +387,23 @@ export class RuntimeControl {
       },
     );
     return this.drainPromise;
+  }
+
+  /**
+   * Close the sidecar exactly once and report what it acknowledged. Whether an
+   * unacknowledged seal is a failure belongs to the caller: on a clean shutdown
+   * it is a real loss claim, because records the application was told were
+   * accepted are not on disk; on a shutdown that already blew its deadline it is
+   * the same expired clock saying so twice.
+   */
+  private async sealSidecar(deadlineAtMs: number): Promise<TelemetrySidecarSeal | undefined> {
+    if (this.sealed) return undefined;
+    this.sealed = true;
+    // The minute in progress is handed over BEFORE the seal, marked not closed.
+    // After the seal every accept is refused, so an aggregate drained later is
+    // an aggregate lost.
+    this.options.persistAggregates();
+    return this.options.telemetrySidecar.seal(this.options.terminalRecord(), deadlineAtMs);
   }
 
   private waitForActiveOperations(): Promise<void> {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  TelemetryJournal,
+  TelemetryInlineWriter,
   TelemetryJournalExporters,
   type Identity,
   type TelemetryJournalRecord,
@@ -12,16 +12,28 @@ import {
 } from "@ackerdb/server";
 
 const directories = new Set<string>();
+const writers = new Set<TelemetryInlineWriter>();
 
-afterEach(() => {
+afterEach(async () => {
+  for (const writer of writers) await writer.seal(undefined, 0).catch(() => {});
+  writers.clear();
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   directories.clear();
 });
 
-function journal(limits?: ConstructorParameters<typeof TelemetryJournal>[0]["limits"]): TelemetryJournal {
+function sidecar(limits?: { readonly maxStoredBytes?: number }): TelemetryInlineWriter {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-exporters-"));
   directories.add(directory);
-  return new TelemetryJournal({ path: join(directory, "telemetry.db"), limits });
+  const writer = new TelemetryInlineWriter({
+    path: join(directory, "telemetry.db"),
+    generation: "export-test-generation",
+    // One record per commit, so a test that appends and then reads never has to
+    // reason about the ring's batching.
+    queue: { commitBatch: 1 },
+    ...limits,
+  });
+  writers.add(writer);
+  return writer;
 }
 
 function log(sequence: bigint, message: string): TelemetryJournalRecord {
@@ -29,8 +41,9 @@ function log(sequence: bigint, message: string): TelemetryJournalRecord {
     kind: "log",
     processGeneration: "export-test",
     sequence,
-    timestamp: Number(sequence),
+    timestamp: Date.now(),
     level: "info",
+    source: "app",
     message,
     truncated: false,
     malformed: false,
@@ -48,7 +61,7 @@ function analytics(
     kind: "analytics",
     processGeneration: "export-test",
     sequence,
-    timestamp: Number(sequence),
+    timestamp: Date.now(),
     event,
     ...(identity === undefined ? {} : { identity }),
     truncated: false,
@@ -61,20 +74,19 @@ function analytics(
 
 describe("TelemetryJournalExporters", () => {
   test("routes capabilities and advances failing providers independently in order", async () => {
-    const storage = journal();
+    const storage = sidecar();
     const identity = 42n as Identity;
-    storage.append(log(1n, "first log"));
-    storage.append(analytics(2n, "anonymous event"));
-    storage.append(analytics(3n, "identified event", identity));
-    storage.append(log(4n, "second log"));
-    await storage.flush();
+    storage.accept("log", log(1n, "first log"));
+    storage.accept("analytics", analytics(2n, "anonymous event"));
+    storage.accept("analytics", analytics(3n, "identified event", identity));
+    storage.accept("log", log(4n, "second log"));
 
     let sentryAvailable = false;
     const sentryBatches: string[][] = [];
     const mixpanelBatches: string[][] = [];
     const warnings: string[] = [];
     const exporters = new TelemetryJournalExporters({
-      journal: storage,
+      port: storage.exports,
       exporters: [
         {
           name: "sentry",
@@ -123,13 +135,11 @@ describe("TelemetryJournalExporters", () => {
     });
 
     await exporters.drain();
-    await storage.drain();
   });
 
   test("a stalled provider cannot block another provider or shutdown", async () => {
-    const storage = journal();
-    storage.append(log(1n, "ready"));
-    await storage.flush();
+    const storage = sidecar();
+    storage.accept("log", log(1n, "ready"));
     let aborted = false;
     const delivered: string[] = [];
     const stalled: TelemetrySignalExporter = {
@@ -143,7 +153,7 @@ describe("TelemetryJournalExporters", () => {
       }),
     };
     const exporters = new TelemetryJournalExporters({
-      journal: storage,
+      port: storage.exports,
       exporters: [
         stalled,
         {
@@ -164,15 +174,13 @@ describe("TelemetryJournalExporters", () => {
     expect(aborted).toBe(true);
     expect(exporters.snapshot().stalled).toMatchObject({ timedOut: 1, inFlight: false });
     await exporters.drain();
-    await storage.drain();
   });
 
-  test("a delayed abort rejection cannot access the journal after shutdown", async () => {
-    const storage = journal();
-    storage.append(log(1n, "shutdown race"));
-    await storage.flush();
+  test("a delayed abort rejection cannot reach the sidecar after it is sealed", async () => {
+    const storage = sidecar();
+    storage.accept("log", log(1n, "shutdown race"));
     const exporters = new TelemetryJournalExporters({
-      journal: storage,
+      port: storage.exports,
       exporters: [{
         name: "delayed-abort",
         signals: ["log"],
@@ -189,24 +197,26 @@ describe("TelemetryJournalExporters", () => {
     const flushing = exporters.flush();
     await Bun.sleep(0);
     await exporters.drain();
-    await storage.drain();
+    await storage.seal(undefined, 0);
     await flushing;
     await Bun.sleep(10);
-    expect(storage.snapshot().state).toBe("stopped");
+    // The seal closed the connection; a late rejection must not have reached it.
+    expect(storage.snapshot().failed).toBe(false);
   });
 
-  test("contains background journal read failure without an unhandled rejection", async () => {
-    const storage = journal();
-    storage.append(log(1n, "corrupt me"));
-    await storage.flush();
-    const corruption = new Database(storage.path);
+  test("contains a background read failure without an unhandled rejection", async () => {
+    const storage = sidecar();
+    storage.accept("log", log(1n, "corrupt me"));
+    // Commit it, then corrupt the stored payload behind the store's back.
+    await storage.exports.batch("primer", 1);
+    const corruption = new Database(storage.stores.store.path);
     corruption.query(
       "UPDATE _ackerdb_telemetry_journal SET payload = ? WHERE id = 1",
     ).run("not a wire value");
     corruption.close();
     const warnings: string[] = [];
     const exporters = new TelemetryJournalExporters({
-      journal: storage,
+      port: storage.exports,
       exporters: [{
         name: "reader",
         signals: ["log"],
@@ -218,18 +228,17 @@ describe("TelemetryJournalExporters", () => {
     });
 
     await Bun.sleep(0);
-    expect(storage.snapshot().state).toBe("failed");
     expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("stopped after local journal failure");
     await exporters.drain();
-    await expect(storage.drain()).rejects.toBeDefined();
   });
 
   test("advances an offline provider over observable journal eviction", async () => {
-    const storage = journal({ maxStoredRecords: 2, maxStoredBytes: 64 * 1_024 });
+    const storage = sidecar();
     let available = false;
     const delivered: string[] = [];
     const exporters = new TelemetryJournalExporters({
-      journal: storage,
+      port: storage.exports,
       exporters: [{
         name: "recovering",
         signals: ["log"],
@@ -242,13 +251,17 @@ describe("TelemetryJournalExporters", () => {
       limits: { retryMinMs: 10_000, retryMaxMs: 10_000 },
     });
 
-    storage.append(log(1n, "evicted-1"));
-    storage.append(log(2n, "evicted-2"));
-    await storage.flush();
+    storage.accept("log", log(1n, "evicted-1"));
+    storage.accept("log", log(2n, "evicted-2"));
     await exporters.flush();
-    storage.append(log(3n, "retained-3"));
-    storage.append(log(4n, "retained-4"));
-    await storage.flush();
+    storage.accept("log", log(3n, "retained-3"));
+    storage.accept("log", log(4n, "retained-4"));
+    await storage.exports.batch("primer", 1);
+    // Eviction is indistinguishable from any other reason a row is gone, which
+    // is the point: the consumer must account the gap rather than stall on it.
+    const evicting = new Database(storage.stores.store.path);
+    evicting.query("DELETE FROM _ackerdb_telemetry_journal WHERE id <= 2").run();
+    evicting.close();
 
     available = true;
     await exporters.flush();
@@ -258,6 +271,5 @@ describe("TelemetryJournalExporters", () => {
       exportedRecords: 2,
     });
     await exporters.drain();
-    await storage.drain();
   });
 });

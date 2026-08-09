@@ -1,7 +1,7 @@
 /**
- * PROTOTYPE (proto/telemetry-worker). The serving thread's side of the durable
- * telemetry pipeline: a bounded ring, a pre-serialized batched handoff, and a
- * quiescence protocol built on acknowledged sequence numbers.
+ * The serving thread's side of the durable telemetry pipeline: a bounded ring,
+ * a pre-serialized batched handoff, and a quiescence protocol built on
+ * acknowledged sequence numbers.
  *
  * **Nothing here blocks the producer.** Accepting a record is one
  * `JSON.stringify` and one array write. The ring is finite; when it is full the
@@ -27,75 +27,51 @@
 import {
   encodeRecordValue,
   FIELD_SEPARATOR,
+  kindCounters,
   RECORD_SEPARATOR,
+  type TelemetryExportRequest,
   type TelemetryRecordKind,
   type TelemetryWorkerEvent,
+  type TelemetryWorkerExportReply,
   type TelemetryWorkerStats,
 } from "./protocol.ts";
-import type {
-  TelemetrySidecarSeal,
-  TelemetrySidecarSnapshot,
-  TelemetrySidecarWriter,
+import {
+  DEFAULT_SIDECAR_QUEUE_LIMITS,
+  type TelemetryExportPort,
+  type TelemetrySidecarQueueLimits,
+  type TelemetrySidecarSeal,
+  type TelemetrySidecarSnapshot,
+  type TelemetrySidecarWriter,
 } from "../writer.ts";
+import type {
+  TelemetryConsumerAdvance,
+  TelemetryConsumerBatch,
+  TelemetryConsumerSnapshot,
+} from "../../application-signals/journal.ts";
+import { TelemetryAdmission } from "../admission.ts";
 
 export interface TelemetryWorkerWriterOptions {
   readonly path: string;
-  /** Records the ring may hold before it drops the newest. */
-  readonly maxQueuedRecords?: number;
-  readonly maxQueuedBytes?: number;
-  /** Records the serving thread accumulates before one handoff. */
-  readonly handoffBatch?: number;
-  /** Rows the worker accumulates before it opens a transaction. */
-  readonly commitBatch?: number;
-  /** Bound on how long a below-threshold record waits for a handoff. */
-  readonly maxHandoffDelayMs?: number;
-  /** Bound on how long the worker holds a below-threshold batch uncommitted. */
-  readonly commitDelayMs?: number;
+  readonly queue?: Partial<TelemetrySidecarQueueLimits>;
   readonly retention?: Readonly<Record<string, number>>;
   readonly maxStoredBytes?: number;
   /** Identifies this process in the aggregate's coverage record. */
   readonly generation: string;
 }
 
-export interface TelemetryWriterSnapshot {
-  readonly acceptedRecords: number;
-  readonly droppedRecords: number;
-  readonly acceptedByKind: Readonly<Record<string, number>>;
-  readonly droppedByKind: Readonly<Record<string, number>>;
-  readonly queuedRecords: number;
-  readonly queuedBytes: number;
-  readonly handoffs: number;
-  readonly acceptedSeq: number;
-  readonly worker: TelemetryWorkerStats | undefined;
-}
-
-const DEFAULTS = {
-  maxQueuedRecords: 65_536,
-  maxQueuedBytes: 64 * 1_024 * 1_024,
-  // Count OR time, never count alone. A count-only threshold makes durability
-  // lag inversely proportional to traffic: at ten operations a second, a
-  // 200-trace handoff plus a 512-row commit is twenty seconds of lag on a
-  // record the application already considers accepted.
-  handoffBatch: 1_400,
-  commitBatch: 512,
-  maxHandoffDelayMs: 5,
-  commitDelayMs: 25,
-};
-
 export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   private readonly worker: Worker;
-  private readonly limits: Required<
-    Omit<TelemetryWorkerWriterOptions, "path" | "retention" | "maxStoredBytes" | "generation">
-  >;
+  private readonly limits: TelemetrySidecarQueueLimits;
   /** Pre-serialized `kind\tjson` lines awaiting a handoff. */
   private ring: string[] = [];
   private queuedBytes = 0;
   private acceptedSeq = 0;
   private acceptedRecords = 0;
   private droppedRecords = 0;
-  private readonly acceptedByKind: Record<string, number> = { log: 0, analytics: 0, span: 0, error: 0 };
-  private readonly droppedByKind: Record<string, number> = { log: 0, analytics: 0, span: 0, error: 0 };
+  private readonly acceptedByKind = kindCounters();
+  private readonly droppedByKind = kindCounters();
   private handoffs = 0;
+  private readonly admission = new TelemetryAdmission();
   /** Per handoff: the oldest accept time it carries, awaiting its watermark. */
   private readonly awaitingAck: { seq: number; oldestAcceptMs: number }[] = [];
   private oldestAcceptInRing: number | undefined;
@@ -104,22 +80,47 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   private handoffTimer?: ReturnType<typeof setTimeout>;
   private lastStats: TelemetryWorkerStats | undefined;
   private readonly failureListeners = new Set<(error: unknown) => void>();
+  private readonly persistListeners = new Set<() => void>();
+  private notifiedDurableSeq = 0;
   private readonly ready: Promise<void>;
   private statsToken = 0;
   private readonly statsWaiters = new Map<number, (stats: TelemetryWorkerStats) => void>();
+  private exportToken = 0;
+  private readonly exportWaiters = new Map<number, {
+    readonly resolve: (reply: TelemetryWorkerExportReply) => void;
+    readonly reject: (error: unknown) => void;
+  }>();
   private sealWaiter?: (event: Extract<TelemetryWorkerEvent, { type: "sealed" }>) => void;
   private sealed = false;
   private notifiedFailure = false;
 
+  readonly exports: TelemetryExportPort = {
+    onPersist: (listener) => {
+      this.persistListeners.add(listener);
+      return () => this.persistListeners.delete(listener);
+    },
+    batch: async (name, limit): Promise<TelemetryConsumerBatch> => {
+      const reply = await this.exportRequest(name, { kind: "batch", limit });
+      return Object.freeze({ records: reply.records ?? [], consumer: reply.consumer });
+    },
+    advance: async (
+      name,
+      cursor,
+      advance: TelemetryConsumerAdvance,
+    ): Promise<TelemetryConsumerSnapshot> =>
+      (await this.exportRequest(name, {
+        kind: "advance",
+        cursor,
+        exportedRecords: advance.exportedRecords ?? 0,
+        skippedUnsupported: advance.skippedUnsupported ?? 0,
+        skippedIdentity: advance.skippedIdentity ?? 0,
+      })).consumer,
+    failure: async (name, timedOut): Promise<TelemetryConsumerSnapshot> =>
+      (await this.exportRequest(name, { kind: "failure", timedOut })).consumer,
+  };
+
   constructor(options: TelemetryWorkerWriterOptions) {
-    this.limits = {
-      maxQueuedRecords: options.maxQueuedRecords ?? DEFAULTS.maxQueuedRecords,
-      maxQueuedBytes: options.maxQueuedBytes ?? DEFAULTS.maxQueuedBytes,
-      handoffBatch: options.handoffBatch ?? DEFAULTS.handoffBatch,
-      commitBatch: options.commitBatch ?? DEFAULTS.commitBatch,
-      maxHandoffDelayMs: options.maxHandoffDelayMs ?? DEFAULTS.maxHandoffDelayMs,
-      commitDelayMs: options.commitDelayMs ?? DEFAULTS.commitDelayMs,
-    };
+    this.limits = Object.freeze({ ...DEFAULT_SIDECAR_QUEUE_LIMITS, ...options.queue });
     this.worker = new Worker(new URL("./entry.ts", import.meta.url).href);
     let resolveReady!: () => void;
     this.ready = new Promise<void>((resolve) => {
@@ -132,22 +133,26 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
           resolveReady();
           return;
         case "watermark":
-          this.lastStats = message.stats;
-          this.settleAcks(message.stats.durableSeq);
+          this.observeStats(message.stats);
           this.observeFailed(message.stats);
           return;
         case "stats": {
-          this.lastStats = message.stats;
-          this.settleAcks(message.stats.durableSeq);
+          this.observeStats(message.stats);
           this.statsWaiters.get(message.token)?.(message.stats);
           this.statsWaiters.delete(message.token);
           return;
         }
         case "sealed":
-          this.lastStats = message.stats;
-          this.settleAcks(message.stats.durableSeq);
+          this.observeStats(message.stats);
           this.sealWaiter?.(message);
           return;
+        case "export": {
+          const waiter = this.exportWaiters.get(message.token);
+          this.exportWaiters.delete(message.token);
+          if (message.error !== undefined) waiter?.reject(new Error(message.error));
+          else waiter?.resolve(message);
+          return;
+        }
         case "failure":
           for (const listener of this.failureListeners) {
             try {
@@ -181,26 +186,25 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
    * accounting stay honest.
    */
   accept(kind: TelemetryRecordKind, record: unknown): boolean {
-    if (this.sealed) {
+    if (this.sealed) return this.shed("sealed", kind);
+    // Admission first, before the serialization it would otherwise pay for.
+    if (this.admission.admit(kind) !== undefined) {
       this.droppedRecords++;
-      this.droppedByKind[kind]!++;
+      this.droppedByKind[kind] = (this.droppedByKind[kind] ?? 0) + 1;
       return false;
     }
     let json: string;
     try {
       json = JSON.stringify(record, encodeRecordValue);
     } catch {
-      this.droppedRecords++;
-      this.droppedByKind[kind]!++;
-      return false;
+      return this.shed("line_too_long", kind);
     }
+    if (json.length > this.limits.maxRecordBytes) return this.shed("line_too_long", kind);
     if (
       this.ring.length >= this.limits.maxQueuedRecords ||
       this.queuedBytes + json.length > this.limits.maxQueuedBytes
     ) {
-      this.droppedRecords++;
-      this.droppedByKind[kind]!++;
-      return false;
+      return this.shed("queue_full", kind);
     }
     // The sequence is taken BEFORE the record enters the ring: a seal that read
     // a counter updated afterwards could seal at a number that excludes records
@@ -214,6 +218,13 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     if (this.ring.length >= this.limits.handoffBatch) this.handoff();
     else this.armHandoff();
     return true;
+  }
+
+  private shed(reason: Parameters<TelemetryAdmission["record"]>[0], kind: TelemetryRecordKind): false {
+    this.admission.record(reason, kind);
+    this.droppedRecords++;
+    this.droppedByKind[kind] = (this.droppedByKind[kind] ?? 0) + 1;
+    return false;
   }
 
   private armHandoff(): void {
@@ -248,12 +259,51 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
    * the OLDEST accept in that handoff, because that is the record that waited
    * longest — measuring the transaction alone would hide both queues, which is
    * exactly how this shape looks healthy while deferring loss.
+   *
+   * A watermark that moved is also the only honest wake-up signal for the export
+   * pump: it means rows were committed, so a consumer that read an empty batch
+   * now has something to read.
    */
-  private settleAcks(durableSeq: number): void {
+  private observeStats(stats: TelemetryWorkerStats): void {
+    this.lastStats = stats;
+    this.admission.observe(stats.pressure, stats.readOnly);
     const now = performance.now();
-    while (this.awaitingAck.length > 0 && this.awaitingAck[0]!.seq <= durableSeq) {
+    while (this.awaitingAck.length > 0 && this.awaitingAck[0]!.seq <= stats.durableSeq) {
       this.commitAckMs.push(now - this.awaitingAck.shift()!.oldestAcceptMs);
     }
+    if (stats.durableSeq <= this.notifiedDurableSeq) return;
+    this.notifiedDurableSeq = stats.durableSeq;
+    for (const listener of this.persistListeners) {
+      try {
+        listener();
+      } catch {
+        // Export scheduling is downstream of durable local persistence.
+      }
+    }
+  }
+
+  private async exportRequest(
+    name: string,
+    request: TelemetryExportRequest,
+  ): Promise<TelemetryWorkerExportReply & { readonly consumer: TelemetryConsumerSnapshot }> {
+    if (this.sealed) throw new Error("telemetry sidecar is sealed");
+    // Hand the ring over FIRST. The channel is ordered, so records posted here
+    // are parsed before the request that follows them — without this, a consumer
+    // reads a journal missing everything this thread accepted since the last
+    // handoff, which for a quiet process is everything it has.
+    this.handoff();
+    const token = ++this.exportToken;
+    const reply = await new Promise<TelemetryWorkerExportReply>((resolve, reject) => {
+      this.exportWaiters.set(token, { resolve, reject });
+      this.worker.postMessage({ type: "export", token, name, request });
+    });
+    // A reply with no cursor row is a cursor operation that did not happen.
+    // Returning a fabricated one would let the pump advance for work the
+    // sidecar never recorded.
+    if (reply.consumer === undefined) {
+      throw new Error(`telemetry export request "${request.kind}" returned no consumer state`);
+    }
+    return reply as TelemetryWorkerExportReply & { readonly consumer: TelemetryConsumerSnapshot };
   }
 
   onFailure(listener: (error: unknown) => void): () => void {
@@ -299,6 +349,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
       rejectedRecords: worker?.rejectedRecords ?? 0,
       storedBytes: worker?.storedBytes ?? 0,
       walBytes: worker?.walBytes ?? 0,
+      shed: this.admission.snapshot(),
       containedFailures: worker?.containedFailures ?? 0,
       failed: worker?.failed ?? false,
     });
@@ -336,6 +387,12 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     clearTimeout(timer);
     if (settled !== "timeout") this.lastStats = settled.stats;
     this.worker.terminate();
+    // The thread that would have answered them is gone. A pump still awaiting a
+    // cursor operation must learn that, or its consumer hangs for the life of
+    // the process holding a batch it can neither deliver nor forget.
+    const abandoned = new Error("telemetry sidecar closed before the export request was answered");
+    for (const waiter of this.exportWaiters.values()) waiter.reject(abandoned);
+    this.exportWaiters.clear();
     return { snapshot: this.snapshot(), timedOut: settled === "timeout" };
   }
 }

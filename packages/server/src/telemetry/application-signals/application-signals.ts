@@ -8,14 +8,12 @@ import type {
   TelemetryJournalRecord,
 } from "./types.ts";
 /**
- * Where accepted records go. The in-process journal satisfies it directly; the
- * prototype's worker writer satisfies it by handing the record to the thread
- * that owns the connection. Application logging does not care which.
+ * Where accepted records go: the sidecar writer's ring, which is the only queue
+ * any durable signal waits in. This is a function and not an object because
+ * there is exactly one thing to do with a record here — hand it over. Whether
+ * the connection is on this thread is the writer's business, not logging's.
  */
-export interface ApplicationSignalSink {
-  append(record: TelemetryJournalRecord): boolean;
-  appendFinal(record: TelemetryJournalRecord): void;
-}
+export type ApplicationSignalSink = (record: TelemetryJournalRecord) => boolean;
 import {
   prepareTelemetryMessage,
   prepareTelemetryMetadata,
@@ -33,7 +31,7 @@ export class ApplicationSignals {
   private readonly functionLoggers = new Map<string, ApplicationLogger>();
 
   constructor(
-    private readonly journal: ApplicationSignalSink,
+    private readonly accept: ApplicationSignalSink,
     private readonly now: () => number,
     private readonly context: () => ApplicationLogCallContext,
   ) {
@@ -93,20 +91,20 @@ export class ApplicationSignals {
    */
   framework(record: TelemetryEventRecord): void {
     try {
-      this.journal.append(this.frameworkRecord(record));
+      this.accept(this.frameworkRecord(record));
     } catch {
       // Durable framework capture must never escape into the recording path.
     }
   }
 
   /**
-   * The terminal lifecycle row: appended synchronously after the journal
-   * drained, as the structurally last durable record before the sidecar closes.
-   * Unlike the recording path this one fails LOUD — the error escapes so the
-   * drain rejects instead of resolving clean with zero terminal rows.
+   * Build the terminal lifecycle row without accepting it. The drain hands this
+   * to the seal, which writes it after the ring has drained — the structurally
+   * last durable record before the sidecar closes. Accepting it would only put
+   * it in the same queue as everything else and lose that guarantee.
    */
-  frameworkFinal(record: TelemetryEventRecord): void {
-    this.journal.appendFinal(this.frameworkRecord(record));
+  terminalRecord(record: TelemetryEventRecord): TelemetryJournalRecord {
+    return this.frameworkRecord(record);
   }
 
   private frameworkRecord(record: TelemetryEventRecord): TelemetryJournalRecord {
@@ -143,7 +141,7 @@ export class ApplicationSignals {
 
   commitAnalytics(events: readonly AnalyticsEventRecord[], commitVersion: bigint): void {
     for (const event of events) {
-      this.journal.append(Object.freeze({ ...event, commitId: String(commitVersion) }));
+      this.accept(Object.freeze({ ...event, commitId: String(commitVersion) }));
     }
   }
 
@@ -161,7 +159,7 @@ export class ApplicationSignals {
         const context = this.context();
         const preparedMessage = prepareTelemetryMessage(message);
         const preparedMetadata = prepareTelemetryMetadata(metadata);
-        this.journal.append(Object.freeze({
+        this.accept(Object.freeze({
           kind: "log",
           processGeneration: this.processGeneration,
           sequence,

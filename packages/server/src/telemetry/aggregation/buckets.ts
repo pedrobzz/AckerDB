@@ -26,7 +26,7 @@
  * dies mid-minute leaves that minute open, so the next generation can say the
  * window is incomplete instead of presenting a smaller count as exact.
  */
-import { Sketch, DEFAULT_MAX_BINS, DEFAULT_RELATIVE_ACCURACY } from "./sketch.ts";
+import { Sketch, DEFAULT_MAPPING_SCALE, DEFAULT_MAX_BINS } from "./sketch.ts";
 import type { TelemetryOperation, TelemetryOutcome } from "../contracts/schema.ts";
 
 export const MINUTE_MS = 60_000;
@@ -106,7 +106,12 @@ export interface TelemetryAggregateLimits {
    * exemplars immediately instead of none until it happens to get busy.
    */
   readonly warmObservations: number;
-  readonly relativeAccuracy: number;
+  /**
+   * The OTLP exponential-histogram scale the sketches start at. An integer,
+   * because a mapping that is not on OTLP's grid cannot be exported without
+   * re-bucketing; a busy series coarsens from here on its own and says so.
+   */
+  readonly mappingScale: number;
   readonly maxBins: number;
 }
 
@@ -115,7 +120,7 @@ export const DEFAULT_AGGREGATE_LIMITS: TelemetryAggregateLimits = Object.freeze(
   maxOpenBuckets: 8,
   referenceWindowMs: 5 * MINUTE_MS,
   warmObservations: 50,
-  relativeAccuracy: DEFAULT_RELATIVE_ACCURACY,
+  mappingScale: DEFAULT_MAPPING_SCALE,
   maxBins: DEFAULT_MAX_BINS,
 });
 
@@ -167,9 +172,15 @@ export interface CohortThreshold {
    * same rate as a smooth one instead of retaining the whole pile.
    */
   readonly boundaryAdmitProbability: number;
-  /** Bounds of the boundary bucket; a duration above `boundaryUpperMs` is retained outright. */
-  readonly boundaryLowerMs: number | undefined;
-  readonly boundaryUpperMs: number | undefined;
+  /**
+   * The boundary bucket, as a key on `mappingScale`'s grid. A caller classifies
+   * its own duration with `bucketKey` and compares INTEGERS: reconstructing the
+   * bucket's edges in milliseconds and comparing those is a fail-open, because a
+   * float `γ^k` lands just under an exact power of two and every observation of
+   * a constant-latency endpoint then tests as above its own bucket.
+   */
+  readonly boundaryKey: number | undefined;
+  readonly mappingScale: number;
 }
 
 /** The share of traffic the policy aims to retain for the tail. */
@@ -186,7 +197,12 @@ export interface AggregateSeriesRow {
   readonly totalMs: number;
   readonly minMs: number;
   readonly maxMs: number;
-  readonly collapsed: boolean;
+  /**
+   * The scale the row's sketches ended at. It is the row's declared error bound
+   * — α = (γ−1)/(γ+1) — and it is what an OTLP export writes into the data
+   * point, so it is stored rather than recomputed by whoever reads the row.
+   */
+  readonly mappingScale: number;
   /**
    * Exposed quantiles this window holds too few observations to answer as fact.
    * Carried on the row rather than left for a screen to infer, for the same
@@ -213,7 +229,7 @@ export interface TelemetryAggregateSnapshot2 {
   readonly overflowedObservations: number;
   readonly droppedObservations: number;
   readonly seriesHighWater: number;
-  readonly relativeAccuracy: number;
+  readonly mappingScale: number;
 }
 
 export class TelemetryAggregateBuckets {
@@ -283,7 +299,7 @@ export class TelemetryAggregateBuckets {
     if (!series.overflow) {
       let history = this.reference.get(key);
       if (history === undefined && this.reference.size < this.limits.maxSeriesPerBucket) {
-        history = new Sketch(this.limits.relativeAccuracy, this.limits.maxBins);
+        history = new Sketch(this.limits.mappingScale, this.limits.maxBins);
         this.reference.set(key, history);
       }
       history?.add(durationMs);
@@ -339,8 +355,8 @@ export class TelemetryAggregateBuckets {
         warm: false,
         observations,
         boundaryAdmitProbability: 1,
-        boundaryLowerMs: undefined,
-        boundaryUpperMs: undefined,
+        boundaryKey: undefined,
+        mappingScale: this.limits.mappingScale,
       };
     }
     const thresholdMs = source.quantile(RETENTION_QUANTILE);
@@ -357,8 +373,8 @@ export class TelemetryAggregateBuckets {
       warm: true,
       observations,
       boundaryAdmitProbability,
-      boundaryLowerMs: share?.lower,
-      boundaryUpperMs: share?.upper,
+      boundaryKey: share?.key,
+      mappingScale: share?.mappingScale ?? this.limits.mappingScale,
     };
   }
 
@@ -376,8 +392,8 @@ export class TelemetryAggregateBuckets {
       totalMs: 0,
       minMs: Number.POSITIVE_INFINITY,
       maxMs: Number.NEGATIVE_INFINITY,
-      ok: new Sketch(this.limits.relativeAccuracy, this.limits.maxBins),
-      failed: new Sketch(this.limits.relativeAccuracy, this.limits.maxBins),
+      ok: new Sketch(this.limits.mappingScale, this.limits.maxBins),
+      failed: new Sketch(this.limits.mappingScale, this.limits.maxBins),
     };
   }
 
@@ -417,7 +433,7 @@ export class TelemetryAggregateBuckets {
           totalMs: series.totalMs,
           minMs: series.count === 0 ? 0 : series.minMs,
           maxMs: series.count === 0 ? 0 : series.maxMs,
-          collapsed: series.ok.snapshot().collapsed || series.failed.snapshot().collapsed,
+          mappingScale: Math.min(series.ok.scale, series.failed.scale),
           lowConfidenceQuantiles: Object.freeze(
             EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(series.count, quantile)),
           ),
@@ -436,7 +452,7 @@ export class TelemetryAggregateBuckets {
       overflowedObservations: this.overflowedObservations,
       droppedObservations: this.droppedObservations,
       seriesHighWater: this.seriesHighWater,
-      relativeAccuracy: this.limits.relativeAccuracy,
+      mappingScale: this.limits.mappingScale,
     });
   }
 }
@@ -455,7 +471,6 @@ export function mergeIntoHour(
     totalMs: number;
     minMs: number;
     maxMs: number;
-    collapsed: boolean;
   }>();
   for (const row of rows) {
     const hour = Math.floor(row.startMs / HOUR_MS) * HOUR_MS;
@@ -464,14 +479,13 @@ export function mergeIntoHour(
     if (entry === undefined) {
       entry = {
         row: { ...row, startMs: hour },
-        ok: new Sketch(DEFAULT_RELATIVE_ACCURACY, maxBins),
-        failed: new Sketch(DEFAULT_RELATIVE_ACCURACY, maxBins),
+        ok: new Sketch(row.mappingScale, maxBins),
+        failed: new Sketch(row.mappingScale, maxBins),
         count: 0,
         errorCount: 0,
         totalMs: 0,
         minMs: Number.POSITIVE_INFINITY,
         maxMs: Number.NEGATIVE_INFINITY,
-        collapsed: false,
       };
       merged.set(key, entry);
     }
@@ -484,7 +498,7 @@ export function mergeIntoHour(
       if (row.minMs < entry.minMs) entry.minMs = row.minMs;
       if (row.maxMs > entry.maxMs) entry.maxMs = row.maxMs;
     }
-    entry.collapsed = entry.collapsed || row.collapsed;
+
   }
   return [...merged.values()].map((entry) => Object.freeze({
     ...entry.row,
@@ -493,7 +507,7 @@ export function mergeIntoHour(
     totalMs: entry.totalMs,
     minMs: entry.count === 0 ? 0 : entry.minMs,
     maxMs: entry.count === 0 ? 0 : entry.maxMs,
-    collapsed: entry.collapsed || entry.ok.snapshot().collapsed || entry.failed.snapshot().collapsed,
+    mappingScale: Math.min(entry.ok.scale, entry.failed.scale),
     lowConfidenceQuantiles: Object.freeze(
       EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(entry.count, quantile)),
     ),

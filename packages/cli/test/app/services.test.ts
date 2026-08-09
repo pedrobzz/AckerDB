@@ -12,7 +12,7 @@ import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
-import { TelemetryJournal } from "@ackerdb/server";
+import { TelemetryInlineWriter } from "@ackerdb/server";
 
 const dirs: string[] = [];
 
@@ -126,8 +126,12 @@ export const tcl = service({
       "cleanup:tuya",
       "cleanup:tcl",
     ]);
-    const journal = new TelemetryJournal({ path: join(dir, ".ackerdb", "data.db.telemetry") });
-    expect(journal.readBatch(0n, 10).filter((entry) => entry.kind === "log").map((entry) => ({
+    const reader = new TelemetryInlineWriter({
+      path: join(dir, ".ackerdb", "data.db.telemetry"),
+      generation: "services-test-reader",
+    });
+    const stored = (await reader.exports.batch("services-test-reader", 10)).records;
+    expect(stored.filter((entry) => entry.kind === "log").map((entry) => ({
       message: entry.message,
       metadata: entry.metadata,
       functionAddress: entry.functionAddress,
@@ -145,8 +149,16 @@ export const tcl = service({
         functionAddress: "devices.event",
         functionKind: "system",
       },
+      // The terminal row: written after the ring drained and before the sidecar
+      // closed, so it is structurally the last durable record of the process.
+      {
+        message: "lifecycle",
+        metadata: { lifecycleState: "stopped", operation: "lifecycle" },
+        functionAddress: "framework",
+        functionKind: "framework",
+      },
     ]);
-    await journal.drain();
+    await reader.seal(undefined, 0);
   }, 20_000);
 
   test("a callback firing after setup persists through system.run", async () => {

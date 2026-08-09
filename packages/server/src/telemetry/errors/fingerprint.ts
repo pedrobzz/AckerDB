@@ -13,6 +13,52 @@ export interface FingerprintedError {
   readonly stack: string;
 }
 
+/**
+ * One failure in the shape that survives the trip to the thread that owns the
+ * sidecar. It exists because a live `Error` does not travel: `JSON.stringify`
+ * turns it into `{}`, and a `new Error(message)` rebuilt on the far side has no
+ * cause chain and no `fingerprint` override — so a grouping computed there would
+ * disagree with the same error grouped in-process, and the two engines would
+ * split one group in two.
+ */
+export interface FlatError {
+  readonly name: string;
+  readonly message: string;
+  readonly stack: string;
+  /** The `fingerprint: string[]` escape hatch, read off the live error. */
+  readonly fingerprint?: readonly string[];
+  readonly cause?: FlatError;
+}
+
+/**
+ * Flatten a live error where it was thrown, which is the only place its cause
+ * chain and its override still exist. Bounded here rather than at the far end:
+ * an unbounded cause chain crossing a thread is an unbounded message.
+ */
+export function flattenError(error: unknown): FlatError {
+  let current: unknown = error;
+  const chain: { name: string; message: string; stack: string; fingerprint?: readonly string[] }[] = [];
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    const custom = customFingerprint(current);
+    chain.push({
+      name: boundedName(current),
+      message: boundedMessage(current),
+      stack: current instanceof Error ? current.stack ?? "" : "",
+      ...(custom === undefined ? {} : { fingerprint: custom }),
+    });
+    if (!(current instanceof Error) || current.cause === undefined) break;
+    current = current.cause;
+  }
+  let carried: FlatError | undefined;
+  for (let index = chain.length - 1; index >= 0; index--) {
+    carried = Object.freeze({
+      ...chain[index]!,
+      ...(carried === undefined ? {} : { cause: carried }),
+    });
+  }
+  return carried!;
+}
+
 const MAX_NAME_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 512;
 const MAX_FRAMES = 50;
@@ -146,23 +192,23 @@ function customFingerprint(error: unknown): readonly string[] | undefined {
  * `fingerprint: string[]` escape hatch where `{{ default }}` salts the
  * computed default instead of replacing it.
  */
-export function fingerprintError(error: unknown, root = process.cwd()): FingerprintedError {
-  const name = boundedName(error);
-  const message = parameterizeErrorMessage(boundedMessage(error));
+export function fingerprintError(error: FlatError, root = process.cwd()): FingerprintedError {
+  const name = error.name;
+  const message = parameterizeErrorMessage(error.message);
 
   const defaultParts: string[] = [];
   const sampleLines: string[] = [];
   let inAppFrames = 0;
-  let current: unknown = error;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth++) {
+  let current: FlatError | undefined = error;
+  for (let depth = 0; current !== undefined; depth++) {
     if (depth > 0) {
-      sampleLines.push(`Caused by: ${boundedName(current)}: ${boundedMessage(current)}`);
-      defaultParts.push(`cause:${boundedName(current)}`);
+      sampleLines.push(`Caused by: ${current.name}: ${current.message}`);
+      defaultParts.push(`cause:${current.name}`);
     } else {
-      sampleLines.push(`${name}: ${boundedMessage(current)}`);
+      sampleLines.push(`${name}: ${current.message}`);
       defaultParts.push(name);
     }
-    const parsed = parseStack(current.stack ?? "", root);
+    const parsed = parseStack(current.stack, root);
     sampleLines.push(...parsed.sample);
     let previous: string | undefined;
     for (const frame of parsed.frames) {
@@ -178,7 +224,7 @@ export function fingerprintError(error: unknown, root = process.cwd()): Fingerpr
   }
   const computed = inAppFrames > 0 ? defaultParts : [name, message];
 
-  const custom = customFingerprint(error);
+  const custom = error.fingerprint;
   const parts = custom === undefined
     ? computed
     : custom.flatMap((part) => (part === DEFAULT_PLACEHOLDER ? computed : [part]));

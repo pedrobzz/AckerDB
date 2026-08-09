@@ -22,7 +22,10 @@ import {
   sanitizeSpan,
 } from "../records/codec.ts";
 import { TelemetryAggregation } from "../aggregation/series.ts";
-import { TelemetryAggregateBuckets } from "../aggregation/buckets.ts";
+import {
+  TelemetryAggregateBuckets,
+  type AggregateBucketHandoff,
+} from "../aggregation/buckets.ts";
 import {
   SAFE_ERROR_CLASS,
   OVERFLOW_METRIC_NAME,
@@ -189,6 +192,8 @@ export function captureTelemetryLink(context: Pick<TelemetryTraceContext, "trace
   return Object.freeze({ traceId, spanId });
 }
 
+const EMPTY_HANDOFFS: readonly AggregateBucketHandoff[] = Object.freeze([]);
+
 export class Telemetry {
   readonly enabled: boolean;
   readonly sampleIntervalMs: number;
@@ -216,7 +221,7 @@ export class Telemetry {
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
       metricSeries: new Set(),
       aggregation: new TelemetryAggregation(limits.maxMetricSeries),
-      aggregateBuckets: new TelemetryAggregateBuckets(),
+      aggregateBuckets: new TelemetryAggregateBuckets(options.aggregate ?? {}),
       publicTraceIndex: new Map(),
       publicTraceDeletions: 0,
       activeTraces: { size: 0 },
@@ -803,6 +808,17 @@ export class Telemetry {
     const retained = this.retain(record, input.local === true);
     if (retained) state.metricSeries.add(seriesKey);
     return retained;
+  }
+
+  /**
+   * Hand over every aggregate minute that has ended, and with `force` the one
+   * still in progress — marked not closed, so a process that stops mid-minute
+   * leaves evidence rather than a smaller count that reads as exact.
+   */
+  drainAggregateBuckets(force = false): readonly AggregateBucketHandoff[] {
+    const state = this.state;
+    if (!state) return EMPTY_HANDOFFS;
+    return state.aggregateBuckets.drain(readClock(state) ?? state.now(), force);
   }
 
   flush(): Promise<void> {

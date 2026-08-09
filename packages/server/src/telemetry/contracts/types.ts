@@ -1,4 +1,5 @@
 import type { TelemetryLimits } from "../../runtime/limits.ts";
+import type { TelemetryAggregateLimits } from "../aggregation/buckets.ts";
 import type {
   TelemetryEventName,
   TelemetryLevel,
@@ -182,6 +183,8 @@ export interface TelemetryScheduler {
 export interface TelemetryOptions {
   readonly enabled?: boolean;
   readonly limits?: Partial<TelemetryLimits>;
+  /** Bounds on the aggregate every observation reaches before anything selects. */
+  readonly aggregate?: Partial<TelemetryAggregateLimits>;
   readonly exporter?: TelemetryExporter;
   readonly localSink?: ((safeJsonLine: string) => void) | false;
   readonly now?: () => number;

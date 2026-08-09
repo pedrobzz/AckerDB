@@ -67,9 +67,6 @@ import { ApplicationSignals } from "../telemetry/application-signals/application
 import { TelemetryInlineWriter } from "../telemetry/storage/inline-writer.ts";
 import { TelemetryWorkerWriter } from "../telemetry/storage/worker/writer.ts";
 import type { TelemetrySidecarWriter } from "../telemetry/storage/writer.ts";
-import {
-  TelemetryJournal,
-} from "../telemetry/application-signals/journal.ts";
 import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
 import {
   TelemetryJournalExporters,
@@ -262,13 +259,18 @@ export class Runtime implements RuntimePort {
     this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
+    const admin = options.admin?.telemetry;
     const ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
-      : new Telemetry(options.telemetry === false
+      // `admin.telemetry.enabled` is the operator's switch and `telemetry:
+      // false` is the embedder's; either one off is off, because a runtime that
+      // records spans an operator switched off is not configurable.
+      : new Telemetry(options.telemetry === false || admin?.enabled === false
         ? { enabled: false }
         : {
             ...options.telemetry,
+            ...(admin?.aggregate === undefined ? {} : { aggregate: admin.aggregate }),
             limits: {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,
@@ -292,35 +294,25 @@ export class Runtime implements RuntimePort {
     // the worker, because the retained fraction approaches 100% during an
     // incident and the serving thread must not be the one committing it; an
     // in-memory engine has no file to isolate, so it writes inline.
-    const admin = options.admin?.telemetry;
-    const generation = randomUUID();
+    const sidecar = {
+      generation: randomUUID(),
+      ...(admin?.queue === undefined ? {} : { queue: admin.queue }),
+      ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
+      ...(admin?.storage?.maxStoredBytes === undefined
+        ? {}
+        : { maxStoredBytes: admin.storage.maxStoredBytes }),
+    };
     this.telemetrySidecar = this.engine.path === ":memory:"
-      ? new TelemetryInlineWriter({
-          path: ":memory:",
-          generation,
-          ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
-          ...(admin?.storage?.maxStoredBytes === undefined
-            ? {}
-            : { maxStoredBytes: admin.storage.maxStoredBytes }),
-        })
+      ? new TelemetryInlineWriter({ path: ":memory:", ...sidecar })
       : new TelemetryWorkerWriter({
           path: telemetryStorePath(this.engine.path),
-          generation,
-          ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
-          ...(admin?.storage?.maxStoredBytes === undefined
-            ? {}
-            : { maxStoredBytes: admin.storage.maxStoredBytes }),
+          ...sidecar,
         });
     this.applicationSignals = new ApplicationSignals(
-      {
-        append: (record) => this.telemetrySidecar.accept(
-          record.kind === "analytics" ? "analytics" : "log",
-          record,
-        ),
-        appendFinal: () => {
-          // The terminal row is written by whoever owns the connection, at seal.
-        },
-      },
+      (record) => this.telemetrySidecar.accept(
+        record.kind === "analytics" ? "analytics" : "log",
+        record,
+      ),
       this.now,
       () => this.tracing.applicationLogContext(),
     );
@@ -328,7 +320,7 @@ export class Runtime implements RuntimePort {
     this.telemetryExporters = options.telemetryExporters === undefined
       ? undefined
       : new TelemetryJournalExporters({
-          journal: this.telemetryJournal,
+          port: this.telemetrySidecar.exports,
           ...options.telemetryExporters,
         });
     this.reads = new RuntimeReadExecutor({
@@ -480,12 +472,20 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       engine: this.engine,
       telemetry: this.telemetry,
-      telemetryJournal: this.telemetryJournal,
+      telemetrySidecar: this.telemetrySidecar,
+      terminalRecord: () => this.applicationSignals.terminalRecord({
+        schemaVersion: 1,
+        kind: "event",
+        timestampMs: this.now(),
+        name: "lifecycle",
+        level: "info",
+        operation: "lifecycle",
+        lifecycleState: "stopped",
+      }),
       ...(this.telemetryExporters === undefined
         ? {}
         : { telemetryExporters: this.telemetryExporters }),
       ownsTelemetry,
-      ownsTelemetryJournal,
       ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
       ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
       reads: this.reads,
@@ -499,6 +499,7 @@ export class Runtime implements RuntimePort {
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
       stopSampler: () => this.sampler.stop(),
+      persistAggregates: () => this.persistAggregates(true),
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sessionApplication = new RuntimeSessionApplication({
@@ -534,11 +535,26 @@ export class Runtime implements RuntimePort {
       sampleRealtime: () => {
         void this.realtime?.sampleHealth(8);
       },
+      persistAggregates: () => this.persistAggregates(),
       flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sampler.start();
     this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
     void this.jobs.activate();
+  }
+
+  /**
+   * Hand every closed aggregate minute to the sidecar. On the sample interval
+   * rather than on the span path: a minute's rows are a minute's work, and
+   * checking on every span would put a walk of the open buckets on the hot path
+   * to discover, almost always, that nothing has closed. `force` also hands over
+   * the minute in progress, marked not closed — what a drain does, so a clean
+   * shutdown loses nothing and still refuses to call a partial minute whole.
+   */
+  private persistAggregates(force = false): void {
+    for (const handoff of this.telemetry.drainAggregateBuckets(force)) {
+      this.telemetrySidecar.accept("aggregate", handoff);
+    }
   }
 
   get state(): RuntimeLifecycleState {

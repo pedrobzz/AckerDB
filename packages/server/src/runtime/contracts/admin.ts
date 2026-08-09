@@ -13,8 +13,8 @@
  * administrative surface to be configured adds a member without changing what
  * any existing caller wrote.
  */
-import type { TelemetryJournalLimits } from "../../telemetry/application-signals/journal.ts";
 import type { TelemetryAggregateLimits } from "../../telemetry/aggregation/buckets.ts";
+import type { TelemetrySidecarQueueLimits } from "../../telemetry/storage/writer.ts";
 import type { TelemetryStoreLimits } from "../../telemetry/storage/store.ts";
 
 export interface AdminTelemetryOptions {
@@ -33,8 +33,11 @@ export interface AdminTelemetryOptions {
   readonly retention?: Readonly<Record<string, number>>;
   /** The sidecar's disk budget and maintenance bounds. */
   readonly storage?: Partial<TelemetryStoreLimits>;
-  /** In-memory bounds on the log and analytics journal's own queue. */
-  readonly journal?: Partial<TelemetryJournalLimits>;
+  /**
+   * In-memory bounds on the one queue every durable signal waits in: the ring
+   * in front of the sidecar, its handoff size, and its commit batch.
+   */
+  readonly queue?: Partial<TelemetrySidecarQueueLimits>;
   /**
    * Bounds on the aggregate every observation reaches: series cardinality, open
    * minute buckets, and the sketch's declared relative accuracy.
