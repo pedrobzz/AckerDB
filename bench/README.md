@@ -19,17 +19,32 @@ under load.
 That interleaving is the measurement's foundation, not a refinement of it.
 Running base's whole pass and then head's charges every minute of drift to
 whichever side ran second; a pair measured seconds apart met the same machine.
-Which side leads alternates on every repetition, and a unit's eight repetitions
-are spread across the run rather than clustered, so a disturbance confined to
-one stretch of wall clock cannot land on all of them.
+Which side leads alternates on every repetition, and a unit's sixteen
+repetitions are spread across the run rather than clustered, so a disturbance
+confined to one stretch of wall clock cannot land on all of them.
 
-Each metric therefore arrives as eight base/head pairs. The verdict is the
+The method is published, as **duet benchmarking** ([Bulej et al., ICPE
+'20](https://dl.acm.org/doi/10.1145/3358960.3379132), 2.3x–12.5x better accuracy
+on ScalaBench and DaCapo, 23.8x–82.4x on SPEC CPU 2017); Chromium's Pinpoint
+runs both revisions on one device for the same reason. This harness reached it
+independently and keeps it because the field did too.
+
+Each metric therefore arrives as sixteen base/head pairs. The verdict is the
 median of their ratios in log space, bounded by a distribution-free interval
-built from those same eight repetitions — the noise band, measured from this
+built from those same sixteen repetitions — the noise band, measured from this
 run's own scatter rather than assumed. A metric regresses only when the interval
 keeps the whole median on the worse side of neutral *and* the median clears a
 twelve-percent floor. Anything else is reported as **no signal**, which is an
-answer: the run could not tell the two commits apart.
+answer: the run could not tell the two commits apart. That rule is `criterion.rs`'s
+shape — a nonparametric test plus a noise threshold — and Go's `benchstat` minus
+the threshold.
+
+Sixteen rather than eight because `benchstat` asks for "at least 10, ideally 20"
+samples per side, and eight has a mechanism behind the shortfall: at eight
+repetitions the interval collapses to the extreme pair, so every repetition must
+agree on the direction before anything can be called. That is a condition
+scatter can meet by luck. See [Releases](../docs/releases.md#why-sixteen-repetitions)
+for what the change cost and bought, measured.
 
 `p99` and connect-readiness `p95` are reported and never gated — the first is
 the noisiest statistic in the set, the second carries a scheduling tail that
@@ -61,7 +76,28 @@ Do not commit a new file under `bench/results/`.
 | `units.ts` | What a unit is, and which metrics gate |
 | `paired-statistics.ts` | The median paired ratio, its interval, and the verdict |
 | `report.ts` | Renders the comparison and decides |
+| `ledger.ts` | The append-only history of paired ratios, and how a run enters it |
 | `workload.ts` | The measured work itself |
+
+## The ledger
+
+Every run's verdicts are appended to the `bench-ledger` branch as one row per
+metric — the median paired ratio, its interval, the signal, the repetition
+count, and the host — by `.github/workflows/bench-ledger.yml`. **Ratios only,
+never absolute numbers**: absolute throughput on an ephemeral runner is not
+comparable run to run, but a paired interleaved ratio is machine-independent by
+construction, which is what makes a cross-runner history possible here.
+
+The rows are computed from the run's raw paired samples by the **default
+branch's** copy of `ledger.ts`, inside a privileged workflow the pull request
+cannot edit. The statistic, the interval, the verdict, and whether the metric
+gates are that branch's answers; only the samples are head's.
+
+Nothing reads it. It exists so the next question about this gate's own noise is
+a query over runs that already happened rather than a campaign run to answer it
+once — the same trick rustc-perf, Perfherder, and Bencher all live on, where
+history is a free null distribution because most pull requests move most metrics
+not at all.
 
 ## Telemetry scope
 
@@ -82,8 +118,8 @@ The default workload uses deterministic data and covers:
 - increasing closed-loop subscription writer capacity.
 
 Windows are short because the comparison repeats them. One long window per side
-yields a single number whose error is the machine's; eight interleaved short
-ones yield eight paired ratios whose spread is measurable and whose median no
+yields a single number whose error is the machine's; sixteen interleaved short
+ones yield sixteen paired ratios whose spread is measurable and whose median no
 single stalled window can move.
 
 Server and load-generator process trees are sampled separately. The record

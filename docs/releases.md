@@ -129,18 +129,31 @@ decides which side gets charged rather than whether anyone does. Which side
 *leads* alternates on every repetition, so even that residue cancels within one
 run instead of across reruns nobody performs.
 
-Each unit is repeated eight times, and the repetitions of a unit are spread
+This is the published method, not a house rule. It is called **duet
+benchmarking** — [Bulej, Horký, Tůma, Farquet and Prokopec, ICPE
+'20](https://dl.acm.org/doi/10.1145/3358960.3379132) — and was measured there at
+2.3x to 12.5x better accuracy than sequential runs on ScalaBench and DaCapo, and
+23.8x to 82.4x on SPEC CPU 2017. Chromium's Pinpoint bisects by running both
+revisions on the same device for the same reason. AckerDB's harness arrived at it
+independently from its own noise measurements; the citation is here because a
+reader deciding whether to trust the comparison should know it is the standard
+answer.
+
+Each unit is repeated sixteen times, and the repetitions of a unit are spread
 across the whole run rather than clustered, so a disturbance confined to one
 stretch of wall clock cannot land on every repetition of the same unit.
 
 ### How a verdict is reached
 
-Every metric arrives as eight base/head pairs measured seconds apart. The
+Every metric arrives as sixteen base/head pairs measured seconds apart. The
 comparison is the median of the paired ratios, taken in log space so a halving
 and a doubling are the same distance from neutral, with a distribution-free
-interval around that median built from the eight repetitions themselves. That
+interval around that median built from the sixteen repetitions themselves. That
 interval is the noise band, and it is measured from the metric's own scatter in
-that very run rather than carried in from a constant.
+that very run rather than carried in from a constant. The rule's shape is
+`criterion.rs`'s — a nonparametric significance test plus a noise threshold,
+reporting "no change" when either fails — and Go's `benchstat` is the same rule
+without the threshold.
 
 A metric is reported as a regression only when both hold:
 
@@ -156,43 +169,159 @@ zero, the median absolute paired delta across ninety-one metrics was one to two
 percent and the p90 six to seven; but the widest single metric reached fifteen
 percent in one run and twenty-nine in another. A floor alone would have fired on
 both. What rejected them was the interval: their repetitions did not agree on a
-direction. Across those hundred and eighty-two null verdicts exactly one metric
-satisfied both conditions, and it was a `p99` — which is exactly why `p99` is
-reported and never gated. Neither null run failed. The same harness on the
-telemetry-sidecar branch reported fifty-five gated regressions, the largest an
-eighty-seven percent loss of query throughput whose interval ran from minus
-ninety-two to minus eighty-three percent.
+direction. Across those hundred and eighty-two null verdicts — taken at eight
+repetitions, before the count moved — exactly one metric satisfied both
+conditions, and it was a `p99`, which is exactly why `p99` is reported and never
+gated. No null run has ever failed. The same harness on the telemetry-sidecar
+branch reported fifty-five gated regressions, the largest an eighty-seven percent
+loss of query throughput whose interval ran from minus ninety-two to minus
+eighty-three percent.
 
 **"No signal" is an answer, not a failure to produce one.** A gate that always
 emits a number teaches everyone to re-run until the number is agreeable; one
 that can say the run could not tell the two commits apart is worth more than one
 that guesses.
 
+### Why sixteen repetitions
+
+`benchstat` asks for "at least 10, ideally 20" samples per side. The harness took
+eight, and the shortfall had a mechanism rather than a cost: `medianIntervalRank`
+returns the deepest pair of order statistics whose two-sided sign test fits
+alpha, and at eight pairs that is rank 1 — the extreme pair. Every repetition had
+to agree on the direction before any metric could be called. That unanimity was
+never chosen; it was simply what eight repetitions could afford. It is also a
+condition a **bimodal** metric can satisfy by luck, where a merely noisy one
+cannot, so the metrics it lets through are not the ones anybody would pick.
+
+At sixteen the same alpha buys rank 4: up to three repetitions may dissent.
+Nothing else moved — alpha is still 0.05, the floor is still twelve percent, and
+the same metrics gate.
+
+One number does change as a consequence, and it is named rather than buried: the
+coverage the chosen rank actually achieves. Rank 1 on eight pairs covers 99.2%,
+rank 4 on sixteen covers 97.9%, so the interval is nominally looser. What matters
+is where that lands after the floor, and it lands nowhere.
+
+Measured on a null run's own recorded noise — 72 gated series with a complete set
+of pairs, `disabled` profile — by relabelling which side is base within each
+repetition, a valid permutation under the null, over 20 000 draws, and by
+injecting a known uniform effect into that same noise over 2 000 draws. On the
+runner the gate actually runs on:
+
+| github-hosted, 4 vCPU | 8 repetitions | 16 repetitions |
+| --- | ---: | ---: |
+| False failure, per run | 2.1% | 2.5% |
+| Detects a 10% regression | 16% | 22% |
+| Detects a 15% regression | 72% | **93%** |
+| Detects a 20% regression | 85% | **98%** |
+| Detects a 25% regression | 89% | 99% |
+| Detects a 50% regression | 100% | 100% |
+| Wall clock, one profile | ~170s | 308s |
+
+**The false-failure rate barely moves — 2.1% to 2.5% here, and 1.1% to 1.1% on a
+quieter 18-vCPU host** — while the odds of seeing a fifteen-percent loss go from
+roughly seven in ten to more than nine. A deeper rank on its own would raise the
+false-failure rate; it is paid for by a median that sixteen repetitions pin down
+better than eight, and the unchanged twelve-percent floor rejects what is left.
+
+Ten, twelve and fourteen were measured on the same noise, on both machines.
+Twelve is the worst of all of them — 5.8% false failures on the runner, 2.5% on
+the quieter host — because rank 3 on twelve pairs covers only 96.1% where rank 4
+on sixteen covers 97.9%. Fourteen matches eight on false failures and loses three
+points of detection at fifteen percent. Sixteen is the best number the data
+offers and it is also the one the field asks for.
+
+The run's own scatter says the same thing from the other side. The first
+sixteen-repetition null run on a GitHub runner had a median absolute paired delta
+of 1.4%, a p90 of 4.7%, and a largest of **7.5%**, against 2.1%, 7.7% and 23.4%
+for the eight-repetition null run that established this policy. Different metric
+sets, so read it as an indication rather than a controlled comparison — but a
+largest-in-run that no longer approaches the floor is what repetitions buy.
+
+Wall clock is 1.8x, not 2x, because the base worktree, the install, both
+servers' startup, the seed, and the one-time idle plateaus are paid once.
+
 ### What it can and cannot see
 
-Injecting a known uniform effect into the harness's own recorded noise gives the
-gate's power directly. Across two hundred and sixteen gated series:
+The check is a detector for large regressions, not an acceptance test. It is
+blind below roughly ten percent, which is what the reviewer's reading of the full
+vector is still for. Loosening the interval further — tolerating dissent beyond
+the rank alpha pays for — is the one direction that does move the false-failure
+rate, and at eight repetitions it was measured at 18.8% of runs: one run in five
+failing on identical code is the fastest way to teach everyone to press rerun.
+`BENCH_REPETITIONS` remains the knob, and every ledger row records the count the
+run used, so a comparison taken at a different one is visible rather than
+implied.
 
-| Regression | Detected |
-| --- | ---: |
-| 10% | 6% |
-| 15% | 41% |
-| 20% | 60% |
-| 25% | 73% |
-| 35% | 88% |
-| 50% | 94% |
+### The ledger
 
-Relabelling which side is base within each repetition — a valid permutation
-under the null — puts the false-failure rate at 3.6% of runs. Loosening the
-interval to tolerate one sign-flipped repetition would raise detection at 20%
-from 60% to 90%, and the false-failure rate from 3.6% to 18.8%: one run in five
-failing on identical code is the fastest way to teach everyone to press rerun,
-so the tighter interval stands. `BENCH_REPETITIONS` buys power at proportional
-wall-clock cost and is the knob to turn when the runner budget allows.
+The gate used to have no memory. It computed a median paired ratio, an interval,
+and a verdict for every metric on every run, printed them into a step summary,
+uploaded them as an artifact that expires in thirty days, and never read any of
+it again — so answering any question about its own noise, including "is this
+metric fit to gate?", meant running a campaign on purpose to collect a null
+distribution that its ordinary work had already thrown away.
 
-The check is therefore a detector for large regressions, not an acceptance test.
-It is blind below roughly ten percent and unreliable in the teens, which is what
-the reviewer's reading of the full vector is still for.
+Every comparable system consumes its history instead. rustc-perf fences each
+benchmark against its own historical distribution of relative changes; Mozilla's
+Perfherder runs a t-test over roughly a dozen preceding revisions with per-test
+thresholds; Bencher stores each metric and derives an IQR, z-score, or t-test
+from what it stored; MongoDB and Otava run change point detection over the
+series. Their history *is* a null distribution, collected free, because most
+pull requests do not move most benchmarks.
+
+**Every run's paired deltas are now appended to the `bench-ledger` branch**, one
+row per metric: the run and its attempt, the base and head commits, the profile,
+the unit, the metric, whether it gated, the median paired ratio, the interval,
+the signal, the repetition count, and the host.
+
+**Ratios only, never absolute numbers.** Absolute throughput on an ephemeral
+GitHub runner is not comparable from one run to the next, which is why rustc-perf
+and Perfherder both need dedicated stable hardware before their history means
+anything. A paired interleaved ratio is machine-independent by construction —
+both sides met the same machine in the same second — so a history that spans
+runners is worth keeping here where an absolute one would not be.
+
+It is a data branch rather than a committed file because a committed ledger would
+make every benchmark run a merge conflict on every open branch. `bench-ledger` is
+an orphan: it shares no file with `main` or `canary`, is never merged into
+either, and is written only by `.github/workflows/bench-ledger.yml`. Rows are
+partitioned one file per month, because git stores a whole file per commit and a
+single ever-growing ledger would cost the square of its own length.
+
+That workflow is triggered by `workflow_run`, not by `pull_request`, and the
+distinction is the security model. A `pull_request` job holds a read-only token
+and runs code the pull request wrote, so it can neither push nor be trusted to;
+a `workflow_run` job runs the **default branch's** copy of the workflow with
+write access, which puts the appender out of a pull request's reach. It therefore
+starts recording only once this workflow has reached `main` — which is the
+property that makes it trustworthy, not an obstacle to route around.
+
+**The rows are computed there, from the run's raw paired samples, and never
+taken as head's summary of them.** The default branch's `bench/ledger.ts`
+recomputes each verdict with the same statistic and the same metric policy the
+gate uses, so a commit cannot file a conclusion the samples do not support, and
+cannot file a `gated` flag the policy table does not agree with. A metric the
+default branch has no policy for is skipped and named in the step summary rather
+than recorded on head's word.
+
+There is deliberately no concurrency group: GitHub cancels a previously pending
+run in a group, and a cancelled append is a lost run. Two runs finishing together
+race on the push instead, and the loser re-folds against the winner's state and
+pushes again, which is safe because folding is order-independent across runs.
+Within one run it is not — GitHub keeps the run id across a re-run — so rows
+carry the attempt number and a later attempt wins by number rather than by
+arrival.
+
+**Nothing reads it.** No threshold, floor, or gated-metric set consults it, and
+this change moves none of them. Once twenty or thirty runs exist, "would this
+metric have gated on unchanged code?" becomes one query over every metric at
+once, continuously refreshed by work that was happening anyway. The rustc-perf
+upgrade — a learned per-metric fence replacing the global twelve-percent floor —
+and change point detection both become available then, and neither is built now.
+Change point detection in particular wants a stationary series, which would mean
+measuring each `canary` merge against a fixed reference commit rather than a
+moving base; that is a separate decision.
 
 ### What it cannot defend against
 
@@ -205,6 +334,17 @@ is branch protection and review: `bench/**`, `scripts/ci/**`, and
 the rule it applied — interval confidence, floor, and every ungated metric — into
 the step summary beside the verdict, so the gate can be weakened but not
 quietly.
+
+The ledger inherits that residual and nothing worse. A commit that fabricates the
+samples it hands the gate hands the ledger the same fabrication — which is why
+every row carries the commit that produced it, the repetition count it used, and
+the host it ran on. What it cannot do is file a conclusion: the appender runs
+from the default branch, recomputes every statistic and every gating disposition
+itself, validates every field, refuses a run describing a commit other than the
+one the workflow measured, refuses a metric reported twice, refuses more rows
+than the workload can produce, and stamps the workflow run, the attempt, and the
+clock on its own authority. The base commit is the one field recorded as claimed;
+it names the comparison, and only the head is authenticated.
 
 Two things are deliberately reported and never gated. `p99` is the noisiest
 statistic in the set — one scheduling stall in a few thousand operations moves
@@ -219,8 +359,9 @@ believed.
 A green `Benchmark` proves that this comparison found no regression large enough
 and consistent enough to stop the merge. It is not an approval of the whole
 performance vector. GitHub stores both sides' samples, the paired series, and
-the rendered comparison as a pull-request artifact and step summary; Pedro and
-an agent still read the table and capture that judgment before merge.
+the rendered comparison as a pull-request artifact and step summary for thirty
+days, and the paired deltas on the `bench-ledger` branch for good; Pedro and an
+agent still read the table and capture that judgment before merge.
 
 Telemetry is disabled for both commits unless telemetry-related source changed.
 When it did, both commits additionally run the runtime-default and
@@ -230,7 +371,8 @@ off, so those profiles are the only place that class of regression is visible.
 
 The committed files under `bench/results/` are historical records from the
 superseded vendor-comparison policy. They are not current merge or release
-evidence.
+evidence, and they are not the ledger; the ledger lives on `bench-ledger` and
+holds ratios, not absolute numbers.
 
 ## Public npm delivery
 
