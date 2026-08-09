@@ -273,9 +273,10 @@ async function main(): Promise<void> {
     totals: {
       acceptedRecords: snapshot.acceptedRecords,
       droppedRecords: snapshot.droppedRecords,
-      committedRecords: sealed.stats?.committedRecords ?? 0,
-      rejectedRecords: sealed.stats?.rejectedRecords ?? 0,
-      sidecarMb: (sealed.stats?.storedBytes ?? 0) / 1024 ** 2,
+      committedRecords: sealed.snapshot.committedRecords,
+      rejectedRecords: sealed.snapshot.rejectedRecords,
+      sidecarMb: sealed.snapshot.storedBytes / 1024 ** 2,
+      shedByReason: sealed.snapshot.shed.shedByReason,
     },
     onDisk,
     exemplarsByReason: Object.fromEntries(byReason.map((row) => [row.reason, Number(row.n)])),
