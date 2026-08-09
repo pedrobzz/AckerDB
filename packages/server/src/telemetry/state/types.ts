@@ -4,6 +4,7 @@ import type { TelemetryAggregation } from "../aggregation/series.ts";
 import type { TelemetryAggregateBuckets } from "../aggregation/buckets.ts";
 import type { ExemplarVerdict } from "../policy.ts";
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
+import type { TraceExemplarInput } from "../exemplars/collector.ts";
 import type {
   TelemetryExporter,
   TelemetryScheduler,
@@ -98,6 +99,11 @@ export interface TelemetryState {
   intervalHandle?: unknown;
   localPumpHandle?: unknown;
   localPumpScheduled: boolean;
+  /** Settled traces awaiting exemplar construction, off the response path. */
+  pendingExemplars: TraceExemplarInput[];
+  exemplarPumpScheduled: boolean;
+  exemplarPumpHandle?: unknown;
+  droppedExemplars: number;
   exportPumpScheduled: boolean;
   exportPumpSuspended: boolean;
   exporting?: Promise<void>;

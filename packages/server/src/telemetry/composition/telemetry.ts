@@ -23,6 +23,11 @@ import {
 } from "../records/codec.ts";
 import { TelemetryAggregation } from "../aggregation/series.ts";
 import {
+  buildExemplar,
+  type TraceExemplar,
+  type TraceExemplarInput,
+} from "../exemplars/collector.ts";
+import {
   DEFAULT_AGGREGATE_LIMITS,
   TelemetryAggregateBuckets,
   type AggregateBucketHandoff,
@@ -201,6 +206,7 @@ export class Telemetry {
   readonly sampleIntervalMs: number;
   private readonly state?: TelemetryState;
   private readonly retention?: TraceRetention;
+  private readonly exemplarSink?: (exemplar: TraceExemplar) => void;
 
   constructor(options: TelemetryOptions = {}) {
     this.enabled = options.enabled !== false;
@@ -239,6 +245,9 @@ export class Telemetry {
       localHead: 0,
       localBytes: 0,
       localPumpScheduled: false,
+      pendingExemplars: [],
+      exemplarPumpScheduled: false,
+      droppedExemplars: 0,
       exportPumpScheduled: false,
       exportPumpSuspended: false,
       stopped: false,
@@ -281,6 +290,7 @@ export class Telemetry {
       },
     };
     this.state = state;
+    if (options.exemplar !== undefined) this.exemplarSink = options.exemplar;
     this.retention = new TraceRetention(state, {
       retainSpan: (record, retainedAtMs) => void this.retainAt(state, record, true, retainedAtMs),
       // The threshold comes from the SAME distribution the chart is drawn from,
@@ -288,7 +298,12 @@ export class Telemetry {
       // exists" true by construction rather than by luck.
       thresholdFor: (operation, functionAddress) =>
         state.aggregateBuckets.thresholdFor(operation ?? "procedure", functionAddress),
-      ...(options.exemplar === undefined ? {} : { exemplar: options.exemplar }),
+      // Queued, never built here: settle runs inside an operation's response
+      // path, and serializing a span tree there is latency the caller pays for
+      // a decision it is not waiting on.
+      ...(options.exemplar === undefined
+        ? {}
+        : { exemplar: (settled) => this.queueExemplar(state, settled) }),
       ...(options.exemplarLimits === undefined ? {} : { limits: options.exemplarLimits }),
     });
     if (state.exporter) {
@@ -839,6 +854,74 @@ export class Telemetry {
    * leaves evidence rather than a smaller count that reads as exact.
    */
   /**
+   * Take one settled trace for storage, and get out of the caller's way.
+   *
+   * Building an exemplar serializes its whole span tree, and `settle` runs
+   * inside the response path of whichever operation happened to prune it — work
+   * that consumes little capacity but sits in front of each response, which is
+   * how it showed up as p50 rising while throughput did not move. Nothing about
+   * whether a trace is kept is a fact the caller is waiting on, so the queue is
+   * bounded, the build is deferred, and an overflow is counted rather than
+   * allowed to grow.
+   */
+  private queueExemplar(state: TelemetryState, settled: TraceExemplarInput): void {
+    if (state.stopped) return;
+    if (state.pendingExemplars.length >= state.limits.maxRecords) {
+      state.droppedExemplars++;
+      return;
+    }
+    state.pendingExemplars.push(settled);
+    this.scheduleExemplars(state);
+  }
+
+  private scheduleExemplars(state: TelemetryState): void {
+    if (state.stopped || state.exemplarPumpScheduled || state.pendingExemplars.length === 0) {
+      return;
+    }
+    state.exemplarPumpScheduled = true;
+    try {
+      state.exemplarPumpHandle = state.scheduler.setTimeout(() => {
+        state.exemplarPumpScheduled = false;
+        state.exemplarPumpHandle = undefined;
+        if (!state.stopped) this.flushExemplars(state);
+      }, 0);
+    } catch {
+      state.exemplarPumpScheduled = false;
+      state.exemplarPumpHandle = undefined;
+      // A scheduler that cannot defer is one that cannot store: the queue is
+      // drained inline rather than left to grow to its cap and be dropped.
+      this.flushExemplars(state);
+    }
+  }
+
+  private flushExemplars(state: TelemetryState, draining = false): void {
+    if (state.exemplarPumpHandle !== undefined) {
+      try {
+        state.scheduler.clearTimeout?.(state.exemplarPumpHandle);
+      } catch {
+        // A scheduler that cannot cancel still gets a no-op pump: the queue is
+        // emptied here and the callback finds nothing to do.
+      }
+      state.exemplarPumpScheduled = false;
+      state.exemplarPumpHandle = undefined;
+    }
+    void draining;
+    const emit = this.exemplarSink;
+    if (emit === undefined) {
+      state.pendingExemplars.length = 0;
+      return;
+    }
+    const settled = state.pendingExemplars.splice(0, state.pendingExemplars.length);
+    for (const one of settled) {
+      try {
+        emit(buildExemplar(one));
+      } catch {
+        state.droppedExemplars++;
+      }
+    }
+  }
+
+  /**
    * The cohort threshold this instance would report and retain against — the
    * same number, from the same distribution. Exposed because "the chart shows
    * p99, therefore a p99 exemplar exists" is only checkable if the check can ask
@@ -883,6 +966,10 @@ export class Telemetry {
     if (state.draining) return state.draining;
     this.stop();
     this.retention!.discardAll();
+    // `discardAll` settles every retained trace, so the queue is at its fullest
+    // here. Building them now is what makes a clean shutdown lose none of them,
+    // and shutdown is the one moment where the latency does not matter.
+    this.flushExemplars(state, true);
     const records = this.takeRecords(state, state.records.length - state.head);
     const localLines = this.takeLocalLines(state, state.localLines.length - state.localHead);
     let draining!: Promise<void>;

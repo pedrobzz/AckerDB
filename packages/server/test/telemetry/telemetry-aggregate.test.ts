@@ -148,6 +148,19 @@ function driver(options: {
   const exemplars: TraceExemplar[] = [];
   const telemetry = new Telemetry({
     localSink: false,
+    // Exemplar construction is deferred off the response path in production.
+    // That is a latency property and not a semantic one, so the guards run it
+    // inline — the alternative is every assertion awaiting a macrotask for a
+    // decision that was already made.
+    scheduler: {
+      setTimeout: (callback: () => void) => {
+        callback();
+        return 0;
+      },
+      clearTimeout: () => {},
+      setInterval: () => 0,
+      clearInterval: () => {},
+    },
     exemplar: (exemplar) => exemplars.push(exemplar),
     exemplarLimits: { baselineProbability: options.baselineProbability ?? 0.01 },
     aggregate: {

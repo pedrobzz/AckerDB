@@ -12,9 +12,8 @@ import type {
 import { selectExemplar, type CohortThreshold } from "../policy.ts";
 import { bucketKey, scaleMultiplier } from "../aggregation/sketch.ts";
 import {
-  buildExemplar,
   DEFAULT_EXEMPLAR_LIMITS,
-  type TraceExemplar,
+  type TraceExemplarInput,
   type TraceExemplarLimits,
 } from "../exemplars/collector.ts";
 import { AuthenticTelemetryTraceContext } from "./context.ts";
@@ -30,8 +29,13 @@ export interface TraceRetentionSinks {
     operation: TelemetryOperation | undefined,
     functionAddress: string | undefined,
   ) => CohortThreshold;
-  /** Where a retained trace goes for durable storage; absent means none is kept. */
-  readonly exemplar?: (exemplar: TraceExemplar) => void;
+  /**
+   * A settled trace worth storing, handed over RAW. Turning it into a row means
+   * serializing its span tree, and settle runs inside an operation's own
+   * response path — so what crosses here is the facts and the span references,
+   * and the building happens on a deferred pump.
+   */
+  readonly exemplar?: (settled: TraceExemplarInput) => void;
   readonly limits?: Partial<TraceExemplarLimits>;
 }
 
@@ -443,7 +447,7 @@ export class TraceRetention {
     trace.exemplarSpans = undefined;
 
     if (emit !== undefined && verdict !== undefined && traceId !== undefined) {
-      emit(buildExemplar({
+      emit({
         traceId,
         startedAtMs: trace.startedAtMs,
         endedAtMs: trace.endedAtMs,
@@ -452,7 +456,7 @@ export class TraceRetention {
         omittedSpans: trace.omittedSpans,
         verdict,
         spans: carried ?? [],
-      }));
+      });
     }
     if (trace.retained) return;
     this.state.traceHealth.discardedTraces = boundedCount(
