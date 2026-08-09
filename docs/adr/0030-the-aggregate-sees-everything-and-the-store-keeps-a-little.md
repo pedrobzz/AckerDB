@@ -118,6 +118,38 @@ target: continuous 5.33%, quantised 5.13%, bimodal 5.11%, constant-latency 4.37%
 A standing guard asserts the realized rate across all three shapes. Keep it and
 extend it; never relax it.
 
+## One decision, where the trace settles
+
+The export pipeline and the exemplar store want the answer to the same question
+about the same spans, so they are one component. `TraceRetention` accumulates a
+trace's spans in a fixed-slot journal with global bounds, judges the trace when
+it ends, and drains once — materializing each span once and handing it to
+whoever wants it. An exemplar carries references to the records the export
+pipeline already holds, allocated only for the retained minority.
+
+A second component doing this beside it staged every trace's spans twice, which
+is the memory this design exists to bound, and gave the same judgement two places
+to drift. That is why the exemplar store went unwritten in production for a
+while: wiring the parallel component in would have been the parallel path, and
+the fix was to remove it.
+
+**The seam is at the staging and the settle, not at the verdict.** The export
+pipeline feeds an external APM the operator configured, which does its own
+sampling and has its own contract; the exemplar verdict decides what goes in our
+store. Collapsing the two predicates would silently change what an existing
+exporter receives — "cold retains outright" is a rule about a fresh cohort's
+exemplars, not a licence to flood someone's APM for the first fifty traces of
+every deploy. One staging area, one drain, one materialization; two sinks that
+each say what they want.
+
+Two costs are paid deliberately for it. A trace id is resolved only for a trace
+the policy is about to keep, inside the branches that need a deterministic draw,
+because an operation trace allocates its UUID on first read and `error`, `slow`
+above the boundary and `cold` need no draw at all. And every span records what it
+says about its trace — count, extent, failures, root cohort — whether or not it
+stages, because a span on an already-retained trace goes straight to the export
+pipeline and the facts must be the same either way.
+
 ## Pressure, and the amplification a flood produces
 
 Tail sampling retains every error as a full exemplar. That is correct at a 1%
@@ -154,12 +186,19 @@ trace and records an admission span and an overload event. That is correct for
 the aggregate, which should count refusals, and it is exactly why the gate has to
 sit at the one door every durable signal passes.
 
-Measured, at two thousand operations a second against a 16 MiB target: the
-healthy phase writes 1,202 bytes per operation and sheds nothing; the flood
-writes 895 bytes per operation and sheds 5,627 of the 7,998 traces selection
-chose. Amplification 0.74×, where the defect would be near seven. The aggregate
-saw all 55,986 observations in both phases and the stored error count is 8,076
-against 7,998 flooded operations.
+Measured **through the production path** — `Telemetry`, `recordSpan`, and the
+exemplar a retained trace becomes — at a thousand operations a second against an
+8 MiB target: the healthy phase writes 2,118 bytes per operation and sheds
+nothing; the flood writes 678 and sheds 2,398 of the 3,014 traces selection
+chose. **Amplification 0.32×**, where the defect it guards is near seven. The
+aggregate saw all 20,993 observations in both phases and the stored error count
+is 3,029 against 2,999 flooded operations — the shape of the incident intact
+while four fifths of its individual specimens are gone.
+
+An earlier figure of 0.74× was measured against a synthetic driver production did
+not feed, and is superseded. The same run at a byte target the traffic never
+reaches gives 1.26×, which is the honest shape of the mechanism: shedding engages
+with pressure and costs nothing before it.
 
 ## Retention: time is the control, bytes are the guard, the floor is what refuses
 
