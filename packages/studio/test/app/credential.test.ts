@@ -3,7 +3,7 @@ import {
   createStudioCredentialStore,
   STUDIO_CREDENTIAL_KEY,
   type StudioCredentialStorage,
-} from "../src/app/credential.ts";
+} from "../../src/app/credential.ts";
 
 function storage(seed?: string): StudioCredentialStorage & { readonly entries: Map<string, string> } {
   const entries = new Map<string, string>();

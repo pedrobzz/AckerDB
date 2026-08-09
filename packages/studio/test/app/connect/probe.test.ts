@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ADMIN_SYSTEM_INFO_PATH, probeAdminApi, type StudioFetch } from "../src/app/probe.ts";
+import { ADMIN_SYSTEM_INFO_PATH, probeAdminApi, type StudioFetch } from "../../../src/app/connect/probe.ts";
 
 /** A fetch that records what it was asked and answers what the test says. */
 function answering(reply: Response | Error): {

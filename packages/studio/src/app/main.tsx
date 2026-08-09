@@ -14,35 +14,14 @@
  * and a reconnect.
  */
 import { AckerDBProvider, type AckerDBProviderConfig } from "@ackerdb/client-react";
-import {
-  RouterProvider,
-  createRootRoute,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
+import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { STUDIO_PATH_PREFIX } from "../origin.ts";
-import { ConnectScreen } from "./connect.tsx";
 import { studioCredential } from "./credential.ts";
+import { createStudioRouter } from "./routes.tsx";
+import "./theme.css";
 
-const rootRoute = createRootRoute();
-const connectRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/",
-  component: ConnectScreen,
-});
-
-const router = createRouter({
-  routeTree: rootRoute.addChildren([connectRoute]),
-  basepath: STUDIO_PATH_PREFIX,
-});
-
-declare module "@tanstack/react-router" {
-  interface Register {
-    router: typeof router;
-  }
-}
+const router = createStudioRouter();
 
 const config: AckerDBProviderConfig = {
   url: window.location.origin,

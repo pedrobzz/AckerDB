@@ -155,6 +155,90 @@ already reported the application's protocol, so a Studio built against a
 different one says which package to install rather than passing along whatever
 the transport called the failure.
 
+## The shell
+
+Once Studio is connected, every screen renders inside one frame: the navigation
+on the left, the connected application across the top, and the screen itself in
+the rest.
+
+**The header names the application, and it reads `admin.system.info` to do it.**
+Nothing on the wire identifies an application — the welcome frame describes
+authentication — and Studio shares an origin with what it proxies, so
+`window.location` names the proxy. It is a live query rather than the connect
+probe's answer: the probe's copy is a snapshot from before the session existed
+and stops refreshing once Studio is connected, and a header still claiming the
+version from before a deploy is a header you learn to distrust.
+
+**Each screen is its own route, and the gate wraps the shell rather than
+redirecting to a connect page.** A link to a screen is therefore a link to that
+screen even in a tab holding no credential yet: you sign in and arrive where the
+link pointed. The same property is what filters will need when they become
+search parameters — the address bar is the state, so a screen can be sent to
+someone else instead of described.
+
+**Each screen also gets its own error boundary**, keyed by route, so a screen
+that throws leaves the navigation and the header standing and you can walk out
+of it. One boundary around everything would be the same amount of code and turn
+any screen's bug into a blank page.
+
+Screens whose feature has not landed say what they will hold rather than that
+they are missing. A page reading only "coming soon" teaches an operator that
+Studio is a promise; naming what will be there is both honest and the most
+useful thing an empty page can say.
+
+## How Studio is built
+
+**Everything Studio displays comes through `@ackerdb/client-react`**, against the
+typed Admin API tree `@ackerdb/core` exports. There is no second data stack and
+no privileged side channel: Studio is an ordinary client of the same public
+surface an application uses, which is what makes awkwardness in it a framework
+gap to fix rather than a reason to reach past it. The one deliberate exception
+is the connect probe, and it exists because it has to answer before a session
+does — see above.
+
+**Interface components are vendored, not depended on.** Code from the
+[shadcn/ui](https://ui.shadcn.com) registry is copied into `src/app/ui/` to be
+modified and maintained by hand; each file names its origin and licence in its
+header and records what was changed and why. Copying costs an update we perform
+deliberately and buys freedom from anyone's release cadence — and the freedom to
+delete what we do not use, which is why Studio's button carries no polymorphic
+`asChild` and no Radix dependency behind it.
+
+**Dark only.** There is no theme toggle and no `prefers-color-scheme` branch. A
+second theme doubles visual review over every screen for a tool that runs beside
+a terminal; it ships when it is worth that, and until then a token is a fact
+rather than a pair. `src/app/theme.css` holds every value, under shadcn's own
+token names so registry code drops in unmodified.
+
+The accent scale is [dither-kit](https://tripwire.sh/dither-kit)'s seed palette
+to the byte. The observability screens paint their charts from those exact
+fills, so a chart shares its hues with the interface around it rather than
+sitting in the page as a differently-coloured rectangle.
+
+Dependencies arrive with the screen that needs them rather than ahead of it: the
+stack decided in the UI-stack resolution — the data-table registry, the chart
+family, the code and JSON viewers, the form library — is installed and vendored
+by the pull request that first renders one. Nothing is carried in the bundle for
+a screen that does not exist yet.
+
+### Bounded tables and a grow-only window
+
+`usePaginatedQuery` grows and never shrinks: `loadMore` extends the window, and
+there is no page count, no jump-to-page, and no way to release a loaded page.
+That is the right model for the infinite-scrolling streams the observability
+screens are, and it is the whole model Studio uses.
+
+Two consequences are accepted deliberately. A screen reports how much it has
+loaded and whether the sequence is `exhausted` — never "N of M", because the
+count does not exist and inventing one would mean a second query answering a
+question nobody asked. And a table resets its window whenever its filters
+change, which the argument key already does for free, so a long session cannot
+accumulate depth across filters.
+
+Studio does not put a windowing layer on top. If bounded windows turn out to be
+genuinely needed, that is a change to the framework's paginated query, not
+something Studio should reimplement beside it.
+
 ## What the application sees
 
 Every request arrives from the `acker studio` process, so the application

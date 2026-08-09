@@ -144,6 +144,47 @@ export function isVerifiedCredential(value: unknown): value is VerifiedCredentia
   return isExternalPrincipal(value) && !("identity" in value);
 }
 
+/**
+ * The value a shared reactive entry is keyed by: this principal, encodable.
+ *
+ * Subscribers to one address and one argument set share a single evaluation
+ * when their principals digest alike, and the evaluation runs with the whole
+ * `Principal` handed to the handler as `ctx.auth`. **So the key has to be a
+ * function of exactly what the handler can see, field for field.** Anything it
+ * omits is a fact a handler may branch on while two principals still share one
+ * answer — one of them then reads a result computed from the other's
+ * credential. Anything it adds costs sharing and nothing else, which is why the
+ * safe direction here is "everything".
+ *
+ * That leaves one field needing a representation rather than a decision.
+ * A vault-issued identity credential never expires, and the sanctioned way to
+ * say never is `POSITIVE_INFINITY` — the one value {@link stableEncode}
+ * refuses, because a non-finite number has no wire form. Digesting a principal
+ * directly therefore *threw* for every credential of that kind, and the failure
+ * surfaced as an opaque `internal` on subscribe: no client holding an identity
+ * credential could open any subscription at all. Naming that expiry with a
+ * string is what makes the encoding total. A string can never collide with a
+ * finite expiry, because the encoding distinguishes the two types.
+ *
+ * The remaining partiality is `claims`, which is whatever a credential verifier
+ * put there. Claims come from JSON, which has no non-finite number, so the
+ * framework cannot produce one — a verifier that synthesised one would break
+ * its own subscriptions, exactly as this did.
+ */
+export function policyScope(principal: Principal): unknown {
+  if (principal.kind === "anonymous" || principal.kind === "system") {
+    return { kind: principal.kind };
+  }
+  return { ...principal, expiresAt: encodableExpiry(principal.expiresAt) };
+}
+
+/** The one expiry with no number to stand for it. */
+const NEVER_EXPIRES = "never";
+
+function encodableExpiry(expiresAt: number): number | string {
+  return Number.isFinite(expiresAt) ? expiresAt : NEVER_EXPIRES;
+}
+
 export interface PrincipalInvalidation {
   readonly issuer: string;
   readonly subject?: string;

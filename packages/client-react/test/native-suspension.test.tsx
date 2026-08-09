@@ -7,8 +7,8 @@
 // and then only new events.
 import { describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts).
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+// suite must do this first (see ackerdb-test-support/dom).
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { FakeAppState, setAppState } from "./support/app-state.ts";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";

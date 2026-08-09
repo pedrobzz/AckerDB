@@ -3,15 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "bun";
-import { STUDIO_PATH_PREFIX } from "../src/origin.ts";
+import { STUDIO_PATH_PREFIX } from "../../src/origin.ts";
 import {
   MAX_UNDELIVERED_BYTES,
   UPSTREAM_ANSWER_TIMEOUT_MS,
   proxyWebSocketHandlers,
   upstreamUrl,
   type ProxiedSocketData,
-} from "../src/launcher/proxy.ts";
-import { startStudio, type RunningStudio } from "../src/launcher/server.ts";
+} from "../../src/launcher/proxy.ts";
+import { startStudio, type RunningStudio } from "../../src/launcher/server.ts";
 
 const INDEX_HTML = "<!doctype html><html><body>studio-index</body></html>";
 const APP_JS = "console.log('studio-asset');";
