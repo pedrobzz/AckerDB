@@ -304,13 +304,24 @@ export class TelemetryAggregateBuckets {
    * the chart is drawn from. Constant time, which is why the sketch exists.
    */
   thresholdFor(operation: TelemetryOperation, functionAddress: string | undefined): CohortThreshold {
-    const history = this.published.get(cohortKey(operation, functionAddress));
-    const observations = history?.count ?? 0;
-    if (history === undefined || observations < this.limits.warmObservations) {
+    const key = cohortKey(operation, functionAddress);
+    // The published window is preferred because it is complete and therefore
+    // stable. But warmth must not WAIT for one: a cohort whose first window has
+    // not closed yet would be cold for the whole window, and "cold retains
+    // everything" for five minutes at three thousand operations a second is the
+    // retain-everything failure this design exists to remove. The accumulating
+    // window is a worse estimate than a closed one and a far better one than
+    // nothing, so it is used the moment it has enough observations to speak.
+    const published = this.published.get(key);
+    const source = published !== undefined && published.count >= this.limits.warmObservations
+      ? published
+      : this.reference.get(key);
+    const observations = source?.count ?? 0;
+    if (source === undefined || observations < this.limits.warmObservations) {
       return { thresholdMs: undefined, warm: false, observations };
     }
     return {
-      thresholdMs: history.quantile(RETENTION_QUANTILE),
+      thresholdMs: source.quantile(RETENTION_QUANTILE),
       warm: true,
       observations,
     };
