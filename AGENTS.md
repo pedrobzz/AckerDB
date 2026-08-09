@@ -260,10 +260,11 @@ adjustment is what they call fixes and band-aids. A metric that is genuinely
 unfit is reported and never gated, on evidence, which is the category `p99`
 already sits in.
 
-This is detection, not acceptance. Measured against its own noise the gate
-catches roughly sixty percent of twenty-percent regressions and almost nothing
-below ten, so a green check is not a performance verdict: Pedro and an agent
-still interpret the complete vector and anomalies by reasoning before merge.
+This is detection, not acceptance. Measured against its own runner noise the gate
+catches roughly ninety-eight percent of twenty-percent regressions, ninety-three
+percent of fifteen-percent ones, and about one in five below ten, so a green
+check is not a performance verdict: Pedro and an agent still interpret the
+complete vector and anomalies by reasoning before merge.
 Telemetry is disabled unless telemetry-related source changed; only then are
 enabled, exporter, and disabled profiles measured, and that widening is
 load-bearing — the sidecar regression above was invisible with telemetry off.

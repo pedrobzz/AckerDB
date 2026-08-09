@@ -43,7 +43,7 @@ Sixteen rather than eight because `benchstat` asks for "at least 10, ideally 20"
 samples per side, and eight has a mechanism behind the shortfall: at eight
 repetitions the interval collapses to the extreme pair, so every repetition must
 agree on the direction before anything can be called. That is a condition
-scatter can meet by luck. See [Releases](../docs/releases.md#how-a-verdict-is-reached)
+scatter can meet by luck. See [Releases](../docs/releases.md#why-sixteen-repetitions)
 for what the change cost and bought, measured.
 
 `p99` and connect-readiness `p95` are reported and never gated — the first is
@@ -75,8 +75,8 @@ Do not commit a new file under `bench/results/`.
 | `ackerdb-client.ts` | The load generator, held open and driven one unit at a time |
 | `units.ts` | What a unit is, and which metrics gate |
 | `paired-statistics.ts` | The median paired ratio, its interval, and the verdict |
-| `report.ts` | Renders the comparison, decides, and writes the ledger rows |
-| `ledger.ts` | The append-only history of paired ratios, and its validation |
+| `report.ts` | Renders the comparison and decides |
+| `ledger.ts` | The append-only history of paired ratios, and how a run enters it |
 | `workload.ts` | The measured work itself |
 
 ## The ledger
@@ -87,6 +87,11 @@ count, and the host — by `.github/workflows/bench-ledger.yml`. **Ratios only,
 never absolute numbers**: absolute throughput on an ephemeral runner is not
 comparable run to run, but a paired interleaved ratio is machine-independent by
 construction, which is what makes a cross-runner history possible here.
+
+The rows are computed from the run's raw paired samples by the **default
+branch's** copy of `ledger.ts`, inside a privileged workflow the pull request
+cannot edit. The statistic, the interval, the verdict, and whether the metric
+gates are that branch's answers; only the samples are head's.
 
 Nothing reads it. It exists so the next question about this gate's own noise is
 a query over runs that already happened rather than a campaign run to answer it

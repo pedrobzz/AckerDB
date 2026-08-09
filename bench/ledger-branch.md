@@ -12,6 +12,10 @@ It is an orphan branch. It shares no file with `main` or `canary`, is never
 merged into either, and is written only by `.github/workflows/bench-ledger.yml`
 running from the default branch. Do not commit to it by hand.
 
+Every row is computed there, from the run's raw paired samples, by the default
+branch's own copy of the statistic and the metric policy. A pull request supplies
+numbers; it does not supply conclusions about them.
+
 Only the ratio is stored because only the ratio travels. Absolute throughput on
 an ephemeral GitHub runner is not comparable from one run to the next — which is
 why rustc-perf and Mozilla's Perfherder both need dedicated stable hardware

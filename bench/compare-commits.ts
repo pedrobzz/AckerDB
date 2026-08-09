@@ -30,7 +30,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { Subprocess } from "bun";
 import { benchmarkConfigFromEnv, type BenchmarkConfig } from "./benchmark.ts";
-import { DEFAULT_REPETITIONS } from "./paired-statistics.ts";
+import { DEFAULT_REPETITIONS, PAIRED_SCHEMA_VERSION, type PairedSeries } from "./paired-statistics.ts";
 import { benchUnits, leadingSide, type BenchUnit, type UnitMetric } from "./units.ts";
 import { BoundedTextTail } from "./process-lifecycle.ts";
 import type { AckerDBBenchmarkProfile } from "./ackerdb-profile.ts";
@@ -197,13 +197,6 @@ class Side {
   }
 }
 
-/** Every repetition of one metric on one unit, base beside head. */
-export interface PairedSeries {
-  readonly unitId: string;
-  readonly metric: string;
-  readonly samples: readonly { readonly repetition: number; readonly base: number; readonly head: number }[];
-}
-
 function pairMetrics(
   base: readonly UnitMessage[],
   head: readonly UnitMessage[],
@@ -326,7 +319,7 @@ try {
   await Bun.write(
     join(outputDirectory, "pair.json"),
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: PAIRED_SCHEMA_VERSION,
       base: baseCommit,
       head: headCommit,
       harnessCommit: headCommit,

@@ -22,14 +22,27 @@
  * absolute one would not be.
  *
  * Nothing reads this yet, and that is deliberate. It is a record, not a rule: no
- * threshold, floor, or gated-metric set consults it. A row is only ever as
- * trustworthy as the commit that produced it, which is why every row carries
- * that commit's SHA and why the appender refuses a file whose rows disagree with
- * the head the workflow was triggered for.
+ * threshold, floor, or gated-metric set consults it.
+ *
+ * **The rows are computed here, from the run's raw paired samples, and never
+ * taken from the pull request as summaries.** This module runs from the default
+ * branch inside a privileged workflow, so the statistic, the interval, the
+ * verdict, and whether the metric gates are all this branch's answers rather
+ * than head's claims about them. What remains head's is the samples themselves:
+ * a commit that lies to the gate lies to the ledger in the same breath, which is
+ * unclosable from inside a workflow the pull request supplies, and is why every
+ * row carries the commit that produced it.
  */
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import type { MetricSignal, PairedComparison } from "./paired-statistics.ts";
+import { basename, join } from "node:path";
+import { metricPolicy, type MetricPolicy } from "./units.ts";
+import {
+  comparePaired,
+  DEFAULT_POLICY,
+  PAIRED_SCHEMA_VERSION,
+  type MetricSignal,
+  type PairedRunRecord,
+} from "./paired-statistics.ts";
 
 export const LEDGER_SCHEMA_VERSION = 1;
 
@@ -44,18 +57,20 @@ export const MAXIMUM_ROWS_PER_RUN = 2_000;
 /** One metric's verdict on one run, as a ratio. No absolute value belongs here. */
 export interface LedgerRow {
   readonly schema: number;
-  /** The workflow run that produced it. Stamped by the appender, not by the run. */
+  /** The workflow run that produced it, and which of its attempts. */
   readonly run: string;
+  readonly attempt: number;
   /** When the appender recorded it, and the ledger's partition key. */
   readonly recordedAt: string;
   readonly host: string;
+  /** The commit the run says it measured against. Head's claim; only head is authenticated. */
   readonly base: string;
   readonly head: string;
   readonly repetitions: number;
   readonly profile: string;
   readonly unit: string;
   readonly metric: string;
-  /** Whether a regression in this metric failed that run's check, as of that run. */
+  /** Whether a regression in this metric fails the check, by this branch's policy. */
   readonly gated: boolean;
   /** Repetitions that produced a usable pair; below `repetitions` when either side had none. */
   readonly pairs: number;
@@ -65,13 +80,12 @@ export interface LedgerRow {
   readonly signal: MetricSignal;
 }
 
-export interface LedgerRunFacts {
+/** What the appender knows on its own authority rather than from the artifact. */
+export interface LedgerProvenance {
   readonly run: string;
-  readonly recordedAt: string;
-  readonly host: string;
-  readonly base: string;
+  readonly attempt: number;
   readonly head: string;
-  readonly repetitions: number;
+  readonly recordedAt: string;
 }
 
 const SIGNALS: readonly string[] = ["regression", "improvement", "no signal", "not measured"];
@@ -83,29 +97,71 @@ function ratio(value: number): number | null {
   return Number.isFinite(value) ? Number(value.toFixed(4)) : null;
 }
 
-export function ledgerRow(
-  facts: LedgerRunFacts,
-  entry: {
-    readonly profile: string;
-    readonly unit: string;
-    readonly metric: string;
-    readonly gated: boolean;
-    readonly comparison: PairedComparison;
-  },
-): LedgerRow {
-  return {
-    schema: LEDGER_SCHEMA_VERSION,
-    ...facts,
-    profile: entry.profile,
-    unit: entry.unit,
-    metric: entry.metric,
-    gated: entry.gated,
-    pairs: entry.comparison.pairs,
-    medianPercent: ratio(entry.comparison.medianPercent),
-    lowPercent: ratio(entry.comparison.lowPercent),
-    highPercent: ratio(entry.comparison.highPercent),
-    signal: entry.comparison.signal,
-  };
+/**
+ * Turns a run's raw paired samples into ledger rows, recomputing every verdict
+ * with this branch's statistic and this branch's metric policy. Head supplies
+ * numbers; it does not supply conclusions about them.
+ *
+ * A metric this branch has no policy for is skipped and counted rather than
+ * recorded, because a row whose `gated` flag came from somewhere else is worth
+ * less than no row: head may legitimately add a metric before the policy table
+ * that judges it reaches the default branch.
+ */
+export function ledgerRows(
+  record: PairedRunRecord,
+  provenance: LedgerProvenance,
+): { readonly rows: LedgerRow[]; readonly unknownMetrics: string[] } {
+  if (record.schemaVersion !== PAIRED_SCHEMA_VERSION) {
+    throw new Error(`unsupported paired benchmark schema ${JSON.stringify(record.schemaVersion)}`);
+  }
+  if (record.head !== provenance.head) {
+    throw new Error(`the run describes head ${record.head} where this workflow measured ${provenance.head}`);
+  }
+  const rows: LedgerRow[] = [];
+  const unknownMetrics = new Set<string>();
+  const seen = new Set<string>();
+  for (const profile of record.profiles) {
+    for (const series of profile.series) {
+      const key = `${profile.profile} ${series.unitId} ${series.metric}`;
+      if (seen.has(key)) throw new Error(`the run reports ${key} more than once`);
+      seen.add(key);
+      let policy: MetricPolicy;
+      try {
+        policy = metricPolicy(series.metric);
+      } catch {
+        unknownMetrics.add(series.metric);
+        continue;
+      }
+      const comparison = comparePaired(series.samples, { ...DEFAULT_POLICY, better: policy.better });
+      rows.push({
+        schema: LEDGER_SCHEMA_VERSION,
+        run: provenance.run,
+        attempt: provenance.attempt,
+        recordedAt: provenance.recordedAt,
+        host: record.executionHost,
+        base: record.base,
+        head: record.head,
+        repetitions: record.repetitions,
+        profile: profile.profile,
+        unit: series.unitId,
+        metric: series.metric,
+        gated: policy.gated,
+        pairs: comparison.pairs,
+        medianPercent: ratio(comparison.medianPercent),
+        lowPercent: ratio(comparison.lowPercent),
+        highPercent: ratio(comparison.highPercent),
+        signal: comparison.signal,
+      });
+    }
+  }
+  if (rows.length > MAXIMUM_ROWS_PER_RUN) {
+    throw new Error(`a single run may not file ${rows.length} rows, the cap is ${MAXIMUM_ROWS_PER_RUN}`);
+  }
+  // The verdicts are this branch's, but the host, the base, and the unit and
+  // metric names still came out of the artifact, so they meet the same reader
+  // the stored ledger meets.
+  for (const row of rows) validRow(row, `${row.profile} ${row.unit} ${row.metric}`);
+  return { rows, unknownMetrics: [...unknownMetrics].sort() };
 }
 
 export function formatLedger(rows: readonly LedgerRow[]): string {
@@ -113,10 +169,9 @@ export function formatLedger(rows: readonly LedgerRow[]): string {
 }
 
 /**
- * Reads rows written by a commit the ledger does not control. Every field is
- * checked rather than trusted: the appender runs from the default branch with
- * write access to the data branch, and the file it reads was produced by a pull
- * request's own harness.
+ * Reads the stored ledger back. Every field is checked rather than trusted: the
+ * branch is written by an automated job and read by whatever eventually asks it
+ * a question, and a row that is subtly wrong is worse than a row that is absent.
  */
 export function parseLedger(text: string): LedgerRow[] {
   return text.split("\n").flatMap((line, index) => {
@@ -127,13 +182,13 @@ export function parseLedger(text: string): LedgerRow[] {
     } catch (error) {
       throw new Error(`ledger line ${index + 1} is not JSON: ${(error as Error).message}`);
     }
-    return [validRow(parsed, index + 1)];
+    return [validRow(parsed, `line ${index + 1}`)];
   });
 }
 
-function validRow(value: unknown, line: number): LedgerRow {
+function validRow(value: unknown, where: string): LedgerRow {
   const fail = (why: string): never => {
-    throw new Error(`ledger line ${line} ${why}`);
+    throw new Error(`ledger ${where} ${why}`);
   };
   if (typeof value !== "object" || value === null || Array.isArray(value)) return fail("is not an object");
   const row = value as Record<string, unknown>;
@@ -148,7 +203,7 @@ function validRow(value: unknown, line: number): LedgerRow {
     if (!COMMIT.test(row[field] as string)) return fail(`has a ${field} that is not a commit`);
   }
   if (Number.isNaN(Date.parse(row.recordedAt as string))) return fail("has an unreadable recordedAt");
-  for (const field of ["repetitions", "pairs"] as const) {
+  for (const field of ["repetitions", "pairs", "attempt"] as const) {
     const count = row[field];
     if (!Number.isInteger(count) || (count as number) < 0 || (count as number) > 1_000) {
       return fail(`has an unusable ${field}`);
@@ -167,40 +222,31 @@ function validRow(value: unknown, line: number): LedgerRow {
 }
 
 /**
- * Puts a run's rows under the workflow run and clock that the appender trusts,
- * having first checked that the file describes the commit the appender was
- * triggered for. A pull request cannot forge which run or which head its numbers
- * are filed under, and cannot file more rows than the workload can produce.
- */
-export function stampLedger(
-  rows: readonly LedgerRow[],
-  provenance: { readonly run: string; readonly head: string; readonly recordedAt: string },
-): LedgerRow[] {
-  if (rows.length > MAXIMUM_ROWS_PER_RUN) {
-    throw new Error(`a single run may not file ${rows.length} rows, the cap is ${MAXIMUM_ROWS_PER_RUN}`);
-  }
-  for (const row of rows) {
-    if (row.head !== provenance.head) {
-      throw new Error(
-        `a row claims head ${row.head} where this run measured ${provenance.head}`,
-      );
-    }
-  }
-  return rows.map((row) => ({ ...row, run: provenance.run, recordedAt: provenance.recordedAt }));
-}
-
-/**
  * Folds one run into the ledger. Rows are keyed by their run, so a re-run
- * replaces its earlier attempt instead of counting twice — and two runs
- * appending in either order produce the same ledger, which is what lets a
- * rejected push be resolved by fetching and folding again rather than by
- * merging text.
+ * replaces its earlier attempt instead of counting twice, and two *different*
+ * runs appending in either order produce the same ledger — which is what lets a
+ * rejected push be resolved by fetching and folding again rather than by merging
+ * text.
+ *
+ * Two attempts of the *same* run are not interchangeable, and GitHub keeps the
+ * run id across a re-run. Later attempts win by attempt number rather than by
+ * arrival, so an earlier attempt's appender that finishes late cannot put stale
+ * measurements back.
  */
 export function mergeLedger(existing: readonly LedgerRow[], incoming: readonly LedgerRow[]): LedgerRow[] {
-  const replaced = new Set(incoming.map((row) => row.run));
-  return [...existing.filter((row) => !replaced.has(row.run)), ...incoming].sort((left, right) =>
+  const attempts = new Map<string, number>();
+  for (const row of incoming) attempts.set(row.run, Math.max(attempts.get(row.run) ?? 0, row.attempt));
+  const superseded = (row: LedgerRow): boolean => (attempts.get(row.run) ?? -1) >= row.attempt;
+  const stale = new Set(
+    existing.flatMap((row) => (attempts.has(row.run) && !superseded(row) ? [row.run] : [])),
+  );
+  return [
+    ...existing.filter((row) => !superseded(row)),
+    ...incoming.filter((row) => !stale.has(row.run)),
+  ].sort((left, right) =>
     left.recordedAt.localeCompare(right.recordedAt) ||
     left.run.localeCompare(right.run) ||
+    left.attempt - right.attempt ||
     left.profile.localeCompare(right.profile) ||
     left.unit.localeCompare(right.unit) ||
     left.metric.localeCompare(right.metric)
@@ -234,10 +280,12 @@ export async function writeLedger(directory: string, rows: readonly LedgerRow[])
   const partitions = new Map<string, LedgerRow[]>();
   for (const row of rows) {
     const partition = ledgerPartition(row.recordedAt);
-    partitions.set(partition, [...(partitions.get(partition) ?? []), row]);
+    const held = partitions.get(partition);
+    if (held === undefined) partitions.set(partition, [row]);
+    else held.push(row);
   }
   for (const path of partitionFiles(directory)) {
-    if (!partitions.has(path.slice(directory.length + 1, -".ndjson".length))) rmSync(path);
+    if (!partitions.has(basename(path, ".ndjson"))) rmSync(path);
   }
   for (const [partition, partitioned] of partitions) {
     await Bun.write(join(directory, `${partition}.ndjson`), formatLedger(partitioned));
@@ -246,21 +294,29 @@ export async function writeLedger(directory: string, rows: readonly LedgerRow[])
 }
 
 if (import.meta.main) {
-  const [incoming, directory, run, head] = process.argv.slice(2);
-  if (!incoming || !directory || !run || !head) {
-    throw new Error("usage: bun bench/ledger.ts <incoming.ndjson> <ledger-directory> <run-id> <head-sha>");
+  const [pairPath, directory, run, attempt, head] = process.argv.slice(2);
+  if (!pairPath || !directory || !run || !attempt || !head) {
+    throw new Error(
+      "usage: bun bench/ledger.ts <pair.json> <ledger-directory> <run-id> <run-attempt> <head-sha>",
+    );
   }
+  if (!/^\d+$/.test(attempt)) throw new Error("the run attempt must be a whole number");
   mkdirSync(directory, { recursive: true });
-  const rows = mergeLedger(
-    await readLedger(directory),
-    stampLedger(parseLedger(await Bun.file(incoming).text()), {
-      run,
-      head,
-      recordedAt: new Date().toISOString(),
-    }),
-  );
+  const measured = ledgerRows(JSON.parse(await Bun.file(pairPath).text()) as PairedRunRecord, {
+    run,
+    attempt: Number(attempt),
+    head,
+    recordedAt: new Date().toISOString(),
+  });
+  const rows = mergeLedger(await readLedger(directory), measured.rows);
   const partitions = await writeLedger(directory, rows);
   process.stderr.write(
-    `ledger: ${rows.length} row(s) across ${partitions} partition(s) after folding in run ${run}\n`,
+    `ledger: ${measured.rows.length} row(s) from run ${run} attempt ${attempt}; ` +
+      `${rows.length} row(s) across ${partitions} partition(s)` +
+      (measured.unknownMetrics.length > 0
+        ? `; skipped ${measured.unknownMetrics.length} metric(s) this branch has no policy for: ` +
+          `${measured.unknownMetrics.join(", ")}`
+        : "") +
+      "\n",
   );
 }

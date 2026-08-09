@@ -197,31 +197,48 @@ At sixteen the same alpha buys rank 4: up to three repetitions may dissent.
 Nothing else moved — alpha is still 0.05, the floor is still twelve percent, and
 the same metrics gate.
 
-Measured on one null run's own recorded noise (72 gated series with a complete
-set of pairs, `disabled` profile, 18 vCPU), by relabelling which side is base
-within each repetition — a valid permutation under the null — over 20 000 draws,
-and by injecting a known uniform effect into that same noise over 2 000 draws:
+One number does change as a consequence, and it is named rather than buried: the
+coverage the chosen rank actually achieves. Rank 1 on eight pairs covers 99.2%,
+rank 4 on sixteen covers 97.9%, so the interval is nominally looser. What matters
+is where that lands after the floor, and it lands nowhere.
 
-| | 8 repetitions | 16 repetitions |
+Measured on a null run's own recorded noise — 72 gated series with a complete set
+of pairs, `disabled` profile — by relabelling which side is base within each
+repetition, a valid permutation under the null, over 20 000 draws, and by
+injecting a known uniform effect into that same noise over 2 000 draws. On the
+runner the gate actually runs on:
+
+| github-hosted, 4 vCPU | 8 repetitions | 16 repetitions |
 | --- | ---: | ---: |
-| False failure, per run | 1.1% | 1.1% |
-| Detects a 10% regression | 15% | 18% |
-| Detects a 15% regression | 71% | **96%** |
-| Detects a 20% regression | 81% | **99%** |
-| Detects a 25% regression | 89% | 100% |
-| Detects a 50% regression | 94% | 100% |
-| Wall clock, one profile | 131s | 246s |
+| False failure, per run | 2.1% | 2.5% |
+| Detects a 10% regression | 16% | 22% |
+| Detects a 15% regression | 72% | **93%** |
+| Detects a 20% regression | 85% | **98%** |
+| Detects a 25% regression | 89% | 99% |
+| Detects a 50% regression | 100% | 100% |
+| Wall clock, one profile | ~170s | 308s |
 
-**The false-failure rate did not move.** A deeper rank on its own would raise it;
-it is paid for by a median that sixteen repetitions pin down better than eight,
-and the twelve-percent floor rejects what is left. Ten, twelve and fourteen were
-measured on the same noise: twelve is the worst of all of them at 2.5% false
-failures, because rank 3 on twelve pairs covers only 96.1% where rank 4 on
-sixteen covers 97.9%. Fourteen matches sixteen on false failures and loses three
-points of detection at 15%. Sixteen is the best number the data offers and it is
-also the one the field asks for.
+**The false-failure rate barely moves — 2.1% to 2.5% here, and 1.1% to 1.1% on a
+quieter 18-vCPU host** — while the odds of seeing a fifteen-percent loss go from
+roughly seven in ten to more than nine. A deeper rank on its own would raise the
+false-failure rate; it is paid for by a median that sixteen repetitions pin down
+better than eight, and the unchanged twelve-percent floor rejects what is left.
 
-Wall clock is 1.9x, not 2x, because the base worktree, the install, both
+Ten, twelve and fourteen were measured on the same noise, on both machines.
+Twelve is the worst of all of them — 5.8% false failures on the runner, 2.5% on
+the quieter host — because rank 3 on twelve pairs covers only 96.1% where rank 4
+on sixteen covers 97.9%. Fourteen matches eight on false failures and loses three
+points of detection at fifteen percent. Sixteen is the best number the data
+offers and it is also the one the field asks for.
+
+The run's own scatter says the same thing from the other side. The first
+sixteen-repetition null run on a GitHub runner had a median absolute paired delta
+of 1.4%, a p90 of 4.7%, and a largest of **7.5%**, against 2.1%, 7.7% and 23.4%
+for the eight-repetition null run that established this policy. Different metric
+sets, so read it as an indication rather than a controlled comparison — but a
+largest-in-run that no longer approaches the floor is what repetitions buy.
+
+Wall clock is 1.8x, not 2x, because the base worktree, the install, both
 servers' startup, the seed, and the one-time idle plateaus are paid once.
 
 ### What it can and cannot see
@@ -254,10 +271,9 @@ series. Their history *is* a null distribution, collected free, because most
 pull requests do not move most benchmarks.
 
 **Every run's paired deltas are now appended to the `bench-ledger` branch**, one
-row per metric: the run, the base and head commits, the profile, the unit, the
-metric, whether it gated, the median paired ratio, the interval, the signal, the
-repetition count, and the host. `bench/report.ts` writes the rows as part of
-deciding, so what the ledger remembers is literally what the check decided.
+row per metric: the run and its attempt, the base and head commits, the profile,
+the unit, the metric, whether it gated, the median paired ratio, the interval,
+the signal, the repetition count, and the host.
 
 **Ratios only, never absolute numbers.** Absolute throughput on an ephemeral
 GitHub runner is not comparable from one run to the next, which is why rustc-perf
@@ -278,12 +294,24 @@ distinction is the security model. A `pull_request` job holds a read-only token
 and runs code the pull request wrote, so it can neither push nor be trusted to;
 a `workflow_run` job runs the **default branch's** copy of the workflow with
 write access, which puts the appender out of a pull request's reach. It therefore
-starts recording only once this workflow has reached `main`. There is
-deliberately no concurrency group: GitHub cancels a previously pending run in a
-group, and a cancelled append is a lost run. Two runs finishing together race on
-the push instead, and the loser re-folds against the winner's state and pushes
-again, which is safe because folding a run in is order-independent and keyed by
-run id.
+starts recording only once this workflow has reached `main` — which is the
+property that makes it trustworthy, not an obstacle to route around.
+
+**The rows are computed there, from the run's raw paired samples, and never
+taken as head's summary of them.** The default branch's `bench/ledger.ts`
+recomputes each verdict with the same statistic and the same metric policy the
+gate uses, so a commit cannot file a conclusion the samples do not support, and
+cannot file a `gated` flag the policy table does not agree with. A metric the
+default branch has no policy for is skipped and named in the step summary rather
+than recorded on head's word.
+
+There is deliberately no concurrency group: GitHub cancels a previously pending
+run in a group, and a cancelled append is a lost run. Two runs finishing together
+race on the push instead, and the loser re-folds against the winner's state and
+pushes again, which is safe because folding is order-independent across runs.
+Within one run it is not — GitHub keeps the run id across a re-run — so rows
+carry the attempt number and a later attempt wins by number rather than by
+arrival.
 
 **Nothing reads it.** No threshold, floor, or gated-metric set consults it, and
 this change moves none of them. Once twenty or thirty runs exist, "would this
@@ -307,14 +335,16 @@ the rule it applied — interval confidence, floor, and every ungated metric —
 the step summary beside the verdict, so the gate can be weakened but not
 quietly.
 
-The ledger inherits that residual and nothing worse. Its rows are produced by the
-pull request's own harness, so a commit that lies to the gate lies to the ledger
-in the same breath — which is why every row carries the commit that produced it
-and the repetition count it used. What the appender does not accept is anything
-structural: it runs from the default branch, validates every field of every row,
-refuses a file whose rows name a commit other than the one the run measured,
-refuses a run that files more rows than the workload can produce, and stamps the
-workflow run and the clock itself rather than believing the ones in the file.
+The ledger inherits that residual and nothing worse. A commit that fabricates the
+samples it hands the gate hands the ledger the same fabrication — which is why
+every row carries the commit that produced it, the repetition count it used, and
+the host it ran on. What it cannot do is file a conclusion: the appender runs
+from the default branch, recomputes every statistic and every gating disposition
+itself, validates every field, refuses a run describing a commit other than the
+one the workflow measured, refuses a metric reported twice, refuses more rows
+than the workload can produce, and stamps the workflow run, the attempt, and the
+clock on its own authority. The base commit is the one field recorded as claimed;
+it names the comparison, and only the head is authenticated.
 
 Two things are deliberately reported and never gated. `p99` is the noisiest
 statistic in the set — one scheduling stall in a few thousand operations moves

@@ -18,44 +18,22 @@
  * Exits non-zero when a gated metric regressed, when the contract is short, or
  * when either side recorded a correctness, accounting, or harness failure.
  *
- * It also writes `ledger.ndjson` beside the comparison: the same verdicts as
- * ratios, for the append-only history in `bench/ledger.ts`. The row is produced
- * here rather than recomputed later so that what the ledger remembers is
- * literally what the check decided.
+ * The same `pair.json` this reads is what the ledger workflow later folds into
+ * `bench-ledger`, recomputing these verdicts from the raw samples with the
+ * default branch's copy of `bench/ledger.ts`. Nothing about the history passes
+ * through this file, so nothing head prints here can become history.
  */
 import { median } from "./load-engine.ts";
 import { contractShortfalls, metricPolicy, METRIC_POLICY } from "./units.ts";
-import type { BenchmarkConfig } from "./benchmark.ts";
 import {
   comparePaired,
   scatterSummary,
   DEFAULT_POLICY,
+  PAIRED_SCHEMA_VERSION,
   type PairedComparison,
+  type PairedRunRecord,
 } from "./paired-statistics.ts";
-import { formatLedger, ledgerRow, type LedgerRow } from "./ledger.ts";
 import type { BenchmarkObservations } from "./result-observations.ts";
-
-interface PairedSeries {
-  readonly unitId: string;
-  readonly metric: string;
-  readonly samples: readonly { readonly repetition: number; readonly base: number; readonly head: number }[];
-}
-
-interface PairedRun {
-  readonly schemaVersion: number;
-  readonly base: string;
-  readonly head: string;
-  readonly executionHost: string;
-  readonly repetitions: number;
-  readonly wallSeconds: number;
-  readonly config: BenchmarkConfig;
-  readonly units: readonly string[];
-  readonly profiles: readonly {
-    readonly profile: string;
-    readonly series: readonly PairedSeries[];
-    readonly terminalFailures: readonly string[];
-  }[];
-}
 
 interface SideSample {
   readonly source: { readonly side: string; readonly commit: string; readonly version: string };
@@ -67,8 +45,10 @@ interface SideSample {
 
 const [directory] = process.argv.slice(2);
 if (!directory) throw new Error("usage: bun bench/report.ts <benchmark-results-directory>");
-const run = JSON.parse(await Bun.file(`${directory}/pair.json`).text()) as PairedRun;
-if (run.schemaVersion !== 2) throw new Error("unsupported AckerDB paired benchmark schema");
+const run = JSON.parse(await Bun.file(`${directory}/pair.json`).text()) as PairedRunRecord;
+if (run.schemaVersion !== PAIRED_SCHEMA_VERSION) {
+  throw new Error("unsupported AckerDB paired benchmark schema");
+}
 
 async function readSide(profile: string, side: "base" | "head"): Promise<SideSample | undefined> {
   const file = Bun.file(`${directory}/${side}-${profile}.json`);
@@ -129,18 +109,6 @@ say(
 let gatedRegressions = 0;
 let failures = 0;
 const everyComparison: PairedComparison[] = [];
-const ledger: LedgerRow[] = [];
-// The run and the clock are placeholders the appender replaces with the ones it
-// trusts; a pull request does not get to say which workflow run its numbers are
-// filed under. Everything else in the row is this run's own measurement.
-const runFacts = {
-  run: process.env.GITHUB_RUN_ID ?? "local",
-  recordedAt: new Date().toISOString(),
-  host: run.executionHost,
-  base: run.base,
-  head: run.head,
-  repetitions: run.repetitions,
-};
 
 for (const profile of run.profiles) {
   say();
@@ -161,13 +129,6 @@ for (const profile of run.profiles) {
     const policy = metricPolicy(series.metric);
     const comparison = comparePaired(series.samples, { ...DEFAULT_POLICY, better: policy.better });
     everyComparison.push(comparison);
-    ledger.push(ledgerRow(runFacts, {
-      profile: profile.profile,
-      unit: series.unitId,
-      metric: series.metric,
-      gated: policy.gated,
-      comparison,
-    }));
     // A gated metric the run could not resolve is a missing answer, not a
     // passing one: too few usable pairs means the machine, not the change,
     // decided what this comparison saw.
@@ -243,13 +204,9 @@ say();
 say(
   "A green check means this comparison found no regression large enough and consistent enough to stop the merge. " +
     "It is not an approval of the whole performance vector, and it is not blind to nothing: against this harness's " +
-    "own measured noise it catches roughly 60% of twenty-percent regressions and 94% of fifty-percent ones, and " +
-    "sees almost nothing below ten. Read the table.",
+    "own measured runner noise it catches roughly 93% of fifteen-percent regressions and 98% of twenty-percent " +
+    "ones, and around one in five of a ten-percent one. Read the table.",
 );
-
-// Written before the exit code is set, because a run that failed is exactly the
-// run whose deltas the history most wants.
-await Bun.write(`${directory}/ledger.ndjson`, formatLedger(ledger));
 
 console.log(lines.join("\n"));
 if (gatedRegressions > 0 || failures > 0) process.exitCode = 1;
