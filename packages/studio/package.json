@@ -1,0 +1,38 @@
+{
+  "name": "@ackerdb/studio",
+  "version": "0.17.0",
+  "license": "FSL-1.1-ALv2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/studio"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "src/launcher",
+    "src/origin.ts"
+  ],
+  "exports": {
+    ".": "./src/launcher/server.ts"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@ackerdb/client-react": "workspace:0.17.0",
+    "@ackerdb/core": "workspace:0.17.0",
+    "@tanstack/react-router": "1.170.18",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "vite": "8.2.0"
+  }
+}

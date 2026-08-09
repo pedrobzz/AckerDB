@@ -140,6 +140,11 @@ client.close();
   `_admin:<domain>:<verb>` vocabulary, what "inert without a grant" means
   exactly, the reference tree shipped from `@ackerdb/core`, and the one `admin`
   configuration object.
+- [Studio](docs/studio.md) documents the opt-in administration client: the
+  `acker studio` command, the single same-origin port that proxies HTTP,
+  WebSocket, and SSE to the application, the path prefix that keeps an
+  application route from being shadowed, and the Admin Credential connect flow
+  and its states.
 - [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
   Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
   issuer string, configuration block, and client credential-source wiring.

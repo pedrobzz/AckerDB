@@ -1382,6 +1382,18 @@ AckerDB client stack, authenticates with an Admin Credential rather than as an
 application user, and consumes only the Admin API. The name is provisional.
 _Avoid_: Dashboard, admin panel, embedded console
 
+**Studio origin** — The single origin `acker studio` serves: the Studio bundle
+under one reserved path prefix, and the whole application proxied onto every
+other path. The browser only ever addresses this origin, so Studio needs no
+CORS negotiation and has no mechanism for being pointed at another server.
+_Avoid_: Studio host, dashboard server, UI port
+
+**Studio bundle** — The prebuilt static single-page application `@ackerdb/studio`
+ships. It is built at release time rather than on an installer's machine, and it
+is the one artifact this repository publishes that is compiled rather than
+source.
+_Avoid_: Studio build, dist, frontend assets
+
 **Log source** — The origin of a record in Studio's Logs stream: application
 (developer-authored application log records) or framework (framework-emitted
 diagnostic events made durable). Analytics events are never part of the Logs

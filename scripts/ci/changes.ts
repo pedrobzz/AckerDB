@@ -86,16 +86,7 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const native = nativeInputsChanged(files);
   const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
   const telemetry = telemetryInputsChanged(base, head, files);
-  const verifyPackages = files.some((file) =>
-    file === "package.json" ||
-    file === "bun.lock" ||
-    file.endsWith("/package.json") ||
-    file.startsWith("scripts/release/") ||
-    file.startsWith("scripts/verify-packages") ||
-    file.startsWith("scripts/packed-consumer") ||
-    file.startsWith("packages/realtime/native/") ||
-    file.startsWith("packages/realtime-native/")
-  );
+  const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
@@ -173,6 +164,30 @@ export function telemetryInputsChanged(
 export function codeInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
     !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
+  );
+}
+
+/**
+ * What changes the tarballs a release would produce, and therefore needs the
+ * packed-package gate.
+ *
+ * The native directories are here because those packages publish built
+ * binaries; `packages/studio/` is here for the same reason, and it is the
+ * stronger case: nothing else in the pipeline builds its bundle, so without
+ * this a pull request touching only the SPA would skip the one check that
+ * proves it compiles, packs, and opens.
+ */
+export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    file === "package.json" ||
+    file === "bun.lock" ||
+    file.endsWith("/package.json") ||
+    file.startsWith("scripts/release/") ||
+    file.startsWith("scripts/verify-packages") ||
+    file.startsWith("scripts/packed-consumer") ||
+    file.startsWith("packages/realtime/native/") ||
+    file.startsWith("packages/realtime-native/") ||
+    file.startsWith("packages/studio/")
   );
 }
 

@@ -4,6 +4,7 @@ import {
   nativeInputsChanged,
   performanceInputsChanged,
   telemetryInputsChanged,
+  verifyPackagesInputsChanged,
 } from "./changes.ts";
 
 describe("native CI selection", () => {
@@ -104,5 +105,17 @@ describe("repository check selection", () => {
     expect(codeInputsChanged(["bun.lock"])).toBe(true);
     expect(codeInputsChanged([".github/workflows/ci.yml"])).toBe(true);
     expect(codeInputsChanged(["README.md", "scripts/lib.ts"])).toBe(true);
+  });
+
+  test("packs and verifies whenever a published package's built contents could change", () => {
+    // The Studio bundle is built by the packing gate and by nothing else, so a
+    // pull request touching only the SPA must still reach it.
+    expect(verifyPackagesInputsChanged(["packages/studio/src/app/connect.tsx"])).toBe(true);
+    expect(verifyPackagesInputsChanged(["packages/studio/vite.config.ts"])).toBe(true);
+    expect(verifyPackagesInputsChanged(["bun.lock"])).toBe(true);
+    expect(verifyPackagesInputsChanged(["packages/realtime-native/darwin-arm64/README.md"]))
+      .toBe(true);
+    expect(verifyPackagesInputsChanged(["packages/server/src/app/registry.ts"])).toBe(false);
+    expect(verifyPackagesInputsChanged(["docs/studio.md"])).toBe(false);
   });
 });
