@@ -295,6 +295,62 @@ the isolation claim it exists for: serving cost 16.8 → 15.5 µs/op from health
 total outage, acknowledgement p99.5 rising only 44.6 → 60.4 ms, 674,575 accepted
 and 674,575 committed, zero dropped, queue slope 0.000.
 
+## Commodity and policy
+
+Almost all of this is commodity with published prior art, and it is worth naming
+so that nobody rebuilds it: the sketch is DDSketch; the retention model is
+journald, Netdata and VictoriaLogs; the refuse-writes floor is Elasticsearch's
+flood stage and VictoriaMetrics' `minFreeDiskSpace`; the actual-retention gauges
+are VictoriaLogs' two timestamps; the discard-reason vocabulary is Loki's; the
+batching semantics are `BatchSpanProcessor`'s; the worker-owned SQLite writer is
+a documented better-sqlite3 pattern; the export format is OTLP; and the
+tail-sampling shapes are the OTel Collector's `tailsamplingprocessor`, which
+ships `latency`, `status_code` and `probabilistic` policies that we derived
+independently before finding them.
+
+**One thing here is policy**, and it is small: the exemplar-link invariant — the
+retention threshold read from the same distribution the chart reports — together
+with exposing both p95 and p99 and paying the lower one's retention cost, and the
+completeness of the disclosure contract. That lives in `telemetry/policy.ts`
+behind a two-method seam (`quantile`, `shareAtAndAbove`), so replacing the sketch
+or the limiter beneath it never touches the invariant.
+
+### Why the sketch is not `@datadog/sketches-js`
+
+The burden was on keeping ours, and two requirements decided it. Measured against
+v2.1.1, Apache-2.0, zero dependencies.
+
+**The mapping passes exactly, and that is worth recording.** Constructing
+`LogCollapsingLowestDenseDDSketch` with `relativeAccuracy = 0.005415159415902577`
+yields `LogarithmicMapping` with `gamma = 1.0108892860517005` — bit-identical to
+`2 ** (2 ** -6)` — and its `key()` agrees with ours on every probe value
+including the 2.0 boundary, zero mismatches. So the grid is not in dispute; the
+library confirms our mapping is OTLP scale 6.
+
+**The bin cap fails.** The library's only bounded stores collapse, and at the 160
+bins OTel's default and Mimir's limit require, `CollapsingLowestDense` collapses
+the *body* of a latency distribution. Measured on 200,000 samples with 95% of
+mass at 2–10 ms and a tail to 8 s: the library reports **p50 = 1,424.8 ms against
+a true 6.226 ms — a 22,783% error — while still declaring a 0.5415% bound**.
+`isCollapsed` is set, but the declared bound is simply wrong for everything below
+the collapse point, which is the failure the downscaling store exists to avoid.
+Ours on the same data: p50 3.37%, p90 3.59%, p99 2.36% error, all inside the
+*widened* 4.33% bound it reports after downscaling to scale 3. The library is
+correct at its own default of 2,048 bins; that is the configuration this design
+rejected, because Mimir silently downscales above its limit and voids any bound
+computed here.
+
+**Serialization fails.** `toProto`/`fromProto` import `protobufjs/minimal`, which
+the package does not declare — its `dependencies` are empty — so the call throws
+at runtime, and adopting it would mean adding protobufjs to production
+dependencies. `fromProto` is also documented to lose `min` and `max`, which the
+stored row carries.
+
+The honest summary is that the library's *mapping* is proven and ours matches it,
+and the library's *store* cannot satisfy a 160-bin budget on a latency shape. The
+validation tests stay either way: they test the contract, not the implementation,
+so they would catch a future swap regressing it.
+
 ## Two standing rules
 
 **Every telemetry decision is checked against prior art before it is made.**
@@ -307,3 +363,10 @@ less information, is a duty and not a failure.
 **What we produce must be exportable in the language others already speak.** The
 OTLP alignment above is that rule paying for itself: it found two constants that
 were wrong and improved the declared error bound while fixing them.
+
+**And before implementing, classify every responsibility as commodity or
+policy.** Default to adopting a mature implementation for the commodity, compose
+proven designs where the capability spans several, and keep policy in its own
+module behind a narrow seam. Building commodity by hand is a last resort that
+needs evidence — the section above is what that evidence looks like when it
+comes out in favour of building, and it should be the exception.
