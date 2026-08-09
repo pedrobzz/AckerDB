@@ -25,7 +25,7 @@
  */
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
 import type { TelemetryOperation } from "../contracts/schema.ts";
-import type { CohortThreshold } from "../aggregation/buckets.ts";
+import type { CohortThreshold } from "../policy.ts";
 import { bucketKey, scaleMultiplier } from "../aggregation/sketch.ts";
 
 /**

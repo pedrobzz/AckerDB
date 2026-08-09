@@ -28,63 +28,17 @@
  */
 import { Sketch, DEFAULT_MAPPING_SCALE, DEFAULT_MAX_BINS } from "./sketch.ts";
 import type { TelemetryOperation, TelemetryOutcome } from "../contracts/schema.ts";
+import {
+  coldThreshold,
+  lowConfidenceQuantiles,
+  thresholdFrom,
+  type CohortThreshold,
+} from "../policy.ts";
 
 export const MINUTE_MS = 60_000;
 export const HOUR_MS = 3_600_000;
 
-/**
- * The quantiles the aggregate exposes, split by what they cost.
- *
- * **Tail quantiles drive retention.** A retention threshold expressed as a fixed
- * millisecond constant has no relationship to the number on the chart, so an
- * operator clicks a p99 spike and finds nothing behind it. That is OpenTelemetry
- * Collector issue #30319, filed January 2024 and closed by a bot as stale with
- * no fix, and it is Datadog's shipped default: its retention filter covers p75,
- * p90 and p95, so the most watched number on the dashboard is the one whose
- * exemplars are missing. Retaining at the lowest exposed TAIL quantile covers
- * every higher one by construction, so "the chart shows p99, therefore a p99
- * exemplar exists" holds at every load with no constant to tune.
- *
- * **Body quantiles do not.** The rule must say *tail* and not merely *lowest*:
- * the day a screen exposes p50, "retain at the lowest exposed quantile" would
- * mean retaining half of all traffic, and the policy would quietly become "store
- * everything" again. It is safe to leave the body out because the deterministic
- * baseline already supplies typical traces — a uniform sample is representative
- * by construction, so it contains median-ish traces at the right density. What a
- * uniform sample almost never contains is a tail outlier at useful density: in a
- * one-minute window of 100 requests, a 1% baseline is one trace, and the chance
- * it is the slow one is 1%. The threshold rule exists for the tail, and only the
- * tail.
- *
- * **Exposing p95 is the expensive choice, and it is deliberate.** Retention
- * follows the LOWEST tail quantile, so exposing p95 retains roughly 5% of traces
- * where exposing p99 alone would retain 1%. Showing the lower tail number costs
- * five times more, not less. It is paid because p95 alone hides any incident
- * affecting under 5% of traffic — the shape of most real ones — and because a
- * page making twenty backend calls has only a 36% chance of dodging the slow 5%
- * entirely. Do not "optimise" this by dropping p99; dropping p95 is what would
- * save storage, and it is the number worth keeping least.
- */
-export const TAIL_QUANTILES: readonly number[] = Object.freeze([0.95, 0.99]);
-export const BODY_QUANTILES: readonly number[] = Object.freeze([0.5]);
-export const EXPOSED_QUANTILES: readonly number[] = Object.freeze(
-  [...BODY_QUANTILES, ...TAIL_QUANTILES].sort((left, right) => left - right),
-);
-/** Derived from the TAIL set alone; a body quantile can never move it. */
-export const RETENTION_QUANTILE = Math.min(...TAIL_QUANTILES);
 
-/**
- * Observations that must fall ABOVE a quantile before it is a statistic rather
- * than an anecdote. At p99 with 100 observations in a window the answer is one
- * request; reporting that as fact is how a dashboard manufactures an incident.
- * Ten is the smallest count at which the estimate stops being a single sample.
- */
-export const MIN_SAMPLES_ABOVE_QUANTILE = 10;
-
-/** Whether a window of `count` observations can speak to `quantile` at all. */
-export function isConfidentQuantile(count: number, quantile: number): boolean {
-  return count * (1 - quantile) >= MIN_SAMPLES_ABOVE_QUANTILE;
-}
 
 /** The overflow series' function name; no application function may collide. */
 export const OVERFLOW_FUNCTION = "\u0000overflow";
@@ -155,36 +109,6 @@ interface Bucket {
   observations: number;
 }
 
-/** What the retention policy asks the aggregate before keeping a trace. */
-export interface CohortThreshold {
-  /** The cohort's current value at `RETENTION_QUANTILE`, once it is warm. */
-  readonly thresholdMs: number | undefined;
-  /** False while the cohort has too little history for a quantile to mean anything. */
-  readonly warm: boolean;
-  readonly observations: number;
-  /**
-   * The chance a trace landing exactly in the threshold's bucket is admitted.
-   *
-   * The policy's contract is a retention RATE; the threshold is only a means of
-   * hitting it. Everything strictly above the boundary bucket is retained, and
-   * the remainder of the target rate is drawn from the boundary bucket at this
-   * probability — so a distribution with mass piled on one value realizes the
-   * same rate as a smooth one instead of retaining the whole pile.
-   */
-  readonly boundaryAdmitProbability: number;
-  /**
-   * The boundary bucket, as a key on `mappingScale`'s grid. A caller classifies
-   * its own duration with `bucketKey` and compares INTEGERS: reconstructing the
-   * bucket's edges in milliseconds and comparing those is a fail-open, because a
-   * float `γ^k` lands just under an exact power of two and every observation of
-   * a constant-latency endpoint then tests as above its own bucket.
-   */
-  readonly boundaryKey: number | undefined;
-  readonly mappingScale: number;
-}
-
-/** The share of traffic the policy aims to retain for the tail. */
-export const TARGET_TAIL_RATE = 1 - RETENTION_QUANTILE;
 
 /** One series, ready to persist. */
 export interface AggregateSeriesRow {
@@ -332,8 +256,10 @@ export class TelemetryAggregateBuckets {
   }
 
   /**
-   * The retention threshold for one cohort, answered from the same distribution
-   * the chart is drawn from. Constant time, which is why the sketch exists.
+   * The distribution one cohort's retention threshold is read from — the SAME
+   * one the chart is drawn from, which is the invariant `policy.ts` owns. This
+   * method only chooses which window is authoritative and hands it over; what
+   * the threshold means is not the aggregate's business.
    */
   thresholdFor(operation: TelemetryOperation, functionAddress: string | undefined): CohortThreshold {
     const key = cohortKey(operation, functionAddress);
@@ -350,32 +276,9 @@ export class TelemetryAggregateBuckets {
       : this.reference.get(key);
     const observations = source?.count ?? 0;
     if (source === undefined || observations < this.limits.warmObservations) {
-      return {
-        thresholdMs: undefined,
-        warm: false,
-        observations,
-        boundaryAdmitProbability: 1,
-        boundaryKey: undefined,
-        mappingScale: this.limits.mappingScale,
-      };
+      return coldThreshold(observations, this.limits.mappingScale);
     }
-    const thresholdMs = source.quantile(RETENTION_QUANTILE);
-    const share = thresholdMs === undefined ? undefined : source.shareAtAndAbove(thresholdMs);
-    // Everything above the boundary bucket is retained outright; the boundary
-    // bucket supplies whatever the target rate still needs. A degenerate
-    // distribution puts all its mass in one bucket, and then this is the only
-    // thing standing between the policy and retaining all of it.
-    const boundaryAdmitProbability = share === undefined || share.at <= 0
-      ? 1
-      : Math.min(1, Math.max(0, (TARGET_TAIL_RATE - share.above) / share.at));
-    return {
-      thresholdMs,
-      warm: true,
-      observations,
-      boundaryAdmitProbability,
-      boundaryKey: share?.key,
-      mappingScale: share?.mappingScale ?? this.limits.mappingScale,
-    };
+    return thresholdFrom(source, this.limits.mappingScale);
   }
 
   private newSeries(
@@ -434,9 +337,7 @@ export class TelemetryAggregateBuckets {
           minMs: series.count === 0 ? 0 : series.minMs,
           maxMs: series.count === 0 ? 0 : series.maxMs,
           mappingScale: Math.min(series.ok.scale, series.failed.scale),
-          lowConfidenceQuantiles: Object.freeze(
-            EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(series.count, quantile)),
-          ),
+          lowConfidenceQuantiles: lowConfidenceQuantiles(series.count),
           sketchOk: series.ok.encode(),
           sketchFailed: series.failed.encode(),
         })),
@@ -508,10 +409,10 @@ export function mergeIntoHour(
     minMs: entry.count === 0 ? 0 : entry.minMs,
     maxMs: entry.count === 0 ? 0 : entry.maxMs,
     mappingScale: Math.min(entry.ok.scale, entry.failed.scale),
-    lowConfidenceQuantiles: Object.freeze(
-      EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(entry.count, quantile)),
-    ),
+    lowConfidenceQuantiles: lowConfidenceQuantiles(entry.count),
     sketchOk: entry.ok.encode(),
     sketchFailed: entry.failed.encode(),
   }));
 }
+
+export type { CohortThreshold };

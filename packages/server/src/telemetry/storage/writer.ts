@@ -28,8 +28,10 @@ export interface TelemetrySidecarSnapshot {
   readonly droppedByKind: Readonly<Record<string, number>>;
   readonly queuedRecords: number;
   readonly queuedBytes: number;
-  /** Highest sequence the sidecar has committed; the quiescence watermark. */
+  /** Highest sequence the sidecar COMMITTED; a rollback does not advance it. */
   readonly durableSeq: number;
+  /** Highest sequence the sidecar resolved either way; what a drain waits on. */
+  readonly processedSeq: number;
   readonly acceptedSeq: number;
   readonly committedRecords: number;
   readonly rejectedRecords: number;
@@ -45,6 +47,25 @@ export interface TelemetrySidecarSeal {
   readonly snapshot: TelemetrySidecarSnapshot;
   /** True when the sidecar never acknowledged everything the drain sealed at. */
   readonly timedOut: boolean;
+  /**
+   * Records the application was told were accepted that are NOT on disk —
+   * dropped at the ring, rejected by a transaction, or never acknowledged. A
+   * drain that resolved clean over a non-zero count would be the exact lie this
+   * whole watermark protocol exists to prevent.
+   */
+  readonly lostRecords: number;
+  /** False when a terminal row was asked for and could not be written. */
+  readonly terminalWritten: boolean;
+  readonly error?: string;
+}
+
+/**
+ * What a seal did not get to disk. Accepted-but-uncommitted plus everything the
+ * ring refused, which are the two ways a record the application handed over can
+ * fail to exist.
+ */
+export function sealLoss(snapshot: TelemetrySidecarSnapshot): number {
+  return Math.max(0, snapshot.acceptedSeq - snapshot.durableSeq) + snapshot.droppedRecords;
 }
 
 /**
@@ -110,6 +131,25 @@ export interface TelemetrySidecarQueueLimits {
   readonly maxHandoffDelayMs: number;
   /** Bound on how long the sidecar holds a below-threshold batch uncommitted. */
   readonly commitDelayMs: number;
+}
+
+/**
+ * Resolve and CHECK operator-supplied queue limits. Both writers go through
+ * here, because these numbers reach a loop: `commitBatch: 0` makes the worker's
+ * `while (pending.length >= commitBatch)` true forever once the queue empties,
+ * and the thread then stops answering stats, exports and seal — one
+ * configuration mistake becoming a shutdown that never completes.
+ */
+export function sidecarQueueLimits(
+  overrides: Partial<TelemetrySidecarQueueLimits> = {},
+): TelemetrySidecarQueueLimits {
+  const resolved = { ...DEFAULT_SIDECAR_QUEUE_LIMITS, ...overrides };
+  for (const [name, value] of Object.entries(resolved)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`telemetry sidecar ${name} must be a positive integer`);
+    }
+  }
+  return Object.freeze(resolved);
 }
 
 export const DEFAULT_SIDECAR_QUEUE_LIMITS: TelemetrySidecarQueueLimits = Object.freeze({

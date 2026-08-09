@@ -18,7 +18,8 @@ import { TelemetrySidecarStores } from "./kinds.ts";
 import type { TelemetryJournalRecord } from "../application-signals/types.ts";
 import { kindCounters, type TelemetryRecordKind } from "./worker/protocol.ts";
 import {
-  DEFAULT_SIDECAR_QUEUE_LIMITS,
+  sealLoss,
+  sidecarQueueLimits,
   type TelemetryExportPort,
   type TelemetrySidecarQueueLimits,
   type TelemetrySidecarSeal,
@@ -54,6 +55,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
   private rejectedRecords = 0;
   private acceptedSeq = 0;
   private durableSeq = 0;
+  private processedSeq = 0;
   private sealed = false;
 
   readonly exports: TelemetryExportPort = {
@@ -74,7 +76,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
   };
 
   constructor(options: TelemetryInlineWriterOptions) {
-    this.limits = Object.freeze({ ...DEFAULT_SIDECAR_QUEUE_LIMITS, ...options.queue });
+    this.limits = sidecarQueueLimits(options.queue);
     this.stores = new TelemetrySidecarStores({
       path: options.path,
       generation: options.generation ?? randomUUID(),
@@ -137,13 +139,15 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
         this.stores.store.maintain();
       })();
       this.committedRecords += batch.length;
+      // Only a commit is a durability claim.
+      this.durableSeq = highest;
     } catch (error) {
       this.rejectedRecords += batch.length;
       this.stores.store.observeFailure(error);
     }
-    // The watermark advances either way: records that will never become durable
-    // must not wedge every future drain.
-    this.durableSeq = highest;
+    // Resolved either way, so a batch that will never become durable does not
+    // wedge every future drain — but it is not reported as durable.
+    this.processedSeq = highest;
     const store = this.stores.store;
     this.admission.observe(store.pressure, store.readOnly);
     for (const listener of this.persistListeners) {
@@ -165,6 +169,7 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
       queuedRecords: this.pending.length,
       queuedBytes: 0,
       durableSeq: this.durableSeq,
+      processedSeq: this.processedSeq,
       acceptedSeq: this.acceptedSeq,
       committedRecords: this.committedRecords,
       rejectedRecords: this.rejectedRecords,
@@ -187,19 +192,37 @@ export class TelemetryInlineWriter implements TelemetrySidecarWriter {
    * way for it to arrive late.
    */
   async seal(terminal: unknown | undefined, _deadlineAtMs?: number): Promise<TelemetrySidecarSeal> {
-    if (this.sealed) return { snapshot: this.snapshot(), timedOut: false };
+    if (this.sealed) {
+      const already = this.snapshot();
+      return {
+        snapshot: already,
+        timedOut: false,
+        lostRecords: sealLoss(already),
+        terminalWritten: true,
+      };
+    }
     this.sealed = true;
     this.commit();
+    let terminalWritten = true;
+    let error: string | undefined;
     if (terminal !== undefined) {
       try {
         this.stores.journal.appendFinal(terminal as TelemetryJournalRecord);
-      } catch (error) {
+      } catch (cause) {
+        terminalWritten = false;
+        error = cause instanceof Error ? cause.message : String(cause);
         this.rejectedRecords++;
-        this.stores.store.observeFailure(error);
+        this.stores.store.observeFailure(cause);
       }
     }
     const snapshot = this.snapshot();
     this.stores.store.close();
-    return { snapshot, timedOut: false };
+    return {
+      snapshot,
+      timedOut: false,
+      lostRecords: sealLoss(snapshot),
+      terminalWritten,
+      ...(error === undefined ? {} : { error }),
+    };
   }
 }

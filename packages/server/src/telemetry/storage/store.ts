@@ -457,7 +457,11 @@ export class TelemetryStore {
     // negligible cost for a window in which the store is over budget, reports
     // that it is not, and — if writes then stop — stays there.
     this.sampleUsage();
-    if (this.storedBytes <= this.limits.maxStoredBytes) {
+    // Either way of running out triggers eviction. Evicting only over the byte
+    // target would leave the sidecar read-only on a volume the application's own
+    // database filled, refusing every signal while old telemetry above the
+    // minimum window sat there evictable.
+    if (!this.needsEviction) {
       this.overBudgetPasses = 0;
       this.floorHeld = false;
       return removed;
@@ -470,15 +474,21 @@ export class TelemetryStore {
     // its target and discloses it rather than deleting the hour an operator is
     // looking at during the incident that caused the overrun.
     const evicted = this.evict(budget, nowMs - this.limits.minRetainedMs);
-    this.floorHeld = evicted === 0 && this.storedBytes > this.limits.maxStoredBytes;
+    this.floorHeld = evicted === 0 && this.needsEviction;
     return removed + evicted;
+  }
+
+  /** True while either way of running out of room is unsatisfied. */
+  private get needsEviction(): boolean {
+    return this.storedBytes > this.limits.maxStoredBytes ||
+      (this.minFreeBytes > 0 && this.freeBytes < this.minFreeBytes);
   }
 
   /** Oldest-first across every clock, shortest clock first, up to `budget` rows. */
   private evict(budget: number, cutoffMs: number): number {
     let evicted = 0;
     for (const set of this.evictionOrder) {
-      while (evicted < budget && this.storedBytes > this.limits.maxStoredBytes) {
+      while (evicted < budget && this.needsEviction) {
         const chunk = Math.min(budget - evicted, this.limits.maxExpiredRowsPerPass);
         const deleted = set.deleteExpired(cutoffMs, chunk);
         if (deleted === 0) break;
@@ -489,7 +499,7 @@ export class TelemetryStore {
         this.database.exec(`PRAGMA incremental_vacuum(${VACUUM_PAGES_PER_ROUND})`);
         this.sampleUsage();
       }
-      if (evicted >= budget || this.storedBytes <= this.limits.maxStoredBytes) break;
+      if (evicted >= budget || !this.needsEviction) break;
     }
     return evicted;
   }

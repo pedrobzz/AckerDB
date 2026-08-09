@@ -146,8 +146,14 @@ describe("the telemetry sidecar", () => {
     expect(snapshot.committedRecords).toBe(0);
     expect(snapshot.failed).toBe(false);
     expect(snapshot.containedFailures).toBeGreaterThan(0);
-    expect(snapshot.durableSeq).toBe(snapshot.acceptedSeq);
-    await writer.seal(undefined, 0);
+    // Resolved, so a drain cannot wedge on it — but NOT durable, because the
+    // transaction rolled back and nothing reached disk. Conflating the two is
+    // how a rollback gets acknowledged as a clean shutdown.
+    expect(snapshot.processedSeq).toBe(snapshot.acceptedSeq);
+    expect(snapshot.durableSeq).toBe(0);
+
+    const seal = await writer.seal(undefined, 0);
+    expect(seal.lostRecords).toBe(2);
   });
 
   test("the terminal row is the last row in the file", async () => {

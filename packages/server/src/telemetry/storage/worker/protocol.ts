@@ -118,8 +118,19 @@ export type TelemetryWorkerCommand =
 
 /** Accounting the worker owns and the serving thread can only observe. */
 export interface TelemetryWorkerStats {
-  /** Highest sequence the worker has COMMITTED. The quiescence watermark. */
+  /**
+   * Highest sequence the worker has COMMITTED. It is a durability claim and
+   * nothing else advances it — a rolled-back transaction leaves it where it was,
+   * so a drain reading it learns that those records are not on disk.
+   */
   readonly durableSeq: number;
+  /**
+   * Highest sequence the worker has RESOLVED, committed or rejected. This is
+   * what quiescence waits on: a batch that will never become durable must not
+   * wedge every future drain, and conflating the two is how a rollback gets
+   * acknowledged as a clean shutdown.
+   */
+  readonly processedSeq: number;
   /** Records parsed but not yet committed — the worker's own queue depth. */
   readonly pendingRecords: number;
   readonly pendingBytes: number;

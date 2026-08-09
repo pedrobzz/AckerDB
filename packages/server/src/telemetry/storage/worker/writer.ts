@@ -36,7 +36,8 @@ import {
   type TelemetryWorkerStats,
 } from "./protocol.ts";
 import {
-  DEFAULT_SIDECAR_QUEUE_LIMITS,
+  sealLoss,
+  sidecarQueueLimits,
   type TelemetryExportPort,
   type TelemetrySidecarQueueLimits,
   type TelemetrySidecarSeal,
@@ -120,7 +121,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   };
 
   constructor(options: TelemetryWorkerWriterOptions) {
-    this.limits = Object.freeze({ ...DEFAULT_SIDECAR_QUEUE_LIMITS, ...options.queue });
+    this.limits = sidecarQueueLimits(options.queue);
     this.worker = new Worker(new URL("./entry.ts", import.meta.url).href);
     let resolveReady!: () => void;
     this.ready = new Promise<void>((resolve) => {
@@ -268,7 +269,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     this.lastStats = stats;
     this.admission.observe(stats.pressure, stats.readOnly);
     const now = performance.now();
-    while (this.awaitingAck.length > 0 && this.awaitingAck[0]!.seq <= stats.durableSeq) {
+    while (this.awaitingAck.length > 0 && this.awaitingAck[0]!.seq <= stats.processedSeq) {
       this.commitAckMs.push(now - this.awaitingAck.shift()!.oldestAcceptMs);
     }
     if (stats.durableSeq <= this.notifiedDurableSeq) return;
@@ -344,6 +345,7 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
       queuedRecords: this.ring.length,
       queuedBytes: this.queuedBytes,
       durableSeq: worker?.durableSeq ?? 0,
+      processedSeq: worker?.processedSeq ?? 0,
       acceptedSeq: this.acceptedSeq,
       committedRecords: worker?.committedRecords ?? 0,
       rejectedRecords: worker?.rejectedRecords ?? 0,
@@ -367,7 +369,15 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
    * thread's promise.
    */
   async seal(terminal: unknown | undefined, deadlineMs: number): Promise<TelemetrySidecarSeal> {
-    if (this.sealed) return { snapshot: this.snapshot(), timedOut: false };
+    if (this.sealed) {
+      const already = this.snapshot();
+      return {
+        snapshot: already,
+        timedOut: false,
+        lostRecords: sealLoss(already),
+        terminalWritten: true,
+      };
+    }
     this.sealed = true;
     this.handoff();
     const answer = new Promise<Extract<TelemetryWorkerEvent, { type: "sealed" }>>((resolve) => {
@@ -387,12 +397,20 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     clearTimeout(timer);
     if (settled !== "timeout") this.lastStats = settled.stats;
     this.worker.terminate();
+    const snapshot = this.snapshot();
     // The thread that would have answered them is gone. A pump still awaiting a
     // cursor operation must learn that, or its consumer hangs for the life of
     // the process holding a batch it can neither deliver nor forget.
     const abandoned = new Error("telemetry sidecar closed before the export request was answered");
     for (const waiter of this.exportWaiters.values()) waiter.reject(abandoned);
     this.exportWaiters.clear();
-    return { snapshot: this.snapshot(), timedOut: settled === "timeout" };
+    return {
+      snapshot,
+      timedOut: settled === "timeout",
+      lostRecords: sealLoss(snapshot),
+      // A seal that never answered cannot claim a terminal row was written.
+      terminalWritten: settled !== "timeout" && settled.terminalWritten,
+      ...(settled !== "timeout" && settled.error !== undefined ? { error: settled.error } : {}),
+    };
   }
 }

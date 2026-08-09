@@ -15,6 +15,8 @@ import {
   type CohortThresholdProvider,
 } from "../../src/telemetry/exemplars/collector.ts";
 import {
+} from "../../src/telemetry/aggregation/buckets.ts";
+import {
   BODY_QUANTILES,
   EXPOSED_QUANTILES,
   MIN_SAMPLES_ABOVE_QUANTILE,
@@ -22,7 +24,7 @@ import {
   TAIL_QUANTILES,
   TARGET_TAIL_RATE,
   isConfidentQuantile,
-} from "../../src/telemetry/aggregation/buckets.ts";
+} from "../../src/telemetry/policy.ts";
 import {
   bucketKey,
   DEFAULT_MAPPING_SCALE,

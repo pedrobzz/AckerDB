@@ -310,16 +310,7 @@ export class RuntimeControl {
         lifecycleState: "stopped",
       });
       await this.options.telemetryExporters?.drain();
-      const seal = await this.sealSidecar(deadlineAtMs);
-      if (seal?.timedOut === true) {
-        throw new AckerDBError(
-          "deadline_exceeded",
-          `telemetry sidecar did not commit ${
-            seal.snapshot.acceptedSeq - seal.snapshot.durableSeq
-          } accepted records before the shutdown deadline`,
-          { resource: "operation" },
-        );
-      }
+      assertSealed(await this.sealSidecar(deadlineAtMs));
       return this.options.ownsTelemetry
         ? this.options.telemetry.drain(deadlineAtMs)
         : this.options.telemetry.flush();
@@ -409,6 +400,43 @@ export class RuntimeControl {
   private waitForActiveOperations(): Promise<void> {
     if (this.activeOperations === 0) return Promise.resolve();
     return new Promise((resolve) => this.activeWaiters.add(resolve));
+  }
+}
+
+/**
+ * A clean shutdown must not resolve over telemetry that is not on disk.
+ *
+ * Three outcomes are losses and only one of them is a timeout: the sidecar can
+ * fail to acknowledge in time, it can acknowledge having REJECTED a batch that
+ * a rolled-back transaction never wrote, and it can fail to write the terminal
+ * row. A drain that checked only the timeout would report success for the other
+ * two, which is the failure the whole watermark protocol exists to prevent —
+ * `opentelemetry-rust` #3453 in a different disguise.
+ */
+function assertSealed(seal: TelemetrySidecarSeal | undefined): void {
+  if (seal === undefined) return;
+  if (seal.timedOut) {
+    throw new AckerDBError(
+      "deadline_exceeded",
+      `telemetry sidecar did not acknowledge ${seal.lostRecords} accepted records before the shutdown deadline`,
+      { resource: "operation" },
+    );
+  }
+  if (seal.lostRecords > 0) {
+    throw new AckerDBError(
+      "internal",
+      `telemetry sidecar lost ${seal.lostRecords} accepted records`,
+      { resource: "telemetry" },
+    );
+  }
+  if (!seal.terminalWritten) {
+    throw new AckerDBError(
+      "internal",
+      `telemetry sidecar could not write its terminal record${
+        seal.error === undefined ? "" : `: ${seal.error}`
+      }`,
+      { resource: "telemetry" },
+    );
   }
 }
 

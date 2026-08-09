@@ -16,13 +16,8 @@
  */
 import type { Database, Statement } from "bun:sqlite";
 import type { AggregateSeriesRow } from "../aggregation/buckets.ts";
-import {
-  EXPOSED_QUANTILES,
-  HOUR_MS,
-  isConfidentQuantile,
-  MINUTE_MS,
-  mergeIntoHour,
-} from "../aggregation/buckets.ts";
+import { HOUR_MS, MINUTE_MS, mergeIntoHour } from "../aggregation/buckets.ts";
+import { lowConfidenceQuantiles } from "../policy.ts";
 import { Sketch } from "../aggregation/sketch.ts";
 import { expirableSet, type TelemetryStore } from "./store.ts";
 
@@ -118,9 +113,14 @@ export class TelemetryAggregateStore {
       VALUES (?, ?, 0)
       ON CONFLICT(minute) DO NOTHING
     `);
+    // A minute is closed ONLY by the generation that announced it. Announce is
+    // `DO NOTHING`, so a generation that dies mid-minute leaves its row behind;
+    // an unconditional close would let the next generation — which observed a
+    // different part of that same minute — mark the combined partial window
+    // complete, which is the crash gap the coverage table exists to expose.
     this.closeMinute = this.store.prepare(`
-      UPDATE _ackerdb_telemetry_aggregate_coverage SET closed = 1, generation = ?
-      WHERE minute = ?
+      UPDATE _ackerdb_telemetry_aggregate_coverage SET closed = 1
+      WHERE minute = ? AND generation = ?
     `);
     const existing = `
       SELECT count, sketch_ok AS sketchOk, sketch_failed AS sketchFailed
@@ -159,9 +159,7 @@ export class TelemetryAggregateStore {
     return Object.freeze({
       ...row,
       mappingScale: Math.min(ok.scale, failed.scale),
-      lowConfidenceQuantiles: Object.freeze(
-        EXPOSED_QUANTILES.filter((quantile) => !isConfidentQuantile(count, quantile)),
-      ),
+      lowConfidenceQuantiles: lowConfidenceQuantiles(count),
       sketchOk: ok.encode(),
       sketchFailed: failed.encode(),
     });
@@ -184,8 +182,7 @@ export class TelemetryAggregateStore {
       this.upsertHour.run(...values(this.folded(this.selectHour, hour)));
       this.writtenHourRows++;
     }
-    if (closed) {
-      this.closeMinute.run(this.generation, startMs);
+    if (closed && this.closeMinute.run(startMs, this.generation).changes > 0) {
       this.closedMinutes++;
     }
   }

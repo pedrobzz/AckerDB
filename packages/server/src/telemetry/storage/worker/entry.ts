@@ -46,6 +46,7 @@ let commitTimer: ReturnType<typeof setTimeout> | undefined;
 const pending: Pending[] = [];
 let pendingBytes = 0;
 let durableSeq = 0;
+let processedSeq = 0;
 let acceptedSeq = 0;
 let committedRecords = 0;
 let committedTransactions = 0;
@@ -60,6 +61,7 @@ function stats(): TelemetryWorkerStats {
   const snapshot = stores?.store.snapshot();
   return {
     durableSeq,
+    processedSeq,
     pendingRecords: pending.length,
     pendingBytes,
     oldestPendingAgeMs: pending.length === 0
@@ -101,15 +103,17 @@ function commit(): void {
     })();
     committedRecords += batch.length;
     committedTransactions++;
+    // Only a commit is a durability claim.
+    durableSeq = highest;
   } catch (error) {
     // One transaction's loss is accounted; whether the connection itself is
     // gone is the store's probe to answer, exactly as on the serving thread.
     rejectedRecords += batch.length;
     if (!open.store.observeFailure(error)) failed = true;
   }
-  // The sequence advances either way: records that will never become durable
-  // must not wedge every future drain.
-  durableSeq = highest;
+  // Resolved either way, so a batch that will never become durable does not
+  // wedge every future drain — but it is not reported as durable.
+  processedSeq = highest;
 }
 
 function parse(payload: string): void {

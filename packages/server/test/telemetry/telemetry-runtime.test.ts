@@ -747,9 +747,10 @@ describe("Runtime telemetry acceptance", () => {
     expect(snapshot.rejectedRecords).toBe(2);
     expect(snapshot.containedFailures).toBeGreaterThan(0);
     expect(snapshot.failed).toBe(false);
-    // The watermark still advanced: a batch that will never become durable must
-    // not wedge every future drain.
-    expect(snapshot.durableSeq).toBe(snapshot.acceptedSeq);
+    // Resolved so a drain cannot wedge on it, and NOT durable, because the
+    // transaction rolled back and nothing reached disk.
+    expect(snapshot.processedSeq).toBe(snapshot.acceptedSeq);
+    expect(snapshot.durableSeq).toBeLessThan(snapshot.acceptedSeq);
   });
 
   test("attributes policy, procedure, transaction, SSE, and system logs", async () => {
