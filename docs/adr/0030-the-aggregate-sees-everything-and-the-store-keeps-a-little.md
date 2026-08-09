@@ -270,15 +270,23 @@ scales, and then every export is a lossy re-bucket of numbers computed exactly.
 So the scale is the parameter and α is derived from it. Scale 6 declares 0.5415%,
 a **tighter** guarantee than the 1% it replaces.
 
-Second, the bin budget is OTel's own 160 rather than Datadog's 2,048, which is
-12.8× the SDK default and above Grafana Mimir's tenant limit — and Mimir
-**silently downscales** over-limit samples, which would void a declared bound
-computed here with nothing raised. That budget is affordable only because the
-sketch **downscales instead of collapsing**: halving the scale merges adjacent
-bucket pairs exactly (`key → ceil(key/2)`), so the shape survives and only the
-declared bound widens, and the widened bound is stored on the row. Collapsing the
-lowest buckets, the alternative, destroys the body of the distribution to protect
-the tail and leaves a p50 wrong by an unstated amount.
+Second, **storage resolution and wire resolution are different numbers.** A
+consumer's bucket limit — Grafana Mimir's tenant cap, the OTel SDK's default of
+160 — is a limit on what it accepts, and OTLP carries `scale` precisely so a
+producer can merge adjacent buckets on the way out. Downscaling is the format's
+designed mechanism, not data loss. Sizing storage to the smallest consumer would
+size the product to the wire: 160 buckets at scale 6 span 5.66×, so a busy series
+would be permanently coarse, and once coarse it cannot be made fine again for
+anyone. So 2,048 buckets are stored — spanning 2^32 at scale 6, which covers
+every latency a request can have — and export coarsens to whatever a consumer
+accepts and declares the widened bound it is sending.
+
+Coarsening is exact either way: halving the scale merges adjacent bucket pairs
+(`key → ceil(key/2)`), so the shape survives and only the declared bound widens.
+The sketch also does it automatically when a single series outgrows its stored
+budget, which is why it never **collapses**: folding the lowest buckets together,
+the alternative, destroys the body of the distribution to protect the tail and
+leaves a p50 wrong by an unstated amount.
 
 Tail-sampling provenance has no standard slot: the OTel specification says
 adjusted count "is not defined for spans obtained via non-probabilistic
@@ -349,18 +357,19 @@ yields `LogarithmicMapping` with `gamma = 1.0108892860517005` — bit-identical 
 including the 2.0 boundary, zero mismatches. So the grid is not in dispute; the
 library confirms our mapping is OTLP scale 6.
 
-**The bin cap fails.** The library's only bounded stores collapse, and at the 160
-bins OTel's default and Mimir's limit require, `CollapsingLowestDense` collapses
-the *body* of a latency distribution. Measured on 200,000 samples with 95% of
-mass at 2–10 ms and a tail to 8 s: the library reports **p50 = 1,424.8 ms against
-a true 6.226 ms — a 22,783% error — while still declaring a 0.5415% bound**.
-`isCollapsed` is set, but the declared bound is simply wrong for everything below
-the collapse point, which is the failure the downscaling store exists to avoid.
+**The bin cap fails — as a matter of which direction it degrades.** The library's
+only bounded stores collapse rather than downscale. Measured on 200,000 samples
+with 95% of mass at 2–10 ms and a tail to 8 s, constrained to 160 bins:
+`CollapsingLowestDense` reports **p50 = 1,424.8 ms against a true 6.226 ms — a
+22,783% error — while still declaring a 0.5415% bound**. `isCollapsed` is set,
+but the declared bound is simply wrong for everything below the collapse point.
 Ours on the same data: p50 3.37%, p90 3.59%, p99 2.36% error, all inside the
-*widened* 4.33% bound it reports after downscaling to scale 3. The library is
-correct at its own default of 2,048 bins; that is the configuration this design
-rejected, because Mimir silently downscales above its limit and voids any bound
-computed here.
+*widened* 4.33% bound it reports after downscaling. Collapsing the LOWEST buckets
+is the wrong trade for latency specifically, because that is where the median
+lives; the library is correct at its own 2,048-bin default, where the range never
+binds. Storage here is now also 2,048, so this failure would not be reached in
+ordinary use — but the guarantee under pressure is the one worth having, and the
+degradation mode is the reason to keep ours rather than a tuning accident.
 
 **Serialization fails.** `toProto`/`fromProto` import `protobufjs/minimal`, which
 the package does not declare — its `dependencies` are empty — so the call throws

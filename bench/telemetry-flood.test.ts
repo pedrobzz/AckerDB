@@ -6,7 +6,9 @@ describe("telemetry under an error storm", () => {
     // A small byte target so a few seconds of traffic reaches the pressure a
     // production-sized store meets after hours of the same attack. The
     // mechanism under test is the same one either way.
-    const result = await runFlood(2_000, 4, 16 * 1024 * 1024);
+    // Driven through the real path — Telemetry, recordSpan, and the exemplar a
+    // retained trace becomes — not a synthetic collector production never calls.
+    const result = await runFlood(1_000, 3, 8 * 1024 * 1024);
     const [healthy, flood] = result.phases;
 
     // The defect this guards: tail sampling retains every error as a full

@@ -43,12 +43,20 @@
 export const DEFAULT_MAPPING_SCALE = 6;
 
 /**
- * OTel's SDK default bucket budget, and below Grafana Mimir's tenant limit. It
- * is affordable at this scale only because the sketch downscales: 160 buckets at
- * scale 6 span 5.66×, which is nothing for latency, so a busy series simply ends
- * up at a coarser scale and says so.
+ * The STORED bucket budget, which is not the wire budget.
+ *
+ * A consumer's bucket limit is a limit on what it accepts, and OTLP carries a
+ * `scale` field precisely so a producer can merge adjacent buckets on the way
+ * out — downscaling is the format's designed mechanism, not data loss. Sizing
+ * storage to the smallest consumer would be sizing the product to the wire: 160
+ * buckets at scale 6 span 5.66×, which for latency means a busy series is
+ * permanently coarse, and once coarse it cannot be made fine again for anyone.
+ *
+ * So the resolution the product needs is stored, and export coarsens to whatever
+ * a given consumer accepts and declares the widened bound it is sending. 2,048
+ * at scale 6 spans 2^32, which covers every latency a request can have.
  */
-export const DEFAULT_MAX_BINS = 160;
+export const DEFAULT_MAX_BINS = 2_048;
 
 /** OTLP's floor. At scale −10 one bucket covers the whole double range. */
 export const MIN_MAPPING_SCALE = -10;
@@ -207,6 +215,19 @@ export class Sketch {
     return steps;
   }
 
+  /**
+   * Return this distribution on a coarser grid, for a consumer whose bucket
+   * limit is below ours. Exact — each step merges adjacent bucket pairs — and
+   * the result reports the widened bound as its own, so what is declared on the
+   * wire is what was actually sent.
+   */
+  coarsenTo(scale: number): Sketch {
+    if (scale >= this.mappingScale) return this;
+    const coarse = Sketch.decode(this.encode(), this.maxBins);
+    coarse.downscale(this.mappingScale - scale);
+    return coarse;
+  }
+
   private downscale(steps: number): void {
     const divisor = 2 ** steps;
     const nextOffset = Math.ceil(this.offset / divisor);
@@ -311,6 +332,61 @@ export class Sketch {
    * how much mass is at the boundary is what makes it possible to admit only
    * part of it.
    */
+  /**
+   * The quantile's value AND the bucket it came from, in one answer.
+   *
+   * The policy previously took `quantile(q)` and handed the millisecond result
+   * back to `shareAtAndAbove`, which re-derived the key from it — a round trip
+   * through a float to recover an integer this class never lost. It happens to
+   * survive, because a bucket's reported value is its midpoint and a midpoint is
+   * far from both edges, but it is the same shape as the defect that made a
+   * constant-latency endpoint retain 100%: a boundary reconstructed instead of
+   * carried. The key is carried.
+   */
+  quantileBucket(q: number): {
+    readonly valueMs: number;
+    readonly at: number;
+    readonly above: number;
+    readonly key: number;
+    readonly mappingScale: number;
+  } | undefined {
+    if (this.count === 0 || !(q >= 0 && q <= 1)) return undefined;
+    const target = q * (this.count - 1);
+    let seen = this.zeroCount;
+    let key = Number.NEGATIVE_INFINITY;
+    let valueMs = 0;
+    if (target >= seen) {
+      let found = false;
+      for (let i = 0; i < this.used; i++) {
+        seen += this.counts[i] ?? 0;
+        if (seen > target) {
+          key = this.offset + i;
+          valueMs = (2 * this.gamma ** key) / (this.gamma + 1);
+          found = true;
+          break;
+        }
+      }
+      if (!found) return undefined;
+    }
+    let at = 0;
+    let above = 0;
+    for (let i = 0; i < this.used; i++) {
+      const weight = this.counts[i] ?? 0;
+      if (weight === 0) continue;
+      const bucket = this.offset + i;
+      if (bucket === key) at += weight;
+      else if (bucket > key) above += weight;
+    }
+    if (key === Number.NEGATIVE_INFINITY) at = this.zeroCount;
+    return {
+      valueMs,
+      at: at / this.count,
+      above: above / this.count,
+      key,
+      mappingScale: this.mappingScale,
+    };
+  }
+
   shareAtAndAbove(value: number): {
     readonly at: number;
     readonly above: number;

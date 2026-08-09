@@ -20,11 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { TelemetryWorkerWriter } from "../packages/server/src/telemetry/storage/worker/writer.ts";
-import {
-  MINUTE_MS,
-  TelemetryAggregateBuckets,
-} from "../packages/server/src/telemetry/aggregation/buckets.ts";
-import { TraceExemplarCollector } from "../packages/server/src/telemetry/exemplars/collector.ts";
+import { MINUTE_MS } from "../packages/server/src/telemetry/aggregation/buckets.ts";
+import { Telemetry } from "../packages/server/src/telemetry/telemetry.ts";
+
 import type { TelemetrySpanRecord } from "../packages/server/src/telemetry/contracts/types.ts";
 
 const SPANS_PER_OPERATION = 7;
@@ -86,11 +84,21 @@ async function main(): Promise<void> {
   });
   await writer.whenReady();
 
-  const buckets = new TelemetryAggregateBuckets({ warmObservations: 50, referenceWindowMs: MINUTE_MS });
-  const collector = new TraceExemplarCollector(
-    (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
-    { baselineProbability: 0.01 },
-  );
+  // The REAL path, as scenario 6 is: one Telemetry, spans through recordSpan,
+  // and the exemplar a retained trace becomes going straight to the sidecar.
+  let retainedTraces = 0;
+  let observations = 0;
+  const telemetry = new Telemetry({
+    localSink: false,
+    exporter: { export: () => {} },
+    exemplar: (exemplar) => {
+      retainedTraces++;
+      writer.accept("exemplar", exemplar);
+    },
+    exemplarLimits: { baselineProbability: 0.01 },
+    aggregate: { warmObservations: 50, referenceWindowMs: MINUTE_MS },
+    limits: { retentionMs: 1, slowOperationMs: 500 },
+  });
 
   let traceCounter = 0;
   const results: StepResult[] = [];
@@ -100,7 +108,7 @@ async function main(): Promise<void> {
   for (const failingShare of STEPS) {
     const ackFrom = writer.commitAckMs.length;
     const before = writer.snapshot();
-    const retainedBefore = collector.snapshot().retainedTraces;
+    const retainedBefore = retainedTraces;
     const samples: { atMs: number; pending: number; bytes: number; age: number }[] = [];
     let rssPeak = 0;
     let servingNs = 0;
@@ -123,37 +131,25 @@ async function main(): Promise<void> {
         // A failing operation is both slow and errored, which is what an
         // incident looks like and what drives retention toward 100%.
         const durationMs = failing ? 200 + Math.random() * 800 : 2 + Math.random() * 8;
+        telemetry.beginTrace({ traceId }, virtualMs);
         for (let position = 0; position < SPANS_PER_OPERATION; position++) {
-          const outcome = failing && position === SPANS_PER_OPERATION - 1 ? "internal" : "ok";
-          const span = {
-            schemaVersion: 1,
-            kind: "span",
+          telemetry.recordSpan({
+            context: {
+              traceId,
+              spanId: `${traceId.slice(0, 24)}${position.toString(16).padStart(8, "0")}`,
+            },
             timestampMs: virtualMs,
-            traceId,
-            spanId: `${traceCounter.toString(16).padStart(13, "0")}${position.toString(16).padStart(3, "0")}`,
-            ...(position === 0
-              ? {}
-              : { parentSpanId: `${traceCounter.toString(16).padStart(13, "0")}000` }),
-            function: "api.checkout.submit",
             operation: position === 0 ? "procedure" : "query",
             stage: position === 0 ? "handler" : "storage",
-            outcome,
-            durationMs: position === 0 ? durationMs : durationMs / SPANS_PER_OPERATION,
+            outcome: failing && position === SPANS_PER_OPERATION - 1 ? "internal" : "ok",
+            functionName: "api.checkout.submit",
             statement: "checkout.submit",
             resource: "operation",
-          } as unknown as TelemetrySpanRecord;
-          // 100% of observations reach the aggregate, before anything selects.
-          buckets.record(
-            span.timestampMs,
-            span.operation,
-            span.function,
-            span.outcome,
-            span.durationMs,
-          );
-          collector.observe(traceId, span);
+            durationMs: position === 0 ? durationMs : durationMs / SPANS_PER_OPERATION,
+          });
+          observations++;
         }
-        const exemplar = collector.settle(traceId);
-        if (exemplar !== undefined) writer.accept("exemplar", exemplar);
+        telemetry.finishTrace({ traceId }, virtualMs + durationMs);
         // Logs are never sampled: one per operation, as a real application does.
         writer.accept("log", {
           kind: "log",
@@ -180,7 +176,7 @@ async function main(): Promise<void> {
       }
       servingNs += Bun.nanoseconds() - servingStart;
       // Closed minute buckets go to the worker like every other signal.
-      for (const handoff of buckets.drain(virtualMs)) {
+      for (const handoff of telemetry.drainAggregateBuckets()) {
         writer.accept("aggregate", {
           startMs: handoff.startMs,
           closed: handoff.closed,
@@ -206,7 +202,7 @@ async function main(): Promise<void> {
     const elapsedMs = performance.now() - startedAt;
     const after = writer.snapshot();
     const acks = writer.commitAckMs.slice(ackFrom).sort((a, b) => a - b);
-    const retained = collector.snapshot().retainedTraces - retainedBefore;
+    const retained = retainedTraces - retainedBefore;
     results.push({
       failingShare,
       operations,
@@ -235,7 +231,7 @@ async function main(): Promise<void> {
     console.error(`  step ${(failingShare * 100).toFixed(0)}% done`);
   }
 
-  for (const handoff of buckets.drain(virtualMs, true)) {
+  for (const handoff of telemetry.drainAggregateBuckets(true)) {
     writer.accept("aggregate", {
       startMs: handoff.startMs,
       closed: handoff.closed,
@@ -280,8 +276,7 @@ async function main(): Promise<void> {
     },
     onDisk,
     exemplarsByReason: Object.fromEntries(byReason.map((row) => [row.reason, Number(row.n)])),
-    aggregate: buckets.snapshot(),
-    collector: collector.snapshot(),
+    aggregate: { observations, retainedTraces },
   }, null, 2));
   rmSync(dir, { recursive: true, force: true });
 }

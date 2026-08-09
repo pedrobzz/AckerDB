@@ -83,16 +83,16 @@ export function lowConfidenceQuantiles(count: number): readonly number[] {
  */
 export interface CohortDistribution {
   readonly count: number;
-  quantile(q: number): number | undefined;
   /**
-   * The share of observations in the same bucket as `value` and the share
-   * strictly above it, with that bucket identified by KEY. The key matters: a
-   * caller that compares a duration against a reconstructed millisecond edge is
-   * comparing against a float, and at OTLP scale 6 every power of two is an
-   * exact bucket edge, so a constant-latency endpoint tests as above its own
-   * bucket and the policy retains all of it.
+   * The value at `q`, the bucket it came from, and how much mass sits in and
+   * above that bucket — in one answer, so no millisecond value is handed back to
+   * be re-keyed. The key matters: a caller comparing a duration against a
+   * reconstructed edge is comparing against a float, and at OTLP scale 6 every
+   * power of two is an exact bucket edge, so a constant-latency endpoint tests
+   * as above its own bucket and the policy retains all of it.
    */
-  shareAtAndAbove(value: number): {
+  quantileBucket(q: number): {
+    readonly valueMs: number;
     readonly at: number;
     readonly above: number;
     readonly key: number;
@@ -150,16 +150,112 @@ export function thresholdFrom(
   distribution: CohortDistribution,
   mappingScale: number,
 ): CohortThreshold {
-  const thresholdMs = distribution.quantile(RETENTION_QUANTILE);
-  const share = thresholdMs === undefined ? undefined : distribution.shareAtAndAbove(thresholdMs);
+  const bucket = distribution.quantileBucket(RETENTION_QUANTILE);
   return {
-    thresholdMs,
+    thresholdMs: bucket?.valueMs,
     warm: true,
     observations: distribution.count,
-    boundaryAdmitProbability: share === undefined || share.at <= 0
+    boundaryAdmitProbability: bucket === undefined || bucket.at <= 0
       ? 1
-      : Math.min(1, Math.max(0, (TARGET_TAIL_RATE - share.above) / share.at)),
-    boundaryKey: share?.key,
-    mappingScale: share?.mappingScale ?? mappingScale,
+      : Math.min(1, Math.max(0, (TARGET_TAIL_RATE - bucket.above) / bucket.at)),
+    boundaryKey: bucket?.key,
+    mappingScale: bucket?.mappingScale ?? mappingScale,
   };
+}
+
+/**
+ * `cold` is its own reason rather than a flavour of baseline: a cohort with too
+ * little history has no quantile, and retaining its first traces is a different
+ * claim from retaining a random share of a known population. A reader filtering
+ * for representative traces must be able to exclude them.
+ */
+export type ExemplarReason = "error" | "slow" | "baseline" | "cold";
+
+export interface ExemplarVerdict {
+  readonly reason: ExemplarReason;
+  /** The chance a trace like this one had of being kept: 1 for error and slow. */
+  readonly inclusionProbability: number;
+  /** The cohort quantile it was measured against; absent while the cohort was cold. */
+  readonly thresholdMs: number | undefined;
+}
+
+/**
+ * A stable [0,1) from a trace id. Deterministic so the same trace draws the same
+ * number wherever the question is asked, and so a test can reproduce a decision
+ * instead of chasing one.
+ */
+export function traceFraction(traceId: string, salt = 0): number {
+  let hash = (0x811c9dc5 ^ salt) >>> 0;
+  for (let index = 0; index < traceId.length; index++) {
+    hash ^= traceId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash / 0x100000000;
+}
+
+/** Salts keep the baseline draw and the boundary draw independent of each other. */
+const BASELINE_SALT = 0;
+const BOUNDARY_SALT = 0x9e3779b9;
+
+export interface ExemplarSelection {
+  /**
+   * Resolved LAZILY, and called only by the branches that need a draw. An
+   * operation trace allocates its UUID on first read, so a selection that
+   * resolved the id up front would put a `randomUUID` on every completed
+   * operation — most of which are forgotten a line later.
+   */
+  readonly traceId: () => string | undefined;
+  readonly durationMs: number;
+  readonly errorSpans: number;
+  readonly cohort: CohortThreshold;
+  /** Share of healthy traces kept so "show me a normal one" has an answer. */
+  readonly baselineProbability: number;
+  /** The bucket `durationMs` falls in, on `cohort.mappingScale`'s grid. */
+  readonly durationKey: number | undefined;
+}
+
+/**
+ * The one decision. A trace is kept because it failed, because it is in the
+ * tail, because its cohort has no history yet, or because the deterministic
+ * baseline drew it — and otherwise it is forgotten, which is the common case by
+ * design.
+ *
+ * `durationKey` is an integer on the aggregate's own grid and is compared
+ * against `cohort.boundaryKey` as an integer. Reconstructing the bucket's
+ * millisecond edges and comparing those is the fail-open this policy has
+ * produced five times: at OTLP scale 6 every power of two is an exact bucket
+ * edge, so a float `γ^k` lands just under it and a constant-latency endpoint
+ * tests as above its own bucket and retains entirely.
+ */
+export function selectExemplar(input: ExemplarSelection): ExemplarVerdict | undefined {
+  if (input.errorSpans > 0) {
+    return { reason: "error", inclusionProbability: 1, thresholdMs: input.cohort.thresholdMs };
+  }
+  const { cohort, durationKey } = input;
+  if (cohort.warm && cohort.thresholdMs !== undefined && cohort.boundaryKey !== undefined &&
+    durationKey !== undefined
+  ) {
+    // Above the boundary bucket retains outright and costs no draw at all.
+    if (durationKey > cohort.boundaryKey) {
+      return { reason: "slow", inclusionProbability: 1, thresholdMs: cohort.thresholdMs };
+    }
+    if (durationKey === cohort.boundaryKey) {
+      const id = input.traceId();
+      if (id !== undefined && traceFraction(id, BOUNDARY_SALT) < cohort.boundaryAdmitProbability) {
+        return { reason: "slow", inclusionProbability: 1, thresholdMs: cohort.thresholdMs };
+      }
+    }
+  }
+  if (!cohort.warm) {
+    return { reason: "cold", inclusionProbability: 1, thresholdMs: undefined };
+  }
+  const id = input.traceId();
+  if (id !== undefined && traceFraction(id, BASELINE_SALT) < input.baselineProbability) {
+    return {
+      reason: "baseline",
+      inclusionProbability: input.baselineProbability,
+      thresholdMs: cohort.thresholdMs,
+    };
+  }
+  return undefined;
 }

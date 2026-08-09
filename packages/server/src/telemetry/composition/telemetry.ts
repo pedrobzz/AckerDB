@@ -23,9 +23,11 @@ import {
 } from "../records/codec.ts";
 import { TelemetryAggregation } from "../aggregation/series.ts";
 import {
+  DEFAULT_AGGREGATE_LIMITS,
   TelemetryAggregateBuckets,
   type AggregateBucketHandoff,
 } from "../aggregation/buckets.ts";
+import { coldThreshold, type CohortThreshold } from "../policy.ts";
 import {
   SAFE_ERROR_CLASS,
   OVERFLOW_METRIC_NAME,
@@ -279,10 +281,16 @@ export class Telemetry {
       },
     };
     this.state = state;
-    this.retention = new TraceRetention(
-      state,
-      (record, retainedAtMs) => void this.retainAt(state, record, true, retainedAtMs),
-    );
+    this.retention = new TraceRetention(state, {
+      retainSpan: (record, retainedAtMs) => void this.retainAt(state, record, true, retainedAtMs),
+      // The threshold comes from the SAME distribution the chart is drawn from,
+      // which is what makes "the chart shows p99, therefore a p99 exemplar
+      // exists" true by construction rather than by luck.
+      thresholdFor: (operation, functionAddress) =>
+        state.aggregateBuckets.thresholdFor(operation ?? "procedure", functionAddress),
+      ...(options.exemplar === undefined ? {} : { exemplar: options.exemplar }),
+      ...(options.exemplarLimits === undefined ? {} : { limits: options.exemplarLimits }),
+    });
     if (state.exporter) {
       try {
         state.intervalHandle = scheduler.setInterval(() => {
@@ -679,15 +687,30 @@ export class Telemetry {
       }
     }
     if (trace !== undefined) {
-      if (trace.retained) return this.retain(materializeSpan(span), true);
+      if (trace.retained) return this.retainForTrace(state, trace, span);
       if (retain) {
         this.retention!.promote(trace, span.timestampMs);
-        return this.retain(materializeSpan(span), true);
+        return this.retainForTrace(state, trace, span);
       }
       this.retention!.stageSpan(trace, span);
       return true;
     }
     return retain ? this.retain(materializeSpan(span), true) : true;
+  }
+
+  /**
+   * One span of an already-retained trace, materialized once and given to every
+   * sink that wants it: the export pipeline, and the exemplar's span list when
+   * one is being built.
+   */
+  private retainForTrace(
+    state: TelemetryState,
+    trace: MutableTraceRetention,
+    span: SanitizedTelemetrySpan,
+  ): boolean {
+    void state;
+    this.retention!.retainSpanFor(trace, span, materializeSpan(span));
+    return true;
   }
 
   recordEvent(input: TelemetryEventInput): boolean {
@@ -815,6 +838,18 @@ export class Telemetry {
    * still in progress — marked not closed, so a process that stops mid-minute
    * leaves evidence rather than a smaller count that reads as exact.
    */
+  /**
+   * The cohort threshold this instance would report and retain against — the
+   * same number, from the same distribution. Exposed because "the chart shows
+   * p99, therefore a p99 exemplar exists" is only checkable if the check can ask
+   * for the number the chart would show.
+   */
+  cohortThreshold(operation: TelemetryOperation, functionAddress?: string): CohortThreshold {
+    const state = this.state;
+    if (!state) return coldThreshold(0, DEFAULT_AGGREGATE_LIMITS.mappingScale);
+    return state.aggregateBuckets.thresholdFor(operation, functionAddress);
+  }
+
   drainAggregateBuckets(force = false): readonly AggregateBucketHandoff[] {
     const state = this.state;
     if (!state) return EMPTY_HANDOFFS;

@@ -1,12 +1,15 @@
 /**
- * Tail-sampled trace exemplars: one row per retained trace, and nothing at all
- * for the rest.
+ * What a retained trace looks like on the way to storage.
  *
- * The aggregate beside this sees every observation, so nothing here is
- * responsible for counting. What an exemplar is for is the other question — not
- * "how slow was this endpoint" but "show me one that was slow" — and answering
- * that needs a handful of whole traces, not all of them. Real products retain
- * 0.1%–1%; #194 attempted 100% and produced 512 MB a minute at design load.
+ * There is no collector here any more. Accumulating spans per trace, bounding
+ * that accumulation, and deciding at trace end whether to keep it are all
+ * `TraceRetention`'s job and always were — a second component doing the same
+ * three things beside it staged every trace's spans twice, which is precisely
+ * the memory this design exists to bound, and gave two places for the same
+ * judgement to drift. One decision, made once, where the trace settles.
+ *
+ * What is left is the row: its shape, the disclosure it must carry, and the
+ * bounded payload built from the spans the trace already staged.
  *
  * **Every stored trace says why it is here.** Selection reason, policy version,
  * inclusion probability, completeness, and the observed and omitted span counts
@@ -18,26 +21,14 @@
  * percentile, or a rank from this table — those come from the aggregate.
  *
  * **A trace that outgrew its budget says so.** Past the per-trace cap the
- * exemplar becomes `oversized`: the root, every error span, and a bounded set of
- * the slowest spans, with `complete: false` and the omitted count. A silently
- * truncated tree that still claims completeness is the one outcome this must
- * never produce, because it looks exactly like a small trace.
+ * exemplar becomes `oversized`: what it kept, with `complete: false` and the
+ * omitted count. A silently truncated tree that still claims completeness is the
+ * one outcome this must never produce, because it looks exactly like a small one.
  */
 import type { TelemetrySpanRecord } from "../contracts/types.ts";
-import type { TelemetryOperation } from "../contracts/schema.ts";
-import type { CohortThreshold } from "../policy.ts";
-import { bucketKey, scaleMultiplier } from "../aggregation/sketch.ts";
+import type { ExemplarReason, ExemplarVerdict } from "../policy.ts";
 
-/**
- * How the policy learns what "slow" currently means for one cohort. It is the
- * aggregate's own distribution — the same one the chart is drawn from — which is
- * what makes "the chart shows p99, therefore a p99 exemplar exists" true by
- * construction instead of by luck.
- */
-export type CohortThresholdProvider = (
-  operation: TelemetryOperation | undefined,
-  functionAddress: string | undefined,
-) => CohortThreshold;
+export type { ExemplarReason };
 
 /**
  * Bump when the thresholds or the shape of the selection change. Stored with
@@ -46,32 +37,12 @@ export type CohortThresholdProvider = (
  */
 export const TRACE_POLICY_VERSION = 1;
 
-/**
- * `cold` is its own reason rather than a flavour of baseline: a cohort with too
- * little history has no quantile, and retaining its first traces is a different
- * claim from retaining a random share of a known population. A reader filtering
- * for representative traces must be able to exclude them.
- */
-export type ExemplarReason = "error" | "slow" | "baseline" | "cold";
-
 export interface TraceExemplarLimits {
-  /** Spans one exemplar may carry before it becomes `oversized`. */
-  readonly maxSpansPerTrace: number;
-  /** Bytes one exemplar's payload may reach before it becomes `oversized`. */
-  readonly maxBytesPerTrace: number;
-  /** Traces accumulating at once; beyond this an unselected trace is discarded whole. */
-  readonly maxOpenTraces: number;
-  /** Bytes across every accumulating trace. */
-  readonly maxOpenBytes: number;
   /** Share of healthy traces kept so "show me a normal one" has an answer. */
   readonly baselineProbability: number;
 }
 
 export const DEFAULT_EXEMPLAR_LIMITS: TraceExemplarLimits = Object.freeze({
-  maxSpansPerTrace: 512,
-  maxBytesPerTrace: 256 * 1_024,
-  maxOpenTraces: 2_048,
-  maxOpenBytes: 4 * 1_024 * 1_024,
   baselineProbability: 0.01,
 });
 
@@ -92,266 +63,58 @@ export interface TraceExemplar {
    * kept under a 40 ms threshold from one kept under 4 s.
    */
   readonly thresholdMs: number | undefined;
-  /** The chance a trace like this one had of being kept: 1 for error and slow. */
   readonly inclusionProbability: number;
   /** False when the payload is not the whole trace. */
   readonly complete: boolean;
   readonly oversized: boolean;
-  /** Spans the collector saw, whether or not they are in the payload. */
+  /** Spans the trace saw, whether or not they are in the payload. */
   readonly observedSpans: number;
   /** Spans the payload leaves out. Zero exactly when `complete`. */
   readonly omittedSpans: number;
   readonly payload: string;
 }
 
-export interface TraceExemplarSnapshot {
-  readonly openTraces: number;
-  readonly openBytes: number;
-  readonly retainedTraces: number;
-  readonly oversizedTraces: number;
-  readonly discardedTraces: number;
-  readonly discardedSpans: number;
-  readonly baselineProbability: number;
-  readonly policyVersion: number;
-}
-
-interface OpenTrace {
+export interface TraceExemplarInput {
   readonly traceId: string;
-  readonly spans: TelemetrySpanRecord[];
-  bytes: number;
-  observed: number;
-  errorSpans: TelemetrySpanRecord[];
-  oversized: boolean;
-  startedAtMs: number;
-  endedAtMs: number;
-  errorCount: number;
-  /** Decided once, at creation, from the trace id — never re-rolled per span. */
-  readonly baselineSelected: boolean;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  readonly errorSpans: number;
+  readonly observedSpans: number;
+  readonly omittedSpans: number;
+  readonly verdict: ExemplarVerdict;
+  readonly spans: readonly TelemetrySpanRecord[];
 }
 
-/**
- * A stable [0,1) from a trace id. Deterministic so the baseline decision can be
- * made when the trace is created rather than when it ends: a selected trace
- * retains immediately, and only the undecided ones pay to be staged while their
- * error-or-slow verdict is still pending.
- */
-export function traceFraction(traceId: string, salt = 0): number {
-  let hash = (0x811c9dc5 ^ salt) >>> 0;
-  for (let index = 0; index < traceId.length; index++) {
-    hash ^= traceId.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash / 0x100000000;
-}
-
-/** Salts keep the baseline draw and the boundary draw independent of each other. */
-const BASELINE_SALT = 0;
-const BOUNDARY_SALT = 0x9e3779b9;
-
-function spanBytes(span: TelemetrySpanRecord): number {
-  return 96 +
-    (span.function?.length ?? 0) +
-    (span.statement?.length ?? 0) +
-    (span.spanId?.length ?? 0) +
-    (span.parentSpanId?.length ?? 0);
-}
-
-export class TraceExemplarCollector {
-  readonly limits: TraceExemplarLimits;
-  private readonly open = new Map<string, OpenTrace>();
-  private openBytes = 0;
-  private retainedTraces = 0;
-  private oversizedTraces = 0;
-  private discardedTraces = 0;
-  private discardedSpans = 0;
-
-  constructor(
-    private readonly thresholdFor: CohortThresholdProvider,
-    limits: Partial<TraceExemplarLimits> = {},
-  ) {
-    this.limits = Object.freeze({ ...DEFAULT_EXEMPLAR_LIMITS, ...limits });
-  }
-
-  /** Whether a trace id is in the deterministic healthy-baseline share. */
-  isBaseline(traceId: string): boolean {
-    return traceFraction(traceId, BASELINE_SALT) < this.limits.baselineProbability;
-  }
-
-  /**
-   * Offer one span. Accumulation is bounded twice: per trace, where overflow
-   * turns the exemplar `oversized` rather than truncating it silently, and
-   * globally, where exhaustion discards an entire trace rather than leaving a
-   * mutilated one behind.
-   */
-  observe(traceId: string, span: TelemetrySpanRecord): void {
-    let trace = this.open.get(traceId);
-    if (trace === undefined) {
-      if (this.open.size >= this.limits.maxOpenTraces || this.openBytes >= this.limits.maxOpenBytes) {
-        this.discardedTraces++;
-        this.discardedSpans++;
-        return;
-      }
-      trace = {
-        traceId,
-        spans: [],
-        bytes: 0,
-        observed: 0,
-        errorSpans: [],
-        oversized: false,
-        startedAtMs: span.timestampMs,
-        endedAtMs: span.timestampMs,
-        errorCount: 0,
-        baselineSelected: this.isBaseline(traceId),
-      };
-      this.open.set(traceId, trace);
-    }
-    trace.observed++;
-    if (span.timestampMs < trace.startedAtMs) trace.startedAtMs = span.timestampMs;
-    const endedAt = span.timestampMs + span.durationMs;
-    if (endedAt > trace.endedAtMs) trace.endedAtMs = endedAt;
-    if (span.outcome !== "ok") {
-      trace.errorCount++;
-      // Error spans are what an operator opened the trace for, so they survive
-      // the cap even when the ordinary span list stops growing.
-      if (trace.errorSpans.length < 32) trace.errorSpans.push(span);
-    }
-    const bytes = spanBytes(span);
-    if (
-      trace.spans.length >= this.limits.maxSpansPerTrace ||
-      trace.bytes + bytes > this.limits.maxBytesPerTrace
-    ) {
-      trace.oversized = true;
-      return;
-    }
-    trace.spans.push(span);
-    trace.bytes += bytes;
-    this.openBytes += bytes;
-  }
-
-  /**
-   * Close a trace. Returns an exemplar when the policy kept it, `undefined`
-   * when it did not — and forgetting is the common case by design.
-   */
-  settle(traceId: string): TraceExemplar | undefined {
-    const trace = this.open.get(traceId);
-    if (trace === undefined) return undefined;
-    this.open.delete(traceId);
-    this.openBytes -= trace.bytes;
-    const durationMs = Math.max(0, trace.endedAtMs - trace.startedAtMs);
-    const root = trace.spans.find((candidate) => candidate.parentSpanId === undefined) ??
-      trace.spans[0];
-    // The threshold is this cohort's own current high quantile, never a
-    // constant: a fixed millisecond value drifts away from the number on the
-    // chart the moment the application's latency changes, and the operator is
-    // the one who discovers it.
-    const cohort = this.thresholdFor(root?.operation, root?.function);
-    // The contract is a RATE, and the threshold is only how it is reached.
-    // Everything above the boundary bucket is retained; the boundary bucket
-    // itself admits at the probability that makes the realized rate match the
-    // target. Without this, a distribution whose mass piles on one value —
-    // a cached endpoint answering in exactly 2 ms, one dominated by a fixed
-    // timeout — retains the entire pile, because `>=` keeps every tie. That is
-    // the same shape as every other way this policy has failed: a rule of the
-    // form "retain when X" whose X quietly stopped discriminating.
-    // Classified in the aggregate's own integer key space. Comparing the
-    // duration against reconstructed millisecond edges is the fail-open this
-    // component keeps rediscovering: a float bucket edge just below an exact
-    // power of two puts every observation of a constant-latency endpoint
-    // "above" its own bucket, and the whole endpoint retains.
-    const key = cohort.boundaryKey === undefined || durationMs <= 0
-      ? undefined
-      : bucketKey(durationMs, scaleMultiplier(cohort.mappingScale));
-    const slow = cohort.warm && cohort.thresholdMs !== undefined && key !== undefined && (
-      key > cohort.boundaryKey! ||
-      (key === cohort.boundaryKey &&
-        traceFraction(traceId, BOUNDARY_SALT) < cohort.boundaryAdmitProbability)
-    );
-    const reason: ExemplarReason | undefined = trace.errorCount > 0
-      ? "error"
-      : slow
-        ? "slow"
-        : !cohort.warm
-          ? "cold"
-          : trace.baselineSelected
-            ? "baseline"
-            : undefined;
-    if (reason === undefined) {
-      this.discardedTraces++;
-      this.discardedSpans += trace.observed;
-      return undefined;
-    }
-    this.retainedTraces++;
-    if (trace.oversized) this.oversizedTraces++;
-    // An oversized exemplar carries the root, every error span it kept, and the
-    // slowest of the rest — the parts an operator opened it for.
-    const carried = trace.oversized
-      ? dedupe([
-          ...(root === undefined ? [] : [root]),
-          ...trace.errorSpans,
-          ...[...trace.spans].sort((a, b) => b.durationMs - a.durationMs).slice(0, 64),
-        ])
-      : trace.spans;
-    return Object.freeze({
-      traceId,
-      startedAtMs: trace.startedAtMs,
-      durationMs,
-      rootFunction: root?.function,
-      rootOperation: root?.operation,
-      outcome: trace.errorCount > 0 ? "error" : "ok",
-      errorCount: trace.errorCount,
-      reason,
-      policyVersion: TRACE_POLICY_VERSION,
-      thresholdMs: cohort.warm ? cohort.thresholdMs : undefined,
-      inclusionProbability: reason === "baseline" ? this.limits.baselineProbability : 1,
-      complete: !trace.oversized,
-      oversized: trace.oversized,
-      observedSpans: trace.observed,
-      omittedSpans: Math.max(0, trace.observed - carried.length),
-      payload: JSON.stringify(carried.map((span) => ({
-        spanId: span.spanId,
-        parentSpanId: span.parentSpanId,
-        operation: span.operation,
-        stage: span.stage,
-        outcome: span.outcome,
-        function: span.function,
-        statement: span.statement,
-        timestampMs: span.timestampMs,
-        durationMs: span.durationMs,
-      }))),
-    });
-  }
-
-  /** Forget a trace without producing an exemplar — a drain drops what is open. */
-  abandon(traceId: string): void {
-    const trace = this.open.get(traceId);
-    if (trace === undefined) return;
-    this.open.delete(traceId);
-    this.openBytes -= trace.bytes;
-    this.discardedTraces++;
-    this.discardedSpans += trace.observed;
-  }
-
-  snapshot(): TraceExemplarSnapshot {
-    return Object.freeze({
-      openTraces: this.open.size,
-      openBytes: this.openBytes,
-      retainedTraces: this.retainedTraces,
-      oversizedTraces: this.oversizedTraces,
-      discardedTraces: this.discardedTraces,
-      discardedSpans: this.discardedSpans,
-      baselineProbability: this.limits.baselineProbability,
-      policyVersion: TRACE_POLICY_VERSION,
-    });
-  }
-}
-
-function dedupe(spans: readonly TelemetrySpanRecord[]): TelemetrySpanRecord[] {
-  const seen = new Set<TelemetrySpanRecord>();
-  const out: TelemetrySpanRecord[] = [];
-  for (const span of spans) {
-    if (seen.has(span)) continue;
-    seen.add(span);
-    out.push(span);
-  }
-  return out;
+/** Build one row from the spans the trace staged and the verdict that kept it. */
+export function buildExemplar(input: TraceExemplarInput): TraceExemplar {
+  const root = input.spans.find((candidate) => candidate.parentSpanId === undefined) ??
+    input.spans[0];
+  return Object.freeze({
+    traceId: input.traceId,
+    startedAtMs: input.startedAtMs,
+    durationMs: Math.max(0, input.endedAtMs - input.startedAtMs),
+    rootFunction: root?.function,
+    rootOperation: root?.operation,
+    outcome: input.errorSpans > 0 ? "error" : "ok",
+    errorCount: input.errorSpans,
+    reason: input.verdict.reason,
+    policyVersion: TRACE_POLICY_VERSION,
+    thresholdMs: input.verdict.thresholdMs,
+    inclusionProbability: input.verdict.inclusionProbability,
+    complete: input.omittedSpans === 0,
+    oversized: input.omittedSpans > 0,
+    observedSpans: input.observedSpans,
+    omittedSpans: input.omittedSpans,
+    payload: JSON.stringify(input.spans.map((span) => ({
+      spanId: span.spanId,
+      parentSpanId: span.parentSpanId,
+      operation: span.operation,
+      stage: span.stage,
+      outcome: span.outcome,
+      function: span.function,
+      statement: span.statement,
+      timestampMs: span.timestampMs,
+      durationMs: span.durationMs,
+    }))),
+  });
 }

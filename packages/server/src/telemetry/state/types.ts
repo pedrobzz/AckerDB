@@ -2,6 +2,8 @@ import type { TelemetryLimits } from "../../runtime/limits.ts";
 import type { TraceJournal } from "../journal.ts";
 import type { TelemetryAggregation } from "../aggregation/series.ts";
 import type { TelemetryAggregateBuckets } from "../aggregation/buckets.ts";
+import type { ExemplarVerdict } from "../policy.ts";
+import type { TelemetrySpanRecord } from "../contracts/types.ts";
 import type {
   TelemetryExporter,
   TelemetryScheduler,
@@ -21,8 +23,27 @@ import type {
 } from "../contracts/schema.ts";
 
 export interface MutableTraceRetention {
-  readonly traceId?: string;
-  readonly startedAtMs: number;
+  traceId?: string;
+  startedAtMs: number;
+  /** Latest span end seen; with `startedAtMs` this is the trace's duration. */
+  endedAtMs: number;
+  /** Spans this trace saw, including any the staging bounds refused. */
+  observedSpans: number;
+  /** Spans the bounds refused, so the exemplar can disclose what it omits. */
+  omittedSpans: number;
+  errorSpans: number;
+  /** The root span's identity, for the cohort a slow verdict is measured in. */
+  rootFunction?: string;
+  rootOperation?: TelemetryOperation;
+  /** Set once, when the trace completes and the policy has judged it. */
+  verdict?: ExemplarVerdict;
+  /**
+   * Materialized spans an exemplar will carry. References to the same records
+   * the export pipeline already holds, not copies, and allocated only for the
+   * retained minority — the alternative, a second component staging every
+   * trace's spans in parallel, is what this replaced.
+   */
+  exemplarSpans?: TelemetrySpanRecord[];
   owner?: TelemetryState;
   rootContext?: AuthenticTelemetryTraceContext;
   operationTrace?: OperationTrace;

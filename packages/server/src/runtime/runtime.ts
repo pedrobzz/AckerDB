@@ -271,6 +271,10 @@ export class Runtime implements RuntimePort {
         : {
             ...options.telemetry,
             ...(admin?.aggregate === undefined ? {} : { aggregate: admin.aggregate }),
+            // A retained trace becomes a durable exemplar. The sidecar is built
+            // a few lines below and no span can be recorded before it exists, so
+            // the closure is safe and keeps the two constructions independent.
+            exemplar: (exemplar) => void this.telemetrySidecar.accept("exemplar", exemplar),
             limits: {
               ...this.limits.telemetry,
               ...options.telemetry?.limits,

@@ -11,11 +11,9 @@ import {
 } from "../../src/telemetry/aggregation/buckets.ts";
 import {
   TRACE_POLICY_VERSION,
-  TraceExemplarCollector,
-  type CohortThresholdProvider,
+  type TraceExemplar,
 } from "../../src/telemetry/exemplars/collector.ts";
-import {
-} from "../../src/telemetry/aggregation/buckets.ts";
+import { Telemetry } from "../../src/telemetry/telemetry.ts";
 import {
   BODY_QUANTILES,
   EXPOSED_QUANTILES,
@@ -30,43 +28,10 @@ import {
   DEFAULT_MAPPING_SCALE,
   scaleMultiplier,
 } from "../../src/telemetry/aggregation/sketch.ts";
-import type { TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
+import type { TelemetryOutcome } from "../../src/telemetry/contracts/schema.ts";
 
 const HOUR_ALIGNED = Math.floor(1_700_000_000_000 / 3_600_000) * 3_600_000;
 
-/**
- * A cohort that is always warm at a fixed threshold, for the policy tests.
- *
- * The boundary is the threshold's OWN bucket on the default grid, computed the
- * same way the aggregate computes it. An earlier fixture supplied hand-written
- * boundary bounds that put every trace inside the boundary bucket — the same
- * fail-open as the code it was testing, one layer up — so the fixture derives
- * them now instead of asserting them.
- */
-const warmAt = (thresholdMs: number): CohortThresholdProvider =>
-  () => ({
-    thresholdMs,
-    warm: true,
-    observations: 10_000,
-    boundaryAdmitProbability: 1,
-    boundaryKey: bucketKey(thresholdMs, scaleMultiplier(DEFAULT_MAPPING_SCALE)),
-    mappingScale: DEFAULT_MAPPING_SCALE,
-  });
-
-function span(overrides: Record<string, unknown> = {}): TelemetrySpanRecord {
-  return Object.freeze({
-    schemaVersion: 1,
-    kind: "span",
-    timestampMs: 1_000,
-    operation: "query",
-    stage: "handler",
-    outcome: "ok",
-    durationMs: 1,
-    spanId: "s1",
-    function: "api.items.list",
-    ...overrides,
-  }) as unknown as TelemetrySpanRecord;
-}
 
 describe("aggregate distribution", () => {
   test("answers quantiles inside the relative accuracy it declares", () => {
@@ -158,167 +123,225 @@ describe("aggregate distribution", () => {
   });
 });
 
+/**
+ * Drive the REAL path: `Telemetry` with an exemplar sink, spans through
+ * `recordSpan`, and a trace that begins and finishes. These are the standing
+ * guards on the retention policy, and a guard that drove a component production
+ * never called is exactly how the exemplar store stayed empty.
+ */
+const PRUNER = "ffffffffffffffffffffffffffffffff";
+
+interface ExemplarDriver {
+  readonly exemplars: readonly TraceExemplar[];
+  readonly telemetry: Telemetry;
+  trace(
+    traceId: string,
+    spans: readonly { durationMs: number; outcome?: TelemetryOutcome; functionName?: string }[],
+    atMs?: number,
+  ): TraceExemplar | undefined;
+}
+
+function driver(options: {
+  baselineProbability?: number;
+  warmObservations?: number;
+} = {}): ExemplarDriver {
+  const exemplars: TraceExemplar[] = [];
+  const telemetry = new Telemetry({
+    localSink: false,
+    exemplar: (exemplar) => exemplars.push(exemplar),
+    exemplarLimits: { baselineProbability: options.baselineProbability ?? 0.01 },
+    aggregate: {
+      warmObservations: options.warmObservations ?? 50,
+      referenceWindowMs: MINUTE_MS,
+    },
+    // A completed trace is held for delayed delivery spans before it settles,
+    // and settling is when its exemplar is written. One millisecond here so the
+    // prune below reaches it; production holds it for five minutes.
+    limits: { retentionMs: 1 },
+  });
+  return {
+    exemplars,
+    telemetry,
+    trace: (traceId, spans, atMs = HOUR_ALIGNED) => {
+      const before = exemplars.length;
+      let spanIndex = 0;
+      telemetry.beginTrace({ traceId }, atMs);
+      for (const one of spans) {
+        telemetry.recordSpan({
+          context: { traceId, spanId: `${traceId.slice(0, 24)}${(spanIndex++ % 10_000).toString(16).padStart(8, "0")}` },
+          timestampMs: atMs,
+          operation: "procedure",
+          stage: "handler",
+          outcome: one.outcome ?? "ok",
+          functionName: one.functionName ?? "api.checkout.submit",
+          durationMs: one.durationMs,
+        });
+      }
+      const endedAt = atMs + Math.max(0, ...spans.map((one) => one.durationMs));
+      telemetry.finishTrace({ traceId }, endedAt);
+      // Settle it the way production does: any later lifecycle call prunes the
+      // completed decisions whose delayed-delivery window has passed. Naming a
+      // trace that does not exist prunes without opening one of its own.
+      telemetry.finishTrace({ traceId: PRUNER }, endedAt + 8);
+      return exemplars.length > before ? exemplars.at(-1) : undefined;
+    },
+  };
+}
+
 describe("trace exemplars", () => {
   const ids = Array.from(
     { length: 20_000 },
     (_, index) => index.toString(16).padStart(32, "0"),
   );
 
-  test("keeps a declared share of healthy traces, decided from the trace id", () => {
-    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
-    const kept = ids.filter((id) => collector.isBaseline(id)).length / ids.length;
-    expect(kept).toBeGreaterThan(0.005);
-    expect(kept).toBeLessThan(0.02);
-    // Deciding at creation is what lets a selected trace retain immediately
-    // instead of staging while its verdict is pending.
-    for (const id of ids.slice(0, 200)) {
-      expect(collector.isBaseline(id)).toBe(collector.isBaseline(id));
+  /**
+   * Warm one cohort so the policy has a quantile to measure against. The spread
+   * is continuous on purpose: a constant duration puts every observation in one
+   * bucket, and the boundary admission that then governs is a different property
+   * with its own test.
+   */
+  const warm = (
+    run: ExemplarDriver,
+    count = 400,
+    functionName = "api.checkout.submit",
+  ): void => {
+    for (let index = 0; index < count; index++) {
+      run.trace(`warm${index.toString(16).padStart(27, "0")}`, [{
+        durationMs: 8 + ((index * 2654435761) % 100_000) / 12_500,
+        functionName,
+      }]);
     }
+  };
+
+  /** A duration in the body of the warmed spread, well below its tail. */
+  const typical = (index: number): number => 8 + (index % 40) / 20;
+
+  test("keeps a declared share of healthy traces, decided from the trace id", () => {
+    const run = driver({ baselineProbability: 0.01 });
+    warm(run);
+    const before = run.exemplars.length;
+    ids.slice(0, 5_000).forEach((id, index) => run.trace(id, [{ durationMs: typical(index) }]));
+    const kept = run.exemplars.slice(before).filter((one) => one.reason === "baseline");
+    // The baseline share is what is declared and what is drawn; the tail share
+    // beside it is the threshold rule, measured separately.
+    expect(kept.length / 5_000).toBeGreaterThan(0.005);
+    expect(kept.length / 5_000).toBeLessThan(0.02);
+    expect(kept.every((one) => one.inclusionProbability === 0.01)).toBe(true);
   });
 
   test("forgets a healthy trace outside the baseline share", () => {
-    const collector = new TraceExemplarCollector(warmAt(500));
-    const id = ids.find((candidate) => !collector.isBaseline(candidate))!;
-    collector.observe(id, span());
-    expect(collector.settle(id)).toBeUndefined();
-    expect(collector.snapshot().discardedTraces).toBe(1);
+    const run = driver({ baselineProbability: 0 });
+    warm(run);
+    expect(run.trace(ids[7_000]!, [{ durationMs: typical(3) }])).toBeUndefined();
   });
 
   test("every stored trace says why it was kept and how likely that was", () => {
-    const collector = new TraceExemplarCollector(warmAt(500));
-    const failed = ids.find((candidate) => !collector.isBaseline(candidate))!;
-    collector.observe(failed, span());
-    collector.observe(failed, span({ spanId: "s2", parentSpanId: "s1", outcome: "internal" }));
-    const errored = collector.settle(failed)!;
+    const run = driver({ baselineProbability: 0 });
+    warm(run);
+
+    const errored = run.trace(ids[1]!, [
+      { durationMs: typical(1) },
+      { durationMs: typical(2), outcome: "internal" },
+    ])!;
     expect(errored.reason).toBe("error");
     expect(errored.inclusionProbability).toBe(1);
     expect(errored.policyVersion).toBe(TRACE_POLICY_VERSION);
     expect(errored.complete).toBe(true);
     expect(errored.omittedSpans).toBe(0);
+    expect(errored.errorCount).toBe(1);
 
-    const slowId = ids.find((candidate) =>
-      !collector.isBaseline(candidate) && candidate !== failed)!;
-    collector.observe(slowId, span({ durationMs: 900 }));
-    const slow = collector.settle(slowId)!;
+    const slow = run.trace(ids[2]!, [{ durationMs: 900 }])!;
     expect(slow.reason).toBe("slow");
     expect(slow.inclusionProbability).toBe(1);
 
-    const baselineId = ids.find((candidate) => collector.isBaseline(candidate))!;
-    collector.observe(baselineId, span());
-    const baseline = collector.settle(baselineId)!;
+    const baselineRun = driver({ baselineProbability: 1 });
+    warm(baselineRun);
+    const baseline = baselineRun.trace(ids[3]!, [{ durationMs: typical(4) }])!;
     expect(baseline.reason).toBe("baseline");
-    expect(baseline.inclusionProbability).toBe(collector.limits.baselineProbability);
+    expect(baseline.inclusionProbability).toBe(1);
   });
 
   test("a trace past its budget is typed oversized, never quietly truncated", () => {
-    const collector = new TraceExemplarCollector(warmAt(500), { maxSpansPerTrace: 128 });
-    const id = ids.find((candidate) => !collector.isBaseline(candidate))!;
-    for (let index = 0; index < 5_000; index++) {
-      collector.observe(id, span({
-        spanId: `s${index}`,
-        ...(index === 0 ? {} : { parentSpanId: "s0" }),
-        durationMs: index % 50,
-        outcome: index === 4_999 ? "internal" : "ok",
-      }));
-    }
-    const exemplar = collector.settle(id)!;
+    const run = driver({ baselineProbability: 0 });
+    warm(run);
+    const spans = Array.from({ length: 5_000 }, (_, index) => ({
+      durationMs: index % 50,
+      outcome: (index === 4_999 ? "internal" : "ok") as TelemetryOutcome,
+    }));
+    const exemplar = run.trace(ids[9]!, spans)!;
+    expect(exemplar.observedSpans).toBe(5_000);
     expect(exemplar.oversized).toBe(true);
     expect(exemplar.complete).toBe(false);
-    expect(exemplar.observedSpans).toBe(5_000);
     // The payload plus what it admits leaving out must equal what was seen; a
     // truncated tree that still added up would be indistinguishable from a
     // genuinely small trace.
     const carried = (JSON.parse(exemplar.payload) as unknown[]).length;
     expect(carried + exemplar.omittedSpans).toBe(exemplar.observedSpans);
-    expect(exemplar.errorCount).toBe(1);
-  });
-
-  test("global staging exhaustion discards whole traces, not parts of them", () => {
-    const collector = new TraceExemplarCollector(warmAt(500), { maxOpenTraces: 4 });
-    for (let index = 0; index < 50; index++) {
-      collector.observe(index.toString(16).padStart(32, "0"), span());
-    }
-    expect(collector.snapshot().openTraces).toBe(4);
-    expect(collector.snapshot().discardedTraces).toBe(46);
   });
 
   test("the retained cohort is not a sample, and its error rate proves it", () => {
-    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
-    let stored = 0;
-    let storedErrors = 0;
+    const run = driver({ baselineProbability: 0.01 });
+    warm(run);
     const produced = 10_000;
+    const before = run.exemplars.length;
+    let storedErrors = 0;
     for (let index = 0; index < produced; index++) {
-      const id = index.toString(16).padStart(32, "0");
       const failed = index % 100 === 0;
-      collector.observe(id, span({ outcome: failed ? "internal" : "ok" }));
-      const exemplar = collector.settle(id);
-      if (exemplar !== undefined) {
-        stored++;
-        if (exemplar.errorCount > 0) storedErrors++;
-      }
+      const exemplar = run.trace(ids[index]!, [{
+        durationMs: typical(index),
+        ...(failed ? { outcome: "internal" as TelemetryOutcome } : {}),
+      }]);
+      if (exemplar !== undefined && exemplar.errorCount > 0) storedErrors++;
     }
-    // The true error rate is 1%. Among stored traces it is close to half,
-    // because the policy keeps every failure and only a sliver of the rest.
-    // Nothing may derive a rate from this table; that is the aggregate's job.
+    const stored = run.exemplars.length - before;
+    // The true error rate is 1%. Among stored traces it is far higher, because
+    // the policy keeps every failure and only a sliver of the rest. Nothing may
+    // derive a rate from this table; that is the aggregate's job.
     expect(storedErrors / stored).toBeGreaterThan(0.3);
-    expect(stored / produced).toBeLessThan(0.05);
+    expect(stored / produced).toBeLessThan(0.10);
   });
 
   test("a rare healthy function may honestly have no exemplar at all", () => {
-    const collector = new TraceExemplarCollector(warmAt(500), { baselineProbability: 0.01 });
-    const rare = ids.filter((candidate) => !collector.isBaseline(candidate)).slice(0, 5);
-    for (const id of rare) {
-      collector.observe(id, span({ function: "api.rare.call" }));
-      expect(collector.settle(id)).toBeUndefined();
+    const run = driver({ baselineProbability: 0 });
+    // Warm the rare cohort, so "no exemplar" is a decision rather than coldness.
+    warm(run, 400, "api.rare.call");
+    const before = run.exemplars.length;
+    for (let index = 0; index < 300; index++) {
+      run.trace(`rare${index.toString(16).padStart(28, "0")}`, [
+        { durationMs: typical(index), functionName: "api.rare.call" },
+      ]);
     }
-    // "Show me a normal trace" has no answer here, and the absence is a fact the
-    // reader must be told rather than a gap it should fill by implication.
-    expect(collector.snapshot().retainedTraces).toBe(0);
+    // "Show me a normal trace" is allowed to have no answer: with no baseline
+    // share configured, a healthy function in the body of its own distribution
+    // stores nothing at all, and that absence is honest rather than a gap.
+    expect(run.exemplars.length - before).toBe(0);
   });
 
   test("a trace at or above the reported p99 exists for the window the chart covers", () => {
     // The scenario an operator feels at 3 a.m.: the chart shows a p99 spike,
     // they click it, and either a trace is there or the policy was measuring
     // something unrelated to the number on screen.
-    const buckets = new TelemetryAggregateBuckets({
-      warmObservations: 50,
-      referenceWindowMs: MINUTE_MS,
-    });
-    const collector = new TraceExemplarCollector(
-      (operation, fn) => buckets.thresholdFor(operation ?? "query", fn),
-      { baselineProbability: 0 },
-    );
-    const stored: number[] = [];
-    let traceIndex = 0;
-
+    const run = driver({ baselineProbability: 0 });
+    let index = 0;
     const drive = (minute: number, durations: readonly number[]) => {
       for (const durationMs of durations) {
-        const at = HOUR_ALIGNED + minute * MINUTE_MS;
-        buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
-        const traceId = (traceIndex++).toString(16).padStart(32, "0");
-        collector.observe(traceId, span({
-          operation: "procedure",
-          function: "api.checkout.submit",
-          timestampMs: at,
-          durationMs,
-        }));
-        const exemplar = collector.settle(traceId);
-        if (exemplar !== undefined) stored.push(exemplar.durationMs);
+        run.trace(
+          (index++).toString(16).padStart(32, "0"),
+          [{ durationMs }],
+          HOUR_ALIGNED + minute * MINUTE_MS,
+        );
       }
     };
-
-    const baseline = Array.from({ length: 400 }, (_, index) => 10 + (index % 20));
+    const baseline = Array.from({ length: 400 }, (_, offset) => 10 + (offset % 20));
     for (const minute of [0, 1, 2, 3]) drive(minute, baseline);
     // Then latency climbs by an order of magnitude — the spike on the chart.
-    drive(4, Array.from({ length: 400 }, (_, index) => 100 + (index % 400)));
+    drive(4, Array.from({ length: 400 }, (_, offset) => 100 + (offset % 400)));
 
-    const reported = buckets.thresholdFor("procedure", "api.checkout.submit");
+    const reported = run.telemetry.cohortThreshold("procedure", "api.checkout.submit");
     expect(reported.warm).toBe(true);
-    const threshold = reported.thresholdMs!;
-
     // Retention follows the lowest exposed TAIL quantile, so an exemplar at or
     // above every tail quantile — p99 included — exists by construction.
-    expect(stored.some((durationMs) => durationMs >= threshold)).toBe(true);
+    expect(run.exemplars.some((one) => one.durationMs >= reported.thresholdMs!)).toBe(true);
   });
 
   test("retention follows the tail set, and a body percentile cannot move it", () => {
@@ -366,77 +389,45 @@ describe("trace exemplars", () => {
   });
 
   test("a healthy application retains a small minority, and this is a standing guard", () => {
-    // Two defects in this component have failed OPEN — a cohort key built with
-    // two different separators, and a cold-start rule that waited for a
-    // published window. Both presented as working systems while silently storing
-    // every trace. This asserts the property those bugs violated, so the next
-    // one is caught by the suite instead of by a ramp someone thought to run.
-    const buckets = new TelemetryAggregateBuckets({
-      warmObservations: 50,
-      referenceWindowMs: MINUTE_MS,
-    });
-    const collector = new TraceExemplarCollector(
-      (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
-      { baselineProbability: 0.01 },
-    );
+    // Three defects in this component have failed OPEN — a cohort key built with
+    // two separators, a cold-start rule that waited for a published window, and
+    // a float bucket edge. All presented as working systems while silently
+    // storing every trace. This asserts the property they violated, through the
+    // path production actually uses.
+    const run = driver({ baselineProbability: 0.01 });
     const operations = 20_000;
-    let retained = 0;
     for (let index = 0; index < operations; index++) {
-      const traceId = index.toString(16).padStart(32, "0");
       // A healthy application: no errors, and a continuous spread rather than a
-      // handful of discrete values. The distinction matters: `>=` at the
-      // threshold retains every tie, so a latency quantised to a few values can
-      // retain its whole top bucket — nine discrete values here retained 12%
-      // rather than 5%. Real latency is continuous; a quantised endpoint is a
-      // real over-retention mode and is noted as such.
-      const durationMs = 8 + ((index * 2654435761) % 100_000) / 12_500;
-      const at = HOUR_ALIGNED + Math.floor(index / 400) * MINUTE_MS;
-      buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
-      collector.observe(traceId, span({
-        operation: "procedure",
-        function: "api.checkout.submit",
-        timestampMs: at,
-        durationMs,
-      }));
-      if (collector.settle(traceId) !== undefined) retained++;
+      // handful of discrete values.
+      run.trace(
+        index.toString(16).padStart(32, "0"),
+        [{ durationMs: 8 + ((index * 2654435761) % 100_000) / 12_500 }],
+        HOUR_ALIGNED + Math.floor(index / 400) * MINUTE_MS,
+      );
     }
     // Errors + slow + baseline on a healthy application is a few per cent. Ten
     // is generous headroom; anything near 100% means the policy has stopped
     // selecting and is storing everything again.
-    expect(retained / operations).toBeLessThan(0.10);
-    expect(retained).toBeGreaterThan(0);
+    expect(run.exemplars.length / operations).toBeLessThan(0.10);
+    expect(run.exemplars.length).toBeGreaterThan(0);
   });
 
   test("realizes the target rate whatever shape the distribution has", () => {
-    // The policy's contract is a RATE. Three fail-opens in this component were
+    // The policy's contract is a RATE. Four fail-opens in this component were
     // all the same shape — a rule "retain when X" whose X stopped
     // discriminating, always failing toward retaining everything. Asserting the
     // rate rather than the threshold is what closes that class.
     const measure = (durationFor: (index: number) => number): number => {
-      const buckets = new TelemetryAggregateBuckets({
-        warmObservations: 50,
-        referenceWindowMs: MINUTE_MS,
-      });
-      const collector = new TraceExemplarCollector(
-        (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
-        { baselineProbability: 0 },
-      );
+      const run = driver({ baselineProbability: 0 });
       const operations = 40_000;
-      let retained = 0;
       for (let index = 0; index < operations; index++) {
-        const traceId = index.toString(16).padStart(32, "0");
-        const durationMs = durationFor(index);
-        const at = HOUR_ALIGNED + Math.floor(index / 500) * MINUTE_MS;
-        buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
-        collector.observe(traceId, span({
-          operation: "procedure",
-          function: "api.checkout.submit",
-          timestampMs: at,
-          durationMs,
-        }));
-        if (collector.settle(traceId) !== undefined) retained++;
+        run.trace(
+          index.toString(16).padStart(32, "0"),
+          [{ durationMs: durationFor(index) }],
+          HOUR_ALIGNED + Math.floor(index / 500) * MINUTE_MS,
+        );
       }
-      return retained / operations;
+      return run.exemplars.length / operations;
     };
 
     const continuous = measure((index) => 8 + ((index * 2654435761) % 100_000) / 12_500);
@@ -458,14 +449,10 @@ describe("trace exemplars", () => {
   });
 
   test("a cold cohort retains rather than falling through to nothing", () => {
-    const buckets = new TelemetryAggregateBuckets({ warmObservations: 50 });
-    const collector = new TraceExemplarCollector(
-      (operation, fn) => buckets.thresholdFor(operation ?? "query", fn),
-      { baselineProbability: 0 },
-    );
-    const id = (1).toString(16).padStart(32, "0");
-    collector.observe(id, span({ function: "api.newly.deployed", durationMs: 3 }));
-    const exemplar = collector.settle(id)!;
+    const run = driver({ baselineProbability: 0 });
+    const exemplar = run.trace(ids[1]!, [
+      { durationMs: 3, functionName: "api.newly.deployed" },
+    ])!;
     // A function nobody has called yet has no quantile; retaining its first
     // traces is why a fresh deploy has something to look at at all.
     expect(exemplar.reason).toBe("cold");

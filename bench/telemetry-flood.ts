@@ -24,12 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { TelemetryWorkerWriter } from "../packages/server/src/telemetry/storage/worker/writer.ts";
-import {
-  MINUTE_MS,
-  TelemetryAggregateBuckets,
-} from "../packages/server/src/telemetry/aggregation/buckets.ts";
-import { TraceExemplarCollector } from "../packages/server/src/telemetry/exemplars/collector.ts";
-import type { TelemetrySpanRecord } from "../packages/server/src/telemetry/contracts/types.ts";
+import { MINUTE_MS } from "../packages/server/src/telemetry/aggregation/buckets.ts";
+import { Telemetry } from "../packages/server/src/telemetry/telemetry.ts";
 
 const SPANS_PER_OPERATION = 7;
 
@@ -62,31 +58,6 @@ export interface FloodResult {
   readonly onDisk: Readonly<Record<string, number>>;
 }
 
-function span(
-  traceId: string,
-  counter: number,
-  position: number,
-  atMs: number,
-  durationMs: number,
-  failing: boolean,
-): TelemetrySpanRecord {
-  return {
-    schemaVersion: 1,
-    kind: "span",
-    timestampMs: atMs,
-    traceId,
-    spanId: `${counter.toString(16).padStart(13, "0")}${position.toString(16).padStart(3, "0")}`,
-    ...(position === 0 ? {} : { parentSpanId: `${counter.toString(16).padStart(13, "0")}000` }),
-    function: "api.checkout.submit",
-    operation: position === 0 ? "procedure" : "query",
-    stage: position === 0 ? "handler" : "storage",
-    outcome: failing && position === SPANS_PER_OPERATION - 1 ? "internal" : "ok",
-    durationMs: position === 0 ? durationMs : durationMs / SPANS_PER_OPERATION,
-    statement: "checkout.submit",
-    resource: "operation",
-  } as unknown as TelemetrySpanRecord;
-}
-
 export async function runFlood(
   opsPerSecond = 3_000,
   secondsPerPhase = 20,
@@ -101,14 +72,18 @@ export async function runFlood(
   });
   await writer.whenReady();
 
-  const buckets = new TelemetryAggregateBuckets({
-    warmObservations: 50,
-    referenceWindowMs: MINUTE_MS,
+  // The REAL path: one Telemetry, spans through recordSpan, and the exemplar a
+  // retained trace becomes going straight to the sidecar. A driver that fed a
+  // collector production never called is how this measurement was wrong before.
+  let observations = 0;
+  const telemetry = new Telemetry({
+    localSink: false,
+    exporter: { export: () => {} },
+    exemplar: (exemplar) => void writer.accept("exemplar", exemplar),
+    exemplarLimits: { baselineProbability: 0.01 },
+    aggregate: { warmObservations: 50, referenceWindowMs: MINUTE_MS },
+    limits: { retentionMs: 1, slowOperationMs: 500 },
   });
-  const collector = new TraceExemplarCollector(
-    (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
-    { baselineProbability: 0.01 },
-  );
 
   const clockBase = Date.now();
   let counter = 0;
@@ -117,8 +92,7 @@ export async function runFlood(
 
   for (const [label, errorShare] of [["healthy", 0.01], ["flood", 1.0]] as const) {
     const before = writer.snapshot();
-    const retainedBefore = collector.snapshot().retainedTraces;
-    const observationsBefore = buckets.snapshot().observations;
+    const observationsBefore = observations;
     const startedAt = performance.now();
     const endAt = startedAt + secondsPerPhase * 1_000;
     let operations = 0;
@@ -130,20 +104,31 @@ export async function runFlood(
         const failing = Math.random() < errorShare;
         const traceId = (counter++).toString(16).padStart(32, "0");
         const durationMs = failing ? 200 + Math.random() * 800 : 2 + Math.random() * 8;
+        telemetry.beginTrace({ traceId }, virtualMs);
         for (let position = 0; position < SPANS_PER_OPERATION; position++) {
-          const record = span(traceId, counter, position, virtualMs, durationMs, failing);
           // 100% of observations reach the aggregate, before anything selects.
-          buckets.record(
-            record.timestampMs,
-            record.operation,
-            record.function,
-            record.outcome,
-            record.durationMs,
-          );
-          collector.observe(traceId, record);
+          telemetry.recordSpan({
+            context: {
+              traceId,
+              spanId: `${traceId.slice(0, 24)}${position.toString(16).padStart(8, "0")}`,
+            },
+            timestampMs: virtualMs,
+            operation: position === 0 ? "procedure" : "query",
+            stage: position === 0 ? "handler" : "storage",
+            outcome: failing && position === SPANS_PER_OPERATION - 1 ? "internal" : "ok",
+            functionName: "api.checkout.submit",
+            statement: "checkout.submit",
+            resource: "operation",
+            durationMs: position === 0 ? durationMs : durationMs / SPANS_PER_OPERATION,
+          });
+          observations++;
         }
-        const exemplar = collector.settle(traceId);
-        if (exemplar !== undefined) writer.accept("exemplar", exemplar);
+        // Completed traces settle on the NEXT trace's lifecycle call, which
+        // prunes whatever's delayed-delivery window has passed. Naming a trace
+        // that does not exist would prune too, but `forContext` falls back to a
+        // linear scan of both lists when the id is not indexed, and paying that
+        // per operation is quadratic.
+        telemetry.finishTrace({ traceId }, virtualMs + durationMs);
         writer.accept("log", {
           kind: "log",
           processGeneration: "flood",
@@ -160,7 +145,7 @@ export async function runFlood(
         });
         operations++;
       }
-      for (const handoff of buckets.drain(virtualMs)) {
+      for (const handoff of telemetry.drainAggregateBuckets()) {
         writer.accept("aggregate", {
           startMs: handoff.startMs,
           closed: handoff.closed,
@@ -172,14 +157,17 @@ export async function runFlood(
     // Let the sidecar commit what this phase produced before it is measured.
     await writer.stats();
     const after = writer.snapshot();
+    const retained = (after.acceptedByKind.exemplar ?? 0) +
+      (after.shed.shedByKind.exemplar ?? 0) -
+      ((before.acceptedByKind.exemplar ?? 0) + (before.shed.shedByKind.exemplar ?? 0));
     const exemplarsAccepted = (after.acceptedByKind.exemplar ?? 0) -
       (before.acceptedByKind.exemplar ?? 0);
     phases.push({
       label,
       errorShare,
       operations,
-      observations: buckets.snapshot().observations - observationsBefore,
-      retainedTraces: collector.snapshot().retainedTraces - retainedBefore,
+      observations: observations - observationsBefore,
+      retainedTraces: retained,
       exemplarsAccepted,
       exemplarsShed: (after.shed.shedByKind.exemplar ?? 0) -
         (before.shed.shedByKind.exemplar ?? 0),
@@ -192,7 +180,7 @@ export async function runFlood(
     console.error(`  phase ${label} done`);
   }
 
-  for (const handoff of buckets.drain(virtualMs, true)) {
+  for (const handoff of telemetry.drainAggregateBuckets(true)) {
     writer.accept("aggregate", {
       startMs: handoff.startMs,
       closed: handoff.closed,
