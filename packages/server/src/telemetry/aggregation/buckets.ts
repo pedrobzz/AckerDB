@@ -79,22 +79,51 @@ export const DEFAULT_AGGREGATE_LIMITS: TelemetryAggregateLimits = Object.freeze(
 });
 
 /**
- * The one place a cohort key is built. It was briefly built in two, with two
- * different separators, and the lookup silently missed every time — a threshold
- * that always reads "cold" fails open rather than loudly, which is the worst
- * way for this particular bug to behave.
+ * A cohort addressed by its two parts, with nothing manufactured to name it.
  *
- * It materializes a string on EVERY observation, which is fine as a Map key and
- * would matter the moment allocation per span shows up as latency — a garbage
- * rate proportional to span volume raises wait-dominated numbers without
- * consuming CPU, so it would appear as delivery latency rather than as
- * throughput. It is the prime suspect for the shipped default's undiagnosed
- * regression (ADR-0030), unconfirmed. If it is confirmed, the fix is to stop
- * manufacturing a new object to describe a pair that has not changed — intern it
- * per series — not to do less work.
+ * This was a `Map` keyed by `` `${operation}\0${functionAddress}` ``, which is a
+ * correct key and a string allocated on EVERY observation — garbage proportional
+ * to span volume, produced solely to describe a pair that had not changed. A
+ * nested map keys the same cohort with no allocation at all. It is the same
+ * work; it is not less of it.
+ *
+ * The single-key form also had history: it was once built in two places with two
+ * different separators, and every lookup silently missed, so the retention
+ * threshold read "cold" forever and the policy retained everything. Two levels
+ * of `Map` cannot disagree about a separator, because there is not one.
  */
-function cohortKey(operation: TelemetryOperation, functionAddress: string | undefined): string {
-  return `${operation}\u0000${functionAddress ?? ""}`;
+class CohortMap<Value> {
+  private readonly byOperation = new Map<TelemetryOperation, Map<string, Value>>();
+  private entries = 0;
+
+  /** Distinct cohorts held, maintained incrementally — the cardinality cap reads it. */
+  get size(): number {
+    return this.entries;
+  }
+
+  get(operation: TelemetryOperation, functionAddress: string | undefined): Value | undefined {
+    return this.byOperation.get(operation)?.get(functionAddress ?? "");
+  }
+
+  set(operation: TelemetryOperation, functionAddress: string | undefined, value: Value): void {
+    let byFunction = this.byOperation.get(operation);
+    if (byFunction === undefined) {
+      byFunction = new Map();
+      this.byOperation.set(operation, byFunction);
+    }
+    const name = functionAddress ?? "";
+    if (!byFunction.has(name)) this.entries++;
+    byFunction.set(name, value);
+  }
+
+  *values(): IterableIterator<Value> {
+    for (const byFunction of this.byOperation.values()) yield* byFunction.values();
+  }
+
+  clear(): void {
+    this.byOperation.clear();
+    this.entries = 0;
+  }
 }
 
 /** One (operation, function) series inside one minute. */
@@ -113,7 +142,7 @@ interface Series {
 
 interface Bucket {
   readonly startMs: number;
-  readonly series: Map<string, Series>;
+  readonly series: CohortMap<Series>;
   overflowedObservations: number;
   observations: number;
 }
@@ -169,12 +198,12 @@ export class TelemetryAggregateBuckets {
   readonly limits: TelemetryAggregateLimits;
   private readonly buckets = new Map<number, Bucket>();
   /** Duration history for the current reference window, by cohort. */
-  private reference = new Map<string, Sketch>();
+  private reference = new CohortMap<Sketch>();
   /** The previous window's history — what thresholds are actually read from. */
-  private published = new Map<string, Sketch>();
+  private published = new CohortMap<Sketch>();
   private referenceWindowStart = 0;
   /** One computed threshold per cohort; see `thresholdFor` for its staleness bound. */
-  private readonly thresholds = new Map<string, {
+  private readonly thresholds = new CohortMap<{
     readonly threshold: CohortThreshold;
     readonly observations: number;
     readonly window: number;
@@ -215,12 +244,16 @@ export class TelemetryAggregateBuckets {
         this.droppedObservations++;
         return false;
       }
-      bucket = { startMs, series: new Map(), overflowedObservations: 0, observations: 0 };
+      bucket = {
+        startMs,
+        series: new CohortMap<Series>(),
+        overflowedObservations: 0,
+        observations: 0,
+      };
       this.buckets.set(startMs, bucket);
     }
     const name = functionAddress ?? "";
-    const key = cohortKey(operation, functionAddress);
-    let series = bucket.series.get(key);
+    let series = bucket.series.get(operation, functionAddress);
     if (series === undefined) {
       if (bucket.series.size >= this.limits.maxSeriesPerBucket) {
         series = this.overflowSeries(bucket, operation);
@@ -228,7 +261,7 @@ export class TelemetryAggregateBuckets {
         this.overflowedObservations++;
       } else {
         series = this.newSeries(operation, name, false);
-        bucket.series.set(key, series);
+        bucket.series.set(operation, functionAddress, series);
         if (bucket.series.size > this.seriesHighWater) this.seriesHighWater = bucket.series.size;
       }
     }
@@ -237,10 +270,10 @@ export class TelemetryAggregateBuckets {
     // an overflowed cohort has no threshold of its own and stays cold, which
     // retains rather than silently keeping nothing.
     if (!series.overflow) {
-      let history = this.reference.get(key);
+      let history = this.reference.get(operation, functionAddress);
       if (history === undefined && this.reference.size < this.limits.maxSeriesPerBucket) {
         history = new Sketch(this.limits.mappingScale, this.limits.maxBins);
-        this.reference.set(key, history);
+        this.reference.set(operation, functionAddress, history);
       }
       history?.add(durationMs);
     }
@@ -267,7 +300,7 @@ export class TelemetryAggregateBuckets {
     }
     if (startMs < this.referenceWindowStart + this.limits.referenceWindowMs) return;
     this.published = this.reference;
-    this.reference = new Map();
+    this.reference = new CohortMap<Sketch>();
     this.referenceWindowStart = startMs;
     this.thresholds.clear();
   }
@@ -279,7 +312,6 @@ export class TelemetryAggregateBuckets {
    * the threshold means is not the aggregate's business.
    */
   thresholdFor(operation: TelemetryOperation, functionAddress: string | undefined): CohortThreshold {
-    const key = cohortKey(operation, functionAddress);
     // The published window is preferred because it is complete and therefore
     // stable. But warmth must not WAIT for one: a cohort whose first window has
     // not closed yet would be cold for the whole window, and "cold retains
@@ -287,10 +319,10 @@ export class TelemetryAggregateBuckets {
     // retain-everything failure this design exists to remove. The accumulating
     // window is a worse estimate than a closed one and a far better one than
     // nothing, so it is used the moment it has enough observations to speak.
-    const published = this.published.get(key);
+    const published = this.published.get(operation, functionAddress);
     const source = published !== undefined && published.count >= this.limits.warmObservations
       ? published
-      : this.reference.get(key);
+      : this.reference.get(operation, functionAddress);
     const observations = source?.count ?? 0;
     if (source === undefined || observations < this.limits.warmObservations) {
       return coldThreshold(observations, this.limits.mappingScale);
@@ -307,7 +339,7 @@ export class TelemetryAggregateBuckets {
     // enough for its tail to mean something else. So it is recomputed when the
     // window rolls, and otherwise once the cohort has doubled — which is often
     // while a cohort is new and rare once it is established.
-    const cached = this.thresholds.get(key);
+    const cached = this.thresholds.get(operation, functionAddress);
     if (
       cached !== undefined &&
       cached.window === this.referenceWindowStart &&
@@ -317,7 +349,7 @@ export class TelemetryAggregateBuckets {
       return cached.threshold;
     }
     const threshold = thresholdFrom(source, this.limits.mappingScale);
-    this.thresholds.set(key, {
+    this.thresholds.set(operation, functionAddress, {
       threshold,
       observations,
       window: this.referenceWindowStart,
@@ -346,11 +378,10 @@ export class TelemetryAggregateBuckets {
   }
 
   private overflowSeries(bucket: Bucket, operation: TelemetryOperation): Series {
-    const key = cohortKey(operation, OVERFLOW_FUNCTION);
-    let series = bucket.series.get(key);
+    let series = bucket.series.get(operation, OVERFLOW_FUNCTION);
     if (series === undefined) {
       series = this.newSeries(operation, OVERFLOW_FUNCTION, true);
-      bucket.series.set(key, series);
+      bucket.series.set(operation, OVERFLOW_FUNCTION, series);
     }
     return series;
   }
