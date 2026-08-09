@@ -1,3 +1,4 @@
+export { ACKERDB_VERSION } from "./version.ts";
 export { encode, decode, stableEncode, toStandardJson, WireError } from "./wire.ts";
 export {
   Err,

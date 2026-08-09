@@ -1,5 +1,6 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,8 +95,9 @@ function recordingFactory(records: SocketRecord[]): (url: string) => AckerDBWebS
     const record: SocketRecord = { socket, frames: [] };
     records.push(record);
     const send = socket.send.bind(socket);
+    let sent = 0;
     socket.send = ((data: string) => {
-      record.frames.push(parseClientMessage(decode(data)));
+      record.frames.push(parseSentFrame(data, sent++));
       send(data);
     }) as typeof socket.send;
     return socket as unknown as AckerDBWebSocket;

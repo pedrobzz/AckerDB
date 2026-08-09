@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   encode,
   type Outcome,
 } from "@ackerdb/core";
@@ -78,7 +78,7 @@ function webSocketErrorText(error: AckerDBError, maxBytes: number): string | nul
   const outcome = outcomeFromError(error);
   return fitOutcome(outcome, maxBytes, (candidate) => {
     const value = encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: candidate,

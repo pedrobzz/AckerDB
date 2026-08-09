@@ -36,7 +36,7 @@ shape and its cross-field invariants; it does not accept a partial object.
 | WebSocket outbound, per connection / global / stall | 4 MiB / 64 MiB / 5 s |
 | Authentication-transition capture, per transition / separate global pool | 2,048 frames and 3 MiB / 64 MiB with 1 MiB reserved control capacity |
 | SSE outbound, per stream / global / stall | 1 MiB / 32 MiB / 5 s |
-| Request / Protocol 6 frame | 1 MiB / 1 MiB |
+| Request / wire frame | 1 MiB / 1 MiB |
 | Resume history, per stream | 64 transitions, 2 MiB, 30 s |
 | Resume history, global | 128 MiB |
 | Publication handoff | 4,096 items, 32 MiB |
@@ -167,7 +167,7 @@ The complete API and recovery semantics are in
 
 ## Typed outcomes
 
-Every Protocol 6 failure is an `Outcome`, and unknown internal exceptions are
+Every wire failure is an `Outcome`, and unknown internal exceptions are
 sanitized to `{ code: "internal", retryable: false, message: "internal server error" }`.
 Messages are bounded to 512 JavaScript UTF-16 code units without splitting a
 Unicode code point. Optional `resource`, `retryAfterMs`, and `committed: true`
@@ -180,7 +180,7 @@ seconds. `committed: true` is legal only on non-retryable
 The finite outcome codes are:
 
 ```text
-malformed                 validation               unsupported_protocol
+malformed                 validation               version_mismatch
 unauthenticated           auth_unavailable         auth_stale
 unauthorized              not_found                conflict
 overloaded                slow_consumer            deadline_exceeded
@@ -192,15 +192,15 @@ The finite `resource` classes are `connection`, `operation`, `reader`,
 `writer`, `subscription`, `revalidation`, `publication`, `outbound`, `sse`,
 `history`, `idempotency`, and `telemetry`.
 
-HTTP maps validation/protocol errors to 400; unauthenticated/stale auth to 401;
+HTTP maps validation and version-mismatch errors to 400; unauthenticated/stale auth to 401;
 unauthorized to 403; not found to 404; conflict to 409; ordinary overload and
 slow consumers to 429; connection/publication overload, auth service failure,
 draining, and unavailability to 503; deadlines to 504; and convergence,
 indeterminate, or internal failures to 500. HTTP responses still carry the
-Protocol 6 error body, which is authoritative.
+same wire error body, which is authoritative.
 
 WebSocket connection failures are sent as an error frame when reserved control
-capacity permits. Malformed/unsupported protocol closes with 1002;
+capacity permits. Malformed frames and version mismatches close with 1002;
 overload/slow-consumer/draining/unavailable closes with 1013; other typed
 outcomes close with 1008.
 

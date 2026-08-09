@@ -1,15 +1,21 @@
 # Ordered realtime and mutation semantics
 
-Protocol 6 separates durable state subscriptions from live event delivery and
+The wire contract separates durable state subscriptions from live event delivery and
 also carries multiplexed application-channel memberships.
 Query subscriptions are authoritative state streams with resume-or-reset
 convergence. Event subscriptions are ordered, bounded, live-only signals and
 do not have durable replay.
 
-Protocol envelopes require `v: 5` and exact framework-owned fields. A different
-version is `unsupported_protocol`; missing, extra, out-of-range, or malformed
-framework fields are `malformed`. There is no earlier-protocol compatibility
-or best-effort negotiation layer.
+A connection's handshake carries `v`, the AckerDB version of the build that
+produced it, and a decoder accepts exactly its own; a frame from any other build
+is `version_mismatch`, refused as the mixed install it is. So do `err` and every
+frame of the transports that have no handshake — SSE and realtime signaling are
+HTTP, where the first frame is the greeting. Session frames carry no version,
+because the peer's build was settled by the handshake their connection opened
+with. Missing, extra, out-of-range, or malformed framework fields are
+`malformed`. There is no compatibility or negotiation layer between versions:
+all thirteen packages ship lockstep, so AckerDB X speaks to AckerDB X and
+mixing them is one command away from fixed.
 
 ## Query transition model
 
@@ -155,7 +161,7 @@ subscription for reconstructible application state.
 or event subscription protocol. Its chunks have no subscription cursor or
 automatic replay; reconnect means starting a new procedure call.
 
-Each SSE event contains one strict Protocol 6 envelope:
+Each SSE event contains one strict wire envelope:
 
 ```ts
 type SseMessage =
@@ -204,7 +210,7 @@ contract does not depend on Bun's hidden HTTP socket buffering.
 EOF before an acknowledged `sse_done` remains `indeterminate`, and EOF
 mid-event is `malformed`. Procedures and SSE procedures are never retried
 automatically. The acknowledgement proves that a peer holding the capability
-received and parsed the frame according to Protocol 6; it is not proof that
+received and parsed the frame according to the wire contract; it is not proof that
 application side effects derived from the chunk were durably committed. A
 bearer credential lease remains held until the bounded response body completes,
 errors, or is canceled.

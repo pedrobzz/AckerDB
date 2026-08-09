@@ -56,7 +56,7 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs the seven public and five native lockstep `@ackerdb/*` tarballs,
+This gate packs the eight public and five native lockstep `@ackerdb/*` tarballs,
 then installs the public packages plus the host-selected native package in a
 temporary consumer. It verifies:
 

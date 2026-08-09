@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts) because `bun test` shares
+// suite must do this first (see ackerdb-test-support/dom) because `bun test` shares
 // one process and React initializes against the globals it first sees.
-import "./support/dom.ts";
+import "ackerdb-test-support/dom";
 
 // The real Expo and React Native modules only run inside a React Native app,
 // so the native entry is exercised here with module mocks standing in for the

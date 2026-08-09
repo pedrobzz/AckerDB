@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION, type ChannelRef } from "@ackerdb/core";
+import { ACKERDB_VERSION, type ChannelRef } from "@ackerdb/core";
 import {
   AckerDBProvider,
   useChannel,
@@ -8,7 +8,7 @@ import {
 } from "@ackerdb/client-react";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
 
 const SESSION = "react-channel-session";
@@ -93,7 +93,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "channel_ready",
         id,
         authEpoch: 0,
@@ -104,7 +103,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "channel_event",
         id,
         event: "message",
@@ -123,7 +121,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "channel_event",
         id,
         event: "message",
@@ -150,7 +147,7 @@ describe("useChannel", () => {
     await render(root, app(testHarness.config(), []));
     await act(async () => {});
     expect(socket.framesOf("channel_leave")).toEqual([
-      { v: PROTOCOL_VERSION, t: "channel_leave", id },
+      { t: "channel_leave", id },
     ]);
     await act(async () => root.unmount());
   });
@@ -176,13 +173,11 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "channel_ready",
         id: join.id,
         authEpoch: 0,
       });
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "channel_event",
         id: join.id,
         event: "message",

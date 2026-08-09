@@ -12,6 +12,7 @@
  *   acker backup <file> [dir] [--metadata-only]   create and verify a backup
  *   acker restore <file> [dir]  verify and restore into a fresh target
  *   acker files migrate <target.json> [dir]  migrate and switch the active FileStore
+ *   acker studio [dir]   serve Studio, proxying one origin to the app server
  *
  * `acker dev` is a supervisor that never imports user code itself: codegen and
  * the server run as child processes, so every reload sees fresh modules with
@@ -53,6 +54,7 @@ import {
   type PluginStorageConsent,
 } from "../plugins/storage.ts";
 import { migrateActiveFileStore } from "../files/command.ts";
+import { parseStudioArguments, runStudioCommand } from "./studio.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
@@ -108,7 +110,8 @@ function usage(): never {
   acker status [app-dir]
   acker backup <artifact> [app-dir] [--metadata-only]
   acker restore <artifact> [app-dir]
-  acker files migrate <target.json> [app-dir]`);
+  acker files migrate <target.json> [app-dir]
+  acker studio [app-dir] [--url <origin>] [--port <n>]`);
   process.exit(2);
 }
 
@@ -711,6 +714,12 @@ try {
         },
       );
       console.log(JSON.stringify(report));
+      break;
+    }
+    case "studio": {
+      const studio = parseStudioArguments(args);
+      if (studio === null) usage();
+      await runStudioCommand(studio);
       break;
     }
     default:

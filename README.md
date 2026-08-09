@@ -3,7 +3,7 @@
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, durable jobs,
 live query subscriptions, application channels, and WebRTC media sessions
-through Protocol 6.
+over one versioned wire contract.
 
 The supported production topology is one Bun server process owning one local
 SQLite database file. AckerDB is not a horizontally scaled or replicated service,
@@ -19,7 +19,7 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@ackerdb/core` | Protocol 6 envelopes, wire encoding, outcomes, cursors, and typed function/channel/realtime references. |
+| `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
 | `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, and telemetry. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
@@ -140,12 +140,17 @@ client.close();
   `_admin:<domain>:<verb>` vocabulary, what "inert without a grant" means
   exactly, the reference tree shipped from `@ackerdb/core`, and the one `admin`
   configuration object.
+- [Studio](docs/studio.md) documents the opt-in administration client: the
+  `acker studio` command, the single same-origin port that proxies HTTP,
+  WebSocket, and SSE to the application, the path prefix that keeps an
+  application route from being shadowed, and the Admin Credential connect flow
+  and its states.
 - [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
   Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
   issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
-  receipts, receiver-confirmed Protocol 6 SSE delivery, reconnect behavior, and
+  receipts, receiver-confirmed SSE delivery, reconnect behavior, and
   the deliberately weaker live-event contract.
 - [Application channels](docs/channels.md) documents typed bidirectional
   events, opt-in rooms, shared memberships, handler deduplication, and

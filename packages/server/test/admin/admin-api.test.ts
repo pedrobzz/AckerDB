@@ -4,7 +4,7 @@
  * application from reaching either.
  */
 import { describe, expect, test } from "bun:test";
-import { ADMIN_API_PATH, PROTOCOL_VERSION, type Identity } from "@ackerdb/core";
+import { ADMIN_API_PATH, ACKERDB_VERSION, type Identity } from "@ackerdb/core";
 import { frameworkFunctionModules } from "../../src/admin/index.ts";
 import { normalizeAdminOptions } from "../../src/admin/options.ts";
 import { ADMIN_SCOPES } from "../../src/admin/scopes.ts";
@@ -22,7 +22,6 @@ import {
 } from "../../src/auth/scopes.ts";
 import { ANONYMOUS_PRINCIPAL, type UserPrincipal } from "../../src/auth/credentials.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
-import { ACKERDB_VERSION } from "../../src/shared/version.ts";
 
 function user(scopes: readonly string[]): UserPrincipal {
   return Object.freeze({
@@ -112,7 +111,6 @@ describe("admin.system.info", () => {
         name: "savoria",
         version: "2.1.0",
         ackerdb: ACKERDB_VERSION,
-        protocol: PROTOCOL_VERSION,
       },
     });
   });

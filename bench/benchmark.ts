@@ -181,12 +181,12 @@ export interface OperationCaseResult {
 export interface ConnectionLevelResult {
   targetConnections: number;
   connected: number;
-  addedConnections: number;
   setupMs: number;
   readyConnectionsPerSec: number;
   readyLatency: LatencyStats;
-  connectedSnapshotId: string;
-  connectedIdlePhaseId: string;
+  /** Present only on the repetition that paid for an idle resource window. */
+  connectedSnapshotId?: string;
+  connectedIdlePhaseId?: string;
   work: ClosedLoopResult & { phaseId: string };
   errors: string[];
 }
@@ -197,11 +197,12 @@ export interface SubscriptionResult {
   queriesPerUser: number;
   logicalSubscriptions: number;
   distinctQueryArguments: number;
-  baselineIdlePhaseId: string;
+  /** Present only on the repetition that paid for an idle resource window. */
+  baselineIdlePhaseId?: string;
   setupMs: number;
   setupConnectionsPerSec: number;
-  subscribedSnapshotId: string;
-  subscribedIdlePhaseId: string;
+  subscribedSnapshotId?: string;
+  subscribedIdlePhaseId?: string;
   phaseId: string;
   updates: number;
   updateThroughputPerSec: number;
@@ -229,10 +230,10 @@ export interface SubscriptionCapacityResult extends ClosedLoopResult {
   correctness: { ok: boolean; errors: string[] };
 }
 
+/** One side's full record for one repetition of every unit. */
 export interface DriverResult {
   system: SystemName;
   config: BenchmarkConfig;
-  snapshots: { seededIdle: string; seededIdlePhaseId: string; connectionBaselineIdlePhaseId: string };
   operations: OperationCaseResult[];
   connections: ConnectionLevelResult[];
   subscriptions: SubscriptionResult[];
@@ -289,9 +290,15 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
   return {
     profile,
     seed: positiveInt("BENCH_SEED", 0xdb22),
+    // The default windows are short because the comparison repeats them. One
+    // two-second window per side yields a single number whose error is the
+    // machine's; eight interleaved three-hundred-millisecond windows yield eight
+    // paired ratios whose spread is measurable and whose median is not moved by
+    // one stalled window. Total measured time barely changes; what changes is
+    // that there is now something to take a median of.
     operation: {
-      warmupMs: positiveInt("BENCH_WARMUP_MS", quick ? 250 : 500),
-      steadyMs: positiveInt("BENCH_STEADY_MS", quick ? 500 : 2_000),
+      warmupMs: positiveInt("BENCH_WARMUP_MS", quick ? 250 : 100),
+      steadyMs: positiveInt("BENCH_STEADY_MS", quick ? 500 : 300),
       trials: positiveInt("BENCH_TRIALS", 1),
       drainTimeoutMs: positiveInt("BENCH_DRAIN_TIMEOUT_MS", 30_000),
       profiles,
@@ -299,16 +306,19 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
     connections: {
       levels: integerList("BENCH_CONNECTION_LEVELS", defaultConnectionLevels),
       batchSize: positiveInt("BENCH_CONNECTION_BATCH", quick ? 25 : 100),
-      workMs: positiveInt("BENCH_CONNECTION_WORK_MS", quick ? 500 : 1_000),
+      workMs: positiveInt("BENCH_CONNECTION_WORK_MS", quick ? 500 : 300),
       timeoutMs: positiveInt("BENCH_CONNECTION_TIMEOUT_MS", 120_000),
     },
     subscriptions: {
       users: positiveInt("BENCH_SUB_USERS", quick ? 10 : 500),
       queriesPerUser: positiveInt("BENCH_SUB_QUERIES", quick ? 5 : 10),
-      durationMs: positiveInt("BENCH_SUB_DURATION_MS", quick ? 500 : 2_000),
+      // The fixed-rate window keeps more of its length than the others: it
+      // offers whole updates at a fixed rate, so a window too short to contain
+      // a decent count of them measures rounding rather than delivery.
+      durationMs: positiveInt("BENCH_SUB_DURATION_MS", quick ? 500 : 600),
       sharedUpdatesPerSec: positiveInt("BENCH_SUB_SHARED_UPDATES_PER_SEC", quick ? 5 : 20),
       partitionedUpdatesPerSec: positiveInt("BENCH_SUB_PARTITIONED_UPDATES_PER_SEC", quick ? 10 : 100),
-      capacityDurationMs: positiveInt("BENCH_SUB_CAPACITY_DURATION_MS", quick ? 500 : 2_000),
+      capacityDurationMs: positiveInt("BENCH_SUB_CAPACITY_DURATION_MS", quick ? 500 : 250),
       capacitySlots: integerList("BENCH_SUB_CAPACITY_SLOTS", quick ? [1, 4] : [1, 32, 512]),
       setupTimeoutMs: positiveInt("BENCH_SUB_SETUP_TIMEOUT_MS", 120_000),
       drainTimeoutMs: positiveInt("BENCH_SUB_DRAIN_TIMEOUT_MS", 30_000),

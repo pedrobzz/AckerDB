@@ -176,25 +176,86 @@ A `canary` pull request may keep the current source version — every merge
 still publishes a distinct `X.Y.Z-canary.N` — and declares exactly one major,
 minor, or patch step with `bun run release:prepare <level>` only when it
 releases a new source version. A `hotfix/*` pull request into `main` always
-declares exactly one step. All seven public packages and five host-specific
+declares exactly one step. All eight public packages and five host-specific
 native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.
 
-The `Benchmark` check gates the release, not the road to it: it runs on the
-`canary` → `main` promotion only, where it is required alongside `Release
-policy` and `Fast CI`, and only when the release changed code exercised by the
-benchmark, its executable harness, the pull-request workflow, or its path
-classifier. Every pull request into `canary` skips it; version bumps, docs,
-tests, and unrelated packages must not spend benchmark time. Measuring on the
-promotion means the comparison is the whole release delta rather than one pull
-request's slice — the only measurement that sees what the accumulated merges
-did together. It never runs another vendor and never runs on
-the developer machine. Telemetry is disabled unless telemetry-related source
-changed; only then are enabled, exporter, and disabled profiles measured. The
-check has no thresholds, score, or automated performance acceptance. Pedro and
-an agent interpret the complete vector and anomalies by reasoning before merge.
-Historical files in `bench/results/` are not current release evidence.
+**The AckerDB version is the compatibility contract, and there is no separate
+number on the wire.** Packages ship lockstep with `workspace:X.Y.Z` precisely
+because version X is contracted to speak to version X, so a connection's
+handshake declares the build that opened it and the decoder accepts exactly its
+own — `ACKERDB_VERSION` in `@ackerdb/core`, read from that package's manifest so
+one fact answers on a server and inside a bundled browser client alike. Running
+mixed versions is the user's error to make and the framework's job to name; the
+refusal says which two versions met and that matching ones must be installed,
+never which mixes might be legal.
+
+Changing the wire therefore costs nothing and needs no permission. Do not add a
+field to avoid reshaping one, do not preserve an old frame shape, and do not
+reintroduce a protocol number to describe a compatibility this contract does
+not offer.
+
+**A frame carries the version exactly when it can be decoded on a connection
+that has not completed a handshake.** That is `hello`, `welcome`, `err`, and
+every frame of the transports that have no handshake at all — SSE and realtime
+signaling are HTTP, where the first frame is the greeting. Everything after a
+handshake carries none: the peer's build was established once and no connection
+changes builds under itself, so repeating it spends the hottest field in the
+system for a fact already known.
+
+`err` is a member of that set and not an exception to it. A client admits a
+connection-level `err` before its `welcome` on purpose, because that is how a
+server delivers a refusal it will not open a session for — and a
+version-refusing server's refusal *is* an `err`. Leaving it unversioned would
+make the one frame that explains a mixed install the one frame nobody could
+check.
+
+The rule is enforced by the parse surfaces, not by this document. Each
+direction has a handshake parser that accepts only what is admissible before a
+session and reads the version on every one of them, and a session parser for
+everything after; a frame's base interface decides whether it even has a `v` to
+set. Admitting a new frame before the handshake therefore means adding a case
+to a parser that checks the version, and forgetting means the frame is refused
+rather than silently trusted.
+
+The exposed HTTP surface is the deliberate exception and not a gap: its request
+and response bodies are the application's own arguments and results, published
+in its OpenAPI document for callers who are not AckerDB builds at all, so it has
+no framework envelope to version and must not grow one. Its compatibility
+contract belongs to the application.
+
+The `Benchmark` check gates every pull request that touches a measured input,
+on the way into `canary` and again on the `canary` → `main` promotion, where it
+is required alongside `Release policy` and `Fast CI`. A regression is then
+attributable to one pull request first and to the release second. It ran on the
+promotion alone until a branch costing eighty-six percent of query throughput
+reached a clean review behind a two-second green tick; the release delta is a
+real measurement, but it arrives when attributing it costs the whole cycle.
+Version bumps, docs, tests, and unrelated packages still must not spend
+benchmark time, and it never runs another vendor.
+
+Both commits are measured live and interleaved, one unit of work at a time, so
+drift lands on both sides instead of on whichever ran second. Each metric is
+judged on the median of its paired ratios against a distribution-free interval
+built from the repetitions themselves — a noise band measured from the run, not
+a threshold carried in. A gated metric fails the check only when that interval
+keeps the whole median on the worse side of neutral **and** the median clears a
+twelve-percent floor; anything else reports no signal, which is an answer.
+Correctness, accounting, and incomplete-measurement failures fail outright.
+`p99` and connect-readiness `p95` are reported and never gated.
+
+This is detection, not acceptance. Measured against its own noise the gate
+catches roughly sixty percent of twenty-percent regressions and almost nothing
+below ten, so a green check is not a performance verdict: Pedro and an agent
+still interpret the complete vector and anomalies by reasoning before merge.
+Telemetry is disabled unless telemetry-related source changed; only then are
+enabled, exporter, and disabled profiles measured, and that widening is
+load-bearing — the sidecar regression above was invisible with telemetry off.
+A run declares the host it executed on rather than refusing to execute off the
+runner; a paired interleaved comparison is meaningful wherever it runs, but a
+number without a machine beside it is not. Historical files in `bench/results/`
+are not current release evidence.
 
 Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
 Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is

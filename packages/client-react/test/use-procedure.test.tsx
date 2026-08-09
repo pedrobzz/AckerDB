@@ -1,5 +1,6 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,13 +164,14 @@ function createApp(): App {
 
 function observingSocket(url: string, onProcedure: () => void): AckerDBWebSocket {
   const native = new NativeWebSocket(url);
+  let sent = 0;
   const socket: AckerDBWebSocket = {
     onopen: null,
     onmessage: null,
     onclose: null,
     onerror: null,
     send(data) {
-      if (parseClientMessage(decode(data)).t === "p") onProcedure();
+      if (parseSentFrame(data, sent++).t === "p") onProcedure();
       native.send(data);
     },
     close(code, reason) {

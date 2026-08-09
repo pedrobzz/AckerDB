@@ -7,13 +7,13 @@
 // and then only new events.
 import { describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts).
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+// suite must do this first (see ackerdb-test-support/dom).
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { FakeAppState, setAppState } from "./support/app-state.ts";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ClientMessage,
   type LiveEventCursor,
   type ServerMessage,
@@ -68,7 +68,7 @@ function liveEvent(
     | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: unknown }
     | { readonly kind: "gap" | "reset"; readonly cursor: LiveEventCursor },
 ): ServerMessage {
-  return { v: PROTOCOL_VERSION, t: "event", id, event };
+  return { t: "event", id, event };
 }
 
 function mutationOk(
@@ -77,7 +77,6 @@ function mutationOk(
   replay: "executed" | "replayed" = "executed",
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",

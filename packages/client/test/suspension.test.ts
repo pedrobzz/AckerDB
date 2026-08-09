@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type AuthenticationDescriptor,
   type Identity,
   type ServerMessage,
@@ -45,7 +45,6 @@ function transition(
   from: SubscriptionCursor | null = null,
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "transition",
     id,
     transition:
@@ -205,7 +204,7 @@ describe("AckerDBClient suspension", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -347,7 +346,7 @@ describe("AckerDBClient activation", () => {
     // session-level errors, auth completions, close, error.
     first.open();
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 9,
@@ -355,13 +354,12 @@ describe("AckerDBClient activation", () => {
     });
     first.receive(transition(subscription.id, cursor(3n), ["evil"], cursor(2n)));
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "stale" },
     });
     first.receive({
-      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: 99,
       authEpoch: 9,
@@ -455,7 +453,7 @@ describe("AckerDBClient activation", () => {
     sockets[0]!.welcome(client.clientSessionId);
     // The server sheds load with an explicit admission deadline.
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -489,7 +487,7 @@ describe("AckerDBClient activation", () => {
     client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -517,7 +515,7 @@ describe("AckerDBClient activation", () => {
     client.subscribe("api.todos.list", { list: 1n }, () => {});
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -572,14 +570,13 @@ describe("AckerDBClient activation", () => {
     // auth confirmation, data, and finally its close event. None of it may
     // mutate the blocked client, flush retained work, or fail it permanently.
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 7,
       ...USER_AUTHENTICATION,
     });
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: 2,
       authEpoch: 7,
@@ -609,7 +606,7 @@ describe("AckerDBClient activation", () => {
     socket.welcome(client.clientSessionId);
     socket.deferClose = true;
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -618,7 +615,7 @@ describe("AckerDBClient activation", () => {
     const blocked = client.currentConnectionState;
 
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 9,
@@ -650,7 +647,7 @@ describe("AckerDBClient activation", () => {
     first.welcome(client.clientSessionId);
     first.deferClose = true;
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -660,7 +657,7 @@ describe("AckerDBClient activation", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -710,7 +707,6 @@ describe("AckerDBClient activation", () => {
     socket.welcome(client.clientSessionId);
     const frame = socket.lastFrame("m");
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: frame.id,
       kind: "mutation",

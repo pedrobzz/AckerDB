@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   PerfectNegotiation,
   ProtocolError,
   RealtimeDataPlane,
@@ -15,7 +15,7 @@ import {
   parseRealtimePatchResponse,
   parseRealtimePrepareRequest,
   parseRealtimePrepareResponse,
-  parseServerMessage,
+  parseConnectionError,
   stableEncode,
   type ApplicationError,
   type AnyRealtimeRef,
@@ -982,7 +982,7 @@ export class RealtimeManager {
     signal: AbortSignal,
   ) {
     const body = encode(parseRealtimePrepareRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
       ref: group.address,
       args: group.args,
@@ -1014,7 +1014,7 @@ export class RealtimeManager {
     generation: PeerGeneration,
   ) {
     const body = encode(parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket,
       offer,
@@ -1102,7 +1102,7 @@ export class RealtimeManager {
         if (local.length === 0 && !complete && !continuation) return;
         if (generation.sessionId === null) return;
         const body = encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_candidates",
           candidates: local,
           complete,
@@ -1493,15 +1493,16 @@ export class RealtimeManager {
   }
 
   private responseError(value: unknown): AckerDBClientError {
+    // Prepare, offer, and trickle are independent HTTP exchanges with no
+    // handshake behind them, so a framework failure on one is a
+    // connection-level refusal and decodes on that surface: the version is
+    // read, and an error naming an operation this exchange never issued is
+    // refused instead of driving recovery.
     try {
-      const frame = parseServerMessage(value);
-      if (frame.t === "err") return this.port.clientError(frame.outcome);
+      return this.port.clientError(parseConnectionError(value).outcome);
     } catch (error) {
       return this.normalize(error, "invalid realtime error response");
     }
-    return this.port.clientError(
-      unavailable("realtime endpoint returned an invalid error", false),
-    );
   }
 
   private terminalDataPlaneError(error: unknown): AckerDBClientError {

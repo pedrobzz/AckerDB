@@ -53,7 +53,7 @@ export const TELEMETRY_OUTCOMES = [
   "application_error",
   "malformed",
   "validation",
-  "unsupported_protocol",
+  "version_mismatch",
   "unauthenticated",
   "auth_unavailable",
   "auth_stale",

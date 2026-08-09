@@ -5,6 +5,14 @@
 > sections below already read that way; **The group is a namespace, not a
 > label** records what changed and what it deleted.
 
+> Amended again: `PROTOCOL_VERSION` no longer exists, so the paragraph below
+> about the address grammar "moving" it describes a number that is gone. What it
+> was reaching for still holds and is now direct: a frame declares the AckerDB
+> version of the build that produced it, and a decoder accepts exactly its own,
+> so a stale client's group-free `ref` is refused as a mixed install before it
+> can name a different function. The number was the indirection; the refusal was
+> the point.
+
 **This decision replaces the erased-visibility model recorded in ADR-0021,
 "Internal functions are erased visibility, not a separate function kind."**
 That record is deleted rather than kept as a tombstone: the model it described
@@ -135,12 +143,13 @@ the address. The Registry keeps one flat key, and its duplicate rule becomes
 correct rather than over-broad: two groups may each hold a `messages.list`, and
 one group may not hold it twice.
 
-The address grammar is part of the wire envelope, so `PROTOCOL_VERSION` moves
-with it. It is the only surface where the string changed — an exposed
-function's URL is byte-identical before and after, because the group was
-already its first path segment — and a stale socket client would otherwise
-send a version-5 `ref` that names a different function here. One refusal at
-the decoder is the honest outcome; a call that lands somewhere else is not.
+The address grammar is part of the wire envelope, and a change to it is exactly
+why the envelope carries a version at all. It is the only surface where the
+string changed — an exposed function's URL is byte-identical before and after,
+because the group was already its first path segment — and a client from another
+build would otherwise send a group-free `ref` that names a different function
+here. One refusal at the decoder is the honest outcome; a call that lands
+somewhere else is not.
 
 Event-table references take the same treatment — `api.events.<table>` — because
 they are leaves of the default group's tree like everything else in it. The

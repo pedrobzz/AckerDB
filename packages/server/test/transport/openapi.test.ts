@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { Err, PROTOCOL_VERSION, Status } from "@ackerdb/core";
+import { Err, ACKERDB_VERSION, Status, parseSseAckRequest } from "@ackerdb/core";
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { argsJsonSchema, validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
+import { SSE_STREAM_HEADERS } from "../../src/transport/http-surface.ts";
 
 // The document is plain JSON; navigating it in tests is not a typed contract.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -346,7 +347,7 @@ describe("openapi document", () => {
       "sse_error",
     ]);
     for (const frame of frames) {
-      expect(frame.properties.v.const).toBe(PROTOCOL_VERSION);
+      expect(frame.properties.v.const).toBe(ACKERDB_VERSION);
       expect(frame.properties.seq).toMatchObject({ type: "integer", minimum: 1 });
       expect(frame.properties.proof).toMatchObject({ type: "string" });
       expect(frame.required).toEqual(Object.keys(frame.properties));
@@ -367,6 +368,17 @@ describe("openapi document", () => {
     expect(stream.description).toContain("sse_ack");
     expect(stream.description).toContain("/_sse/ack");
     expect(stream.description).toContain("x-ackerdb-sse-max-stall-ms");
+    // The documented body is one a caller copies, so its placeholders are the
+    // only thing standing between it and JSON a decoder accepts. An unquoted
+    // version would have made the whole acknowledgment unparseable, and the
+    // stream stalls after exactly one frame when an acknowledgment fails.
+    const documentedAck = /`(\{"v":.*?\})`/.exec(stream.description as string)?.[1];
+    expect(documentedAck).toBeDefined();
+    expect(parseSseAckRequest(JSON.parse(
+      documentedAck!.replace("<seq>", "1")
+        .replace(`<${SSE_STREAM_HEADERS.stream}>`, "stream-token")
+        .replace("<proof>", "proof-token"),
+    ))).toMatchObject({ v: ACKERDB_VERSION, t: "sse_ack", seq: 1 });
 
     expect(Object.keys(stream.headers)).toEqual([
       "x-ackerdb-sse-stream",

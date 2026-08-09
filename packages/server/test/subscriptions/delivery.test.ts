@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseServerMessage,
@@ -133,7 +133,6 @@ class FakeSocket implements WebSocketDeliverySocket {
 
 function application(id: number, value: unknown = `value-${id}`) {
   return prepareRuntimePublication({
-    v: PROTOCOL_VERSION,
     t: "ok",
     id,
     kind: "query",
@@ -247,7 +246,6 @@ describe("WebSocketSessionSink", () => {
     const sink = new WebSocketSessionSink({ socket, budget, limits });
     const forged = {
       message: {
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: 1,
         kind: "query",
@@ -273,7 +271,7 @@ describe("WebSocketSessionSink", () => {
     const message = application(1, "💥");
     const messageText = message.text;
     const messageBytes = message.bytes;
-    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const controlBytes = encoder.encode(encode(control)).byteLength;
     socket.plans.push(
       { result: -1, buffered: messageBytes },
@@ -490,7 +488,7 @@ describe("WebSocketSessionSink", () => {
     const sink = new WebSocketSessionSink({ socket, budget, limits });
 
     const accepted = sink.sendApplication(1, first);
-    const later = sink.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+    const later = sink.sendControl({ t: "pong" });
     await expect(accepted).resolves.toBeUndefined();
     expect(await state(later)).toBe("pending");
     expect(socket.sent).toEqual([firstText]);
@@ -500,7 +498,7 @@ describe("WebSocketSessionSink", () => {
     socket.bufferedAmount = 0;
     sink.onDrain();
     await expect(later).resolves.toBeUndefined();
-    expect(socket.sent).toEqual([firstText, encode({ v: PROTOCOL_VERSION, t: "pong" })]);
+    expect(socket.sent).toEqual([firstText, encode({ t: "pong" })]);
     expect(sink.snapshot()).toMatchObject({ queuedBytes: 0, bufferedBytes: 0, blocked: false });
     expect(budget.snapshot().bytes).toBe(0);
   });
@@ -584,11 +582,11 @@ describe("WebSocketSessionSink", () => {
 
   test("fits a tight all-emoji WebSocket terminal to a nonempty public fallback", () => {
     const fallback = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err" as const,
       id: null,
       outcome: {
-        code: "unsupported_protocol" as const,
+        code: "version_mismatch" as const,
         retryable: true,
         message: "err",
         retryAfterMs: 30_000,
@@ -600,7 +598,7 @@ describe("WebSocketSessionSink", () => {
     const budget = new OutboundBudget(limits.webSocket.maxBytes, maxFrameBytes);
     const socket = new FakeSocket();
     const sink = new WebSocketSessionSink({ socket, budget, limits });
-    const error = new AckerDBError("unsupported_protocol", "💥".repeat(512), {
+    const error = new AckerDBError("version_mismatch", "💥".repeat(512), {
       retryable: true,
       retryAfterMs: 30_000,
       resource: "subscription",
@@ -621,7 +619,7 @@ describe("WebSocketSessionSink", () => {
     });
     const budget = new OutboundBudget(limits.webSocket.maxBytes, 512);
     const socket = new FakeSocket();
-    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const controlBytes = encoder.encode(encode(control)).byteLength;
     socket.plans.push({ result: -1, buffered: controlBytes });
     const sink = new WebSocketSessionSink({ socket, budget, limits });
@@ -670,8 +668,8 @@ describe("WebSocketSessionSink", () => {
     await Promise.all(held);
     expect(busySocket.closes[0]).toEqual({ code: 1013, reason: "overloaded" });
 
-    await expect(healthy.sendControl({ v: PROTOCOL_VERSION, t: "pong" })).resolves.toBeUndefined();
-    expect(healthySocket.sent).toEqual([encode({ v: PROTOCOL_VERSION, t: "pong" })]);
+    await expect(healthy.sendControl({ t: "pong" })).resolves.toBeUndefined();
+    expect(healthySocket.sent).toEqual([encode({ t: "pong" })]);
     expect(healthySocket.closes).toEqual([]);
     expect(budget.snapshot().bytes).toBe(0);
   });
@@ -1353,9 +1351,13 @@ describe("BoundedSseProducer", () => {
     await expect(reader.read()).rejects.toMatchObject({ code: "slow_consumer" });
     reader.releaseLock();
     await flushObservations();
+    // Every attempt is observed at every stage it reached, and a refused write
+    // reaches fewer than an admitted one: the admitted writes are seen
+    // encoding, queued, and delivered, while the write the stream byte limit
+    // turns away is seen encoding and refused at the queue.
     expect(observations.filter(({ lane, source }) =>
       lane === "application" && source === "write"
-    )).toHaveLength(writes * 3);
+    )).toHaveLength(writes * 3 + 2);
     expect(observations.some(({ lane, source, outcome }) =>
       lane === "application" && source === "write" && outcome !== "ok"
     )).toBe(true);
@@ -1472,9 +1474,12 @@ describe("BoundedSseProducer", () => {
     const tight = new BoundedSseProducer({ budget, limits });
     Reflect.set(tight, "nextSequence", Number.MAX_SAFE_INTEGER);
     Reflect.set(tight, "acknowledgedSequence", Number.MAX_SAFE_INTEGER - 1);
-    tight.fail(new AckerDBError("unsupported_protocol", "💥".repeat(512), {
-      retryable: true,
-      retryAfterMs: 30_000,
+    // Saturating the reserve means being the shape it is sized for, which is
+    // the committed convergence failure: the longest outcome code in the
+    // vocabulary, the longest resource class, and a message with no prefix
+    // short enough to keep. Anything smaller would leave slack and prove less.
+    tight.fail(new AckerDBError("convergence_unavailable", "💥".repeat(512), {
+      committed: true,
       resource: "subscription",
     }));
     const tightReader = tight.stream.getReader();
@@ -1484,9 +1489,9 @@ describe("BoundedSseProducer", () => {
     expect(tightTerminal).toMatchObject({
       t: "sse_error",
       outcome: {
-        code: "unsupported_protocol",
-        retryable: true,
-        retryAfterMs: 30_000,
+        code: "convergence_unavailable",
+        committed: true,
+        retryable: false,
         resource: "subscription",
         message: "err",
       },
@@ -1717,7 +1722,7 @@ describe("delivery observers", () => {
         );
       },
     });
-    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const sends: Promise<void>[] = [];
 
     for (let index = 0; index < 1_000; index++) sends.push(sink.sendControl(control));
@@ -1755,7 +1760,7 @@ describe("delivery observers", () => {
 
   test("finalizes terminal ownership when clocks or observation scheduling fail", async () => {
     const limits = testLimits();
-    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const clocks: DeliveryClock[] = [
       {
         now: () => Number.NaN,
@@ -1848,8 +1853,8 @@ describe("delivery observers", () => {
       limits,
       clock,
     });
-    await sink.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
-    expect(socket.sent).toEqual([encode({ v: PROTOCOL_VERSION, t: "pong" })]);
+    await sink.sendControl({ t: "pong" });
+    expect(socket.sent).toEqual([encode({ t: "pong" })]);
     expect(webSocketBudget.snapshot().bytes).toBe(0);
 
     const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
@@ -1887,7 +1892,6 @@ describe("delivery observers", () => {
     });
 
     await expect(sink.sendControl({
-      v: PROTOCOL_VERSION,
       t: "pong",
       unsafe: Number.NaN,
     } as unknown as SessionControlMessage)).rejects.toThrow(
@@ -1952,10 +1956,10 @@ describe("delivery observers", () => {
     );
     const socket = new FakeSocket();
     const sink = new WebSocketSessionSink({ socket, budget: webSocketBudget, limits, observer });
-    await sink.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+    await sink.sendControl({ t: "pong" });
     await flushObservations();
     await Promise.resolve();
-    expect(socket.sent).toEqual([encode({ v: PROTOCOL_VERSION, t: "pong" })]);
+    expect(socket.sent).toEqual([encode({ t: "pong" })]);
     expect(socket.closes).toEqual([]);
     expect(webSocketBudget.snapshot().bytes).toBe(0);
 

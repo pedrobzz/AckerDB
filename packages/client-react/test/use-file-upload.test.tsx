@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createBoundary } from "./support/boundary.tsx";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ClientMessage,
   type FileId,
   type FileUploadSession,
@@ -51,7 +51,6 @@ function acceptSession(
   url: string,
 ): void {
   socket.receive({
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: mutation.id,
     kind: "mutation",

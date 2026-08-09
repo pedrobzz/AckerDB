@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   EVENTS_ADDRESS_PREFIX,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   stableEncode,
@@ -16,7 +16,7 @@ import {
   type SubscriptionTransition,
   type TransitionMessage,
 } from "@ackerdb/core";
-import type { Principal } from "../../auth/credentials.ts";
+import { policyScope, type Principal } from "../../auth/credentials.ts";
 import { authorizeInvocation } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { OwnedProcedureContext } from "../../app/functions.ts";
@@ -341,7 +341,7 @@ export class RuntimeSessionStore {
             );
           } catch (error) {
             this.captureFrame(captured, this.prepare({
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "err",
               id: definition.id,
               outcome: outcomeFromError(transportError(error)),
@@ -363,7 +363,7 @@ export class RuntimeSessionStore {
           } catch (error) {
             this.releaseSubscription(state, definition.id, "channel");
             this.captureFrame(captured, this.prepare({
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "err",
               id: definition.id,
               outcome: outcomeFromError(transportError(error)),
@@ -642,7 +642,7 @@ export class RuntimeSessionStore {
       const message = outcome.ok
         ? successPublication?.message
         : {
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "err",
             id,
             outcome: outcomeFromError(outcome.error),
@@ -673,19 +673,17 @@ export class RuntimeSessionStore {
       this.publish(state(), authEpoch, message);
     return Object.freeze({
       sendTransition: (id: number, transition: SubscriptionTransition) => publish({
-        v: PROTOCOL_VERSION,
         t: "transition",
         id,
         transition,
       } satisfies TransitionMessage),
       sendEvent: (id: number, event: LiveEvent) => publish({
-        v: PROTOCOL_VERSION,
         t: "event",
         id,
         event,
       } satisfies EventMessage),
       sendError: (id: number, outcome: Outcome) => publish({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id,
         outcome,
@@ -707,7 +705,6 @@ export class RuntimeSessionStore {
         const current = state();
         try {
           await this.publish(current, current.context.authEpoch, {
-            v: PROTOCOL_VERSION,
             t: "channel_event",
             id,
             event,
@@ -796,13 +793,11 @@ export class RuntimeSessionStore {
     });
     const message = result.ok
       ? {
-          v: PROTOCOL_VERSION,
           t: "channel_ready",
           id,
           authEpoch: state.context.authEpoch,
         } satisfies ChannelReadyMessage
       : {
-          v: PROTOCOL_VERSION,
           t: "channel_rejected",
           id,
           authEpoch: state.context.authEpoch,
@@ -948,7 +943,7 @@ export class RuntimeSessionStore {
       id,
       address,
       args,
-      policyScopeFingerprint: digest(state.context.principal),
+      policyScopeFingerprint: digest(policyScope(state.context.principal)),
       fairnessKey: state.context.fairnessKey,
       context: { principal: state.context.principal },
       authEpoch: state.context.authEpoch,

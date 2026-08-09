@@ -14,7 +14,7 @@ import {
   type AckerDBServer,
 } from "@ackerdb/server";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseRealtimeOfferResponse,
@@ -109,7 +109,7 @@ async function prepare(
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
       ref: "api.assistant.live",
       args: {},
@@ -133,7 +133,7 @@ async function offer(value: Fixture, forwarded: string): Promise<string> {
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket: prepared.ticket,
       offer: { type: "offer", sdp: "v=0\r\noffer" },
@@ -157,7 +157,7 @@ function sessionRequest(
     ...(method === "PATCH"
       ? {
           body: encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_candidates",
             candidates: [],
             complete: true,

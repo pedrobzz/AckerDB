@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
 import type { AckerDBConnectionState } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";

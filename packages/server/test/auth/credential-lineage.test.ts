@@ -5,7 +5,7 @@
  * would be an authority it kept forever.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION } from "@ackerdb/core";
+import { ACKERDB_VERSION } from "@ackerdb/core";
 import {
   verifyClientCredential,
   type PrincipalInvalidation,
@@ -254,7 +254,6 @@ describe("credential delegation lineage", () => {
     );
     try {
       const attempt = await runtime.procedure(aliceSession, request({
-        v: PROTOCOL_VERSION,
         t: "p" as const,
         id: 1,
         ref: "api.tokens.revokeThenRollback",

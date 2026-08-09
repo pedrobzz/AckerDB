@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Err,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   encode,
   parseSseMessage,
@@ -390,7 +390,6 @@ class RuntimeHarness {
     issuedAt = Date.now(),
   ) {
     const message: MutationMessage = {
-      v: PROTOCOL_VERSION,
       t: "m",
       id,
       ref,
@@ -461,7 +460,7 @@ async function collectSse(
         .join("\n");
       const frame = parseSseMessage(JSON.parse(payload));
       runtime.ackSse({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "sse_ack",
         stream: response.streamId,
         seq: frame.seq,
@@ -585,7 +584,6 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("application-log-order");
 
     expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_001,
       ref: "api.items.logSequence",
@@ -646,7 +644,6 @@ describe("Runtime telemetry acceptance", () => {
     await Promise.all(Array.from({ length: 4 }, (_, index) => app.runtime.query(
       session.context,
       request({
-        v: PROTOCOL_VERSION,
         t: "q",
         id: 720_000_030 + index,
         ref: "api.items.logSequence",
@@ -668,7 +665,6 @@ describe("Runtime telemetry acceptance", () => {
     const first = await app.openSession("application-log-shared-query-first");
     const second = await app.openSession("application-log-shared-query-second");
     const subscription = {
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 720_000_011,
       ref: "api.items.loggedList",
@@ -706,7 +702,6 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("application-log-malformed");
 
     expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_015,
       ref: "api.items.unsafeLog",
@@ -759,7 +754,6 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("application-log-contexts");
 
     expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_016,
       ref: "api.items.policyLog",
@@ -969,7 +963,6 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("application-signal-export");
 
     expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 720_000_031,
       ref: "api.items.logSequence",
@@ -1089,7 +1082,6 @@ describe("Runtime telemetry acceptance", () => {
     const session = await app.openSession("telemetry-tail-runtime");
 
     await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 740_000_001,
       ref: "api.items.list",
@@ -1131,7 +1123,6 @@ describe("Runtime telemetry acceptance", () => {
     });
     const session = await app.openSession("telemetry-request-bytes");
     const message = {
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 740_000_010,
       ref: "api.items.list",
@@ -1200,21 +1191,18 @@ describe("Runtime telemetry acceptance", () => {
     const primary = await app.openSession(PRIMARY_SESSION);
 
     await app.runtime.subscribe(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: QUERY_SUBSCRIPTION_ID,
       ref: "api.items.list",
       args: { room: 1n },
     }));
     await app.runtime.subscribe(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: MATCHING_EVENT_SUBSCRIPTION_ID,
       ref: "api.events.signals",
       args: { room: 1n },
     }));
     await app.runtime.subscribe(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: NONMATCHING_EVENT_SUBSCRIPTION_ID,
       ref: "api.events.signals",
@@ -1284,7 +1272,6 @@ describe("Runtime telemetry acceptance", () => {
       throw new Error(PRIVATE_DELIVERY);
     });
     await app.runtime.subscribe(failing.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: FAILING_SUBSCRIPTION_ID,
       ref: "api.items.list",
@@ -1311,7 +1298,6 @@ describe("Runtime telemetry acceptance", () => {
     )).rejects.toThrow(PRIVATE_FAILURE);
 
     const roomOne = await app.runtime.query(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_001,
       ref: "api.items.list",
@@ -1319,21 +1305,18 @@ describe("Runtime telemetry acceptance", () => {
     })) as Array<{ id: bigint; room: bigint; body: string }>;
     expect(roomOne.map((row) => row.body)).toEqual([PRIVATE_BODY, PRIVATE_FETCH]);
     expect(await app.runtime.query(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_002,
       ref: "api.items.list",
       args: { room: 3n },
     }))).toHaveLength(1);
     expect(await app.runtime.query(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_003,
       ref: "api.items.list",
       args: { room: 4n },
     }))).toEqual([]);
     expect(await app.runtime.query(primary.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 750_000_004,
       ref: "api.audit.list",
@@ -1785,7 +1768,6 @@ describe("Runtime telemetry acceptance", () => {
 
     const session = await app.openSession("telemetry-operator-sampler");
     await app.runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 830_000_001,
       ref: "api.items.list",
@@ -1831,7 +1813,6 @@ describe("Runtime telemetry acceptance", () => {
     const heldReads = Array.from(
       { length: PRODUCTION_LIMITS.revalidationConcurrency + 1 },
       (_, index) => app.runtime.query(session.context, request({
-        v: PROTOCOL_VERSION,
         t: "q",
         id: 830_000_100 + index,
         ref: "api.items.hold",
@@ -2070,7 +2051,6 @@ describe("Runtime telemetry acceptance", () => {
     expect(app.runtime.telemetry.snapshot().exporter.failures).toBeGreaterThanOrEqual(1);
 
     await app.runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: QUERY_SUBSCRIPTION_ID,
       ref: "api.items.list",
@@ -2089,7 +2069,6 @@ describe("Runtime telemetry acceptance", () => {
             body: "application-remains-correct",
           });
           const rows = await app.runtime.query(session.context, request({
-            v: PROTOCOL_VERSION,
             t: "q",
             id: 910_000_002,
             ref: "api.items.list",
@@ -2154,7 +2133,6 @@ describe("Runtime telemetry acceptance", () => {
     });
     const session = await app.openSession("telemetry-disabled");
     expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 920_000_001,
       ref: "api.items.list",

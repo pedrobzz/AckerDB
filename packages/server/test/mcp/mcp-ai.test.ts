@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   parseSseMessage,
   type SseMessage,
   type Identity,
@@ -322,7 +322,7 @@ async function collectSse(response: RuntimeSseResponse): Promise<SseMessage[]> {
     const message = parseSseMessage(JSON.parse(text.slice("data: ".length).trim()));
     messages.push(message);
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: message.seq,

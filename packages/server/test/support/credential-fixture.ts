@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Err,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   encode,
   type MutationMessage,
@@ -403,7 +403,6 @@ export function mutationMessage(
 ): MutationMessage {
   const timestamp = Date.now().toString(16).padStart(12, "0");
   return {
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
     ref,
@@ -414,9 +413,9 @@ export function mutationMessage(
 }
 
 export function queryMessage(id: number, ref = "api.tokens.listAgentTokens"): QueryMessage {
-  return { v: PROTOCOL_VERSION, t: "q", id, ref, args: {} };
+  return { t: "q", id, ref, args: {} };
 }
 
 export function subscribeMessage(id: number, ref = "api.tokens.listAgentTokens"): SubscribeMessage {
-  return { v: PROTOCOL_VERSION, t: "sub", id, ref, args: {} };
+  return { t: "sub", id, ref, args: {} };
 }

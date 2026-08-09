@@ -1382,6 +1382,35 @@ AckerDB client stack, authenticates with an Admin Credential rather than as an
 application user, and consumes only the Admin API. The name is provisional.
 _Avoid_: Dashboard, admin panel, embedded console
 
+**Studio origin** — The single origin `acker studio` serves: the Studio bundle
+under one reserved path prefix, and the whole application proxied onto every
+other path. The browser only ever addresses this origin, so Studio needs no
+CORS negotiation and has no mechanism for being pointed at another server.
+_Avoid_: Studio host, dashboard server, UI port
+
+**Studio bundle** — The prebuilt static single-page application `@ackerdb/studio`
+ships. It is built at release time rather than on an installer's machine, and it
+is the one artifact this repository publishes that is compiled rather than
+source.
+_Avoid_: Studio build, dist, frontend assets
+
+**Studio shell** — The frame every Studio screen renders inside: the navigation,
+the connected-application header, and the region a screen occupies. It is what
+remains standing when a screen has nothing to show or fails outright, and it
+belongs to no feature.
+_Avoid_: layout, chrome, dashboard frame
+
+**Screen** — One addressable surface of Studio, occupying one route beneath the
+Studio origin's reserved prefix and named in the navigation. A screen an
+operator can send to a colleague is a screen whose whole state is in its URL.
+_Avoid_: page, view, tab, panel
+
+**Vendored component** — Interface code copied into this repository from a
+component registry to be modified and maintained by hand. It carries no version
+and no upstream release cadence: once copied it is ours, updated deliberately or
+not at all. Each such file names its origin and licence in its header.
+_Avoid_: third-party component, UI library, imported widget
+
 **Log source** — The origin of a record in Studio's Logs stream: application
 (developer-authored application log records) or framework (framework-emitted
 diagnostic events made durable). Analytics events are never part of the Logs

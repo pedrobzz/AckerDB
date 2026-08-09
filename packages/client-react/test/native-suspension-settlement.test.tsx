@@ -9,8 +9,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts).
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+// suite must do this first (see ackerdb-test-support/dom).
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { FakeAppState, setAppState } from "./support/app-state.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -201,7 +201,7 @@ const SSE_ACK_PATH = "/_sse/ack";
 
 // Records SSE request and acknowledgement traffic so the tests can prove no
 // hidden replacement stream starts and no acknowledgement leaks after
-// settlement. Resolves `fetch` at call time: after support/dom.ts registers
+// settlement. Resolves `fetch` at call time: after ackerdb-test-support/dom registers
 // happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {

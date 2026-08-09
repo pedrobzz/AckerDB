@@ -9,11 +9,10 @@
  * funnel. So it is an ordinary Admin API query: addressed, scoped, and served
  * by the same machinery as everything else.
  */
-import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
+import { ACKERDB_VERSION, type AdminSystemInfo } from "@ackerdb/core";
 import { ADMIN_API_PATH } from "@ackerdb/core";
 import { query } from "../app/functions.ts";
 import type { ScopeRequirement } from "../auth/scopes.ts";
-import { ACKERDB_VERSION } from "../shared/version.ts";
 import { v } from "../validation/v.ts";
 import type { AdminScope } from "./scopes.ts";
 import type { NormalizedAdminOptions } from "./options.ts";
@@ -46,13 +45,11 @@ export function systemModule(admin: NormalizedAdminOptions) {
       name: v.string(),
       version: v.string(),
       ackerdb: v.string(),
-      protocol: v.int(),
     }),
     handler: (): AdminSystemInfo => ({
       name: admin.application.name,
       version: admin.application.version,
       ackerdb: ACKERDB_VERSION,
-      protocol: PROTOCOL_VERSION,
     }),
   });
   return { info };

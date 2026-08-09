@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   type MutationMessage,
   type QueryMessage,
@@ -86,7 +86,6 @@ async function callMutation(
   const id = harness.nextId++;
   const issuedAt = Date.now();
   const message: MutationMessage = {
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
     ref,
@@ -103,7 +102,6 @@ async function callQuery(
   args: unknown,
 ): Promise<unknown> {
   const message: QueryMessage = {
-    v: PROTOCOL_VERSION,
     t: "q",
     id: harness.nextId++,
     ref,

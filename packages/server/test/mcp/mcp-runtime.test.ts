@@ -25,7 +25,7 @@ import {
 } from "../support/credential-fixture.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
-const MCP_PROTOCOL_VERSION = "2025-11-25";
+const MCP_ACKERDB_VERSION = "2025-11-25";
 
 interface GateState {
   readonly started: Deferred<void>;
@@ -233,7 +233,7 @@ function rpc(
     headers: {
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
-      "mcp-protocol-version": MCP_PROTOCOL_VERSION,
+      "mcp-protocol-version": MCP_ACKERDB_VERSION,
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     },
     body: JSON.stringify({
