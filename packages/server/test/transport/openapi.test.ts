@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Err, PROTOCOL_VERSION, Status } from "@ackerdb/core";
+import { Err, ACKERDB_VERSION, Status } from "@ackerdb/core";
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -346,7 +346,7 @@ describe("openapi document", () => {
       "sse_error",
     ]);
     for (const frame of frames) {
-      expect(frame.properties.v.const).toBe(PROTOCOL_VERSION);
+      expect(frame.properties.v.const).toBe(ACKERDB_VERSION);
       expect(frame.properties.seq).toMatchObject({ type: "integer", minimum: 1 });
       expect(frame.properties.proof).toMatchObject({ type: "string" });
       expect(frame.required).toEqual(Object.keys(frame.properties));

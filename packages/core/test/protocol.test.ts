@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_PROTOCOL_ID,
   MAX_RETRY_AFTER_MS,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   ProtocolError,
   decode,
   encode,
@@ -40,18 +40,17 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 7 envelopes", () => {
+describe("wire envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(7);
     expect(
       parseClientMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "client-1",
         credential: { kind: "anonymous" },
       }),
     ).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "client-1",
       credential: { kind: "anonymous" },
@@ -68,7 +67,7 @@ describe("protocol 7 envelopes", () => {
 
   test("parses exact channel join, leave, send, ready, event, and rejection frames", () => {
     expect(parseClientMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_join",
       id: 7,
       ref: "chat.room",
@@ -76,32 +75,32 @@ describe("protocol 7 envelopes", () => {
       room: "support",
     }).t).toBe("channel_join");
     expect(parseClientMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_leave",
       id: 7,
     }).t).toBe("channel_leave");
     expect(parseClientMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_send",
       id: 7,
       event: "message",
       payload: { body: "hello" },
     }).t).toBe("channel_send");
     expect(parseServerMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_ready",
       id: 7,
       authEpoch: 2,
     }).t).toBe("channel_ready");
     expect(parseServerMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_event",
       id: 7,
       event: "message",
       payload: { body: "hello" },
     }).t).toBe("channel_event");
     expect(parseServerMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_rejected",
       id: 7,
       authEpoch: 2,
@@ -114,9 +113,9 @@ describe("protocol 7 envelopes", () => {
     }).t).toBe("channel_rejected");
 
     for (const value of [
-      { v: PROTOCOL_VERSION, t: "channel_join", id: 7, ref: "chat.room", args: {}, room: undefined },
-      { v: PROTOCOL_VERSION, t: "channel_send", id: 7, event: "", payload: null },
-      { v: PROTOCOL_VERSION, t: "channel_event", id: 7, event: "message" },
+      { v: ACKERDB_VERSION, t: "channel_join", id: 7, ref: "chat.room", args: {}, room: undefined },
+      { v: ACKERDB_VERSION, t: "channel_send", id: 7, event: "", payload: null },
+      { v: ACKERDB_VERSION, t: "channel_event", id: 7, event: "message" },
     ]) {
       expectProtocolError(
         () => value.t.startsWith("channel_") && value.t === "channel_event"
@@ -127,19 +126,44 @@ describe("protocol 7 envelopes", () => {
     }
   });
 
-  test("rejects old versions, unknown frame types, unknown fields, and unbounded IDs", () => {
-    expectProtocolError(() => parseClientMessage({ v: 1, t: "ping" }), "unsupported_protocol");
-    // The version before this one spoke group-free addresses, so a `ref` it
-    // sends can name a different function here. It is refused as a version,
-    // never dispatched and answered with not_found.
+  test("rejects other versions, unknown frame types, unknown fields, and unbounded IDs", () => {
+    // Any other AckerDB build is a mixed install, and the refusal names both
+    // sides from the perspective of whoever reads it: this decode is a server
+    // reading what a client sent, so the client is the one that is 0.0.1.
+    expectProtocolError(() => parseClientMessage({ v: "0.0.1", t: "ping" }), "version_mismatch");
+    try {
+      parseClientMessage({ v: "0.0.1", t: "ping" });
+    } catch (error) {
+      expect((error as ProtocolError).message).toBe(
+        `this application runs AckerDB ${ACKERDB_VERSION} and this client is 0.0.1` +
+          " — install matching versions",
+      );
+    }
+    // The same skew read from the other end names the same two sides, so the
+    // sentence stays true whether an operator reads it in a server log or a
+    // browser console.
+    try {
+      parseServerMessage({ v: "0.0.1", t: "pong" });
+    } catch (error) {
+      expect((error as ProtocolError).message).toBe(
+        `this application runs AckerDB 0.0.1 and this client is ${ACKERDB_VERSION}` +
+          " — install matching versions",
+      );
+    }
+    // A frame from a build that spoke the retired protocol number carries an
+    // integer where a version belongs. There is no compatibility path back to
+    // it, so it is malformed rather than a mixed install: the field is not a
+    // version at all.
+    expectProtocolError(() => parseClientMessage({ v: 7, t: "ping" }), "malformed");
+    expectProtocolError(() => parseClientMessage({ t: "ping" }), "malformed");
     expectProtocolError(
-      () => parseClientMessage({ v: 5, t: "q", id: 1, ref: "internal.messages.list", args: null }),
-      "unsupported_protocol",
+      () => parseClientMessage({ v: "0".repeat(65), t: "ping" }),
+      "malformed",
     );
-    expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "wat" }), "malformed");
-    expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "ping", legacy: true }), "malformed");
+    expectProtocolError(() => parseClientMessage({ v: ACKERDB_VERSION, t: "wat" }), "malformed");
+    expectProtocolError(() => parseClientMessage({ v: ACKERDB_VERSION, t: "ping", legacy: true }), "malformed");
     expectProtocolError(
-      () => parseClientMessage({ v: PROTOCOL_VERSION, t: "q", id: MAX_PROTOCOL_ID + 1, ref: "a.b", args: null }),
+      () => parseClientMessage({ v: ACKERDB_VERSION, t: "q", id: MAX_PROTOCOL_ID + 1, ref: "a.b", args: null }),
       "malformed",
     );
   });
@@ -152,24 +176,24 @@ describe("protocol 7 envelopes", () => {
     );
     expect(
       parseClientMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: 2,
         credential: { kind: "bearer", token: "token" },
       }).t,
     ).toBe("auth");
     expect(
-      parseClientMessage({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "messages.list", args: {}, cursor: cursor(2n) }).t,
+      parseClientMessage({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "messages.list", args: {}, cursor: cursor(2n) }).t,
     ).toBe("sub");
-    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "reset", id: 1, cursor: cursor(2n) }).t).toBe("reset");
-    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "messages.list", args: {} }).t).toBe("q");
+    expect(parseClientMessage({ v: ACKERDB_VERSION, t: "reset", id: 1, cursor: cursor(2n) }).t).toBe("reset");
+    expect(parseClientMessage({ v: ACKERDB_VERSION, t: "q", id: 2, ref: "messages.list", args: {} }).t).toBe("q");
     expect(
-      parseClientMessage({ v: PROTOCOL_VERSION, t: "p", id: 3, ref: "reports.create", args: {} }).t,
+      parseClientMessage({ v: ACKERDB_VERSION, t: "p", id: 3, ref: "reports.create", args: {} }).t,
     ).toBe("p");
-    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "cancel", id: 3 }).t).toBe("cancel");
+    expect(parseClientMessage({ v: ACKERDB_VERSION, t: "cancel", id: 3 }).t).toBe("cancel");
     expect(
       parseClientMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "m",
         id: 4,
         ref: "messages.send",
@@ -239,49 +263,49 @@ describe("structured outcomes", () => {
 describe("SSE receiver acknowledgments", () => {
   test("parses exact chunk, completion, error, and cumulative acknowledgment envelopes", () => {
     expect(parseSseMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_chunk",
       seq: 1,
       proof: "proof-1",
       value: { id: 1n },
-    })).toEqual({ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: { id: 1n } });
-    expect(parseSseMessage({ v: PROTOCOL_VERSION, t: "sse_done", seq: 2, proof: "proof-2" })).toEqual({
-      v: PROTOCOL_VERSION,
+    })).toEqual({ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: { id: 1n } });
+    expect(parseSseMessage({ v: ACKERDB_VERSION, t: "sse_done", seq: 2, proof: "proof-2" })).toEqual({
+      v: ACKERDB_VERSION,
       t: "sse_done",
       seq: 2,
       proof: "proof-2",
     });
     expect(parseSseMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_error",
       seq: 3,
       proof: "proof-3",
       outcome: { code: "slow_consumer", retryable: false, message: "stalled", resource: "sse" },
     }).t).toBe("sse_error");
     expect(parseSseAckRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: "stream-1",
       seq: 3,
       proof: "proof-3",
-    })).toEqual({ v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 3, proof: "proof-3" });
+    })).toEqual({ v: ACKERDB_VERSION, t: "sse_ack", stream: "stream-1", seq: 3, proof: "proof-3" });
   });
 
   test("rejects unknown fields, unsafe sequences, empty tokens, and the wrong envelope kind", () => {
     for (const value of [
-      { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 0, proof: "proof", value: null },
-      { v: PROTOCOL_VERSION, t: "sse_done", seq: Number.MAX_SAFE_INTEGER + 1, proof: "proof" },
-      { v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "" },
-      { v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof", legacy: true },
-      { v: PROTOCOL_VERSION, t: "sse_error", seq: 1, proof: "proof", outcome: { code: "wat" } },
+      { v: ACKERDB_VERSION, t: "sse_chunk", seq: 0, proof: "proof", value: null },
+      { v: ACKERDB_VERSION, t: "sse_done", seq: Number.MAX_SAFE_INTEGER + 1, proof: "proof" },
+      { v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "" },
+      { v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "proof", legacy: true },
+      { v: ACKERDB_VERSION, t: "sse_error", seq: 1, proof: "proof", outcome: { code: "wat" } },
     ]) {
       expectProtocolError(() => parseSseMessage(value), "malformed");
     }
     for (const value of [
-      { v: PROTOCOL_VERSION, t: "call", stream: "stream", seq: 1, proof: "proof" },
-      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "", seq: 1, proof: "proof" },
-      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream", seq: -1, proof: "proof" },
-      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream", seq: 1, proof: "x".repeat(129) },
+      { v: ACKERDB_VERSION, t: "call", stream: "stream", seq: 1, proof: "proof" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "", seq: 1, proof: "proof" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "stream", seq: -1, proof: "proof" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "stream", seq: 1, proof: "x".repeat(129) },
     ]) {
       expectProtocolError(() => parseSseAckRequest(value), "malformed");
     }
@@ -353,7 +377,7 @@ describe("ordered subscription state", () => {
 
   test("preserves opaque application payloads through wire decode and envelope validation", () => {
     const message: TransitionMessage = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: 8,
       transition: {
@@ -371,7 +395,7 @@ describe("live events and operation results", () => {
   test("validates session acceptance, auth rotation, and structured errors", () => {
     expect(
       parseServerMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "welcome",
         clientSessionId: "client-1",
         authEpoch: 0,
@@ -379,7 +403,7 @@ describe("live events and operation results", () => {
       }).t,
     ).toBe("welcome");
     const userAuthentication = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 2,
       authEpoch: 1,
@@ -391,7 +415,7 @@ describe("live events and operation results", () => {
     expect(parseServerMessage(decode(encode(userAuthentication)))).toEqual(userAuthentication);
     expect(
       parseServerMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: { code: "unauthenticated", retryable: false, message: "authentication required" },
@@ -402,7 +426,7 @@ describe("live events and operation results", () => {
   test("validates the exact secret-free authentication descriptor union", () => {
     expect(
       parseServerMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "welcome",
         clientSessionId: "client-1",
         authEpoch: 0,
@@ -452,7 +476,7 @@ describe("live events and operation results", () => {
       expectProtocolError(
         () =>
           parseServerMessage({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "auth",
             attemptId: 1,
             authEpoch: 1,
@@ -470,14 +494,14 @@ describe("live events and operation results", () => {
       { kind: "gap", cursor: position },
       { kind: "reset", cursor: position },
     ]) {
-      expect(parseServerMessage({ v: PROTOCOL_VERSION, t: "event", id: 4, event }).t).toBe("event");
+      expect(parseServerMessage({ v: ACKERDB_VERSION, t: "event", id: 4, event }).t).toBe("event");
     }
   });
 
   test("validates query and mutation ok variants and the exact receipt", () => {
-    expect(parseServerMessage({ v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "query", value: [1, 2] }).t).toBe("ok");
+    expect(parseServerMessage({ v: ACKERDB_VERSION, t: "ok", id: 1, kind: "query", value: [1, 2] }).t).toBe("ok");
     const procedure = parseServerMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: 9,
       kind: "procedure",
@@ -495,14 +519,14 @@ describe("live events and operation results", () => {
     });
     expect(
       parseServerMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "ok",
         id: 2,
         kind: "mutation",
         value: { created: 1n },
         receipt,
       }),
-    ).toEqual({ v: PROTOCOL_VERSION, t: "ok", id: 2, kind: "mutation", value: { created: 1n }, receipt });
+    ).toEqual({ v: ACKERDB_VERSION, t: "ok", id: 2, kind: "mutation", value: { created: 1n }, receipt });
   });
 
   test("validates application-error frames and preserves procedure status metadata", () => {
@@ -513,14 +537,14 @@ describe("live events and operation results", () => {
       status: Status.NotFound,
     };
     const procedure = parseServerMessage({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "app_err",
       id: 9,
       kind: "procedure",
       error,
     });
     expect(procedure).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "app_err",
       id: 9,
       kind: "procedure",
@@ -528,7 +552,7 @@ describe("live events and operation results", () => {
     });
     expectProtocolError(
       () => parseServerMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "app_err",
         id: 9,
         kind: "query",
@@ -562,7 +586,7 @@ describe("live events and operation results", () => {
       "malformed",
     );
     expectProtocolError(
-      () => parseServerMessage({ v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "legacy", value: null }),
+      () => parseServerMessage({ v: ACKERDB_VERSION, t: "ok", id: 1, kind: "legacy", value: null }),
       "malformed",
     );
   });

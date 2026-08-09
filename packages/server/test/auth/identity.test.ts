@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage, type QueryMessage, type Identity } from "@ackerdb/core";
+import { ACKERDB_VERSION, encode, type MutationMessage, type QueryMessage, type Identity } from "@ackerdb/core";
 import {
   verifyClientCredential,
   type CredentialVerifier,
@@ -200,7 +200,7 @@ describe("durable provider-neutral Identity", () => {
     await first.runtime.openSession(firstSession);
     const issuedAt = Date.now();
     const mutationMessage: MutationMessage = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "m",
       id: 1,
       ref: "api.owned.create",
@@ -227,7 +227,7 @@ describe("durable provider-neutral Identity", () => {
     const secondSession = session(secondPrincipal, "second-session");
     await second.runtime.openSession(secondSession);
     const queryMessage: QueryMessage = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "q",
       id: 2,
       ref: "api.owned.current",

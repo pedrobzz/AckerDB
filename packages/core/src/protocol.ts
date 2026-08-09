@@ -2,9 +2,10 @@ import type { Identity } from "./identity.ts";
 import {
   boundedString as string,
   exactFields as exact,
+  frameVersion,
   malformed,
   protocolObject as object,
-  ProtocolError,
+  type FrameSender,
   type ProtocolObject as ObjectValue,
 } from "./protocol-validation.ts";
 import {
@@ -12,6 +13,7 @@ import {
   type ApplicationError,
   type ErrorHttpStatus,
 } from "./result.ts";
+import { ACKERDB_VERSION } from "./version.ts";
 
 export { ProtocolError } from "./protocol-validation.ts";
 
@@ -20,18 +22,16 @@ export { ProtocolError } from "./protocol-validation.ts";
  * results, and event rows remain opaque and keep their inferred TypeScript
  * types; every framework-owned field is validated after wire decode.
  *
- * The version covers the grammar of every framework-owned field, `ref`
- * included: 6 is where a function address began with its API path, so a
- * version-5 `ref` naming one function could name a different one here. 7 is
- * where the credential TTL disclosure gained `null`, for the identity
- * credentials that do not expire; a version-6 decoder refuses that value as
- * malformed, so the skew has to be one refusal at the handshake rather than a
- * session that dies on its own welcome frame. A decoder that refuses the
- * version is what turns skew into one refusal instead of a call that lands
- * somewhere else.
+ * `v` is the AckerDB version of the build that produced the frame, and a
+ * decoder accepts exactly its own — see {@link frameVersion} for why that is
+ * the whole of the compatibility contract. Every frame carries it rather than
+ * only the handshake pair, because several of these frames reach a decoder
+ * through a door that has no handshake: an SSE stream and the realtime
+ * signaling exchange are HTTP, where the first frame *is* the greeting. One
+ * uniform rule guards all of them without depending on which frame arrives
+ * first.
  */
 
-export const PROTOCOL_VERSION = 7 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -48,7 +48,7 @@ const MAX_IDENTITY = 2n ** 63n - 1n;
 export const OUTCOME_CODES = [
   "malformed",
   "validation",
-  "unsupported_protocol",
+  "version_mismatch",
   "unauthenticated",
   "auth_unavailable",
   "auth_stale",
@@ -198,7 +198,7 @@ export interface MutationReceipt {
 }
 
 interface Frame<T extends string> {
-  v: typeof PROTOCOL_VERSION;
+  v: typeof ACKERDB_VERSION;
   t: T;
 }
 
@@ -443,15 +443,9 @@ function enumValue<T extends string>(value: unknown, name: string, values: Set<s
   return value as T;
 }
 
-function frame(value: unknown): ObjectValue {
+function frame(value: unknown, sender: FrameSender): ObjectValue {
   const result = object(value, "frame");
-  if (!Object.hasOwn(result, "v")) malformed("missing field v");
-  if (result.v !== PROTOCOL_VERSION) {
-    if (Number.isInteger(result.v)) {
-      throw new ProtocolError("unsupported_protocol", "unsupported protocol version");
-    }
-    malformed("v must be an integer protocol version");
-  }
+  frameVersion(result.v, sender);
   if (typeof result.t !== "string") malformed("t must be a frame type");
   return result;
 }
@@ -701,7 +695,7 @@ export function parseMutationReceipt(value: unknown): MutationReceipt {
 }
 
 export function parseClientMessage(value: unknown): ClientMessage {
-  const result = frame(value);
+  const result = frame(value, "client");
   switch (result.t) {
     case "hello":
       exact(result, ["v", "t", "clientSessionId", "credential"]);
@@ -777,7 +771,7 @@ export function parseClientMessage(value: unknown): ClientMessage {
 }
 
 export function parseServerMessage(value: unknown): ServerMessage {
-  const result = frame(value);
+  const result = frame(value, "application");
   switch (result.t) {
     case "welcome":
       parseAuthenticationDescriptor(result, ["v", "t", "clientSessionId", "authEpoch"]);
@@ -855,7 +849,7 @@ export function parseServerMessage(value: unknown): ServerMessage {
 }
 
 export function parseSseMessage(value: unknown): SseMessage {
-  const result = frame(value);
+  const result = frame(value, "application");
   switch (result.t) {
     case "sse_chunk":
       exact(result, ["v", "t", "seq", "proof", "value"]);
@@ -877,7 +871,7 @@ export function parseSseMessage(value: unknown): SseMessage {
 }
 
 export function parseSseAckRequest(value: unknown): SseAckRequest {
-  const result = frame(value);
+  const result = frame(value, "client");
   if (result.t !== "sse_ack") malformed("SSE acknowledgment must be an sse_ack frame");
   exact(result, ["v", "t", "stream", "seq", "proof"]);
   string(result.stream, "SSE stream", MAX_SSE_TOKEN_LENGTH);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseClientMessage,
@@ -99,7 +99,7 @@ describe("ChannelManager", () => {
     expect(port.sent.filter((frame) => frame.t === "channel_leave")).toHaveLength(0);
     second.close();
     expect(port.sent.filter((frame) => frame.t === "channel_leave")).toEqual([
-      { v: PROTOCOL_VERSION, t: "channel_leave", id },
+      { v: ACKERDB_VERSION, t: "channel_leave", id },
     ]);
   });
 
@@ -143,7 +143,7 @@ describe("ChannelManager", () => {
     manager.ready(supportJoin.id, 0);
     expect(support.send("message", { body: "ready" })).toBe(true);
     expect(port.sent.at(-1)).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "channel_send",
       id: supportJoin.id,
       event: "message",

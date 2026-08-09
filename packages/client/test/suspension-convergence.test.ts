@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   parseClientMessage,
   type AuthenticationDescriptor,
@@ -75,7 +75,7 @@ function transition(
   from: SubscriptionCursor | null = null,
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition:
@@ -95,7 +95,7 @@ function mutationOk(
   } = {},
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",
@@ -116,7 +116,7 @@ function liveEvent(
     | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: unknown }
     | { readonly kind: "gap" | "reset"; readonly cursor: LiveEventCursor },
 ): ServerMessage {
-  return { v: PROTOCOL_VERSION, t: "event", id, event };
+  return { v: ACKERDB_VERSION, t: "event", id, event };
 }
 
 /** Total mutation frames carrying `mutationRequestId` across every socket. */
@@ -337,7 +337,7 @@ describe("mutation convergence across suspension", () => {
     // fresh connection must verify it before any retained work is sent.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -350,7 +350,7 @@ describe("mutation convergence across suspension", () => {
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
 
     second.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 2,
@@ -474,7 +474,7 @@ describe("mutation convergence across suspension", () => {
     });
     const issued = first.lastFrame("m");
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -711,7 +711,7 @@ describe("event convergence across suspension", () => {
       for (const retired of sockets) {
         retired.open();
         retired.receive({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "welcome",
           clientSessionId: client.clientSessionId,
           authEpoch: 9,
@@ -732,7 +732,7 @@ describe("event convergence across suspension", () => {
           }),
         );
         retired.receive({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "auth",
           attemptId: 99,
           authEpoch: 9,

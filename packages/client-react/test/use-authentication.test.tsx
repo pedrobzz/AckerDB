@@ -3,7 +3,7 @@ import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type AuthenticationDescriptor,
   type ClientMessage,
   type Identity,
@@ -184,7 +184,7 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 5,
@@ -246,7 +246,7 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -279,7 +279,7 @@ describe("useAuthentication", () => {
     // The server rejects the refreshed credential by terminating the session.
     await act(async () => {
       onlyLive(harness).receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: { code: "unauthenticated", retryable: false, message: "invalid credential" },
@@ -316,7 +316,7 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -374,7 +374,7 @@ describe("useAuthentication", () => {
     await act(async () => {
       reconnecting.open();
       reconnecting.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -500,7 +500,7 @@ describe("credential-source provider", () => {
     const attempt = lastAuthFrame(socket);
     expect(attempt.credential).toEqual({ kind: "bearer", token: `token-${pulls}` });
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -522,7 +522,7 @@ describe("credential-source provider", () => {
     const outFrame = lastAuthFrame(onlyLive(harness));
     expect(outFrame.credential).toEqual({ kind: "anonymous" });
     onlyLive(harness).receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: outFrame.attemptId,
       authEpoch: 2,
@@ -563,7 +563,7 @@ describe("honest sign-out", () => {
       const attempt = lastAuthFrame(socket);
       expect(attempt.credential).toEqual({ kind: "bearer", token: "still-here" });
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -585,7 +585,7 @@ describe("honest sign-out", () => {
       const attempt = lastAuthFrame(socket);
       expect(attempt.credential).toEqual({ kind: "anonymous" });
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 2,

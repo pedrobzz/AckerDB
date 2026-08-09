@@ -31,7 +31,7 @@ import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { serve } from "../../src/transport/server.ts";
 
-const PROTOCOL_VERSION = "2025-11-25";
+const ACKERDB_VERSION = "2025-11-25";
 
 const schema = defineSchema({
   notes: defineTable({
@@ -272,7 +272,7 @@ function mcpHeaders(): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
-    "mcp-protocol-version": PROTOCOL_VERSION,
+    "mcp-protocol-version": ACKERDB_VERSION,
   };
 }
 
@@ -346,7 +346,7 @@ describe("public stateless MCP endpoint", () => {
     expect(harness.registry.addressOf(agentMcp.tools.write_note)).toBeUndefined();
 
     const initialize = await rpc("initialize", {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: ACKERDB_VERSION,
       capabilities: {},
       clientInfo: { name: "raw-test", version: "1" },
     });
@@ -356,7 +356,7 @@ describe("public stateless MCP endpoint", () => {
       jsonrpc: "2.0",
       id: 1,
       result: {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: ACKERDB_VERSION,
         capabilities: { tools: {} },
         serverInfo: {
           name: "agent",
@@ -450,7 +450,7 @@ describe("public stateless MCP endpoint", () => {
     expect(harness.registry.mcps.get("operations")).toBe(operationsMcp);
 
     const initialized = await rpcAt(operationsMcp.path, "initialize", {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: ACKERDB_VERSION,
       capabilities: {},
       clientInfo: { name: "route-test", version: "1" },
     });

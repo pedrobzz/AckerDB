@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseServerMessage,
@@ -254,7 +254,7 @@ function acknowledgeSse(
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream,
       seq: message.seq,
@@ -509,7 +509,7 @@ test("disabled telemetry adds no HTTP token or WebSocket auth-observer records",
 
     const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "disabled-telemetry-connection",
       credential: { kind: "anonymous" },
@@ -550,7 +550,7 @@ test("samples bounded Serve pressure during pre-hello and HTTP auth stalls witho
   try {
     client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: connectionCanary,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },
@@ -681,7 +681,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
 
     const hanging = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     hanging.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "private-retained-tail-connection-canary",
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },
@@ -720,7 +720,7 @@ async function hello(
 ): Promise<WsClient> {
   const client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
   client.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId,
     credential: { kind: "bearer", token },
@@ -746,7 +746,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
   try {
     const primary = await hello(app, primaryConnection, VALID_WS_TOKEN);
     primary.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 1,
       credential: { kind: "bearer", token: VALID_REFRESH_TOKEN },
@@ -758,7 +758,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
       principal: "user",
     });
     primary.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 2,
       credential: { kind: "anonymous" },
@@ -775,7 +775,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const failedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     failedHello.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: failedHelloConnection,
       credential: { kind: "bearer", token: INVALID_WS_TOKEN },
@@ -790,7 +790,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const failedRefresh = await hello(app, failedRefreshConnection, VALID_WS_TOKEN);
     failedRefresh.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 3,
       credential: { kind: "bearer", token: INVALID_WS_TOKEN },
@@ -805,14 +805,14 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const superseded = await hello(app, supersededConnection, VALID_WS_TOKEN);
     superseded.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 4,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },
     });
     await eventually(() => app.verifier.verified.filter((token) => token === HANGING_WS_TOKEN).length >= 1);
     superseded.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 5,
       credential: { kind: "anonymous" },
@@ -828,7 +828,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const closed = await hello(app, closedConnection, VALID_WS_TOKEN);
     closed.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 6,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },
@@ -841,7 +841,7 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const closedHello = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/_ws`);
     closedHello.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: closedHelloConnection,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },

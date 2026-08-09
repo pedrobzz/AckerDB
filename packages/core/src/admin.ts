@@ -31,10 +31,12 @@ export interface AdminSystemInfo {
   readonly name: string;
   /** The application's own version, as its package declares it. */
   readonly version: string;
-  /** The AckerDB version serving it. */
+  /**
+   * The AckerDB version serving it, which is also the whole of what it can
+   * talk to: packages ship lockstep, so a consumer holding a different one is
+   * a mixed install and every socket it opens is refused.
+   */
   readonly ackerdb: string;
-  /** The wire protocol this server speaks; a client's own is `PROTOCOL_VERSION`. */
-  readonly protocol: number;
 }
 
 /** Arguments of a function that answers about the server and nothing else. */

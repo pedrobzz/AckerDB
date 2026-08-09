@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { ACKERDB_VERSION } from "../../../core/src/version.ts";
 import {
-  PROTOCOL_VERSION,
   type ClientAuthMessage,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
@@ -171,7 +171,7 @@ function cursor(authEpoch: number, generation = `g${authEpoch}`): SubscriptionCu
 
 function resetTransition(authEpoch: number, id = 1): TransitionMessage {
   return {
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition: {
@@ -316,7 +316,7 @@ class FakeRuntime implements RuntimePort {
         ? { ref: message.ref, principal: context.principal.kind }
         : await this.queryHook(context, message);
       await context.publish(prepareRuntimePublication({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "ok",
         id: message.id,
         kind: "query",
@@ -325,7 +325,7 @@ class FakeRuntime implements RuntimePort {
       return value;
     } catch (error) {
       await context.publish(prepareRuntimePublication({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: message.id,
         outcome: outcomeFromError(error),
@@ -345,7 +345,7 @@ class FakeRuntime implements RuntimePort {
     if (this.procedureHook !== null) return this.procedureHook(context, request);
     const value = { ref: message.ref, principal: context.principal.kind };
     await context.publish(prepareRuntimePublication({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: message.id,
       kind: "procedure",
@@ -372,7 +372,7 @@ class FakeRuntime implements RuntimePort {
       },
     };
     await context.publish(prepareRuntimePublication({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: message.id,
       kind: "mutation",
@@ -400,20 +400,20 @@ function principal(subject: string, expiresAt = 60_000): VerifiedUserCredential 
 }
 
 function hello(credential: Credential = { kind: "anonymous" }): unknown {
-  return { v: PROTOCOL_VERSION, t: "hello", clientSessionId: "client-1", credential };
+  return { v: ACKERDB_VERSION, t: "hello", clientSessionId: "client-1", credential };
 }
 
 function auth(attemptId: number, credential: Credential): ClientAuthMessage {
-  return { v: PROTOCOL_VERSION, t: "auth", attemptId, credential };
+  return { v: ACKERDB_VERSION, t: "auth", attemptId, credential };
 }
 
 function query(id: number): QueryMessage {
-  return { v: PROTOCOL_VERSION, t: "q", id, ref: "messages.list", args: {} };
+  return { v: ACKERDB_VERSION, t: "q", id, ref: "messages.list", args: {} };
 }
 
 function mutation(id: number): MutationMessage {
   return {
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "m",
     id,
     ref: "messages.send",
@@ -462,7 +462,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.queries).toHaveLength(0);
     expect(sink.controls).toEqual([
       {
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: { code: "malformed", retryable: false, message: "hello must be the first frame" },
@@ -478,12 +478,12 @@ describe("Session Protocol-2 ownership", () => {
     expect(session.currentClientSessionId).toBeNull();
 
     await handle(session, hello());
-    await handle(session, { v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "messages.list", args: {} });
-    await handle(session, { v: PROTOCOL_VERSION, t: "reset", id: 1, cursor: cursor(0) });
+    await handle(session, { v: ACKERDB_VERSION, t: "sub", id: 1, ref: "messages.list", args: {} });
+    await handle(session, { v: ACKERDB_VERSION, t: "reset", id: 1, cursor: cursor(0) });
     await handle(session, query(2));
     await handle(session, mutation(3));
-    await handle(session, { v: PROTOCOL_VERSION, t: "unsub", id: 1 });
-    await handle(session, { v: PROTOCOL_VERSION, t: "ping" });
+    await handle(session, { v: ACKERDB_VERSION, t: "unsub", id: 1 });
+    await handle(session, { v: ACKERDB_VERSION, t: "ping" });
     await settle();
 
     expect(session.snapshot()).toMatchObject({
@@ -546,16 +546,16 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const running = handle(session, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "p",
       id: 41,
       ref: "messages.hold",
       args: {},
     });
     await started.promise;
-    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 42 });
+    await handle(session, { v: ACKERDB_VERSION, t: "cancel", id: 42 });
     expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(false);
-    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 41 });
+    await handle(session, { v: ACKERDB_VERSION, t: "cancel", id: 41 });
     await running;
 
     expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
@@ -576,7 +576,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const subscriptions = [1, 2].map((id) => handle(session, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sub",
       id,
       ref: "messages.list",
@@ -612,7 +612,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const runningProcedure = handle(session, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "p",
       id: 8,
       ref: "messages.hold",
@@ -809,7 +809,7 @@ describe("Session Protocol-2 ownership", () => {
     ]);
     const accepted = messagesOfType(sink.controls, "auth")[0]!;
     expect(accepted).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 2,
       authEpoch: 1,
@@ -1221,7 +1221,7 @@ describe("Session Protocol-2 ownership", () => {
       "err",
     )[0];
     expect(error).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: 7,
       outcome: { code: "unauthorized", retryable: false, message: "access denied" },

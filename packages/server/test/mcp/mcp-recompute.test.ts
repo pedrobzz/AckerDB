@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode } from "@ackerdb/core";
+import { ACKERDB_VERSION, encode } from "@ackerdb/core";
 import type { UserPrincipal } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
@@ -193,7 +193,7 @@ test("a subscription recomputes cleanly after another principal's MCP tool commi
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
+    request({ v: ACKERDB_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -225,7 +225,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
+    request({ v: ACKERDB_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -260,7 +260,7 @@ test("an event subscription delivers cleanly after another principal's MCP tool 
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 9, ref: "api.events.signals", args: {} }),
+    request({ v: ACKERDB_VERSION, t: "sub", id: 9, ref: "api.events.signals", args: {} }),
   );
   await until(() => publications.length >= 1, "event reset");
 

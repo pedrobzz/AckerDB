@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
+  OUTCOME_CODES,
   RESOURCE_CLASSES,
   encodeSseChunk,
   encodeSseControl,
@@ -96,14 +97,14 @@ function sameProof(left: string, right: string): boolean {
 }
 
 function sseDoneBytes(seq: number, proof: string): Uint8Array {
-  return encodeSseControl({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
+  return encodeSseControl({ v: ACKERDB_VERSION, t: "sse_done", seq, proof });
 }
 
 function sseErrorBytes(error: AckerDBError, maxBytes: number, seq: number, proof: string): Uint8Array {
   const outcome = outcomeFromError(error);
   const fitted = fitOutcome(outcome, maxBytes, (candidate) => {
     const value = encodeSseControl({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_error",
       seq,
       proof,
@@ -124,8 +125,18 @@ const MINIMUM_SSE_CHUNK_FIXED_BYTES =
 const MAXIMUM_SSE_RESOURCE = RESOURCE_CLASSES.reduce(
   (longest, resource) => resource.length > longest.length ? resource : longest,
 );
+// The reserve has to hold the largest terminal frame this producer can emit,
+// and which outcome that is must be read off the vocabulary rather than named:
+// a code that is renamed or added would otherwise leave the reserve sized for a
+// frame that no longer exists, and `fitOutcome` would have nowhere to put even
+// the fallback message. `convergence_unavailable` is excluded here because it
+// cannot be retryable and so cannot carry `retryAfterMs`; its own optional set
+// is measured as the second shape below.
+const MAXIMUM_RETRYABLE_SSE_CODE = OUTCOME_CODES
+  .filter((code) => code !== "convergence_unavailable")
+  .reduce((longest, code) => (code.length > longest.length ? code : longest));
 const MINIMUM_SSE_CONTROL_BYTES = Math.max(
-  sseErrorBytes(new AckerDBError("unsupported_protocol", PUBLIC_ERROR_FALLBACK, {
+  sseErrorBytes(new AckerDBError(MAXIMUM_RETRYABLE_SSE_CODE, PUBLIC_ERROR_FALLBACK, {
     retryable: true,
     retryAfterMs: 30_000,
     resource: MAXIMUM_SSE_RESOURCE,

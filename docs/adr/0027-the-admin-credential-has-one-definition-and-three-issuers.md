@@ -1,5 +1,14 @@
 # The Admin Credential has one definition and three issuers; an authority change never closes the door carrying its own answer
 
+> Amended: the two mentions of "protocol version 7" below name a constant that
+> no longer exists. The TTL disclosure gaining `null` is unchanged and is still
+> a wire change; what changed is that a wire change no longer moves a separate
+> number. A frame declares the AckerDB version that produced it, and a decoder
+> accepts exactly its own — so the skew this decision worried about is still one
+> refusal at the first frame, named as the mixed install it is. Read "and the
+> protocol version is 7" as "and this is a wire change, which the AckerDB
+> version already covers".
+
 An application had no way to be administered. `FRAMEWORK_SCOPES` had just been
 filled by [ADR-0026](0026-administration-is-a-first-class-surface.md), so a
 grant of `["*", "_*"]` finally expanded to real authority — and nothing in the
@@ -156,7 +165,7 @@ identity credential could authenticate over WebSocket at all, though the
 documentation said all three transports worked.
 
 The disclosure is now `number | null`, `null` meaning the credential does not
-expire, and the protocol version is 7. A finite stand-in was rejected: it is a
+expire. A finite stand-in was rejected: it is a
 lie the client schedules a pointless re-pull against, and clamping to a large
 integer hides the one fact the field exists to communicate. Omitting the field
 was rejected too — a client must never have to read silence as a value — so it
@@ -200,8 +209,9 @@ as shrinking any other limit under live data.
   than a runtime assertion, and it was not widened for uniformity.
 - Every fresh database now spends Identity 1 and one commit version on the
   master. Subsequent starts write nothing.
-- The protocol version is 7. Packages ship lockstep, so a 0.17 client meets a
-  0.18 server as one refusal at the handshake.
+- This is a wire change, and it needs no separate number to be one: packages
+  ship lockstep, so a 0.17 client meets a 0.18 server as one refusal on the
+  first frame either sends.
 - `AuthInvalidationBoundary.subscribeDirect` returns a subscription with a scope,
   like every other subscription. `publishCredentialInvalidations` is gone; a
   commit request carries `publishAuthInvalidation` instead, defaulting to the

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   type ApplicationError,
   type ClientMessage,
@@ -64,7 +64,7 @@ function acceptSession(
   expiresAt = 60_000,
 ): void {
   socket.receive({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "ok",
     id: mutation.id,
     kind: "mutation",
@@ -218,7 +218,7 @@ describe("AckerDBClient files", () => {
     const refresh = client.refreshCredential({ kind: "anonymous" });
     const authentication = socket.lastFrame("auth");
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: authentication.attemptId,
       authEpoch: 1,
@@ -716,7 +716,7 @@ describe("AckerDBClient files", () => {
     const socket = sockets[0]!;
     const mutation = dispatchSession(client, socket);
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "app_err",
       id: mutation.id,
       kind: "mutation",

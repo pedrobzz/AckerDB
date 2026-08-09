@@ -17,7 +17,7 @@
  * the shell's chrome tell the truth on its own.
  */
 import { useQuery } from "@ackerdb/client-react";
-import { PROTOCOL_VERSION, adminApi, type AdminSystemInfo } from "@ackerdb/core";
+import { ACKERDB_VERSION, adminApi, type AdminSystemInfo } from "@ackerdb/core";
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge.tsx";
 import { Skeleton } from "../ui/skeleton.tsx";
@@ -82,13 +82,13 @@ function KnownIdentity({
         <span className="font-mono text-sm text-muted-foreground">{application.version}</span>
       </div>
       <Fact label="AckerDB">{application.ackerdb}</Fact>
-      <Fact label="Protocol">{application.protocol}</Fact>
       {/*
-        A protocol Studio does not speak never reaches this header — the connect
-        gate holds that case and names the package to install. The badge marks
-        the ordinary agreement, so the disagreement is legible as its absence.
+        A Studio on a different AckerDB version never reaches this header — the
+        connect gate holds that case and names the package to install. The badge
+        marks the ordinary agreement, so the disagreement is legible as its
+        absence.
       */}
-      {application.protocol === PROTOCOL_VERSION && (
+      {application.ackerdb === ACKERDB_VERSION && (
         <Badge variant="signal" className="text-signal-green">
           connected
         </Badge>

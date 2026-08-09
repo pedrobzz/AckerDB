@@ -1,5 +1,4 @@
 import {
-  REALTIME_PROTOCOL_VERSION,
   REALTIME_STREAM_CHUNK_MAX_BYTES,
   RealtimeProtocolError,
   decodeRealtimeFrame,
@@ -9,6 +8,8 @@ import {
   type RealtimeSignalFrame,
 } from "./protocol.ts";
 import type { Outcome } from "../protocol.ts";
+import type { FrameSender } from "../protocol-validation.ts";
+import { ACKERDB_VERSION } from "../version.ts";
 import type { PortableRTCDataChannel } from "./webrtc.ts";
 
 export class RealtimeStreamInterruptedError extends Error {
@@ -157,6 +158,8 @@ export class RealtimeDataPlane {
   private readonly channel: PortableRTCDataChannel;
   private readonly localPrefix: "c" | "s";
   private readonly remotePrefix: "c" | "s";
+  /** Which end the peer is, so a version refusal names both sides correctly. */
+  private readonly remoteSender: FrameSender;
   private readonly maxBufferedAmount: number;
   private readonly maxConcurrentStreams: number;
   private readonly maxIncomingBufferedBytes: number;
@@ -183,6 +186,7 @@ export class RealtimeDataPlane {
     this.channel = options.channel;
     this.localPrefix = options.localPrefix;
     this.remotePrefix = options.localPrefix === "c" ? "s" : "c";
+    this.remoteSender = this.remotePrefix === "c" ? "client" : "application";
     this.maxBufferedAmount = positiveInteger(
       options.maxBufferedAmount,
       "maxBufferedAmount",
@@ -220,7 +224,7 @@ export class RealtimeDataPlane {
 
   sendSessionError(outcome: Outcome): boolean {
     return this.trySend(encodeRealtimeFrame({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "session_error",
       outcome,
     }));
@@ -261,7 +265,7 @@ export class RealtimeDataPlane {
     this.touchOutgoing(transfer);
     try {
       this.sendControl({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_open",
         id,
         stream,
@@ -281,7 +285,7 @@ export class RealtimeDataPlane {
       close: async () => {
         if (transfer.ended) return;
         await this.waitAndSend({
-          v: REALTIME_PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "stream_end",
           id,
         }, transfer);
@@ -322,7 +326,7 @@ export class RealtimeDataPlane {
   private readonly receive = (event: MessageEvent): void => {
     const work = this.receiveTail.then(async () => {
       const data = await packetData(event.data);
-      await this.accept(decodeRealtimeFrame(data));
+      await this.accept(decodeRealtimeFrame(data, this.remoteSender));
     });
     this.receiveTail = work.catch((error) => {
       if (this.closed) return;
@@ -553,7 +557,7 @@ export class RealtimeDataPlane {
         Math.min(rawChunk.byteLength, offset + REALTIME_STREAM_CHUNK_MAX_BYTES),
       );
       await this.waitAndSend({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_chunk",
         id: transfer.id,
         chunk,
@@ -658,7 +662,7 @@ export class RealtimeDataPlane {
     if (this.closed || this.channel.readyState !== "open") return;
     try {
       this.sendControl({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_cancel",
         id,
         reason,

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   stableEncode,
   type ServerMessage,
   type SubscriptionCursor,
@@ -125,7 +125,7 @@ describe("shared query registry", () => {
     expect(subs).toHaveLength(1);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -136,7 +136,7 @@ describe("shared query registry", () => {
     expect(snapshot).toMatchObject({ status: "success", stale: false });
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -293,7 +293,7 @@ describe("shared query registry", () => {
     await ready(harness);
     const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -310,7 +310,7 @@ describe("shared query registry", () => {
     );
     expect(harness.frames("unsub")).toHaveLength(0);
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -330,7 +330,7 @@ describe("shared query registry", () => {
     expect(subs[1]!.id).not.toBe(firstId);
     expect(subs[1]!.cursor).toBeUndefined();
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(3n), value: ["three"] },
@@ -364,7 +364,7 @@ describe("shared query registry", () => {
     expect(live.framesOf("unsub")).toHaveLength(0);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: live.framesOf("sub")[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -396,7 +396,7 @@ describe("shared query registry", () => {
     expect(harness.frames("unsub")).toHaveLength(0);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -414,7 +414,7 @@ describe("shared query registry", () => {
     await ready(harness);
     const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -433,7 +433,7 @@ describe("shared query registry", () => {
 
     // Updates keep flowing to the adopting consumer.
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -451,7 +451,7 @@ describe("shared query registry", () => {
     await ready(harness);
     const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -493,7 +493,7 @@ describe("shared query registry", () => {
     await ready(harness);
     const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -513,7 +513,7 @@ describe("shared query registry", () => {
         });
       });
       await receive(harness, {
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "transition",
         id: firstId,
         transition: {
@@ -562,7 +562,7 @@ describe("shared query registry", () => {
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
     await ready(harness);
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: harness.frames("sub")[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -586,7 +586,7 @@ describe("shared query registry", () => {
     expect(subs).toHaveLength(1);
     expect(subs[0]!.cursor).toBeUndefined();
     await receive(harness, {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["two"] },
@@ -618,7 +618,7 @@ describe("shared query registry", () => {
     expect(harness.frames("sub")).toHaveLength(1);
     const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -652,7 +652,7 @@ describe("shared query registry", () => {
     const stopFirst = source.listen(() => {});
     const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },

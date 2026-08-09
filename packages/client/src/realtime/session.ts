@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   PerfectNegotiation,
   ProtocolError,
   RealtimeDataPlane,
@@ -982,7 +982,7 @@ export class RealtimeManager {
     signal: AbortSignal,
   ) {
     const body = encode(parseRealtimePrepareRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
       ref: group.address,
       args: group.args,
@@ -1014,7 +1014,7 @@ export class RealtimeManager {
     generation: PeerGeneration,
   ) {
     const body = encode(parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket,
       offer,
@@ -1102,7 +1102,7 @@ export class RealtimeManager {
         if (local.length === 0 && !complete && !continuation) return;
         if (generation.sessionId === null) return;
         const body = encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "realtime_candidates",
           candidates: local,
           complete,

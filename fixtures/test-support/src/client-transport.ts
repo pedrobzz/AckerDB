@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseClientMessage,
@@ -178,7 +178,7 @@ export class FakeSocket implements AckerDBWebSocket {
   ): void {
     this.open();
     this.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId,
       authEpoch,

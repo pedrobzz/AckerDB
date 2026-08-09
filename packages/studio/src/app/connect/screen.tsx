@@ -10,10 +10,10 @@
  *   application is not; it is amber rather than red, it says Studio keeps
  *   asking, and it offers no field, because typing a credential would not help
  *   and the screen should not imply it might.
- * - **A protocol Studio does not speak names the fix.** The detail carries the
- *   two versions and the AckerDB release to install, so the screen renders it
- *   as the instruction it is instead of flattening it into "something went
- *   wrong". That sentence is the entire value of the state.
+ * - **A Studio on another AckerDB version names the fix.** The detail carries
+ *   both versions and the exact package to install, so the screen renders it as
+ *   the instruction it is instead of flattening it into "something went wrong".
+ *   That sentence is the entire value of the state.
  *
  * There is no URL field and never will be: Studio talks to its own origin and
  * `acker studio` owns the target. A field here would be a second way to point
@@ -228,9 +228,9 @@ export function ConnectScreen({ connection }: { readonly connection: Unconnected
           <CardContent className="flex flex-col gap-5">
             {/*
               The detail is the whole answer in the case this state reaches in
-              practice — it names both protocol versions and the AckerDB release
-              whose Studio speaks the application's. It is rendered first and on
-              its own, because a screen that leads with "something failed" and
+              practice — it names both AckerDB versions and the exact Studio
+              package the application's version wants. It is rendered first and
+              on its own, because a screen that leads with "something failed" and
               buries the instruction is a screen that gets a bug report.
             */}
             <Detail>{connection.detail}</Detail>

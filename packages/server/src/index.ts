@@ -24,7 +24,6 @@ export {
   type AdminCredentialBoot,
 } from "./admin/credentials.ts";
 export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
-export { ACKERDB_VERSION } from "./shared/version.ts";
 export {
   ADMINISTRATIVE_GRANT,
   expandScopeGrant,

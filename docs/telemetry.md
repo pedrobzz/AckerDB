@@ -293,8 +293,8 @@ publication   match         evaluation    changed       unchanged
 encoding      fanout        queue         delivery      export
 ```
 
-`TelemetryOutcome` is `ok` plus the finite Protocol 6 failure codes, and
-resources match the Protocol 6 vocabulary documented in
+`TelemetryOutcome` is `ok` plus the finite wire failure codes, and
+resources match the wire vocabulary documented in
 [Operations](operations.md#typed-outcomes). `statement` is a sanitized logical
 summary such as `messages.collect`, never literal SQL.
 

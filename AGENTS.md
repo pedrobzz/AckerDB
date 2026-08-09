@@ -181,6 +181,23 @@ native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.
 
+**The AckerDB version is the compatibility contract, and there is no separate
+number on the wire.** Packages ship lockstep with `workspace:X.Y.Z` precisely
+because version X is contracted to speak to version X, so every frame declares
+the version of the build that produced it and every decoder accepts exactly its
+own — `ACKERDB_VERSION` in `@ackerdb/core`, read from that package's manifest so
+one fact answers on a server and inside a bundled browser client alike. Running
+mixed versions is the user's error to make and the framework's job to name; the
+refusal says which two versions met and that matching ones must be installed,
+never which mixes might be legal.
+
+Changing the wire therefore costs nothing and needs no permission. Do not add a
+field to avoid reshaping one, do not preserve an old frame shape, and do not
+reintroduce a protocol number to describe a compatibility this contract does
+not offer. Every wire entry point is guarded by the same rule: an envelope that
+reaches a decoder without a version on it is the defect, not the version that
+would have refused it.
+
 The `Benchmark` check gates every pull request that touches a measured input,
 on the way into `canary` and again on the `canary` → `main` promotion, where it
 is required alongside `Release policy` and `Fast CI`. A regression is then

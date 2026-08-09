@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION, type Credential, type Identity } from "@ackerdb/core";
+import { ACKERDB_VERSION, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBClient, type AckerDBClientOptions } from "@ackerdb/client";
 import { createHarness } from "./support/harness.ts";
 
@@ -87,7 +87,7 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("token-2"));
     harness.live().receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,
@@ -116,7 +116,7 @@ describe("credential source", () => {
     const first = harness.live();
     first.open();
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "bad token" },
@@ -200,7 +200,7 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("fresh"));
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,
@@ -240,7 +240,7 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("token-2"));
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,

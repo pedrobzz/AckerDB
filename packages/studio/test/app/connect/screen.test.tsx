@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import "ackerdb-test-support/dom";
-import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
+import { ACKERDB_VERSION, type AdminSystemInfo } from "@ackerdb/core";
 import { studioCredential } from "../../../src/app/credential.ts";
 import { studioConnection } from "../../../src/app/connect/connection.ts";
 import { ConnectScreen, type UnconnectedStudio } from "../../../src/app/connect/screen.tsx";
@@ -9,8 +9,7 @@ import { mountStudio, studioState, type MountedStudio } from "../../support/rend
 const APPLICATION: AdminSystemInfo = {
   name: "savoria-eu",
   version: "2.1.0",
-  ackerdb: "0.17.0",
-  protocol: PROTOCOL_VERSION,
+  ackerdb: ACKERDB_VERSION,
 };
 
 let mounted: MountedStudio | undefined;
@@ -45,12 +44,12 @@ describe("the connect screen", () => {
     }
   });
 
-  test("a protocol the two do not share keeps naming the package to install", () => {
+  test("a mixed install keeps naming the package to install", () => {
     // The whole value of this state is the instruction. A restyle that
     // flattened it into a generic failure would leave an operator with a
     // working credential and no idea which Studio to install, which is the one
     // thing this screen exists to prevent.
-    const older: AdminSystemInfo = { ...APPLICATION, ackerdb: "0.16.0", protocol: PROTOCOL_VERSION - 1 };
+    const older: AdminSystemInfo = { ...APPLICATION, ackerdb: "0.16.0" };
     const connection = studioConnection({
       hasCredential: true,
       probe: { status: "open", application: older },
@@ -58,9 +57,9 @@ describe("the connect screen", () => {
     }) as UnconnectedStudio;
 
     const text = render(connection).textContent ?? "";
-    expect(text).toContain(`this application speaks protocol ${PROTOCOL_VERSION - 1}`);
-    expect(text).toContain(`Studio speaks ${PROTOCOL_VERSION}`);
-    expect(text).toContain("install the Studio matching AckerDB 0.16.0");
+    expect(text).toContain("this application runs AckerDB 0.16.0");
+    expect(text).toContain(`this Studio is ${ACKERDB_VERSION}`);
+    expect(text).toContain("install @ackerdb/studio@0.16.0");
   });
 
   test("only the two states a credential can fix offer the field", () => {

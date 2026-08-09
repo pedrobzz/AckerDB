@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   getRef,
   stableEncode,
   type ApplicationError,
@@ -137,7 +137,7 @@ export class ChannelManager {
     if (group === undefined) {
       const id = this.port.allocateId();
       const message = {
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "channel_join",
         id,
         ref: address,
@@ -272,7 +272,7 @@ export class ChannelManager {
           return false;
         }
         const frame = manager.port.encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "channel_send",
           id: group.id,
           event,
@@ -338,7 +338,7 @@ export class ChannelManager {
     if (sendLeave && this.port.canSend()) {
       try {
         this.port.send(this.port.encode({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "channel_leave",
           id: group.id,
         }));

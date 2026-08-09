@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseServerMessage,
@@ -166,7 +166,7 @@ function connect(base: string, token: string): Promise<WsClient> {
           : Promise.resolve(closeEvent),
       };
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "admin-rotation",
         credential: { kind: "bearer", token },
@@ -207,7 +207,7 @@ describe("rotating the Admin Credential a caller is authenticated with", () => {
     expect(await within(client.next())).toMatchObject({ t: "welcome", principal: "user" });
 
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "m",
       id: 1,
       ref: "admin.credentials.rotate",

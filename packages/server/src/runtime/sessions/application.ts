@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   isApplicationError,
   isResult,
   stableEncode,
@@ -186,14 +186,14 @@ export class RuntimeSessionApplication {
       publication = this.options.store.prepare(
         result.ok
           ? {
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "ok",
               id: message.id,
               kind: "query",
               value: result.data,
             } satisfies QueryOkMessage
           : {
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "app_err",
               id: message.id,
               kind: "query",
@@ -248,14 +248,14 @@ export class RuntimeSessionApplication {
             publication = this.options.store.prepare(
               result.ok
                 ? {
-                    v: PROTOCOL_VERSION,
+                    v: ACKERDB_VERSION,
                     t: "ok",
                     id: message.id,
                     kind: "procedure",
                     value: result.data,
                   } satisfies ProcedureOkMessage
                 : {
-                    v: PROTOCOL_VERSION,
+                    v: ACKERDB_VERSION,
                     t: "app_err",
                     id: message.id,
                     kind: "procedure",
@@ -440,7 +440,7 @@ export class RuntimeSessionApplication {
     };
     return value.ok
       ? {
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "ok",
           id: message.id,
           kind: "mutation",
@@ -448,7 +448,7 @@ export class RuntimeSessionApplication {
           receipt,
         }
       : {
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "app_err",
           id: message.id,
           kind: "mutation",

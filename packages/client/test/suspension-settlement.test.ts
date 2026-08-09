@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseSseAckRequest,
@@ -158,7 +158,7 @@ function openSse(stream = "stream-1"): OpenBody & { chunk(seq: number, value: un
     ...open,
     chunk(seq, value) {
       return open.push(
-        `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_chunk", seq, proof: `proof-${seq}`, value })}\n\n`,
+        `data: ${encode({ v: ACKERDB_VERSION, t: "sse_chunk", seq, proof: `proof-${seq}`, value })}\n\n`,
       );
     },
   };
@@ -205,7 +205,7 @@ describe("non-resumable work started while suspended", () => {
     sockets[1]!.welcome(client.clientSessionId);
     const request = sockets[1]!.lastFrame("p");
     sockets[1]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -374,7 +374,7 @@ describe("suspension settles in-flight procedures", () => {
     });
     expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -406,14 +406,14 @@ describe("suspension settles in-flight procedures", () => {
     const replacementRequest = sockets[1]!.lastFrame("p");
 
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: staleRequest.id,
       kind: "procedure",
       value: "stale",
     });
     sockets[1]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "ok",
       id: replacementRequest.id,
       kind: "procedure",
@@ -512,7 +512,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const second = iterator.next().catch((error) => error);
     await Bun.sleep(0);
     expect(journal.acknowledgments).toEqual([
-      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
 
     port.suspend();
@@ -661,7 +661,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     replacement.chunk(2, { tick: 8 });
     expect(await fresh.next()).toEqual({ done: false, value: { tick: 8 } });
     replacement.push(
-      `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_done", seq: 3, proof: "proof-3" })}\n\n`,
+      `data: ${encode({ v: ACKERDB_VERSION, t: "sse_done", seq: 3, proof: "proof-3" })}\n\n`,
     );
     expect(await fresh.next()).toEqual({ done: true, value: undefined });
     expect(journal.acknowledgments.map((acknowledgment) => acknowledgment.stream)).toEqual([
@@ -684,7 +684,7 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
     sockets[0]!.onmessage?.({
       data: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "reset", from: null, to: cursor(5n), value: ["one"] },

@@ -1,7 +1,7 @@
 import {
   MAX_PROTOCOL_ID,
   MAX_RETRY_AFTER_MS,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   ProtocolError,
   WireError,
   Err,
@@ -327,7 +327,7 @@ export class AckerDBClientError extends Error {
       ? "unhandled"
       : outcome.code === "malformed" ||
           outcome.code === "validation" ||
-          outcome.code === "unsupported_protocol" ||
+          outcome.code === "version_mismatch" ||
           outcome.code === "unauthenticated" ||
           outcome.code === "auth_unavailable" ||
           outcome.code === "auth_stale" ||
@@ -883,7 +883,7 @@ export class AckerDBClient {
     // presented; a fixed credential is validated here, before any dial.
     if (this.credential !== undefined) {
       parseClientMessage({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: this.clientSessionId,
         credential: this.credential,
@@ -981,7 +981,7 @@ export class AckerDBClient {
     // any state changes, so an unencodable credential rejects here instead of
     // installing an attempt whose frame can never be sent.
     this.frameBytes(
-      this.encodeClient({ v: PROTOCOL_VERSION, t: "auth", attemptId: id, credential: nextCredential }),
+      this.encodeClient({ v: ACKERDB_VERSION, t: "auth", attemptId: id, credential: nextCredential }),
       "connection",
     );
     if (this.authAttempt) {
@@ -1844,11 +1844,11 @@ export class AckerDBClient {
       const mutationRequestId = kind === "mutation" ? this.uuid.create(createdAtMs) : undefined;
       const frame = this.encodeClient(
         kind === "query"
-          ? { v: PROTOCOL_VERSION, t: "q", id, ref, args }
+          ? { v: ACKERDB_VERSION, t: "q", id, ref, args }
           : kind === "procedure"
-            ? { v: PROTOCOL_VERSION, t: "p", id, ref, args }
+            ? { v: ACKERDB_VERSION, t: "p", id, ref, args }
           : {
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "m",
               id,
               ref,
@@ -2045,7 +2045,7 @@ export class AckerDBClient {
     this.helloCredential = credential;
     try {
       this.sendFrame({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: this.clientSessionId,
         credential,
@@ -2374,7 +2374,7 @@ export class AckerDBClient {
     if (!this.canSendOperations()) return;
     if (subscription.cursor) {
       this.sendFrame({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "reset",
         id: subscription.id,
         cursor: subscription.cursor,
@@ -2441,7 +2441,7 @@ export class AckerDBClient {
     this.subscriptions.delete(id);
     this.releasePersistent(subscription.bytes);
     if (sendUnsubscribe && this.canSendOperations()) {
-      this.sendFrame({ v: PROTOCOL_VERSION, t: "unsub", id });
+      this.sendFrame({ v: ACKERDB_VERSION, t: "unsub", id });
     }
     for (const request of [...this.pending.values()]) {
       if (request.kind === "mutation" && request.receipt && request.obligations?.delete(id)) {
@@ -2508,7 +2508,7 @@ export class AckerDBClient {
       !this.canSendOperations()
     ) return;
     try {
-      this.sendFrame({ v: PROTOCOL_VERSION, t: "cancel", id: request.id });
+      this.sendFrame({ v: ACKERDB_VERSION, t: "cancel", id: request.id });
     } catch {
       // Cancellation is best effort; the local outcome remains indeterminate.
     }
@@ -2576,7 +2576,7 @@ export class AckerDBClient {
 
   private sendAuth(attempt: AuthAttempt): void {
     this.sendFrame({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.id,
       credential: attempt.credential,
@@ -2685,7 +2685,7 @@ export class AckerDBClient {
     }, this.reconnect.stableOpenMs);
     this.pingHandle = this.clock.setInterval(() => {
       if (this.ready && this.connectionGeneration === generation) {
-        this.sendFrame({ v: PROTOCOL_VERSION, t: "ping" });
+        this.sendFrame({ v: ACKERDB_VERSION, t: "ping" });
       }
     }, 30_000);
   }
@@ -2753,7 +2753,7 @@ export class AckerDBClient {
   // rejection rather than a raw wire error.
   private encodeSubscriptionOrReject(id: number, ref: string, args: unknown): string {
     try {
-      return this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref, args });
+      return this.encodeClient({ v: ACKERDB_VERSION, t: "sub", id, ref, args });
     } catch (error) {
       if (error instanceof WireError) {
         throw localError("validation", error.message, "subscription");
@@ -2767,7 +2767,7 @@ export class AckerDBClient {
     cursor: SubscriptionCursor | undefined,
   ): string {
     return this.encodeClient({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sub",
       id: subscription.id,
       ref: subscription.ref,
@@ -2890,7 +2890,7 @@ export class AckerDBClient {
     signal: AbortSignal,
   ): Promise<void> {
     const acknowledgment: SseAckRequest = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream,
       seq: frame.seq,

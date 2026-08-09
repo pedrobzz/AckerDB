@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
-import { PROTOCOL_VERSION, type ServerMessage } from "@ackerdb/core";
+import { ACKERDB_VERSION, type ServerMessage } from "@ackerdb/core";
 import type {
   AckerDBClientError,
   AckerDBLiveEvent,
@@ -88,7 +88,7 @@ describe("useEvent lifecycle", () => {
     const id = subs[0]!.id;
 
     await act(async () => {
-      socket.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
+      socket.receive({ v: ACKERDB_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
     });
     expect(first.map((event) => event.kind)).toEqual(["reset"]);
 
@@ -99,14 +99,14 @@ describe("useEvent lifecycle", () => {
 
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id,
         event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
       });
       // Skipping sequence 2 surfaces the client's honest gap marker.
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id,
         event: { kind: "row", cursor: cursor(3n), row: { id: 3n, n: 3 } },
@@ -128,7 +128,7 @@ describe("useEvent lifecycle", () => {
 
     // Late frames after shutdown reach nobody.
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "event",
       id,
       event: { kind: "row", cursor: cursor(4n), row: { id: 4n, n: 4 } },
@@ -156,7 +156,7 @@ describe("useEvent lifecycle", () => {
     expect(socket.framesOf("unsub")).toHaveLength(0);
 
     await render(root, app({ config, min: 2n, onEvent }));
-    expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
+    expect(socket.framesOf("unsub")).toEqual([{ v: ACKERDB_VERSION, t: "unsub", id: firstId }]);
     const subs = socket.framesOf("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]).toMatchObject({ ref: "api.events.pings", args: { min: 2n } });
@@ -182,9 +182,9 @@ describe("useEvent lifecycle", () => {
     });
     const id = socket.framesOf("sub")[0]!.id;
     await act(async () => {
-      socket.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
+      socket.receive({ v: ACKERDB_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id,
         event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
@@ -211,9 +211,9 @@ describe("useEvent lifecycle", () => {
     expect(next.framesOf("sub")[0]!.cursor).toBeUndefined();
 
     await act(async () => {
-      next.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n, "g2") } });
+      next.receive({ v: ACKERDB_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n, "g2") } });
       next.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id,
         event: { kind: "row", cursor: cursor(1n, "g2"), row: { id: 9n, n: 9 } },
@@ -343,7 +343,7 @@ describe("useEvent lifecycle", () => {
     const firstId = socket.framesOf("sub")[0]!.id;
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id: firstId,
         event: { kind: "reset", cursor: cursor(0n) },
@@ -361,7 +361,7 @@ describe("useEvent lifecycle", () => {
       tree(2n, second, () => {
         unsubsAtFire = socket.framesOf("unsub").length;
         socket.receive({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "event",
           id: firstId,
           event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
@@ -375,11 +375,11 @@ describe("useEvent lifecycle", () => {
     expect(second).toHaveLength(0);
 
     // The passive phase then swaps the subscription, which delivers normally.
-    expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
+    expect(socket.framesOf("unsub")).toEqual([{ v: ACKERDB_VERSION, t: "unsub", id: firstId }]);
     const secondId = socket.framesOf("sub")[1]!.id;
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id: secondId,
         event: { kind: "reset", cursor: cursor(0n, "g2") },
@@ -415,7 +415,7 @@ describe("useEvent lifecycle", () => {
     const id = socket.framesOf("sub")[0]!.id;
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         id,
         event: { kind: "reset", cursor: cursor(0n) },
@@ -433,7 +433,7 @@ describe("useEvent lifecycle", () => {
       view(false, () => {
         liveAtFire = harness.open().length;
         socket.receive({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "event",
           id,
           event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },

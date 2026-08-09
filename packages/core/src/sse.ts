@@ -1,6 +1,6 @@
 import { encode } from "./wire.ts";
+import { ACKERDB_VERSION } from "./version.ts";
 import {
-  PROTOCOL_VERSION,
   parseSseMessage,
   type SseChunkMessage,
   type SseDoneMessage,
@@ -9,6 +9,9 @@ import {
 } from "./protocol.ts";
 
 const utf8 = new TextEncoder();
+// The chunk envelope is assembled by concatenation rather than encoded, so the
+// version's JSON form is quoted once here instead of on every chunk.
+const VERSION_JSON = JSON.stringify(ACKERDB_VERSION);
 
 /** Encode one exposed-JSON application value in its Protocol-2 SSE envelope. */
 export function encodeSseChunk(
@@ -18,7 +21,7 @@ export function encodeSseChunk(
 ): Uint8Array {
   const json = JSON.stringify(value) ?? "null";
   return utf8.encode(
-    `data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":${seq},"proof":${JSON.stringify(proof)},"value":${json}}\n\n`,
+    `data: {"v":${VERSION_JSON},"t":"sse_chunk","seq":${seq},"proof":${JSON.stringify(proof)},"value":${json}}\n\n`,
   );
 }
 

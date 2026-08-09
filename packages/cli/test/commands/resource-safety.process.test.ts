@@ -3,7 +3,7 @@ import { rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import type { Subprocess } from "bun";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseServerMessage,
@@ -314,7 +314,7 @@ let sessionSequence = 0;
 async function connectWebSocket(url: string): Promise<WsClient> {
   const client = await rawWebSocket(url);
   client.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId: `resource-safety-${++sessionSequence}`,
     credential: { kind: "anonymous" },
@@ -421,7 +421,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
           if (frame.t === "welcome" && !subscriptionSent) {
             subscriptionSent = true;
             socket.write(maskedWebSocketFrame({
-              v: PROTOCOL_VERSION,
+              v: ACKERDB_VERSION,
               t: "sub",
               id: 1,
               ref: "api.items.large",
@@ -473,7 +473,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
         handshakeBytes = Buffer.alloc(0);
         opened = true;
         socket.write(maskedWebSocketFrame({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "hello",
           clientSessionId: "resource-safety-unread",
           credential: { kind: "anonymous" },
@@ -1088,7 +1088,7 @@ processResourceTest(
 
   // Warm every measured path so the baseline excludes one-time module/JIT work.
   const warm = await connectWebSocket(wsUrl);
-  warm.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  warm.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
   expect(await withTimeout(warm.next(), "warm subscription reset")).toMatchObject({
     t: "transition",
     id: 1,
@@ -1114,8 +1114,8 @@ processResourceTest(
   const first = await connectWebSocket(wsUrl);
   const second = await connectWebSocket(wsUrl);
   const third = await connectWebSocket(wsUrl);
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
-  second.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  first.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  second.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
   for (const client of [first, second]) {
     expect(await withTimeout(client.next(), "subscription reset")).toMatchObject({
       t: "transition",
@@ -1124,7 +1124,7 @@ processResourceTest(
     });
   }
 
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "api.items.list", args: {} });
+  first.send({ v: ACKERDB_VERSION, t: "sub", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(first.next(), "subscription overload")).toMatchObject({
     t: "err",
     id: 2,
@@ -1137,7 +1137,7 @@ processResourceTest(
   });
 
   third.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "m",
     id: 1,
     ref: "api.items.add",
@@ -1195,8 +1195,8 @@ processResourceTest(
     },
   });
 
-  first.send({ v: PROTOCOL_VERSION, t: "unsub", id: 1 });
-  second.send({ v: PROTOCOL_VERSION, t: "unsub", id: 1 });
+  first.send({ v: ACKERDB_VERSION, t: "unsub", id: 1 });
+  second.send({ v: ACKERDB_VERSION, t: "unsub", id: 1 });
   const unreadOnlyStatus = await eventually(
     () => status(base),
     (value) => value.runtime.reactive.queryListeners === 1 &&
@@ -1214,7 +1214,7 @@ processResourceTest(
   while (maximum(unreadOutboundSamples) === 0 && pressureSequence < 512) {
     pressureSequence++;
     third.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "m",
       id: pressureSequence,
       ref: "api.items.add",
@@ -1254,7 +1254,7 @@ processResourceTest(
   }
   await processHarness.waitForCount("@@block-start", 4);
 
-  third.send({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "api.items.list", args: {} });
+  third.send({ v: ACKERDB_VERSION, t: "q", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(third.next(), "operation overload")).toMatchObject({
     t: "err",
     id: 2,

@@ -1,5 +1,5 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type AuthenticationDescriptor,
   type AuthenticatedMessage,
   type ChannelJoinMessage,
@@ -238,7 +238,7 @@ export class Session {
       case "auth":
         return this.acceptAuth(message);
       case "ping":
-        return this.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+        return this.sendControl({ v: ACKERDB_VERSION, t: "pong" });
       case "cancel":
         return this.cancelProcedure(message);
       case "sub":
@@ -339,7 +339,7 @@ export class Session {
       await this.runtime.openSession(context);
       if (this.isClosed()) return;
       await this.sendControl({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
@@ -481,7 +481,7 @@ export class Session {
           if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
         }
         const ack: AuthenticatedMessage = {
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
@@ -603,7 +603,7 @@ export class Session {
 
   private sendControlError(id: number, error: AckerDBError): Promise<void> {
     return this.sendControl({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id,
       outcome: outcomeFromError(error),
@@ -733,7 +733,7 @@ export class Session {
     const closeSink = (async () => {
       try {
         await this.sink.sendControl({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "err",
           id: null,
           outcome,
