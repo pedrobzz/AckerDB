@@ -2,9 +2,9 @@
  * What this gate has already measured, kept so the next question about its own
  * noise is a query rather than a campaign.
  *
- * `report.ts` computes a median paired ratio, an interval, and a verdict for
- * every metric on every run, prints them into a step summary, uploads them as an
- * artifact that expires in thirty days, and then never reads any of it again.
+ * The gate computes a median paired ratio, an interval, and a verdict for every
+ * metric on every run, prints them into a step summary, uploads them as an
+ * artifact that expires in thirty days — and used to read none of it ever again.
  * Every comparable system does the opposite: rustc-perf fences each benchmark
  * against its own historical distribution of relative changes, Mozilla's
  * Perfherder runs a t-test over the preceding revisions, and Bencher stores each
