@@ -25,6 +25,8 @@ let upstream: Server<undefined>;
  * already stopped — a stall that says nothing about the launcher.
  */
 let live: RunningStudio;
+/** A target that accepts every connection and answers none of them. */
+let silent: Server<undefined>;
 const running: RunningStudio[] = [];
 
 beforeAll(() => {
@@ -53,6 +55,7 @@ beforeAll(() => {
             body: request.method === "POST" ? await request.text() : null,
             authorization: request.headers.get("authorization"),
             cookie: request.headers.get("cookie"),
+            contentLength: request.headers.get("content-length"),
           },
           { headers: { "x-upstream": "yes" } },
         );
@@ -82,6 +85,12 @@ beforeAll(() => {
     },
   });
 
+  silent = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Promise<Response>(() => {}),
+  });
+
   live = startStudio({
     target: `http://127.0.0.1:${upstream.port}`,
     port: 0,
@@ -91,6 +100,7 @@ beforeAll(() => {
 
 afterAll(() => {
   live.stop();
+  silent.stop(true);
   upstream.stop(true);
   rmSync(distDir, { recursive: true, force: true });
 });
@@ -100,8 +110,13 @@ afterEach(() => {
 });
 
 /** A Studio pointed somewhere other than the live application, stopped after the test. */
-function studioTargeting(target: string): RunningStudio {
-  const started = startStudio({ target, port: 0, distDir });
+function studioTargeting(target: string, answerTimeoutMs?: number): RunningStudio {
+  const started = startStudio({
+    target,
+    port: 0,
+    distDir,
+    ...(answerTimeoutMs === undefined ? {} : { answerTimeoutMs }),
+  });
   running.push(started);
   return started;
 }
@@ -120,6 +135,7 @@ async function rawRequest(
   studio: RunningStudio,
   target: string,
   extraHeaders: readonly string[] = [],
+  body?: string,
 ): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<string>();
   let received = "";
@@ -135,12 +151,12 @@ async function rawRequest(
     return body.endsWith("0\r\n\r\n");
   };
   const request = [
-    `GET ${target} HTTP/1.1`,
+    `${body === undefined ? "GET" : "POST"} ${target} HTTP/1.1`,
     "Host: 127.0.0.1",
     ...extraHeaders,
     "Connection: close",
     "",
-    "",
+    body ?? "",
   ].join("\r\n");
   // Written from `open`, not after `Bun.connect` resolves: bytes handed to a
   // socket that has not opened yet are dropped, which shows up as a request
@@ -287,13 +303,14 @@ describe("everything outside the prefix", () => {
     expect(await posted.json()).toMatchObject({ outcome: "not_found", path: "/" });
   });
 
-  test("ambient cookies never cross the hop, in either direction", async () => {
-    // Cookies are host-scoped and ignore the port, so forwarding them would
-    // carry another local service's cookie out to a remote `--url` target and
-    // land that target's Set-Cookie on every local service sharing the host.
-    // Read off the wire, because what a client would report is exactly the
-    // header handling under test, and against a target of its own, because a
-    // cookie-setting response must not reach any other test's client.
+  test("the hop strips ambient cookies and sandboxes every proxied document", async () => {
+    // Two header rules on one response, read off the wire because that is what
+    // they are about. Cookies are host-scoped and ignore the port, so
+    // forwarding them would carry another local service's cookie out to a
+    // remote `--url` target and land that target's Set-Cookie on every local
+    // service sharing the host. And Studio's storage holds an Admin Credential
+    // while the application shares the origin, so an application document must
+    // render in an opaque origin with no scripting.
     const setter = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -304,22 +321,48 @@ describe("everything outside the prefix", () => {
     });
     try {
       const started = studioTargeting(`http://127.0.0.1:${setter.port}`);
-      const answered = await rawRequest(started, "/api/echo", ["Cookie: session=someone-elses"]);
+      const answered = await rawRequest(started, "/api/echo", [
+        "Cookie: session=someone-elses",
+        "Accept: text/html",
+      ]);
       expect(answered).toContain('"cookie":null');
       expect(answered.toLowerCase()).not.toContain("set-cookie");
+      expect(answered.toLowerCase()).toContain("content-security-policy: sandbox");
     } finally {
       setter.stop(true);
     }
   });
 
-  test("every proxied response is sandboxed, so no application document runs in this origin", async () => {
-    // Studio's storage holds an Admin Credential and the application shares the
-    // origin; a sandboxed document has an opaque origin and no scripting.
-    const started = live;
-    const proxied = await fetch(`${origin(started)}/api/echo`, { headers: HTML });
-    expect(proxied.headers.get("content-security-policy")).toBe("sandbox");
-    const shell = await fetch(started.url, { headers: HTML });
-    expect(shell.headers.get("content-security-policy")).toBeNull();
+  test("the shell keeps its own origin, so Studio's own code is not sandboxed", async () => {
+    const shell = await rawRequest(live, STUDIO_PATH_PREFIX, ["Accept: text/html"]);
+    expect(shell.toLowerCase()).not.toContain("content-security-policy");
+  });
+
+  test("a scheme-relative path cannot name a host of its own", async () => {
+    // `new URL("//elsewhere.example/x", target)` resolves to that host, so a
+    // proxy that resolved rather than assigned would dial it with the caller's
+    // headers and body. Driven over a raw socket because `fetch` normalizes the
+    // doubled slash away before the request is ever sent.
+    const escaped = await rawRequest(live, "//elsewhere.example/steal?x=1");
+    expect(escaped).toContain("not_found");
+    expect(escaped).toContain("/elsewhere.example/steal");
+  });
+
+  test("a forwarded body carries no framing of its own", async () => {
+    // The body is forwarded as a stream, so the caller's `Content-Length` no
+    // longer describes what goes out. Left in place it is a request declaring
+    // two lengths, and the application answers 400 — only sometimes, because
+    // whether the runtime honours the length or chunks the stream depends on
+    // timing. Under listener churn this reproduced seven times in two hundred
+    // requests against Studio and never once straight at the application.
+    const posted = await rawRequest(live, "/api/echo", [
+      "Content-Type: application/json",
+      "Content-Length: 18",
+    ], '{"hello":"studio"}');
+    expect(posted).toContain(" 200 ");
+    // The body arrives whole and the length the caller declared does not.
+    expect(posted).toContain('"body":"{\\"hello\\":\\"studio\\"}"');
+    expect(posted).toContain('"contentLength":null');
   });
 
   test("carries method, query, body, and credential through unchanged", async () => {
@@ -336,15 +379,55 @@ describe("everything outside the prefix", () => {
       body: JSON.stringify({ hello: "studio" }),
       authorization: "Bearer admin",
       cookie: null,
+      contentLength: null,
     });
   });
 
   test("a target that accepts and never answers becomes the unreachable diagnosis", async () => {
-    // The one window a deadline belongs in. Past the headers a response is a
-    // stream the application owns, which is why the SSE case below still runs
-    // unbounded through the same code path.
-    expect(UPSTREAM_ANSWER_TIMEOUT_MS).toBeGreaterThan(0);
-    expect(Number.isFinite(UPSTREAM_ANSWER_TIMEOUT_MS)).toBe(true);
+    const started = studioTargeting(`http://127.0.0.1:${silent.port}`, 120);
+    const answered = await fetch(`${origin(started)}/api/echo`);
+    expect(answered.status).toBe(502);
+    expect(await answered.text()).toContain("could not reach the application server");
+  });
+
+  test("the deadline covers getting an answer, never carrying one", async () => {
+    // Headers arrive at once and the body follows well past the deadline: the
+    // timer is cleared by then, which is what lets SSE and live tails run
+    // through the same code path unbounded.
+    const slow = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      // The first chunk is what puts headers on the wire; the tail arrives
+      // long after the deadline would have fired.
+      fetch: () => new Response(
+        new ReadableStream({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode("early"));
+            await Bun.sleep(400);
+            controller.enqueue(new TextEncoder().encode("-late"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/plain" } },
+      ),
+    });
+    try {
+      const started = studioTargeting(`http://127.0.0.1:${slow.port}`, 100);
+      const answered = await fetch(`${origin(started)}/api/echo`);
+      expect(answered.status).toBe(200);
+      expect(await answered.text()).toBe("early-late");
+    } finally {
+      slow.stop(true);
+    }
+  });
+
+  test("a WebSocket handshake the application never completes closes with 1011", async () => {
+    const started = studioTargeting(`http://127.0.0.1:${silent.port}`, 120);
+    const socket = new WebSocket(`${origin(started).replace("http:", "ws:")}/_ws`);
+    const closed = await new Promise<number>((resolve) => {
+      socket.onclose = (event) => resolve(event.code);
+    });
+    expect(closed).toBe(1011);
   });
 
   test("streams SSE responses through unbuffered", async () => {
@@ -403,6 +486,7 @@ function bridged(readyState: number): {
   const closed: number[] = [];
   const data: ProxiedSocketData = {
     upstream: { readyState, bufferedAmount: 0, close: () => {}, send: () => {} } as unknown as WebSocket,
+    answerTimeoutMs: UPSTREAM_ANSWER_TIMEOUT_MS,
     buffered: [],
     bufferedBytes: 0,
   };

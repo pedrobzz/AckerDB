@@ -20,6 +20,7 @@ import { join, resolve, sep } from "node:path";
 import { STUDIO_METHODS, STUDIO_PATH_PREFIX, studioRoute } from "../origin.ts";
 import {
   MAX_UNDELIVERED_BYTES,
+  UPSTREAM_ANSWER_TIMEOUT_MS,
   proxyHttp,
   proxyWebSocket,
   proxyWebSocketHandlers,
@@ -35,6 +36,13 @@ export interface StudioServerOptions {
   readonly hostname?: string;
   /** The built SPA. Defaults to the `dist/` bundle shipped in this package. */
   readonly distDir?: string;
+  /**
+   * How long the application has to begin answering — response headers, or a
+   * WebSocket open frame — before Studio reports it unreachable. Default
+   * {@link UPSTREAM_ANSWER_TIMEOUT_MS}. It never limits how long an answer may
+   * take to arrive in full.
+   */
+  readonly answerTimeoutMs?: number;
 }
 
 export interface RunningStudio {
@@ -90,6 +98,7 @@ export function startStudio(options: StudioServerOptions): RunningStudio {
     );
   }
   const hostname = options.hostname ?? "127.0.0.1";
+  const answerTimeoutMs = options.answerTimeoutMs ?? UPSTREAM_ANSWER_TIMEOUT_MS;
   const server = Bun.serve<ProxiedSocketData, never>({
     hostname,
     port: options.port,
@@ -116,8 +125,8 @@ export function startStudio(options: StudioServerOptions): RunningStudio {
         }
         case "application":
           return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-            ? proxyWebSocket(request, running, target)
-            : proxyHttp(request, target);
+            ? proxyWebSocket(request, running, target, answerTimeoutMs)
+            : proxyHttp(request, target, answerTimeoutMs);
       }
     },
     websocket: {

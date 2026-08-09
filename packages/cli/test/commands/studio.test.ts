@@ -102,6 +102,20 @@ describe("studioTarget", () => {
     expect(studioTarget({ appDir, port: STUDIO_DEFAULT_PORT })).toBe("http://127.0.0.1:4998");
   });
 
+  test("an IPv6 listener is bracketed, so the target is a URL at all", () => {
+    // Interpolated bare, `::1` produces `http://::1:3211`, which parses as
+    // nothing. The explicit files.publicUrl is what lets the configuration
+    // load at all — see the note in the pull request about that defect.
+    const appDir = directory();
+    writeFileSync(
+      join(appDir, ".ackerdb.config.json"),
+      JSON.stringify({ hostname: "::1", port: 3211, files: { publicUrl: "http://[::1]:3211" } }),
+    );
+    const target = studioTarget({ appDir, port: STUDIO_DEFAULT_PORT });
+    expect(target).toBe("http://[::1]:3211");
+    expect(new URL(target).port).toBe("3211");
+  });
+
   test("an explicit --url wins without reading any config", () => {
     expect(studioTarget({ appDir: join(directory(), "absent"), url: "https://api.example.com", port: 1 }))
       .toBe("https://api.example.com");

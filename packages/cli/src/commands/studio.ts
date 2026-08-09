@@ -102,6 +102,15 @@ export function resolveStudioEntry(appDir: string): string {
 }
 
 /**
+ * An IPv6 literal is bracketed in a URL and every other host is not. A
+ * configured `::1` would otherwise produce `http://::1:3211`, which parses as
+ * nothing at all.
+ */
+function asUrlHost(hostname: string): string {
+  return hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname;
+}
+
+/**
  * The proxy target: `--url`, or the application config's listener on loopback.
  * A wildcard bind is an interface list, not an address to dial, so it becomes
  * the loopback address the listener is certainly reachable on.
@@ -112,7 +121,7 @@ export function studioTarget(options: StudioArguments): string {
   const hostname = config.hostname === "0.0.0.0" || config.hostname === "::"
     ? "127.0.0.1"
     : config.hostname;
-  return `http://${hostname}:${config.port}`;
+  return `http://${asUrlHost(hostname)}:${config.port}`;
 }
 
 export async function runStudioCommand(options: StudioArguments): Promise<void> {

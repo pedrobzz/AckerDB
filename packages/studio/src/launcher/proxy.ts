@@ -107,31 +107,61 @@ export function upstreamUrl(request: Request, target: URL): URL {
   return upstream;
 }
 
-export async function proxyHttp(request: Request, target: URL): Promise<Response> {
-  const headers = withoutHopByHop(request.headers);
-  // fetch derives Host from the target URL; the Studio origin's must not leak.
-  headers.delete("host");
-  // The deadline covers getting an answer, never carrying one: it is cleared as
-  // soon as headers arrive, so a stream it is not watching can run as long as
-  // the application keeps it open.
+/**
+ * Send one request upstream, with the deadline that covers getting an answer.
+ * Throws whatever the runtime throws; the caller decides what a failure means.
+ */
+async function sendUpstream(
+  request: Request,
+  url: URL,
+  headers: Headers,
+  answerTimeoutMs: number,
+): Promise<Response> {
   const answer = new AbortController();
-  const deadline = setTimeout(() => answer.abort(), UPSTREAM_ANSWER_TIMEOUT_MS);
-  let upstream: Response;
+  const deadline = setTimeout(() => answer.abort(), answerTimeoutMs);
   try {
-    upstream = await fetch(upstreamUrl(request, target), {
+    return await fetch(url, {
       method: request.method,
       headers,
       body: request.body,
       redirect: "manual",
       signal: answer.signal,
     });
-  } catch {
+  } finally {
+    // Cleared as soon as headers arrive, so the deadline can never truncate a
+    // body: SSE streams and live tails are unbounded by design.
+    clearTimeout(deadline);
+  }
+}
+
+export async function proxyHttp(
+  request: Request,
+  target: URL,
+  answerTimeoutMs: number = UPSTREAM_ANSWER_TIMEOUT_MS,
+): Promise<Response> {
+  const headers = withoutHopByHop(request.headers);
+  // fetch derives Host from the target URL; the Studio origin's must not leak.
+  headers.delete("host");
+  // **The body is forwarded as a stream, so the caller's framing no longer
+  // describes it.** The runtime frames what it is given — usually chunked — and
+  // a `Content-Length` left beside that is a request declaring two lengths,
+  // which the application answers `400` to. It does so only sometimes, because
+  // whether the runtime honours the declared length or chunks the stream
+  // depends on timing, which is what makes the failure look like a flake.
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  let upstream: Response;
+  try {
+    upstream = await sendUpstream(request, upstreamUrl(request, target), headers, answerTimeoutMs);
+  } catch (error) {
+    // The cause travels: "connection refused" and "the socket closed
+    // mid-flight" send an operator to different places, and the connect screen
+    // shows this text.
+    const cause = error instanceof Error ? ` (${error.message})` : "";
     return new Response(
-      `AckerDB Studio could not reach the application server at ${target.origin} — start it and retry`,
+      `AckerDB Studio could not reach the application server at ${target.origin}${cause} — start it and retry`,
       { status: 502 },
     );
-  } finally {
-    clearTimeout(deadline);
   }
   const responseHeaders = withoutHopByHop(upstream.headers);
   // fetch already decoded the body; the original framing headers would lie.
@@ -147,6 +177,8 @@ export async function proxyHttp(request: Request, target: URL): Promise<Response
 
 export interface ProxiedSocketData {
   readonly upstream: WebSocket;
+  /** How long the upstream has to complete its handshake; see the constant above. */
+  readonly answerTimeoutMs: number;
   /** Client frames sent while the upstream socket is still connecting. */
   readonly buffered: (string | Uint8Array)[];
   /** Bytes held in {@link ProxiedSocketData.buffered}, against the bound above. */
@@ -177,6 +209,7 @@ export function proxyWebSocket(
   request: Request,
   server: Server<ProxiedSocketData>,
   target: URL,
+  answerTimeoutMs: number = UPSTREAM_ANSWER_TIMEOUT_MS,
 ): Response | undefined {
   const url = upstreamUrl(request, target);
   url.protocol = target.protocol === "https:" ? "wss:" : "ws:";
@@ -186,7 +219,7 @@ export function proxyWebSocket(
     protocols === null ? [] : protocols.split(",").map((name) => name.trim()),
   );
   upstream.binaryType = "arraybuffer";
-  const data: ProxiedSocketData = { upstream, buffered: [], bufferedBytes: 0 };
+  const data: ProxiedSocketData = { upstream, answerTimeoutMs, buffered: [], bufferedBytes: 0 };
   if (server.upgrade(request, { data })) return undefined;
   upstream.close();
   return new Response("expected a WebSocket upgrade", { status: 400 });
@@ -235,7 +268,7 @@ export const proxyWebSocketHandlers: WebSocketHandler<ProxiedSocketData> = {
       if (upstream.readyState !== WebSocket.CONNECTING) return;
       upstream.close();
       forwardClose(ws, 1011, "the application server did not complete the handshake");
-    }, UPSTREAM_ANSWER_TIMEOUT_MS);
+    }, ws.data.answerTimeoutMs);
     deadline.unref?.();
     ws.data.handshakeDeadline = deadline;
   },
