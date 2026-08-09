@@ -12,12 +12,48 @@
  * repetitions themselves. That interval is the noise band: it is measured from
  * this metric's own scatter in this very run, not carried in from a constant
  * someone once guessed.
+ *
+ * The shape of that rule is the field's, not this repository's. `criterion.rs`
+ * pairs a nonparametric significance test with a noise threshold and reports
+ * "no change" when either fails; Go's `benchstat` is the same rule without the
+ * threshold. What is local is only which metrics gate and where the floor sits.
  */
 import { median } from "./load-engine.ts";
+import type { BenchmarkConfig } from "./benchmark.ts";
 
 export interface PairedSample {
   readonly base: number;
   readonly head: number;
+}
+
+export const PAIRED_SCHEMA_VERSION = 2;
+
+/** Every repetition of one metric on one unit, base beside head. */
+export interface PairedSeries {
+  readonly unitId: string;
+  readonly metric: string;
+  readonly samples: readonly (PairedSample & { readonly repetition: number })[];
+}
+
+/**
+ * The pair driver's record, as written to `pair.json` and read back by
+ * everything that judges or remembers a run. One declaration, because a reader
+ * that disagrees with the writer about this shape disagrees silently.
+ */
+export interface PairedRunRecord {
+  readonly schemaVersion: number;
+  readonly base: string;
+  readonly head: string;
+  readonly executionHost: string;
+  readonly repetitions: number;
+  readonly wallSeconds: number;
+  readonly config: BenchmarkConfig;
+  readonly units: readonly string[];
+  readonly profiles: readonly {
+    readonly profile: string;
+    readonly series: readonly PairedSeries[];
+    readonly terminalFailures: readonly string[];
+  }[];
 }
 
 export type MetricSignal = "regression" | "improvement" | "no signal" | "not measured";
@@ -68,19 +104,36 @@ export interface ComparisonPolicy {
 export const DEFAULT_FLOOR_PERCENT = 12;
 
 /**
- * Repetitions buy both confidence and sensitivity, and eight is where the
- * measured trade sits. Relabelling which side is base within each repetition —
- * a valid permutation under the null — puts the false-failure rate at 3.6% of
- * runs here, while injecting a known effect into the harness's own recorded
- * noise detects 60% of twenty-percent regressions and 94% of fifty-percent
- * ones. More repetitions raise both at proportional wall-clock cost;
- * `BENCH_REPETITIONS` is the knob, and `docs/releases.md` carries the curve.
+ * Sixteen, because eight is below what the field will sign off on and the
+ * shortfall has a mechanism.
+ *
+ * `benchstat` asks for "at least 10, ideally 20" samples per side. At eight,
+ * `medianIntervalRank` collapses to rank 1: the interval is the extreme pair, so
+ * *every* repetition must agree on the direction before a metric can be called.
+ * That unanimity was never a design choice — it is simply the deepest rank eight
+ * repetitions can afford at alpha 0.05 — and it is a condition a **bimodal**
+ * metric can satisfy by luck while a merely noisy one cannot. At sixteen the
+ * same alpha buys rank 4, so up to three repetitions may dissent, and scatter
+ * alone stops being able to manufacture a verdict.
+ *
+ * Nothing about the rule moved to get there. Alpha is still 0.05, the floor is
+ * still twelve percent, and the same metrics gate; the rank is a consequence of
+ * the count. Measured on a runner null run's own recorded noise — 72 gated
+ * series, 20 000 relabellings of which side is base, which is a valid
+ * permutation under the null — the false-failure rate goes from **2.1% of runs
+ * at eight to 2.5% at sixteen**, barely moving, because the deeper rank is paid
+ * for by a median that sixteen repetitions pin down better than eight. What
+ * moves is detection: a fifteen-percent regression goes from 72% to 93% and a
+ * twenty-percent one from 85% to 98%. Twelve was measured too and is worse than
+ * both, at 5.8%: rank 3 on twelve pairs covers only 96.1%, where rank 4 on
+ * sixteen covers 97.9%. `docs/releases.md` carries the full curve, a second
+ * host, and the wall clock it costs.
  *
  * Even matters independently of the count: the pair driver alternates which
  * side runs first on each repetition, so an odd number would hand one side an
  * extra turn in the leading, colder slot.
  */
-export const DEFAULT_REPETITIONS = 8;
+export const DEFAULT_REPETITIONS = 16;
 
 export const DEFAULT_POLICY = Object.freeze({
   floorPercent: DEFAULT_FLOOR_PERCENT,

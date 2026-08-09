@@ -236,19 +236,35 @@ Version bumps, docs, tests, and unrelated packages still must not spend
 benchmark time, and it never runs another vendor.
 
 Both commits are measured live and interleaved, one unit of work at a time, so
-drift lands on both sides instead of on whichever ran second. Each metric is
-judged on the median of its paired ratios against a distribution-free interval
-built from the repetitions themselves — a noise band measured from the run, not
-a threshold carried in. A gated metric fails the check only when that interval
-keeps the whole median on the worse side of neutral **and** the median clears a
-twelve-percent floor; anything else reports no signal, which is an answer.
-Correctness, accounting, and incomplete-measurement failures fail outright.
-`p99` and connect-readiness `p95` are reported and never gated.
+drift lands on both sides instead of on whichever ran second. That is published
+prior art — duet benchmarking, Bulej et al., ICPE '20 — not a house rule, and the
+decision rule around it is `criterion.rs`'s shape. Each metric is judged over
+sixteen repetitions on the median of its paired ratios against a
+distribution-free interval built from the repetitions themselves — a noise band
+measured from the run, not a threshold carried in. A gated metric fails the check
+only when that interval keeps the whole median on the worse side of neutral
+**and** the median clears a twelve-percent floor; anything else reports no
+signal, which is an answer. Correctness, accounting, and incomplete-measurement
+failures fail outright. `p99` and connect-readiness `p95` are reported and never
+gated.
 
-This is detection, not acceptance. Measured against its own noise the gate
-catches roughly sixty percent of twenty-percent regressions and almost nothing
-below ten, so a green check is not a performance verdict: Pedro and an agent
-still interpret the complete vector and anomalies by reasoning before merge.
+Every run's paired deltas are appended to the `bench-ledger` data branch — ratios
+only, never absolute numbers, because a paired interleaved ratio is
+machine-independent and an ephemeral runner's throughput is not. Nothing reads
+it. It exists so the next question about this gate's own noise is a query over
+runs that already happened instead of a null campaign, which is how rustc-perf,
+Perfherder, and Bencher all work. Do not make it a threshold, and do not adjust a
+per-metric threshold to make something pass: MongoDB's static-threshold system
+produced false positives up to 99% depending on how you count, and per-test
+adjustment is what they call fixes and band-aids. A metric that is genuinely
+unfit is reported and never gated, on evidence, which is the category `p99`
+already sits in.
+
+This is detection, not acceptance. Measured against its own runner noise the gate
+catches roughly ninety-eight percent of twenty-percent regressions, ninety-three
+percent of fifteen-percent ones, and about one in five below ten, so a green
+check is not a performance verdict: Pedro and an agent still interpret the
+complete vector and anomalies by reasoning before merge.
 Telemetry is disabled unless telemetry-related source changed; only then are
 enabled, exporter, and disabled profiles measured, and that widening is
 load-bearing — the sidecar regression above was invisible with telemetry off.

@@ -14,12 +14,23 @@
  * Only one side is ever under load. The other's server sits idle, which the
  * harness separately measures as costing near-nothing, and its load generator
  * holds no connections open between units.
+ *
+ * This is not a local invention. The method is published as **duet
+ * benchmarking** — Bulej, Horký, Tůma, Farquet and Prokopec, ICPE '20,
+ * <https://dl.acm.org/doi/10.1145/3358960.3379132> — which measured 2.3x to
+ * 12.5x better accuracy than sequential runs on ScalaBench and DaCapo and 23.8x
+ * to 82.4x on SPEC CPU 2017; Chromium's Pinpoint bisects by running both
+ * revisions on the same device for the same reason. This harness arrived at it
+ * independently, from the same evidence, which is a reason to keep it and a
+ * reason to say where else it lives: a reader deciding whether to trust the
+ * comparison should know it is the standard answer rather than a house rule.
  */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { Subprocess } from "bun";
 import { benchmarkConfigFromEnv, type BenchmarkConfig } from "./benchmark.ts";
+import { DEFAULT_REPETITIONS, PAIRED_SCHEMA_VERSION, type PairedSeries } from "./paired-statistics.ts";
 import { benchUnits, leadingSide, type BenchUnit, type UnitMetric } from "./units.ts";
 import { BoundedTextTail } from "./process-lifecycle.ts";
 import type { AckerDBBenchmarkProfile } from "./ackerdb-profile.ts";
@@ -43,7 +54,7 @@ if (!executionHost) {
   throw new Error("BENCH_EXECUTION_HOST must name the machine this comparison ran on");
 }
 
-const REPETITIONS = Number(process.env.BENCH_REPETITIONS ?? 8);
+const REPETITIONS = Number(process.env.BENCH_REPETITIONS ?? DEFAULT_REPETITIONS);
 if (!Number.isInteger(REPETITIONS) || REPETITIONS < 2 || REPETITIONS % 2 !== 0) {
   // Odd counts hand one side an extra turn in the leading, colder slot.
   throw new Error("BENCH_REPETITIONS must be an even integer of at least 2");
@@ -186,13 +197,6 @@ class Side {
   }
 }
 
-/** Every repetition of one metric on one unit, base beside head. */
-export interface PairedSeries {
-  readonly unitId: string;
-  readonly metric: string;
-  readonly samples: readonly { readonly repetition: number; readonly base: number; readonly head: number }[];
-}
-
 function pairMetrics(
   base: readonly UnitMessage[],
   head: readonly UnitMessage[],
@@ -315,7 +319,7 @@ try {
   await Bun.write(
     join(outputDirectory, "pair.json"),
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: PAIRED_SCHEMA_VERSION,
       base: baseCommit,
       head: headCommit,
       harnessCommit: headCommit,
