@@ -221,10 +221,11 @@ The sidecar snapshot reports whether it is on and names the setting, so a surfac
 that has nothing to show can say which of the two it is looking at rather than
 rendering an unexplained blank.
 
-Measured, so the choice is informed: the always-on aggregate costs 0.014–0.019 µs
-per observation, and enabling trace storage costs about 0.25 µs per operation
-synchronously plus deferred construction off the response path — end to end the
-framework benchmark measured p50 rising 12–15% with it on.
+Costs are recorded in ADR-0030, each labelled with the configuration it measured.
+The shipped default currently carries an undiagnosed regression on subscription
+delivery latency, and the opt-in's own price has not yet been measured under this
+code — no benchmark profile has exercised trace storage. Treat any single
+"telemetry costs N%" figure with suspicion until it says which of the two it is.
 
 **The aggregate sees every observation and the exemplar store keeps a
 minority.** Counts, error counts and totals are exact for covered buckets;

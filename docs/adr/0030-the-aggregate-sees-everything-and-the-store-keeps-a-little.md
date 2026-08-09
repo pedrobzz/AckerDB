@@ -386,6 +386,49 @@ run of the series (median absolute paired delta 2.6%, p90 7.7%). Query latency
 throughput −4.3%, query saturation −4.8%, mutation latency −1.7% and −3.9%, every
 interval spanning zero.
 
+**Every number below is labelled with the configuration it measured.** Two costs
+on this ticket both came out near 12–15%, for different paths in different
+configurations, and letting them read as one number is how a wrong figure
+survives review.
+
+**The shipped default — telemetry on, no trace storage — has an unexplained
+regression.** On the 16-repetition gate it costs **p50 and p95 +12–15% on
+subscription delivery** (`subscription:shared` at 1 and 10 writers), reproducing
+across the `enabled` and `exporter` profiles and vanishing entirely when
+telemetry is off. This is the path every application pays whether or not it
+enables trace storage. It is not diagnosed.
+
+**A microbenchmark said 0.12 µs/op for that path, and it was wrong.** It measured
+`TelemetryAggregateBuckets.record()` in a tight loop over one cohort at
+0.014–0.019 µs per observation. That case does not occur: a loop over a single
+cohort key hits string interning and never triggers a collection, so it measured
+neither the allocation the real path performs nor the collections that allocation
+causes. **Do not re-derive this number with a microbenchmark** — the question is
+allocation rate on the delivery path under real cohort variety, and wall time in
+a tight loop cannot see it. The suite's number is the one that counts.
+
+**The opt-in's price has not been measured under the current code.** No benchmark
+profile has ever set `admin.telemetry.traces`, so the suite has never exercised
+durable trace storage. An earlier figure of p50 +12–15% on *operation* latency
+came from runs where traces were still on by default in the code; it measured a
+configuration that no longer ships and is not carried forward here. A synthetic
+driver puts the synchronous share at **0.25 µs/op** against 2.83 µs/op with
+storage off, and exemplar construction is deferred off the response path and is
+not in that figure — so it is a floor, not a price.
+
+**The stored bin budget is not a cost.** 2,048 buckets measure 0.0144 µs against
+0.0171 at 160 for a single series, and 0.0193 against 0.0179 across sixty-four.
+That comparison is between two shapes of the same tight loop, so it is subject to
+the same caveat above — but it is a *relative* measurement of one changed
+constant, which is what a microbenchmark can still answer honestly.
+
+**The framework's own benchmark is the number that counts.** With durable trace
+storage off — the default — against `canary` over eight interleaved repetitions
+in all three telemetry profiles: **no gated metric regressed**, on the cleanest
+run of the series (median absolute paired delta 2.6%, p90 7.7%). Query latency
+throughput −4.3%, query saturation −4.8%, mutation latency −1.7% and −3.9%, every
+interval spanning zero.
+
 **What the always-on half costs, because every application pays it whether or not
 it enables trace storage.** The aggregate observation — the one piece that runs
 on every span in every configuration — measures **0.014–0.019 µs per
@@ -395,14 +438,7 @@ measures 0.0144 µs against 0.0171 at 160 for a single series, and 0.0193 agains
 0.0179 across sixty-four, so raising storage resolution to the wire-independent
 number is free either way and the earlier worry about it was unfounded.
 
-**The opt-in's price, published because an operator deserves it before they turn
-it on.** The gate measured it directly, because durable traces were on by default
-for three runs: **p50 up 12–15% and throughput down as much as 12%** on query and
-procedure saturation. A microbenchmark isolates the *synchronous* share an
-operation pays at **0.25 µs/op** — the verdict and span collection — against 2.83
-µs/op for the same work with storage off; exemplar construction is deferred off
-the response path and so does not appear in that figure, which is why it is the
-smaller of the two numbers and why the end-to-end one is the one to plan with.
+See the labelled figures above for what each configuration costs.
 
 The one cost that is *not* noise is idle memory: **82 → 95 MB RSS**, consistently
 across profiles. That is the sidecar's worker thread and its SQLite connection,

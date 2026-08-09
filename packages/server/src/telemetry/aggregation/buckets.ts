@@ -83,6 +83,15 @@ export const DEFAULT_AGGREGATE_LIMITS: TelemetryAggregateLimits = Object.freeze(
  * different separators, and the lookup silently missed every time — a threshold
  * that always reads "cold" fails open rather than loudly, which is the worst
  * way for this particular bug to behave.
+ *
+ * It materializes a string on EVERY observation, which is fine as a Map key and
+ * would matter the moment allocation per span shows up as latency — a garbage
+ * rate proportional to span volume raises wait-dominated numbers without
+ * consuming CPU, so it would appear as delivery latency rather than as
+ * throughput. It is the prime suspect for the shipped default's undiagnosed
+ * regression (ADR-0030), unconfirmed. If it is confirmed, the fix is to stop
+ * manufacturing a new object to describe a pair that has not changed — intern it
+ * per series — not to do less work.
  */
 function cohortKey(operation: TelemetryOperation, functionAddress: string | undefined): string {
   return `${operation}\u0000${functionAddress ?? ""}`;
