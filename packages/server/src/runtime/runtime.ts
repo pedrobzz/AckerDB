@@ -45,7 +45,7 @@ import {
 import type { DeliveryObserver } from "../subscriptions/delivery/observation.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { telemetryJournalPath } from "../database/artifacts.ts";
+import { telemetryStorePath } from "../database/artifacts.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
@@ -62,7 +62,11 @@ import {
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
 import { Telemetry } from "../telemetry/telemetry.ts";
+import { randomUUID } from "node:crypto";
 import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
+import { TelemetryInlineWriter } from "../telemetry/storage/inline-writer.ts";
+import { TelemetryWorkerWriter } from "../telemetry/storage/worker/writer.ts";
+import type { TelemetrySidecarWriter } from "../telemetry/storage/writer.ts";
 import {
   TelemetryJournal,
 } from "../telemetry/application-signals/journal.ts";
@@ -138,7 +142,8 @@ export class Runtime implements RuntimePort {
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
-  readonly telemetryJournal: TelemetryJournal;
+  /** The one owner of every durable telemetry signal. */
+  readonly telemetrySidecar: TelemetrySidecarWriter;
   readonly telemetryExporters: TelemetryJournalExporters | undefined;
   readonly log: ApplicationLogger;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
@@ -283,20 +288,39 @@ export class Runtime implements RuntimePort {
       admit: (session, fairnessKey, sessionOrder) =>
         this.control.admit(session, fairnessKey, sessionOrder),
     });
-    const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
-    this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
-      ? options.telemetryJournal
-      : new TelemetryJournal({
-          path: this.engine.path === ":memory:"
-            ? ":memory:"
-            : telemetryJournalPath(this.engine.path),
-          ...options.telemetryJournal,
+    // One sidecar writer owns every durable signal. A file-backed engine gets
+    // the worker, because the retained fraction approaches 100% during an
+    // incident and the serving thread must not be the one committing it; an
+    // in-memory engine has no file to isolate, so it writes inline.
+    const admin = options.admin?.telemetry;
+    const generation = randomUUID();
+    this.telemetrySidecar = this.engine.path === ":memory:"
+      ? new TelemetryInlineWriter({
+          path: ":memory:",
+          generation,
+          ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
+          ...(admin?.storage?.maxStoredBytes === undefined
+            ? {}
+            : { maxStoredBytes: admin.storage.maxStoredBytes }),
+        })
+      : new TelemetryWorkerWriter({
+          path: telemetryStorePath(this.engine.path),
+          generation,
+          ...(admin?.retention === undefined ? {} : { retention: admin.retention }),
+          ...(admin?.storage?.maxStoredBytes === undefined
+            ? {}
+            : { maxStoredBytes: admin.storage.maxStoredBytes }),
         });
-    if (this.telemetryJournal.snapshot().state !== "ready") {
-      throw new TypeError("Runtime requires a ready telemetry journal");
-    }
     this.applicationSignals = new ApplicationSignals(
-      this.telemetryJournal,
+      {
+        append: (record) => this.telemetrySidecar.accept(
+          record.kind === "analytics" ? "analytics" : "log",
+          record,
+        ),
+        appendFinal: () => {
+          // The terminal row is written by whoever owns the connection, at seal.
+        },
+      },
       this.now,
       () => this.tracing.applicationLogContext(),
     );

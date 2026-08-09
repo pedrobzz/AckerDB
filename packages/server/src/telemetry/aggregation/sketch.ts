@@ -202,6 +202,52 @@ export class Sketch {
     return seen / this.count;
   }
 
+  /**
+   * The share of observations sitting in the same bucket as `value`, and the
+   * share strictly above that bucket.
+   *
+   * This is what lets the retention policy hit a RATE rather than merely apply a
+   * threshold. `>=` at a threshold retains every tie, so a distribution with
+   * mass piled on one value — a cached endpoint that always answers in 2 ms, an
+   * endpoint dominated by a fixed timeout — retains that entire pile. Knowing
+   * how much mass is at the boundary is what makes it possible to admit only
+   * part of it.
+   */
+  shareAtAndAbove(value: number): {
+    readonly at: number;
+    readonly above: number;
+    readonly lower: number;
+    readonly upper: number;
+  } | undefined {
+    if (this.count === 0 || !Number.isFinite(value) || value < 0) return undefined;
+    if (value === 0) {
+      return {
+        at: this.zeroCount / this.count,
+        above: (this.count - this.zeroCount) / this.count,
+        lower: 0,
+        upper: 0,
+      };
+    }
+    const key = this.key(value);
+    let at = 0;
+    let above = 0;
+    for (let i = 0; i < this.used; i++) {
+      const weight = this.counts[i] ?? 0;
+      if (weight === 0) continue;
+      const bucket = this.offset + i;
+      if (bucket === key) at += weight;
+      else if (bucket > key) above += weight;
+    }
+    // Bucket `key` covers (γ^(key−1), γ^key]; the caller needs those edges to
+    // tell "inside the boundary bucket" from "above it".
+    return {
+      at: at / this.count,
+      above: above / this.count,
+      lower: Math.pow(this.gamma, key - 1),
+      upper: Math.pow(this.gamma, key),
+    };
+  }
+
   snapshot(): SketchSnapshot {
     return Object.freeze({
       count: this.count,

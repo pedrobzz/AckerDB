@@ -12,6 +12,7 @@ import type {
 } from "../../telemetry/application-signals/journal.ts";
 import type { Telemetry, TelemetryOptions } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";
+import type { AdminOptions } from "./admin.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
 import type { DeclaredJob } from "../../jobs/definition.ts";
 import type { RuntimeFilesOptions } from "../../files/namespace.ts";
@@ -31,6 +32,11 @@ export interface RuntimeOptions {
   /** The application scope vocabulary (`defineApp({ scopes })`); absent when none. */
   readonly scopes?: readonly string[];
   readonly limits?: ServiceLimits;
+  /**
+   * Everything an operator configures about the framework's own surfaces —
+   * today telemetry storage, retention and the one enabled switch.
+   */
+  readonly admin?: AdminOptions;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly telemetryJournal?: TelemetryJournal | Omit<TelemetryJournalOptions, "path">;
   readonly telemetryExporters?: Omit<TelemetryJournalExportersOptions, "journal">;

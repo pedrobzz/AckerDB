@@ -134,14 +134,18 @@ interface OpenTrace {
  * retains immediately, and only the undecided ones pay to be staged while their
  * error-or-slow verdict is still pending.
  */
-export function traceFraction(traceId: string): number {
-  let hash = 0x811c9dc5;
+export function traceFraction(traceId: string, salt = 0): number {
+  let hash = (0x811c9dc5 ^ salt) >>> 0;
   for (let index = 0; index < traceId.length; index++) {
     hash ^= traceId.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash / 0x100000000;
 }
+
+/** Salts keep the baseline draw and the boundary draw independent of each other. */
+const BASELINE_SALT = 0;
+const BOUNDARY_SALT = 0x9e3779b9;
 
 function spanBytes(span: TelemetrySpanRecord): number {
   return 96 +
@@ -169,7 +173,7 @@ export class TraceExemplarCollector {
 
   /** Whether a trace id is in the deterministic healthy-baseline share. */
   isBaseline(traceId: string): boolean {
-    return traceFraction(traceId) < this.limits.baselineProbability;
+    return traceFraction(traceId, BASELINE_SALT) < this.limits.baselineProbability;
   }
 
   /**
@@ -240,9 +244,19 @@ export class TraceExemplarCollector {
     // chart the moment the application's latency changes, and the operator is
     // the one who discovers it.
     const cohort = this.thresholdFor(root?.operation, root?.function);
-    const slow = cohort.warm &&
-      cohort.thresholdMs !== undefined &&
-      durationMs >= cohort.thresholdMs;
+    // The contract is a RATE, and the threshold is only how it is reached.
+    // Everything above the boundary bucket is retained; the boundary bucket
+    // itself admits at the probability that makes the realized rate match the
+    // target. Without this, a distribution whose mass piles on one value —
+    // a cached endpoint answering in exactly 2 ms, one dominated by a fixed
+    // timeout — retains the entire pile, because `>=` keeps every tie. That is
+    // the same shape as every other way this policy has failed: a rule of the
+    // form "retain when X" whose X quietly stopped discriminating.
+    const slow = cohort.warm && cohort.thresholdMs !== undefined && (
+      (cohort.boundaryUpperMs !== undefined && durationMs > cohort.boundaryUpperMs) ||
+      ((cohort.boundaryLowerMs === undefined || durationMs > cohort.boundaryLowerMs) &&
+        traceFraction(traceId, BOUNDARY_SALT) < cohort.boundaryAdmitProbability)
+    );
     const reason: ExemplarReason | undefined = trace.errorCount > 0
       ? "error"
       : slow

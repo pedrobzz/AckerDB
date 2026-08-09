@@ -20,6 +20,7 @@ import {
   MIN_SAMPLES_ABOVE_QUANTILE,
   RETENTION_QUANTILE,
   TAIL_QUANTILES,
+  TARGET_TAIL_RATE,
   isConfidentQuantile,
 } from "../../src/telemetry/aggregation/buckets.ts";
 import type { TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
@@ -28,7 +29,16 @@ const HOUR_ALIGNED = Math.floor(1_700_000_000_000 / 3_600_000) * 3_600_000;
 
 /** A cohort that is always warm at a fixed threshold, for the policy tests. */
 const warmAt = (thresholdMs: number): CohortThresholdProvider =>
-  () => ({ thresholdMs, warm: true, observations: 10_000 });
+  () => ({
+    thresholdMs,
+    warm: true,
+    observations: 10_000,
+    boundaryAdmitProbability: 1,
+    // A degenerate boundary bucket: the fixture is a hard threshold, so nothing
+    // sits "inside" it and everything above is retained.
+    boundaryLowerMs: thresholdMs,
+    boundaryUpperMs: thresholdMs,
+  });
 
 function span(overrides: Record<string, unknown> = {}): TelemetrySpanRecord {
   return Object.freeze({
@@ -382,6 +392,56 @@ describe("trace exemplars", () => {
     // selecting and is storing everything again.
     expect(retained / operations).toBeLessThan(0.10);
     expect(retained).toBeGreaterThan(0);
+  });
+
+  test("realizes the target rate whatever shape the distribution has", () => {
+    // The policy's contract is a RATE. Three fail-opens in this component were
+    // all the same shape — a rule "retain when X" whose X stopped
+    // discriminating, always failing toward retaining everything. Asserting the
+    // rate rather than the threshold is what closes that class.
+    const measure = (durationFor: (index: number) => number): number => {
+      const buckets = new TelemetryAggregateBuckets({
+        warmObservations: 50,
+        referenceWindowMs: MINUTE_MS,
+      });
+      const collector = new TraceExemplarCollector(
+        (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
+        { baselineProbability: 0 },
+      );
+      const operations = 40_000;
+      let retained = 0;
+      for (let index = 0; index < operations; index++) {
+        const traceId = index.toString(16).padStart(32, "0");
+        const durationMs = durationFor(index);
+        const at = HOUR_ALIGNED + Math.floor(index / 500) * MINUTE_MS;
+        buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
+        collector.observe(traceId, span({
+          operation: "procedure",
+          function: "api.checkout.submit",
+          timestampMs: at,
+          durationMs,
+        }));
+        if (collector.settle(traceId) !== undefined) retained++;
+      }
+      return retained / operations;
+    };
+
+    const continuous = measure((index) => 8 + ((index * 2654435761) % 100_000) / 12_500);
+    // A cached endpoint that always answers in exactly the same time: every
+    // observation lands in one bucket, so `>=` would retain all of them.
+    const constant = measure(() => 2);
+    // An endpoint quantised to a handful of values — the shape that retained 12%
+    // before the rate became the invariant.
+    const quantised = measure((index) => 8 + (index % 9));
+
+    for (const [label, rate] of [
+      ["continuous", continuous],
+      ["constant", constant],
+      ["quantised", quantised],
+    ] as const) {
+      expect({ label, over: rate > TARGET_TAIL_RATE * 2.5 }).toEqual({ label, over: false });
+      expect({ label, under: rate < TARGET_TAIL_RATE * 0.2 }).toEqual({ label, under: false });
+    }
   });
 
   test("a cold cohort retains rather than falling through to nothing", () => {

@@ -157,7 +157,23 @@ export interface CohortThreshold {
   /** False while the cohort has too little history for a quantile to mean anything. */
   readonly warm: boolean;
   readonly observations: number;
+  /**
+   * The chance a trace landing exactly in the threshold's bucket is admitted.
+   *
+   * The policy's contract is a retention RATE; the threshold is only a means of
+   * hitting it. Everything strictly above the boundary bucket is retained, and
+   * the remainder of the target rate is drawn from the boundary bucket at this
+   * probability — so a distribution with mass piled on one value realizes the
+   * same rate as a smooth one instead of retaining the whole pile.
+   */
+  readonly boundaryAdmitProbability: number;
+  /** Bounds of the boundary bucket; a duration above `boundaryUpperMs` is retained outright. */
+  readonly boundaryLowerMs: number | undefined;
+  readonly boundaryUpperMs: number | undefined;
 }
+
+/** The share of traffic the policy aims to retain for the tail. */
+export const TARGET_TAIL_RATE = 1 - RETENTION_QUANTILE;
 
 /** One series, ready to persist. */
 export interface AggregateSeriesRow {
@@ -318,12 +334,31 @@ export class TelemetryAggregateBuckets {
       : this.reference.get(key);
     const observations = source?.count ?? 0;
     if (source === undefined || observations < this.limits.warmObservations) {
-      return { thresholdMs: undefined, warm: false, observations };
+      return {
+        thresholdMs: undefined,
+        warm: false,
+        observations,
+        boundaryAdmitProbability: 1,
+        boundaryLowerMs: undefined,
+        boundaryUpperMs: undefined,
+      };
     }
+    const thresholdMs = source.quantile(RETENTION_QUANTILE);
+    const share = thresholdMs === undefined ? undefined : source.shareAtAndAbove(thresholdMs);
+    // Everything above the boundary bucket is retained outright; the boundary
+    // bucket supplies whatever the target rate still needs. A degenerate
+    // distribution puts all its mass in one bucket, and then this is the only
+    // thing standing between the policy and retaining all of it.
+    const boundaryAdmitProbability = share === undefined || share.at <= 0
+      ? 1
+      : Math.min(1, Math.max(0, (TARGET_TAIL_RATE - share.above) / share.at));
     return {
-      thresholdMs: source.quantile(RETENTION_QUANTILE),
+      thresholdMs,
       warm: true,
       observations,
+      boundaryAdmitProbability,
+      boundaryLowerMs: share?.lower,
+      boundaryUpperMs: share?.upper,
     };
   }
 

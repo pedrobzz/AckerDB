@@ -32,6 +32,11 @@ import {
   type TelemetryWorkerEvent,
   type TelemetryWorkerStats,
 } from "./protocol.ts";
+import type {
+  TelemetrySidecarSeal,
+  TelemetrySidecarSnapshot,
+  TelemetrySidecarWriter,
+} from "../writer.ts";
 
 export interface TelemetryWorkerWriterOptions {
   readonly path: string;
@@ -77,7 +82,7 @@ const DEFAULTS = {
   commitDelayMs: 25,
 };
 
-export class TelemetryWorkerWriter {
+export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   private readonly worker: Worker;
   private readonly limits: Required<
     Omit<TelemetryWorkerWriterOptions, "path" | "retention" | "maxStoredBytes" | "generation">
@@ -98,11 +103,13 @@ export class TelemetryWorkerWriter {
   readonly commitAckMs: number[] = [];
   private handoffTimer?: ReturnType<typeof setTimeout>;
   private lastStats: TelemetryWorkerStats | undefined;
+  private readonly failureListeners = new Set<(error: unknown) => void>();
   private readonly ready: Promise<void>;
   private statsToken = 0;
   private readonly statsWaiters = new Map<number, (stats: TelemetryWorkerStats) => void>();
   private sealWaiter?: (event: Extract<TelemetryWorkerEvent, { type: "sealed" }>) => void;
   private sealed = false;
+  private notifiedFailure = false;
 
   constructor(options: TelemetryWorkerWriterOptions) {
     this.limits = {
@@ -127,6 +134,7 @@ export class TelemetryWorkerWriter {
         case "watermark":
           this.lastStats = message.stats;
           this.settleAcks(message.stats.durableSeq);
+          this.observeFailed(message.stats);
           return;
         case "stats": {
           this.lastStats = message.stats;
@@ -141,6 +149,13 @@ export class TelemetryWorkerWriter {
           this.sealWaiter?.(message);
           return;
         case "failure":
+          for (const listener of this.failureListeners) {
+            try {
+              listener(new Error(message.message));
+            } catch {
+              // A health observer cannot replace the sidecar's own failure.
+            }
+          }
           return;
       }
     };
@@ -241,6 +256,24 @@ export class TelemetryWorkerWriter {
     }
   }
 
+  onFailure(listener: (error: unknown) => void): () => void {
+    this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
+  }
+
+  /** The worker reports its own store's health; a failed sidecar is fatal here too. */
+  private observeFailed(stats: TelemetryWorkerStats): void {
+    if (!stats.failed || this.notifiedFailure) return;
+    this.notifiedFailure = true;
+    for (const listener of this.failureListeners) {
+      try {
+        listener(new Error("telemetry sidecar connection is unusable"));
+      } catch {
+        // A health observer cannot replace the sidecar's own failure.
+      }
+    }
+  }
+
   /** Ask the worker for its accounting; also flushes anything it is holding. */
   async stats(): Promise<TelemetryWorkerStats> {
     const token = ++this.statsToken;
@@ -251,7 +284,8 @@ export class TelemetryWorkerWriter {
     return answer;
   }
 
-  snapshot(): TelemetryWriterSnapshot {
+  snapshot(): TelemetrySidecarSnapshot {
+    const worker = this.lastStats;
     return Object.freeze({
       acceptedRecords: this.acceptedRecords,
       droppedRecords: this.droppedRecords,
@@ -259,10 +293,20 @@ export class TelemetryWorkerWriter {
       droppedByKind: Object.freeze({ ...this.droppedByKind }),
       queuedRecords: this.ring.length,
       queuedBytes: this.queuedBytes,
-      handoffs: this.handoffs,
+      durableSeq: worker?.durableSeq ?? 0,
       acceptedSeq: this.acceptedSeq,
-      worker: this.lastStats,
+      committedRecords: worker?.committedRecords ?? 0,
+      rejectedRecords: worker?.rejectedRecords ?? 0,
+      storedBytes: worker?.storedBytes ?? 0,
+      walBytes: worker?.walBytes ?? 0,
+      containedFailures: worker?.containedFailures ?? 0,
+      failed: worker?.failed ?? false,
     });
+  }
+
+  /** Handoffs performed; diagnostic, not part of the sidecar contract. */
+  get handoffCount(): number {
+    return this.handoffs;
   }
 
   /**
@@ -271,11 +315,8 @@ export class TelemetryWorkerWriter {
    * about what is on disk, which is why it is the worker's number and not this
    * thread's promise.
    */
-  async seal(
-    terminal: unknown | undefined,
-    deadlineMs: number,
-  ): Promise<{ readonly stats: TelemetryWorkerStats | undefined; readonly timedOut: boolean }> {
-    if (this.sealed) return { stats: this.lastStats, timedOut: false };
+  async seal(terminal: unknown | undefined, deadlineMs: number): Promise<TelemetrySidecarSeal> {
+    if (this.sealed) return { snapshot: this.snapshot(), timedOut: false };
     this.sealed = true;
     this.handoff();
     const answer = new Promise<Extract<TelemetryWorkerEvent, { type: "sealed" }>>((resolve) => {
@@ -293,8 +334,8 @@ export class TelemetryWorkerWriter {
     });
     const settled = await Promise.race([answer, expiry]);
     clearTimeout(timer);
+    if (settled !== "timeout") this.lastStats = settled.stats;
     this.worker.terminate();
-    if (settled === "timeout") return { stats: this.lastStats, timedOut: true };
-    return { stats: settled.stats, timedOut: false };
+    return { snapshot: this.snapshot(), timedOut: settled === "timeout" };
   }
 }
