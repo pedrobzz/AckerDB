@@ -333,6 +333,43 @@ sampling", so only the deterministic baseline slice can ride in `tracestate`. Th
 industry emits a plain span attribute, so an OTLP export maps an exemplar's
 `reason` to `tailsampling.policy` rather than inventing a field.
 
+## Durable trace storage is opt-in; the aggregate is not
+
+The map's standing constraint is **zero cost when nobody is looking**, and a
+trace store that fills whether or not anyone opens Studio violates it by
+construction. Storing whole traces exists to serve Studio, and Studio is itself
+opt-in — installing the package *is* the opt-in — so charging every application
+that ships this version for a store most of them will never read was the wrong
+default. The split follows what each part costs and who it serves:
+
+- **The aggregate is always on.** The previous version already updated an
+  aggregate on every span, it is what `/status` and the runtime metrics are made
+  of, and it is bounded by cardinality rather than by traffic. It is not what the
+  benchmark was catching.
+- **Logs and analytics keep their journal**, unchanged, because ADR-0017 makes
+  those durable whether or not anyone is watching.
+- **Durable spans and exemplars default off.**
+
+`admin.telemetry.traces` is a **capability, not a boolean**: presence enables it,
+absence is off. A second `enabled` flag beside the subsystem's own would be two
+switches whose interaction an operator has to hold in their head, and the
+relationship is containment rather than overlap — `enabled: false` stops the
+runtime recording at all, and this decides whether what is recorded is *kept*.
+With no sink nothing downstream runs: no verdict, no span collection, no row, and
+the per-span observation maintains only the trace extent that releasing its spans
+needs.
+
+**A default-off store is only honest if the product says so.** The sidecar
+snapshot reports whether trace storage is on, names `admin.telemetry.traces`
+verbatim so a surface can quote it, and states that enabling is **not
+retroactive**. Studio's trace surfaces must say which of the two they are looking
+at — "trace storage is off; turn it on with `admin.telemetry.traces` and traces
+appear from then forward" — because an operator who installs Studio, opens a
+trace screen and sees a blank page concludes the product is broken, and that is a
+worse outcome than the cost being avoided. It is the same disclosure rule as
+configured-versus-effective retention: the surface tells the truth about what it
+can show and why.
+
 ## Cost
 
 The synthetic driver measured the serving thread's share of an operation at
@@ -342,15 +379,21 @@ outage. Scenario 1 measured the isolation claim it exists for: serving cost
 44.6 → 60.4 ms, 674,575 accepted and 674,575 committed, zero dropped, queue slope
 0.000.
 
-**The framework's own benchmark is the number that counts, and it is what it
-gives, not what the driver predicted.** Against `canary` over eight interleaved
-repetitions in all three telemetry profiles: no gated metric regressed. Query
-latency throughput −2.4%, query saturation −5.1%, uncontended mutation latency
-−0.8%, contended mutation latency +0.9%, procedure latency −3.1% — every one
-inside an interval spanning zero, against a run whose own median absolute paired
-delta was 3.1% and whose p90 was 8.0%. The honest reading is that this change is
-not distinguishable from noise on throughput at this harness's sensitivity, which
-detects roughly 60% of twenty-percent regressions and almost nothing below ten.
+**The framework's own benchmark is the number that counts.** With durable trace
+storage off — the default — against `canary` over eight interleaved repetitions
+in all three telemetry profiles: **no gated metric regressed**, on the cleanest
+run of the series (median absolute paired delta 2.6%, p90 7.7%). Query latency
+throughput −4.3%, query saturation −4.8%, mutation latency −1.7% and −3.9%, every
+interval spanning zero.
+
+**The opt-in's price, published because an operator deserves it before they turn
+it on.** The gate measured it directly, because durable traces were on by default
+for three runs: **p50 up 12–15% and throughput down as much as 12%** on query and
+procedure saturation. A microbenchmark isolates the *synchronous* share an
+operation pays at **0.25 µs/op** — the verdict and span collection — against 2.83
+µs/op for the same work with storage off; exemplar construction is deferred off
+the response path and so does not appear in that figure, which is why it is the
+smaller of the two numbers and why the end-to-end one is the one to plan with.
 
 The one cost that is *not* noise is idle memory: **82 → 95 MB RSS**, consistently
 across profiles. That is the sidecar's worker thread and its SQLite connection,
