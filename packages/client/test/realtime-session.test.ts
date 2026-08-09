@@ -846,6 +846,50 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
+  test("decodes a realtime HTTP failure on the connection surface, not the session one", async () => {
+    // Prepare is its own HTTP exchange with no handshake behind it, so its
+    // framework failure is a connection-level refusal. An error naming an
+    // operation this exchange never issued is not one, and must not be handed
+    // through as an authoritative realtime outcome.
+    for (const [body, expected] of [
+      [
+        { v: ACKERDB_VERSION, t: "err", id: 7, outcome: { code: "unavailable", retryable: true, message: "operation scoped" } },
+        { code: "malformed", message: "a connection error must not name an operation" },
+      ],
+      [
+        { v: "0.0.1", t: "err", id: null, outcome: { code: "unavailable", retryable: true, message: "other build" } },
+        {
+          code: "version_mismatch",
+          message: `this application runs AckerDB 0.0.1 and this client is ${ACKERDB_VERSION}` +
+            " — install matching versions",
+        },
+      ],
+      [
+        { v: ACKERDB_VERSION, t: "err", id: null, outcome: { code: "unauthorized", retryable: false, message: "no grant" } },
+        { code: "unauthorized", message: "no grant" },
+      ],
+    ] as const) {
+      const client = new AckerDBClient({
+        url: "https://ackerdb.example.test",
+        credential: { kind: "anonymous" },
+        clientSessionId: "01890a5d-ac96-774b-b4c0-123456789abc",
+        createWebSocket: () => {
+          throw new Error("realtime must not open the application WebSocket");
+        },
+        createPeerConnection: () => ({}),
+        fetch: async () => new Response(encode(body), { status: 400 }),
+      });
+      const session = client.realtime(assistant, { assistantId: 1n });
+      await eventually(() => session.currentState.phase === "failed");
+      const state = session.currentState;
+      if (state.phase !== "failed") throw new Error(`unexpected ${state.phase}`);
+      expect(state.error.code).toBe(expected.code);
+      expect(state.error.message).toBe(expected.message);
+      session.release();
+      client.close();
+    }
+  });
+
   test("validates reserved peer capabilities before the offer", async () => {
     let requests = 0;
     const client = new AckerDBClient({
