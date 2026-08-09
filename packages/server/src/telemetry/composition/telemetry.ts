@@ -865,7 +865,9 @@ export class Telemetry {
    * allowed to grow.
    */
   private queueExemplar(state: TelemetryState, settled: TraceExemplarInput): void {
-    if (state.stopped) return;
+    // Deliberately NOT gated on `stopped`. Stopping halts timers; the traces
+    // that settle during a drain are exactly the ones a clean shutdown must not
+    // lose, and `drain` flushes this queue explicitly after `discardAll`.
     if (state.pendingExemplars.length >= state.limits.maxRecords) {
       state.droppedExemplars++;
       return;

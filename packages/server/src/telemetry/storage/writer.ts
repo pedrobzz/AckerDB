@@ -92,12 +92,22 @@ export interface TelemetrySidecarSeal {
 }
 
 /**
- * What a seal did not get to disk. Accepted-but-uncommitted plus everything the
- * ring refused, which are the two ways a record the application handed over can
- * fail to exist.
+ * What a seal did not get to disk: refused at the ring, rejected by a
+ * transaction, or never resolved at all.
+ *
+ * NOT `acceptedSeq - durableSeq`. Both watermarks are scalar high-water marks,
+ * so a batch that rolls back and is followed by one that commits leaves
+ * `durableSeq` at the later number — and the difference then reports zero loss
+ * while the rejected records are still missing. A high-water mark proves the
+ * newest batch committed and says nothing about the ones before it, so the
+ * rejections are counted rather than inferred. `processedSeq` covers everything
+ * resolved either way, which is why the unresolved term uses it and cannot
+ * double-count a rejection.
  */
 export function sealLoss(snapshot: TelemetrySidecarSnapshot): number {
-  return Math.max(0, snapshot.acceptedSeq - snapshot.durableSeq) + snapshot.droppedRecords;
+  return snapshot.droppedRecords +
+    snapshot.rejectedRecords +
+    Math.max(0, snapshot.acceptedSeq - snapshot.processedSeq);
 }
 
 /**

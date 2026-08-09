@@ -355,20 +355,20 @@ export class RuntimeControl {
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
-        try {
-          // The sidecar still has to close, but a seal that does not acknowledge
-          // in time here is the deadline already being reported above, not a
-          // second failure: the same expired clock produced both.
-          await this.sealSidecar(deadlineAtMs);
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
         if (this.options.ownsTelemetry) {
           try {
             await this.options.telemetry.drain(deadlineAtMs);
           } catch (cleanupError) {
             cleanupErrors.push(cleanupError);
           }
+        }
+        try {
+          // Same order as the clean path: settle traces, then seal. A seal that
+          // does not acknowledge in time here is the deadline already being
+          // reported above, not a second failure.
+          await this.sealSidecar(deadlineAtMs);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
         }
         if (cleanupErrors.length === 0) throw error;
         throw new AggregateError(

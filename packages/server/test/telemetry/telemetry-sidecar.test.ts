@@ -378,3 +378,69 @@ describe("a long-lived trace is bounded by bytes and count, never by assumed dur
     expect(staged.dropped.stagedOverflow).toBeGreaterThan(0);
   });
 });
+
+describe("the verdict waits for every span the trace will have", () => {
+  function judged(deliverFailure: boolean): TraceExemplar[] {
+    const kept: TraceExemplar[] = [];
+    const telemetry = new Telemetry({
+      localSink: false,
+      exporter: { export: () => {} },
+      exemplar: (settled) => kept.push(settled as unknown as TraceExemplar),
+      scheduler: {
+        setTimeout: (callback: () => void) => {
+          callback();
+          return 0;
+        },
+        clearTimeout: () => {},
+        setInterval: () => 0,
+        clearInterval: () => {},
+      },
+      // The delayed-delivery window is exactly what `retentionMs` bounds, so it
+      // has to outlast the delivery this test is about — at 1 ms the trace is
+      // legitimately gone before the span arrives, which is correct behaviour
+      // and a useless fixture.
+      limits: { retentionMs: 1_000, slowOperationMs: 500 },
+    });
+    const traceId = "7".repeat(32);
+    const at = 1_700_000_000_000;
+    telemetry.beginTrace({ traceId }, at);
+    telemetry.recordSpan({
+      context: { traceId, spanId: `${traceId.slice(0, 24)}00000001` },
+      timestampMs: at,
+      operation: "procedure",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "api.orders.submit",
+      durationMs: 3,
+    });
+    telemetry.finishTrace({ traceId }, at + 3);
+    // A delivery that lands AFTER the operation completed, and fails.
+    telemetry.recordSpan({
+      context: { traceId, spanId: `${traceId.slice(0, 24)}00000002` },
+      timestampMs: at + 4,
+      operation: "sse",
+      stage: "delivery",
+      outcome: deliverFailure ? "internal" : "ok",
+      functionName: "api.orders.submit",
+      durationMs: 1,
+    });
+    // Settle it through the prune path.
+    telemetry.finishTrace({ traceId: "f".repeat(32) }, at + 5_000);
+    return kept;
+  }
+
+  test("a delayed failure still produces an error exemplar", () => {
+    // Judging at `complete` and emitting at settle meant this trace was decided
+    // before its failure existed: an operation that succeeded and then failed on
+    // delivery stored nothing, which is the trace an operator most wants.
+    const kept = judged(true);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.reason).toBe("error");
+    expect(kept[0]!.errorCount).toBe(1);
+  });
+
+  test("and a delayed success does not invent one", () => {
+    const kept = judged(false);
+    expect(kept.every((one) => one.reason !== "error")).toBe(true);
+  });
+});

@@ -99,6 +99,8 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
   private sealWaiter?: (event: Extract<TelemetryWorkerEvent, { type: "sealed" }>) => void;
   private sealed = false;
   private notifiedFailure = false;
+  private workerDied = false;
+  private resolveReady!: () => void;
 
   readonly exports: TelemetryExportPort = {
     onPersist: (listener) => {
@@ -129,15 +131,14 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     this.limits = sidecarQueueLimits(options.queue);
     this.traceStorage = options.traceStorage === true;
     this.worker = new Worker(new URL("./entry.ts", import.meta.url).href);
-    let resolveReady!: () => void;
     this.ready = new Promise<void>((resolve) => {
-      resolveReady = resolve;
+      this.resolveReady = resolve;
     });
     this.worker.onmessage = (event: MessageEvent<TelemetryWorkerEvent>) => {
       const message = event.data;
       switch (message.type) {
         case "ready":
-          resolveReady();
+          this.resolveReady();
           return;
         case "watermark":
           this.observeStats(message.stats);
@@ -171,6 +172,13 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
           return;
       }
     };
+    // A worker can die before or between messages, and every promise this class
+    // hands out is settled by one. Without this, a crash leaves readiness, stats,
+    // exports and the seal pending until some outer deadline, and the failure
+    // listeners never learn the sidecar is gone.
+    const died = (cause: unknown): void => this.observeWorkerDeath(cause);
+    this.worker.onerror = died;
+    (this.worker as unknown as { onmessageerror?: (event: unknown) => void }).onmessageerror = died;
     this.worker.postMessage({
       type: "open",
       path: options.path,
@@ -318,17 +326,69 @@ export class TelemetryWorkerWriter implements TelemetrySidecarWriter {
     return () => this.failureListeners.delete(listener);
   }
 
-  /** The worker reports its own store's health; a failed sidecar is fatal here too. */
-  private observeFailed(stats: TelemetryWorkerStats): void {
-    if (!stats.failed || this.notifiedFailure) return;
+  /**
+   * The worker is gone. Idempotent: settle everything waiting on it, mark the
+   * snapshot failed, and tell the failure listeners once.
+   */
+  private observeWorkerDeath(cause: unknown): void {
+    if (this.workerDied) return;
+    this.workerDied = true;
+    const error = cause instanceof Error
+      ? cause
+      : new Error("telemetry sidecar worker stopped unexpectedly");
+    for (const waiter of this.exportWaiters.values()) waiter.reject(error);
+    this.exportWaiters.clear();
+    for (const [token, resolve] of this.statsWaiters) {
+      resolve({ ...this.workerStats(), failed: true });
+      this.statsWaiters.delete(token);
+    }
+    this.sealWaiter?.({
+      type: "sealed",
+      through: this.acceptedSeq,
+      stats: { ...this.workerStats(), failed: true },
+      terminalWritten: false,
+      error: error.message,
+    });
+    this.resolveReady();
+    this.notifyFailure(error);
+  }
+
+  private workerStats(): TelemetryWorkerStats {
+    return this.lastStats ?? {
+      durableSeq: 0,
+      processedSeq: 0,
+      pendingRecords: 0,
+      pendingBytes: 0,
+      oldestPendingAgeMs: 0,
+      committedRecords: 0,
+      committedTransactions: 0,
+      rejectedRecords: 0,
+      storedBytes: 0,
+      walBytes: 0,
+      freeBytes: Number.POSITIVE_INFINITY,
+      pressure: 0,
+      readOnly: false,
+      containedFailures: 0,
+      failed: true,
+    };
+  }
+
+  private notifyFailure(error: unknown): void {
+    if (this.notifiedFailure) return;
     this.notifiedFailure = true;
     for (const listener of this.failureListeners) {
       try {
-        listener(new Error("telemetry sidecar connection is unusable"));
+        listener(error);
       } catch {
         // A health observer cannot replace the sidecar's own failure.
       }
     }
+  }
+
+  /** The worker reports its own store's health; a failed sidecar is fatal here too. */
+  private observeFailed(stats: TelemetryWorkerStats): void {
+    if (!stats.failed) return;
+    this.notifyFailure(new Error("telemetry sidecar connection is unusable"));
   }
 
   /** Ask the worker for its accounting; also flushes anything it is holding. */

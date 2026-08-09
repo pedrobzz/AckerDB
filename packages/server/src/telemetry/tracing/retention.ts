@@ -9,7 +9,7 @@ import type {
   MutableTraceRetention,
   TelemetryState,
 } from "../state/types.ts";
-import { selectExemplar, type CohortThreshold } from "../policy.ts";
+import { selectExemplar, type CohortThreshold, type ExemplarVerdict } from "../policy.ts";
 import { bucketKey, scaleMultiplier } from "../aggregation/sketch.ts";
 import {
   DEFAULT_EXEMPLAR_LIMITS,
@@ -119,23 +119,6 @@ export class TraceRetention {
   complete(trace: MutableTraceRetention, completedAtMs: number): void {
     const state = this.state;
     if (completedAtMs > trace.endedAtMs) trace.endedAtMs = completedAtMs;
-    if (trace.verdict === undefined && trace.errorSpans === 0 && this.sinks.exemplar !== undefined) {
-      const durationMs = Math.max(0, trace.endedAtMs - trace.startedAtMs);
-      const cohort = this.sinks.thresholdFor(trace.rootOperation, trace.rootFunction);
-      trace.verdict = selectExemplar({
-        traceId: () => this.traceIdOf(trace),
-        durationMs,
-        errorSpans: trace.errorSpans,
-        cohort,
-        baselineProbability: this.exemplarLimits.baselineProbability,
-        durationKey: durationMs > 0
-          ? bucketKey(durationMs, scaleMultiplier(cohort.mappingScale))
-          : undefined,
-      });
-    }
-    if (trace.errorSpans > 0 && this.sinks.exemplar !== undefined) {
-      trace.verdict ??= { reason: "error", inclusionProbability: 1, thresholdMs: undefined };
-    }
     // The export pipeline keeps its own predicate. It feeds an external APM the
     // operator configured, which does its own sampling and has its own contract;
     // the exemplar verdict decides what goes in OUR store. Same spans, same
@@ -149,11 +132,10 @@ export class TraceRetention {
     ) {
       this.promote(trace, completedAtMs);
     }
-    // A trace the export pipeline did not want can still be an exemplar, so its
-    // spans are collected here rather than left to a drain that discards them.
-    if (!trace.retained && trace.verdict !== undefined && this.wantsExemplar(trace)) {
-      trace.exemplarSpans ??= [];
-    }
+    // A trace the export pipeline did not want can still become an exemplar, and
+    // the verdict is not in until settle, so its spans are collected from here
+    // rather than left to a drain that would discard them.
+    if (!trace.retained && this.sinks.exemplar !== undefined) trace.exemplarSpans ??= [];
     trace.completedAtMs = completedAtMs;
     this.unlink(state.activeTraces, trace);
     trace.phase = "completed";
@@ -275,8 +257,22 @@ export class TraceRetention {
     this.retainSpan(record, span.timestampMs);
   }
 
-  private wantsExemplar(trace: MutableTraceRetention): boolean {
-    return this.sinks.exemplar !== undefined && trace.verdict !== undefined;
+  private judge(trace: MutableTraceRetention): ExemplarVerdict | undefined {
+    if (trace.errorSpans > 0) {
+      return { reason: "error", inclusionProbability: 1, thresholdMs: undefined };
+    }
+    const durationMs = Math.max(0, trace.endedAtMs - trace.startedAtMs);
+    const cohort = this.sinks.thresholdFor(trace.rootOperation, trace.rootFunction);
+    return selectExemplar({
+      traceId: () => this.traceIdOf(trace),
+      durationMs,
+      errorSpans: trace.errorSpans,
+      cohort,
+      baselineProbability: this.exemplarLimits.baselineProbability,
+      durationKey: durationMs > 0
+        ? bucketKey(durationMs, scaleMultiplier(cohort.mappingScale))
+        : undefined,
+    });
   }
 
   /**
@@ -440,7 +436,13 @@ export class TraceRetention {
    */
   private settle(trace: MutableTraceRetention, settledAtMs: number): void {
     const emit = this.sinks.exemplar;
-    const verdict = trace.verdict;
+    // THE decision, taken here and nowhere else. Completing a trace is not the
+    // end of it: a delivery lease can still deliver, and a delayed failing span
+    // arrives after `complete`. Judging at completion and emitting at settle
+    // meant a trace that failed on a delayed delivery produced no error
+    // exemplar, and a trace already chosen could be stored under a reason that
+    // was no longer true. Export promotion stays independent and earlier.
+    const verdict = emit === undefined ? undefined : this.judge(trace);
     const traceId = verdict === undefined ? undefined : this.traceIdOf(trace);
     const carried = trace.exemplarSpans;
     // Anything still staged is drained now: into the export pipeline if the
