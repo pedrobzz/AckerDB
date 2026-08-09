@@ -63,7 +63,6 @@ function mutationOk(
   replay: "executed" | "replayed" = "executed",
 ): ServerMessage {
   return {
-    v: ACKERDB_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",

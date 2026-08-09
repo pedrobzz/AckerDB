@@ -68,7 +68,6 @@ async function completeProcedure<Value>(
 ): Promise<Value> {
   const dispatched = dispatchProcedure<Record<never, never>, Value>(client, sockets, ref, {});
   dispatched.socket.receive({
-    v: ACKERDB_VERSION,
     t: "ok",
     id: dispatched.request.id,
     kind: "procedure",
@@ -205,7 +204,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const secondResult = client.query("api.todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth.attemptId + 10,
       authEpoch: 5,
@@ -218,7 +216,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       );
 
     first.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 5,
@@ -269,7 +266,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
@@ -294,7 +290,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const c3 = cursor(3n);
 
     const initial: ServerMessage = {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -304,14 +299,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: ACKERDB_VERSION, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c1, to: c2, value: ["two-too-late"] },
@@ -319,7 +312,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -344,7 +336,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: [] },
@@ -361,7 +352,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     first.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: firstMutation.id,
       kind: "mutation",
@@ -377,7 +367,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -387,7 +376,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const discharged = client.mutation("api.todos.add", { text: "bread" });
     const secondMutation = first.lastFrame("m");
     first.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: secondMutation.id,
       kind: "mutation",
@@ -413,7 +401,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: resent.id,
       kind: "mutation",
@@ -462,7 +449,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const malformedFrame = socket.lastFrame("q");
     socket.receiveRaw(
       encode({
-        v: ACKERDB_VERSION,
         t: "ok",
         id: malformedFrame.id,
         kind: "query",
@@ -523,7 +509,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     socket.welcome(client.clientSessionId);
     const query = socket.lastFrame("q");
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "app_err",
       id: query.id,
       kind: "query",
@@ -549,7 +534,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     );
     const mutation = socket.lastFrame("m");
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "app_err",
       id: mutation.id,
       kind: "mutation",
@@ -658,7 +642,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const subscription = sockets[0]!.lastFrame("sub");
     const held = cursor(4n);
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: held, value: ["held"] },
@@ -714,19 +697,16 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "event",
       id: subscription.id,
       event: {
@@ -736,7 +716,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
     });
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "event",
       id: subscription.id,
       event: {
@@ -767,9 +746,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
     unsubscribe();
     expect(
       sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
-    ).toEqual([{ v: ACKERDB_VERSION, t: "unsub", id }]);
+    ).toEqual([{ t: "unsub", id }]);
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "event",
       id,
       event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
@@ -804,7 +782,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       token: "session-token",
     });
     stats.socket.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: stats.request.id,
       kind: "procedure",
@@ -832,7 +809,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {},
     );
     missing.socket.receive({
-      v: ACKERDB_VERSION,
       t: "app_err",
       id: missing.request.id,
       kind: "procedure",
@@ -876,13 +852,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${mode} procedure response interruption`);
       expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
       expect(dispatched.socket.lastFrame("cancel")).toEqual({
-        v: ACKERDB_VERSION,
         t: "cancel",
         id: dispatched.request.id,
       });
 
       dispatched.socket.receive({
-        v: ACKERDB_VERSION,
         t: "ok",
         id: dispatched.request.id,
         kind: "procedure",
@@ -2182,7 +2156,6 @@ describe("subscription cursor confirmations", () => {
 
     // Value deliveries keep flowing through onUpdate alone.
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2192,7 +2165,6 @@ describe("subscription cursor confirmations", () => {
 
     // A checkpoint silently advances the cursor and confirms the held value.
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -2208,7 +2180,6 @@ describe("subscription cursor confirmations", () => {
     second.welcome(client.clientSessionId);
     expect(second.lastFrame("sub").cursor).toEqual(c2);
     second.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "resume", from: c2, to: c2 },
@@ -2238,7 +2209,6 @@ describe("subscription cursor confirmations", () => {
     const c3 = cursor(3n);
 
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2247,14 +2217,12 @@ describe("subscription cursor confirmations", () => {
     // A mismatched predecessor makes the client demand a reset; deliveries
     // landing on the held cursor are no longer trusted as confirmations.
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: ACKERDB_VERSION, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
@@ -2264,7 +2232,6 @@ describe("subscription cursor confirmations", () => {
     // The authoritative reset delivers through onUpdate; a duplicate of it
     // landing on the now-held cursor confirms again.
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2272,7 +2239,6 @@ describe("subscription cursor confirmations", () => {
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
     expect(confirmations).toBe(0);
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2398,7 +2364,6 @@ describe("AckerDBClient authentication state", () => {
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-refreshed" });
     const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2439,7 +2404,6 @@ describe("AckerDBClient authentication state", () => {
     const signOutFrame = sockets[0]!.lastFrame("auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: signOutFrame.attemptId,
       authEpoch: 1,
@@ -2463,7 +2427,6 @@ describe("AckerDBClient authentication state", () => {
     const refreshFrame = sockets[0]!.lastFrame("auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
@@ -2493,7 +2456,6 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
     const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2509,7 +2471,6 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
     const signOutAttempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: signOutAttempt.attemptId,
       authEpoch: 2,

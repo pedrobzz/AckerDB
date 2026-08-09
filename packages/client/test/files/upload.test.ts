@@ -64,7 +64,6 @@ function acceptSession(
   expiresAt = 60_000,
 ): void {
   socket.receive({
-    v: ACKERDB_VERSION,
     t: "ok",
     id: mutation.id,
     kind: "mutation",
@@ -218,7 +217,6 @@ describe("AckerDBClient files", () => {
     const refresh = client.refreshCredential({ kind: "anonymous" });
     const authentication = socket.lastFrame("auth");
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: authentication.attemptId,
       authEpoch: 1,
@@ -716,7 +714,6 @@ describe("AckerDBClient files", () => {
     const socket = sockets[0]!;
     const mutation = dispatchSession(client, socket);
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "app_err",
       id: mutation.id,
       kind: "mutation",

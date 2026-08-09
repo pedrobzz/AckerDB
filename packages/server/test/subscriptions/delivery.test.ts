@@ -133,7 +133,6 @@ class FakeSocket implements WebSocketDeliverySocket {
 
 function application(id: number, value: unknown = `value-${id}`) {
   return prepareRuntimePublication({
-    v: ACKERDB_VERSION,
     t: "ok",
     id,
     kind: "query",
@@ -247,7 +246,6 @@ describe("WebSocketSessionSink", () => {
     const sink = new WebSocketSessionSink({ socket, budget, limits });
     const forged = {
       message: {
-        v: ACKERDB_VERSION,
         t: "ok",
         id: 1,
         kind: "query",
@@ -273,7 +271,7 @@ describe("WebSocketSessionSink", () => {
     const message = application(1, "💥");
     const messageText = message.text;
     const messageBytes = message.bytes;
-    const control = { v: ACKERDB_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const controlBytes = encoder.encode(encode(control)).byteLength;
     socket.plans.push(
       { result: -1, buffered: messageBytes },
@@ -490,7 +488,7 @@ describe("WebSocketSessionSink", () => {
     const sink = new WebSocketSessionSink({ socket, budget, limits });
 
     const accepted = sink.sendApplication(1, first);
-    const later = sink.sendControl({ v: ACKERDB_VERSION, t: "pong" });
+    const later = sink.sendControl({ t: "pong" });
     await expect(accepted).resolves.toBeUndefined();
     expect(await state(later)).toBe("pending");
     expect(socket.sent).toEqual([firstText]);
@@ -500,7 +498,7 @@ describe("WebSocketSessionSink", () => {
     socket.bufferedAmount = 0;
     sink.onDrain();
     await expect(later).resolves.toBeUndefined();
-    expect(socket.sent).toEqual([firstText, encode({ v: ACKERDB_VERSION, t: "pong" })]);
+    expect(socket.sent).toEqual([firstText, encode({ t: "pong" })]);
     expect(sink.snapshot()).toMatchObject({ queuedBytes: 0, bufferedBytes: 0, blocked: false });
     expect(budget.snapshot().bytes).toBe(0);
   });
@@ -621,7 +619,7 @@ describe("WebSocketSessionSink", () => {
     });
     const budget = new OutboundBudget(limits.webSocket.maxBytes, 512);
     const socket = new FakeSocket();
-    const control = { v: ACKERDB_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const controlBytes = encoder.encode(encode(control)).byteLength;
     socket.plans.push({ result: -1, buffered: controlBytes });
     const sink = new WebSocketSessionSink({ socket, budget, limits });
@@ -670,8 +668,8 @@ describe("WebSocketSessionSink", () => {
     await Promise.all(held);
     expect(busySocket.closes[0]).toEqual({ code: 1013, reason: "overloaded" });
 
-    await expect(healthy.sendControl({ v: ACKERDB_VERSION, t: "pong" })).resolves.toBeUndefined();
-    expect(healthySocket.sent).toEqual([encode({ v: ACKERDB_VERSION, t: "pong" })]);
+    await expect(healthy.sendControl({ t: "pong" })).resolves.toBeUndefined();
+    expect(healthySocket.sent).toEqual([encode({ t: "pong" })]);
     expect(healthySocket.closes).toEqual([]);
     expect(budget.snapshot().bytes).toBe(0);
   });
@@ -1724,7 +1722,7 @@ describe("delivery observers", () => {
         );
       },
     });
-    const control = { v: ACKERDB_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const sends: Promise<void>[] = [];
 
     for (let index = 0; index < 1_000; index++) sends.push(sink.sendControl(control));
@@ -1762,7 +1760,7 @@ describe("delivery observers", () => {
 
   test("finalizes terminal ownership when clocks or observation scheduling fail", async () => {
     const limits = testLimits();
-    const control = { v: ACKERDB_VERSION, t: "pong" as const };
+    const control = { t: "pong" as const };
     const clocks: DeliveryClock[] = [
       {
         now: () => Number.NaN,
@@ -1855,8 +1853,8 @@ describe("delivery observers", () => {
       limits,
       clock,
     });
-    await sink.sendControl({ v: ACKERDB_VERSION, t: "pong" });
-    expect(socket.sent).toEqual([encode({ v: ACKERDB_VERSION, t: "pong" })]);
+    await sink.sendControl({ t: "pong" });
+    expect(socket.sent).toEqual([encode({ t: "pong" })]);
     expect(webSocketBudget.snapshot().bytes).toBe(0);
 
     const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
@@ -1894,7 +1892,6 @@ describe("delivery observers", () => {
     });
 
     await expect(sink.sendControl({
-      v: ACKERDB_VERSION,
       t: "pong",
       unsafe: Number.NaN,
     } as unknown as SessionControlMessage)).rejects.toThrow(
@@ -1959,10 +1956,10 @@ describe("delivery observers", () => {
     );
     const socket = new FakeSocket();
     const sink = new WebSocketSessionSink({ socket, budget: webSocketBudget, limits, observer });
-    await sink.sendControl({ v: ACKERDB_VERSION, t: "pong" });
+    await sink.sendControl({ t: "pong" });
     await flushObservations();
     await Promise.resolve();
-    expect(socket.sent).toEqual([encode({ v: ACKERDB_VERSION, t: "pong" })]);
+    expect(socket.sent).toEqual([encode({ t: "pong" })]);
     expect(socket.closes).toEqual([]);
     expect(webSocketBudget.snapshot().bytes).toBe(0);
 

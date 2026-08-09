@@ -254,7 +254,6 @@ describe("credential delegation lineage", () => {
     );
     try {
       const attempt = await runtime.procedure(aliceSession, request({
-        v: ACKERDB_VERSION,
         t: "p" as const,
         id: 1,
         ref: "api.tokens.revokeThenRollback",

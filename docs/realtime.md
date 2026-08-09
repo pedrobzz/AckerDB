@@ -6,10 +6,13 @@ Query subscriptions are authoritative state streams with resume-or-reset
 convergence. Event subscriptions are ordered, bounded, live-only signals and
 do not have durable replay.
 
-Every envelope carries `v`, the AckerDB version of the build that produced it,
-plus exact framework-owned fields. A decoder accepts exactly its own version; a
-frame from any other build is `version_mismatch`, refused as the mixed install
-it is. Missing, extra, out-of-range, or malformed framework fields are
+A connection's handshake carries `v`, the AckerDB version of the build that
+produced it, and a decoder accepts exactly its own; a frame from any other build
+is `version_mismatch`, refused as the mixed install it is. So do `err` and every
+frame of the transports that have no handshake — SSE and realtime signaling are
+HTTP, where the first frame is the greeting. Session frames carry no version,
+because the peer's build was settled by the handshake their connection opened
+with. Missing, extra, out-of-range, or malformed framework fields are
 `malformed`. There is no compatibility or negotiation layer between versions:
 all thirteen packages ship lockstep, so AckerDB X speaks to AckerDB X and
 mixing them is one command away from fixed.

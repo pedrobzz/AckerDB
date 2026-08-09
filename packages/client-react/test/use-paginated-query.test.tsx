@@ -106,7 +106,6 @@ async function deliverPage(
   page: QueryPage<string>,
 ): Promise<void> {
   await receive(harness, {
-    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition: {
@@ -338,7 +337,6 @@ describe("usePaginatedQuery", () => {
     await deliverPage(harness, first.id, 1n, { items: ["a", "b"], nextCursor: null });
     expect(container.textContent).toBe("fresh:a,b+end");
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: first.id,
       transition: {

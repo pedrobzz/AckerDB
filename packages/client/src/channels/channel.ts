@@ -9,7 +9,7 @@ import {
   type ChannelError,
   type ChannelRoom,
   type ChannelServerEvents,
-  type ClientMessage,
+  type ClientSessionMessage,
   type EventMap,
   type EventUnion,
 } from "@ackerdb/core";
@@ -61,7 +61,7 @@ export interface AckerDBChannel<
 
 export interface ChannelManagerPort {
   allocateId(): number;
-  encode(frame: ClientMessage): string;
+  encode(frame: ClientSessionMessage): string;
   retain(frame: string): number;
   release(bytes: number): void;
   ensureConnected(): void;
@@ -137,13 +137,12 @@ export class ChannelManager {
     if (group === undefined) {
       const id = this.port.allocateId();
       const message = {
-        v: ACKERDB_VERSION,
         t: "channel_join",
         id,
         ref: address,
         args,
         ...(hasRoom ? { room } : {}),
-      } satisfies ClientMessage;
+      } satisfies ClientSessionMessage;
       const frame = this.port.encode(message);
       const bytes = this.port.retain(frame);
       group = {
@@ -272,7 +271,6 @@ export class ChannelManager {
           return false;
         }
         const frame = manager.port.encode({
-          v: ACKERDB_VERSION,
           t: "channel_send",
           id: group.id,
           event,
@@ -338,7 +336,6 @@ export class ChannelManager {
     if (sendLeave && this.port.canSend()) {
       try {
         this.port.send(this.port.encode({
-          v: ACKERDB_VERSION,
           t: "channel_leave",
           id: group.id,
         }));

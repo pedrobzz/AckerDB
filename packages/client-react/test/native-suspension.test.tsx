@@ -68,7 +68,7 @@ function liveEvent(
     | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: unknown }
     | { readonly kind: "gap" | "reset"; readonly cursor: LiveEventCursor },
 ): ServerMessage {
-  return { v: ACKERDB_VERSION, t: "event", id, event };
+  return { t: "event", id, event };
 }
 
 function mutationOk(
@@ -77,7 +77,6 @@ function mutationOk(
   replay: "executed" | "replayed" = "executed",
 ): ServerMessage {
   return {
-    v: ACKERDB_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",

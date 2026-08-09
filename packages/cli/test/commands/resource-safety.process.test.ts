@@ -6,6 +6,8 @@ import {
   ACKERDB_VERSION,
   decode,
   encode,
+  parseConnectionError,
+  parseServerHandshake,
   parseServerMessage,
   type ServerMessage,
 } from "@ackerdb/core";
@@ -279,8 +281,13 @@ function rawWebSocket(url: string): Promise<WsClient> {
   const waiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors the client's own two phases: nothing but the versioned
+  // handshake pair decodes until a welcome has landed.
+  let open = false;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const text = decode(String(event.data));
+    const frame = open ? parseServerMessage(text) : parseServerHandshake(text);
+    if (frame.t === "welcome") open = true;
     const waiter = waiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -416,12 +423,17 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
         frameBytes = frameBytes.subarray(offset + length);
         const opcode = first & 0x0f;
         if (opcode === 1) {
-          const frame = parseServerMessage(decode(payload.toString("utf8")));
+          // Same two-phase read the client performs: the welcome decodes
+          // through the handshake parser, everything after it through the
+          // session parser.
+          const text = decode(payload.toString("utf8"));
+          const frame = subscriptionSent
+            ? parseServerMessage(text)
+            : parseServerHandshake(text);
           frames.push(frame);
           if (frame.t === "welcome" && !subscriptionSent) {
             subscriptionSent = true;
             socket.write(maskedWebSocketFrame({
-              v: ACKERDB_VERSION,
               t: "sub",
               id: 1,
               ref: "api.items.large",
@@ -1088,7 +1100,7 @@ processResourceTest(
 
   // Warm every measured path so the baseline excludes one-time module/JIT work.
   const warm = await connectWebSocket(wsUrl);
-  warm.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  warm.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
   expect(await withTimeout(warm.next(), "warm subscription reset")).toMatchObject({
     t: "transition",
     id: 1,
@@ -1114,8 +1126,8 @@ processResourceTest(
   const first = await connectWebSocket(wsUrl);
   const second = await connectWebSocket(wsUrl);
   const third = await connectWebSocket(wsUrl);
-  first.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
-  second.send({ v: ACKERDB_VERSION, t: "sub", id: 1, ref: "api.items.list", args: {} });
+  first.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
+  second.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
   for (const client of [first, second]) {
     expect(await withTimeout(client.next(), "subscription reset")).toMatchObject({
       t: "transition",
@@ -1124,7 +1136,7 @@ processResourceTest(
     });
   }
 
-  first.send({ v: ACKERDB_VERSION, t: "sub", id: 2, ref: "api.items.list", args: {} });
+  first.send({ t: "sub", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(first.next(), "subscription overload")).toMatchObject({
     t: "err",
     id: 2,
@@ -1137,7 +1149,6 @@ processResourceTest(
   });
 
   third.send({
-    v: ACKERDB_VERSION,
     t: "m",
     id: 1,
     ref: "api.items.add",
@@ -1175,7 +1186,7 @@ processResourceTest(
     headers: { connection: "close" },
   });
   expect(connectionExcess.status).toBe(503);
-  expect(parseServerMessage(decode(await connectionExcess.text()))).toMatchObject({
+  expect(parseConnectionError(decode(await connectionExcess.text()))).toMatchObject({
     t: "err",
     id: null,
     outcome: {
@@ -1195,8 +1206,8 @@ processResourceTest(
     },
   });
 
-  first.send({ v: ACKERDB_VERSION, t: "unsub", id: 1 });
-  second.send({ v: ACKERDB_VERSION, t: "unsub", id: 1 });
+  first.send({ t: "unsub", id: 1 });
+  second.send({ t: "unsub", id: 1 });
   const unreadOnlyStatus = await eventually(
     () => status(base),
     (value) => value.runtime.reactive.queryListeners === 1 &&
@@ -1214,7 +1225,6 @@ processResourceTest(
   while (maximum(unreadOutboundSamples) === 0 && pressureSequence < 512) {
     pressureSequence++;
     third.send({
-      v: ACKERDB_VERSION,
       t: "m",
       id: pressureSequence,
       ref: "api.items.add",
@@ -1254,7 +1264,7 @@ processResourceTest(
   }
   await processHarness.waitForCount("@@block-start", 4);
 
-  third.send({ v: ACKERDB_VERSION, t: "q", id: 2, ref: "api.items.list", args: {} });
+  third.send({ t: "q", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(third.next(), "operation overload")).toMatchObject({
     t: "err",
     id: 2,

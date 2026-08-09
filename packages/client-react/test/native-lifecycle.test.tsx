@@ -241,7 +241,6 @@ describe("native AppState lifecycle through the provider", () => {
     const subscription = first.framesOf("sub")[0]!;
     await act(async () => {
       first.receive({
-        v: ACKERDB_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -278,7 +277,6 @@ describe("native AppState lifecycle through the provider", () => {
     expect(second.framesOf("sub")[0]!.cursor).toEqual(cursor(1n));
     await act(async () => {
       second.receive({
-        v: ACKERDB_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "resume", from: cursor(1n), to: cursor(1n) },
@@ -321,7 +319,6 @@ describe("native AppState lifecycle through the provider", () => {
     const initial = first.framesOf("p")[0]!;
     await act(async () => {
       first.receive({
-        v: ACKERDB_VERSION,
         t: "ok",
         id: initial.id,
         kind: "procedure",
@@ -335,7 +332,7 @@ describe("native AppState lifecycle through the provider", () => {
     expect(interrupted).toBeDefined();
     await platform("background");
     expect(first.framesOf("cancel")).toEqual([
-      { v: ACKERDB_VERSION, t: "cancel", id: interrupted.id },
+      { t: "cancel", id: interrupted.id },
     ]);
     expect(container.textContent).toBe("suspended/stale:ONE:indeterminate");
 
@@ -354,7 +351,6 @@ describe("native AppState lifecycle through the provider", () => {
     });
     await act(async () => {
       replacement.receive({
-        v: ACKERDB_VERSION,
         t: "ok",
         id: recovered.id,
         kind: "procedure",

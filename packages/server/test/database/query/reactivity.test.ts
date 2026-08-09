@@ -206,7 +206,6 @@ class SessionHarness {
   mutation(id: number, ref: string, args: unknown) {
     const issuedAt = Date.now();
     const message: MutationMessage = {
-      v: ACKERDB_VERSION,
       t: "m",
       id,
       ref,
@@ -219,7 +218,6 @@ class SessionHarness {
 
   subscribe(id: number, ref: string, args: unknown): Promise<void> {
     return this.runtime.subscribe(this.context, request({
-      v: ACKERDB_VERSION,
       t: "sub",
       id,
       ref,

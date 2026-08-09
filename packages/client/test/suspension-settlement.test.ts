@@ -205,7 +205,6 @@ describe("non-resumable work started while suspended", () => {
     sockets[1]!.welcome(client.clientSessionId);
     const request = sockets[1]!.lastFrame("p");
     sockets[1]!.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -374,7 +373,6 @@ describe("suspension settles in-flight procedures", () => {
     });
     expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -406,14 +404,12 @@ describe("suspension settles in-flight procedures", () => {
     const replacementRequest = sockets[1]!.lastFrame("p");
 
     sockets[0]!.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: staleRequest.id,
       kind: "procedure",
       value: "stale",
     });
     sockets[1]!.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: replacementRequest.id,
       kind: "procedure",
@@ -684,7 +680,6 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
     sockets[0]!.onmessage?.({
       data: encode({
-        v: ACKERDB_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "reset", from: null, to: cursor(5n), value: ["one"] },

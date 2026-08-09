@@ -1,3 +1,4 @@
+import { parseReceivedFrame } from "ackerdb-test-support/client-transport";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -469,8 +470,11 @@ function rawWebSocket(url: string): Promise<WsClient> {
   const frameWaiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors a client's own two phases: the first frame a server
+  // sends is its handshake, and only a welcome opens the session parser.
+  let received = 0;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const frame = parseReceivedFrame(String(event.data), received++);
     const waiter = frameWaiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -746,7 +750,6 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
   try {
     const primary = await hello(app, primaryConnection, VALID_WS_TOKEN);
     primary.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 1,
       credential: { kind: "bearer", token: VALID_REFRESH_TOKEN },
@@ -758,7 +761,6 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
       principal: "user",
     });
     primary.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 2,
       credential: { kind: "anonymous" },
@@ -790,7 +792,6 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const failedRefresh = await hello(app, failedRefreshConnection, VALID_WS_TOKEN);
     failedRefresh.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 3,
       credential: { kind: "bearer", token: INVALID_WS_TOKEN },
@@ -805,14 +806,12 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const superseded = await hello(app, supersededConnection, VALID_WS_TOKEN);
     superseded.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 4,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },
     });
     await eventually(() => app.verifier.verified.filter((token) => token === HANGING_WS_TOKEN).length >= 1);
     superseded.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 5,
       credential: { kind: "anonymous" },
@@ -828,7 +827,6 @@ test("real WebSocket auth traces hello, refresh, sign-out, failures, supersessio
 
     const closed = await hello(app, closedConnection, VALID_WS_TOKEN);
     closed.send({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 6,
       credential: { kind: "bearer", token: HANGING_WS_TOKEN },

@@ -2,7 +2,10 @@ import {
   ACKERDB_VERSION,
   decode,
   encode,
+  parseClientHandshake,
   parseClientMessage,
+  parseServerHandshake,
+  parseServerMessage,
   type AuthenticationDescriptor,
   type ClientMessage,
   type ServerMessage,
@@ -120,6 +123,28 @@ export class ManualClock implements AckerDBClientClock {
  * with the real protocol parser before it is recorded, so a suite asserting on
  * frames can never pass on a frame the wire would have rejected.
  */
+/**
+ * A socket's first frame is its handshake and every later one is a session
+ * frame, so this reads what the client sent exactly as a server would. Test
+ * doubles that watch a client's outbound traffic share it, because a spy that
+ * read every frame with one parser would reject the hello it is spying on.
+ */
+export function parseSentFrame(text: string, index: number): ClientMessage {
+  const value = decode(text);
+  return index === 0 ? parseClientHandshake(value) : parseClientMessage(value);
+}
+
+/**
+ * The mirror of {@link parseSentFrame} for a server's outbound stream. A
+ * connection's first server frame is either the welcome that opens the session
+ * or the connection-level refusal that ends it, and both are the handshake
+ * surface's; everything after a welcome is a session frame.
+ */
+export function parseReceivedFrame(text: string, index: number): ServerMessage {
+  const value = decode(text);
+  return index === 0 ? parseServerHandshake(value) : parseServerMessage(value);
+}
+
 export class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
@@ -135,6 +160,7 @@ export class FakeSocket implements AckerDBWebSocket {
    * it has asked to close but has not been told the socket is gone.
    */
   deferClose = false;
+  #opened = false;
   #closed = false;
 
   get closed(): boolean {
@@ -143,7 +169,7 @@ export class FakeSocket implements AckerDBWebSocket {
 
   send(data: string): void {
     if (this.#closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
+    parseSentFrame(data, this.sent.length);
     this.sent.push(data);
   }
 
@@ -162,7 +188,15 @@ export class FakeSocket implements AckerDBWebSocket {
   }
 
   /** Completes the transport handshake without granting a session. */
+  /**
+   * Fires the open event once, as a real socket does. It is idempotent because
+   * a suite that opens a socket and then admits it would otherwise notify the
+   * client twice and make it greet twice on one connection — which a real
+   * socket can never cause, and which the handshake parser now refuses.
+   */
   open(): void {
+    if (this.#opened) return;
+    this.#opened = true;
     this.onopen?.();
   }
 
@@ -196,7 +230,7 @@ export class FakeSocket implements AckerDBWebSocket {
   }
 
   frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
+    return this.sent.map(parseSentFrame);
   }
 
   framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {

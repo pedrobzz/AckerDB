@@ -673,13 +673,11 @@ export class RuntimeSessionStore {
       this.publish(state(), authEpoch, message);
     return Object.freeze({
       sendTransition: (id: number, transition: SubscriptionTransition) => publish({
-        v: ACKERDB_VERSION,
         t: "transition",
         id,
         transition,
       } satisfies TransitionMessage),
       sendEvent: (id: number, event: LiveEvent) => publish({
-        v: ACKERDB_VERSION,
         t: "event",
         id,
         event,
@@ -707,7 +705,6 @@ export class RuntimeSessionStore {
         const current = state();
         try {
           await this.publish(current, current.context.authEpoch, {
-            v: ACKERDB_VERSION,
             t: "channel_event",
             id,
             event,
@@ -796,13 +793,11 @@ export class RuntimeSessionStore {
     });
     const message = result.ok
       ? {
-          v: ACKERDB_VERSION,
           t: "channel_ready",
           id,
           authEpoch: state.context.authEpoch,
         } satisfies ChannelReadyMessage
       : {
-          v: ACKERDB_VERSION,
           t: "channel_rejected",
           id,
           authEpoch: state.context.authEpoch,

@@ -1,5 +1,7 @@
 import {
   ACKERDB_VERSION,
+  parseClientHandshake,
+  parseClientMessage,
   type AuthenticationDescriptor,
   type AuthenticatedMessage,
   type ChannelJoinMessage,
@@ -8,6 +10,7 @@ import {
   type ClientAuthMessage,
   type ClientMessage,
   type Credential,
+  type HelloMessage,
   type MutationMessage,
   type ProcedureCancelMessage,
   type ProcedureMessage,
@@ -181,9 +184,20 @@ export class Session {
 
   /** Owns exact byte admission and Protocol-2 decoding for one raw WebSocket message. */
   handle(raw: SessionWireFrame): Promise<void> {
-    let frame: DecodedClientFrame;
+    // The phase picks the vocabulary. Before the hello is accepted this
+    // connection has no verified peer, so the only frame that decodes at all is
+    // the versioned handshake; afterwards the peer's build is settled and the
+    // session frames carry no version to re-check.
+    let frame: DecodedClientFrame<ClientMessage>;
     try {
-      frame = decodeClientFrame(raw, this.maxFrameBytes, this.maxRequestBytes);
+      frame = decodeClientFrame(
+        raw,
+        this.maxFrameBytes,
+        this.maxRequestBytes,
+        this.phase === "awaiting_hello"
+          ? (value: unknown): ClientMessage => parseClientHandshake(value)
+          : (value: unknown): ClientMessage => parseClientMessage(value),
+      );
     } catch (error) {
       return this.rejectFrame(error as AckerDBError);
     }
@@ -216,21 +230,16 @@ export class Session {
   private dispatchFrame(message: ClientMessage, bytes: number): void | Promise<void> {
     if (this.phase === "closed") return;
 
+    // "hello must be the first frame" and "hello only once" are the handshake
+    // and session parsers' own vocabularies now, so nothing restates them here.
     if (this.phase === "awaiting_hello") {
-      if (message.t !== "hello") {
-        void this.terminate(new AckerDBError("malformed", "hello must be the first frame"));
-        return;
-      }
+      const hello = message as HelloMessage;
       this.phase = "opening";
-      this.opening = this.open(message.clientSessionId, message.credential);
+      this.opening = this.open(hello.clientSessionId, hello.credential);
       return this.opening;
     }
     if (this.phase === "opening") {
       void this.terminate(new AckerDBError("malformed", "welcome must precede further client frames"));
-      return;
-    }
-    if (message.t === "hello") {
-      void this.terminate(new AckerDBError("malformed", "hello has already been received"));
       return;
     }
 
@@ -238,7 +247,7 @@ export class Session {
       case "auth":
         return this.acceptAuth(message);
       case "ping":
-        return this.sendControl({ v: ACKERDB_VERSION, t: "pong" });
+        return this.sendControl({ t: "pong" });
       case "cancel":
         return this.cancelProcedure(message);
       case "sub":
@@ -481,7 +490,6 @@ export class Session {
           if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
         }
         const ack: AuthenticatedMessage = {
-          v: ACKERDB_VERSION,
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,

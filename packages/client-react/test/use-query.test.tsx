@@ -94,7 +94,6 @@ async function bootToSuccess(harness: ProviderHarness, root: Root, container: HT
   await ready(harness);
   const id = harness.frames("sub")[0]!.id;
   await receive(harness, {
-    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -125,7 +124,6 @@ describe("useQuery state transitions", () => {
     expect(subs[0]!.args).toEqual({ list: 1n });
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -167,7 +165,6 @@ describe("useQuery state transitions", () => {
     expect(container.textContent).toBe("stale:one");
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "resume", from: cursor(1n), to: cursor(1n) },
@@ -194,7 +191,6 @@ describe("useQuery state transitions", () => {
     // The value did not change while disconnected but the commit version did:
     // the server replays its history as checkpoints, which is authoritative.
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "checkpoint", from: cursor(1n), to: cursor(2n) },
@@ -219,7 +215,6 @@ describe("useQuery state transitions", () => {
     expect(container.textContent).toBe("stale:one");
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(5n), value: ["one", "two"] },
@@ -255,7 +250,6 @@ describe("useQuery state transitions", () => {
     const id = await bootToSuccess(harness, root, container);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: {
@@ -279,7 +273,6 @@ describe("useQuery state transitions", () => {
     expect(failed.error.body.list).toBe(1n);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(3n), value: ["restored"] },
@@ -295,7 +288,6 @@ describe("useQuery state transitions", () => {
     const id = await bootToSuccess(harness, root, container);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: {
@@ -332,7 +324,6 @@ describe("useQuery state transitions", () => {
     await ready(harness);
     expect(harness.live().framesOf("sub")[0]!.cursor).toEqual(cursor(2n));
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "resume", from: cursor(2n), to: cursor(2n) },
@@ -368,7 +359,6 @@ describe("useQuery state transitions", () => {
     expect(subs[1]!.args).toEqual({ list: 1n });
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -419,7 +409,6 @@ describe("useQuery state transitions", () => {
     const id = await bootToSuccess(harness, root, container);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: {
@@ -433,7 +422,6 @@ describe("useQuery state transitions", () => {
 
     // A checkpoint cannot clear the revocation.
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "checkpoint", from: cursor(2n), to: cursor(3n) },
@@ -441,7 +429,6 @@ describe("useQuery state transitions", () => {
     expect(container.textContent).toBe("error:unauthorized:-");
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(4n), value: ["one", "two"] },
@@ -471,7 +458,6 @@ describe("useQuery state transitions", () => {
     expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(9n), value: ["two"] },
@@ -490,7 +476,6 @@ describe("useQuery state transitions", () => {
     // A duplicate of the applied transition confirms the held cursor; a fresh
     // snapshot has nothing to change, including its identity.
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -527,7 +512,6 @@ describe("useQuery state transitions", () => {
     expect(live.framesOf("unsub")).toHaveLength(0);
 
     await receive(harness, {
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -555,7 +539,6 @@ describe("useQuery state transitions", () => {
     first.welcome(SESSION);
     const id = first.framesOf("sub")[0]!.id;
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -595,7 +578,6 @@ describe("useQuery state transitions", () => {
     expect(resubscribed).toHaveLength(1);
     expect(resubscribed[0]!.args).toEqual({ list: 1n });
     second.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: resubscribed[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -620,7 +602,6 @@ describe("useQuery state transitions", () => {
     first.welcome(SESSION);
     const id = first.framesOf("sub")[0]!.id;
     first.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id,
       transition: {
@@ -734,7 +715,6 @@ describe("awaiting principal change", () => {
     const attempt = socket.framesOf("auth")[0]!;
     const accepted = alice();
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: accepted.authEpoch,
@@ -746,7 +726,6 @@ describe("awaiting principal change", () => {
     expect(subs).toHaveLength(2);
     expect(subs[1]!.args).toEqual({ list: 1n });
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["mine"] },
@@ -775,7 +754,6 @@ describe("awaiting principal change", () => {
     const attempt = socket.framesOf("auth")[0]!;
     const accepted = alice();
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: accepted.authEpoch,
@@ -854,7 +832,6 @@ describe("same-principal epoch advance", () => {
     const refreshed = client.refreshCredential({ kind: "bearer", token: "admin" });
     const attempt = socket.framesOf("auth")[0]!;
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -899,7 +876,6 @@ describe("rejection during an in-flight presentation", () => {
 
     const attempt = socket.framesOf("auth")[0]!;
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -913,7 +889,6 @@ describe("rejection during an in-flight presentation", () => {
     const subs = socket.framesOf("sub");
     expect(subs).toHaveLength(2);
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["revived"] },

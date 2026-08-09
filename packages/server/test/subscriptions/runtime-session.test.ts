@@ -548,7 +548,6 @@ async function reconnectTransitionEvidence(
   const write = async (args: unknown): Promise<void> => {
     const sequence = ++mutationSequence;
     await handle(writer, {
-      v: ACKERDB_VERSION,
       t: "m",
       id: sequence,
       ref: "api.messages.send",
@@ -716,7 +715,6 @@ describe("Session + Runtime integration", () => {
         credential: { kind: "anonymous" },
       });
       const message = {
-        v: ACKERDB_VERSION,
         t: "q" as const,
         id: 91,
         ref: "api.messages.list",
@@ -817,7 +815,6 @@ describe("Session + Runtime integration", () => {
       }]);
 
       await handle(session, {
-        v: ACKERDB_VERSION,
         t: "sub",
         id: 10,
         ref: "api.messages.list",
@@ -836,7 +833,6 @@ describe("Session + Runtime integration", () => {
 
       const mutationRequestId = uuidV7(NOW, 1);
       const mutation = {
-        v: ACKERDB_VERSION,
         t: "m" as const,
         id: 2,
         ref: "api.messages.send",
@@ -885,7 +881,6 @@ describe("Session + Runtime integration", () => {
       expect(engine.reader.query('SELECT COUNT(*) AS count FROM "messages"').get()).toEqual({ count: 1n });
 
       await handle(session, {
-        v: ACKERDB_VERSION,
         t: "sub",
         id: 20,
         ref: "api.messages.identity",
@@ -899,7 +894,6 @@ describe("Session + Runtime integration", () => {
       const rotationTraceStart = sink.trace.length;
       const authenticated = sink.waitForAuth(1);
       await handle(session, {
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: 1,
         credential: { kind: "bearer", token: "bob" },
@@ -1114,14 +1108,12 @@ describe("Session + Runtime integration", () => {
       });
       for (const session of [slow, target]) {
         await handle(session, {
-          v: ACKERDB_VERSION,
           t: "sub",
           id: 10,
           ref: "api.messages.list",
           args: { channelId: 1n },
         });
         await handle(session, {
-          v: ACKERDB_VERSION,
           t: "sub",
           id: 20,
           ref: "api.events.typing",
@@ -1133,7 +1125,6 @@ describe("Session + Runtime integration", () => {
         message.t === "transition" && message.id === 10 && message.transition.kind === "update"
       );
       const queryMutation = handle(caller, {
-        v: ACKERDB_VERSION,
         t: "m",
         id: 1,
         ref: "api.messages.send",
@@ -1145,7 +1136,6 @@ describe("Session + Runtime integration", () => {
 
       const firstAuth = targetSink.waitForAuth(1);
       await handle(target, {
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: 1,
         credential: { kind: "bearer", token: "bob" },
@@ -1162,7 +1152,6 @@ describe("Session + Runtime integration", () => {
         message.t === "event" && message.id === 20 && message.event.kind === "row"
       );
       const eventMutation = handle(caller, {
-        v: ACKERDB_VERSION,
         t: "m",
         id: 2,
         ref: "api.typing.emit",
@@ -1174,7 +1163,6 @@ describe("Session + Runtime integration", () => {
 
       const secondAuth = targetSink.waitForAuth(2);
       await handle(target, {
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: 2,
         credential: { kind: "bearer", token: "alice" },

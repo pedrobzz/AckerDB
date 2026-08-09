@@ -30,7 +30,7 @@ import {
   type AckerDBLiveEvent,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
-import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+import { FakeSocket, ManualClock, parseSentFrame } from "ackerdb-test-support/client-transport";
 import { createHarness, cursor, mustOk } from "./support/harness.ts";
 
 import {
@@ -75,7 +75,6 @@ function transition(
   from: SubscriptionCursor | null = null,
 ): ServerMessage {
   return {
-    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition:
@@ -95,7 +94,6 @@ function mutationOk(
   } = {},
 ): ServerMessage {
   return {
-    v: ACKERDB_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",
@@ -116,7 +114,7 @@ function liveEvent(
     | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: unknown }
     | { readonly kind: "gap" | "reset"; readonly cursor: LiveEventCursor },
 ): ServerMessage {
-  return { v: ACKERDB_VERSION, t: "event", id, event };
+  return { t: "event", id, event };
 }
 
 /** Total mutation frames carrying `mutationRequestId` across every socket. */
@@ -350,7 +348,6 @@ describe("mutation convergence across suspension", () => {
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
 
     second.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 2,
@@ -732,7 +729,6 @@ describe("event convergence across suspension", () => {
           }),
         );
         retired.receive({
-          v: ACKERDB_VERSION,
           t: "auth",
           attemptId: 99,
           authEpoch: 9,
@@ -959,8 +955,9 @@ function suspendableClient(
     createWebSocket: (target) => {
       const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
       const send = socket.send.bind(socket);
+      let sent = 0;
       socket.send = (data: string) => {
-        clientFrames.push(parseClientMessage(decode(data)));
+        clientFrames.push(parseSentFrame(data, sent++));
         send(data);
       };
       return socket;
@@ -1403,8 +1400,9 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         createWebSocket: (target) => {
           const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
           const send = socket.send.bind(socket);
+          let sent = 0;
           socket.send = (data: string) => {
-            clientFrames.push(parseClientMessage(decode(data)));
+            clientFrames.push(parseSentFrame(data, sent++));
             send(data);
           };
           return socket;

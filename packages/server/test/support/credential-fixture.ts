@@ -403,7 +403,6 @@ export function mutationMessage(
 ): MutationMessage {
   const timestamp = Date.now().toString(16).padStart(12, "0");
   return {
-    v: ACKERDB_VERSION,
     t: "m",
     id,
     ref,
@@ -414,9 +413,9 @@ export function mutationMessage(
 }
 
 export function queryMessage(id: number, ref = "api.tokens.listAgentTokens"): QueryMessage {
-  return { v: ACKERDB_VERSION, t: "q", id, ref, args: {} };
+  return { t: "q", id, ref, args: {} };
 }
 
 export function subscribeMessage(id: number, ref = "api.tokens.listAgentTokens"): SubscribeMessage {
-  return { v: ACKERDB_VERSION, t: "sub", id, ref, args: {} };
+  return { t: "sub", id, ref, args: {} };
 }

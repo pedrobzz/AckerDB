@@ -1,3 +1,4 @@
+import { parseReceivedFrame, parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -239,7 +240,7 @@ class ObservingWebSocket implements AckerDBWebSocket {
     this.socket.onerror = () => this.onerror?.();
     this.socket.onmessage = (event) => {
       if (typeof event.data === "string") {
-        const message = parseServerMessage(decode(event.data));
+        const message = parseReceivedFrame(event.data, this.receivedCount++);
         if (message.t === "ok" && message.kind === "mutation") {
           this.observed.receipts.push(message.receipt);
         }
@@ -248,8 +249,11 @@ class ObservingWebSocket implements AckerDBWebSocket {
     };
   }
 
+  private sentCount = 0;
+  private receivedCount = 0;
+
   send(data: string): void {
-    const message = parseClientMessage(decode(data));
+    const message = parseSentFrame(data, this.sentCount++);
     if (message.t === "m") this.observed.mutationRequestIds.push(message.mutationRequestId);
     this.socket.send(data);
   }

@@ -1,3 +1,4 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -228,7 +229,10 @@ class BeforeWriteController {
 
   readonly factory: AckerDBWebSocketFactory = (url) => {
     const socket = new WebSocket(url) as unknown as AckerDBWebSocket;
-    return new InterceptingSocket(socket, (text) => this.send(text));
+    // Each dial is its own stream, so the handshake index belongs to the
+    // socket rather than to the controller that outlives every reconnect.
+    let sent = 0;
+    return new InterceptingSocket(socket, (text) => this.send(text, sent++));
   };
 
   cutNext(predicate: (message: ClientMessage) => boolean): Promise<InterceptedWrite> {
@@ -242,8 +246,8 @@ class BeforeWriteController {
     if (this.failure !== undefined) throw this.failure;
   }
 
-  private send(text: string): boolean {
-    const message = parseClientMessage(decode(text));
+  private send(text: string, index: number): boolean {
+    const message = parseSentFrame(text, index);
     const cut = this.cut;
     if (cut === undefined || !cut.predicate(message)) return false;
     this.cut = undefined;

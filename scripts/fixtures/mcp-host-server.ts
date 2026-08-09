@@ -241,7 +241,6 @@ function request(args: unknown, ref: string) {
   const issuedAt = Date.now();
   const timestamp = issuedAt.toString(16).padStart(12, "0");
   const message: MutationMessage = {
-    v: ACKERDB_VERSION,
     t: "m",
     id,
     ref,

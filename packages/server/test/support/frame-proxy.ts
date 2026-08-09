@@ -1,3 +1,4 @@
+import { parseReceivedFrame, parseSentFrame } from "ackerdb-test-support/client-transport";
 import {
   decode,
   parseClientMessage,
@@ -126,6 +127,9 @@ interface Pair {
   serverBuffer: Buffer;
   clientHandshake: boolean;
   serverHandshake: boolean;
+  /** Frames each end has sent; the first of each is the AckerDB handshake. */
+  clientSent: number;
+  serverSent: number;
   clientClosed: boolean;
   serverClosed: boolean;
   faulted: boolean;
@@ -328,6 +332,8 @@ export class FrameProxy {
       serverBuffer: Buffer.alloc(0),
       clientHandshake: false,
       serverHandshake: false,
+      clientSent: 0,
+      serverSent: 0,
       clientClosed: false,
       serverClosed: false,
       faulted: false,
@@ -394,7 +400,7 @@ export class FrameProxy {
           pair.upstream.write(parsed.bytes);
           continue;
         }
-        const message = parseClientMessage(decode(parsed.payload.toString("utf8")));
+        const message = parseSentFrame(parsed.payload.toString("utf8"), pair.clientSent++);
         const frame: ProxiedClientFrame = {
           sequence: ++this.nextSequence,
           connectionId: pair.id,
@@ -476,7 +482,7 @@ export class FrameProxy {
           pair.downstream.write(parsed.bytes);
           continue;
         }
-        const message = parseServerMessage(decode(parsed.payload.toString("utf8")));
+        const message = parseReceivedFrame(parsed.payload.toString("utf8"), pair.serverSent++);
         const frame: ProxiedServerFrame = {
           sequence: ++this.nextSequence,
           connectionId: pair.id,

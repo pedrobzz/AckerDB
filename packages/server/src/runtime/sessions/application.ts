@@ -186,14 +186,12 @@ export class RuntimeSessionApplication {
       publication = this.options.store.prepare(
         result.ok
           ? {
-              v: ACKERDB_VERSION,
               t: "ok",
               id: message.id,
               kind: "query",
               value: result.data,
             } satisfies QueryOkMessage
           : {
-              v: ACKERDB_VERSION,
               t: "app_err",
               id: message.id,
               kind: "query",
@@ -248,14 +246,12 @@ export class RuntimeSessionApplication {
             publication = this.options.store.prepare(
               result.ok
                 ? {
-                    v: ACKERDB_VERSION,
                     t: "ok",
                     id: message.id,
                     kind: "procedure",
                     value: result.data,
                   } satisfies ProcedureOkMessage
                 : {
-                    v: ACKERDB_VERSION,
                     t: "app_err",
                     id: message.id,
                     kind: "procedure",
@@ -440,7 +436,6 @@ export class RuntimeSessionApplication {
     };
     return value.ok
       ? {
-          v: ACKERDB_VERSION,
           t: "ok",
           id: message.id,
           kind: "mutation",
@@ -448,7 +443,6 @@ export class RuntimeSessionApplication {
           receipt,
         }
       : {
-          v: ACKERDB_VERSION,
           t: "app_err",
           id: message.id,
           kind: "mutation",

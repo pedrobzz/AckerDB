@@ -87,7 +87,6 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("token-2"));
     harness.live().receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,
@@ -200,7 +199,6 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("fresh"));
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,
@@ -240,7 +238,6 @@ describe("credential source", () => {
     expect(auth).toHaveLength(1);
     expect(auth[0]!.credential).toEqual(bearer("token-2"));
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: auth[0]!.attemptId,
       authEpoch: 1,

@@ -193,7 +193,7 @@ test("a subscription recomputes cleanly after another principal's MCP tool commi
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: ACKERDB_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
+    request({ t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -225,7 +225,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: ACKERDB_VERSION, t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
+    request({ t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -260,7 +260,7 @@ test("an event subscription delivers cleanly after another principal's MCP tool 
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: ACKERDB_VERSION, t: "sub", id: 9, ref: "api.events.signals", args: {} }),
+    request({ t: "sub", id: 9, ref: "api.events.signals", args: {} }),
   );
   await until(() => publications.length >= 1, "event reset");
 

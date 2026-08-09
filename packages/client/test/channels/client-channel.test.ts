@@ -71,7 +71,6 @@ describe("AckerDBClient channels", () => {
     const joins = socket.framesOf("channel_join");
     expect(joins).toHaveLength(1);
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "channel_ready",
       id: joins[0]!.id,
       authEpoch: 0,
@@ -81,7 +80,6 @@ describe("AckerDBClient channels", () => {
     expect(socket.framesOf("channel_send")).toHaveLength(1);
 
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "channel_event",
       id: joins[0]!.id,
       event: "message",
@@ -117,7 +115,6 @@ describe("AckerDBClient channels", () => {
     });
     const join = socket.framesOf("channel_join")[0]!;
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "channel_rejected",
       id: join.id,
       authEpoch: 0,

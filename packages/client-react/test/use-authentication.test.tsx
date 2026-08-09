@@ -184,7 +184,6 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 5,
@@ -246,7 +245,6 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -316,7 +314,6 @@ describe("useAuthentication", () => {
     expect(attempt.credential).toEqual({ kind: "anonymous" });
     await act(async () => {
       onlyLive(harness).receive({
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -500,7 +497,6 @@ describe("credential-source provider", () => {
     const attempt = lastAuthFrame(socket);
     expect(attempt.credential).toEqual({ kind: "bearer", token: `token-${pulls}` });
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -522,7 +518,6 @@ describe("credential-source provider", () => {
     const outFrame = lastAuthFrame(onlyLive(harness));
     expect(outFrame.credential).toEqual({ kind: "anonymous" });
     onlyLive(harness).receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: outFrame.attemptId,
       authEpoch: 2,
@@ -563,7 +558,6 @@ describe("honest sign-out", () => {
       const attempt = lastAuthFrame(socket);
       expect(attempt.credential).toEqual({ kind: "bearer", token: "still-here" });
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 1,
@@ -585,7 +579,6 @@ describe("honest sign-out", () => {
       const attempt = lastAuthFrame(socket);
       expect(attempt.credential).toEqual({ kind: "anonymous" });
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 2,

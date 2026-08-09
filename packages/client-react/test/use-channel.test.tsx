@@ -93,7 +93,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "channel_ready",
         id,
         authEpoch: 0,
@@ -104,7 +103,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "channel_event",
         id,
         event: "message",
@@ -123,7 +121,6 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "channel_event",
         id,
         event: "message",
@@ -150,7 +147,7 @@ describe("useChannel", () => {
     await render(root, app(testHarness.config(), []));
     await act(async () => {});
     expect(socket.framesOf("channel_leave")).toEqual([
-      { v: ACKERDB_VERSION, t: "channel_leave", id },
+      { t: "channel_leave", id },
     ]);
     await act(async () => root.unmount());
   });
@@ -176,13 +173,11 @@ describe("useChannel", () => {
 
     await act(async () => {
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "channel_ready",
         id: join.id,
         authEpoch: 0,
       });
       socket.receive({
-        v: ACKERDB_VERSION,
         t: "channel_event",
         id: join.id,
         event: "message",

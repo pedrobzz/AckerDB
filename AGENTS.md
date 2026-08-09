@@ -183,8 +183,8 @@ and only needs to be newer than `main`.
 
 **The AckerDB version is the compatibility contract, and there is no separate
 number on the wire.** Packages ship lockstep with `workspace:X.Y.Z` precisely
-because version X is contracted to speak to version X, so every frame declares
-the version of the build that produced it and every decoder accepts exactly its
+because version X is contracted to speak to version X, so a connection's
+handshake declares the build that opened it and the decoder accepts exactly its
 own — `ACKERDB_VERSION` in `@ackerdb/core`, read from that package's manifest so
 one fact answers on a server and inside a bundled browser client alike. Running
 mixed versions is the user's error to make and the framework's job to name; the
@@ -196,16 +196,34 @@ field to avoid reshaping one, do not preserve an old frame shape, and do not
 reintroduce a protocol number to describe a compatibility this contract does
 not offer.
 
-The rule covers every **framework-owned envelope**, and all of them carry the
-version rather than only the handshake pair, because several reach a decoder
-through a door with no handshake to put it on: SSE frames and realtime
-signaling are HTTP, where the first frame is the greeting. A framework envelope
-that reaches a decoder without a version on it is the defect, not the version
-that would have refused it. The exposed HTTP surface is the deliberate
-exception and not a gap: its request and response bodies are the application's
-own arguments and results, published in its OpenAPI document for callers who
-are not AckerDB builds at all, so it has no framework envelope to version and
-must not grow one. Its compatibility contract belongs to the application.
+**A frame carries the version exactly when it can be decoded on a connection
+that has not completed a handshake.** That is `hello`, `welcome`, `err`, and
+every frame of the transports that have no handshake at all — SSE and realtime
+signaling are HTTP, where the first frame is the greeting. Everything after a
+handshake carries none: the peer's build was established once and no connection
+changes builds under itself, so repeating it spends the hottest field in the
+system for a fact already known.
+
+`err` is a member of that set and not an exception to it. A client admits a
+connection-level `err` before its `welcome` on purpose, because that is how a
+server delivers a refusal it will not open a session for — and a
+version-refusing server's refusal *is* an `err`. Leaving it unversioned would
+make the one frame that explains a mixed install the one frame nobody could
+check.
+
+The rule is enforced by the parse surfaces, not by this document. Each
+direction has a handshake parser that accepts only what is admissible before a
+session and reads the version on every one of them, and a session parser for
+everything after; a frame's base interface decides whether it even has a `v` to
+set. Admitting a new frame before the handshake therefore means adding a case
+to a parser that checks the version, and forgetting means the frame is refused
+rather than silently trusted.
+
+The exposed HTTP surface is the deliberate exception and not a gap: its request
+and response bodies are the application's own arguments and results, published
+in its OpenAPI document for callers who are not AckerDB builds at all, so it has
+no framework envelope to version and must not grow one. Its compatibility
+contract belongs to the application.
 
 The `Benchmark` check gates every pull request that touches a measured input,
 on the way into `canary` and again on the `canary` → `main` promotion, where it

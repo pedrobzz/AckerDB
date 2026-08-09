@@ -51,7 +51,6 @@ function acceptSession(
   url: string,
 ): void {
   socket.receive({
-    v: ACKERDB_VERSION,
     t: "ok",
     id: mutation.id,
     kind: "mutation",

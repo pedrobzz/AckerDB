@@ -45,7 +45,6 @@ function transition(
   from: SubscriptionCursor | null = null,
 ): ServerMessage {
   return {
-    v: ACKERDB_VERSION,
     t: "transition",
     id,
     transition:
@@ -361,7 +360,6 @@ describe("AckerDBClient activation", () => {
       outcome: { code: "unauthenticated", retryable: false, message: "stale" },
     });
     first.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 99,
       authEpoch: 9,
@@ -579,7 +577,6 @@ describe("AckerDBClient activation", () => {
       ...USER_AUTHENTICATION,
     });
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "auth",
       attemptId: 2,
       authEpoch: 7,
@@ -710,7 +707,6 @@ describe("AckerDBClient activation", () => {
     socket.welcome(client.clientSessionId);
     const frame = socket.lastFrame("m");
     socket.receive({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: frame.id,
       kind: "mutation",

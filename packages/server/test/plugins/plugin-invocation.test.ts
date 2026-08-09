@@ -86,7 +86,6 @@ async function callMutation(
   const id = harness.nextId++;
   const issuedAt = Date.now();
   const message: MutationMessage = {
-    v: ACKERDB_VERSION,
     t: "m",
     id,
     ref,
@@ -103,7 +102,6 @@ async function callQuery(
   args: unknown,
 ): Promise<unknown> {
   const message: QueryMessage = {
-    v: ACKERDB_VERSION,
     t: "q",
     id: harness.nextId++,
     ref,

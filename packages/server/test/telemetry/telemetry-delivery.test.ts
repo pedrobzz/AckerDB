@@ -258,7 +258,6 @@ test("Runtime prepares one canonical query frame for WebSocket delivery", async 
   try {
     await runtime.openSession(context);
     const result = await runtime.query(context, request({
-      v: ACKERDB_VERSION,
       t: "q",
       id: 1,
       ref: "api.probe.once",
@@ -268,7 +267,6 @@ test("Runtime prepares one canonical query frame for WebSocket delivery", async 
     expect(result).toBe(value);
     expect(reads).toBe(1);
     expect(socket.frames).toEqual([encode({
-      v: ACKERDB_VERSION,
       t: "ok",
       id: 1,
       kind: "query",
@@ -338,7 +336,6 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
 
     socket.bufferNext();
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "q",
       id: 41,
       ref: "api.notes.list",
@@ -352,7 +349,6 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     const mutationId = uuidV7(issuedAt, 42);
     socket.bufferNext();
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "m",
       id: 42,
       ref: "api.notes.add",
@@ -366,7 +362,6 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
 
     socket.bufferNext();
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "q",
       id: 43,
       ref: "api.notes.missing",
@@ -377,7 +372,6 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     sink.onDrain();
 
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "q",
       id: 44,
       ref: "api.notes.large",
@@ -385,7 +379,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     });
     await settle();
 
-    await handle(session, { v: ACKERDB_VERSION, t: "ping" });
+    await handle(session, { t: "ping" });
     await settle();
     await runtime.telemetry.flush();
 
@@ -515,7 +509,6 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
 
     socket.bufferNext();
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "q",
       id: 51,
       ref: "api.notes.list",
@@ -542,7 +535,6 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
 
     socket.bufferNext();
     await handle(session, {
-      v: ACKERDB_VERSION,
       t: "q",
       id: 52,
       ref: "api.notes.list",
