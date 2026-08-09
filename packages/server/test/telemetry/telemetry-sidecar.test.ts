@@ -10,6 +10,7 @@ import {
   type TelemetrySidecarWriter,
 } from "@ackerdb/server";
 import { admittedShare, TelemetryAdmission } from "../../src/telemetry/storage/admission.ts";
+import { Sketch } from "../../src/telemetry/aggregation/sketch.ts";
 
 const directories = new Set<string>();
 
@@ -217,5 +218,52 @@ describe("telemetry admission", () => {
     expect(admission.admit("aggregate")).toBe("read_only");
     expect(admission.admit("log")).toBe("read_only");
     expect(admission.snapshot().shedByReason.read_only).toBe(2);
+  });
+});
+
+describe("aggregate coverage across a crash", () => {
+  test("a minute a dead generation left open is reported incomplete, not exact", async () => {
+    const path = sidecarPath();
+    const minute = Math.floor(Date.now() / 60_000) * 60_000;
+    const row = {
+      startMs: minute,
+      operation: "procedure" as const,
+      functionAddress: "api.checkout.submit",
+      overflow: false,
+      count: 40,
+      errorCount: 1,
+      totalMs: 400,
+      minMs: 1,
+      maxMs: 40,
+      mappingScale: 6,
+      lowConfidenceQuantiles: [],
+      sketchOk: new Sketch().encode(),
+      sketchFailed: new Sketch().encode(),
+    };
+
+    // A generation that dies between updating a bucket and closing its minute:
+    // the rows are written, the coverage row is announced and never closed.
+    const dying = new TelemetryInlineWriter({
+      path,
+      generation: "generation-that-dies",
+      queue: { commitBatch: 1 },
+    });
+    dying.accept("aggregate", { startMs: minute, closed: false, rows: [row] });
+    await dying.exports.batch("primer", 1);
+    // No seal: the process is gone, so nothing closes the minute.
+    dying.stores.store.close();
+
+    const next = new TelemetryInlineWriter({ path, generation: "next-generation" });
+    // The window is reported incomplete rather than presented as a whole
+    // minute — a smaller count that reads as exact is the one outcome the
+    // coverage table exists to prevent.
+    expect(next.stores.aggregate.incompleteMinutes()).toEqual([minute]);
+
+    // And the next generation closing its own minute does not retroactively
+    // claim the dead one.
+    next.accept("aggregate", { startMs: minute + 60_000, closed: true, rows: [] });
+    await next.exports.batch("primer", 1);
+    expect(next.stores.aggregate.incompleteMinutes()).toEqual([minute]);
+    await next.seal(undefined, 0);
   });
 });
