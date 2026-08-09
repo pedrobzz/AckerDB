@@ -279,11 +279,20 @@ async function invoke(
       return new Response(body, { status });
     },
   };
-  const carried = options.lease?.invalidationScope === undefined
+  // The listener owns the origin's publisher and releases it once the response
+  // has left; standing in for it here is what makes the deferral observable.
+  const invalidations = options.lease === undefined
+    ? undefined
+    : harness.runtime.authInvalidation.publisher(principal, options.lease.invalidationScope);
+  const carried = invalidations === undefined
     ? request
-    : carryHttpRequestProvenance(request, 1, undefined, options.lease.invalidationScope);
-  const response = await harness.runtime.runProcedure(carried);
-  return { status: response.status, body: JSON.parse(await response.text()) };
+    : carryHttpRequestProvenance(request, 1, undefined, invalidations);
+  try {
+    const response = await harness.runtime.runProcedure(carried);
+    return { status: response.status, body: JSON.parse(await response.text()) };
+  } finally {
+    invalidations?.finish();
+  }
 }
 
 async function link(harness: Harness, principal: UserPrincipal, token: string): Promise<void> {

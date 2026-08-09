@@ -105,6 +105,11 @@ grant covers the framework's reserved vocabulary. Nothing else opens the Admin
 API: the most generous application grant, a bare `*`, deliberately excludes
 every `_admin:` scope. See [Scopes and identity credentials](scopes.md).
 
+A server whose vault holds none issues one at startup and prints the plaintext
+once; that is the value to paste into the connect screen. `acker credential
+reset` is the recourse if it was never copied. See
+[Boot-mint](admin-api.md#boot-mint).
+
 The credential is held in `sessionStorage`, in the tab you typed it into. A
 reload does not ask again; closing the tab forgets it. It is never written to
 `localStorage`, to a cookie, or into a URL.
@@ -122,7 +127,7 @@ The connect screen has six honest states:
 | application unreachable | the application is not answering Studio | start it, or check the target |
 | sign in | the application answers and Studio holds no credential | sign in |
 | credential refused | the credential was rejected, or holds no admin grant | use another credential |
-| signed in, no session | the credential opens the Admin API and the client still cannot hold a session | report it; another credential will not help |
+| signed in, no session | the credential opens the Admin API and Studio still cannot hold a session — a protocol the two do not share is the cause this reaches in practice | install the Studio matching the application's AckerDB |
 | connected | signed in, showing what `admin.system.info` named | proceed |
 
 Reachability is read before anything about credentials, because a stopped
@@ -142,6 +147,13 @@ the probe alone would report connected while the session is still being
 established — or never is. When the two disagree the screen names which half
 failed, because "your credential was refused" and "Studio cannot hold a session
 with a credential that plainly works" send you to entirely different places.
+
+The second of those has one cause in practice, and the screen names it outright:
+the Admin API answers over plain HTTP, which negotiates no protocol version,
+while the socket handshake refuses one it cannot speak. `admin.system.info`
+already reported the application's protocol, so a Studio built against a
+different one says which package to install rather than passing along whatever
+the transport called the failure.
 
 ## What the application sees
 

@@ -8,11 +8,28 @@ import {
   type BenchAdapter,
   type BenchConnection,
   type BenchmarkConfig,
+  type ConnectionLevelResult,
   type DriverResult,
   type SearchRow,
 } from "./benchmark.ts";
 import { collectBenchmarkObservations } from "./result-observations.ts";
-import { runConnectionScale, runSubscriptionCase } from "./workload.ts";
+import { runConnectionLevel, runSubscriptionCase } from "./workload.ts";
+
+/** The ladder the driver walks, one independent level at a time. */
+async function runConnectionLadder(
+  adapter: BenchAdapter,
+  config: BenchmarkConfig,
+  nextNonce: () => number,
+): Promise<{ measurements: ConnectionLevelResult[]; failures: DriverResult["failures"] }> {
+  const measurements: ConnectionLevelResult[] = [];
+  const failures: DriverResult["failures"] = [];
+  for (const target of config.connections.levels) {
+    const outcome = await runConnectionLevel(adapter, config, target, nextNonce, { measureIdle: false });
+    if (outcome.measurement !== undefined) measurements.push(outcome.measurement);
+    failures.push(...outcome.failures);
+  }
+  return { measurements, failures };
+}
 
 function config(): BenchmarkConfig {
   return {
@@ -75,11 +92,6 @@ function subscriptionWorkload(
   return {
     system: "ackerdb",
     config,
-    snapshots: {
-      seededIdle: "seeded",
-      seededIdlePhaseId: "seeded-idle",
-      connectionBaselineIdlePhaseId: "connection-baseline-idle",
-    },
     operations: [],
     connections: [],
     subscriptions: [subscription],
@@ -141,16 +153,11 @@ describe("measured workload failures", () => {
     };
     let nonce = 0;
 
-    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => nonce++);
+    const outcome = await runConnectionLadder(adapter, benchmarkConfig, () => nonce++);
     const connections = outcome.measurements;
     const workload: DriverResult = {
       system: "ackerdb",
       config: benchmarkConfig,
-      snapshots: {
-        seededIdle: "seeded",
-        seededIdlePhaseId: "seeded-idle",
-        connectionBaselineIdlePhaseId: "connection-baseline-idle",
-      },
       operations: [],
       connections,
       subscriptions: [],
@@ -187,7 +194,7 @@ describe("measured workload failures", () => {
       },
     };
 
-    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => 1);
+    const outcome = await runConnectionLadder(adapter, benchmarkConfig, () => 1);
     await Bun.sleep(15);
 
     expect(outcome.measurements).toEqual([]);
@@ -210,16 +217,16 @@ describe("measured workload failures", () => {
       connect: async () => connection({ close: () => new Promise<void>(() => {}) }),
     };
 
-    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => 1);
+    const outcome = await runConnectionLadder(adapter, benchmarkConfig, () => 1);
 
     expect(outcome.measurements).toEqual([]);
     expect(outcome.failures[0]).toMatchObject({
       kind: "connection",
       targetConnections: 1,
-      stage: "setup",
+      stage: "cleanup",
       terminal: true,
     });
-    expect(outcome.failures[0]!.message).toContain("sample connection release timed out");
+    expect(outcome.failures[0]!.message).toContain("connections:1 release timed out");
   });
 
   test("cleans a failed readiness batch and continues with the next subscription pattern", async () => {
@@ -258,8 +265,8 @@ describe("measured workload failures", () => {
       }),
     };
     let nonce = 1;
-    const failed = await runSubscriptionCase(adapter, "shared", benchmarkConfig, () => nonce++);
-    const measured = await runSubscriptionCase(adapter, "partitioned", benchmarkConfig, () => nonce++);
+    const failed = await runSubscriptionCase(adapter, "shared", benchmarkConfig, () => nonce++, { measureIdle: false });
+    const measured = await runSubscriptionCase(adapter, "partitioned", benchmarkConfig, () => nonce++, { measureIdle: false });
 
     expect(failed).toMatchObject({
       failures: [{
@@ -286,6 +293,7 @@ describe("measured workload failures", () => {
       "shared",
       benchmarkConfig,
       () => nonce++,
+      { measureIdle: false },
     );
     const subscription = outcome.measurement!;
     const observations = collectBenchmarkObservations([{
@@ -323,6 +331,7 @@ describe("measured workload failures", () => {
       "partitioned",
       benchmarkConfig,
       () => nonce++,
+      { measureIdle: false },
     );
     const subscription = outcome.measurement!;
     const observations = collectBenchmarkObservations([{
@@ -360,6 +369,7 @@ describe("measured workload failures", () => {
       "shared",
       benchmarkConfig,
       () => nonce++,
+      { measureIdle: false },
     );
     const subscription = outcome.measurement!;
     const observations = collectBenchmarkObservations([{

@@ -636,7 +636,7 @@ function SessionButton({ token }: { token: string }) {
 | --- | --- |
 | `authenticating` | Initial presentation or refresh is in flight; carries the `credential` kind (`"source"` before a credential-source client's first pull). |
 | `unauthenticated` | The server confirmed an anonymous `authentication`. |
-| `authenticated` | The server confirmed a user or workload `authentication`; bearer descriptors carry `credentialTtlMs`, the server's credential TTL disclosure. |
+| `authenticated` | The server confirmed a user or workload `authentication`; bearer descriptors carry `credentialTtlMs`, the server's credential TTL disclosure, or `null` for a credential that does not expire. |
 | `refresh-required` | The credential was rejected or timed out; carries `error` and blocks reconnect until `refresh(...)`. |
 | `failed` | The client failed permanently; carries `error`. |
 | `closed` | The provider closed the client. |

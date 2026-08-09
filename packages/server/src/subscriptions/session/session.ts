@@ -68,7 +68,14 @@ function authenticationDescriptor(
 ): AuthenticationDescriptor {
   if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
   const provenance = Object.freeze({ issuer: principal.issuer, subject: principal.subject });
-  const credentialTtlMs = Math.max(0, Math.floor(principal.expiresAt - nowMs));
+  // An identity credential never expires — it is revoked instead — and the
+  // relative duration of "never" is not a number. Disclosing `null` is what
+  // lets one authenticate over this transport at all: any finite stand-in
+  // would be a lie the client schedules a pointless refresh against, and the
+  // honest arithmetic produces an Infinity the wire contract refuses.
+  const credentialTtlMs = Number.isFinite(principal.expiresAt)
+    ? Math.max(0, Math.floor(principal.expiresAt - nowMs))
+    : null;
   return principal.kind === "user"
     ? Object.freeze({ principal: "user", identity: principal.identity, provenance, credentialTtlMs })
     : Object.freeze({ principal: "workload", provenance, credentialTtlMs });

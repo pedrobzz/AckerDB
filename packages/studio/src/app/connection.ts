@@ -25,7 +25,7 @@
  * operator hunting for a token that is already correct.
  */
 import type { AckerDBAuthenticationState } from "@ackerdb/client-react";
-import type { AdminSystemInfo } from "@ackerdb/core";
+import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
 import type { StudioProbe } from "./probe.ts";
 
 export type StudioConnection =
@@ -37,7 +37,13 @@ export type StudioConnection =
   | { readonly state: "unconfigured" }
   /** The credential Studio holds was refused. Try another one. */
   | { readonly state: "refused"; readonly detail: string }
-  /** The credential opens the Admin API and the client still cannot hold a session. */
+  /**
+   * The credential opens the Admin API and the client still cannot hold a
+   * session. A protocol Studio and the application do not share is the cause
+   * this reaches in practice — the Admin API answers over plain HTTP, which
+   * negotiates no version, while the socket handshake refuses one it cannot
+   * speak.
+   */
   | { readonly state: "session-failed"; readonly detail: string }
   /** Signed in, with the application the credential opened. */
   | { readonly state: "authenticated"; readonly application: AdminSystemInfo };
@@ -74,7 +80,10 @@ export function studioConnection(input: StudioConnectionInput): StudioConnection
       return { state: "connecting" };
     case "refresh-required":
     case "failed":
-      return { state: "session-failed", detail: input.authentication.error.message };
+      return {
+        state: "session-failed",
+        detail: sessionDetail(input.probe.application, input.authentication.error.message),
+      };
     case "unauthenticated":
       return {
         state: "session-failed",
@@ -83,4 +92,19 @@ export function studioConnection(input: StudioConnectionInput): StudioConnection
     case "closed":
       return { state: "session-failed", detail: "the Studio client was closed" };
   }
+}
+
+/**
+ * Why a credential that opens the Admin API cannot hold a session.
+ *
+ * The probe already reported the application's protocol, so a mismatch can be
+ * named outright instead of handed over as whatever the transport called it.
+ * That is the difference between an operator upgrading one package and an
+ * operator reading "internal error" and filing a bug.
+ */
+function sessionDetail(application: AdminSystemInfo, reported: string): string {
+  return application.protocol === PROTOCOL_VERSION
+    ? reported
+    : `this application speaks protocol ${application.protocol} and Studio speaks ` +
+      `${PROTOCOL_VERSION} — install the Studio matching AckerDB ${application.ackerdb}`;
 }

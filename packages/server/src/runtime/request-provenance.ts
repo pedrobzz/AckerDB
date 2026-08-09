@@ -1,5 +1,5 @@
 import type { ExternalHttpTrace } from "../telemetry/external-trace.ts";
-import type { AuthInvalidationScope } from "../auth/invalidation.ts";
+import type { AuthInvalidationPublisher } from "../auth/invalidation.ts";
 
 const HTTP_REQUEST_PROVENANCE: unique symbol = Symbol("ackerdb.httpRequestProvenance");
 const trustedProvenance = new WeakSet<object>();
@@ -12,19 +12,25 @@ interface HttpRequestProvenanceCarrier {
 export interface HttpRequestProvenance {
   readonly bytes: number;
   readonly trace?: ExternalHttpTrace;
-  readonly invalidationScope?: AuthInvalidationScope;
+  /**
+   * The caller's own auth-invalidation channel. It is the publisher and not the
+   * bare scope because releasing the deferred delivery belongs to whoever owns
+   * the response handoff, and for an HTTP request that is the listener rather
+   * than anything inside the Runtime.
+   */
+  readonly invalidations?: AuthInvalidationPublisher;
 }
 
 export function carryHttpRequestProvenance<T extends object>(
   value: T,
   bytes: number,
   trace: ExternalHttpTrace | undefined,
-  invalidationScope?: AuthInvalidationScope,
+  invalidations?: AuthInvalidationPublisher,
 ): T {
   const provenance = Object.freeze({
     bytes,
     ...(trace === undefined ? {} : { trace }),
-    ...(invalidationScope === undefined ? {} : { invalidationScope }),
+    ...(invalidations === undefined ? {} : { invalidations }),
   });
   trustedProvenance.add(provenance);
   Object.assign(value, { [HTTP_REQUEST_PROVENANCE]: provenance });

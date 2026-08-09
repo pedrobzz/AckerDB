@@ -22,12 +22,16 @@ export { ProtocolError } from "./protocol-validation.ts";
  *
  * The version covers the grammar of every framework-owned field, `ref`
  * included: 6 is where a function address began with its API path, so a
- * version-5 `ref` naming one function could name a different one here. A
- * decoder that refuses the version is what turns that skew into one refusal
- * instead of a call that lands somewhere else.
+ * version-5 `ref` naming one function could name a different one here. 7 is
+ * where the credential TTL disclosure gained `null`, for the identity
+ * credentials that do not expire; a version-6 decoder refuses that value as
+ * malformed, so the skew has to be one refusal at the handshake rather than a
+ * session that dies on its own welcome frame. A decoder that refuses the
+ * version is what turns skew into one refusal instead of a call that lands
+ * somewhere else.
  */
 
-export const PROTOCOL_VERSION = 6 as const;
+export const PROTOCOL_VERSION = 7 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -102,14 +106,20 @@ export type AuthenticationDescriptor =
       readonly principal: "user";
       readonly identity: Identity;
       readonly provenance: CredentialProvenance;
-      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs: number;
+      /**
+       * Credential TTL disclosure: remaining validity of the accepted
+       * credential as a relative duration, or `null` when it does not expire.
+       * An identity credential is revoked rather than aged out, so `null` is a
+       * real answer and not a missing one — the field stays required so a
+       * client can never mistake silence for it.
+       */
+      readonly credentialTtlMs: number | null;
     }
   | {
       readonly principal: "workload";
       readonly provenance: CredentialProvenance;
-      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs: number;
+      /** As above: a relative duration, or `null` for a credential that does not expire. */
+      readonly credentialTtlMs: number | null;
     };
 
 export interface Outcome {
@@ -472,7 +482,10 @@ function parseCredentialProvenance(value: unknown): CredentialProvenance {
 }
 
 // Every accepted bearer presentation discloses its TTL; omission is malformed.
+// `null` is the disclosure for a credential that does not expire, which is what
+// an identity credential is: it ends by revocation, never by the clock.
 function parseCredentialTtl(result: ObjectValue): void {
+  if (result.credentialTtlMs === null) return;
   nonNegativeInteger(result.credentialTtlMs, "credentialTtlMs");
 }
 

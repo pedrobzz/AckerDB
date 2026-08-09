@@ -18,11 +18,18 @@ export {
   type NormalizedAdminApplication,
   type NormalizedAdminOptions,
 } from "./admin/options.ts";
+export {
+  ADMIN_CREDENTIAL_NAME,
+  ensureAdminCredential,
+  type AdminCredentialBoot,
+} from "./admin/credentials.ts";
 export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
 export { ACKERDB_VERSION } from "./shared/version.ts";
 export {
+  ADMINISTRATIVE_GRANT,
   expandScopeGrant,
   FRAMEWORK_SCOPES,
+  isAdministrativeGrant,
   isScopeGrant,
   isScopePattern,
   knownScopeVocabulary,
@@ -47,6 +54,10 @@ export {
   type CredentialUpdateInput,
   type SystemCredentialOperations,
 } from "./auth/credential-context.ts";
+export {
+  resetAdminCredentials,
+  type AdminCredentialResetResult,
+} from "./auth/credential-reset.ts";
 export {
   CREDENTIAL_ISSUER,
   CREDENTIAL_TOKEN_PREFIX,

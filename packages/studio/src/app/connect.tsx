@@ -161,10 +161,7 @@ export function ConnectScreen() {
         <>
           <h2>Signed in, but Studio cannot hold a session</h2>
           <p>{connection.detail}</p>
-          <p>
-            This credential opens the Admin API, so another one will not help.
-            Report the message above.
-          </p>
+          <p>This credential opens the Admin API, so another one will not help.</p>
           <button type="button" onClick={forget} disabled={busy}>
             Forget this credential
           </button>

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import {
   activePhaseIds,
-  BENCHMARK_START_SIGNAL,
   benchmarkFailure,
   BenchmarkError,
   BoundedTextTail,
@@ -26,8 +25,8 @@ describe("bounded process diagnostics", () => {
     const child = Bun.spawn([
       process.execPath,
       "-e",
-      `import { waitForBenchmarkStart } from ${JSON.stringify(lifecycleUrl)};` +
-      `console.log("ready");await waitForBenchmarkStart();` +
+      `import { parentCommands } from ${JSON.stringify(lifecycleUrl)};` +
+      `console.log("ready");for await (const line of parentCommands()) { if (line === "go") break; }` +
       `console.log(performance.timeOrigin + performance.now());` +
       `await Bun.sleep(60);console.log(performance.timeOrigin + performance.now())`,
     ], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -45,7 +44,7 @@ describe("bounded process diagnostics", () => {
     const baselineTable = readProcessTable();
     const baselines = monitors.map((monitor) => monitor.sampleNow(baselineTable));
 
-    child.stdin.write(BENCHMARK_START_SIGNAL);
+    child.stdin.write("go\n");
     child.stdin.end();
     const phaseStartedAt = Number(decoder.decode((await phaseOutput).value).trim());
     await Bun.sleep(25);

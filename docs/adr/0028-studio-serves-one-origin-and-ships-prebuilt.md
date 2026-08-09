@@ -118,6 +118,12 @@ screen names which half failed, because "your credential was refused" and
 "Studio cannot hold a session with a credential that plainly works" send an
 operator to entirely different places.
 
+The second has one cause in practice: HTTP negotiates no protocol version and
+the socket handshake refuses one it cannot speak, so a Studio built against a
+different protocol than the application's reaches the Admin API and never holds
+a session. The probe already reported that version, so the screen names it and
+says which package to install.
+
 ## The bundle is built by an explicit release stage
 
 `@ackerdb/studio` is the first package in this repository that publishes a built

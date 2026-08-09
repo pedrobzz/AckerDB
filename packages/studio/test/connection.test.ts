@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AckerDBAuthenticationState, AckerDBClientError } from "@ackerdb/client-react";
-import type { AdminSystemInfo } from "@ackerdb/core";
+import { PROTOCOL_VERSION, type AdminSystemInfo } from "@ackerdb/core";
 import { studioConnection, type StudioConnectionInput } from "../src/app/connection.ts";
 import type { StudioProbe } from "../src/app/probe.ts";
 
@@ -15,7 +15,7 @@ const APPLICATION: AdminSystemInfo = {
   name: "savoria-eu",
   version: "2.1.0",
   ackerdb: "0.17.0",
-  protocol: 6,
+  protocol: PROTOCOL_VERSION,
 };
 
 const AUTHENTICATED: AckerDBAuthenticationState = {
@@ -86,6 +86,22 @@ describe("what Studio says about itself", () => {
       expect(studioConnection(input({ probe, authentication })))
         .toEqual({ state: "refused", detail: "unauthorized" });
     }
+  });
+
+  test("a protocol the two do not share is named, not handed over as a transport error", () => {
+    // The cause this state reaches in practice: the Admin API answers over
+    // plain HTTP, which negotiates no version, while the socket handshake
+    // refuses one it cannot speak. The probe already reported the
+    // application's protocol, so the screen can say which package to install.
+    const older: AdminSystemInfo = { ...APPLICATION, ackerdb: "0.16.0", protocol: PROTOCOL_VERSION - 1 };
+    expect(studioConnection(input({
+      probe: { status: "open", application: older },
+      authentication: { phase: "failed", error: clientError("internal error") },
+    }))).toEqual({
+      state: "session-failed",
+      detail: `this application speaks protocol ${PROTOCOL_VERSION - 1} and Studio speaks ` +
+        `${PROTOCOL_VERSION} — install the Studio matching AckerDB 0.16.0`,
+    });
   });
 
   test("with the surface open, every session phase describes the session", () => {

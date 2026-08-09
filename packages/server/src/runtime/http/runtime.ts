@@ -19,7 +19,7 @@ import {
 } from "../../app/invocation.ts";
 import type { Registry } from "../../app/registry.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../auth/credentials.ts";
-import type { AuthInvalidationBoundary } from "../../auth/invalidation.ts";
+import type { AuthInvalidationPublisher } from "../../auth/invalidation.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type {
@@ -84,7 +84,12 @@ interface ClaimedHttpRequest {
   readonly codec: ExposedHttpCodec;
   readonly claimedTrace?: ClaimedHttpTrace;
   readonly fairnessKey: string;
-  readonly invalidationScope?: Parameters<AuthInvalidationBoundary["publisher"]>[1];
+  /**
+   * The caller's own auth-invalidation channel, owned and released by the
+   * listener. A direct in-process call has no response to protect, so it falls
+   * back to the Runtime's immediate fan-out.
+   */
+  readonly invalidations: AuthInvalidationPublisher;
 }
 
 interface Deferred<T> {
@@ -98,7 +103,8 @@ export interface RuntimeHttpOptions {
   readonly operations: RuntimeOperationRunner<RuntimeSession>;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly queries: RuntimeQueries;
-  readonly authInvalidation: AuthInvalidationBoundary;
+  /** The origin-less publisher a call arriving without transport ownership uses. */
+  readonly immediateInvalidations: AuthInvalidationPublisher;
   readonly telemetry: Telemetry;
   readonly tracing: RuntimeTraceBridge;
   readonly admittedRequestBytes: (request: unknown, receivedBytes?: number) => number;
@@ -146,7 +152,8 @@ export class RuntimeHttp {
   }
 
   runMutation(request: RuntimeHttpMutationRequest): Promise<Response> {
-    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claim(request, "mutation");
+    const { requestBytes, codec, claimedTrace, fairnessKey, invalidations } =
+      this.claim(request, "mutation");
     let committed: CommittedHttpMutation | undefined;
     return this.options.operations.run(null, "mutation", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "mutation");
@@ -163,6 +170,11 @@ export class RuntimeHttp {
         fn,
         principal: request.principal,
         args: request.args,
+        // A mutation that revokes the caller's own credential must not close
+        // the door its own answer leaves through. The body is encoded inside
+        // the transaction below, but that ordering is an implementation detail
+        // and not a guarantee; the origin exclusion is the guarantee.
+        publishAuthInvalidation: invalidations.publish,
         // The response body is the mutation's last fallible step. Validate and
         // bound it inside the transaction so an unshippable value never commits.
         validate: (value) => {
@@ -196,12 +208,8 @@ export class RuntimeHttp {
   }
 
   runProcedure(request: RuntimeHttpRequest): Promise<Response> {
-    const { requestBytes, codec, claimedTrace, fairnessKey, invalidationScope } =
+    const { requestBytes, codec, claimedTrace, fairnessKey, invalidations } =
       this.claim(request, "procedure");
-    const invalidations = this.options.authInvalidation.publisher(
-      request.principal,
-      invalidationScope,
-    );
     return this.options.operations.run(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.options.operationSignal(request.signal);
@@ -225,13 +233,7 @@ export class RuntimeHttp {
       }
     }, {
       identifiers: { requestId: String(request.id) },
-      finalize: (outcome) => {
-        try {
-          return this.responses.respond(request, codec, "procedure", outcome);
-        } finally {
-          invalidations.finish();
-        }
-      },
+      finalize: (outcome) => this.responses.respond(request, codec, "procedure", outcome),
       claimedTrace,
       fairnessKey,
     });
@@ -322,7 +324,8 @@ export class RuntimeHttp {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
-    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claim(request, "sse");
+    const { requestBytes, codec, claimedTrace, fairnessKey, invalidations } =
+      this.claim(request, "sse");
     const runtimeScope = this.options.tracing.open(
       undefined,
       "sse",
@@ -404,7 +407,7 @@ export class RuntimeHttp {
           producer.signal,
           requestBytes,
           this.readNow(),
-          (account) => this.options.authInvalidation.publishAccount(account),
+          invalidations.publish,
         );
         const handler = invokeFunction(fn, procedure.value as SseCtx, request.args, {
           onAuthorized: () => {
@@ -524,7 +527,7 @@ export class RuntimeHttp {
       ),
       fairnessKey: request.fairnessKey
         ?? callerFairnessKey(request.principal, DIRECT_RUNTIME_SOURCE),
-      invalidationScope: provenance?.invalidationScope,
+      invalidations: provenance?.invalidations ?? this.options.immediateInvalidations,
     };
   }
 

@@ -1160,8 +1160,12 @@ export class AckerDBClient {
    */
   private acceptedCredential(): void {
     const authentication = this.authentication;
+    // A `null` disclosure is a credential that does not expire, so it has no
+    // deadline to record — the same absence anonymous has, reached honestly.
     this.credentialExpiresAtMs =
-      authentication === undefined || authentication.principal === "anonymous"
+      authentication === undefined ||
+      authentication.principal === "anonymous" ||
+      authentication.credentialTtlMs === null
         ? undefined
         : this.now() + authentication.credentialTtlMs;
     this.scheduleSourceRefresh();
@@ -1172,7 +1176,9 @@ export class AckerDBClient {
    * ~80% of the TTL, clamped to land at least the margin before expiry and
    * floored so tiny TTLs cannot hot-loop the source. Anonymous principals
    * disclose no TTL and arm nothing — the next sign-in arrives by
-   * `refreshCredential()`.
+   * `refreshCredential()`. A credential that does not expire arms nothing for
+   * the same reason: there is no expiry to get ahead of, and re-pulling a
+   * non-expiring secret on a timer would be work with no outcome.
    */
   private scheduleSourceRefresh(): void {
     this.clearSourceRefreshTimer();
@@ -1180,6 +1186,7 @@ export class AckerDBClient {
     const authentication = this.authentication;
     if (authentication === undefined || authentication.principal === "anonymous") return;
     const ttl = authentication.credentialTtlMs;
+    if (ttl === null) return;
     const delay = Math.min(
       MAX_SOURCE_REFRESH_DELAY_MS,
       Math.max(MIN_SOURCE_REFRESH_DELAY_MS, Math.min(ttl * 0.8, ttl - SOURCE_REFRESH_MARGIN_MS)),

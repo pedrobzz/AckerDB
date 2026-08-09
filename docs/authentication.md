@@ -379,12 +379,15 @@ old principal is never silently restored.
 Every accepted bearer presentation — the `welcome` and each `auth`
 acknowledgement — carries `credentialTtlMs`, the server's **credential TTL
 disclosure**: the remaining validity of the accepted credential as a relative
-duration, computed at frame send. It exists so a client can refresh
-proactively without assuming any credential format (client-side token
-parsing would break the format-opaque `credentialVerifier` contract).
-Anonymous principals disclose nothing. The client's
-[credential source](client-react.md#credential-source) schedules its
-proactive re-pull from this disclosure.
+duration, computed at frame send — or `null` for a credential that does not
+expire. It exists so a client can refresh proactively without assuming any
+credential format (client-side token parsing would break the format-opaque
+`credentialVerifier` contract). Anonymous principals disclose nothing. The
+client's [credential source](client-react.md#credential-source) schedules its
+proactive re-pull from this disclosure, and arms nothing for `null`: an
+[identity credential](scopes.md#identity-credentials) ends by revocation rather
+than by the clock, so there is no expiry to get ahead of. The field is still
+always present, because a client must never have to read silence as a value.
 
 The server owns a hard timer for `expiresAt` and closes a session that is not
 refreshed in time. The built-in OIDC verifier advertises

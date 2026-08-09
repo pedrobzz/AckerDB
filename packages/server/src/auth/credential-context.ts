@@ -10,6 +10,14 @@
  * vocabulary, which is how an administrative `["*", "_*"]` credential is
  * minted without any identity holding that authority first.
  *
+ * `adminCredentials` is the third door and the only one the framework's own
+ * functions use. It differs from the other two in what it is bounded by rather
+ * than in what it can do: an Admin Credential is a root credential, so nothing
+ * bounds it at use and issuance is the only ceiling there is — the caller must
+ * already hold everything it is about to mint. It is deliberately absent from
+ * the package's public surface, because an application that wants a root
+ * credential already has `systemCredentials`.
+ *
  * Revocations and grant changes are staged on the write set and published
  * after commit as account invalidations on the one generic auth-invalidation
  * path (`issuer: ackerdb:credentials`, subject = token id), so live sessions
@@ -34,7 +42,7 @@ import {
 } from "./credential-vault.ts";
 import { CREDENTIAL_ISSUER } from "./credential-token.ts";
 import { issueChildScopes } from "./child-credentials.ts";
-import { SCOPE_WILDCARD } from "./scopes.ts";
+import { ADMINISTRATIVE_GRANT, SCOPE_WILDCARD } from "./scopes.ts";
 import { markOneTimeResult } from "../runtime/one-time-result.ts";
 
 export type {
@@ -55,6 +63,12 @@ export interface CredentialOperations {
   update(ctx: WriteContext, tokenId: string, input: CredentialUpdateInput): void;
   updateScopes(ctx: WriteContext, tokenId: string, scopes: readonly string[]): void;
   revoke(ctx: WriteContext, tokenId: string): void;
+}
+
+/** Administration of the Admin Credential itself, for the framework's own functions. */
+export interface AdminCredentialOperations {
+  list(ctx: ReadContext): readonly CredentialDescriptor[];
+  rotate(ctx: WriteContext, name: string): CreatedCredential;
 }
 
 /** Explicitly privileged administration for backend-managed and standalone identities. */
@@ -342,6 +356,73 @@ export const credentials: CredentialOperations = Object.freeze({
   revoke(ctx: WriteContext, tokenId: string): void {
     const owner = writing(ownerCapability(ctx));
     revokeCredential(owner, owner.principal.identity, tokenId);
+  },
+});
+
+/**
+ * The Admin Credential, listed and rotated by the framework's own `admin`
+ * functions.
+ *
+ * **Rotation replaces the credential it was called with**, minting a new one
+ * and revoking every credential that was administrative before the mint. It
+ * cannot re-key the row in place: the
+ * invalidation channel names a credential by its token id, so an old secret and
+ * its replacement sharing one id would be one subject, and "revoke the leaked
+ * secret's live sessions but not the new one's" would not be expressible. A
+ * rotation whose whole purpose is to defeat a leaked secret has to produce a
+ * different subject.
+ *
+ * The two live at once for the length of one transaction, which is what makes
+ * the rotation downtime-free: the new credential is already usable when the old
+ * one stops being. The cost is that the administrative Identity changes, and
+ * with it everything keyed on that Identity — File ownership, analytics
+ * attribution, and every credential delegated beneath the old master, which the
+ * revocation cascade takes with it.
+ */
+export const adminCredentials: AdminCredentialOperations = Object.freeze({
+  list(ctx: ReadContext): readonly CredentialDescriptor[] {
+    // Every mint and revoke of a root credential records this exact key, so a
+    // reactive read of the administrative set re-runs on precisely the changes
+    // that can alter it, and on nothing else.
+    const capability = invocationCapability(ctx);
+    capability.reads?.add(ownerKey(null));
+    return capability.engine[credentialVaultOwner].listAdministrative(capability.connection);
+  },
+  rotate(ctx: WriteContext, name: string): CreatedCredential {
+    const owner = writing(ownerCapability(ctx));
+    const superseded = owner.engine[credentialVaultOwner].listAdministrative(owner.connection);
+    // Rotation replaces the credential it was called with, so the caller has to
+    // be one of them. Holding a grant that covers the vocabulary is not the
+    // same claim and never was: a *child* holding `["*", "_*"]` covers it too,
+    // and minting a root from there would trade authority its parent can narrow
+    // at any moment for authority nobody can — an escalation in permanence
+    // rather than in reach. So would a resolver-backed user the application
+    // granted everything, who would additionally get to destroy the operator's
+    // master. Membership here is the strictly stronger statement, and it makes
+    // the subset invariant redundant rather than merely satisfied.
+    //
+    // The comparison is on the Identity, which is the credential row's own
+    // unique key, rather than on the token id an external provider also gets to
+    // choose the shape of.
+    const rotating = owner.principal.issuer === CREDENTIAL_ISSUER &&
+      superseded.some((credential) => credential.identity === owner.principal.identity);
+    if (!rotating) {
+      throw new AckerDBError(
+        "unauthorized",
+        "credential rotation replaces the Admin Credential it is called with," +
+          " and this caller presents none",
+      );
+    }
+    // Revoked first, then minted, inside one transaction. Root credentials
+    // share one capacity bucket, so minting first would make a full bucket the
+    // one state rotation cannot get out of — and the bucket is exactly what a
+    // rotation is about to make room in. Ordering it this way costs nothing:
+    // the set was read before either step, so the replacement is never in the
+    // set it replaces, and a failed mint rolls the revocations back with it.
+    for (const previous of superseded) revokeCredential(owner, null, previous.id);
+    // The caller's own credential is always among those, and it is revoked with
+    // the response carrying the new secret already staged.
+    return createCredential(owner, null, { name, scopes: ADMINISTRATIVE_GRANT });
   },
 });
 

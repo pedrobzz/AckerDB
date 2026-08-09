@@ -84,18 +84,81 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
   const native = nativeInputsChanged(files);
-  const performance = performanceInputsChanged(files);
-  const telemetry = files.some((file) => file.startsWith("packages/server/src/telemetry/")) ||
-    Bun.spawnSync(
-      ["git", "diff", "--quiet", "-G", "(telemetry|Telemetry)", `${base}...${head}`, "--", "packages/*/src", "bench"],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exitCode === 1;
+  const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
+  const telemetry = telemetryInputsChanged(base, head, files);
   const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
   return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
+}
+
+/** The packages whose code the benchmark workload actually executes. */
+const MEASURED_PACKAGES = Object.freeze(["core", "client", "server", "cli"]);
+
+const DEPENDENCY_FIELDS = Object.freeze([
+  "dependencies",
+  "peerDependencies",
+  "optionalDependencies",
+]);
+
+/**
+ * Whether a measured package's third-party dependencies moved. A dependency
+ * update changes the executable product without touching a single line of
+ * source, so a path list alone would report a successful no-op for it.
+ *
+ * Workspace `@ackerdb/*` entries are excluded deliberately: every release step
+ * rewrites all twelve of them in lockstep, and a version bump that ships the
+ * same code is exactly the case the benchmark must not spend a runner on.
+ */
+export function measuredDependenciesChanged(base: string, head: string): boolean {
+  const externals = (ref: string): string =>
+    JSON.stringify(MEASURED_PACKAGES.map((pkg) => {
+      const manifest = JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, unknown>;
+      return DEPENDENCY_FIELDS.map((field) => {
+        const entries = Object.entries((manifest[field] ?? {}) as Record<string, string>);
+        return entries.filter(([name]) => !name.startsWith("@ackerdb/")).sort();
+      });
+    }));
+  return externals(base) !== externals(head);
+}
+
+/**
+ * Whether the benchmark must run the telemetry profiles beside the default one.
+ *
+ * This classifier is wider than it looks like it needs to be, and stays that
+ * way on evidence: the telemetry sidecar rework cost eighty-six percent of
+ * query throughput with telemetry on and nothing measurable with it off. The
+ * profiles it selects are the only place that class of regression is visible,
+ * so narrowing it to buy runner minutes would be spending the gate to save
+ * change. What it does tighten is the failure mode — a git invocation that
+ * neither says "no match" nor "match" is an error, where it used to be read as
+ * "no telemetry changed" and quietly drop the profiles that catch the largest
+ * regressions this benchmark has ever recorded.
+ */
+export function telemetryInputsChanged(
+  base: string,
+  head: string,
+  files: readonly string[],
+): boolean {
+  if (
+    files.some((file) =>
+      file.startsWith("packages/server/src/telemetry/") ||
+      file.startsWith("packages/server/src/runtime/telemetry/")
+    )
+  ) {
+    return true;
+  }
+  const probe = Bun.spawnSync(
+    ["git", "diff", "--quiet", "-G", "[Tt]elemetry", `${base}...${head}`, "--", "packages/*/src", "bench"],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+  if (probe.exitCode === 0) return false;
+  if (probe.exitCode === 1) return true;
+  throw new Error(
+    `git could not classify telemetry changes (exit ${probe.exitCode}): ${probe.stderr.toString().trim()}`,
+  );
 }
 
 export function codeInputsChanged(files: readonly string[]): boolean {

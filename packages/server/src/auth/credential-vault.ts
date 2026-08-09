@@ -25,6 +25,7 @@ import { deepFreeze } from "../shared/immutable.ts";
 import { CREDENTIAL_TOKEN_PREFIX, type ParsedCredentialToken } from "./credential-token.ts";
 import {
   expandScopeGrant,
+  isAdministrativeGrant,
   isScopeGrant,
   MAX_SCOPE_PATTERNS,
   SCOPE_WILDCARD,
@@ -396,6 +397,38 @@ export class CredentialVault {
         ORDER BY creation_seq`,
     ).all(parentIdentity) as StoredDescriptorRow[];
     return Object.freeze(rows.map(descriptor));
+  }
+
+  /**
+   * Every Admin Credential: a *root* credential whose stored grant is the
+   * administrative one. This is the vault's single answer to "does a master
+   * exist", and boot-mint, rotation and the offline break-glass reset all read
+   * it rather than each deriving a predicate of their own — two derivations
+   * would disagree the first time the definition moved, and disagreement here
+   * means a database that clears rows one side still counts, or can never
+   * re-mint.
+   *
+   * Rootness is half the definition and not an optimization. A *child* holding
+   * the same patterns is a delegate: its live authority is intersected with its
+   * parent's, so it is bounded by a master rather than being one. Restricting
+   * the read to roots is also what keeps the set disjoint under revocation,
+   * since no root is ever a descendant of another.
+   *
+   * The grant is decoded per row rather than compared as stored bytes: the
+   * encoding is an implementation detail of the column, and the claim is about
+   * the patterns. The root bucket is bounded by `maxPerIdentity`, so the scan
+   * is a handful of rows.
+   */
+  listAdministrative(connection: Database): readonly CredentialDescriptor[] {
+    const rows = connection.query(
+      `SELECT creation_seq, token_id, identity, name, metadata, scopes, created_at, updated_at
+        FROM _ackerdb_credentials
+        WHERE parent_identity IS NULL
+        ORDER BY creation_seq`,
+    ).all() as StoredDescriptorRow[];
+    return Object.freeze(
+      rows.map(descriptor).filter((credential) => isAdministrativeGrant(credential.scopes)),
+    );
   }
 
   update(

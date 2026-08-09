@@ -1,7 +1,6 @@
 import type { Subprocess } from "bun";
 
 export const DIAGNOSTIC_TAIL_CHARS = 64 * 1_024;
-export const BENCHMARK_START_SIGNAL = "start\n";
 
 type StoppableProcess = Pick<Subprocess, "exitCode" | "exited" | "kill">;
 
@@ -15,12 +14,29 @@ export interface BenchmarkDiagnostics {
   readonly tail?: string;
 }
 
-/** Blocks a benchmark client until the parent has established resource baselines. */
-export async function waitForBenchmarkStart(): Promise<void> {
-  const signal = await Bun.stdin.text();
-  if (signal !== BENCHMARK_START_SIGNAL) {
-    throw new Error(`invalid benchmark start signal ${JSON.stringify(signal)}`);
+/**
+ * Newline-delimited commands from the parent, one at a time. A benchmark child
+ * now outlives a single instruction — the pair driver hands it one unit of work,
+ * reads the answer, gives the machine to the other side, and comes back — so
+ * stdin has to be consumed by the line instead of swallowed whole.
+ */
+export async function* parentCommands(
+  stream: ReadableStream<Uint8Array> = Bun.stdin.stream(),
+): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true });
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) break;
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line !== "") yield line;
+    }
   }
+  const trailing = (buffer + decoder.decode()).trim();
+  if (trailing !== "") yield trailing;
 }
 
 export class BenchmarkError extends Error {

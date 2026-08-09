@@ -338,14 +338,22 @@ describe("everything outside the prefix", () => {
     expect(shell.toLowerCase()).not.toContain("content-security-policy");
   });
 
-  test("a scheme-relative path cannot name a host of its own", async () => {
+  test("a scheme-relative path is answered by the configured application", async () => {
     // `new URL("//elsewhere.example/x", target)` resolves to that host, so a
     // proxy that resolved rather than assigned would dial it with the caller's
     // headers and body. Driven over a raw socket because `fetch` normalizes the
     // doubled slash away before the request is ever sent.
+    //
+    // The assertion is provenance, not status: the configured application
+    // answers such a target 404 or 400 depending on how the runtime frames the
+    // doubled slash, and neither is Studio's business. What is Studio's
+    // business is that the answer came back through this proxy — the policy
+    // header below is set on nothing else — and that no byte of it came from
+    // the host the path named. `upstreamUrl` above pins the rule itself.
     const escaped = await rawRequest(live, "//elsewhere.example/steal?x=1");
-    expect(escaped).toContain("not_found");
-    expect(escaped).toContain("/elsewhere.example/steal");
+    expect(escaped.toLowerCase()).toContain("content-security-policy: sandbox");
+    expect(escaped).not.toContain("elsewhere.example says");
+    expect(escaped).toMatch(/^HTTP\/1\.1 (?:400|404) /);
   });
 
   test("a forwarded body carries no framing of its own", async () => {
