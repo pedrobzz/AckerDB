@@ -342,6 +342,48 @@ describe("trace exemplars", () => {
     expect(isConfidentQuantile(100, 0.99)).toBe(false);
   });
 
+  test("a healthy application retains a small minority, and this is a standing guard", () => {
+    // Two defects in this component have failed OPEN — a cohort key built with
+    // two different separators, and a cold-start rule that waited for a
+    // published window. Both presented as working systems while silently storing
+    // every trace. This asserts the property those bugs violated, so the next
+    // one is caught by the suite instead of by a ramp someone thought to run.
+    const buckets = new TelemetryAggregateBuckets({
+      warmObservations: 50,
+      referenceWindowMs: MINUTE_MS,
+    });
+    const collector = new TraceExemplarCollector(
+      (operation, fn) => buckets.thresholdFor(operation ?? "procedure", fn),
+      { baselineProbability: 0.01 },
+    );
+    const operations = 20_000;
+    let retained = 0;
+    for (let index = 0; index < operations; index++) {
+      const traceId = index.toString(16).padStart(32, "0");
+      // A healthy application: no errors, and a continuous spread rather than a
+      // handful of discrete values. The distinction matters: `>=` at the
+      // threshold retains every tie, so a latency quantised to a few values can
+      // retain its whole top bucket — nine discrete values here retained 12%
+      // rather than 5%. Real latency is continuous; a quantised endpoint is a
+      // real over-retention mode and is noted as such.
+      const durationMs = 8 + ((index * 2654435761) % 100_000) / 12_500;
+      const at = HOUR_ALIGNED + Math.floor(index / 400) * MINUTE_MS;
+      buckets.record(at, "procedure", "api.checkout.submit", "ok", durationMs);
+      collector.observe(traceId, span({
+        operation: "procedure",
+        function: "api.checkout.submit",
+        timestampMs: at,
+        durationMs,
+      }));
+      if (collector.settle(traceId) !== undefined) retained++;
+    }
+    // Errors + slow + baseline on a healthy application is a few per cent. Ten
+    // is generous headroom; anything near 100% means the policy has stopped
+    // selecting and is storing everything again.
+    expect(retained / operations).toBeLessThan(0.10);
+    expect(retained).toBeGreaterThan(0);
+  });
+
   test("a cold cohort retains rather than falling through to nothing", () => {
     const buckets = new TelemetryAggregateBuckets({ warmObservations: 50 });
     const collector = new TraceExemplarCollector(
