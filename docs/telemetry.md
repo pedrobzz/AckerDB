@@ -25,12 +25,33 @@ Programmatic `Runtime` construction accepts `telemetry: false`, an existing
 interface TelemetryOptions {
   enabled?: boolean;
   limits?: Partial<TelemetryLimits>;
+  aggregate?: Partial<TelemetryAggregateLimits>;
   exporter?: TelemetryExporter;
   localSink?: ((safeJsonLine: string) => void) | false;
   now?: () => number;
   scheduler?: TelemetryScheduler;
 }
 ```
+
+Everything an operator configures about durable telemetry lives in one place
+instead, `RuntimeOptions.admin.telemetry`, so there is a single object to look
+at rather than an environment variable no manifest mentions plus a limits object
+passed beside the Runtime's other telemetry fields:
+
+```ts
+interface AdminTelemetryOptions {
+  enabled?: boolean;
+  retention?: Record<string, number>;
+  storage?: Partial<TelemetryStoreLimits>;
+  queue?: Partial<TelemetrySidecarQueueLimits>;
+  aggregate?: Partial<TelemetryAggregateLimits>;
+}
+```
+
+`admin.telemetry.enabled: false` and `telemetry: false` are the operator's
+switch and the embedder's; either one off is off. Durable application logs and
+analytics keep their sidecar regardless, because ADR-0017 makes those durable
+whether or not anyone is watching operations.
 
 `Telemetry`, its schema constants, `TelemetryLimits`, and all record, option,
 aggregate, and health snapshot types are public exports of `@ackerdb/server`.
@@ -169,6 +190,62 @@ counted under `dropped.drain` or `localSink.dropped.drain`, while released trace
 states use `traceRetention.dropped.drain` and exporter/local failures retain
 their own counters. A telemetry failure cannot extend application shutdown
 indefinitely, and drain is not a guarantee that every diagnostic was exported.
+
+## Durable telemetry storage
+
+Everything observable is stored in one framework-owned SQLite file beside the
+application database, `<db>.telemetry`. It holds application logs, analytics
+events and their day rollup, error groups and occurrences, retained trace
+exemplars, and the aggregate at minute and hour resolution. The application
+database never carries telemetry, so an application backup never drags it and
+telemetry loss is never business-data loss.
+
+**One thread owns the connection.** A file-backed engine writes through a worker,
+so the serving thread never runs a synchronous commit; an in-memory engine has no
+file to isolate and writes inline. Every signal crosses the same bounded ring,
+which assigns the sequence numbers a drain seals at. `Runtime.drain()` resolves
+only when the sidecar acknowledges a durable watermark at or past everything the
+process accepted, and writes one terminal lifecycle row as the structurally last
+record before the file closes.
+
+**The aggregate sees every observation and the exemplar store keeps a
+minority.** Counts, error counts and totals are exact for covered buckets;
+quantiles carry a declared relative error, and a window says which of its exposed
+quantiles it holds too few observations to answer. Retained traces disclose why
+they were kept — `reason`, `policyVersion`, `inclusionProbability`, `complete`,
+`observedSpans`, `omittedSpans` — because the retained set over-represents errors
+and slow traces. Nothing may derive a rate, a percentile or a rank from stored
+exemplars; those come from the aggregate. ADR-0030 has the reasoning.
+
+**Retention is time per signal, guarded by bytes.** Each class of data has a
+clock — `debug`, `info`, `warn`, `error`, `traces`, `analytics`, `minutes`,
+`rollups` — set through `admin.telemetry.retention` in milliseconds, and applied
+retroactively on the next maintenance pass. `storage.maxStoredBytes` is a target
+eviction chases rather than a hard cap; two floors bound it. `keepFreeRatio`
+keeps the sidecar from consuming the last of the volume, and `minRetainedMs`
+stops eviction from taking the most recent window whatever the byte target says,
+so a store over its target discloses that rather than erasing the hours that
+explain the overrun. Error groups deliberately have no clock: an index that
+forgets is not one.
+
+The store reports the oldest and newest timestamp it holds per signal, so the
+window actually being given can be read beside the window configured.
+
+**Under pressure the specimens shed and the shape does not.** As the sidecar
+approaches its byte target or the free-space floor, admission scales down the
+share of records it accepts — exemplars first, then error occurrences, then logs
+and analytics. The aggregate never sheds, because it is bounded by cardinality
+rather than by traffic, so counts, error counts and distributions stay complete
+through a flood. Drops are counted by kind and by reason using Loki's
+discard-reason names (`rate_limited`, `line_too_long`, `queue_full`,
+`read_only`). Below the free-space floor the sidecar refuses every write.
+
+**Provider exporters read the durable journal.** `RuntimeOptions.telemetryExporters`
+installs adapters that consume committed log and analytics rows in order, each
+through its own cursor stored in the sidecar. Delivery is at least once: the
+cursor advances after the exporter's call returns, so a process that dies between
+them re-delivers that batch. A slow or unavailable provider cannot block
+application work or another exporter.
 
 ## Privacy boundary
 
