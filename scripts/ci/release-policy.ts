@@ -1,8 +1,8 @@
 import {
   PACKAGES,
   fail,
-  git,
   pkgJsonPath,
+  tryGit,
 } from "../lib.ts";
 
 type Version = readonly [major: number, minor: number, patch: number];
@@ -34,11 +34,23 @@ export function accumulatedLevel(base: string, head: string): ReleaseLevel | nul
   return headPatch > basePatch ? "patch" : null;
 }
 
+/**
+ * Every lockstep manifest that exists at `ref`.
+ *
+ * A package the pull request *introduces* has no manifest at the base, and that
+ * is not a violation — it is what adding a package to the set looks like. The
+ * lockstep rule is about the packages that are there: at the head every one of
+ * them exists, so nothing the invariant covers goes unchecked, while reading
+ * the head's package list against an older tree would make the very commit
+ * that adds a package the one commit that cannot pass.
+ */
 function manifestsAt(ref: string): ReadonlyMap<string, Record<string, any>> {
-  return new Map(PACKAGES.map((pkg) => [
-    pkg,
-    JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, any>,
-  ]));
+  const found = new Map<string, Record<string, any>>();
+  for (const pkg of PACKAGES) {
+    const manifest = tryGit("show", `${ref}:${pkgJsonPath(pkg)}`);
+    if (manifest !== null) found.set(pkg, JSON.parse(manifest) as Record<string, any>);
+  }
+  return found;
 }
 
 export function releaseVersionAt(ref: string): string {
@@ -47,10 +59,10 @@ export function releaseVersionAt(ref: string): string {
     [...manifests.values()].map((manifest) => manifest.version as unknown),
   );
   if (versions.size !== 1 || typeof [...versions][0] !== "string") {
-    // The count is read off the package set rather than spelled, so adding a
-    // lockstep package cannot leave this message asserting a number that is
-    // no longer true — it is the one an operator reads when the check fails.
-    throw new Error(`all ${PACKAGES.length} packages at ${ref} must share one version`);
+    // The count is read off what was found rather than spelled, so adding a
+    // lockstep package cannot leave this message asserting a number that is no
+    // longer true — it is the one an operator reads when the check fails.
+    throw new Error(`all ${manifests.size} packages at ${ref} must share one version`);
   }
   const version = [...versions][0] as string;
   parseVersion(version);
