@@ -391,21 +391,37 @@ on this ticket both came out near 12–15%, for different paths in different
 configurations, and letting them read as one number is how a wrong figure
 survives review.
 
-**The shipped default — telemetry on, no trace storage — has an unexplained
-regression.** On the 16-repetition gate it costs **p50 and p95 +12–15% on
-subscription delivery** (`subscription:shared` at 1 and 10 writers), reproducing
-across the `enabled` and `exporter` profiles and vanishing entirely when
-telemetry is off. This is the path every application pays whether or not it
-enables trace storage. It is not diagnosed.
+**The shipped default cost 12–15% on subscription delivery, and the cause was one
+string.** The aggregate keyed its per-cohort state with a template literal built
+on every observation, so it produced garbage strictly proportional to span
+volume. On the 16-repetition gate that showed up as **p50 and p95 +12–15% on
+`subscription:shared`** at 1 and 10 writers, reproducing across the `enabled` and
+`exporter` profiles and absent when telemetry was off. Addressing the cohort
+through a nested map instead — the same work, no allocation — returns it to
+**+3.9% and +4.9%** (`enabled`) and **+5.0% and +2.3%** (`exporter`), no metric
+gated, on a run whose own median absolute paired delta was 2.1%.
 
-**A microbenchmark said 0.12 µs/op for that path, and it was wrong.** It measured
-`TelemetryAggregateBuckets.record()` in a tight loop over one cohort at
-0.014–0.019 µs per observation. That case does not occur: a loop over a single
-cohort key hits string interning and never triggers a collection, so it measured
-neither the allocation the real path performs nor the collections that allocation
-causes. **Do not re-derive this number with a microbenchmark** — the question is
-allocation rate on the delivery path under real cohort variety, and wall time in
-a tight loop cannot see it. The suite's number is the one that counts.
+**How three instruments got this wrong is the most useful thing on this ticket.**
+
+A microbenchmark timed `TelemetryAggregateBuckets.record()` at 0.014–0.019 µs per
+observation and the always-on cost was published as 0.12 µs/op. That number
+measured a case that does not occur: a tight loop over ONE cohort key hits string
+interning and never triggers a collection, so it saw neither the allocation the
+real path performs nor the collections that allocation causes. It was wrong by
+two orders of magnitude against a suite reading 15%.
+
+Two allocation probes then read **zero bytes per iteration** — including a
+control that retained 300,000 constructed strings in an array, where zero is
+impossible. `process.memoryUsage().heapUsed` does not track JSC allocation at
+that resolution, so the instrument was broken rather than the hypothesis. That
+control is what proved it: without a case whose answer is known in advance, a
+zero reads as a result.
+
+What settled it was making the change on its own merits and letting the gate
+measure. **Do not re-derive the always-on cost with a microbenchmark.** Garbage
+proportional to span volume raises wait-dominated latency without consuming CPU,
+so it appears in delivery percentiles and nowhere else; a tight loop and a heap
+delta are both blind to it, and only the suite has ever seen it.
 
 **The opt-in's price has not been measured under the current code.** No benchmark
 profile has ever set `admin.telemetry.traces`, so the suite has never exercised

@@ -87,6 +87,11 @@ export const DEFAULT_AGGREGATE_LIMITS: TelemetryAggregateLimits = Object.freeze(
  * nested map keys the same cohort with no allocation at all. It is the same
  * work; it is not less of it.
  *
+ * Measured: the string form cost 12-15% on subscription delivery p50 on the
+ * sixteen-repetition gate, and removing it returned that to 2-5% with nothing
+ * gated. A microbenchmark had priced the same call at 0.017 us and seen none of
+ * it, because a tight loop over one key interns it and never collects.
+ *
  * The single-key form also had history: it was once built in two places with two
  * different separators, and every lookup silently missed, so the retention
  * threshold read "cold" forever and the policy retained everything. Two levels

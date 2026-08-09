@@ -222,10 +222,11 @@ that has nothing to show can say which of the two it is looking at rather than
 rendering an unexplained blank.
 
 Costs are recorded in ADR-0030, each labelled with the configuration it measured.
-The shipped default currently carries an undiagnosed regression on subscription
-delivery latency, and the opt-in's own price has not yet been measured under this
-code — no benchmark profile has exercised trace storage. Treat any single
-"telemetry costs N%" figure with suspicion until it says which of the two it is.
+The shipped default's cost is small — a few per cent on subscription delivery
+latency, none of it gated — and the opt-in's own price has not yet been measured
+under this code, because no benchmark profile exercises trace storage. Treat any
+single "telemetry costs N%" figure with suspicion until it says which of the two
+it is.
 
 **The aggregate sees every observation and the exemplar store keeps a
 minority.** Counts, error counts and totals are exact for covered buckets;
