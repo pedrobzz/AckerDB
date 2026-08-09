@@ -292,10 +292,10 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
     seed: positiveInt("BENCH_SEED", 0xdb22),
     // The default windows are short because the comparison repeats them. One
     // two-second window per side yields a single number whose error is the
-    // machine's; eight interleaved three-hundred-millisecond windows yield eight
-    // paired ratios whose spread is measurable and whose median is not moved by
-    // one stalled window. Total measured time barely changes; what changes is
-    // that there is now something to take a median of.
+    // machine's; sixteen interleaved three-hundred-millisecond windows yield
+    // sixteen paired ratios whose spread is measurable and whose median is not
+    // moved by one stalled window. What changes is that there is now something
+    // to take a median of, and enough of them to bound it.
     operation: {
       warmupMs: positiveInt("BENCH_WARMUP_MS", quick ? 250 : 100),
       steadyMs: positiveInt("BENCH_STEADY_MS", quick ? 500 : 300),

@@ -17,6 +17,11 @@
  *
  * Exits non-zero when a gated metric regressed, when the contract is short, or
  * when either side recorded a correctness, accounting, or harness failure.
+ *
+ * It also writes `ledger.ndjson` beside the comparison: the same verdicts as
+ * ratios, for the append-only history in `bench/ledger.ts`. The row is produced
+ * here rather than recomputed later so that what the ledger remembers is
+ * literally what the check decided.
  */
 import { median } from "./load-engine.ts";
 import { contractShortfalls, metricPolicy, METRIC_POLICY } from "./units.ts";
@@ -27,6 +32,7 @@ import {
   DEFAULT_POLICY,
   type PairedComparison,
 } from "./paired-statistics.ts";
+import { formatLedger, ledgerRow, type LedgerRow } from "./ledger.ts";
 import type { BenchmarkObservations } from "./result-observations.ts";
 
 interface PairedSeries {
@@ -123,6 +129,18 @@ say(
 let gatedRegressions = 0;
 let failures = 0;
 const everyComparison: PairedComparison[] = [];
+const ledger: LedgerRow[] = [];
+// The run and the clock are placeholders the appender replaces with the ones it
+// trusts; a pull request does not get to say which workflow run its numbers are
+// filed under. Everything else in the row is this run's own measurement.
+const runFacts = {
+  run: process.env.GITHUB_RUN_ID ?? "local",
+  recordedAt: new Date().toISOString(),
+  host: run.executionHost,
+  base: run.base,
+  head: run.head,
+  repetitions: run.repetitions,
+};
 
 for (const profile of run.profiles) {
   say();
@@ -143,6 +161,13 @@ for (const profile of run.profiles) {
     const policy = metricPolicy(series.metric);
     const comparison = comparePaired(series.samples, { ...DEFAULT_POLICY, better: policy.better });
     everyComparison.push(comparison);
+    ledger.push(ledgerRow(runFacts, {
+      profile: profile.profile,
+      unit: series.unitId,
+      metric: series.metric,
+      gated: policy.gated,
+      comparison,
+    }));
     // A gated metric the run could not resolve is a missing answer, not a
     // passing one: too few usable pairs means the machine, not the change,
     // decided what this comparison saw.
@@ -221,6 +246,10 @@ say(
     "own measured noise it catches roughly 60% of twenty-percent regressions and 94% of fifty-percent ones, and " +
     "sees almost nothing below ten. Read the table.",
 );
+
+// Written before the exit code is set, because a run that failed is exactly the
+// run whose deltas the history most wants.
+await Bun.write(`${directory}/ledger.ndjson`, formatLedger(ledger));
 
 console.log(lines.join("\n"));
 if (gatedRegressions > 0 || failures > 0) process.exitCode = 1;
