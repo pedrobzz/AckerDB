@@ -1405,12 +1405,6 @@ Studio origin's reserved prefix and named in the navigation. A screen an
 operator can send to a colleague is a screen whose whole state is in its URL.
 _Avoid_: page, view, tab, panel
 
-**Vendored component** — Interface code copied into this repository from a
-component registry to be modified and maintained by hand. It carries no version
-and no upstream release cadence: once copied it is ours, updated deliberately or
-not at all. Each such file names its origin and licence in its header.
-_Avoid_: third-party component, UI library, imported widget
-
 **Log source** — The origin of a record in Studio's Logs stream: application
 (developer-authored application log records) or framework (framework-emitted
 diagnostic events made durable). Analytics events are never part of the Logs
