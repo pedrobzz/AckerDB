@@ -208,6 +208,24 @@ only when the sidecar acknowledges a durable watermark at or past everything the
 process accepted, and writes one terminal lifecycle row as the structurally last
 record before the file closes.
 
+**Durable trace storage is opt-in; the aggregate is not.** `admin.telemetry.traces`
+turns on storing whole traces as exemplars. It is absent by default, and absence
+is off — there is no `enabled` flag inside it, because that would be a second
+switch overlapping the subsystem's own and the relationship is containment:
+`admin.telemetry.enabled: false` stops the runtime recording anything at all,
+while this decides whether what is recorded is also kept. The aggregate,
+application logs and analytics are unaffected by it and always durable.
+
+Turning it on is **not retroactive**: traces are stored from that point forward.
+The sidecar snapshot reports whether it is on and names the setting, so a surface
+that has nothing to show can say which of the two it is looking at rather than
+rendering an unexplained blank.
+
+Measured, so the choice is informed: the always-on aggregate costs 0.014–0.019 µs
+per observation, and enabling trace storage costs about 0.25 µs per operation
+synchronously plus deferred construction off the response path — end to end the
+framework benchmark measured p50 rising 12–15% with it on.
+
 **The aggregate sees every observation and the exemplar store keeps a
 minority.** Counts, error counts and totals are exact for covered buckets;
 quantiles carry a declared relative error, and a window says which of its exposed

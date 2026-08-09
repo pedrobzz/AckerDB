@@ -386,6 +386,15 @@ run of the series (median absolute paired delta 2.6%, p90 7.7%). Query latency
 throughput −4.3%, query saturation −4.8%, mutation latency −1.7% and −3.9%, every
 interval spanning zero.
 
+**What the always-on half costs, because every application pays it whether or not
+it enables trace storage.** The aggregate observation — the one piece that runs
+on every span in every configuration — measures **0.014–0.019 µs per
+observation**, or roughly 0.12 µs per seven-span operation against a ~126 µs
+baseline. The stored bin budget is not part of that cost: at 2,048 buckets it
+measures 0.0144 µs against 0.0171 at 160 for a single series, and 0.0193 against
+0.0179 across sixty-four, so raising storage resolution to the wire-independent
+number is free either way and the earlier worry about it was unfounded.
+
 **The opt-in's price, published because an operator deserves it before they turn
 it on.** The gate measured it directly, because durable traces were on by default
 for three runs: **p50 up 12–15% and throughput down as much as 12%** on query and
