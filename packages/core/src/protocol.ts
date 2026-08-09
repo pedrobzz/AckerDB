@@ -15,7 +15,11 @@ import {
 } from "./result.ts";
 import { ACKERDB_VERSION } from "./version.ts";
 
-export { ProtocolError } from "./protocol-validation.ts";
+// `FrameSender` is part of the public surface because two exported decoders
+// take it: a shape that travels both ways cannot read its own direction, and a
+// refusal that cannot say which end sent the frame cannot name the two versions
+// in the order its reader expects.
+export { ProtocolError, type FrameSender } from "./protocol-validation.ts";
 
 /**
  * The executable client/server envelope contract. Application arguments,
