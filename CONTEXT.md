@@ -50,6 +50,25 @@ purpose.
 that still enforces the required invariant. AckerDB does not add machinery merely
 to imitate another system or erase an acceptable backend difference.
 
+**Commodity** — Generic, reusable substrate that systems of AckerDB's class
+commonly need and that carries no unique product value: storage, transport,
+signaling, scheduling, retries, auth protocols, serialization.
+
+**Policy** — Product-specific behavior that makes AckerDB distinct: its rules,
+invariants, supported features, public API, and interaction model.
+
+**Converged surface** — One AckerDB definition serving what is normally several
+systems, such as a single procedure observed reactively, exposed over HTTP,
+offered as an MCP tool, and memoized as a durable step.
+
+**Supervised fork** — A vendored or forked third-party implementation under
+AckerDB ownership, pinned to an immutable revision and recording the upstream
+revision it came from.
+
+**Policy–commodity seam** — The narrow interface through which policy uses only
+the capability commodity exposes, and behind which the commodity can be
+replaced without policy surgery.
+
 ## Function outcomes
 
 **Function result** — The typed outcome of a registered query, mutation, or
