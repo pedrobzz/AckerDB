@@ -35,7 +35,7 @@ export type {
   RealtimeCandidatePathDiagnostic,
   RealtimeGlobalResourceLimits,
   RealtimeGlobalResourceSnapshot,
-  RealtimeHealthSnapshot,
+  RealtimePressureSnapshot,
   RealtimeMediaFlowDiagnostic,
   RealtimeNetworkDiagnostic,
   RealtimePeerDiagnostic,

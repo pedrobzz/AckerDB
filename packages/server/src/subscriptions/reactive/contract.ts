@@ -88,50 +88,12 @@ export class ReactiveCommit {
   }
 }
 
-export type ReactiveObservationPhase =
-  | "initial_evaluation"
-  | "invalidation_match"
-  | "revalidation_queue"
-  | "evaluation"
-  | "changed"
-  | "unchanged"
-  | "fanout"
-  | "listener_queue"
-  | "delivery"
-  | "event_match"
-  | "failure";
-
-export type ReactiveObservationOutcome =
-  | "ok"
-  | "changed"
-  | "unchanged"
-  | "matched"
-  | "unmatched"
-  | Outcome["code"];
-
-/** Privacy-safe metadata emitted at the realtime boundary that owns each stage. */
-export interface ReactiveObservation {
-  readonly kind: "query" | "event";
-  readonly phase: ReactiveObservationPhase;
-  readonly outcome: ReactiveObservationOutcome;
-  readonly durationMs: number;
-  readonly address?: string;
-  readonly subscriptionId?: number;
-  readonly commitVersion?: bigint;
-  readonly dependencyCount?: number;
-  readonly resultCount?: number;
-  readonly byteCount?: number;
-}
-
-export type ReactiveObserver = (observation: ReactiveObservation) => unknown;
-
 export interface OrderedReactiveOptions<C> {
   readonly evaluate: QueryEvaluator<C>;
   readonly limits?: ServiceLimits;
   readonly initialVersion?: bigint;
   readonly now?: () => number;
   readonly generation?: () => string;
-  readonly observer?: ReactiveObserver;
 }
 
 export interface ReactiveSnapshot {

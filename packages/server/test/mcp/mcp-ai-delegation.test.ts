@@ -23,14 +23,12 @@ import {
   type McpAiContext,
 } from "../../src/mcp/index.ts";
 import { handleMcpPost } from "../../src/mcp/http.ts";
-import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
@@ -425,23 +423,15 @@ const modules = {
 
 let directory: string;
 let engine: Engine;
-let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-delegation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  telemetry = [];
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
     scopes: VOCABULARY,
-    telemetry: {
-      enabled: true,
-      exporter: { export: (batch) => void telemetry.push(...batch) },
-      localSink: false,
-      limits: { ...PRODUCTION_LIMITS.telemetry, slowOperationMs: 0 },
-    },
   });
   observations = [];
   retainedTools = undefined;
@@ -509,10 +499,6 @@ async function callProcedure(principal: Principal, mode: string): Promise<unknow
     throw new Error(failure.message ?? failure.code);
   }
   return body;
-}
-
-function spans(): TelemetrySpanRecord[] {
-  return telemetry.filter((record): record is TelemetrySpanRecord => record.kind === "span");
 }
 
 async function httpToolCall(
@@ -593,12 +579,6 @@ describe("MCP identity-preserving local delegation", () => {
       expect(fetch).not.toHaveBeenCalled();
       expect(authenticate).not.toHaveBeenCalled();
 
-      await runtime.telemetry.flush();
-      expect(spans()).toContainEqual(expect.objectContaining({
-        function: "api.tools.readOrders",
-        stage: "policy",
-        outcome: "ok",
-      }));
       await expect(retainedTools!.read_orders!.execute({})).rejects.toThrow(
         "no longer active",
       );

@@ -3,11 +3,7 @@ import { MAX_PAGE_BYTES, MAX_PAGE_SIZE } from "@ackerdb/core";
 import { isValidationError, ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
-import {
-  deliverObservation,
-  observeStatement,
-  type DbStatementObserver,
-} from "../statement-observation.ts";
+import { runStatement } from "../transaction-statement.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { markTransactionPoisoned } from "../../runtime/transaction-context.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
@@ -233,7 +229,6 @@ class TableQueryRuntime {
     private readonly reads: ReadRecorder | null,
     private readonly plan: TablePlan,
     private readonly state: QueryState,
-    private readonly observer?: DbStatementObserver,
   ) {}
 
   private next(state: QueryState): TableQueryRuntime {
@@ -243,7 +238,6 @@ class TableQueryRuntime {
       this.reads,
       this.plan,
       state,
-      this.observer,
     );
   }
 
@@ -381,39 +375,18 @@ class TableQueryRuntime {
   }
 
   async collect(): Promise<Record<string, unknown>[]> {
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "collect",
-      () => this.rowsArray(),
-      (rows) => rows.length,
-    );
+    return await runStatement(() => this.rowsArray());
   }
 
   async take(count: number): Promise<Record<string, unknown>[]> {
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new ValidationError(`${this.plan.displayName}.query.take: count must be a non-negative safe integer`);
     }
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "take",
-      () => this.rowsArray(count),
-      (rows) => rows.length,
-    );
+    return await runStatement(() => this.rowsArray(count));
   }
 
   async first(): Promise<Record<string, unknown> | null> {
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "first",
-      () => this.rowsArray(1)[0] ?? null,
-      (row) => row === null ? 0 : 1,
-    );
+    return await runStatement(() => this.rowsArray(1)[0] ?? null);
   }
 
   private uniqueRow(): Record<string, unknown> | null {
@@ -425,14 +398,7 @@ class TableQueryRuntime {
   }
 
   async unique(): Promise<Record<string, unknown> | null> {
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "unique",
-      () => this.uniqueRow(),
-      (row) => row === null ? 0 : 1,
-    );
+    return await runStatement(() => this.uniqueRow());
   }
 
   private aggregateRaw(select: string): unknown {
@@ -451,14 +417,7 @@ class TableQueryRuntime {
   }
 
   async count(): Promise<number> {
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "count",
-      () => Number(this.aggregateRaw("COUNT(*)")),
-      (count) => count,
-    );
+    return await runStatement(() => Number(this.aggregateRaw("COUNT(*)")));
   }
 
   private sumValue(column: string, kind: string): number | bigint {
@@ -492,14 +451,7 @@ class TableQueryRuntime {
       `${this.plan.displayName}.query.sum`,
       SUMMABLE_KINDS,
     );
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "sum",
-      () => this.sumValue(column, kind),
-      () => undefined,
-    );
+    return await runStatement(() => this.sumValue(column, kind));
   }
 
   async avg(callback: unknown): Promise<number | null> {
@@ -509,17 +461,10 @@ class TableQueryRuntime {
       `${this.plan.displayName}.query.avg`,
       SUMMABLE_KINDS,
     );
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "avg",
-      () => {
+    return await runStatement(() => {
         const raw = this.aggregateRaw(`AVG(${quote(column)})`);
         return raw === null ? null : typeof raw === "bigint" ? Number(raw) : (raw as number);
-      },
-      () => undefined,
-    );
+      });
   }
 
   private extremeValue(fn: "MIN" | "MAX", column: string): unknown {
@@ -534,14 +479,7 @@ class TableQueryRuntime {
       `${this.plan.displayName}.query.min`,
       MINMAX_KINDS,
     );
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "min",
-      () => this.extremeValue("MIN", column),
-      () => undefined,
-    );
+    return await runStatement(() => this.extremeValue("MIN", column));
   }
 
   async max(callback: unknown): Promise<unknown> {
@@ -551,40 +489,17 @@ class TableQueryRuntime {
       `${this.plan.displayName}.query.max`,
       MINMAX_KINDS,
     );
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "max",
-      () => this.extremeValue("MAX", column),
-      () => undefined,
-    );
+    return await runStatement(() => this.extremeValue("MAX", column));
   }
 
   async *iter(): AsyncGenerator<Record<string, unknown>> {
-    const startedAt = this.observer === undefined ? 0 : performance.now();
-    let rowCount = 0;
-    let failed = false;
     try {
       for (const row of this.streamRows()) {
-        rowCount++;
         yield row;
       }
     } catch (error) {
-      failed = true;
       markTransactionPoisoned(error);
       throw error;
-    } finally {
-      if (this.observer !== undefined) {
-        deliverObservation(this.observer, {
-          kind: "read",
-          table: this.plan.displayName,
-          statement: "iter",
-          outcome: failed ? "failed" : "ok",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          ...(failed ? {} : { rowCount }),
-        });
-      }
     }
   }
 
@@ -610,14 +525,7 @@ class TableQueryRuntime {
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
       throw new ValidationError(`${this.plan.displayName}.query.paginate: cursor must be a string or null`);
     }
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "paginate",
-      () => this.page(options),
-      (result) => result.items.length,
-    );
+    return await runStatement(() => this.page(options));
   }
 
   private page(options: PaginationOptions): PaginationResult {
@@ -664,7 +572,6 @@ export function createTableQuery(
   conn: Database,
   reads: ReadRecorder | null,
   plan: TablePlan,
-  observer?: DbStatementObserver,
 ): unknown {
   return new TableQueryRuntime(
     engine,
@@ -672,6 +579,5 @@ export function createTableQuery(
     reads,
     plan,
     { predicates: [], order: [] },
-    observer,
   );
 }

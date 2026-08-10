@@ -223,7 +223,6 @@ function spawnServer(dir: string, port: number) {
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);
@@ -258,7 +257,6 @@ async function runCli(args: string[]) {
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);

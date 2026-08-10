@@ -24,11 +24,9 @@ last step can only produce text. The demo uses `N = 16`.
 
 ## Sandboxed CLI tools: materialize eagerly
 
-just-bash blocks `globalThis.performance.now` while `exec()` runs. AckerDB reads
-are telemetry-timed, so *lazy* file providers that query the database from
-inside the sandbox die mid-command (surfacing as `ENOENT`). Materialize every
-workspace file eagerly — inside one `ctx.tx`, before constructing the sandbox
-— so the sandbox only ever touches plain strings. This is also what makes the
+Materialize every workspace file eagerly — inside one `ctx.tx`, before
+constructing the sandbox — so the sandbox only ever touches plain strings and
+does not need a host database capability. This is also what makes the
 workspace transactionally consistent: one snapshot, no torn reads.
 
 ## Dev database across engine-schema bumps

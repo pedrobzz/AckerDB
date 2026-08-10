@@ -120,7 +120,6 @@ class Side {
         BENCH_SIDE: label,
         BENCH_SOURCE_COMMIT: commit,
         BENCH_HARNESS_COMMIT: headCommit,
-        BENCH_TELEMETRY_PROFILE: profile,
         BENCH_PORT: String(port),
         BENCH_OUTPUT: outputPath,
         BENCH_EXECUTION_HOST: executionHost,
@@ -210,7 +209,7 @@ function pairMetrics(
     for (const metric of baseUnit.metrics) {
       const counterpart = headUnit.metrics.find((candidate) => candidate.name === metric.name);
       if (counterpart === undefined) continue;
-      const key = `${baseUnit.unitId} ${metric.name}`;
+      const key = `${baseUnit.unitId}${metric.name}`;
       const entry = series.get(key) ?? { unitId: baseUnit.unitId, metric: metric.name, samples: [] };
       entry.samples.push({ repetition: baseUnit.repetition, base: metric.value, head: counterpart.value });
       series.set(key, entry);
@@ -281,7 +280,7 @@ async function measureProfile(
     await Promise.all([base.stop(), head.stop()]);
   } catch (error) {
     // Whatever failed, neither side may outlive this driver. A server left
-    // holding its port would fail every profile after it with a message about
+    // holding its port would fail the next run with a message about
     // the port rather than about the thing that actually broke.
     await Promise.all([base.kill(), head.kill()]);
     throw error;
@@ -291,16 +290,7 @@ async function measureProfile(
 
 const config = benchmarkConfigFromEnv();
 const units = benchUnits(config);
-const profiles = (process.env.BENCH_TELEMETRY_PROFILES ?? "disabled")
-  .split(",")
-  .map((value) => value.trim()) as AckerDBBenchmarkProfile[];
-if (
-  profiles.length === 0 ||
-  profiles.some((profile) => !["enabled", "exporter", "disabled"].includes(profile)) ||
-  new Set(profiles).size !== profiles.length
-) {
-  throw new Error("BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles");
-}
+const profiles: readonly AckerDBBenchmarkProfile[] = ["default"];
 
 const startedAt = Date.now();
 try {
@@ -332,7 +322,7 @@ try {
     }, null, 2)}\n`,
   );
   process.stderr.write(
-    `paired ${measured.length} telemetry profile(s) over ${REPETITIONS} repetitions in ` +
+    `paired base and head over ${REPETITIONS} repetitions in ` +
       `${Math.round((Date.now() - startedAt) / 1_000)}s\n`,
   );
 } finally {

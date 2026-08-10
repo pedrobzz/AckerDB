@@ -49,7 +49,7 @@ across every dimension of the performance vector:
 | --- | --- |
 | Useful latency and throughput | Fast p50/p95/p99 and high completed useful work for the actual operation, not a synthetic partial path. |
 | Idle cost | Near-zero CPU when there is no work; no background churn, polling, or retained state without a purpose. |
-| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, history, and telemetry must earn their bytes. |
+| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, and history must earn their bytes. |
 | Scale shape | Minimal proportional cost. No global scans, duplicated recomputation, or allocation cliffs. Larger loads may use larger machines. |
 | Tail behavior | A slow consumer, a hot key, a full queue, or a dependency failure gets a bounded typed outcome instead of poisoning unrelated work. |
 | Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
@@ -292,9 +292,6 @@ catches roughly ninety-eight percent of twenty-percent regressions, ninety-three
 percent of fifteen-percent ones, and about one in five below ten, so a green
 check is not a performance verdict: Pedro and an agent still interpret the
 complete vector and anomalies by reasoning before merge.
-Telemetry is disabled unless telemetry-related source changed; only then are
-enabled, exporter, and disabled profiles measured, and that widening is
-load-bearing — the sidecar regression above was invisible with telemetry off.
 A run declares the host it executed on rather than refusing to execute off the
 runner; a paired interleaved comparison is meaningful wherever it runs, but a
 number without a machine beside it is not. Historical files in `bench/results/`

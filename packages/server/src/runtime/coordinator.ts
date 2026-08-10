@@ -1,17 +1,14 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   decode,
   encode,
   uuidV7Timestamp,
   type DurabilityPolicy,
-  type OutcomeCode,
 } from "@ackerdb/core";
 import {
   makeDbWriter,
   newWriteCollector,
   type WriteCollector,
 } from "../database/access.ts";
-import type { DbStatementObserver } from "../database/statement-observation.ts";
 import type { DbWriter } from "../database/query/types.ts";
 import type { Engine } from "../database/engine.ts";
 import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
@@ -22,7 +19,6 @@ import {
   type StagedMutation,
   type StoredMutation,
 } from "../database/mutation-replay.ts";
-import { outcomeFromError } from "./outcome.ts";
 import { isOneTimeResult } from "./one-time-result.ts";
 import type { PublicationReservation } from "../subscriptions/publication.ts";
 import type { Schema } from "../schema/definition.ts";
@@ -33,76 +29,25 @@ import {
   runInTransaction,
 } from "./transaction-context.ts";
 
-const fetchInstrumentation = new AsyncLocalStorage<FetchObserver>();
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
-
-export interface FetchObservation {
-  readonly durationMs: number;
-  readonly outcome: OutcomeCode | "ok";
-}
-
-export type FetchObserver = (observation: Readonly<FetchObservation>) => unknown;
-
-function observeFetch(
-  observer: FetchObserver | undefined,
-  startedAt: number,
-  outcome: FetchObservation["outcome"],
-): void {
-  if (observer === undefined) return;
-  try {
-    const result = fetchInstrumentation.exit(() => observer(Object.freeze({
-      durationMs: Math.max(0, performance.now() - startedAt),
-      outcome,
-    })));
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as PromiseLike<unknown>).then === "function"
-    ) {
-      void Promise.resolve(result).catch(() => {});
-    }
-  } catch {
-    // Fetch telemetry is diagnostic and never owns application work.
-  }
-}
 
 function installFetchGuard(): void {
   if (fetchGuardInstalled) return;
   fetchGuardInstalled = true;
   const original = globalThis.fetch;
   const guarded = ((...args: Parameters<typeof fetch>) => {
-    const observer = fetchInstrumentation.getStore();
-    const startedAt = observer === undefined ? 0 : performance.now();
     if (inTransaction()) {
       const error = new AckerDBError(
         "validation",
         "fetch is not allowed inside a transaction; use a procedure outside ctx.tx",
       );
-      observeFetch(observer, startedAt, error.code);
       return poisonTransaction(error);
     }
-    const request = original(...args);
-    if (observer === undefined) return request;
-    return request.then(
-      (response) => {
-        observeFetch(observer, startedAt, "ok");
-        return response;
-      },
-      (error) => {
-        observeFetch(observer, startedAt, telemetryOutcome(error));
-        throw error;
-      },
-    );
+    return original(...args);
   }) as typeof fetch;
   Object.assign(guarded, original);
   globalThis.fetch = guarded;
-}
-
-/** Correlate outbound fetch work without capturing URLs, headers, or bodies. */
-export function withFetchObserver<T>(observer: FetchObserver, work: () => T): T {
-  installFetchGuard();
-  return fetchInstrumentation.run(observer, work);
 }
 
 export interface IdempotencyIdentity {
@@ -115,7 +60,7 @@ export interface IdempotencyIdentity {
 }
 
 export interface CommitRequest<T, Publication> {
-  readonly operation: "mutation" | "transaction" | "scheduled";
+  readonly operation: CommitOperation;
   readonly fairnessKey: string;
   readonly requestBytes: number;
   readonly deadlineMs?: number;
@@ -123,9 +68,7 @@ export interface CommitRequest<T, Publication> {
   readonly admissionSignal?: AbortSignal;
   /** Cancels a request-owned transaction before BEGIN or COMMIT. */
   readonly transactionSignal?: AbortSignal;
-  readonly telemetry?: CommitTelemetryObserver;
-  readonly statementTelemetry?: DbStatementObserver;
-  /** Restore the request owner's async instrumentation while its writer turn runs. */
+  /** Restore the request owner's async context while its writer turn runs. */
   readonly run?: <R>(work: () => R) => R;
   readonly idempotency?: IdempotencyIdentity;
   readonly work: (db: DbWriter<Schema>, writes: WriteCollector) => T | Promise<T>;
@@ -158,34 +101,12 @@ export interface FrameworkTransactionRequest<T> {
   readonly afterCommit?: (value: T) => void;
 }
 
-export interface CommitTelemetryEvent {
-  readonly operation: "mutation" | "transaction" | "scheduled";
-  readonly stage:
-    | "queue"
-    | "execution"
-    | "storage"
-    | "encoding"
-    | "commit"
-    | "rollback"
-    | "publication";
-  readonly outcome: "ok" | OutcomeCode;
-  readonly durationMs: number;
-  readonly sizeBytes?: number;
-  readonly resultCount?: number;
-  readonly dependencyCount?: number;
-  readonly replayed?: boolean;
-  readonly commitVersion?: bigint;
-  readonly postCommit?: boolean;
-}
-
-export type CommitTelemetryObserver = (
-  event: Readonly<CommitTelemetryEvent>,
-) => void | PromiseLike<void>;
+export type CommitOperation = "mutation" | "transaction" | "scheduled";
 
 export type CommitHookStage = "commit";
 
 export interface CommitHookContext {
-  readonly operation: CommitTelemetryEvent["operation"];
+  readonly operation: CommitOperation;
   readonly commitVersion: bigint;
   readonly postCommit: true;
 }
@@ -235,25 +156,6 @@ function sameIdentity(stored: StoredMutation, incoming: IdempotencyIdentity): bo
   );
 }
 
-function observeCommit(
-  request: Pick<CommitRequest<unknown, unknown>, "operation" | "telemetry">,
-  event: Omit<CommitTelemetryEvent, "operation">,
-): void {
-  if (request.telemetry === undefined) return;
-  try {
-    const result = request.telemetry(Object.freeze({ operation: request.operation, ...event }));
-    if (result && typeof (result as PromiseLike<unknown>).then === "function") {
-      Promise.resolve(result).catch(() => {});
-    }
-  } catch {
-    // Telemetry is diagnostic and never owns transaction correctness.
-  }
-}
-
-function telemetryOutcome(error: unknown): OutcomeCode {
-  return outcomeFromError(error).code;
-}
-
 /** Owns the only writer turn, transaction boundary, durable version, and publication handoff. */
 export class CommitCoordinator<Publication> {
   readonly engine: Engine;
@@ -292,68 +194,28 @@ export class CommitCoordinator<Publication> {
         "cannot open a transaction inside a transaction; compose calls in the current ctx.tx",
       );
     }
-    const queuedAt = performance.now();
-    let admitted = false;
-    let handoff: CommitHandoff<T, Publication>;
-    try {
-      const admittedWork = () => {
-        admitted = true;
-        observeCommit(request, {
-          stage: "queue",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - queuedAt),
-          sizeBytes: request.requestBytes,
-        });
-        return this.commit(request);
-      };
-      const run = request.run;
-      handoff = await this.writer.submit(
-        run === undefined ? admittedWork : () => run(admittedWork),
-        {
-          operation: request.operation,
-          bytes: request.requestBytes,
-          fairnessKey: request.fairnessKey,
-          ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
-          ...(request.admissionSignal === undefined
-            ? {}
-            : { signal: request.admissionSignal }),
-        },
-      );
-    } catch (error) {
-      if (!admitted) {
-        observeCommit(request, {
-          stage: "queue",
-          outcome: telemetryOutcome(error),
-          durationMs: Math.max(0, performance.now() - queuedAt),
-          sizeBytes: request.requestBytes,
-        });
-      }
-      throw error;
-    }
+    const work = () => this.commit(request);
+    const run = request.run;
+    const handoff = await this.writer.submit(
+      run === undefined ? work : () => run(work),
+      {
+        bytes: request.requestBytes,
+        fairnessKey: request.fairnessKey,
+        ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
+        ...(request.admissionSignal === undefined
+          ? {}
+          : { signal: request.admissionSignal }),
+      },
+    );
     if (handoff.completion !== undefined) {
-      const publicationAt = performance.now();
       const completion = await handoff.completion;
       if (!completion.ok) {
-        observeCommit(request, {
-          stage: "publication",
-          outcome: "convergence_unavailable",
-          durationMs: Math.max(0, performance.now() - publicationAt),
-          commitVersion: handoff.result.commitVersion,
-          postCommit: true,
-        });
         throw new AckerDBError(
           "convergence_unavailable",
           "the transaction committed but ordered publication failed",
           { committed: true, cause: completion.cause },
         );
       }
-      observeCommit(request, {
-        stage: "publication",
-        outcome: "ok",
-        durationMs: Math.max(0, performance.now() - publicationAt),
-        commitVersion: handoff.result.commitVersion,
-        postCommit: true,
-      });
     }
     return handoff.result;
   }
@@ -400,7 +262,6 @@ export class CommitCoordinator<Publication> {
         throw error;
       }
     }, {
-      operation: "transaction",
       bytes: request.requestBytes,
       fairnessKey: request.fairnessKey,
       ...(request.admissionSignal === undefined
@@ -426,78 +287,48 @@ export class CommitCoordinator<Publication> {
   ): Promise<CommitHandoff<T, Publication>> {
     const idempotency = request.idempotency;
     if (idempotency) {
-      const replayAt = performance.now();
-      let replayObserved = false;
-      try {
-        if (!Number.isSafeInteger(idempotency.issuedAt) || idempotency.issuedAt < 0) {
-          throw new AckerDBError("validation", "mutation issuedAt must be a non-negative safe integer", {
-            resource: "idempotency",
-          });
-        }
-        this.pruneExpiredMutations();
-        const stored = this.engine[mutationReplayOwner].lookup(
-          idempotency.sessionId,
-          idempotency.requestId,
-        );
-        if (stored) {
-          if (!sameIdentity(stored, idempotency)) {
-            throw conflict("mutation request ID was already used with different semantics");
-          }
-          if (stored.resultDisposition === "one-time") {
-            throw conflict("mutation committed, but its one-time result is no longer available");
-          }
-          observeCommit(request, {
-            stage: "storage",
-            outcome: "ok",
-            durationMs: Math.max(0, performance.now() - replayAt),
-            sizeBytes: stored.resultBytes,
-            replayed: true,
-            commitVersion: stored.commitVersion,
-          });
-          replayObserved = true;
-          return {
-            result: {
-              value: decode(stored.result!) as T,
-              commitVersion: stored.commitVersion,
-              durability: stored.durability,
-              replay: "replayed",
-            },
-          };
-        }
-        const now = this.readNow();
-        const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
-        if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
-          throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
-            resource: "idempotency",
-          });
-        }
-        if (requestCreatedAt < now - this.limits.mutationReplay.maxAgeMs) {
-          throw conflict("mutation request is outside the retained replay window");
-        }
-        if (this.engine[mutationReplayOwner].records >= this.limits.mutationReplay.maxRecords) {
-          throw new AckerDBError("overloaded", "mutation replay capacity is full", {
-            retryable: true,
-            retryAfterMs: 1_000,
-            resource: "idempotency",
-          });
-        }
-        observeCommit(request, {
-          stage: "storage",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - replayAt),
-          replayed: false,
+      if (!Number.isSafeInteger(idempotency.issuedAt) || idempotency.issuedAt < 0) {
+        throw new AckerDBError("validation", "mutation issuedAt must be a non-negative safe integer", {
+          resource: "idempotency",
         });
-        replayObserved = true;
-      } catch (error) {
-        if (!replayObserved) {
-          observeCommit(request, {
-            stage: "storage",
-            outcome: telemetryOutcome(error),
-            durationMs: Math.max(0, performance.now() - replayAt),
-            replayed: false,
-          });
+      }
+      this.pruneExpiredMutations();
+      const stored = this.engine[mutationReplayOwner].lookup(
+        idempotency.sessionId,
+        idempotency.requestId,
+      );
+      if (stored) {
+        if (!sameIdentity(stored, idempotency)) {
+          throw conflict("mutation request ID was already used with different semantics");
         }
-        throw error;
+        if (stored.resultDisposition === "one-time") {
+          throw conflict("mutation committed, but its one-time result is no longer available");
+        }
+        return {
+          result: {
+            value: decode(stored.result!) as T,
+            commitVersion: stored.commitVersion,
+            durability: stored.durability,
+            replay: "replayed",
+          },
+        };
+      }
+      const now = this.readNow();
+      const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
+      if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
+        throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
+          resource: "idempotency",
+        });
+      }
+      if (requestCreatedAt < now - this.limits.mutationReplay.maxAgeMs) {
+        throw conflict("mutation request is outside the retained replay window");
+      }
+      if (this.engine[mutationReplayOwner].records >= this.limits.mutationReplay.maxRecords) {
+        throw new AckerDBError("overloaded", "mutation replay capacity is full", {
+          retryable: true,
+          retryAfterMs: 1_000,
+          resource: "idempotency",
+        });
       }
     }
 
@@ -507,71 +338,34 @@ export class CommitCoordinator<Publication> {
       this.engine,
       writes,
       (table) => this.nextEventSequence(table),
-      request.statementTelemetry,
     ) as DbWriter<Schema>;
     let committed = false;
     let transactionOpen = false;
-    let storageObserved = false;
     let publication: Publication | undefined;
-    const storageAt = performance.now();
     try {
       throwIfAborted(request.transactionSignal);
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
-      const executionAt = request.telemetry === undefined ? undefined : performance.now();
       let value: T;
-      try {
-        value = await runInTransaction(async () => {
-          const settled = await request.work(db, writes);
-          assertTransactionHealthy();
-          return settled;
-        });
-        throwIfAborted(request.transactionSignal);
-        if (request.rollbackWhen?.(value) === true) {
-          if (executionAt !== undefined) {
-            observeCommit(request, {
-              stage: "execution",
-              outcome: "ok",
-              durationMs: Math.max(0, performance.now() - executionAt),
-              dependencyCount: writes.keys.size,
-            });
-          }
-          const rollbackAt = performance.now();
-          this.engine.writer.exec("ROLLBACK");
-          transactionOpen = false;
-          reservation.cancel();
-          observeCommit(request, {
-            stage: "rollback",
-            outcome: "ok",
-            durationMs: Math.max(0, performance.now() - rollbackAt),
-            dependencyCount: writes.keys.size,
-          });
-          let commitVersion = this.engine.commitVersion();
-          if (idempotency !== undefined) {
-            const encodingAt = performance.now();
-            const resultDisposition = isOneTimeResult(writes)
-              ? "one-time"
-              : "replayable";
-            let result: string | undefined;
-            try {
-              if (resultDisposition === "replayable") result = encode(value);
-            } catch (error) {
-              observeCommit(request, {
-                stage: "encoding",
-                outcome: telemetryOutcome(error),
-                durationMs: Math.max(0, performance.now() - encodingAt),
-              });
-              throw error;
-            }
+      value = await runInTransaction(async () => {
+        const settled = await request.work(db, writes);
+        assertTransactionHealthy();
+        return settled;
+      });
+      throwIfAborted(request.transactionSignal);
+      if (request.rollbackWhen?.(value) === true) {
+        this.engine.writer.exec("ROLLBACK");
+        transactionOpen = false;
+        reservation.cancel();
+        let commitVersion = this.engine.commitVersion();
+        if (idempotency !== undefined) {
+          const resultDisposition = isOneTimeResult(writes)
+            ? "one-time"
+            : "replayable";
+          const result = resultDisposition === "replayable" ? encode(value) : undefined;
             const resultBytes = result === undefined
               ? 0
               : this.encoder.encode(result).byteLength;
-            observeCommit(request, {
-              stage: "encoding",
-              outcome: "ok",
-              durationMs: Math.max(0, performance.now() - encodingAt),
-              sizeBytes: resultBytes,
-            });
             if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
               throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
                 retryable: false,
@@ -608,93 +402,25 @@ export class CommitCoordinator<Publication> {
               }
               throw error;
             }
-            commitVersion = staged.commitVersion;
-          }
-          observeCommit(request, {
-            stage: "storage",
-            outcome: "ok",
-            durationMs: Math.max(0, performance.now() - storageAt),
-            dependencyCount: writes.keys.size,
-            replayed: false,
+          commitVersion = staged.commitVersion;
+        }
+        return {
+          result: {
+            value,
             commitVersion,
-          });
-          storageObserved = true;
-          return {
-            result: {
-              value,
-              commitVersion,
-              durability: this.engine.durability,
-              replay: "executed",
-            },
-          };
-        }
-        await request.finalize?.(writes);
-        if (executionAt !== undefined) {
-          observeCommit(request, {
-            stage: "execution",
-            outcome: "ok",
-            durationMs: Math.max(0, performance.now() - executionAt),
-            dependencyCount: writes.keys.size,
-          });
-        }
-      } catch (error) {
-        if (executionAt !== undefined) {
-          observeCommit(request, {
-            stage: "execution",
-            outcome: telemetryOutcome(error),
-            durationMs: Math.max(0, performance.now() - executionAt),
-            dependencyCount: writes.keys.size,
-          });
-        }
-        throw error;
+            durability: this.engine.durability,
+            replay: "executed",
+          },
+        };
       }
-      const publicationAt = performance.now();
-      let publicationBytes: number;
-      try {
-        publicationBytes = this.publicationBytes(writes);
-        reservation.resize(publicationBytes);
-        observeCommit(request, {
-          stage: "publication",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - publicationAt),
-          sizeBytes: publicationBytes,
-          dependencyCount: writes.keys.size,
-          postCommit: false,
-        });
-      } catch (error) {
-        observeCommit(request, {
-          stage: "publication",
-          outcome: telemetryOutcome(error),
-          durationMs: Math.max(0, performance.now() - publicationAt),
-          dependencyCount: writes.keys.size,
-          postCommit: false,
-        });
-        throw error;
-      }
-      const encodingAt = performance.now();
+      await request.finalize?.(writes);
+      reservation.resize(this.publicationBytes(writes));
       let result: string | undefined;
       const resultDisposition = isOneTimeResult(writes) ? "one-time" : "replayable";
       if (idempotency && resultDisposition === "replayable") {
-        try {
-          result = encode(value);
-        } catch (error) {
-          observeCommit(request, {
-            stage: "encoding",
-            outcome: telemetryOutcome(error),
-            durationMs: Math.max(0, performance.now() - encodingAt),
-          });
-          throw error;
-        }
+        result = encode(value);
       }
       const resultBytes = result === undefined ? 0 : this.encoder.encode(result).byteLength;
-      if (idempotency) {
-        observeCommit(request, {
-          stage: "encoding",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - encodingAt),
-          sizeBytes: resultBytes,
-        });
-      }
       if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
         throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
           retryable: false,
@@ -729,70 +455,16 @@ export class CommitCoordinator<Publication> {
       if (commitVersion !== reservation.version) {
         throw new AckerDBError("internal", "storage and publication versions diverged");
       }
-      const descriptorAt = performance.now();
-      try {
-        publication = request.publication(commitVersion, writes);
-        request.validate?.(value, commitVersion, writes, publication);
-        observeCommit(request, {
-          stage: "publication",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - descriptorAt),
-          sizeBytes: publicationBytes,
-          dependencyCount: writes.keys.size,
-          commitVersion,
-          postCommit: false,
-        });
-      } catch (error) {
-        observeCommit(request, {
-          stage: "publication",
-          outcome: telemetryOutcome(error),
-          durationMs: Math.max(0, performance.now() - descriptorAt),
-          sizeBytes: publicationBytes,
-          dependencyCount: writes.keys.size,
-          commitVersion,
-          postCommit: false,
-        });
-        throw error;
-      }
-      observeCommit(request, {
-        stage: "storage",
-        outcome: "ok",
-        durationMs: Math.max(0, performance.now() - storageAt),
-        sizeBytes: resultBytes,
-        dependencyCount: writes.keys.size,
-        commitVersion,
-        replayed: false,
-      });
-      storageObserved = true;
-      const commitAt = performance.now();
-      try {
-        throwIfAborted(request.transactionSignal);
-        this.engine.writer.exec("COMMIT");
-      } catch (error) {
-        observeCommit(request, {
-          stage: "commit",
-          outcome: telemetryOutcome(error),
-          durationMs: Math.max(0, performance.now() - commitAt),
-          sizeBytes: resultBytes,
-          dependencyCount: writes.keys.size,
-          commitVersion,
-        });
-        throw error;
-      }
+      publication = request.publication(commitVersion, writes);
+      request.validate?.(value, commitVersion, writes, publication);
+      throwIfAborted(request.transactionSignal);
+      this.engine.writer.exec("COMMIT");
       transactionOpen = false;
       committed = true;
       this.afterCommit?.(writes, commitVersion);
       if (stagedMutation !== undefined) {
         this.engine[mutationReplayOwner].committed(stagedMutation);
       }
-      observeCommit(request, {
-        stage: "commit",
-        outcome: "ok",
-        durationMs: Math.max(0, performance.now() - commitAt),
-        sizeBytes: resultBytes,
-        dependencyCount: writes.keys.size,
-        commitVersion,
-      });
       if (this.wait !== undefined) {
         try {
           await this.wait("commit", Object.freeze({
@@ -819,19 +491,8 @@ export class CommitCoordinator<Publication> {
         ),
       };
     } catch (error) {
-      if (!storageObserved) {
-        observeCommit(request, {
-          stage: "storage",
-          outcome: telemetryOutcome(error),
-          durationMs: Math.max(0, performance.now() - storageAt),
-          dependencyCount: writes.keys.size,
-          replayed: false,
-        });
-      }
       if (!committed) {
         let rollbackFailed = false;
-        const shouldRollback = transactionOpen;
-        const rollbackAt = performance.now();
         try {
           if (transactionOpen) {
             this.engine.writer.exec("ROLLBACK");
@@ -839,14 +500,6 @@ export class CommitCoordinator<Publication> {
           }
         } catch {
           rollbackFailed = true;
-        }
-        if (shouldRollback) {
-          observeCommit(request, {
-            stage: "rollback",
-            outcome: rollbackFailed ? "indeterminate" : "ok",
-            durationMs: Math.max(0, performance.now() - rollbackAt),
-            dependencyCount: writes.keys.size,
-          });
         }
         reservation.cancel();
         if (rollbackFailed) {

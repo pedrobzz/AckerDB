@@ -162,7 +162,6 @@ const runtime = new Runtime({
   registry: new Registry(functions),
   verifier,
   limits,
-  telemetry: false,
 });
 const server = serve({ runtime, port });
 

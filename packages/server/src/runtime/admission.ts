@@ -1,6 +1,12 @@
 import { validateQueueLimits, type QueueLimits } from "./limits.ts";
 import { AckerDBError } from "../shared/errors.ts";
-import type { TelemetryOperation, TelemetryResource } from "../telemetry/telemetry.ts";
+
+export type AdmissionResource =
+  | "reader"
+  | "writer"
+  | "subscription"
+  | "revalidation"
+  | "publication";
 
 export type AdmissionDiscipline = "fifo" | "round-robin";
 export type AdmissionRejectionReason =
@@ -14,13 +20,12 @@ export type AdmissionRejectionReason =
 export interface AdmissionQueueOptions {
   readonly discipline: AdmissionDiscipline;
   readonly limits: QueueLimits;
-  readonly resource: TelemetryResource;
+  readonly resource: AdmissionResource;
   readonly retryAfterMs?: number;
   readonly now?: () => number;
 }
 
 export interface AdmissionRequestOptions {
-  readonly operation: TelemetryOperation;
   readonly bytes: number;
   readonly fairnessKey?: string;
   readonly deadlineMs?: number;
@@ -29,7 +34,6 @@ export interface AdmissionRequestOptions {
 
 export interface AdmissionLease<T> {
   readonly value: T;
-  readonly operation: TelemetryOperation;
   readonly fairnessKey?: string;
   readonly bytes: number;
   readonly enqueuedAtMs: number;
@@ -49,7 +53,7 @@ export interface AdmissionRejectionTotals {
 
 export interface AdmissionQueueSnapshot {
   readonly discipline: AdmissionDiscipline;
-  readonly resource: TelemetryResource;
+  readonly resource: AdmissionResource;
   readonly queuedItems: number;
   readonly queuedBytes: number;
   readonly oldestAgeMs: number;
@@ -65,11 +69,11 @@ type AdmissionOutcomeCode = "overloaded" | "deadline_exceeded" | "draining" | "u
 
 export class AdmissionRejected extends AckerDBError {
   declare readonly code: AdmissionOutcomeCode;
-  declare readonly resource: TelemetryResource;
+  declare readonly resource: AdmissionResource;
 
   constructor(
     readonly reason: AdmissionRejectionReason,
-    resource: TelemetryResource,
+    resource: AdmissionResource,
     retryAfterMs: number,
   ) {
     const capacity = reason === "items" || reason === "bytes";
@@ -97,7 +101,6 @@ interface FairnessGroup<T> {
 interface PendingAdmission<T> {
   readonly sequence: number;
   readonly value: T;
-  readonly operation: TelemetryOperation;
   readonly fairnessKey?: string;
   readonly bytes: number;
   readonly enqueuedAtMs: number;
@@ -123,7 +126,7 @@ function earlier<T>(left: PendingAdmission<T>, right: PendingAdmission<T>): bool
 export class AdmissionQueue<T> {
   readonly discipline: AdmissionDiscipline;
   readonly limits: QueueLimits;
-  readonly resource: TelemetryResource;
+  readonly resource: AdmissionResource;
 
   private readonly now: () => number;
   private readonly retryAfterMs: number;
@@ -200,7 +203,6 @@ export class AdmissionQueue<T> {
     const entry: PendingAdmission<T> = {
       sequence: ++this.sequence,
       value,
-      operation: options.operation,
       fairnessKey: options.fairnessKey,
       bytes: options.bytes,
       enqueuedAtMs: now,
@@ -250,7 +252,6 @@ export class AdmissionQueue<T> {
 
     const lease = Object.freeze({
       value: entry.value,
-      operation: entry.operation,
       fairnessKey,
       bytes: entry.bytes,
       enqueuedAtMs: entry.enqueuedAtMs,

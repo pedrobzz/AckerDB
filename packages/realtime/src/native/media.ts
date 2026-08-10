@@ -29,7 +29,7 @@ import {
 
 const decodedStreamDropReaders = new WeakMap<object, () => bigint>();
 
-/** Package-internal native media pressure observation for session telemetry. */
+/** Package-internal native media pressure snapshot for runtime status. */
 export function nativeDecodedStreamDrops(resource: object): number | undefined {
   const read = decodedStreamDropReaders.get(resource);
   return read === undefined ? undefined : Number(read());

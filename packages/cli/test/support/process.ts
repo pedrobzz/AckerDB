@@ -4,10 +4,10 @@ import { within } from "ackerdb-test-support/async";
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 
 /**
- * Durable writes with telemetry off, for suites whose subject is neither.
- * A suite that asserts on telemetry or durability must pass its own instead.
+ * Durable writes for suites whose subject is not durability.
+ * A suite that asserts on durability must pass its own instead.
  */
-export const CLI_ENV = { ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" } as const;
+export const CLI_ENV = { ACKERDB_DURABILITY: "production" } as const;
 
 /**
  * A settled `Result` yields its data; anything else passes through. Process

@@ -94,10 +94,6 @@ export interface StartAppOptions<A extends App = App> {
   holdPendingMigrations?: boolean;
   /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
   realtime?: RealtimeRuntimeModule;
-  /** Optional local-journal bounds for application logs and analytics. */
-  telemetryJournal?: RuntimeOptions["telemetryJournal"];
-  /** Provider adapters consuming the local telemetry journal independently. */
-  telemetryExporters?: RuntimeOptions["telemetryExporters"];
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
@@ -438,13 +434,6 @@ export async function startApp<const A extends App = App>(
       ...(resolveScopes === undefined ? {} : { resolveScopes }),
       ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
-      telemetry: config.telemetry === "disabled" ? false : undefined,
-      ...(options.telemetryJournal === undefined
-        ? {}
-        : { telemetryJournal: options.telemetryJournal }),
-      ...(options.telemetryExporters === undefined
-        ? {}
-        : { telemetryExporters: options.telemetryExporters }),
     });
 
     // Administration must exist before anything can be administered, so the
@@ -496,10 +485,7 @@ export async function startApp<const A extends App = App>(
     server.activate(runtime);
     activated = true;
 
-    console.log(`@@ackerdb-startup ${JSON.stringify({
-      telemetry: config.telemetry,
-      durability: config.durability,
-    })}`);
+    console.log(`@@ackerdb-startup ${JSON.stringify({ durability: config.durability })}`);
     const displayHostname = server.hostname.includes(":")
       ? `[${server.hostname}]`
       : server.hostname;

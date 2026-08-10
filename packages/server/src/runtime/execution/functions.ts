@@ -55,12 +55,8 @@ import {
   type Subscriber,
 } from "../../subscriptions/reactive/contract.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
-import type { ApplicationSignals } from "../../telemetry/application-signals/application-signals.ts";
-import type {
-  AnalyticsEventRecord,
-  ApplicationLogger,
-} from "../../telemetry/application-signals/types.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
+import type { Analytics } from "../../signals/analytics.ts";
+import type { Logger } from "../../signals/logger.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   CommitCoordinator,
@@ -72,16 +68,13 @@ import {
   assertWriterAvailable,
   runInInvocationRoot,
   withMutationAccess,
-  withTransactionAnalytics,
 } from "../invocation-state.ts";
 import { createMutationInvocationScope } from "../mutation-scope.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
-import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
 import {
   JobRunsStore,
   JobsStore,
-  dueJobStats,
   nextDueJobAt,
   readJobRow,
   readJobRunRow,
@@ -182,10 +175,8 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly limits: ServiceLimits;
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
-  readonly telemetry: Telemetry;
-  readonly tracing: RuntimeTraceBridge;
-  readonly applicationSignals: ApplicationSignals;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
+  readonly analytics: Analytics;
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
   /** Application scopes plus the framework's: what a credential grant expands against. */
@@ -214,12 +205,10 @@ export interface RuntimeFunctionExecutorOptions<C> {
 export class RuntimeFunctionExecutor<C> {
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly fileProcedures: FileProcedureRuntime;
-  private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
   /**
    * Where one commit's committed authority changes are published. The commit
    * request knows its origin and the post-commit handoff only sees the write
-   * set, so the two meet on the collector the turn already owns — the same
-   * shape staged analytics use, for the same reason.
+   * set, so the two meet on the collector the turn already owns.
    */
   private readonly authInvalidationByWrites =
     new WeakMap<WriteCollector, (account: ExternalAccount) => void>();
@@ -230,19 +219,13 @@ export class RuntimeFunctionExecutor<C> {
       engine: options.engine,
       limits: options.limits,
       reservePublication: (bytes) => options.reactive.publication.reserve(bytes),
-      afterCommit: (writes, commitVersion) => {
-        options.files.observability.committed(writes.fileObservability);
+      afterCommit: (writes) => {
         if (writes.fileCleanupAt !== null) options.files.scheduleCleanupAt(writes.fileCleanupAt);
         const credentialInvalidations = takeCredentialInvalidations(writes);
         if (credentialInvalidations.length > 0) {
           const publish = this.authInvalidationByWrites.get(writes)
             ?? options.publishAuthInvalidation;
           for (const account of credentialInvalidations) publish(account);
-        }
-        const analytics = this.analyticsByWrites.get(writes);
-        if (analytics !== undefined) {
-          this.analyticsByWrites.delete(writes);
-          options.applicationSignals.commitAnalytics(analytics, commitVersion);
         }
       },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
@@ -300,7 +283,6 @@ export class RuntimeFunctionExecutor<C> {
     work: (db: unknown) => T | Promise<T>,
   ): Promise<T> {
     return this.options.reads.execute(
-      "query",
       "system:files",
       signal,
       1,
@@ -309,7 +291,6 @@ export class RuntimeFunctionExecutor<C> {
         this.options.engine,
         execution.connection,
         null,
-        execution.statementObserver,
       )),
     );
   }
@@ -347,12 +328,10 @@ export class RuntimeFunctionExecutor<C> {
         account.subject,
       ),
       {
-        operation: "transaction",
         bytes: requestBytes,
         fairnessKey,
         signal,
       },
-      false,
     );
     if (existing !== null) return existing;
     return this.coordinator.transactFramework({
@@ -374,7 +353,6 @@ export class RuntimeFunctionExecutor<C> {
       this.options.engine,
       execution.connection,
       execution.reads,
-      execution.statementObserver,
     );
     const timestamp = this.readNow();
     const context = this.hostQueryContext(db, principal, timestamp, execution);
@@ -419,7 +397,7 @@ export class RuntimeFunctionExecutor<C> {
       abortSignal: signal,
       timestamp,
       tx: async <R>(work: (ctx: TxCtx) => R): Promise<Awaited<R>> =>
-        await this.inTransactionTrace(() => this.executeWrite(
+        await this.executeWrite(
           "transaction",
           fairnessKey,
           signal,
@@ -428,7 +406,7 @@ export class RuntimeFunctionExecutor<C> {
             const context = Object.freeze({
               db,
               auth: principal,
-              analytics: this.options.applicationSignals.analyticsFor(principal),
+              analytics: this.options.analytics,
               log: this.options.log,
               timestamp,
             }) as TxCtx;
@@ -445,7 +423,7 @@ export class RuntimeFunctionExecutor<C> {
               return poisonCurrentInvocation(error);
             }
           },
-        )) as Awaited<R>,
+        ) as Awaited<R>,
     });
   }
 
@@ -482,7 +460,7 @@ export class RuntimeFunctionExecutor<C> {
       : () => timestamp;
     const initialTimestamp = currentTimestamp();
     const plugins = this.options.pluginRuntime?.bindProcedure({
-      invocation: this.pluginInvocationCapabilities(principal, initialTimestamp),
+      invocation: this.pluginInvocationCapabilities(initialTimestamp),
       abortSignal: signal,
       runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
       runMutation: (work) => this.executePluginWrite(
@@ -511,7 +489,7 @@ export class RuntimeFunctionExecutor<C> {
       files: this.fileProcedures.capability(principal, signal),
       ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
-        this.inTransactionTrace(() => this.executeWrite(
+        this.executeWrite(
           "transaction",
           fairnessKey,
           signal,
@@ -541,7 +519,7 @@ export class RuntimeFunctionExecutor<C> {
                 }
               }));
           },
-        )),
+        ),
       ...(surface === "http" ? {} : {
         linkAccount: (rawBearerToken: string) => this.linkAccount(
           principal,
@@ -576,7 +554,7 @@ export class RuntimeFunctionExecutor<C> {
   ): QueryCtx {
     const plugins = this.options.pluginRuntime?.bindQuery({
       ...execution,
-      invocation: this.pluginInvocationCapabilities(principal, timestamp),
+      invocation: this.pluginInvocationCapabilities(timestamp),
     }) ?? {};
     return Object.freeze({
       db: applicationDatabase(db),
@@ -594,32 +572,23 @@ export class RuntimeFunctionExecutor<C> {
     principal: Principal,
     timestamp: number,
     writes: WriteCollector,
-    attribution?: { functionAddress: string; functionKind: string },
     extras?: Record<string, unknown>,
   ): MutationCtx {
-    const analytics = this.options.applicationSignals.analyticsFor(principal, attribution);
     const plugins = this.options.pluginRuntime?.bindMutation({
       writes,
-      invocation: this.pluginInvocationCapabilities(principal, timestamp),
-      ...(this.options.telemetry.enabled
-        ? { statementObserver: this.options.tracing.observeStatement }
-        : {}),
+      invocation: this.pluginInvocationCapabilities(timestamp),
     }) ?? {};
     return Object.freeze({
       ...extras,
       db: applicationDatabase(db),
       auth: principal,
-      analytics,
+      analytics: this.options.analytics,
       log: this.options.log,
       timestamp,
       jobs: mutationJobsNamespace(
         this.options.jobs(),
         db,
-        new JobsStore(
-          this.options.engine,
-          writes,
-          this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
-        ),
+        new JobsStore(this.options.engine, writes),
       ),
       files: this.options.files.mutation(db, principal, timestamp, (at) => {
         writes.fileCleanupAt = writes.fileCleanupAt === null
@@ -666,18 +635,12 @@ export class RuntimeFunctionExecutor<C> {
       transactionSignal: request.transactionSignal,
       idempotency: request.idempotency,
       validate: request.validate,
-      ...(this.options.telemetry.enabled
-        ? {
-            telemetry: this.options.tracing.observeCommit,
-            statementTelemetry: this.options.tracing.observeStatement,
-          }
-        : {}),
       run: AsyncLocalStorage.snapshot(),
       work: (db, writes) => {
         if (request.publishAuthInvalidation !== undefined) {
           this.authInvalidationByWrites.set(writes, request.publishAuthInvalidation);
         }
-        return this.withStagedAnalytics(writes, () => request.work(db, writes));
+        return request.work(db, writes);
       },
       rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
@@ -687,24 +650,6 @@ export class RuntimeFunctionExecutor<C> {
     });
     if (scheduledTables.size > 0) this.options.armJobs();
     return result;
-  }
-
-  private withStagedAnalytics<T>(
-    writes: WriteCollector,
-    work: () => T | Promise<T>,
-  ): Promise<T> {
-    const analytics: AnalyticsEventRecord[] = [];
-    this.analyticsByWrites.set(writes, analytics);
-    return withTransactionAnalytics(analytics, async () => {
-      try {
-        const value = await work();
-        if (isResult(value) && !value.ok) analytics.length = 0;
-        return value;
-      } catch (error) {
-        analytics.length = 0;
-        throw error;
-      }
-    });
   }
 
   private async executeWrite<T>(
@@ -745,12 +690,9 @@ export class RuntimeFunctionExecutor<C> {
       signal,
       1,
       (db, writes) => {
-        const observer = this.options.telemetry.enabled
-          ? this.options.tracing.observeStatement
-          : undefined;
         const surface: JobsWriteSurface = {
-          jobs: new JobsStore(this.options.engine, writes, observer),
-          runs: new JobRunsStore(this.options.engine, writes, observer),
+          jobs: new JobsStore(this.options.engine, writes),
+          runs: new JobRunsStore(this.options.engine, writes),
           savepoint: () => {
             const checkpoint = checkpointWriteCollector(writes);
             this.options.engine.writer.exec("SAVEPOINT ackerdb_job_handler");
@@ -779,7 +721,6 @@ export class RuntimeFunctionExecutor<C> {
               SYSTEM_PRINCIPAL,
               this.readNow(),
               writes,
-              { functionAddress: jobAddress, functionKind: "job" },
               { runNumber },
             ) as MutationCtx & { readonly runNumber: number };
             return await this.bindCredentialContext(
@@ -814,24 +755,13 @@ export class RuntimeFunctionExecutor<C> {
     return nextDueJobAt(this.options.engine, connection, inProcessIds, notBefore);
   }
 
-  dueJobStats(connection: Database, now: number) {
-    return dueJobStats(this.options.engine, connection, now);
-  }
-
-  private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {
-    const scope = this.options.tracing.currentScope();
-    return scope === undefined
-      ? work()
-      : this.options.tracing.runScope({ ...scope, operation: "transaction" }, work);
-  }
-
   private executePluginQuery<T>(
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T> {
-    return this.options.reads.execute("query", fairnessKey, signal, requestBytes, null, work);
+    return this.options.reads.execute(fairnessKey, signal, requestBytes, null, work);
   }
 
   private executePluginWrite<T>(
@@ -846,14 +776,9 @@ export class RuntimeFunctionExecutor<C> {
       fairnessKey,
       signal,
       requestBytes,
-      (_db, writes) => work(Object.freeze({
-        writes,
-        ...(this.options.telemetry.enabled
-          ? { statementObserver: this.options.tracing.observeStatement }
-          : {}),
-      })),
+      (_db, writes) => work(Object.freeze({ writes })),
     );
-    return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
+    return execute();
   }
 
   private async linkAccount(
@@ -946,19 +871,11 @@ export class RuntimeFunctionExecutor<C> {
     }
   }
 
-  private pluginInvocationCapabilities(
-    principal: Principal,
-    timestamp: number,
-  ): Readonly<PluginInvocationCapabilities> {
+  private pluginInvocationCapabilities(timestamp: number): Readonly<PluginInvocationCapabilities> {
     return Object.freeze({
       timestamp,
-      log: (functionAddress, functionKind) =>
-        this.options.applicationSignals.forFunction(functionAddress, functionKind),
-      analytics: (functionAddress, functionKind) =>
-        this.options.applicationSignals.analyticsFor(principal, {
-          functionAddress,
-          functionKind,
-        }),
+      log: () => this.options.log,
+      analytics: () => this.options.analytics,
     } satisfies PluginInvocationCapabilities);
   }
 

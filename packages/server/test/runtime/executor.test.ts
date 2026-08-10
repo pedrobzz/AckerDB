@@ -32,11 +32,11 @@ describe("BoundedExecutor", () => {
       await gate;
       order.push("first-end");
       return 1;
-    }, { operation: "mutation", bytes: 1 });
+    }, { bytes: 1 });
     const second = executor.submit(() => {
       order.push("second");
       return 2;
-    }, { operation: "mutation", bytes: 1 });
+    }, { bytes: 1 });
 
     await Promise.resolve();
     expect(executor.snapshot()).toMatchObject({ active: 1, admitted: 1, completed: 0 });
@@ -59,9 +59,9 @@ describe("BoundedExecutor", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const active = executor.submit(() => gate, { operation: "query", bytes: 1 });
-    const queued = executor.submit(() => 2, { operation: "query", bytes: 2 });
-    const rejected = executor.submit(() => 3, { operation: "query", bytes: 1 });
+    const active = executor.submit(() => gate, { bytes: 1 });
+    const queued = executor.submit(() => 2, { bytes: 2 });
+    const rejected = executor.submit(() => 3, { bytes: 1 });
     await expect(rejected).rejects.toMatchObject({
       code: "overloaded",
       resource: "reader",
@@ -87,16 +87,15 @@ describe("BoundedExecutor", () => {
       () => new Promise<void>((resolve) => {
         release = resolve;
       }),
-      { operation: "mutation", bytes: 1 },
+      { bytes: 1 },
     );
     const expires = executor.submit(() => 2, {
-      operation: "mutation",
       bytes: 1,
       deadlineMs: 5,
     });
 
     const overloaded = await rejectionOf(
-      executor.submit(() => 3, { operation: "mutation", bytes: 1 }),
+      executor.submit(() => 3, { bytes: 1 }),
     );
     expect(overloaded).toBeInstanceOf(AdmissionRejected);
     expect(outcomeFromError(overloaded)).toEqual({
@@ -118,7 +117,7 @@ describe("BoundedExecutor", () => {
       message: "Admission rejected: deadline",
     });
 
-    const closes = executor.submit(() => 4, { operation: "mutation", bytes: 1 });
+    const closes = executor.submit(() => 4, { bytes: 1 });
     executor.close();
     const draining = await rejectionOf(closes);
     expect(draining).toBeInstanceOf(AdmissionRejected);
@@ -146,10 +145,9 @@ describe("BoundedExecutor", () => {
       () => new Promise<void>((resolve) => {
         release = resolve;
       }),
-      { operation: "query", bytes: 1, fairnessKey: "a" },
+      { bytes: 1, fairnessKey: "a" },
     );
     const queued = executor.submit(() => 2, {
-      operation: "query",
       bytes: 1,
       fairnessKey: "b",
     });
@@ -166,7 +164,7 @@ describe("BoundedExecutor", () => {
     await drain;
     expect(drained).toBe(true);
     await expect(
-      executor.submit(() => 3, { operation: "query", bytes: 1, fairnessKey: "c" }),
+      executor.submit(() => 3, { bytes: 1, fairnessKey: "c" }),
     ).rejects.toMatchObject({ code: "draining" });
   });
 });

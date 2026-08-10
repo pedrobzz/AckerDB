@@ -116,7 +116,7 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
         principal: options.principal,
         signal: AbortSignal.any([options.signal, extra.signal]),
         fairnessKey: options.fairnessKey,
-      }, options.bytes, undefined, options.invalidations));
+      }, options.bytes, options.invalidations));
       return {
         content: result.content,
         ...(result.structuredContent === undefined

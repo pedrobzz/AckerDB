@@ -42,7 +42,6 @@ import {
 } from "./tables.ts";
 import type { FileStore } from "./store/contract.ts";
 import { checkedFileText } from "./text.ts";
-import { FileObservability } from "./observability.ts";
 
 export const DEFAULT_FILE_MAX_BYTES = 1024 ** 3;
 export const HARD_FILE_MAX_BYTES = 5 * 1024 ** 3;
@@ -255,10 +254,7 @@ export class RuntimeFiles {
   readonly store: FileStore | undefined;
   private scheduleCleanup: (at: number) => void = () => {};
 
-  constructor(
-    options: RuntimeFilesOptions = {},
-    readonly observability: FileObservability,
-  ) {
+  constructor(options: RuntimeFilesOptions = {}) {
     this.publicUrl = filePublicUrl(options.publicUrl);
     const maxBytes = options.maxBytes ?? DEFAULT_FILE_MAX_BYTES;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > HARD_FILE_MAX_BYTES) {

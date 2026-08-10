@@ -8,7 +8,6 @@ import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits
 import { serve } from "../../src/transport/server.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
-import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 import {
   cleanupCredentialFixtures,
   databasePath,
@@ -191,7 +190,7 @@ interface Harness {
 function startHarness(
   maxOperations = 8,
   maxOperationsPerCaller = 4,
-  telemetry: RuntimeOptions["telemetry"] = false,
+  analyticsStrategy?: RuntimeOptions["analyticsStrategy"],
 ): Harness {
   const limits = defineServiceLimits({
     ...PRODUCTION_LIMITS,
@@ -207,7 +206,7 @@ function startHarness(
     databasePath("ackerdb-mcp-runtime-"),
     undefined,
     ownershipModules,
-    { limits, telemetry },
+    { limits, analyticsStrategy },
   );
   const server = serve({ runtime: value.runtime, port: 0 });
   trackCleanup(() => server.drain());
@@ -412,24 +411,12 @@ describe("MCP Runtime ownership", () => {
     await expectIdle(value);
   });
 
-  test("keeps nested invocations and a transaction under one traced Runtime lease", async () => {
-    const exported: TelemetryRecord[] = [];
+  test("keeps nested invocations and a transaction under one Runtime lease", async () => {
+    const analytics: string[] = [];
     const value = startHarness(4, 2, {
-      enabled: true,
-      exporter: { export: (records) => void exported.push(...records) },
-      localSink: false,
-      limits: {
-        ...PRODUCTION_LIMITS.telemetry,
-        maxMetricSeries: 32,
-        slowOperationMs: 0,
-        sampleIntervalMs: 60_000,
-        batchIntervalMs: 60_000,
-      },
+      track: (event) => analytics.push(event),
     });
     const [token] = await tokens(value, "nested", ["Nested"]);
-    const principal = await value.runtime.authenticateCredential(token!, "nested-analytics") as {
-      readonly identity: bigint;
-    };
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
       value: "private-nested-value",
@@ -452,34 +439,7 @@ describe("MCP Runtime ownership", () => {
     });
     await expectIdle(value);
 
-    await value.runtime.telemetry.flush();
-    const spans = exported.filter((record) => record.kind === "span");
-    const root = spans.find((span) =>
-      span.function === "ownership:nested_ownership_write" && span.stage === "admission"
-    );
-    expect(root).toBeDefined();
-    for (const fn of ["api.ownership.insertOwnershipRecord", "api.ownership.countOwnershipRecords"]) {
-      const nested = spans.find((span) => span.function === fn && span.stage === "handler");
-      expect(nested, fn).toBeDefined();
-      expect(nested?.traceId, fn).toBe(root?.traceId);
-    }
-    const observed = JSON.stringify({
-      exported,
-      aggregates: value.runtime.status().telemetryAggregates,
-      snapshot: value.runtime.status().telemetry,
-    });
-    expect(observed).not.toContain(token!);
-    expect(observed).not.toContain("private-nested-value");
-    expect(value.runtime.status().telemetryAggregates.series.length).toBeLessThanOrEqual(32);
-    await value.runtime.telemetryJournal.flush();
-    const analytics = value.runtime.telemetryJournal.readBatch(0n, 16)
-      .filter((record) => record.kind === "analytics");
-    expect(analytics).toHaveLength(1);
-    expect(analytics[0]).toMatchObject({
-      event: "ownership record inserted",
-      functionAddress: "api.ownership.insertOwnershipRecord",
-      identity: principal.identity,
-    });
+    expect(analytics).toEqual(["ownership record inserted"]);
   });
 
   test("cancels queued contention and preserves commit/rollback ownership", async () => {

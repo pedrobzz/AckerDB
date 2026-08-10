@@ -11,24 +11,13 @@ import { emitFullTextWriteKeys, emitWriteKeys, idKey } from "./keys.ts";
 import { createTableQuery } from "./query/query.ts";
 import { createNearestQuery } from "./query/nearest.ts";
 import { createFullTextQuery } from "./query/full-text.ts";
-import {
-  observeStatement,
-  type DbStatementObserver,
-} from "./statement-observation.ts";
+import { runStatement } from "./transaction-statement.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
 import { decode, stableEncode } from "@ackerdb/core";
 import { JOB_RUNS_TABLE, JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
 import { hashJobArgs } from "../jobs/identity.ts";
 import { FILES_TABLE } from "../files/tables.ts";
-import {
-  checkpointFileObservability,
-  newFileObservabilityDelta,
-  rollbackFileObservability,
-  stageFileObservability,
-  type FileObservabilityCheckpoint,
-  type FileObservabilityDelta,
-} from "../files/observability.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -61,8 +50,6 @@ export interface WriteCollector {
   scheduledTables: Set<string>;
   /** Earliest post-commit wake requested by transactional File state. */
   fileCleanupAt: number | null;
-  /** Framework File state staged until the enclosing database COMMIT succeeds. */
-  fileObservability: FileObservabilityDelta;
   /**
    * Credential token ids whose authority this transaction changed, published as
    * account invalidations after commit. They live here, with every other
@@ -77,7 +64,6 @@ export interface WriteCollectorCheckpoint {
   readonly events: number;
   readonly scheduledTables: number;
   readonly fileCleanupAt: number | null;
-  readonly fileObservability: FileObservabilityCheckpoint;
   readonly credentialInvalidations: number;
 }
 
@@ -114,7 +100,6 @@ export function checkpointWriteCollector(
     events: writes.events.length,
     scheduledTables: scheduledTables.checkpoint(),
     fileCleanupAt: writes.fileCleanupAt,
-    fileObservability: checkpointFileObservability(writes.fileObservability),
     credentialInvalidations: writes.credentialInvalidations.length,
   };
 }
@@ -132,7 +117,6 @@ export function rollbackWriteCollector(
   writes.events.length = checkpoint.events;
   scheduledTables.rollback(checkpoint.scheduledTables);
   writes.fileCleanupAt = checkpoint.fileCleanupAt;
-  rollbackFileObservability(writes.fileObservability, checkpoint.fileObservability);
   writes.credentialInvalidations.length = checkpoint.credentialInvalidations;
 }
 
@@ -151,17 +135,11 @@ function readMethods(
   conn: Database,
   reads: ReadRecorder | null,
   plan: TablePlan,
-  observer?: DbStatementObserver,
 ) {
   const accessor: Record<string, unknown> = Object.assign(Object.create(null), {
     async get(id: unknown): Promise<Record<string, unknown> | null> {
       assertMutationAccess();
-      return await observeStatement(
-        observer,
-        "read",
-        plan.displayName,
-        "get",
-        () => {
+      return await runStatement(() => {
           if (typeof id !== "bigint") {
             throw new ValidationError(`${plan.displayName}.get: expected a bigint id`);
           }
@@ -173,22 +151,20 @@ function readMethods(
             )
             .get(id as never) as Record<string, unknown> | null;
           return raw === null ? null : engine.rowFromSql(plan, raw);
-        },
-        (row) => row === null ? 0 : 1,
-      );
+        });
     },
     query(): unknown {
       assertMutationAccess();
-      return createTableQuery(engine, conn, reads, plan, observer);
+      return createTableQuery(engine, conn, reads, plan);
     },
   });
   if (plan.hasVectorColumns) {
     accessor["nearest"] = (column: unknown, query: unknown, options: unknown): unknown =>
-      createNearestQuery(engine, conn, reads, plan, column, query, options, observer);
+      createNearestQuery(engine, conn, reads, plan, column, query, options);
   }
   if (plan.fullText.length > 0) {
     accessor["fullText"] = (column: unknown, query: unknown): unknown =>
-      createFullTextQuery(engine, conn, reads, plan, column, query, observer);
+      createFullTextQuery(engine, conn, reads, plan, column, query);
   }
   return accessor;
 }
@@ -261,20 +237,10 @@ function makeWriteResult<T>(
   return main;
 }
 
-function observedWriteResult<T>(
-  observer: DbStatementObserver | undefined,
-  table: string,
-  statement: string,
+function statementResult<T>(
   work: () => WriteOutcome<T> | Promise<WriteOutcome<T>>,
 ): AnyWriteResult<T> {
-  return makeWriteResult(() => observeStatement(
-    observer,
-    "write",
-    table,
-    statement,
-    work,
-    (outcome) => outcome.row === null ? 0 : 1,
-  ));
+  return makeWriteResult(() => runStatement(work));
 }
 
 /**
@@ -374,7 +340,6 @@ function updateRow(
   emitWriteKeys(plan, input.oldRow, writes.keys);
   emitWriteKeys(plan, updated, writes.keys);
   emitFullTextWriteKeys(plan, input.oldRow, updated, writes.keys);
-  stageFileObservability(writes.fileObservability, plan.logicalName, input.oldRow, updated);
   if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
   return { value: undefined, row: updated };
 }
@@ -383,7 +348,6 @@ function writeMethods(
   engine: Engine,
   writes: WriteCollector,
   plan: TablePlan,
-  observer?: DbStatementObserver,
 ) {
   const conn = engine.writer;
   const touch = () => {
@@ -403,7 +367,7 @@ function writeMethods(
   return {
     insert(row: unknown): AnyWriteResult<bigint> {
       assertMutationAccess();
-      return observedWriteResult(observer, plan.displayName, "insert", () => {
+      return statementResult(() => {
         const values = checkFullRow(plan, row, "insert");
         const { sql, bind } = engine.insertSql(plan);
         let inserted: { [k: string]: unknown };
@@ -417,7 +381,6 @@ function writeMethods(
         claimFileReferences(engine, writes, plan, full);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, null, full, writes.keys);
-        stageFileObservability(writes.fileObservability, plan.logicalName, null, full);
         touch();
         return { value: id, row: full };
       });
@@ -425,7 +388,7 @@ function writeMethods(
 
     patch(id: bigint, partial: unknown): AnyWriteResult<void> {
       assertMutationAccess();
-      return observedWriteResult(observer, plan.displayName, "patch", () => {
+      return statementResult(() => {
         const old = getRow(id);
         if (old === null) throw new Error(`${plan.displayName}.patch: row ${id} not found`);
         return updateRow(engine, writes, plan, { id, oldRow: old, partial });
@@ -434,7 +397,7 @@ function writeMethods(
 
     replace(id: bigint, row: unknown): AnyWriteResult<void> {
       assertMutationAccess();
-      return observedWriteResult(observer, plan.displayName, "replace", () => {
+      return statementResult(() => {
         const values = checkFullRow(plan, row, "replace");
         const old = getRow(id);
         if (old === null) throw new Error(`${plan.displayName}.replace: row ${id} not found`);
@@ -460,7 +423,6 @@ function writeMethods(
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, full, writes.keys);
         emitFullTextWriteKeys(plan, old, full, writes.keys);
-        stageFileObservability(writes.fileObservability, plan.logicalName, old, full);
         touch();
         return { value: undefined, row: full };
       });
@@ -468,7 +430,7 @@ function writeMethods(
 
     delete(id: bigint): AnyWriteResult<void> {
       assertMutationAccess();
-      return observedWriteResult(observer, plan.displayName, "delete", () => {
+      return statementResult(() => {
         const old = getRow(id);
         if (old === null) return { value: undefined, row: null }; // idempotent under retry
         engine
@@ -476,7 +438,6 @@ function writeMethods(
           .run(id as never);
         emitWriteKeys(plan, old, writes.keys);
         emitFullTextWriteKeys(plan, old, null, writes.keys);
-        stageFileObservability(writes.fileObservability, plan.logicalName, old, null);
         touch();
         return { value: undefined, row: old };
       });
@@ -484,12 +445,7 @@ function writeMethods(
 
     async deleteMany(ids: unknown): Promise<number> {
       assertMutationAccess();
-      return await observeStatement(
-        observer,
-        "write",
-        plan.displayName,
-        "deleteMany",
-        () => {
+      return await runStatement(() => {
           if (!Array.isArray(ids)) {
             throw new ValidationError(`${plan.displayName}.deleteMany: expected an array of bigint ids`);
           }
@@ -518,13 +474,10 @@ function writeMethods(
             const row = engine.rowFromSql(plan, raw);
             emitWriteKeys(plan, row, writes.keys);
             emitFullTextWriteKeys(plan, row, null, writes.keys);
-            stageFileObservability(writes.fileObservability, plan.logicalName, row, null);
           }
           if (rawRows.length > 0) touch();
           return rawRows.length;
-        },
-        (deleted) => deleted,
-      );
+        });
     },
   };
 }
@@ -535,7 +488,6 @@ function attachUpsert(
   plan: TablePlan,
   accessor: Record<string, unknown>,
   childWriter: ReturnType<typeof writeMethods>,
-  observer?: DbStatementObserver,
 ): void {
   const candidates = plan.indexes.filter(
     (index) =>
@@ -544,7 +496,7 @@ function attachUpsert(
   if (candidates.length === 0) return;
   accessor["upsert"] = (key: unknown, values: unknown): AnyWriteResult<bigint> => {
     assertMutationAccess();
-    return observedWriteResult(observer, plan.displayName, "upsert", async () => {
+    return statementResult(async () => {
       if (key === null || typeof key !== "object" || Array.isArray(key)) {
         throw new ValidationError(`${plan.displayName}.upsert: expected a key object`);
       }
@@ -675,12 +627,11 @@ export function makeDbReader(
   engine: Engine,
   conn: Database,
   reads: ReadRecorder | null,
-  observer?: DbStatementObserver,
   scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
   for (const plan of scope.plans.values()) {
-    db[plan.logicalName] = readMethods(engine, conn, reads, plan, observer);
+    db[plan.logicalName] = readMethods(engine, conn, reads, plan);
   }
   return db;
 }
@@ -775,7 +726,6 @@ export function makeDbWriter(
   engine: Engine,
   writes: WriteCollector,
   nextEventId: (table: string) => bigint,
-  observer?: DbStatementObserver,
   scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
@@ -785,8 +735,8 @@ export function makeDbWriter(
       continue;
     }
     const plan = scope.plan(name);
-    const writer = writeMethods(engine, writes, plan, observer);
-    const reader = readMethods(engine, engine.writer, null, plan, observer);
+    const writer = writeMethods(engine, writes, plan);
+    const reader = readMethods(engine, engine.writer, null, plan);
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),
       reader,
@@ -800,10 +750,7 @@ export function makeDbWriter(
           : writer,
     );
     if (name !== JOBS_TABLE && name !== JOB_RUNS_TABLE) {
-      const upsertWriter = observer === undefined
-        ? writer
-        : writeMethods(engine, writes, plan);
-      attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+      attachUpsert(engine, writes, plan, accessor, writer);
     }
     db[name] = accessor;
   }
@@ -842,10 +789,9 @@ export function makeFrameworkTableWriter(
   engine: Engine,
   writes: WriteCollector,
   table: string,
-  observer?: DbStatementObserver,
 ): ReturnType<typeof writeMethods> & { plan: TablePlan } {
   const plan = engine.rootScope.plan(table);
-  return Object.assign(writeMethods(engine, writes, plan, observer), { plan });
+  return Object.assign(writeMethods(engine, writes, plan), { plan });
 }
 
 export function newWriteCollector(): WriteCollector {
@@ -854,7 +800,6 @@ export function newWriteCollector(): WriteCollector {
     events: [],
     scheduledTables: new JournaledSet(),
     fileCleanupAt: null,
-    fileObservability: newFileObservabilityDelta(),
     credentialInvalidations: [],
   };
 }

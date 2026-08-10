@@ -25,7 +25,6 @@ describe("built-in Files capability", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       now: () => NOW,
       files: { publicUrl: "https://files.example.test/root/" },
     });

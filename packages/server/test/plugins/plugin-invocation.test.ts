@@ -63,6 +63,8 @@ interface Harness {
   readonly session: SessionRuntimeContext;
   readonly controller: AbortController;
   readonly storeScope: StorageScope;
+  readonly logMessages: string[];
+  readonly analyticsEvents: string[];
   nextId: number;
 }
 
@@ -464,11 +466,18 @@ async function makeHarness(
     },
   };
   let clock = Date.now();
+  const logMessages: string[] = [];
+  const analyticsEvents: string[] = [];
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     pluginRuntime,
-    telemetry: false,
+    loggerStrategy: {
+      write: (_level, message) => logMessages.push(message),
+    },
+    analyticsStrategy: {
+      track: (event) => analyticsEvents.push(event),
+    },
     now: () => ++clock,
   });
   const controller = new AbortController();
@@ -488,6 +497,8 @@ async function makeHarness(
     session,
     controller,
     storeScope: scopes.get("store")!,
+    logMessages,
+    analyticsEvents,
     nextId: 1,
   };
   harnesses.push(harness);
@@ -495,7 +506,7 @@ async function makeHarness(
 }
 
 describe("Plugin invocation boundaries", () => {
-  test("logs from query, mutation, procedure, and nested Plugin contexts", async () => {
+  test("routes query, mutation, procedure, and nested Plugin logs through the configured strategy", async () => {
     const harness = await makeHarness();
 
     await callQuery(harness, "api.plugins.inspect", { key: "logged" });
@@ -504,24 +515,20 @@ describe("Plugin invocation boundaries", () => {
       value: "value",
     });
     await callProcedure(harness, "api.plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
-      .filter((record) => record.kind === "log");
-    expect(records.map((record) => [record.message, record.functionAddress])).toEqual([
-      ["facade read", "facade.read"],
-      ["plugin read", "store.read"],
-      ["facade put", "facade.put"],
-      ["plugin set", "store.set"],
-      ["plugin read", "store.read"],
-      ["facade flow", "facade.flow"],
-      ["plugin set", "store.set"],
-      ["plugin set", "store.set"],
-      ["plugin procedure", "store.external"],
+    expect(harness.logMessages).toEqual([
+      "facade read",
+      "plugin read",
+      "facade put",
+      "plugin set",
+      "plugin read",
+      "facade flow",
+      "plugin set",
+      "plugin set",
+      "plugin procedure",
     ]);
   });
 
-  test("publishes Plugin mutation and transaction analytics only after commit", async () => {
+  test("routes Plugin mutation and transaction analytics through the configured strategy", async () => {
     const harness = await makeHarness();
 
     await callMutation(harness, "api.plugins.sameTransaction", {
@@ -529,18 +536,12 @@ describe("Plugin invocation boundaries", () => {
       value: "value",
     });
     await callProcedure(harness, "api.plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
-      .filter((record) => record.kind === "analytics");
-    expect(records.map((record) => [record.event, record.functionAddress])).toEqual([
-      ["plugin set tracked", "store.set"],
-      ["plugin set tracked", "store.set"],
-      ["plugin transaction tracked", "facade.flow"],
-      ["plugin set tracked", "store.set"],
+    expect(harness.analyticsEvents).toEqual([
+      "plugin set tracked",
+      "plugin set tracked",
+      "plugin transaction tracked",
+      "plugin set tracked",
     ]);
-    expect(records.every((record) => record.identity === undefined)).toBe(true);
-    expect(records.every((record) => record.commitId !== undefined)).toBe(true);
   });
 
   test("binds procedure and transaction capabilities to a system execution root", async () => {
@@ -741,7 +742,6 @@ describe("Plugin invocation boundaries", () => {
     expect((failure as AggregateError).errors).toEqual([coreError, cleanupError]);
     expect(cleanups).toBe(1);
     expect(harness.plugins.state).toBe("failed");
-    expect(harness.runtime.telemetryJournal.snapshot().state).toBe("stopped");
     expect(await harness.runtime.drain().catch((error: unknown) => error)).toBe(failure);
     expect(cleanups).toBe(1);
   });

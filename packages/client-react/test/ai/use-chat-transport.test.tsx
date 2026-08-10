@@ -247,7 +247,6 @@ function createApp(): App {
     engine,
     registry: registry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   return {
@@ -701,7 +700,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server"
       await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
       expect(phase).toBe("ready");
       // The unmount settles as cancellation, not as a failure: no error
-      // callback, no false error telemetry from a user navigating away.
+      // callback, no false error report from a user navigating away.
       await until(() => finishes.length === 1, "the aborted request to report finish");
       expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
       expect(errors).toEqual([]);

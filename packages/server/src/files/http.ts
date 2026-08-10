@@ -34,7 +34,6 @@ import {
   FILES_TABLE,
 } from "./tables.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
-import type { FileTransferOutcome } from "./observability.ts";
 
 export interface FileRequestAuthentication {
   readonly principal: Principal;
@@ -122,20 +121,6 @@ function methodNotAllowed(allow: string): Response {
     status: 405,
     headers: { allow, "cache-control": "no-store" },
   });
-}
-
-function transferOutcome(status: number): FileTransferOutcome {
-  if ((status >= 200 && status < 400)) return "ok";
-  if (status === 400 || status === 411) return "malformed";
-  if (status === 401) return "unauthenticated";
-  if (status === 403) return "unauthorized";
-  if (status === 404) return "not_found";
-  if (status === 409 || status === 412) return "conflict";
-  if (status === 413 || status === 415 || status === 416 || status === 422) return "validation";
-  if (status === 429) return "overloaded";
-  if (status === 499) return "indeterminate";
-  if (status === 503) return "unavailable";
-  return "internal";
 }
 
 function uploadError(
@@ -308,30 +293,17 @@ export class FileHttpRuntime {
   }
 
   private async upload(request: Request, id: bigint, secret: string): Promise<Response> {
-    const observedAt = performance.now();
-    let bytes = 0;
-    let response: Response;
     try {
-      response = await this.executeUpload(request, id, secret, (stored) => {
-        bytes = stored;
-      });
+      return await this.executeUpload(request, id, secret);
     } catch {
-      response = uploadError(503, "file upload is temporarily unavailable");
+      return uploadError(503, "file upload is temporarily unavailable");
     }
-    this.options.files.observability.recordTransfer(
-      "upload",
-      transferOutcome(response.status),
-      bytes,
-      performance.now() - observedAt,
-    );
-    return response;
   }
 
   private async executeUpload(
     request: Request,
     id: bigint,
     secret: string,
-    accepted: (bytes: number) => void,
   ): Promise<Response> {
     const store = this.options.files.store;
     if (store === undefined) return uploadError(503, "file storage is not configured");
@@ -392,7 +364,6 @@ export class FileHttpRuntime {
         signal: request.signal,
         contentLength: length,
       });
-      accepted(stored.size);
       if (start.expectedSha256 !== null && stored.sha256 !== start.expectedSha256) {
         if (await this.cleanupObject(store, start.objectKey)) await this.releaseUpload(start);
         return uploadError(422, "uploaded bytes do not match expectedSha256");
@@ -410,9 +381,6 @@ export class FileHttpRuntime {
           return uploadError(499, "file upload was canceled");
         }
       }
-      this.options.files.observability.recordProviderError(
-        error instanceof FileStoreError ? error.operation : "put",
-      );
       return uploadError(503, "file storage is temporarily unavailable");
     }
 
@@ -582,12 +550,6 @@ export class FileHttpRuntime {
       await store.delete(objectKey);
       return true;
     } catch (error) {
-      this.options.files.observability.recordCleanupFailure();
-      if (!(error instanceof FileStoreError) || error.code !== "cancelled") {
-        this.options.files.observability.recordProviderError(
-          error instanceof FileStoreError ? error.operation : "delete",
-        );
-      }
       try {
         const now = this.options.now();
         await this.options.write(this.options.lifecycleSignal(), async (value) => {
@@ -609,39 +571,13 @@ export class FileHttpRuntime {
   }
 
   private async download(input: RuntimeFileRequest, id: bigint, secret: string): Promise<Response> {
-    const observedAt = performance.now();
-    let streaming = false;
-    let response: Response;
-    try {
-      response = await this.executeDownload(input, id, secret, (body) => {
-        streaming = true;
-        return this.observeDownloadBody(body, observedAt);
-      });
-    } catch (error) {
-      this.options.files.observability.recordTransfer(
-        "download",
-        outcomeFromError(error).code,
-        0,
-        performance.now() - observedAt,
-      );
-      throw error;
-    }
-    if (!streaming) {
-      this.options.files.observability.recordTransfer(
-        "download",
-        transferOutcome(response.status),
-        0,
-        performance.now() - observedAt,
-      );
-    }
-    return response;
+    return this.executeDownload(input, id, secret);
   }
 
   private async executeDownload(
     input: RuntimeFileRequest,
     id: bigint,
     secret: string,
-    observeBody: (body: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>,
   ): Promise<Response> {
     const store = this.options.files.store;
     if (store === undefined) return notFound();
@@ -748,7 +684,6 @@ export class FileHttpRuntime {
           signal: input.request.signal,
         });
         if (attributes.size !== size) {
-          this.options.files.observability.recordProviderError("attributes");
           throw new AckerDBError("unavailable", "file storage is unavailable", {
             resource: "operation",
             retryable: true,
@@ -762,70 +697,14 @@ export class FileHttpRuntime {
       });
       if (opened.attributes.size !== size) {
         await opened.body.cancel("File Store object size does not match immutable File metadata").catch(() => {});
-        this.options.files.observability.recordProviderError("open");
         throw new AckerDBError("unavailable", "file storage is unavailable", {
           resource: "operation",
           retryable: true,
         });
       }
-      return new Response(observeBody(opened.body), { status: range === null ? 200 : 206, headers });
+      return new Response(opened.body, { status: range === null ? 200 : 206, headers });
     } catch (error) {
-      if (!(error instanceof FileStoreError) || error.code !== "cancelled") {
-        this.options.files.observability.recordProviderError(
-          error instanceof FileStoreError ? error.operation : input.request.method === "HEAD"
-            ? "attributes"
-            : "open",
-        );
-      }
       fileStoreDownloadFailure(error);
     }
-  }
-
-  private observeDownloadBody(
-    source: ReadableStream<Uint8Array>,
-    observedAt: number,
-  ): ReadableStream<Uint8Array> {
-    const reader = source.getReader();
-    const files = this.options.files;
-    let bytes = 0;
-    let settled = false;
-    const settle = (outcome: FileTransferOutcome): void => {
-      if (settled) return;
-      settled = true;
-      this.options.files.observability.recordTransfer(
-        "download",
-        outcome,
-        bytes,
-        performance.now() - observedAt,
-      );
-    };
-    return new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const result = await reader.read();
-          if (result.done) {
-            settle("ok");
-            controller.close();
-            return;
-          }
-          bytes += result.value.byteLength;
-          controller.enqueue(result.value);
-        } catch (error) {
-          if (!(error instanceof FileStoreError) || error.code !== "cancelled") {
-            files.observability.recordProviderError(
-              error instanceof FileStoreError ? error.operation : "open",
-            );
-          }
-          settle(error instanceof FileStoreError && error.code === "cancelled"
-            ? "indeterminate"
-            : "unavailable");
-          controller.error(error);
-        }
-      },
-      cancel(reason) {
-        settle("indeterminate");
-        return reader.cancel(reason);
-      },
-    });
   }
 }

@@ -268,7 +268,6 @@ async function main(): Promise<void> {
     registry: new Registry(modules),
     scopes: [READ_SCOPE, ADMIN_SCOPE],
     resolveScopes: () => [READ_SCOPE, ADMIN_SCOPE],
-    telemetry: false,
   });
   const identity = await runtime.resolveIdentity({
     issuer: "https://acceptance.ackerdb.test/",

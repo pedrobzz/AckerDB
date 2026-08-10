@@ -139,14 +139,6 @@ export class FileProcedureRuntime {
         throw new ValidationError("files.store bytes do not match expectedSha256");
       }
     } catch (error) {
-      if (
-        !(error instanceof ValidationError) &&
-        (!(error instanceof FileStoreError) || error.code !== "cancelled")
-      ) {
-        this.options.files.observability.recordProviderError(
-          error instanceof FileStoreError ? error.operation : "put",
-        );
-      }
       await this.abandonStaging(stagingId, error);
       throw error;
     }
@@ -217,10 +209,9 @@ export class FileProcedureRuntime {
       }
       return Object.freeze({
         metadata: publicMetadata(row),
-        body: this.observeProviderBody(opened.body),
+        body: opened.body,
       });
     } catch (error) {
-      this.observeProviderError(error, "open");
       throw error;
     }
   }
@@ -239,13 +230,11 @@ export class FileProcedureRuntime {
     try {
       opened = await store.open(row.objectKey, { signal });
     } catch (error) {
-      this.observeProviderError(error, "open");
       throw error;
     }
     if (opened.attributes.size !== row.size) {
       await opened.body.cancel("File Store attributes disagree with File metadata").catch(() => {});
       const error = new Error("File Store returned attributes that do not match immutable File metadata");
-      this.observeProviderError(error, "open");
       throw error;
     }
     const buffer = new Uint8Array(row.size);
@@ -264,14 +253,12 @@ export class FileProcedureRuntime {
         offset += chunk.byteLength;
       }
     } catch (error) {
-      this.observeProviderError(error, "open");
       throw error;
     } finally {
       reader.releaseLock();
     }
     if (offset !== buffer.byteLength) {
       const error = new Error("File Store returned fewer bytes than File metadata");
-      this.observeProviderError(error, "open");
       throw error;
     }
     return buffer;
@@ -297,28 +284,4 @@ export class FileProcedureRuntime {
     }
   }
 
-  private observeProviderError(error: unknown, operation: "put" | "open"): void {
-    if (error instanceof FileStoreError && error.code === "cancelled") return;
-    this.options.files.observability.recordProviderError(
-      error instanceof FileStoreError ? error.operation : operation,
-    );
-  }
-
-  private observeProviderBody(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
-    const reader = source.getReader();
-    const observe = (error: unknown): void => this.observeProviderError(error, "open");
-    return new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const result = await reader.read();
-          if (result.done) controller.close();
-          else controller.enqueue(result.value);
-        } catch (error) {
-          observe(error);
-          controller.error(error);
-        }
-      },
-      cancel: (reason) => reader.cancel(reason),
-    });
-  }
 }

@@ -48,7 +48,7 @@ export const LEDGER_SCHEMA_VERSION = 1;
 
 /**
  * A run contributes at most one row per metric per profile. The default
- * workload produces 91 of them per profile and runs at most three profiles; the
+ * workload produces 91 of them for the single runtime profile; the
  * cap is an order of magnitude above that, so a pull request cannot grow the
  * ledger branch by writing a file nobody asked for.
  */

@@ -85,7 +85,7 @@ without knowing which flags the framework honours.
 
 An identity credential is an Identity: issuing one mints an Identity row, and
 the bearer authenticates into an ordinary `user` principal. Fairness keying,
-File ownership, analytics attribution, telemetry, and every access callback
+File ownership, analytics attribution, and every access callback
 therefore work on an agent without knowing it came from a token, and the
 `McpPrincipal` special case that each of those sites had to remember is gone
 along with the vault, descriptor, context, and invalidation machinery that

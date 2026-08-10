@@ -384,7 +384,6 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
     registry,
     verifier: new TestVerifier(),
     limits,
-    telemetry: false,
     hooks,
   });
   const server = serve({ runtime, port: 0 });

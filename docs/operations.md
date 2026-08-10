@@ -53,7 +53,6 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Realtime native queue reservations, per generation / process-wide | 32 MiB / 512 MiB |
 | Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
-| Telemetry retention/export | See [Telemetry](telemetry.md#default-bounds) |
 
 WebSocket application traffic cannot consume the reserved control-frame
 capacity. SSE reserves capacity for one terminal outcome and retains each
@@ -72,7 +71,7 @@ pool while reset/revocation frames are assembled for the new epoch. One
 transition may retain at most 2,048 frames and 3 MiB; all transitions share a
 64 MiB pool with 1 MiB reserved control capacity. Exhaustion is retryable
 `overloaded` with resource `subscription`. Protected status exposes
-`runtime.authCaptureBudget`, and telemetry emits `runtime.auth_capture_bytes`.
+`runtime.authCaptureBudget`.
 
 Read, write, and revalidation executors use round-robin fairness keys. A user's
 active-operation key is its durable Identity, shared across HTTP and WebSocket;
@@ -123,15 +122,12 @@ generation owns its tracks, sources, decoded streams, auxiliary peers, data
 channels, and partial typed streams; close releases them. Recovery never
 replays application events, provider state, media, or partial streams.
 
-`Runtime.status().realtime` exposes fixed-cardinality admission, setup-stage,
-recovery, close-reason, resource, pressure, and aggregate media-path health.
+`Runtime.status().realtime` exposes bounded admission, setup-stage, recovery,
+close-reason, resource, and pressure state.
 `Runtime.realtimeDiagnostic(sessionId, principal)` is the authorized,
-on-demand, redacted per-peer diagnostic. On-demand diagnostics and each
-periodic batch have the deployment's absolute `diagnosticTimeoutMs` deadline
-(5 seconds by default), so a stalled or late native statistics request cannot
-hold shutdown or mutate a later health snapshot. The periodic health sampler
-rotates over at most eight active generations on the existing telemetry tick;
-it does not create another timer or scan every peer.
+on-demand, redacted per-peer diagnostic. It has the deployment's absolute
+`diagnosticTimeoutMs` deadline (5 seconds by default), so a stalled native
+statistics request cannot hold shutdown.
 
 The server native engine runs in the Bun process. A peer/session failure is
 generation-contained, but a native process crash requires an ordinary process
@@ -190,7 +186,7 @@ indeterminate             internal
 
 The finite `resource` classes are `connection`, `operation`, `reader`,
 `writer`, `subscription`, `revalidation`, `publication`, `outbound`, `sse`,
-`history`, `idempotency`, and `telemetry`.
+`history`, and `idempotency`.
 
 HTTP maps validation and version-mismatch errors to 400; unauthenticated/stale auth to 401;
 unauthorized to 403; not found to 404; conflict to 409; ordinary overload and
@@ -367,7 +363,7 @@ in [Authentication](authentication.md#operational-status-authority). Its body
 is the full `AckerDBServer.status()` snapshot with `version: 1` added: transport
 connection count, HTTP ingress/fairness and rejection counts, SSE
 acknowledgement ingress/no-op counts, global WebSocket outbound bytes, and the
-runtime queue, publication, reactivity, SSE, telemetry, and storage snapshots.
+runtime queue, publication, reactivity, SSE, and storage snapshots.
 `runtime.authCaptureBudget` and `runtime.sseBudget` distinguish current
 total/application/control byte ownership from lifetime peaks since Runtime
 construction. `peakBytes` is the maximum simultaneous total; the two lane peaks
@@ -398,7 +394,7 @@ import/preparation promise.
 Readiness does not start a new probe transaction for every request. Its
 database guarantee is the successful engine-open and reconciliation activation
 gate, plus the Runtime lifecycle state. Operators needing continuous storage
-probes should derive them from protected status/telemetry and their own policy.
+probes should derive them from protected status and their own policy.
 
 ## Signals and bounded drain
 
@@ -413,8 +409,7 @@ path and removes those handlers:
    retaining their acknowledgement capabilities through terminal delivery or
    terminal grace expiry;
 3. wait for admitted operations, the writer/publication path, revalidation,
-   readers, and the owned telemetry drain (or one flush for caller-owned
-   telemetry); and
+   and readers; and
 4. on successful server drain, mark SQLite clean and close the engine.
 
 `gracefulShutdownMs` is one absolute server drain bound (10 seconds by default),
@@ -425,13 +420,6 @@ and resource `operation`. If Runtime has drained but a connection, Session, or
 listener still consumes the deadline, Serve owns the fallback
 `deadline_exceeded` with message `graceful shutdown deadline exceeded` and
 resource `connection`.
-
-Owned telemetry releases active/completed tail decisions without promoting
-their staged diagnostics, then drains or explicitly accounts for already
-retained records and local lines within that same absolute deadline. Trace-state
-release and any retained remainder are visible in separate telemetry drop
-counters. A caller-supplied shared `Telemetry` instance remains caller-owned:
-Runtime performs one flush and does not stop or terminally drain it.
 
 Either expiry makes the server `failed`, terminates remaining sockets,
 force-stops the listener, and makes the CLI set a nonzero exit code. It does not
@@ -451,14 +439,6 @@ acker status [app-dir]
 acker backup <artifact> [app-dir] [--metadata-only]
 acker restore <artifact> [app-dir]
 ```
-
-With default telemetry enabled, `backup` and `restore` first emit bounded safe
-JSON telemetry records: one `storage` span with duration/outcome and, on
-failure, one sanitized event. Successful spans may include artifact byte count
-and commit-version correlation, but never paths, contents, schema literals, or
-error messages. The final line remains the operation report. Setting
-`ACKERDB_TELEMETRY=disabled` removes those records exactly and leaves only the
-report.
 
 `status` and `backup` require an existing database and never create a missing
 one. The engine's canonical ownership transaction means these CLI operations
@@ -612,13 +592,6 @@ configuration-change failure leaves the previous FileStore active. The JSON
 success report includes the journal path and copied, already-present, resumed,
 and total object and byte counts.
 
-With telemetry enabled, the command first emits one bounded `file_migration`
-`storage` span with duration, sanitized outcome, verified target byte count,
-and commit correlation on success. Failure also emits one sanitized `failure`
-event; paths, object keys, contents, and error messages are never telemetry.
-The telemetry is drained before the final report, and
-`ACKERDB_TELEMETRY=disabled` removes it exactly.
-
 ## Remaining limitations
 
 - One process owns one SQLite database and one writer. There is no consensus,
@@ -642,9 +615,6 @@ The telemetry is drained before the final report, and
   against a declared output schema.
 - External OIDC verifies identity but does not provide built-in credential
   issuance, discovery, introspection, or immediate provider revocation.
-- Telemetry has a backend-neutral callback, not a bundled OTLP exporter or
-  observability backend. Its exact current coverage is listed in
-  [Telemetry](telemetry.md#automatic-runtime-signals).
 - The graceful timer can abort asynchronous work, but JavaScript cannot fire a
   timer while a handler synchronously blocks the Bun event loop. A process
   supervisor still needs an outer hard-kill deadline for CPU-bound or native

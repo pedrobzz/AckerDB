@@ -4,11 +4,10 @@ import {
   type AdmissionRequestOptions,
 } from "./admission.ts";
 import type { QueueLimits } from "./limits.ts";
-import type { TelemetryOperation, TelemetryResource } from "../telemetry/telemetry.ts";
+import type { AdmissionResource } from "./admission.ts";
 import { positiveSafeInteger } from "../shared/numbers.ts";
 
 export interface ExecutorTaskOptions {
-  readonly operation: TelemetryOperation;
   readonly bytes: number;
   readonly fairnessKey?: string;
   readonly deadlineMs?: number;
@@ -28,7 +27,7 @@ export interface BoundedExecutorOptions {
   readonly concurrency: number;
   readonly discipline: "fifo" | "round-robin";
   readonly limits: QueueLimits;
-  readonly resource: TelemetryResource;
+  readonly resource: AdmissionResource;
   readonly retryAfterMs?: number;
   readonly now?: () => number;
 }
@@ -74,7 +73,6 @@ export class BoundedExecutor {
     });
     const task: Task<T> = { work, resolve, reject };
     const request: AdmissionRequestOptions = {
-      operation: options.operation,
       bytes: options.bytes,
       ...(options.fairnessKey === undefined ? {} : { fairnessKey: options.fairnessKey }),
       ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),

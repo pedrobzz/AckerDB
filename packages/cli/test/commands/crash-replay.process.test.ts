@@ -96,7 +96,6 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
 const runtime = new Runtime({
   engine,
   registry: new Registry({ messages }),
-  telemetry: false,
   ...(hooks === undefined ? {} : { hooks }),
 });
 const server = serve({ runtime, port });
@@ -183,7 +182,6 @@ function spawnProcess(
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
       ...env,
     },
   }) as CliProcess;

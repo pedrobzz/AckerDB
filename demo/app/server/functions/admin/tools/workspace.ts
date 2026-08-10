@@ -132,11 +132,8 @@ Revenue by dish across all checks (cents), busiest dish first:
  *
  * Materialization is EAGER — every file is rendered here, inside the open read
  * transaction, before the shell runs. Lazy per-file providers would query less,
- * but just-bash's sandbox lockdown blocks `globalThis.performance.now` while a
- * script executes, and ackerdb's read path times its reads with `performance.now()`
- * whenever telemetry is enabled — so any database read issued from inside
- * `exec()` dies with a SecurityViolationError (surfaced to the script as
- * ENOENT). Host reads happen out here instead, where the sandbox has no say;
+ * but would also move a host database capability inside the sandbox. Host reads
+ * happen out here instead, where the sandbox has no say;
  * the shell only ever sees plain strings. Per-call freshness and snapshot
  * consistency are unchanged: files are rebuilt from live data on every call and
  * discarded afterward.

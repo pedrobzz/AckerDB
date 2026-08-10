@@ -15,7 +15,6 @@ import {
   LocalFileStore,
   reconcile,
   reconcilePluginStorage,
-  type TelemetryRecord,
 } from "@ackerdb/server";
 import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import { importApp } from "../../src/app/manifest.ts";
@@ -165,15 +164,6 @@ function outputJson<T>(stdout: string): T {
   return JSON.parse(lines.at(-1)!) as T;
 }
 
-function telemetryRecords(stdout: string): TelemetryRecord[] {
-  return stdout
-    .trim()
-    .split("\n")
-    .slice(0, -1)
-    .map((line) => JSON.parse(line) as TelemetryRecord)
-    .filter((record) => record.schemaVersion === 1);
-}
-
 describe("acker backup, restore, and status", () => {
   test("backup includes framework File bytes and restore writes them to the active File store", async () => {
     const source = fixture();
@@ -189,12 +179,6 @@ describe("acker backup, restore, and status", () => {
       count: 1,
       bytes: new TextEncoder().encode(file.contents).byteLength,
     });
-    expect(telemetryRecords(backup.stdout)).toEqual([
-      expect.objectContaining({
-        operation: "backup",
-        sizeBytes: backupReport.manifest.bytes + backupReport.manifest.files.bytes,
-      }),
-    ]);
     expect(existsSync(backupFilesPath(artifact))).toBe(true);
 
     const target = fixture();
@@ -417,18 +401,6 @@ describe("acker backup, restore, and status", () => {
     expect(existsSync(backupManifestPath(artifact))).toBe(true);
     expect(backup.manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(backup.manifest.verifiedAt).toBeGreaterThan(0);
-    expect(telemetryRecords(backupResult.stdout)).toEqual([
-      expect.objectContaining({
-        kind: "span",
-        operation: "backup",
-        stage: "storage",
-        outcome: "ok",
-        resource: "operation",
-        sizeBytes: backup.manifest.bytes,
-        commitId: "1",
-      }),
-    ]);
-
     const target = fixture();
     const restoreResult = await runCli(["restore", artifact, target]);
     expect(restoreResult.code).toBe(0);
@@ -440,18 +412,6 @@ describe("acker backup, restore, and status", () => {
       artifact,
       status: { commitVersion: "1" },
     });
-    expect(telemetryRecords(restoreResult.stdout)).toEqual([
-      expect.objectContaining({
-        kind: "span",
-        operation: "restore",
-        stage: "storage",
-        outcome: "ok",
-        resource: "operation",
-        sizeBytes: backup.manifest.bytes,
-        commitId: "1",
-      }),
-    ]);
-
     const targetConfig = loadConfig(target);
     const restored = new Engine((await importApp(targetConfig)).schema, join(targetConfig.dbDir, "data.db"), {
       integrityCheck: "full",
@@ -522,48 +482,6 @@ describe("acker backup, restore, and status", () => {
     const backupResult = await runCli(["backup", artifact, source], env);
     expect(backupResult.code).toBe(0);
     expect(outputJson<BackupReport>(backupResult.stdout).manifest.durability).toBe("balanced");
-  }, 30_000);
-
-  test("backup telemetry is fail-safe, payload-free, and can be disabled exactly", async () => {
-    const source = fixture();
-    await seed(source);
-    const secret = "backup-telemetry-secret-canary";
-    const occupied = join(source, secret);
-    writeFileSync(occupied, secret);
-
-    const failed = await runCli(["backup", occupied, source]);
-    expect(failed.code).toBe(1);
-    const failedRecords = failed.stdout.trim().split("\n").map(
-      (line) => JSON.parse(line) as TelemetryRecord,
-    );
-    expect(failedRecords).toEqual([
-      expect.objectContaining({
-        kind: "span",
-        operation: "backup",
-        stage: "storage",
-        outcome: "internal",
-        resource: "operation",
-      }),
-      expect.objectContaining({
-        kind: "event",
-        name: "failure",
-        operation: "backup",
-        stage: "storage",
-        outcome: "internal",
-        errorClass: "Error",
-      }),
-    ]);
-    expect(failed.stdout).not.toContain(secret);
-
-    const artifact = join(source, "disabled-backup.db");
-    const disabled = await runCli(["backup", artifact, source], { ACKERDB_TELEMETRY: "disabled" });
-    expect(disabled.code).toBe(0);
-    expect(disabled.stderr).toBe("");
-    expect(disabled.stdout.trim().split("\n")).toHaveLength(1);
-    expect(outputJson<BackupReport>(disabled.stdout)).toMatchObject({
-      operation: "backup",
-      manifest: { commitVersion: "1" },
-    });
   }, 30_000);
 
   test("rejects changed artifacts and malformed manifests before creating a target", async () => {

@@ -20,7 +20,7 @@ backups are verified by restoring them before they are accepted.
 | Package | Purpose |
 | --- | --- |
 | `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
-| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, and telemetry. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, logging, and analytics strategies. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
@@ -140,11 +140,6 @@ client.close();
   `_admin:<domain>:<verb>` vocabulary, what "inert without a grant" means
   exactly, the reference tree shipped from `@ackerdb/core`, and the one `admin`
   configuration object.
-- [Studio](docs/studio.md) documents the opt-in administration client: the
-  `acker studio` command, the single same-origin port that proxies HTTP,
-  WebSocket, and SSE to the application, the path prefix that keeps an
-  application route from being shadowed, and the Admin Credential connect flow
-  and its states.
 - [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
   Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
   issuer string, configuration block, and client credential-source wiring.
@@ -163,10 +158,6 @@ client.close();
   production defaults, typed outcomes, durability profiles, health endpoints,
   startup/readiness phases, evidence-preserving crash recovery, signal-driven
   draining, and verified backup/restore.
-- [Telemetry](docs/telemetry.md) documents the default-on privacy boundary,
-  tuning and disabling, bounded whole-operation tail retention and fail-open
-  export, schema version 1 records, correlated auth/operation/receiver-delivery
-  coverage, CLI backup/restore spans, and runtime/storage health metrics.
 - [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
   to `@ackerdb/client-react`: supported versions, provider lifetime, every hook,
   durable Identity, native recovery, and current platform limitations.
@@ -203,14 +194,14 @@ never both. A `realtime` module path may default-export
 resource configuration; it is loaded only when the application declares
 realtime handlers. The protected status scope is set in the same
 `.ackerdb.config.json` through `statusScope`.
-Durability and telemetry profiles are exact environment switches:
+Durability is an exact environment switch:
 
 ```sh
-ACKERDB_DURABILITY=production ACKERDB_TELEMETRY=enabled acker start ./apps/server
+ACKERDB_DURABILITY=production acker start ./apps/server
 ```
 
-`production` and `enabled` are the defaults. See the linked contract documents
-before selecting `balanced` durability or disabling telemetry.
+`production` is the default. See the linked contract documents before selecting
+`balanced` durability.
 
 The CLI listener is plaintext HTTP/WebSocket and does not terminate TLS. Keep
 the default loopback listener or place a non-loopback listener behind a private
@@ -249,9 +240,8 @@ GitHub's required benchmark status first classifies the pull request. It returns
 an immediate successful no-op unless code exercised by the benchmark or the
 benchmark contract itself changed. For those performance-relevant changes, it
 compares the pull request's AckerDB with its base branch's AckerDB on the
-credential-free GitHub-hosted runner. Telemetry stays disabled unless telemetry source
-changed. The check records evidence without thresholds or an automated verdict;
-Pedro and an agent interpret the complete vector.
+credential-free GitHub-hosted runner. The check records evidence without static
+per-metric thresholds; Pedro and an agent interpret the complete vector.
 Do not run the protected benchmark locally. See [the benchmark
 contract](bench/README.md).
 

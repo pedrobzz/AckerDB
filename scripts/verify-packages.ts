@@ -9,7 +9,6 @@ import {
 import { join } from "node:path";
 import { NATIVE_PACKAGES, PACKAGES, PUBLIC_PACKAGES } from "./lib.ts";
 import { FSL_LICENSE, NATIVE_LICENSE } from "./release/package-license.ts";
-import { buildStudioDist } from "./release/studio-dist.ts";
 import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
@@ -20,7 +19,6 @@ import {
   type TargetBuildManifest,
 } from "../packages/realtime/native/webrtc/evidence.ts";
 import { NATIVE_ABI, WEBRTC_TARGETS } from "../packages/realtime/native/webrtc/provenance.ts";
-import { STUDIO_PATH_PREFIX } from "../packages/studio/src/origin.ts";
 import {
   createPackedConsumer,
   type PackageManifest,
@@ -253,48 +251,6 @@ function assertServerExcludesRealtimeRuntime(serverDirectory: string): void {
   }
 }
 
-/**
- * The published Studio must open: the launcher entry resolves, the prebuilt
- * `dist/index.html` shipped, and every asset that page loads shipped with it.
- *
- * `dist` is git-ignored at the repository root, and npm-family packers have
- * historically applied ignore rules on top of a `files` list, so "the bundle is
- * in the tarball" is the one fact about this package that must be checked
- * rather than assumed. The asset walk is what turns "a file called index.html
- * exists" into "the page it names can load".
- */
-function assertStudioOpens(studioDirectory: string): void {
-  const manifest = readManifest(join(studioDirectory, "package.json"));
-  if (manifest.exports?.["."] !== "./src/launcher/server.ts") {
-    throw new Error("packed @ackerdb/studio does not expose its launcher from ./src/launcher/server.ts");
-  }
-  if (!existsSync(join(studioDirectory, "src/launcher/server.ts"))) {
-    throw new Error("packed @ackerdb/studio is missing its launcher src/launcher/server.ts");
-  }
-  const indexPath = join(studioDirectory, "dist/index.html");
-  if (!existsSync(indexPath)) {
-    throw new Error("packed @ackerdb/studio is missing its prebuilt dist/index.html");
-  }
-  const html = readFileSync(indexPath, "utf8");
-  const assets = [...html.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((match) => match[1]!);
-  if (assets.length === 0) {
-    throw new Error("packed @ackerdb/studio dist/index.html references no bundled assets");
-  }
-  for (const asset of assets) {
-    // Assets are emitted under the prefix the launcher serves the shell from,
-    // and they live in the tarball at the bundle root beneath it.
-    if (!asset.startsWith(STUDIO_PATH_PREFIX.slice(1))) {
-      throw new Error(
-        `packed @ackerdb/studio dist/index.html references /${asset}, outside the SPA prefix`,
-      );
-    }
-    const packed = join(studioDirectory, "dist", asset.slice(STUDIO_PATH_PREFIX.length - 1));
-    if (!existsSync(packed)) {
-      throw new Error(`packed @ackerdb/studio dist/index.html references missing asset /${asset}`);
-    }
-  }
-}
-
 function assertPackagedLicenses(consumerDirectory: string): void {
   const nativePackages = new Set<string>(NATIVE_PACKAGES);
   for (const pkg of PACKAGES) {
@@ -322,10 +278,6 @@ function assertPackagedLicenses(consumerDirectory: string): void {
 }
 
 async function main(): Promise<void> {
-  // Studio's `dist/` is git-ignored and produced by the release build stage, so
-  // this gate builds the same bundle before packing. Otherwise it would verify
-  // a tarball no release ever produces — or, on a clean checkout, none at all.
-  buildStudioDist();
   const packed = await createPackedConsumer("ackerdb-packed-consumer");
   const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
@@ -386,8 +338,6 @@ async function main(): Promise<void> {
         }
       }
     }
-
-    assertStudioOpens(join(consumerDir, "node_modules/@ackerdb/studio"));
 
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
@@ -719,7 +669,6 @@ await verifyPublicRealtimeSession(createBundledRealtimeEngine);
     ], consumerDir, {
       ...process.env,
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
     });
     await runCommand([process.execPath, "verify-runtime.ts"], consumerDir);
     await runCommand([

@@ -39,7 +39,7 @@ function record(overrides: Partial<PairedRunRecord> = {}): PairedRunRecord {
     config: benchmarkConfigFromEnv(),
     units: ["operation:query:latency"],
     profiles: [{
-      profile: "disabled",
+      profile: "default",
       terminalFailures: [],
       series: [
         series("operation:query:latency", "throughput/s", Array(DEFAULT_REPETITIONS).fill(0.99)),
@@ -79,7 +79,7 @@ describe("deriving rows from a run", () => {
     // run that produced the samples would have preferred to describe it.
     const regressed = record({
       profiles: [{
-        profile: "disabled",
+        profile: "default",
         terminalFailures: [],
         series: [series("operation:query:latency", "throughput/s", Array(DEFAULT_REPETITIONS).fill(0.6))],
       }],
@@ -97,7 +97,7 @@ describe("deriving rows from a run", () => {
   test("records an unresolvable comparison as null rather than as a number", () => {
     const short = record({
       profiles: [{
-        profile: "disabled",
+        profile: "default",
         terminalFailures: [],
         series: [series("operation:query:latency", "throughput/s", [1, 1])],
       }],
@@ -113,7 +113,7 @@ describe("deriving rows from a run", () => {
   test("skips a metric this branch has no policy for, and names it", () => {
     const unknown = record({
       profiles: [{
-        profile: "disabled",
+        profile: "default",
         terminalFailures: [],
         series: [series("operation:query:latency", "bytes shuffled", Array(DEFAULT_REPETITIONS).fill(1))],
       }],
@@ -137,7 +137,7 @@ describe("what a run may not do to the ledger", () => {
   test("refuses the same metric reported twice", () => {
     const duplicated = record({
       profiles: [{
-        profile: "disabled",
+        profile: "default",
         terminalFailures: [],
         series: [
           series("operation:query:latency", "throughput/s", Array(DEFAULT_REPETITIONS).fill(1)),
@@ -151,7 +151,7 @@ describe("what a run may not do to the ledger", () => {
   test("refuses a run filing more rows than the workload can produce", () => {
     const flood = record({
       profiles: [{
-        profile: "disabled",
+        profile: "default",
         terminalFailures: [],
         series: Array.from({ length: MAXIMUM_ROWS_PER_RUN + 1 }, (_, index) =>
           series(`operation:invented:${index}`, "throughput/s", Array(DEFAULT_REPETITIONS).fill(1))),

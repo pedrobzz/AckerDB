@@ -129,7 +129,7 @@ function spawnServer(dir: string): {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";

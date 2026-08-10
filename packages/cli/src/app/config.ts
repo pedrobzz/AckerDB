@@ -13,8 +13,6 @@ import {
   type S3FileStoreEncryption,
 } from "@ackerdb/server";
 
-export type TelemetryMode = "enabled" | "disabled";
-
 export type AuthenticationConfig =
   | {
       readonly kind: "oidc";
@@ -65,7 +63,6 @@ export interface AppConfig {
   hostname: string;
   port: number;
   durability: DurabilityPolicy;
-  telemetry: TelemetryMode;
   /** The application's one configured authentication authority. Bearer credentials fail closed when omitted. */
   authentication?: AuthenticationConfig;
   /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
@@ -410,7 +407,6 @@ export function loadConfig(
     hostname,
     port,
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
-    telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(authentication === undefined ? {} : { authentication }),
     ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
     ...(realtime === undefined ? {} : { realtime: abs(realtime) }),

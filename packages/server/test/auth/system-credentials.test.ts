@@ -235,7 +235,6 @@ function fixture(): { engine: Engine; runtime: Runtime } {
   const runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: false,
     scopes: VOCABULARY,
     jobs: declaredJobs(),
     now: () => jobsClock ?? Date.now(),

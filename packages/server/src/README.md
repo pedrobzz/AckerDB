@@ -17,7 +17,6 @@ modules; do not add new implementation files to this root.
 | `runtime/` | Admission, execution, mutation coordination, request outcomes, and orchestration |
 | `schema/` | Schema definitions, snapshots, planning, reconciliation, and migrations |
 | `shared/` | Small dependency-free primitives used across multiple modules |
-| `telemetry/` | Telemetry records, trace journals, and external trace capture |
 | `transport/` | HTTP/WebSocket server ownership, the public route surface, and its OpenAPI document |
 | `validation/` | Validators, JSON Schema emission, Standard Schema/JSON, constraints, and validation errors |
 

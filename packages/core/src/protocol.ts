@@ -83,7 +83,6 @@ export const RESOURCE_CLASSES = [
   "sse",
   "history",
   "idempotency",
-  "telemetry",
 ] as const;
 
 export type ResourceClass = (typeof RESOURCE_CLASSES)[number];

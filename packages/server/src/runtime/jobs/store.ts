@@ -20,7 +20,6 @@ import type {
   JobState,
   JobTrigger,
 } from "../../jobs/definition.ts";
-import type { DbStatementObserver } from "../../database/statement-observation.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -78,9 +77,8 @@ class TableStore<Row> {
     protected readonly engine: Engine,
     writes: WriteCollector,
     table: string,
-    observer?: DbStatementObserver,
   ) {
-    this.writer = makeFrameworkTableWriter(engine, writes, table, observer);
+    this.writer = makeFrameworkTableWriter(engine, writes, table);
     this.plan = this.writer.plan;
   }
 
@@ -113,8 +111,8 @@ class TableStore<Row> {
 
 /** The runner's writer-side Job store; construct one per transaction. */
 export class JobsStore extends TableStore<JobRow> {
-  constructor(engine: Engine, writes: WriteCollector, observer?: DbStatementObserver) {
-    super(engine, writes, JOBS_TABLE, observer);
+  constructor(engine: Engine, writes: WriteCollector) {
+    super(engine, writes, JOBS_TABLE);
   }
 
   /** The live (non-terminal) Job of one identity, if any. */
@@ -188,8 +186,8 @@ export class JobsStore extends TableStore<JobRow> {
 
 /** The runner's writer-side Job run store; construct one per transaction. */
 export class JobRunsStore extends TableStore<JobRunRow> {
-  constructor(engine: Engine, writes: WriteCollector, observer?: DbStatementObserver) {
-    super(engine, writes, JOB_RUNS_TABLE, observer);
+  constructor(engine: Engine, writes: WriteCollector) {
+    super(engine, writes, JOB_RUNS_TABLE);
   }
 
   /** One run of one Job, by its position. */
@@ -261,23 +259,6 @@ function readOne<Row>(
     .query(`SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${where} LIMIT 1`)
     .get(...(params as never[])) as Record<string, unknown> | null;
   return raw === null ? null : (engine.rowFromSql(plan, raw) as unknown as Row);
-}
-
-export function dueJobStats(
-  engine: Engine,
-  connection: Database,
-  now: number,
-): { due: number; oldestDueAt: number | null } {
-  const plan = engine.rootScope.plan(JOBS_TABLE);
-  const row = connection
-    .query(
-      `SELECT COUNT(*) AS due, MIN(${quote("nextRunAt")}) AS oldest FROM ${quote(plan.name)} WHERE ${quote("state")} IN ('pending', 'retrying') AND ${quote("nextRunAt")} <= ?`,
-    )
-    .get(now as never) as { due: number | bigint; oldest: number | bigint | null };
-  return {
-    due: Number(row.due),
-    oldestDueAt: row.oldest === null ? null : Number(row.oldest),
-  };
 }
 
 /**

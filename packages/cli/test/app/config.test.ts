@@ -5,13 +5,12 @@ import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../../src/app/config.ts";
 
 describe("production profile configuration", () => {
-  test("defaults to production durability with telemetry enabled", () => {
+  test("defaults to production durability", () => {
     expect(loadConfig(".", {})).toMatchObject({
       appPath: resolve("app.ts"),
       dbDir: resolve(".ackerdb"),
       hostname: "127.0.0.1",
       durability: "production",
-      telemetry: "enabled",
       statusScope: "ackerdb:status",
       files: {
         backend: "filesystem",
@@ -45,25 +44,15 @@ describe("production profile configuration", () => {
     }
   });
 
-  test("accepts only the named durability and telemetry profiles", () => {
+  test("accepts the named durability profiles", () => {
     expect(loadConfig(".", {
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
-    })).toMatchObject({
-      durability: "balanced",
-      telemetry: "disabled",
-    });
+    })).toMatchObject({ durability: "balanced" });
   });
 
   test("rejects an unknown durability profile without normalization", () => {
     expect(() => loadConfig(".", { ACKERDB_DURABILITY: "Production" })).toThrow(
       'ACKERDB_DURABILITY must be exactly production or balanced; received "Production"',
-    );
-  });
-
-  test("rejects an unknown telemetry profile without normalization", () => {
-    expect(() => loadConfig(".", { ACKERDB_TELEMETRY: "off" })).toThrow(
-      'ACKERDB_TELEMETRY must be exactly enabled or disabled; received "off"',
     );
   });
 
@@ -314,8 +303,8 @@ describe("the admin object", () => {
       const write = (admin: unknown) =>
         writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ admin }));
 
-      write({ telemetry: {} });
-      expect(() => loadConfig(dir, {})).toThrow("unknown admin field: telemetry");
+      write({ dashboard: {} });
+      expect(() => loadConfig(dir, {})).toThrow("unknown admin field: dashboard");
       write({ application: { title: "savoria" } });
       expect(() => loadConfig(dir, {})).toThrow("unknown admin.application field: title");
       write({ application: { name: 7 } });

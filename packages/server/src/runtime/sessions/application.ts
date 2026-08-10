@@ -71,16 +71,14 @@ export class RuntimeSessionApplication {
     request: RuntimeRequest<SubscribeMessage>,
   ): Promise<void> {
     const { message } = request;
-    return this.options.store.run(context, request, "subscription", message.ref, (state) =>
+    return this.options.store.run(context, request, "subscription", (state) =>
       this.options.store.subscribe(
         state,
         message.id,
         message.ref,
         message.args,
         message.cursor === undefined ? undefined : Object.freeze({ ...message.cursor }),
-      ), {
-      identifiers: { requestId: String(message.id), subscriptionId: String(message.id) },
-    });
+      ));
   }
 
   unsubscribe(
@@ -88,10 +86,8 @@ export class RuntimeSessionApplication {
     request: RuntimeRequest<UnsubscribeMessage>,
   ): Promise<void> {
     const { message } = request;
-    return this.options.store.run(context, request, "subscription", undefined, (state) =>
-      this.options.store.unsubscribe(state, message.id), {
-      identifiers: { requestId: String(message.id), subscriptionId: String(message.id) },
-    });
+    return this.options.store.run(context, request, "subscription", (state) =>
+      this.options.store.unsubscribe(state, message.id));
   }
 
   reset(
@@ -99,10 +95,8 @@ export class RuntimeSessionApplication {
     request: RuntimeRequest<ResetRequestMessage>,
   ): Promise<void> {
     const { message } = request;
-    return this.options.store.run(context, request, "subscription", undefined, (state) =>
-      this.options.store.reset(state, message.id, message.cursor), {
-      identifiers: { requestId: String(message.id), subscriptionId: String(message.id) },
-    });
+    return this.options.store.run(context, request, "subscription", (state) =>
+      this.options.store.reset(state, message.id, message.cursor));
   }
 
   async joinChannel(
@@ -114,7 +108,6 @@ export class RuntimeSessionApplication {
       context,
       request,
       "subscription",
-      message.ref,
       (state, requestBytes) => this.options.store.joinChannel(
         state,
         message.id,
@@ -125,7 +118,6 @@ export class RuntimeSessionApplication {
         requestBytes,
       ),
       {
-        identifiers: { requestId: String(message.id), subscriptionId: String(message.id) },
         successPublication: (publication) => publication,
       },
     );
@@ -140,9 +132,7 @@ export class RuntimeSessionApplication {
       context,
       request,
       "subscription",
-      undefined,
       (state, requestBytes) => this.options.store.leaveChannel(state, message.id, requestBytes),
-      { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } },
     );
   }
 
@@ -155,7 +145,6 @@ export class RuntimeSessionApplication {
       context,
       request,
       "subscription",
-      undefined,
       (state, requestBytes) => this.options.store.sendChannel(
         state,
         message.id,
@@ -163,7 +152,6 @@ export class RuntimeSessionApplication {
         message.payload,
         requestBytes,
       ),
-      { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } },
     );
   }
 
@@ -173,7 +161,7 @@ export class RuntimeSessionApplication {
   ): Promise<unknown> {
     const { message } = request;
     let publication: RuntimePublication | undefined;
-    return this.options.store.run(context, request, "query", message.ref, async (_state, requestBytes) => {
+    return this.options.store.run(context, request, "query", async (_state, requestBytes) => {
       const result = await this.options.queries.execute(
         message.ref,
         message.args,
@@ -201,7 +189,6 @@ export class RuntimeSessionApplication {
       );
       return result.ok ? result.data : result;
     }, {
-      identifiers: { requestId: String(message.id) },
       successPublication: () => requiredPublication(publication, "query"),
     });
   }
@@ -221,7 +208,6 @@ export class RuntimeSessionApplication {
         context,
         request,
         "procedure",
-        message.ref,
         async (_state, requestBytes) => {
           const fn = this.expect(message.ref, "procedure");
           const signal = this.options.operationSignal(request.signal ?? context.signal);
@@ -265,7 +251,6 @@ export class RuntimeSessionApplication {
           }
         },
         {
-          identifiers: { requestId: String(message.id) },
           successPublication: () => requiredPublication(publication, "procedure"),
         },
       );
@@ -293,7 +278,6 @@ export class RuntimeSessionApplication {
         context,
         request,
         "mutation",
-        message.ref,
         async (state, requestBytes) => {
           const fn = this.expect(message.ref, "mutation");
           const signal = this.options.operationSignal(context.signal);
@@ -340,8 +324,6 @@ export class RuntimeSessionApplication {
           return finished.result;
         },
         {
-          identifiers: { requestId: String(message.id), mutationId: message.mutationRequestId },
-          synthesizeHandler: false,
           successPublication: () => requiredPublication(successPublication, "mutation"),
         },
       );

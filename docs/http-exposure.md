@@ -56,8 +56,8 @@ the lockstep release, breaks are explicit).
   sensitive args belong in a POST body — URLs leak into access logs.
 - Cancellation is the HTTP request abort; there is no cancel endpoint.
 - Callers send no request id. The listener numbers path-addressed calls from
-  its own monotonic sequence so telemetry keeps a meaningful request id and the
-  operation stays correlatable in logs; the id never reaches the response.
+  its own monotonic sequence so the operation stays correlatable in logs; the
+  id never reaches the response.
 - A value response emits no `Cache-Control`; caching policy belongs to the
   operator. An SSE response is not policy — it sets
   `Cache-Control: no-cache, no-transform` (and `X-Accel-Buffering: no`), because
@@ -350,8 +350,8 @@ mirroring `ApplicationErrorMessage.receipt`.
 Unchanged from the existing HTTP routes: `Authorization: Bearer` resolved
 through the credential verifier into an auth lease; anonymous principals
 where the function's policy allows; MCP credentials remain forbidden on
-application functions. Admission, fairness keys, body limits, and telemetry
-traces reuse the existing HTTP ingress machinery.
+application functions. Admission, fairness keys, and body limits reuse the
+existing HTTP ingress machinery.
 
 ## OpenAPI
 
@@ -503,8 +503,8 @@ boundary), `runProcedure`/`runSse` (HTTP-native; they need the envelope parse
 replaced with path+body, and `runProcedure` emits the plain value instead of a
 `ProcedureOkMessage` frame), the coordinator's optional
 `IdempotencyIdentity`, `outcomeHttpStatus`, the standard-schema JSON Schema
-emitters, and the HTTP ingress (auth lease, admission, `parseHttpBody`,
-CORS, telemetry) in `transport/server.ts`. New work: kind dispatch from the
+emitters, and the HTTP ingress (auth lease, admission, `parseHttpBody`, and
+CORS) in `transport/server.ts`. New work: kind dispatch from the
 path, `runQuery`/`runMutation` HTTP siblings of `runProcedure`, the `http`
 definition field and its registry plumbing, receipt headers, the shared
 schema module extraction, the OpenAPI walk, the CLI export, the `_` route

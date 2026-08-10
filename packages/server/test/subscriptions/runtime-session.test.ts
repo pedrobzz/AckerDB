@@ -40,7 +40,6 @@ import {
   type SessionSink,
 } from "../../src/subscriptions/session/contract.ts";
 import { Session } from "../../src/subscriptions/session/session.ts";
-import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const ALICE_AUTHENTICATION = {
@@ -167,7 +166,7 @@ interface PendingApplicationBlock {
   readonly released: Deferred<void>;
 }
 
-function applicationTrace(authEpoch: number, message: SessionApplicationMessage): string {
+function applicationHistory(authEpoch: number, message: SessionApplicationMessage): string {
   if (message.t === "transition") {
     return `application:transition:${message.id}:${message.transition.kind}:${authEpoch}`;
   }
@@ -182,7 +181,7 @@ class DeterministicSink implements SessionSink {
   readonly applications: ApplicationRecord[] = [];
   readonly droppedApplications: ApplicationRecord[] = [];
   readonly closes: Outcome[] = [];
-  readonly trace: string[] = [];
+  readonly history: string[] = [];
   dropNextMutationResponse = false;
   private readonly authWaiters = new Map<number, Set<() => void>>();
   private applicationBlock: PendingApplicationBlock | null = null;
@@ -190,18 +189,18 @@ class DeterministicSink implements SessionSink {
   async sendControl(message: SessionControlMessage): Promise<void> {
     this.controls.push(message);
     if (message.t === "auth") {
-      this.trace.push(`control:auth:${message.attemptId}:${message.authEpoch}`);
+      this.history.push(`control:auth:${message.attemptId}:${message.authEpoch}`);
       for (const resolve of this.authWaiters.get(message.attemptId) ?? []) resolve();
       this.authWaiters.delete(message.attemptId);
       return;
     }
-    this.trace.push(`control:${message.t}`);
+    this.history.push(`control:${message.t}`);
   }
 
   async sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void> {
     const { message } = publication;
     const record = { authEpoch, message };
-    this.trace.push(applicationTrace(authEpoch, message));
+    this.history.push(applicationHistory(authEpoch, message));
     const block = this.applicationBlock;
     if (block?.predicate(record)) {
       this.applicationBlock = null;
@@ -217,7 +216,7 @@ class DeterministicSink implements SessionSink {
   }
 
   async dropApplicationFramesBefore(authEpoch: number): Promise<void> {
-    this.trace.push(`drop-before:${authEpoch}`);
+    this.history.push(`drop-before:${authEpoch}`);
     for (let index = this.applications.length - 1; index >= 0; index--) {
       if (this.applications[index]!.authEpoch < authEpoch) this.applications.splice(index, 1);
     }
@@ -509,7 +508,6 @@ async function reconnectTransitionEvidence(
     registry,
     verifier,
     limits,
-    telemetry: false,
     now: () => NOW,
   });
   const writerSink = new DeterministicSink();
@@ -677,68 +675,6 @@ async function reconnectTransitionEvidence(
 }
 
 describe("Session + Runtime integration", () => {
-  test("preserves exact noncanonical Session bytes in concrete Runtime telemetry", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-session-bytes-"));
-    const engine = new Engine(schema, join(directory, "data.db"));
-    reconcile(engine);
-    const exported: TelemetryRecord[] = [];
-    const runtime = new Runtime({
-      engine,
-      registry: new Registry({
-        messages: {
-          list: query({
-            access: "public",
-            args: { channelId: v.bigint() },
-            handler: (ctx: Ctx, args: Ctx) =>
-              ctx.db.messages.query()
-                .where((row: Ctx) => row.channelId.eq(args.channelId))
-                .collect(),
-          }),
-        },
-      }),
-      telemetry: {
-        enabled: true,
-        exporter: { export: (batch) => void exported.push(...batch) },
-        localSink: false,
-        limits: { slowOperationMs: 0, batchIntervalMs: 60_000, sampleIntervalMs: 60_000 },
-      },
-      now: () => NOW,
-    });
-    const sink = new DeterministicSink();
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new FixedClock() });
-
-    try {
-      await handle(session, {
-        v: ACKERDB_VERSION,
-        t: "hello",
-        clientSessionId: "exact-session-bytes",
-        credential: { kind: "anonymous" },
-      });
-      const message = {
-        t: "q" as const,
-        id: 91,
-        ref: "api.messages.list",
-        args: { channelId: 1n },
-      };
-      const canonical = encode(message);
-      const received = `${" ".repeat(137)}${canonical}`;
-      const receivedBytes = Buffer.byteLength(received);
-      expect(receivedBytes).toBeGreaterThan(Buffer.byteLength(canonical));
-
-      await session.handle(received);
-      await runtime.telemetry.flush();
-      const requestSpans = exported.filter((record): record is TelemetrySpanRecord =>
-        record.kind === "span" && record.requestId === "91"
-      );
-      expect(requestSpans.find((span) => span.stage === "admission")?.sizeBytes).toBe(receivedBytes);
-      expect(requestSpans.find((span) => span.stage === "queue")?.sizeBytes).toBe(receivedBytes);
-    } finally {
-      await session.close();
-      await runtime.drain();
-      engine.close("clean");
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
 
   test("reconnects safely immediately before and after every query transition kind", async () => {
     for (const [transition, phase, recoveryTransitions, updates, errors] of RECONNECT_TRANSITION_CASES) {
@@ -788,7 +724,6 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier: new UserVerifier(),
-      telemetry: false,
       now: () => NOW,
     });
     const sink = new DeterministicSink();
@@ -841,10 +776,10 @@ describe("Session + Runtime integration", () => {
         issuedAt: NOW,
       };
       sink.dropNextMutationResponse = true;
-      const mutationTraceStart = sink.trace.length;
+      const mutationHistoryStart = sink.history.length;
       await handle(session, mutation);
 
-      expect(sink.trace.slice(mutationTraceStart)).toEqual([
+      expect(sink.history.slice(mutationHistoryStart)).toEqual([
         "application:transition:10:update:0",
         "application:mutation:2:executed:0",
       ]);
@@ -891,7 +826,7 @@ describe("Session + Runtime integration", () => {
         transition: { kind: "reset", to: { authEpoch: 0 }, value: { subject: "alice" } },
       });
 
-      const rotationTraceStart = sink.trace.length;
+      const rotationHistoryStart = sink.history.length;
       const authenticated = sink.waitForAuth(1);
       await handle(session, {
         t: "auth",
@@ -901,7 +836,7 @@ describe("Session + Runtime integration", () => {
       await authenticated;
       await settle();
 
-      expect(sink.trace.slice(rotationTraceStart)).toEqual([
+      expect(sink.history.slice(rotationHistoryStart)).toEqual([
         "drop-before:1",
         "application:transition:10:revoked:1",
         "application:transition:20:revoked:1",
@@ -950,7 +885,6 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier: new UserVerifier(),
-      telemetry: false,
       now: () => NOW,
     });
     const clock = new FixedClock();
@@ -1077,7 +1011,6 @@ describe("Session + Runtime integration", () => {
       engine,
       registry,
       verifier,
-      telemetry: false,
       now: () => NOW,
     });
     const slowSink = new DeterministicSink();

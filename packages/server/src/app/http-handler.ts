@@ -13,7 +13,7 @@ import {
   type FunctionResult,
   type TxCtx,
 } from "./functions.ts";
-import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
+import type { Logger } from "../signals/logger.ts";
 import type { FileProcedureCapability } from "../files/api.ts";
 
 export const HTTP_HANDLER_METHODS = Object.freeze([
@@ -42,7 +42,7 @@ export type HttpHandlerCtx<
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
 > = Capabilities & {
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
   readonly timestamp: number;
   /** Fires when the caller disconnects or the Runtime shuts down. */
   readonly abortSignal: AbortSignal;

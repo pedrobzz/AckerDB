@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decode, encode } from "@ackerdb/core";
-import { noopAnalytics, noopLogger } from "ackerdb-test-support/telemetry";
+import { noopAnalytics, noopLogger } from "ackerdb-test-support/signals";
 import {
   assemblePlugins,
   definePlugin,
@@ -13,7 +13,6 @@ import {
   PluginRuntime,
   reconcilePluginStorage,
   v,
-  type DbStatementObservation,
   type PluginExportTree,
   type PluginInstance,
 } from "@ackerdb/server";
@@ -105,7 +104,6 @@ async function invoke(
 
 function createBuiltInRig(
   plugin: TestPlugin,
-  observations: DbStatementObservation[] = [],
   sqlStatements?: string[],
 ) {
   const engine = new Engine(defineSchema({}), ":memory:");
@@ -140,7 +138,6 @@ function createBuiltInRig(
         engine,
         newWriteCollector(),
         () => 0n,
-        (observation) => observations.push(observation),
         scope,
       );
       const result = await invoke(plugin, path, { db, mount: "cache", timestamp }, args);
@@ -159,13 +156,12 @@ function createBuiltInRig(
       engine,
       newWriteCollector(),
       () => 0n,
-      undefined,
       scope,
     ) as TestDb;
     return work(db);
   };
 
-  return { call, close: () => engine.close("clean"), inspect, observations };
+  return { call, close: () => engine.close("clean"), inspect };
 }
 
 describe("cachePlugin configuration and keys", () => {
@@ -364,7 +360,6 @@ describe("built-in cache operations", () => {
         engine,
         newWriteCollector(),
         () => 0n,
-        undefined,
         scope,
       ) as TestDb;
       const encodedKey = encodeCacheKey("", "cache", "", "profile");
@@ -542,10 +537,9 @@ describe("built-in cache operations", () => {
   });
 
   test("bulk-evicts the minimal oldest prefix with one delete statement", async () => {
-    const observations: DbStatementObservation[] = [];
     const sqlStatements: string[] = [];
     const plugin = cachePlugin({ maxEntries: 100, maxBytes: 500, maxEntryBytes: 500 });
-    const rig = createBuiltInRig(plugin, observations, sqlStatements);
+    const rig = createBuiltInRig(plugin, sqlStatements);
     try {
       for (const key of ["first", "second", "third", "fourth"]) {
         await rig.call(["set"], { key, value: 1 }, 1);
@@ -567,15 +561,10 @@ describe("built-in cache operations", () => {
       }
       expect(expectedDeleted).toBeGreaterThan(1);
       expect(expectedDeleted).toBeLessThan(before.entries.length);
-      observations.length = 0;
       sqlStatements.length = 0;
 
       await rig.call(["set"], { key: "large", value: "x".repeat(400) }, 2);
 
-      const bulkDeletes = observations.filter(({ statement }) => statement === "deleteMany");
-      expect(bulkDeletes).toHaveLength(1);
-      expect(bulkDeletes[0]?.rowCount).toBe(expectedDeleted);
-      expect(observations.some(({ statement }) => statement === "delete")).toBe(false);
       expect(sqlStatements.filter((sql) => sql.startsWith("DELETE FROM"))).toHaveLength(1);
 
       await rig.inspect(async (db) => {
@@ -618,15 +607,14 @@ describe("built-in cache operations", () => {
   });
 
   test("get performs no writes", async () => {
-    const observations: DbStatementObservation[] = [];
+    const sqlStatements: string[] = [];
     const plugin = cachePlugin();
-    const rig = createBuiltInRig(plugin, observations);
+    const rig = createBuiltInRig(plugin, sqlStatements);
     try {
       await rig.call(["set"], { key: "key", value: "value" }, 1);
-      observations.length = 0;
+      sqlStatements.length = 0;
       expect(await rig.call(["get"], { key: "key" }, 1)).toBe("value");
-      expect(observations.some((observation) => observation.kind === "write")).toBe(false);
-      expect(observations.filter((observation) => observation.kind === "read")).toHaveLength(1);
+      expect(sqlStatements.some((sql) => /^(INSERT|UPDATE|DELETE)\b/.test(sql))).toBe(false);
     } finally {
       rig.close();
     }

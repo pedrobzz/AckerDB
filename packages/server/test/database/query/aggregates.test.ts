@@ -12,8 +12,6 @@ import {
   newWriteCollector,
   v,
 } from "@ackerdb/server";
-import type { DbStatementObservation } from "../../../src/database/statement-observation.ts";
-
 const schema = defineSchema({
   orders: defineTable({
     id: v.primaryKey(),
@@ -143,16 +141,5 @@ describe("query aggregates", () => {
     expect(recorded).toEqual(new Set([ixKey("orders", index.name, [1n])]));
   });
 
-  test("delivers per-aggregate statement observations", async () => {
-    const statements: string[] = [];
-    const observer = (observation: Readonly<DbStatementObservation>): void => {
-      statements.push(observation.statement);
-    };
-    const reader: any = makeDbReader(engine, engine.reader, null, observer);
-    await reader.orders.query().sum((row: any) => row.amount);
-    await reader.orders.query().avg((row: any) => row.price);
-    await reader.orders.query().min((row: any) => row.label);
-    await reader.orders.query().max((row: any) => row.total);
-    expect(statements).toEqual(["sum", "avg", "min", "max"]);
-  });
+
 });

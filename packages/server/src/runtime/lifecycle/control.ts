@@ -5,9 +5,6 @@ import { AckerDBError } from "../../shared/errors.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
-import type { TelemetryJournalExporters } from "../../telemetry/application-signals/exporters.ts";
-import type { TelemetryJournal } from "../../telemetry/application-signals/journal.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { RuntimeStatus } from "../contracts/status.ts";
 import type { RuntimeLifecycleState } from "../contracts/lifecycle.ts";
 import type { RuntimeFunctionExecutor } from "../execution/functions.ts";
@@ -17,7 +14,6 @@ import type {
 } from "../execution/operation-runner.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { ServiceLimits } from "../limits.ts";
-import { outcomeFromError } from "../outcome.ts";
 import type { RuntimeJobs } from "../jobs/runtime.ts";
 import type {
   RuntimeReactiveContext,
@@ -25,7 +21,6 @@ import type {
   RuntimeSessionStore,
 } from "../sessions/store.ts";
 import type { FileCleanupRuntime } from "../../files/cleanup.ts";
-import type { RuntimeFiles } from "../../files/namespace.ts";
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
 const utf8 = new TextEncoder();
@@ -33,11 +28,6 @@ const utf8 = new TextEncoder();
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
-  readonly telemetry: Telemetry;
-  readonly telemetryJournal: TelemetryJournal;
-  readonly telemetryExporters?: TelemetryJournalExporters;
-  readonly ownsTelemetry: boolean;
-  readonly ownsTelemetryJournal: boolean;
   readonly pluginRuntime?: PluginRuntime;
   readonly realtime?: RealtimeRuntime;
   readonly reads: RuntimeReadExecutor;
@@ -46,12 +36,9 @@ export interface RuntimeControlOptions {
   readonly sessions: RuntimeSessionStore;
   readonly jobs: RuntimeJobs;
   readonly fileCleanup: FileCleanupRuntime;
-  readonly files: RuntimeFiles;
   readonly authCaptureBudget: OutboundBudget;
   readonly sseBudget: OutboundBudget;
   readonly sseProducers: ReadonlyMap<string, BoundedSseProducer>;
-  readonly stopSampler: () => void;
-  readonly flushDeliveryFailures: () => void;
 }
 
 /** Owns Runtime admission, lifecycle state, status projection, and finite drain. */
@@ -60,32 +47,11 @@ export class RuntimeControl {
   private readonly activeWaiters = new Set<() => void>();
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
-  private readonly releaseTelemetryJournalFailure: () => void;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
 
-  constructor(private readonly options: RuntimeControlOptions) {
-    this.releaseTelemetryJournalFailure = options.telemetryJournal.onFailure((error) => {
-      options.telemetry.recordEvent({
-        name: "failure",
-        level: "error",
-        operation: "lifecycle",
-        outcome: "internal",
-        resource: "telemetry",
-        errorClass: error instanceof Error ? error.name : "UnknownError",
-      });
-      if (this.lifecycle === "ready") {
-        void this.drain(Date.now() + options.limits.gracefulShutdownMs).catch(() => {});
-      }
-    });
-    options.telemetry.recordEvent({
-      name: "lifecycle",
-      level: "info",
-      operation: "lifecycle",
-      lifecycleState: "ready",
-    });
-  }
+  constructor(private readonly options: RuntimeControlOptions) {}
 
   get state(): RuntimeLifecycleState {
     return this.lifecycle;
@@ -222,17 +188,12 @@ export class RuntimeControl {
       realtime: this.options.realtime?.snapshot() ?? null,
       declaredJobs: this.options.jobs.declaredCount,
       jobsArmed: this.options.jobs.armed,
-      files: this.options.files.observability.snapshot(),
       reader: this.options.reads.snapshot(),
       writer: this.options.functions.snapshot(),
       reactive: this.options.reactive.snapshot(),
       publication: this.options.reactive.publication.snapshot(),
       authCaptureBudget: this.options.authCaptureBudget.snapshot(),
       sseBudget: this.options.sseBudget.snapshot(),
-      telemetry: this.options.telemetry.snapshot(),
-      telemetryAggregates: this.options.telemetry.aggregateSnapshot(),
-      telemetryJournal: this.options.telemetryJournal.snapshot(),
-      telemetryExporters: this.options.telemetryExporters?.snapshot() ?? null,
       storage: this.options.engine.status(),
     });
   }
@@ -244,16 +205,8 @@ export class RuntimeControl {
       throw new RangeError("runtime shutdown deadline must be finite");
     }
     this.lifecycle = "draining";
-    this.releaseTelemetryJournalFailure();
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
-    this.options.stopSampler();
-    this.options.telemetry.recordEvent({
-      name: "lifecycle",
-      level: "info",
-      operation: "lifecycle",
-      lifecycleState: "draining",
-    });
     const draining = new AckerDBError("draining", "runtime is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
@@ -267,7 +220,6 @@ export class RuntimeControl {
 
     this.options.functions.close();
     this.options.reads.close();
-    if (this.options.ownsTelemetry) this.options.telemetry.stop();
     const reactiveDrain = this.options.reactive.close();
     let deadlineReached = false;
     const coreShutdown = (async () => {
@@ -292,25 +244,7 @@ export class RuntimeControl {
         throw new AggregateError(errors, "Runtime shutdown failed");
       }
     })();
-    const shutdownWork = coreShutdown.then(async () => {
-      if (deadlineReached) return;
-      this.options.flushDeliveryFailures();
-      this.options.telemetry.recordEvent({
-        name: "lifecycle",
-        level: "info",
-        operation: "lifecycle",
-        lifecycleState: "stopped",
-      });
-      await this.options.telemetryExporters?.drain();
-      if (this.options.ownsTelemetryJournal) {
-        await this.options.telemetryJournal.drain();
-      } else {
-        await this.options.telemetryJournal.flush();
-      }
-      return this.options.ownsTelemetry
-        ? this.options.telemetry.drain(deadlineAtMs)
-        : this.options.telemetry.flush();
-    });
+    const shutdownWork = coreShutdown.then(() => undefined);
 
     const deadlineError = new AckerDBError(
       "deadline_exceeded",
@@ -337,41 +271,7 @@ export class RuntimeControl {
         deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
-        this.options.telemetry.recordEvent({
-          name: "lifecycle",
-          level: "error",
-          operation: "lifecycle",
-          lifecycleState: "failed",
-          outcome: outcomeFromError(error).code,
-          errorClass: error instanceof Error ? error.name : "UnknownError",
-        });
-        const cleanupErrors: unknown[] = [];
-        try {
-          await this.options.telemetryExporters?.drain();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (this.options.ownsTelemetryJournal) {
-            await this.options.telemetryJournal.drain();
-          } else {
-            await this.options.telemetryJournal.flush();
-          }
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        if (this.options.ownsTelemetry) {
-          try {
-            await this.options.telemetry.drain(deadlineAtMs);
-          } catch (cleanupError) {
-            cleanupErrors.push(cleanupError);
-          }
-        }
-        if (cleanupErrors.length === 0) throw error;
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          "Runtime shutdown and telemetry cleanup both failed",
-        );
+        throw error;
       },
     );
     return this.drainPromise;

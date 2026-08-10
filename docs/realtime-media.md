@@ -133,7 +133,7 @@ handler(ctx) {
 
 The nested procedure revalidates its arguments and access policy and keeps the
 same authenticated principal, abort signal, Plugin capabilities, result
-contract, telemetry, and transaction-poisoning rules. Generated realtime
+contract and transaction-poisoning rules. Generated realtime
 contexts include the application's procedure capabilities and their
 transaction counterparts, so procedures using mounted Plugins remain callable
 without casts.
@@ -169,7 +169,7 @@ provider.onToolCall((call) => {
 
 `ctx.run(work)` is intentionally fire-and-own, not a promise-returning task
 API. The work runs under this session's authenticated invocation context,
-abort lifecycle, concurrency limit, telemetry, and fatal-error boundary.
+abort lifecycle, concurrency limit, and fatal-error boundary.
 Provider media pumps that do not touch procedure capabilities can stay on
 their bounded native/application queue and report terminal failures through
 `ctx.run(() => { throw error; })`.
@@ -430,12 +430,10 @@ tracks, senders, transceivers, configuration, and data channels instead.
 
 `runtime.status().realtime` is a bounded aggregate snapshot. It includes active
 and reserved generations, principal/handshake admission, setup and recovery
-durations/outcomes, fixed close-reason counters, resource ownership and
-saturation, selected path classes, first media, sampled RTT/jitter/loss/bitrate,
-buffer pressure, and native event-queue drops. Sampling rotates through at
-most eight active peers per telemetry interval. There is no realtime polling
-loop when telemetry is disabled, no per-session timer after close, and no
-principal, session, track, candidate-address, SDP, or payload metric label.
+durations/outcomes, fixed close-reason counters, resource ownership,
+saturation, buffer pressure, and native event-queue drops. It performs no
+periodic peer sampling and contains no principal, session, track,
+candidate-address, SDP, or payload label.
 
 For one authorized connection, `runtime.realtimeDiagnostic(sessionId,
 principal)` reads a bounded standard stats report and returns a redacted path

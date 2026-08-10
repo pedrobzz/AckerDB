@@ -53,7 +53,6 @@ describe("File cleanup restart recovery", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: { store },
     });
   });
@@ -95,7 +94,6 @@ describe("File cleanup restart recovery", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: { store },
     });
     const restarted = runtime as unknown as RuntimeInternals;
@@ -112,7 +110,6 @@ describe("File cleanup restart recovery", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: { store },
       now: () => now,
     });
@@ -150,7 +147,6 @@ describe("File cleanup restart recovery", () => {
       runtime = new Runtime({
         engine,
         registry: new Registry({}),
-        telemetry: false,
         files: { store },
         now: () => now,
       });
@@ -244,7 +240,6 @@ describe("File cleanup restart recovery", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: { store },
     });
     const restarted = runtime as unknown as RuntimeInternals;
@@ -327,7 +322,6 @@ describe("File cleanup restart recovery", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: { store },
     });
     const restarted = runtime as unknown as RuntimeInternals;

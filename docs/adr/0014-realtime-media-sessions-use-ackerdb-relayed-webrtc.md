@@ -28,8 +28,7 @@ AckerDB owns:
   negotiation;
 - one internal reliable ordered data channel for typed events, typed finite
   byte streams, and post-connect signaling control;
-- shared client demand, bounded recovery, generation cleanup, and runtime
-  telemetry; and
+- shared client demand, bounded recovery, and generation cleanup; and
 - a native server peer based on the focused LiveKit Rust libwebrtc binding.
 
 Applications own:
@@ -169,12 +168,9 @@ errors, configuration, cloning, and raw data channels. A deliberately
 unsupported standard capability throws `NotSupportedError`; it is never a
 silent stub.
 
-Aggregate metrics have fixed cardinality and contain no principals, session or
-track IDs, addresses, SDP, credentials, or payloads. A bounded authorized
-diagnostic snapshot exposes redacted standard stats for one session. The
-existing runtime telemetry tick samples only a rotating subset of active
-generations, and closed or idle realtime service creates no independent
-polling loop.
+A bounded authorized diagnostic snapshot exposes redacted standard stats for
+one session. It contains no credentials, addresses, SDP, or payloads and runs
+only when explicitly requested.
 
 ## Native distribution
 

@@ -5,13 +5,10 @@ import {
   type ReadRecorder,
   type WriteCollector,
 } from "../database/access.ts";
-import type { DbStatementObserver } from "../database/statement-observation.ts";
 import type { Engine, StorageScope } from "../database/engine.ts";
 import { deepFreeze } from "../shared/immutable.ts";
-import type {
-  AnalyticsTracker,
-  ApplicationLogger,
-} from "../telemetry/application-signals/types.ts";
+import type { Analytics } from "../signals/analytics.ts";
+import type { Logger } from "../signals/logger.ts";
 import {
   isPluginOperationSpec,
   type AnyPluginOperationSpec,
@@ -44,18 +41,16 @@ export interface PluginRuntimeOptions {
 export interface PluginReadExecution {
   readonly connection: Database;
   readonly reads: ReadRecorder | null;
-  readonly statementObserver?: DbStatementObserver;
 }
 
 export interface PluginWriteExecution {
   readonly writes: WriteCollector;
-  readonly statementObserver?: DbStatementObserver;
 }
 
 export interface PluginInvocationCapabilities {
   readonly timestamp: number;
-  readonly log: (functionAddress: string, functionKind: PluginOperationKind) => ApplicationLogger;
-  readonly analytics: (functionAddress: string, functionKind: PluginOperationKind) => AnalyticsTracker;
+  readonly log: (functionAddress: string, functionKind: PluginOperationKind) => Logger;
+  readonly analytics: (functionAddress: string, functionKind: PluginOperationKind) => Analytics;
 }
 
 export interface PluginQueryBinding extends PluginReadExecution {
@@ -575,15 +570,11 @@ export class PluginRuntime {
             connection: this.engine.writer,
             reads: null,
             invocation: binding.value.invocation,
-            ...(binding.value.statementObserver === undefined
-              ? {}
-              : { statementObserver: binding.value.statementObserver }),
           };
       const db = makeDbReader(
         this.engine,
         read.connection,
         read.reads,
-        read.statementObserver,
         scope,
       );
       return Object.freeze({
@@ -605,7 +596,6 @@ export class PluginRuntime {
         () => {
           throw new Error("Plugin private schemas cannot contain event tables");
         },
-        binding.value.statementObserver,
         scope,
       );
       return Object.freeze({

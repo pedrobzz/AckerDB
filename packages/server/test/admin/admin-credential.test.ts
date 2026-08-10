@@ -67,7 +67,6 @@ function fixture(): Fixture {
     engine,
     registry: new Registry({}),
     scopes: APP_SCOPES,
-    telemetry: false,
   });
   let closed = false;
   const close = (): void => {
@@ -275,7 +274,6 @@ function fixtureAt(path: string): Fixture {
     engine,
     registry: new Registry({}),
     scopes: APP_SCOPES,
-    telemetry: false,
   });
   let closed = false;
   const close = (): void => {

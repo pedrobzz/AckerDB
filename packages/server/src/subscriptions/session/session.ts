@@ -63,7 +63,6 @@ import {
   type DecodedClientFrame,
   type SessionWireFrame,
 } from "./frame.ts";
-import { PendingAuthObservations } from "./observation.ts";
 
 function authenticationDescriptor(
   principal: ClientPrincipal,
@@ -125,7 +124,6 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly authObservations: PendingAuthObservations;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
@@ -152,7 +150,6 @@ export class Session {
     validateCredentialVerifierRevocation(options.runtime.credentialVerifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
-    this.authObservations = new PendingAuthObservations(options);
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
@@ -316,24 +313,16 @@ export class Session {
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
     const authController = new AbortController();
     this.pendingAuthController = authController;
-    const observationOwner = this.authObservations.enabled ? authController : undefined;
-    if (observationOwner !== undefined) {
-      this.authObservations.begin(observationOwner, { kind: "hello", clientSessionId });
-    }
     let principal: ClientPrincipal;
     try {
       principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
       const failure = verifierError(error);
       if (this.pendingAuthController === authController) this.pendingAuthController = null;
-      if (observationOwner !== undefined) {
-        this.authObservations.finish(observationOwner, failure);
-      }
       void this.terminate(failure);
       return;
     }
     if (this.pendingAuthController === authController) this.pendingAuthController = null;
-    if (observationOwner !== undefined) this.authObservations.finish(observationOwner);
     if (this.isClosed()) return;
     try {
       this.clientSessionId = clientSessionId;
@@ -378,29 +367,15 @@ export class Session {
     aborted(this.epochController, stale);
     this.abortActiveProcedures(stale);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, stale);
-    this.authObservations.finish(undefined, stale);
     const transitionController = new AbortController();
     this.pendingAuthController = transitionController;
-    const clientSessionId = this.clientSessionId;
-    this.authObservations.begin(
-      transitionController,
-      clientSessionId === null
-        ? undefined
-        : {
-            kind: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
-            clientSessionId,
-            attemptId: message.attemptId,
-          },
-    );
 
     void this.verifyCredential(message.credential, transitionController.signal).then(
       (principal) => {
-        this.authObservations.finish(transitionController);
         this.queueAuthCompletion(message, transitionController, principal);
       },
       (error) => {
         const failure = verifierError(error);
-        this.authObservations.finish(transitionController, failure);
         this.queueAuthCompletion(message, transitionController, failure);
       },
     );
@@ -720,7 +695,6 @@ export class Session {
     aborted(this.epochController, error);
     this.abortActiveProcedures(error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
-    this.authObservations.finish(undefined, error);
     const authPublications = this.authPublications;
     this.authPublications = null;
     authPublications?.release();

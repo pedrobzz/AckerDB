@@ -194,7 +194,7 @@ function spawnFixture(dir: string, port: number): ProcessHarness {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   }) as FixtureProcess;
   let stdout = "";
   let stderr = "";
@@ -705,36 +705,6 @@ function queueReleased(queue: RuntimeStatus["reader"]["queue"]): boolean {
     queue.activeFairnessKeys === 0;
 }
 
-function everyNumberIsZero(value: object): boolean {
-  return Object.values(value).every((entry) =>
-    typeof entry === "number"
-      ? entry === 0
-      : typeof entry === "object" && entry !== null
-        ? everyNumberIsZero(entry)
-        : true
-  );
-}
-
-function telemetryReleased(telemetry: RuntimeStatus["telemetry"]): boolean {
-  return telemetry.enabled === false &&
-    telemetry.queuedRecords === 0 &&
-    telemetry.queuedBytes === 0 &&
-    telemetry.oldestAgeMs === 0 &&
-    telemetry.metricSeries === 0 &&
-    telemetry.traceRetention.activeTraces === 0 &&
-    telemetry.traceRetention.completedDecisions === 0 &&
-    telemetry.traceRetention.stagedRecords === 0 &&
-    telemetry.traceRetention.stagedBytes === 0 &&
-    telemetry.localSink.configured === false &&
-    telemetry.localSink.inFlight === false &&
-    telemetry.localSink.pendingRecords === 0 &&
-    telemetry.localSink.pendingBytes === 0 &&
-    telemetry.localSink.oldestAgeMs === 0 &&
-    telemetry.exporter.configured === false &&
-    telemetry.exporter.inFlight === false &&
-    everyNumberIsZero(telemetry);
-}
-
 function resourcesReleased(value: ResourceStatus): boolean {
   return (
     value.connections === 0 &&
@@ -772,8 +742,7 @@ function resourcesReleased(value: ResourceStatus): boolean {
     value.runtime.authCaptureBudget.controlBytes === 0 &&
     value.runtime.sseBudget.bytes === 0 &&
     value.runtime.sseBudget.applicationBytes === 0 &&
-    value.runtime.sseBudget.controlBytes === 0 &&
-    telemetryReleased(value.runtime.telemetry)
+    value.runtime.sseBudget.controlBytes === 0
   );
 }
 
@@ -810,27 +779,6 @@ function assertResourcesReleased(value: ResourceStatus): void {
       publication: { items: 0, bytes: 0, oldestAgeMs: 0 },
       authCaptureBudget: { bytes: 0, applicationBytes: 0, controlBytes: 0 },
       sseBudget: { bytes: 0, applicationBytes: 0, controlBytes: 0 },
-      telemetry: {
-        enabled: false,
-        queuedRecords: 0,
-        queuedBytes: 0,
-        oldestAgeMs: 0,
-        metricSeries: 0,
-        traceRetention: {
-          activeTraces: 0,
-          completedDecisions: 0,
-          stagedRecords: 0,
-          stagedBytes: 0,
-        },
-        localSink: {
-          configured: false,
-          inFlight: false,
-          pendingRecords: 0,
-          pendingBytes: 0,
-          oldestAgeMs: 0,
-        },
-        exporter: { configured: false, inFlight: false },
-      },
     },
   });
   for (const queue of [
