@@ -1,3 +1,5 @@
+import { totalSignal } from "./delivery.ts";
+
 export type AnalyticsProperties = Readonly<Record<string, unknown>>;
 
 export interface AnalyticsStrategy {
@@ -18,6 +20,6 @@ export class Analytics {
   readonly track: (event: string, properties?: AnalyticsProperties) => void;
 
   constructor(strategy: AnalyticsStrategy = consoleAnalyticsStrategy) {
-    this.track = (event, properties) => strategy.track(event, properties);
+    this.track = totalSignal((event, properties) => strategy.track(event, properties));
   }
 }
