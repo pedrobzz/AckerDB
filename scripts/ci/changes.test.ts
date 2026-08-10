@@ -27,6 +27,12 @@ describe("native CI selection", () => {
       .toBe(true);
     expect(nativeBuildInputsChanged([".github/workflows/native.yml"]))
       .toBe(true);
+    expect(nativeBuildInputsChanged([
+      "packages/realtime/native/webrtc/test/candidate.test.ts",
+    ])).toBe(true);
+    expect(nativeBuildInputsChanged([
+      "packages/realtime/native/webrtc/test/distribution.test.ts",
+    ])).toBe(true);
   });
 
   test("runs native tests without rebuilding unchanged binaries", () => {
@@ -35,6 +41,16 @@ describe("native CI selection", () => {
     ])).toBe(true);
     expect(nativeTestInputsChanged([
       "packages/realtime/native/webrtc/src/peer.rs",
+    ])).toBe(false);
+    expect(nativeTestInputsChanged([
+      "packages/realtime/native/webrtc/test/native-engine.test.ts",
+    ])).toBe(true);
+    expect(nativeTestInputsChanged([
+      "packages/realtime/native/webrtc/test/public-session.test.ts",
+    ])).toBe(true);
+    expect(nativeTestInputsChanged([
+      "packages/realtime/native/webrtc/test/candidate.test.ts",
+      "packages/realtime/native/webrtc/test/distribution.test.ts",
     ])).toBe(false);
   });
 });

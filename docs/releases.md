@@ -54,7 +54,9 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - the repository TypeScript checks, skipped when only documentation changed;
 - package, MCP, and workflow boundary checks only when their inputs changed;
 - the native matrix only when the WebRTC Rust source, native build/evidence
-  contract, native tests, or native workflow changed.
+  contract, distribution/evidence tests, or native workflow changed;
+- runtime-only WebRTC test changes reuse verified published binaries in one
+  macOS job and do not compile Rust.
 
 The benchmark is not part of `Fast CI`. It is its own required check on every
 pull request — see [Benchmark job](#benchmark-job).

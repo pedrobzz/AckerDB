@@ -178,13 +178,16 @@ export function performanceInputsChanged(files: readonly string[]): boolean {
 export function nativeBuildInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
     file === ".github/workflows/native.yml" ||
+    file === "packages/realtime/native/webrtc/test/candidate.test.ts" ||
+    file === "packages/realtime/native/webrtc/test/distribution.test.ts" ||
     /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
   );
 }
 
 export function nativeTestInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
-    file.startsWith("packages/realtime/native/webrtc/test/")
+    /^packages\/realtime\/native\/webrtc\/test\/(?:native-engine|public-session)\.test\.ts$/.test(file) ||
+    file === "packages/realtime/native/webrtc/test/public-session-fixture.ts"
   );
 }
 

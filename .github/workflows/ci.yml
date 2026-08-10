@@ -65,7 +65,10 @@ jobs:
           bun -e 'import { ensureNativeArtifacts } from
           "./scripts/release/native-artifacts.ts";
           await ensureNativeArtifacts(["https://registry.npmjs.org"])'
-      - run: bun test --timeout 15000 packages/realtime/native/webrtc/test
+      - run: >-
+          bun test --timeout 15000
+          packages/realtime/native/webrtc/test/native-engine.test.ts
+          packages/realtime/native/webrtc/test/public-session.test.ts
 
   fast-ci:
     name: Fast CI
@@ -132,7 +135,7 @@ jobs:
   benchmark:
     name: Benchmark
     if: always()
-    needs: [changes, native_build, native_tests]
+    needs: [changes, native_build]
     runs-on: ubuntu-24.04
     # The cap is finite so a hung process cannot retain a runner indefinitely.
     timeout-minutes: 25
@@ -141,11 +144,9 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           NATIVE_BUILD: ${{ needs.native_build.result }}
-          NATIVE_TESTS: ${{ needs.native_tests.result }}
         run: |
           case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
           case "$NATIVE_BUILD" in success|skipped) ;; *) exit 1 ;; esac
-          case "$NATIVE_TESTS" in success|skipped) ;; *) exit 1 ;; esac
       - if: needs.changes.outputs.performance == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
