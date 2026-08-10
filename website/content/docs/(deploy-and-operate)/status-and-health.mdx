@@ -69,6 +69,7 @@ Use the results to make clear infrastructure decisions:
 | `/ready` is `503` while draining | Graceful shutdown is in progress. | Stop routing new requests; allow the termination grace period. |
 | `/status` reports pressure or rejections | A bounded resource is protecting unrelated work. | Inspect load shape and capacity before increasing limits. |
 
-Health checks are not telemetry. Use [Telemetry](/docs/telemetry) for bounded
-runtime signals and [Backups and Restore](/docs/backups-and-restore) for storage
-integrity and recovery evidence.
+Health checks are not a substitute for application observability. Keep logs,
+metrics, and traces in the tooling your deployment already owns; use
+[Backups and Restore](/docs/backups-and-restore) for storage integrity and
+recovery evidence.

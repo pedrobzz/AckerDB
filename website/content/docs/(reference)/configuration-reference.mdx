@@ -177,14 +177,12 @@ changing this field against live data.
 
 ## Environment profiles
 
-Durability and telemetry are process environment settings, not JSON fields.
-That keeps the application definition stable while an operator selects a
-deployment profile:
+Durability is a process environment setting, not a JSON field. That keeps the
+application definition stable while an operator selects a deployment profile:
 
 | Environment variable | Values | Default |
 | --- | --- | --- |
 | `ACKERDB_DURABILITY` | `production`, `balanced` | `production` |
-| `ACKERDB_TELEMETRY` | `enabled`, `disabled` | `enabled` |
 
 `production` uses the strongest SQLite synchronization policy. `balanced`
 can acknowledge recent commits before they survive sudden power loss. Read

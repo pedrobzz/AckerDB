@@ -10,7 +10,6 @@
     "durability-profiles",
     "backups-and-restore",
     "---Observe---",
-    "status-and-health",
-    "telemetry"
+    "status-and-health"
   ]
 }
