@@ -7,8 +7,8 @@
  * One set of values means a token is a fact rather than a pair, and the day a
  * light theme is worth its cost the split happens here and nowhere else.
  *
- * **The names are shadcn's, deliberately.** Studio vendors registry components
- * — they are copied in to be maintained by hand — and a component that reads
+ * **The names are shadcn's, deliberately.** The registry publishes source, so a
+ * component lands in this tree as written — and one that reads
  * `bg-card` and `text-muted-foreground` drops into this tree unmodified only
  * while those names mean something. Renaming them to something more expressive
  * would buy nothing and cost a hand-edit on every future copy. Tailwind v4

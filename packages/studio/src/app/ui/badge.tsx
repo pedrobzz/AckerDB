@@ -1,5 +1,5 @@
 /**
- * Vendored from the shadcn/ui registry (MIT, `new-york-v4/ui/badge`).
+ * From the shadcn/ui registry (`new-york-v4/ui/badge`).
  *
  * `asChild` and the `[a&]:` anchor variants are dropped with the `radix-ui`
  * `Slot` they served; nothing in Studio renders a badge as a link. The `signal`

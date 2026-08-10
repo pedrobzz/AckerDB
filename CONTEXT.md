@@ -50,6 +50,25 @@ purpose.
 that still enforces the required invariant. AckerDB does not add machinery merely
 to imitate another system or erase an acceptable backend difference.
 
+**Commodity** — Generic, reusable substrate that systems of AckerDB's class
+commonly need and that carries no unique product value: storage, transport,
+signaling, scheduling, retries, auth protocols, serialization.
+
+**Policy** — Product-specific behavior that makes AckerDB distinct: its rules,
+invariants, supported features, public API, and interaction model.
+
+**Converged surface** — One AckerDB definition serving what is normally several
+systems, such as a single procedure observed reactively, exposed over HTTP,
+offered as an MCP tool, and memoized as a durable step.
+
+**Supervised fork** — A vendored or forked third-party implementation under
+AckerDB ownership, pinned to an immutable revision and recording the upstream
+revision it came from.
+
+**Policy–commodity seam** — The narrow interface through which policy uses only
+the capability commodity exposes, and behind which the commodity can be
+replaced without policy surgery.
+
 ## Function outcomes
 
 **Function result** — The typed outcome of a registered query, mutation, or
@@ -1404,12 +1423,6 @@ _Avoid_: layout, chrome, dashboard frame
 Studio origin's reserved prefix and named in the navigation. A screen an
 operator can send to a colleague is a screen whose whole state is in its URL.
 _Avoid_: page, view, tab, panel
-
-**Vendored component** — Interface code copied into this repository from a
-component registry to be modified and maintained by hand. It carries no version
-and no upstream release cadence: once copied it is ours, updated deliberately or
-not at all. Each such file names its origin and licence in its header.
-_Avoid_: third-party component, UI library, imported widget
 
 **Log source** — The origin of a record in Studio's Logs stream: application
 (developer-authored application log records) or framework (framework-emitted

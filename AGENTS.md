@@ -1,3 +1,5 @@
+Before designing, implementing, changing, or refactoring any code, always read the `policy-and-commodity` skill and follow it. AckerDB adds to that doctrine in *Prefer less code and proven work* below; nothing here relaxes it.
+
 Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not AckerDB decisions or domain modeling.
 
 ## Performance, correctness, and code quality
@@ -103,10 +105,13 @@ Correctness is broader than “the happy-path test passed.” Correct AckerDB co
 ### When a design wall appears
 
 A mismatch with a specification, failed assumption, test, or integration is a
-design signal. Do not patch around it to make the old statement appear true.
-Re-derive the model from first principles until the conflicting case has one
-honest home. If that result diverges from the requested specification, explain
-the divergence before implementing it.
+design signal—and so is a chosen dependency that cannot support the contract.
+Do not patch around it to make the old statement appear true. Classify the wall
+as commodity, policy, or the boundary between them, and follow the wall
+protocol in the `policy-and-commodity` skill. Re-derive the model from first
+principles until the conflicting case has one honest home. If that result
+diverges from the requested specification, explain the divergence before
+implementing it.
 
 Never turn an invalid design into a “working” deliverable using an accidental
 patch. The patch merely hides the failure and becomes future machinery.
@@ -127,15 +132,37 @@ Do not add backwards compatibility unless it was explicitly requested.
 
 The most performant code is code that never runs. The least buggy code is code
 that does not exist. Delete redundant operations and state before optimizing
-them. Do not hand-build commodity machinery just to avoid a dependency; use a
-small, well-understood solution when it fits the actual contract.
+them.
 
-Do not keep a dependency merely because it currently works. If its design adds
-material cost, incorrectness, or unused machinery, first study it in OpenSRC
-and its primary sources, then refresh deliberately when the studied version
-changes. Vendor it only when a focused adaptation has a proven net gain; build
-a replacement only after a prototype demonstrates a material performance or
-correctness gain that justifies permanent maintenance.
+What follows adds to the `policy-and-commodity` skill and does not restate it.
+
+AckerDB is infrastructure, and infrastructure has been studied for decades. Its
+generic substrate—storage, transport, signaling, scheduling, retries, auth
+protocols, serialization—is commodity, so adopting a proven implementation is
+the default here rather than the fallback.
+
+AckerDB's policy merges into one definition what is normally several systems: a
+procedure is observed reactively, served over exposed HTTP, offered as an MCP
+tool, and memoized as a durable step, under one authorization vocabulary, one
+result contract, and one version contract. That convergence is policy and is
+where AckerDB may invent. It says nothing about whether an ICE stack, a
+full-text index, or a JWKS client should be written here.
+
+Because that policy is unusual, a mature implementation often covers nearly
+everything a converged surface needs while the missing part makes it unusable:
+a capability that exists internally but is not exported, or a contract that
+assumes the surfaces stay separate. A supervised fork or vendored copy is the
+expected answer there, between composing proven solutions and building new
+commodity. The realtime native packages already carry a pinned libwebrtc fork
+on a recorded LiveKit revision — that one is a real fork, and it is owned as one
+(`packages/realtime-native/*/PROVENANCE.md`).
+
+A fork is ownership, not a shortcut: pin an immutable revision, record the
+upstream revision it came from, verify inputs by digest, publish its provenance
+where the artifact ships, and refresh deliberately when the studied version
+changes. Do not keep a dependency merely because it currently works—if its
+design adds material cost, incorrectness, or unused machinery, study it in
+OpenSRC and its primary sources first.
 
 ### Evidence and verification
 
@@ -292,6 +319,12 @@ only when actual WebRTC native inputs changed. A `canary` → `main` promotion r
 that work; it runs branch policy before merge and npm delivery after merge.
 
 ## Agent skills
+
+### Policy and commodity
+
+The `policy-and-commodity` skill, read before every implementation without
+exception. AckerDB's additions to it are in *Prefer less code and proven work*
+above; the vocabulary is in `CONTEXT.md`.
 
 ### Issue tracker
 
