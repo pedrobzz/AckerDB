@@ -11,7 +11,8 @@ interface ChangeSet {
   readonly files: readonly string[];
   readonly testPackages: readonly string[];
   readonly code: boolean;
-  readonly native: boolean;
+  readonly nativeBuild: boolean;
+  readonly nativeTests: boolean;
   readonly performance: boolean;
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
@@ -82,14 +83,25 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const testPackages = [...dependentClosure(directlyChanged, packageGraph(head))]
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
-  const native = nativeInputsChanged(files);
+  const nativeBuild = nativeBuildInputsChanged(files);
+  const nativeTests = nativeTestInputsChanged(files);
   const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
   const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
-  return { files, testPackages, code, native, performance, verifyPackages, mcp, workflows };
+  return {
+    files,
+    testPackages,
+    code,
+    nativeBuild,
+    nativeTests,
+    performance,
+    verifyPackages,
+    mcp,
+    workflows,
+  };
 }
 
 /** The packages whose code the benchmark workload actually executes. */
@@ -143,7 +155,8 @@ export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
     file.startsWith("scripts/release/") ||
     file.startsWith("scripts/verify-packages") ||
     file.startsWith("scripts/packed-consumer") ||
-    file.startsWith("packages/realtime/native/") ||
+    (file.startsWith("packages/realtime/native/") &&
+      !file.startsWith("packages/realtime/native/webrtc/test/")) ||
     file.startsWith("packages/realtime-native/")
   );
 }
@@ -162,10 +175,16 @@ export function performanceInputsChanged(files: readonly string[]): boolean {
   );
 }
 
-export function nativeInputsChanged(files: readonly string[]): boolean {
+export function nativeBuildInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
     file === ".github/workflows/native.yml" ||
-    /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|test\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
+    /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
+  );
+}
+
+export function nativeTestInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    file.startsWith("packages/realtime/native/webrtc/test/")
   );
 }
 
@@ -178,7 +197,8 @@ if (import.meta.main) {
     appendFileSync(output, [
       `test_packages=${JSON.stringify(changes.testPackages)}`,
       `code=${changes.code}`,
-      `native=${changes.native}`,
+      `native_build=${changes.nativeBuild}`,
+      `native_tests=${changes.nativeTests}`,
       `performance=${changes.performance}`,
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,

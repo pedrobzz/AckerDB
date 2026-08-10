@@ -24,7 +24,8 @@ jobs:
     outputs:
       test_packages: ${{ steps.changes.outputs.test_packages }}
       code: ${{ steps.changes.outputs.code }}
-      native: ${{ steps.changes.outputs.native }}
+      native_build: ${{ steps.changes.outputs.native_build }}
+      native_tests: ${{ steps.changes.outputs.native_tests }}
       performance: ${{ steps.changes.outputs.performance }}
       verify_packages: ${{ steps.changes.outputs.verify_packages }}
       mcp: ${{ steps.changes.outputs.mcp }}
@@ -42,26 +43,46 @@ jobs:
           "${{ github.event.pull_request.base.sha }}"
           "${{ github.event.pull_request.head.sha }}"
 
-  native:
-    name: Native
+  native_build:
+    name: Native build
     needs: changes
-    if: needs.changes.outputs.native == 'true'
+    if: needs.changes.outputs.native_build == 'true'
     uses: ./.github/workflows/native.yml
+
+  native_tests:
+    name: Native tests
+    needs: changes
+    if: >-
+      needs.changes.outputs.native_tests == 'true' &&
+      needs.changes.outputs.native_build != 'true'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: ./.github/actions/bun-workspace
+      - name: Reuse verified WebRTC binaries
+        run: >-
+          bun -e 'import { ensureNativeArtifacts } from
+          "./scripts/release/native-artifacts.ts";
+          await ensureNativeArtifacts(["https://registry.npmjs.org"])'
+      - run: bun test --timeout 15000 packages/realtime/native/webrtc/test
 
   fast-ci:
     name: Fast CI
     if: always()
-    needs: [changes, native]
+    needs: [changes, native_build, native_tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - name: Validate prerequisite jobs
         env:
           CHANGES: ${{ needs.changes.result }}
-          NATIVE: ${{ needs.native.result }}
+          NATIVE_BUILD: ${{ needs.native_build.result }}
+          NATIVE_TESTS: ${{ needs.native_tests.result }}
         run: |
           case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
-          case "$NATIVE" in success|skipped) ;; *) exit 1 ;; esac
+          case "$NATIVE_BUILD" in success|skipped) ;; *) exit 1 ;; esac
+          case "$NATIVE_TESTS" in success|skipped) ;; *) exit 1 ;; esac
       - if: needs.changes.result == 'success'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -111,7 +132,7 @@ jobs:
   benchmark:
     name: Benchmark
     if: always()
-    needs: [changes, native]
+    needs: [changes, native_build, native_tests]
     runs-on: ubuntu-24.04
     # The cap is finite so a hung process cannot retain a runner indefinitely.
     timeout-minutes: 25
@@ -119,10 +140,12 @@ jobs:
       - name: Validate prerequisite jobs
         env:
           CHANGES: ${{ needs.changes.result }}
-          NATIVE: ${{ needs.native.result }}
+          NATIVE_BUILD: ${{ needs.native_build.result }}
+          NATIVE_TESTS: ${{ needs.native_tests.result }}
         run: |
           case "$CHANGES" in success|skipped) ;; *) exit 1 ;; esac
-          case "$NATIVE" in success|skipped) ;; *) exit 1 ;; esac
+          case "$NATIVE_BUILD" in success|skipped) ;; *) exit 1 ;; esac
+          case "$NATIVE_TESTS" in success|skipped) ;; *) exit 1 ;; esac
       - if: needs.changes.outputs.performance == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
