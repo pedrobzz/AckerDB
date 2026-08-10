@@ -15,9 +15,8 @@ The decision: **administration is a first-class surface of the framework, not a
 client bolted onto one.** The framework declares functions of its own, in a
 group it publishes for every application, authorized by a vocabulary it owns,
 and every one of them is dispatched by the same code as an application's. It is
-named the Admin API rather than after any client that reads it: Studio is one
-consumer, and naming a set of server functions after the tool that happens to
-call them is the tail wagging the dog.
+named the Admin API for the capability it exposes, independent of any client
+that consumes it.
 
 ## The framework is a contributor, not a special case
 
@@ -101,8 +100,8 @@ and could not use it.
 ## The reference tree ships, it is not generated
 
 Code generation builds a group's tree from a walk of the *consumer's* functions
-directory. A shipped package has no such directory, so no amount of bending the
-generator gives `@ackerdb/studio` typed `admin.*` references. The framework's
+directory. A shipped operator client has no such directory, so bending the
+generator cannot give it typed `admin.*` references. The framework's
 declarations are statically known and have no business going through an
 application's code generation at all.
 

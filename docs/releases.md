@@ -172,7 +172,7 @@ both. What rejected them was the interval: their repetitions did not agree on a
 direction. Across those hundred and eighty-two null verdicts — taken at eight
 repetitions, before the count moved — exactly one metric satisfied both
 conditions, and it was a `p99`, which is exactly why `p99` is reported and never
-gated. No null run has ever failed. The same harness on the telemetry-sidecar
+gated. No null run has ever failed. The same harness on a known regression
 branch reported fifty-five gated regressions, the largest an eighty-seven percent
 loss of query throughput whose interval ran from minus ninety-two to minus
 eighty-three percent.
@@ -363,12 +363,6 @@ the rendered comparison as a pull-request artifact and step summary for thirty
 days, and the paired deltas on the `bench-ledger` branch for good; Pedro and an
 agent still read the table and capture that judgment before merge.
 
-Telemetry is disabled for both commits unless telemetry-related source changed.
-When it did, both commits additionally run the runtime-default and
-in-process-exporter profiles. This is not caution: the sidecar rework that cost
-eighty-six percent of query throughput moved nothing measurable with telemetry
-off, so those profiles are the only place that class of regression is visible.
-
 The committed files under `bench/results/` are historical records from the
 superseded vendor-comparison policy. They are not current merge or release
 evidence, and they are not the ledger; the ledger lives on `bench-ledger` and
@@ -376,10 +370,10 @@ holds ratios, not absolute numbers.
 
 ## Public npm delivery
 
-All thirteen packages move in lockstep:
+All twelve packages move in lockstep:
 
-- eight user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
-  `client`, `client-react`, `cli`, and `studio`;
+- seven user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
+  `client`, `client-react`, and `cli`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
 Every merge into `canary` prepares the current source version as
@@ -398,31 +392,6 @@ public package version is skipped only when its tarball is byte-identical; a
 different existing tarball is a hard collision. Public delivery never reads
 from Verdaccio. Release tags are optional manual bookkeeping and are not
 created by a write-capable CI job.
-
-### The Studio build stage
-
-`@ackerdb/studio` is the only package that publishes a built artifact: its
-`dist/` bundle is git-ignored and produced at release time. Every other package
-ships TypeScript source, so packing has never needed a build.
-
-It is an explicit, ordered stage in `release.yml` — `bun
-scripts/release/studio-dist.ts`, between the frozen install and `publish.ts` —
-and never a `prepack` or `prepublishOnly` hook. The pipeline disables lifecycle
-scripts in three places on purpose (`bunfig.toml`'s `ignoreScripts`, the
-install's `--ignore-scripts`, and `bun pm pack --ignore-scripts`), so a hook
-would not fire, and re-enabling one for a single package would trade away the
-supply-chain posture those flags exist to hold.
-
-**The stage proves the bundle packs reproducibly, not merely that it builds.**
-It builds and packs twice and compares tarball digests, because byte-identity is
-what decides whether an existing version is skipped or collides: a bundle that
-changed for no reason would make a resumed or re-dispatched publication
-unrecoverable. The publisher runs the same check again, after the manifests
-carry the version being released, so the compared tarballs are the artifact that
-run will actually send rather than a same-shaped stand-in; the workflow stage is
-what fails first, before any manifest has moved. The packed-package gate builds
-the bundle the same way and then asserts that `dist/index.html` shipped and that
-every asset it references shipped beside it.
 
 The workflow's manual dispatch exists only to bootstrap or resume delivery from
 the current protected `canary` or `main` commit. It crosses the same environment,

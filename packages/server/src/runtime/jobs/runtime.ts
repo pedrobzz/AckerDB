@@ -28,7 +28,7 @@ import { decode, isApplicationError, isResult, stableEncode, type OutcomeCode } 
 import type { SystemCtx, SystemRunner } from "../../app/system.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import { ValidationError } from "../../validation/error.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
+import type { Logger } from "../../signals/logger.ts";
 import {
   DEFAULT_JOB_RETENTION_MS,
   type AnyJob,
@@ -60,7 +60,6 @@ export interface JobsExecutor {
     inProcessIds: readonly bigint[],
     notBefore: number,
   ): number | null;
-  dueJobStats(connection: Database, now: number): { due: number; oldestDueAt: number | null };
 }
 
 const LEASE_EXPIRED = "job lease expired before the run settled";
@@ -103,7 +102,7 @@ export interface RuntimeJobsOptions {
   readonly registry: Pick<Registry, "get">;
   readonly reads: RuntimeReadExecutor;
   readonly system: SystemRunner;
-  readonly telemetry: Telemetry;
+  readonly log: Logger;
   readonly limits: RuntimeJobsLimits;
   readonly now: () => number;
   readonly signal: () => AbortSignal;
@@ -217,7 +216,9 @@ export class RuntimeJobs {
       }).catch((error) => {
         // Arming still proceeds and enqueues re-wake the runner, but the
         // failure leaves evidence.
-        this.event("failure", "error", outcomeFromError(error).code);
+        this.options.log.error("job bootstrap failed", {
+          outcome: outcomeFromError(error).code,
+        });
       });
     }
     this.arm();
@@ -559,9 +560,10 @@ export class RuntimeJobs {
       // a reap that filled its page still has work waiting behind it, and a
       // page of runs alone wakes nothing on commit.
       this.stalled = claims === 0 && !(await this.reap(signal));
-      await this.recordGauges();
     } catch (error) {
-      this.event("failure", "error", outcomeFromError(error).code);
+      this.options.log.error("job batch failed", {
+        outcome: outcomeFromError(error).code,
+      });
     }
   }
 
@@ -653,10 +655,8 @@ export class RuntimeJobs {
     if (result === null) return null;
     if ("inline" in result) {
       this.deliver([result.inline]);
-      this.event("claimed", "info");
       return { outcome: "settled-inline", cursor: result.page };
     }
-    this.event("claimed", "info");
     return { outcome: result.claimed, cursor: result.page };
   }
 
@@ -778,7 +778,7 @@ export class RuntimeJobs {
       signal: controller.signal,
       now: this.options.now,
       // The suspend itself committed inside step.sleep's own transaction;
-      // this is the post-commit notification to waiters and telemetry.
+      // this is the post-commit notification to waiters.
       onSlept: (wakeAt) =>
         this.deliver([{
           id: claimed.jobId,
@@ -861,7 +861,9 @@ export class RuntimeJobs {
     } catch (error) {
       // Shutdown or a failed settle commit: the lease expires and recovery
       // re-runs the run — at-least-once, as declared.
-      this.event("failure", "error", outcomeFromError(error).code);
+      this.options.log.error("job settlement failed", {
+        outcome: outcomeFromError(error).code,
+      });
     }
   }
 
@@ -1220,18 +1222,9 @@ export class RuntimeJobs {
     for (const resolve of set) resolve(outcome);
   }
 
-  /** Post-commit delivery: waiters and telemetry see only committed settles. */
+  /** Post-commit delivery: waiters see only committed settles. */
   private deliver(notifications: readonly Notification[]): void {
     for (const notification of notifications) {
-      this.event(
-        notification.event,
-        notification.event === "settled" || notification.event === "slept"
-          ? "info"
-          : notification.event === "retried"
-            ? "warn"
-            : "error",
-        notification.errorCode ?? "ok",
-      );
       this.notifyDirect(notification.id, notification.outcome);
     }
   }
@@ -1247,8 +1240,7 @@ export class RuntimeJobs {
           : this.options.executor.readJobRunRow(connection, id, job.runCount);
         return { job, run };
       },
-      { operation: "query", bytes: 1, fairnessKey: "system:jobs" },
-      false,
+      { bytes: 1, fairnessKey: "system:jobs" },
     );
   }
 
@@ -1261,47 +1253,8 @@ export class RuntimeJobs {
           inProcessIds,
           this.lastReapAt + REAP_INTERVAL_MS,
         ),
-      { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
-      false,
+      { bytes: 1, fairnessKey: "system:jobs" },
     );
   }
 
-  private async recordGauges(): Promise<void> {
-    if (!this.options.telemetry.enabled) return;
-    this.options.telemetry.recordMetric({
-      name: "jobs.running",
-      value: this.activeRuns,
-      unit: "gauge",
-    });
-    const now = this.options.now();
-    const backlog = await this.options.reads.submit(
-      (connection) => this.options.executor.dueJobStats(connection, now),
-      { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
-      false,
-    );
-    this.options.telemetry.recordMetric({
-      name: "jobs.due_backlog",
-      value: backlog.due,
-      unit: "gauge",
-    });
-    this.options.telemetry.recordMetric({
-      name: "jobs.oldest_due_age_ms",
-      value: backlog.oldestDueAt === null ? 0 : Math.max(0, now - backlog.oldestDueAt),
-      unit: "gauge",
-    });
-  }
-
-  private event(
-    name: "claimed" | "settled" | "retried" | "failed" | "canceled" | "slept" | "failure",
-    level: "info" | "warn" | "error",
-    outcome: OutcomeCode | "ok" = "ok",
-  ): void {
-    if (!this.options.telemetry.enabled) return;
-    this.options.telemetry.recordEvent({
-      name: `job_${name}`,
-      level,
-      operation: "job",
-      outcome,
-    });
-  }
 }

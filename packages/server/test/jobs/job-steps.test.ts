@@ -55,7 +55,6 @@ function start(
   runtime = new Runtime({
     engine,
     registry: new Registry(functions, ["internal"]),
-    telemetry: false,
     limits: limits(),
     jobs,
     now: () => clock,
@@ -74,7 +73,6 @@ async function restart(
   runtime = new Runtime({
     engine,
     registry: new Registry(functions, ["internal"]),
-    telemetry: false,
     limits: limits(),
     jobs,
     now: () => clock,

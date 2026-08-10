@@ -99,7 +99,7 @@ on a contract function, which is the surface built for that; if a later
 feature adds opt-in framework auth here, `auth` has an obvious place to
 return to.
 
-## Reachability and telemetry
+## Reachability
 
 - The kind exists only at the HTTP boundary. It has no Protocol-2 form, no
   client reference (generated APIs erase the export), and no OpenAPI

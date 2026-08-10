@@ -11,7 +11,6 @@ import {
   makeDbWriter,
   newWriteCollector,
   v,
-  type DbStatementObservation,
 } from "@ackerdb/server";
 import { ftsCorpusKey } from "../../../src/database/keys.ts";
 
@@ -98,7 +97,7 @@ describe("literal full-text search", () => {
     expect(await db.documents.fullText("body", "---").first()).toBeNull();
   });
 
-  test("uses one joined ranking statement and reuses predicate dependencies and observation", async () => {
+  test("uses one joined ranking statement and reuses predicate dependencies", async () => {
     await db.documents.insert({
       accountId: 7n,
       title: "Observed",
@@ -116,12 +115,10 @@ describe("literal full-text search", () => {
       return statement;
     }) as typeof engine.reader.prepare;
     const dependencies = new Set<string>();
-    const observations: DbStatementObservation[] = [];
     const reader: any = makeDbReader(
       engine,
       engine.reader,
       { add: (key) => dependencies.add(key) },
-      (observation) => observations.push(observation),
     );
 
     const rows = await reader.documents
@@ -138,17 +135,7 @@ describe("literal full-text search", () => {
       ixKey("documents", engine.plan("documents").indexes[0]!.name, [7n]),
       ftsCorpusKey("documents", "body"),
     ]));
-    expect(observations).toHaveLength(1);
-    expect(observations[0]).toMatchObject({
-      kind: "read",
-      table: "documents",
-      statement: "fullText",
-      outcome: "ok",
-      rowCount: 1,
-    });
-
     dependencies.clear();
-    observations.length = 0;
     issued.length = 0;
     expect(
       await reader.documents
@@ -158,11 +145,6 @@ describe("literal full-text search", () => {
     ).toEqual([]);
     expect(dependencies).toEqual(new Set());
     expect(issued).toEqual([]);
-    expect(observations[0]).toMatchObject({
-      statement: "fullText",
-      outcome: "ok",
-      rowCount: 0,
-    });
   });
 
   test("prepares literals without borrowing the application writer connection", async () => {

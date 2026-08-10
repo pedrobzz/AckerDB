@@ -85,7 +85,7 @@ function runCli(args: string[]): number {
   const child = Bun.spawnSync([process.execPath, CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   });
   return child.exitCode;
 }

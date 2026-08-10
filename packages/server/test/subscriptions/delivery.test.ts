@@ -8,11 +8,7 @@ import {
   type SseMessage,
 } from "@ackerdb/core";
 import { OutboundBudget } from "../../src/subscriptions/delivery/budget.ts";
-import {
-  FINALIZE_DELIVERY_OBSERVER,
-  type DeliveryClock,
-  type DeliveryObservation,
-} from "../../src/subscriptions/delivery/observation.ts";
+import type { DeliveryClock } from "../../src/subscriptions/delivery/clock.ts";
 import { BoundedSseProducer } from "../../src/subscriptions/delivery/sse.ts";
 import {
   WebSocketSessionSink,
@@ -25,12 +21,6 @@ import {
   type RuntimePublication,
   type SessionControlMessage,
 } from "../../src/subscriptions/session/contract.ts";
-import {
-  CLAIM_DELIVERY_LEASE,
-  prepareTelemetryTraceContext,
-  RELEASE_DELIVERY_LEASE,
-  Telemetry,
-} from "../../src/telemetry/telemetry.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -175,36 +165,6 @@ function sseMessage(chunk: Uint8Array | string): SseMessage {
   return parseSseMessage(decode(text.slice(6, -2)));
 }
 
-async function flushObservations(): Promise<void> {
-  await new Promise<void>((resolve) => queueMicrotask(resolve));
-}
-
-function expectSafeObservations(observations: readonly DeliveryObservation[]): void {
-  const safeFields = new Set([
-    "transport",
-    "stage",
-    "lane",
-    "source",
-    "bytes",
-    "durationMs",
-    "outcome",
-    "terminalOutcome",
-    "droppedObservations",
-  ]);
-  for (const observation of observations) {
-    expect(Object.isFrozen(observation)).toBe(true);
-    expect(Object.keys(observation).every((field) => safeFields.has(field))).toBe(true);
-    expect(Number.isSafeInteger(observation.bytes)).toBe(true);
-    expect(observation.bytes).toBeGreaterThanOrEqual(0);
-    expect(Number.isFinite(observation.durationMs)).toBe(true);
-    expect(observation.durationMs).toBeGreaterThanOrEqual(0);
-    if (observation.droppedObservations !== undefined) {
-      expect(Number.isSafeInteger(observation.droppedObservations)).toBe(true);
-      expect(observation.droppedObservations).toBeGreaterThan(0);
-    }
-  }
-}
-
 describe("OutboundBudget", () => {
   test("accounts exact bytes and keeps application traffic outside the control reserve", () => {
     const budget = new OutboundBudget(100, 20);
@@ -259,221 +219,6 @@ describe("WebSocketSessionSink", () => {
       "application publication was not prepared by ackerdb",
     );
     expect(socket.sent).toEqual([]);
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
-  test("observes exact queue wait and full buffered delivery for both lanes", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const observations: DeliveryObservation[] = [];
-    const message = application(1, "💥");
-    const messageText = message.text;
-    const messageBytes = message.bytes;
-    const control = { t: "pong" as const };
-    const controlBytes = encoder.encode(encode(control)).byteLength;
-    socket.plans.push(
-      { result: -1, buffered: messageBytes },
-      { result: -1, buffered: messageBytes - 1 + controlBytes },
-    );
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
-
-    await sink.sendApplication(1, message);
-    const controlAccepted = sink.sendControl(control);
-    await flushObservations();
-    expect(observations.filter(({ stage }) => stage === "delivery")).toEqual([]);
-
-    clock.advance(3);
-    socket.bufferedAmount = messageBytes - 1;
-    sink.onDrain();
-    await controlAccepted;
-    await flushObservations();
-    expect(observations.filter(({ stage }) => stage === "delivery")).toEqual([]);
-
-    clock.advance(4);
-    socket.bufferedAmount = 0;
-    sink.onDrain();
-    await flushObservations();
-
-    expect(observations).toEqual([
-      {
-        transport: "websocket",
-        stage: "queue",
-        lane: "application",
-        source: "send",
-        bytes: messageBytes,
-        durationMs: 0,
-        outcome: "ok",
-      },
-      {
-        transport: "websocket",
-        stage: "encoding",
-        lane: "control",
-        source: "send",
-        bytes: controlBytes,
-        durationMs: 0,
-        outcome: "ok",
-      },
-      {
-        transport: "websocket",
-        stage: "queue",
-        lane: "control",
-        source: "send",
-        bytes: controlBytes,
-        durationMs: 3,
-        outcome: "ok",
-      },
-      {
-        transport: "websocket",
-        stage: "delivery",
-        lane: "application",
-        source: "send",
-        bytes: messageBytes,
-        durationMs: 7,
-        outcome: "ok",
-      },
-      {
-        transport: "websocket",
-        stage: "delivery",
-        lane: "control",
-        source: "send",
-        bytes: controlBytes,
-        durationMs: 4,
-        outcome: "ok",
-      },
-    ]);
-    expectSafeObservations(observations);
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
-  test("reports stale drops and terminal release outcomes at their owning stage", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const observations: DeliveryObservation[] = [];
-    const first = application(1);
-    const firstBytes = first.bytes;
-    socket.plans.push({ result: -1, buffered: firstBytes });
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
-
-    await sink.sendApplication(1, first);
-    const stale = sink.sendApplication(1, application(2));
-    const current = sink.sendApplication(2, application(3));
-    clock.advance(2);
-    await sink.dropApplicationFramesBefore(2);
-    await stale;
-    clock.advance(3);
-    await sink.close({
-      code: "draining",
-      retryable: true,
-      message: "service draining",
-      resource: "connection",
-    });
-    await expect(current).rejects.toMatchObject({ code: "unavailable" });
-    await flushObservations();
-
-    const queueOutcomes = observations
-      .filter(({ stage }) => stage === "queue")
-      .map(({ outcome, durationMs }) => ({ outcome, durationMs }));
-    expect(queueOutcomes).toEqual([
-      { outcome: "ok", durationMs: 0 },
-      { outcome: "dropped", durationMs: 2 },
-      { outcome: "draining", durationMs: 5 },
-    ]);
-    expect(observations.filter(({ stage }) => stage === "delivery")).toEqual([
-      {
-        transport: "websocket",
-        stage: "delivery",
-        lane: "application",
-        source: "send",
-        bytes: firstBytes,
-        durationMs: 5,
-        outcome: "draining",
-      },
-    ]);
-    expectSafeObservations(observations);
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
-  test("keeps socket send failures in the queue stage and observes the terminal control frame", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const observations: DeliveryObservation[] = [];
-    const message = application(1);
-    const messageBytes = message.bytes;
-    socket.plans.push({ result: 0 }, { result: 0 });
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
-
-    await expect(sink.sendApplication(1, message)).rejects.toMatchObject({ code: "unavailable" });
-    await flushObservations();
-
-    expect(observations.filter(({ lane }) => lane === "application")).toEqual([
-      {
-        transport: "websocket",
-        stage: "queue",
-        lane: "application",
-        source: "send",
-        bytes: messageBytes,
-        durationMs: 0,
-        outcome: "unavailable",
-      },
-    ]);
-    const terminalBytes = encoder.encode(socket.sent.at(-1)!).byteLength;
-    expect(observations.filter(({ source }) => source === "terminal")).toEqual([
-      {
-        transport: "websocket",
-        stage: "encoding",
-        lane: "control",
-        source: "terminal",
-        bytes: terminalBytes,
-        durationMs: 0,
-        outcome: "ok",
-        terminalOutcome: "unavailable",
-      },
-      {
-        transport: "websocket",
-        stage: "queue",
-        lane: "control",
-        source: "terminal",
-        bytes: terminalBytes,
-        durationMs: 0,
-        outcome: "ok",
-        terminalOutcome: "unavailable",
-      },
-      {
-        transport: "websocket",
-        stage: "delivery",
-        lane: "control",
-        source: "terminal",
-        bytes: terminalBytes,
-        durationMs: 0,
-        outcome: "unavailable",
-        terminalOutcome: "unavailable",
-      },
-    ]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -534,17 +279,11 @@ describe("WebSocketSessionSink", () => {
     });
     const budget = new OutboundBudget(limits.webSocket.maxBytes, 512);
     const socket = new FakeSocket();
-    const observations: DeliveryObservation[] = [];
     const message = application(1, "x".repeat(45));
     const frameBytes = message.bytes;
     const capacity = limits.webSocket.maxBytesPerConnection - limits.maxFrameBytes;
     socket.plans.push({ result: -1, buffered: frameBytes });
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      observer: (observation) => observations.push(observation),
-    });
+    const sink = new WebSocketSessionSink({ socket, budget, limits });
 
     const writes: Promise<unknown>[] = [];
     for (let index = 0; index < Math.floor(capacity / frameBytes); index++) {
@@ -553,30 +292,9 @@ describe("WebSocketSessionSink", () => {
     const overflow = sink.sendApplication(1, application(99, "x".repeat(45)));
     await expect(overflow).rejects.toMatchObject({ code: "slow_consumer", resource: "outbound" });
     await Promise.all(writes);
-    await flushObservations();
-
     expect(socket.closes).toEqual([{ code: 1013, reason: "slow_consumer" }]);
     const terminal = decode(socket.sent.at(-1)!) as { t: string; outcome: { code: string } };
     expect(terminal).toMatchObject({ t: "err", outcome: { code: "slow_consumer" } });
-    expect(observations).toContainEqual(expect.objectContaining({
-      stage: "queue",
-      lane: "application",
-      outcome: "slow_consumer",
-    }));
-    expect(observations).toContainEqual(expect.objectContaining({
-      stage: "delivery",
-      lane: "application",
-      outcome: "slow_consumer",
-    }));
-    expect(observations.filter(({ source }) => source === "terminal").map(({ stage, terminalOutcome }) => ({
-      stage,
-      terminalOutcome,
-    }))).toEqual([
-      { stage: "encoding", terminalOutcome: "slow_consumer" },
-      { stage: "queue", terminalOutcome: "slow_consumer" },
-      { stage: "delivery", terminalOutcome: "slow_consumer" },
-    ]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -702,13 +420,7 @@ describe("BoundedSseProducer", () => {
     const clock = new FakeClock();
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     producer.write({ text: "first" });
     producer.write({ text: "💥" });
     const reader = producer.stream.getReader();
@@ -752,14 +464,6 @@ describe("BoundedSseProducer", () => {
     await completion;
     expect((await reader.read()).done).toBe(true);
     reader.releaseLock();
-    await flushObservations();
-
-    expect(observations.filter(({ stage }) => stage === "delivery")).toEqual([
-      expect.objectContaining({ source: "write", bytes: firstBytes.byteLength, durationMs: 5 }),
-      expect.objectContaining({ source: "write", bytes: secondBytes.byteLength, durationMs: 5 }),
-      expect.objectContaining({ source: "terminal", bytes: doneBytes.byteLength, durationMs: 2 }),
-    ]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -970,13 +674,7 @@ describe("BoundedSseProducer", () => {
     const clock = new FakeClock();
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     const first = { text: "a".repeat(80) };
     const mergedChunk = { text: "b".repeat(80) };
     producer.write(first);
@@ -993,45 +691,12 @@ describe("BoundedSseProducer", () => {
 
     clock.advance(6);
     producer.ack(firstFrame.seq, firstFrame.proof);
-    const mergedBytes = (await reader.read()).value!;
-    const mergedFrame = sseMessage(mergedBytes);
+    const mergedFrame = sseMessage((await reader.read()).value!);
     clock.advance(4);
     producer.ack(mergedFrame.seq, mergedFrame.proof);
     await merged;
     reader.releaseLock();
     await producer.stream.cancel("test complete");
-    await flushObservations();
-
-    expect(observations.filter(({ source }) => source === "merge")).toEqual([
-      {
-        transport: "sse",
-        stage: "encoding",
-        lane: "application",
-        source: "merge",
-        bytes: mergedBytes.byteLength,
-        durationMs: 0,
-        outcome: "ok",
-      },
-      {
-        transport: "sse",
-        stage: "queue",
-        lane: "application",
-        source: "merge",
-        bytes: mergedBytes.byteLength,
-        durationMs: 0,
-        outcome: "ok",
-      },
-      {
-        transport: "sse",
-        stage: "delivery",
-        lane: "application",
-        source: "merge",
-        bytes: mergedBytes.byteLength,
-        durationMs: 4,
-        outcome: "ok",
-      },
-    ]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -1039,13 +704,7 @@ describe("BoundedSseProducer", () => {
     const clock = new FakeClock();
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     producer.write({ text: "a".repeat(80) });
     const mergedChunk = { text: "b".repeat(80) };
     const merged = producer.merge(new ReadableStream({
@@ -1058,10 +717,6 @@ describe("BoundedSseProducer", () => {
     clock.advance(2);
     await producer.stream.cancel("consumer stopped");
     await expect(merged).rejects.toMatchObject({ code: "unavailable" });
-    await flushObservations();
-
-    expect(observations.filter(({ source }) => source === "merge")).toEqual([]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -1091,37 +746,16 @@ describe("BoundedSseProducer", () => {
     expect(budget.snapshot().bytes).toBe(0);
   });
 
-  test("reports cancellation as failed delivery and releases capacity once", async () => {
+  test("releases capacity once when the consumer cancels", async () => {
     const clock = new FakeClock();
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     const chunk = { value: "held" };
 
     producer.write(chunk);
-    const bytes = producer.snapshot().unackedBytes;
     clock.advance(3);
     await producer.stream.cancel("consumer stopped");
-    await flushObservations();
-
-    expect(observations.filter(({ stage }) => stage === "delivery")).toEqual([
-      {
-        transport: "sse",
-        stage: "delivery",
-        lane: "application",
-        source: "write",
-        bytes,
-        durationMs: 3,
-        outcome: "unavailable",
-      },
-    ]);
-    expectSafeObservations(observations);
     expect(producer.snapshot()).toMatchObject({ unackedBytes: 0, unackedFrames: 0, state: "closed" });
     expect(budget.snapshot().bytes).toBe(0);
   });
@@ -1223,13 +857,7 @@ describe("BoundedSseProducer", () => {
     const clock = new FakeClock();
     const limits = testLimits({ sse: { maxStallMs: 10 } });
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     producer.write({ text: "unread" });
     const reader = producer.stream.getReader();
     const chunkBytes = (await reader.read()).value!;
@@ -1279,33 +907,6 @@ describe("BoundedSseProducer", () => {
     });
     await expect(reader.read()).rejects.toMatchObject({ code: "slow_consumer" });
     reader.releaseLock();
-    await flushObservations();
-    expect(observations.filter(({ source }) => source === "terminal").map((observation) => ({
-      stage: observation.stage,
-      lane: observation.lane,
-      outcome: observation.outcome,
-      terminalOutcome: observation.terminalOutcome,
-    }))).toEqual([
-      {
-        stage: "encoding",
-        lane: "control",
-        outcome: "ok",
-        terminalOutcome: "slow_consumer",
-      },
-      {
-        stage: "queue",
-        lane: "control",
-        outcome: "ok",
-        terminalOutcome: "slow_consumer",
-      },
-      {
-        stage: "delivery",
-        lane: "control",
-        outcome: "slow_consumer",
-        terminalOutcome: "slow_consumer",
-      },
-    ]);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -1313,13 +914,7 @@ describe("BoundedSseProducer", () => {
     const clock = new FakeClock();
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const observations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget,
-      limits,
-      clock,
-      observer: (observation) => observations.push(observation),
-    });
+    const producer = new BoundedSseProducer({ budget, limits, clock });
     const chunk = { text: "x".repeat(55) };
     let writes = 0;
     for (;;) {
@@ -1350,19 +945,6 @@ describe("BoundedSseProducer", () => {
     clock.advance(limits.sse.maxStallMs);
     await expect(reader.read()).rejects.toMatchObject({ code: "slow_consumer" });
     reader.releaseLock();
-    await flushObservations();
-    // Every attempt is observed at every stage it reached, and a refused write
-    // reaches fewer than an admitted one: the admitted writes are seen
-    // encoding, queued, and delivered, while the write the stream byte limit
-    // turns away is seen encoding and refused at the queue.
-    expect(observations.filter(({ lane, source }) =>
-      lane === "application" && source === "write"
-    )).toHaveLength(writes * 3 + 2);
-    expect(observations.some(({ lane, source, outcome }) =>
-      lane === "application" && source === "write" && outcome !== "ok"
-    )).toBe(true);
-    expect(observations.filter(({ source }) => source === "terminal")).toHaveLength(3);
-    expectSafeObservations(observations);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -1574,411 +1156,5 @@ describe("BoundedSseProducer", () => {
     expect(await pending).toEqual({ done: true, value: undefined });
     expect(producer.snapshot()).toMatchObject({ unackedBytes: 0, unackedFrames: 0, state: "closed" });
     expect(budget.snapshot().bytes).toBe(0);
-  });
-});
-
-describe("delivery observers", () => {
-  test("keeps coalesced observations with the observer captured once per frame", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const firstObservations: DeliveryObservation[] = [];
-    const secondObservations: DeliveryObservation[] = [];
-    const firstObserver = (observation: DeliveryObservation) => firstObservations.push(observation);
-    const secondObserver = (observation: DeliveryObservation) => secondObservations.push(observation);
-    let currentObserver = firstObserver;
-    let captures = 0;
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      captureObserver: () => {
-        captures++;
-        return currentObserver;
-      },
-    });
-    const first = application(1, "first");
-    const second = application(2, "second response");
-    const firstBytes = first.bytes;
-    const secondBytes = second.bytes;
-
-    const firstSend = sink.sendApplication(1, first);
-    currentObserver = secondObserver;
-    const secondSend = sink.sendApplication(1, second);
-
-    expect(firstObservations).toEqual([]);
-    expect(secondObservations).toEqual([]);
-    await Promise.all([firstSend, secondSend]);
-    await flushObservations();
-
-    expect(captures).toBe(2);
-    expect(firstObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
-      { stage: "queue", bytes: firstBytes },
-      { stage: "delivery", bytes: firstBytes },
-    ]);
-    expect(secondObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
-      { stage: "queue", bytes: secondBytes },
-      { stage: "delivery", bytes: secondBytes },
-    ]);
-    expectSafeObservations([...firstObservations, ...secondObservations]);
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
-  test("retains the frame observer through delayed WebSocket drain", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const ownerObservations: DeliveryObservation[] = [];
-    const unrelatedObservations: DeliveryObservation[] = [];
-    const owner = (observation: DeliveryObservation) => ownerObservations.push(observation);
-    const unrelated = (observation: DeliveryObservation) => unrelatedObservations.push(observation);
-    let currentObserver = owner;
-    let captures = 0;
-    const message = application(1, "buffered");
-    const bytes = message.bytes;
-    socket.plans.push({ result: -1, buffered: bytes });
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      captureObserver: () => {
-        captures++;
-        return currentObserver;
-      },
-    });
-
-    const accepted = sink.sendApplication(1, message);
-    currentObserver = unrelated;
-    await accepted;
-    await flushObservations();
-    expect(ownerObservations.map(({ stage }) => stage)).toEqual(["queue"]);
-    expect(unrelatedObservations).toEqual([]);
-
-    clock.advance(7);
-    socket.bufferedAmount = 0;
-    sink.onDrain();
-    await flushObservations();
-
-    expect(captures).toBe(1);
-    expect(ownerObservations.map(({ stage, durationMs }) => ({ stage, durationMs }))).toEqual([
-      { stage: "queue", durationMs: 0 },
-      { stage: "delivery", durationMs: 7 },
-    ]);
-    expect(unrelatedObservations).toEqual([]);
-    expectSafeObservations(ownerObservations);
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
-  test("bounds pending observations and reports the exact overflow count", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
-    const socket = new FakeSocket();
-    const observations: DeliveryObservation[] = [];
-    const telemetry = new Telemetry({
-      localSink: false,
-      limits: {
-        maxRecords: 4_096,
-        maxBytes: 16 * 1_024 * 1_024,
-        slowOperationMs: 100,
-      },
-    });
-    let finalized = 0;
-    let traceSequence = 0;
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget,
-      limits,
-      clock,
-      captureObserver: () => {
-        const sequence = traceSequence++;
-        const context = prepareTelemetryTraceContext({
-          traceId: `trace_delivery_burst_${sequence}`,
-          spanId: `span_delivery_burst_${sequence}`,
-        });
-        expect(telemetry.beginTrace(context)).toBe(true);
-        telemetry.recordSpan({
-          context,
-          operation: "query",
-          stage: "handler",
-          outcome: "ok",
-          durationMs: 1,
-        });
-        const lease = telemetry[CLAIM_DELIVERY_LEASE](context);
-        if (lease === undefined) throw new Error("delivery lease was not claimed");
-        expect(telemetry.finishTrace(context)).toBe(true);
-        return Object.assign(
-          (observation: DeliveryObservation) => observations.push(observation),
-          {
-            [FINALIZE_DELIVERY_OBSERVER]: () => {
-              finalized++;
-              telemetry[RELEASE_DELIVERY_LEASE](lease);
-            },
-          },
-        );
-      },
-    });
-    const control = { t: "pong" as const };
-    const sends: Promise<void>[] = [];
-
-    for (let index = 0; index < 1_000; index++) sends.push(sink.sendControl(control));
-    expect(observations).toEqual([]);
-    expect(budget.snapshot().bytes).toBe(0);
-    expect(telemetry.snapshot().traceRetention.completedDecisions).toBeGreaterThan(0);
-    await Promise.all(sends);
-    await flushObservations();
-
-    expect(finalized).toBe(1_000);
-    expect(telemetry.snapshot().traceRetention).toMatchObject({
-      completedDecisions: 0,
-      stagedRecords: 0,
-      dropped: { decisionOverflow: 0 },
-    });
-    expect(observations).toHaveLength(256);
-    expect(observations[0]?.droppedObservations).toBe(3_000 - observations.length);
-    expectSafeObservations(observations);
-
-    await sink.sendControl(control);
-    await flushObservations();
-    expect(finalized).toBe(1_001);
-    expect(observations).toHaveLength(259);
-    expect(observations.slice(-3).every(({ droppedObservations }) => (
-      droppedObservations === undefined
-    ))).toBe(true);
-    expect(budget.snapshot().bytes).toBe(0);
-    expect(telemetry.snapshot().traceRetention).toMatchObject({
-      completedDecisions: 0,
-      stagedRecords: 0,
-      dropped: { decisionOverflow: 0 },
-    });
-    telemetry.stop();
-  });
-
-  test("finalizes terminal ownership when clocks or observation scheduling fail", async () => {
-    const limits = testLimits();
-    const control = { t: "pong" as const };
-    const clocks: DeliveryClock[] = [
-      {
-        now: () => Number.NaN,
-        setTimeout: () => 0,
-        clearTimeout: () => {},
-      },
-      {
-        now: () => {
-          throw new Error("clock failed");
-        },
-        setTimeout: () => 0,
-        clearTimeout: () => {},
-      },
-    ];
-
-    for (const clock of clocks) {
-      let finalized = 0;
-      const sink = new WebSocketSessionSink({
-        socket: new FakeSocket(),
-        budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
-        limits,
-        clock,
-        captureObserver: () => Object.assign(
-          () => {},
-          { [FINALIZE_DELIVERY_OBSERVER]: () => finalized++ },
-        ),
-      });
-      await sink.sendControl(control);
-      expect(finalized).toBe(1);
-    }
-
-    let clockReads = 0;
-    let deliveryStartFinalized = 0;
-    const partialObservations: DeliveryObservation[] = [];
-    const deliveryStartSink = new WebSocketSessionSink({
-      socket: new FakeSocket(),
-      budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
-      limits,
-      clock: {
-        now: () => ++clockReads === 5 ? Number.NaN : 0,
-        setTimeout: () => 0,
-        clearTimeout: () => {},
-      },
-      captureObserver: () => Object.assign(
-        (observation: DeliveryObservation) => partialObservations.push(observation),
-        { [FINALIZE_DELIVERY_OBSERVER]: () => deliveryStartFinalized++ },
-      ),
-    });
-    await deliveryStartSink.sendControl(control);
-    expect(deliveryStartFinalized).toBe(1);
-    await flushObservations();
-    expect(partialObservations.map(({ stage }) => stage)).toEqual(["encoding", "queue"]);
-
-    let finalized = 0;
-    const scheduledSink = new WebSocketSessionSink({
-      socket: new FakeSocket(),
-      budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
-      limits,
-      clock: new FakeClock(),
-      captureObserver: () => Object.assign(
-        () => {},
-        { [FINALIZE_DELIVERY_OBSERVER]: () => finalized++ },
-      ),
-    });
-    const schedule = globalThis.queueMicrotask;
-    let sent: Promise<void>;
-    globalThis.queueMicrotask = () => {
-      throw new Error("observation scheduling failed");
-    };
-    try {
-      sent = scheduledSink.sendControl(control);
-      expect(finalized).toBe(1);
-    } finally {
-      globalThis.queueMicrotask = schedule;
-    }
-    await sent!;
-  });
-
-  test("preserves the no-observer path while receiver ACK owns release", async () => {
-    const limits = testLimits();
-    const clock = new FakeClock();
-    const webSocketBudget = new OutboundBudget(
-      limits.webSocket.maxBytes,
-      limits.maxFrameBytes,
-    );
-    const socket = new FakeSocket();
-    const sink = new WebSocketSessionSink({
-      socket,
-      budget: webSocketBudget,
-      limits,
-      clock,
-    });
-    await sink.sendControl({ t: "pong" });
-    expect(socket.sent).toEqual([encode({ t: "pong" })]);
-    expect(webSocketBudget.snapshot().bytes).toBe(0);
-
-    const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const producer = new BoundedSseProducer({ budget: sseBudget, limits, clock });
-    const reader = producer.stream.getReader();
-    const chunk = { value: "direct" };
-    producer.write(chunk);
-    const application = sseMessage((await reader.read()).value!);
-    expect(application).toMatchObject({ t: "sse_chunk", value: chunk });
-    producer.ack(application.seq, application.proof);
-    const completion = producer.complete();
-    const terminal = sseMessage((await reader.read()).value!);
-    expect(terminal.t).toBe("sse_done");
-    producer.ack(terminal.seq, terminal.proof);
-    await completion;
-    expect((await reader.read()).done).toBe(true);
-    reader.releaseLock();
-    expect(sseBudget.snapshot().bytes).toBe(0);
-  });
-
-  test("reports encoding failures without retaining unsafe input", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const webSocketBudget = new OutboundBudget(
-      limits.webSocket.maxBytes,
-      limits.maxFrameBytes,
-    );
-    const webSocketObservations: DeliveryObservation[] = [];
-    const sink = new WebSocketSessionSink({
-      socket: new FakeSocket(),
-      budget: webSocketBudget,
-      limits,
-      clock,
-      observer: (observation) => webSocketObservations.push(observation),
-    });
-
-    await expect(sink.sendControl({
-      t: "pong",
-      unsafe: Number.NaN,
-    } as unknown as SessionControlMessage)).rejects.toThrow(
-      "cannot encode non-finite number",
-    );
-    await flushObservations();
-    expect(webSocketObservations).toEqual([
-      {
-        transport: "websocket",
-        stage: "encoding",
-        lane: "control",
-        source: "send",
-        bytes: 0,
-        durationMs: 0,
-        outcome: "internal",
-      },
-    ]);
-    expectSafeObservations(webSocketObservations);
-    expect(webSocketBudget.snapshot().bytes).toBe(0);
-
-    const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const sseObservations: DeliveryObservation[] = [];
-    const producer = new BoundedSseProducer({
-      budget: sseBudget,
-      limits,
-      clock,
-      observer: (observation) => sseObservations.push(observation),
-    });
-    // An SSE chunk is standard JSON — the exposed function's codec converted
-    // it — so a value JSON cannot carry fails here exactly as a non-finite
-    // number fails the Protocol-2 encoder above.
-    expect(() => producer.write({ unsafe: 1n })).toThrow(/BigInt/);
-    await flushObservations();
-    expect(sseObservations).toEqual([
-      {
-        transport: "sse",
-        stage: "encoding",
-        lane: "application",
-        source: "write",
-        bytes: 0,
-        durationMs: 0,
-        outcome: "internal",
-      },
-    ]);
-    expectSafeObservations(sseObservations);
-    await producer.stream.cancel("test complete");
-    expect(sseBudget.snapshot().bytes).toBe(0);
-  });
-
-  test("isolates synchronous throws and asynchronous observer rejections", async () => {
-    const limits = testLimits();
-    let calls = 0;
-    const observer = (): unknown => {
-      calls += 1;
-      if (calls % 2 === 1) throw new Error("observer failed synchronously");
-      return Promise.reject(new Error("observer failed asynchronously"));
-    };
-
-    const webSocketBudget = new OutboundBudget(
-      limits.webSocket.maxBytes,
-      limits.maxFrameBytes,
-    );
-    const socket = new FakeSocket();
-    const sink = new WebSocketSessionSink({ socket, budget: webSocketBudget, limits, observer });
-    await sink.sendControl({ t: "pong" });
-    await flushObservations();
-    await Promise.resolve();
-    expect(socket.sent).toEqual([encode({ t: "pong" })]);
-    expect(socket.closes).toEqual([]);
-    expect(webSocketBudget.snapshot().bytes).toBe(0);
-
-    const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const producer = new BoundedSseProducer({ budget: sseBudget, limits, observer });
-    const reader = producer.stream.getReader();
-    producer.write({ value: "delivered" });
-    const chunk = sseMessage((await reader.read()).value!);
-    producer.ack(chunk.seq, chunk.proof);
-    const completion = producer.complete();
-    const terminal = sseMessage((await reader.read()).value!);
-    producer.ack(terminal.seq, terminal.proof);
-    await completion;
-    expect((await reader.read()).done).toBe(true);
-    reader.releaseLock();
-    await flushObservations();
-    await Promise.resolve();
-    expect(calls).toBeGreaterThanOrEqual(9);
-    expect(producer.snapshot()).toMatchObject({ unackedBytes: 0, unackedFrames: 0, state: "closed" });
-    expect(sseBudget.snapshot().bytes).toBe(0);
   });
 });

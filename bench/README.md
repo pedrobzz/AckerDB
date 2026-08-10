@@ -99,15 +99,6 @@ once — the same trick rustc-perf, Perfherder, and Bencher all live on, where
 history is a free null distribution because most pull requests move most metrics
 not at all.
 
-## Telemetry scope
-
-The default comparison runs only the `disabled` telemetry profile. If the pull
-request changes telemetry-related source, both commits additionally run the
-runtime-default and in-process-exporter profiles. That widening is not caution:
-the telemetry sidecar rework cost eighty-six percent of query throughput with
-telemetry on and moved nothing measurable with it off, so those profiles are the
-only place that class of regression is visible.
-
 ## Workload
 
 The default workload uses deterministic data and covers:

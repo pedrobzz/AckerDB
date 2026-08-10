@@ -57,7 +57,7 @@ import type { AdminScope } from "./scopes.ts";
  */
 export const ADMIN_CREDENTIAL_NAME = "Admin Credential";
 
-/** The telemetry name of the startup run that mints the master. */
+/** The stable operation name of the startup run that mints the master. */
 const BOOT_MINT_OPERATION = "ackerdb:admin:credential:mint";
 
 const credentialShape = v.object({

@@ -212,7 +212,6 @@ function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking
     engine,
     registry: new Registry(functions),
     verifier,
-    telemetry: false,
     now: () => NOW,
   });
   const harness = { directory, engine, runtime, verifier };
@@ -286,7 +285,7 @@ async function invoke(
     : harness.runtime.authInvalidation.publisher(principal, options.lease.invalidationScope);
   const carried = invalidations === undefined
     ? request
-    : carryHttpRequestProvenance(request, 1, undefined, invalidations);
+    : carryHttpRequestProvenance(request, 1, invalidations);
   try {
     const response = await harness.runtime.runProcedure(carried);
     return { status: response.status, body: JSON.parse(await response.text()) };

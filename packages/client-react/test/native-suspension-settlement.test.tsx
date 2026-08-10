@@ -182,7 +182,6 @@ function createApp(): App {
     engine,
     registry: registry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   return {

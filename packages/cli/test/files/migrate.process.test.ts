@@ -5,7 +5,6 @@ import {
   Engine,
   LocalFileStore,
   reconcile,
-  type TelemetryRecord,
 } from "@ackerdb/server";
 import {
   recordVerifiedFileStoreTransition,
@@ -70,12 +69,6 @@ function outputJson(stdout: string): Record<string, unknown> {
   return JSON.parse(stdout.trim().split("\n").at(-1)!) as Record<string, unknown>;
 }
 
-function telemetryRecords(stdout: string, finalReport: boolean): TelemetryRecord[] {
-  const lines = stdout.trim().split("\n").filter((line) => line.length > 0);
-  return (finalReport ? lines.slice(0, -1) : lines)
-    .map((line) => JSON.parse(line) as TelemetryRecord);
-}
-
 describe("acker files migrate", () => {
   test("copies and verifies live bytes before atomically switching the active FileStore", async () => {
     const directory = fixture();
@@ -113,15 +106,6 @@ describe("acker files migrate", () => {
       state: "complete",
       objects: { total: 1, completed: 1, copied: 1 },
     });
-    expect(telemetryRecords(migrated.stdout, true)).toEqual([
-      expect.objectContaining({
-        kind: "span",
-        operation: "file_migration",
-        stage: "storage",
-        outcome: "ok",
-        sizeBytes: new TextEncoder().encode(contents).byteLength,
-      }),
-    ]);
     const active = loadConfig(directory);
     expect(active.files).toMatchObject({
       backend: "filesystem",
@@ -265,21 +249,6 @@ describe("acker files migrate", () => {
 
     expect(migrated.code).toBe(1);
     expect(migrated.stderr).toContain("FileStore migration failed during source-read");
-    expect(telemetryRecords(migrated.stdout, false)).toEqual([
-      expect.objectContaining({
-        kind: "span",
-        operation: "file_migration",
-        stage: "storage",
-        outcome: "internal",
-      }),
-      expect.objectContaining({
-        kind: "event",
-        name: "failure",
-        operation: "file_migration",
-        stage: "storage",
-        outcome: "internal",
-      }),
-    ]);
     expect(existsSync(join(directory, ".ackerdb.config.json"))).toBe(false);
     expect(loadConfig(directory).files).toMatchObject({
       backend: "filesystem",

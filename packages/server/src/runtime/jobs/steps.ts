@@ -71,7 +71,7 @@ interface InlineStepEntry extends StepEntryBase {
   readonly result: string;
 }
 
-/** A sleep's record: the wake scheduled at first encounter (observability). */
+/** A sleep's record: the wake scheduled at first encounter. */
 interface SleepStepEntry extends StepEntryBase {
   readonly kind: "sleep";
   readonly wakeAt: number;

@@ -90,7 +90,6 @@ import {
   initializationArtifactPaths,
   restoreArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
-  telemetryJournalPaths,
 } from "./artifacts.ts";
 import { loadVectorRuntimeForSchema } from "./query/vector-runtime.ts";
 import {
@@ -138,7 +137,7 @@ export interface PhysicalTablePlan {
   readonly logicalName: string;
   /** The physical SQLite table name. */
   readonly name: string;
-  /** Qualified human-facing name used by validation and telemetry. */
+  /** Qualified human-facing name used by validation. */
   readonly displayName: string;
   /** Resolve a logical named type to this scope's stable storage identity. */
   tagIdentity(typeName: string): string;
@@ -1026,13 +1025,6 @@ function removeStaleInitializationArtifacts(path: string): void {
 
 function removeRestoreArtifacts(path: string): boolean {
   const artifacts = restoreArtifactPaths(path);
-  for (const artifact of artifacts) rmSync(artifact, { force: true });
-  if (artifacts.length > 0) fsyncPath(dirname(path));
-  return artifacts.length > 0;
-}
-
-function removeTelemetryJournalArtifacts(path: string): boolean {
-  const artifacts = telemetryJournalPaths(path).filter((artifact) => existsSync(artifact));
   for (const artifact of artifacts) rmSync(artifact, { force: true });
   if (artifacts.length > 0) fsyncPath(dirname(path));
   return artifacts.length > 0;
@@ -2292,13 +2284,8 @@ export class DatabaseRestoreTarget {
       const restoreArtifacts = new Set(
         restoreArtifactPaths(database).map((artifact) => basename(artifact)),
       );
-      const allowedArtifacts = new Set([
-        ...restoreArtifacts,
-        ...telemetryJournalPaths(database).map((artifact) => basename(artifact)),
-      ]);
-      assertRestoreTargetFresh(database, allowedArtifacts, allowedTargetSubtrees);
+      assertRestoreTargetFresh(database, restoreArtifacts, allowedTargetSubtrees);
       removeRestoreArtifacts(database);
-      removeTelemetryJournalArtifacts(database);
       return new DatabaseRestoreTarget(database, ownership, allowedTargetSubtrees);
     } catch (error) {
       try {

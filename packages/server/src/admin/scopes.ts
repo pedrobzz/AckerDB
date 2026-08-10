@@ -10,8 +10,7 @@
  * **A domain is what an operator authorizes.** `logs`, `jobs`, `database` are
  * the things a scope screen offers and an agent credential is narrowed to; the
  * category above them is not, so the vocabulary is two levels deep and not
- * three. Nesting the signals under a `telemetry` domain would buy a tidier
- * tree and pay for it with a fourth segment on every read scope.
+ * three.
  *
  * The list may grow without invalidating anything already issued: a grant
  * expands against the vocabulary known *at the moment of the check*, so a
@@ -38,7 +37,6 @@ export const ADMIN_SCOPES = Object.freeze([
   "_admin:jobs:write",
   "_admin:logs:read",
   "_admin:system:read",
-  "_admin:traces:read",
 ] as const);
 
 /**

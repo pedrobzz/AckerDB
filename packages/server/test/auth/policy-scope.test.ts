@@ -64,7 +64,7 @@ describe("the reactive key a principal produces", () => {
     // The defect this pins: `POSITIVE_INFINITY` is the sanctioned expiry of an
     // identity credential and the encoding refuses non-finite numbers, so
     // keying a principal directly threw on subscribe. Every client holding an
-    // identity credential — Studio above all — could open no subscription, and
+    // identity credential could open no subscription, and
     // the failure surfaced as an opaque `internal`.
     expect(() => stableEncode(NEVER_EXPIRES)).toThrow(/non-finite/);
     expect(() => fingerprint(NEVER_EXPIRES)).not.toThrow();

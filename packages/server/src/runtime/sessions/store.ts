@@ -39,8 +39,6 @@ import {
   type SessionApplicationMessage,
   type SessionRuntimeContext,
 } from "../../subscriptions/session/contract.ts";
-import type { TelemetryOperation } from "../../telemetry/telemetry.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
 import type { ServiceLimits } from "../limits.ts";
 import { outcomeFromError } from "../outcome.ts";
 import {
@@ -50,8 +48,6 @@ import {
   type RuntimeOperationOutcome,
   type SessionOperationOrder,
 } from "../execution/operation-runner.ts";
-import type { RuntimeTraceIdentifiers } from "../telemetry/trace-bridge.ts";
-import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
 
 export interface AuthTransitionCapture {
   phase: "revoking" | "reattaching";
@@ -82,7 +78,6 @@ export interface RuntimeSession {
   subscriber: Subscriber;
   readonly channelAdapter: ChannelSessionAdapter;
   readonly subscriptionKinds: Map<number, "reactive" | "channel">;
-  readonly telemetryConnectionId?: string;
   readonly subscriptionControlTails: Map<number, Promise<void>>;
   subscriptionControlFrontier: Promise<void>;
   pendingSubscriptionControls: number;
@@ -93,15 +88,10 @@ export interface RuntimeSession {
 }
 
 export interface RuntimeSessionOperationOptions<T> {
-  readonly identifiers?: RuntimeTraceIdentifiers;
-  readonly synthesizeHandler?: boolean;
   readonly successPublication?: (value: T) => RuntimePublication;
 }
 
-type SessionOperation = Extract<
-  TelemetryOperation,
-  "query" | "mutation" | "procedure" | "subscription"
->;
+type SessionOperation = "query" | "mutation" | "procedure" | "subscription";
 
 export interface RuntimeSessionStoreOptions {
   readonly limits: ServiceLimits;
@@ -111,15 +101,11 @@ export interface RuntimeSessionStoreOptions {
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly operations: RuntimeOperationRunner<RuntimeSession>;
   readonly authCaptureBudget: OutboundBudget;
-  readonly telemetry: Telemetry;
-  readonly tracing: RuntimeTraceBridge;
-  readonly telemetryConnectionId?: (clientSessionId: string) => string;
   readonly createChannelContext: (
     state: RuntimeSession,
     signal: AbortSignal,
     requestBytes: number,
   ) => OwnedProcedureContext;
-  readonly observeConnectionCount: (connections: number) => void;
 }
 
 /**
@@ -186,13 +172,6 @@ export class RuntimeSessionStore {
       subscriber,
       channelAdapter,
       subscriptionKinds: new Map(),
-      ...(this.options.telemetryConnectionId === undefined
-        ? {}
-        : {
-            telemetryConnectionId: this.options.telemetryConnectionId(
-              context.clientSessionId,
-            ),
-          }),
       subscriptionControlTails: new Map(),
       subscriptionControlFrontier: Promise.resolve(),
       pendingSubscriptionControls: 0,
@@ -202,7 +181,6 @@ export class RuntimeSessionStore {
       activeOperations: 0,
     };
     this.sessions.set(context.clientSessionId, state);
-    this.options.observeConnectionCount(this.sessions.size);
   }
 
   matching(context: SessionRuntimeContext): RuntimeSession | null {
@@ -238,7 +216,6 @@ export class RuntimeSessionStore {
     context: SessionRuntimeContext,
     request: RuntimeRequest<Message>,
     operation: SessionOperation,
-    functionName: string | undefined,
     work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
     options: RuntimeSessionOperationOptions<T> = {},
   ): Promise<T> {
@@ -259,13 +236,9 @@ export class RuntimeSessionStore {
         : undefined;
     return this.options.operations.run(
       state,
-      operation,
-      functionName,
       requestBytes,
       execute,
       {
-        identifiers: options.identifiers ?? {},
-        synthesizeHandler: options.synthesizeHandler ?? true,
         finalize: (outcome) =>
           this.publishOperationOutcome(
             context,
@@ -283,7 +256,7 @@ export class RuntimeSessionStore {
 
   async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
     const state = this.current(transition.from, true);
-    return this.options.operations.run(state, "subscription", undefined, 1, async () => {
+    return this.options.operations.run(state, 1, async () => {
       if (
         transition.to.clientSessionId !== transition.from.clientSessionId ||
         transition.to.authEpoch !== transition.from.authEpoch + 1
@@ -478,7 +451,6 @@ export class RuntimeSessionStore {
     label: string,
     resource: "operation" | "subscription" = "operation",
   ): RuntimePublication {
-    const startedAt = this.options.telemetry.enabled ? performance.now() : 0;
     let publication: RuntimePublication;
     try {
       publication = prepareRuntimePublication(frame);
@@ -488,14 +460,6 @@ export class RuntimeSessionStore {
         `${label} is not wire-representable`,
         { cause: error },
       );
-      if (this.options.telemetry.enabled) {
-        this.options.tracing.span({
-          stage: "encoding",
-          outcome: failure.code,
-          resource: "outbound",
-          durationMs: Math.max(0, performance.now() - startedAt),
-        }, resource === "subscription" ? "subscription" : "query");
-      }
       throw failure;
     }
     if (publication.bytes > this.options.limits.maxFrameBytes) {
@@ -504,34 +468,7 @@ export class RuntimeSessionStore {
         `${label} exceeds maxFrameBytes`,
         { resource },
       );
-      if (this.options.telemetry.enabled) {
-        this.options.tracing.span({
-          stage: "encoding",
-          outcome: failure.code,
-          resource: "outbound",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: publication.bytes,
-        }, resource === "subscription" ? "subscription" : "query");
-      }
       throw failure;
-    }
-    if (this.options.telemetry.enabled) {
-      this.options.tracing.span({
-        stage: "encoding",
-        outcome: "ok",
-        resource: "outbound",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        sizeBytes: publication.bytes,
-        ...(frame.t === "ok" && frame.kind === "query"
-          ? {
-              resultCount: Array.isArray(frame.value)
-                ? frame.value.length
-                : frame.value === null
-                  ? 0
-                  : 1,
-            }
-          : {}),
-      }, resource === "subscription" ? "subscription" : "query");
     }
     return publication;
   }
@@ -740,8 +677,7 @@ export class RuntimeSessionStore {
     const publication = prepared ?? this.prepare(
       message,
       "application frame",
-      message.t === "transition" || message.t === "event" ||
-          this.options.tracing.currentScope()?.operation === "subscription"
+      message.t === "transition" || message.t === "event"
         ? "subscription"
         : "operation",
     );
@@ -897,35 +833,11 @@ export class RuntimeSessionStore {
         throw new AckerDBError("not_found", `unknown event table "${table}"`);
       }
       const subscription = tableDefinition.eventSubscription!;
-      const policyAt = this.options.telemetry.enabled ? performance.now() : 0;
-      let authorized: Awaited<ReturnType<typeof authorizeInvocation>>;
-      try {
-        authorized = await authorizeInvocation(
-          subscription,
-          { auth: state.context.principal },
-          args,
-        );
-        if (this.options.telemetry.enabled) {
-          this.options.tracing.span({
-            stage: "policy",
-            outcome: "ok",
-            functionName: address,
-            resource: "subscription",
-            durationMs: Math.max(0, performance.now() - policyAt),
-          }, "subscription");
-        }
-      } catch (error) {
-        if (this.options.telemetry.enabled) {
-          this.options.tracing.span({
-            stage: "policy",
-            outcome: outcomeFromError(transportError(error)).code,
-            functionName: address,
-            resource: "subscription",
-            durationMs: Math.max(0, performance.now() - policyAt),
-          }, "subscription");
-        }
-        throw error;
-      }
+      const authorized = await authorizeInvocation(
+        subscription,
+        { auth: state.context.principal },
+        args,
+      );
       await this.options.reactive.subscribeEvent({
         subscriber: state.subscriber,
         id,
@@ -1026,7 +938,6 @@ export class RuntimeSessionStore {
     state.subscriptionKinds.clear();
     if (this.sessions.get(state.context.clientSessionId) === state) {
       this.sessions.delete(state.context.clientSessionId);
-      this.options.observeConnectionCount(this.sessions.size);
     }
     const drain = state.closeDrain;
     state.closeDrain = null;

@@ -57,7 +57,7 @@ export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
 export interface RuntimeHttpHandlerRequest {
   readonly address: string;
   readonly request: Request;
-  /** The listener's own sequence; telemetry correlation only. */
+  /** The listener's own sequence. */
   readonly id?: number;
   /** The buffered body size the listener admitted; 1 when bodiless. */
   readonly requestBytes?: number;

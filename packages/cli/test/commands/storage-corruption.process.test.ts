@@ -62,7 +62,7 @@ function spawnStart(dir: string) {
     cwd: REPO,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   }) as CliProcess;
   children.add(child);
   let output = "";

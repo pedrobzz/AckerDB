@@ -174,7 +174,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-handler-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions), limits, telemetry: false });
+  runtime = new Runtime({ engine, registry: new Registry(functions), limits });
   server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
 });

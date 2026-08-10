@@ -1,11 +1,9 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   Err,
   Ok,
   isApplicationError,
   isResult,
   type OkResult,
-  type Outcome,
 } from "@ackerdb/core";
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
 import type { Expand, Validator } from "../validation/validator.ts";
@@ -15,11 +13,7 @@ import {
   type ObjectShape,
 } from "../validation/composites.ts";
 import { AckerDBError } from "../shared/errors.ts";
-import type {
-  AnyInvocable,
-  FunctionResult,
-  Invocable,
-} from "./functions.ts";
+import type { FunctionResult, Invocable } from "./functions.ts";
 import type { AccessPolicy, InvocationContext } from "./access.ts";
 import {
   enforceScopeRequirement,
@@ -27,7 +21,6 @@ import {
   type ScopeRequirement,
 } from "../auth/scopes.ts";
 import { deepFreeze } from "../shared/immutable.ts";
-import { outcomeFromError } from "../runtime/outcome.ts";
 import {
   currentInvocationState,
   withInvocationState,
@@ -43,68 +36,6 @@ interface CompiledInvocation<Ctx, Args> {
 }
 
 type InvocationArgsDecoder<Args> = (rawArgs: unknown, path: string) => Args;
-
-export type InvocationPhase = "auth" | "policy" | "handler";
-export type InvocationOutcome = "ok" | Outcome["code"];
-
-export interface InvocationObservation {
-  readonly fn: AnyInvocable;
-  readonly invocationId: number;
-  readonly parentInvocationId?: number;
-  readonly depth: number;
-  readonly phase: InvocationPhase;
-  readonly durationMs: number;
-  readonly outcome: InvocationOutcome;
-}
-
-export type InvocationObserver = (observation: InvocationObservation) => unknown;
-
-export interface InvocationPhaseScope {
-  readonly fn: AnyInvocable;
-  readonly invocationId: number;
-  readonly parentInvocationId?: number;
-  readonly depth: number;
-  readonly phase: InvocationPhase;
-}
-
-export interface InvocationPhaseRunner {
-  <T>(scope: Readonly<InvocationPhaseScope>, work: () => T): T;
-}
-
-interface InvocationInstrumentationScope {
-  readonly observer?: InvocationObserver;
-  readonly telemetryObserver?: InvocationTelemetryObserver;
-  readonly runPhase?: InvocationPhaseRunner;
-  nextInvocationId: number;
-}
-
-interface InvocationInstrumentationState {
-  readonly scope: InvocationInstrumentationScope;
-  readonly invocationId: number | null;
-  readonly parentInvocationId?: number;
-  readonly depth: number;
-  readonly parent?: InvocationInstrumentationState;
-  readonly fn?: AnyInvocable;
-}
-
-export interface InvocationTelemetryContext {
-  readonly invocationId: number;
-  readonly parent?: InvocationTelemetryContext;
-  readonly fn: AnyInvocable;
-}
-
-export interface InvocationFunctionContext {
-  readonly invocationId: number;
-  readonly parent?: InvocationFunctionContext;
-  readonly fn: AnyInvocable;
-}
-
-export type InvocationTelemetryObserver = (
-  context: InvocationTelemetryContext,
-  phase: InvocationPhase,
-  durationMs: number,
-  outcome: InvocationOutcome,
-) => unknown;
 
 export interface InvocationOptions<Ctx, Args> {
   /** Runs after args and access pass, immediately before the handler starts. */
@@ -129,57 +60,7 @@ export interface AuthorizedInvocation<Ctx, Args> {
   readonly args: Args;
 }
 
-const invocationInstrumentation = new AsyncLocalStorage<InvocationInstrumentationState>();
 const compiledInvocations = new WeakMap<object, CompiledInvocation<InvocationContext, unknown>>();
-
-/** Install one isolated observer scope around a top-level invocation boundary. */
-export function withInvocationObserver<T>(
-  observer: InvocationObserver,
-  work: () => T,
-  runPhase?: InvocationPhaseRunner,
-): T {
-  return invocationInstrumentation.run({
-    scope: { observer, runPhase, nextInvocationId: 0 },
-    invocationId: null,
-    depth: -1,
-  }, work);
-}
-
-/** Package-internal low-allocation observer path for Runtime telemetry. */
-export function withInvocationTelemetry<T>(
-  observer: InvocationTelemetryObserver,
-  work: () => T,
-): T {
-  return invocationInstrumentation.run({
-    scope: { telemetryObserver: observer, nextInvocationId: 0 },
-    invocationId: null,
-    depth: -1,
-  }, work);
-}
-
-/** Install only ambient function ownership, without timing or observations. */
-export function withInvocationContext<T>(work: () => T): T {
-  return invocationInstrumentation.run({
-    scope: { nextInvocationId: 0 },
-    invocationId: null,
-    depth: -1,
-  }, work);
-}
-
-export function currentInvocationFunctionContext(): InvocationFunctionContext | undefined {
-  const state = invocationInstrumentation.getStore();
-  return state?.invocationId !== null && state?.fn !== undefined
-    ? state as InvocationFunctionContext
-    : undefined;
-}
-
-/** Returns the existing ambient invocation frame without allocating a public observation. */
-export function currentInvocationTelemetryContext(): InvocationTelemetryContext | undefined {
-  const state = invocationInstrumentation.getStore();
-  return state?.invocationId !== null && state?.fn !== undefined
-    ? state as InvocationTelemetryContext
-    : undefined;
-}
 
 function denied(principal: Principal, cause?: unknown): AckerDBError {
   return principal.kind === "anonymous"
@@ -357,100 +238,6 @@ export function authorizeInvocation<A extends ObjectShape, Ctx extends Invocatio
   }
 }
 
-function safeOutcome(error: unknown): InvocationOutcome {
-  try {
-    return outcomeFromError(error).code;
-  } catch {
-    return "internal";
-  }
-}
-
-function emitObservation(
-  state: InvocationInstrumentationState,
-  fn: AnyInvocable,
-  phase: InvocationPhase,
-  startedAt: number,
-  outcome: InvocationOutcome,
-): void {
-  const durationMs = Math.max(0, performance.now() - startedAt);
-  try {
-    const result = invocationInstrumentation.exit(() => {
-      if (state.scope.telemetryObserver !== undefined) {
-        return state.scope.telemetryObserver(
-          state as InvocationTelemetryContext,
-          phase,
-          durationMs,
-          outcome,
-        );
-      }
-      const observation: InvocationObservation = Object.freeze({
-        fn,
-        invocationId: state.invocationId!,
-        ...(state.parentInvocationId === undefined
-          ? {}
-          : { parentInvocationId: state.parentInvocationId }),
-        depth: state.depth,
-        phase,
-        durationMs,
-        outcome,
-      });
-      return state.scope.observer!(observation);
-    });
-    if (isPromiseLike(result)) void Promise.resolve(result).catch(() => {});
-  } catch {
-    // Instrumentation is diagnostic and must never affect application work.
-  }
-}
-
-function observePhase<T>(
-  state: InvocationInstrumentationState,
-  fn: AnyInvocable,
-  phase: InvocationPhase,
-  work: () => T | Promise<T>,
-): T | Promise<T> {
-  if (
-    state.scope.observer === undefined &&
-    state.scope.telemetryObserver === undefined &&
-    state.scope.runPhase === undefined
-  ) return work();
-  const run = (): T | Promise<T> => {
-    const startedAt = performance.now();
-    try {
-      const value = work();
-      if (isPromiseLike(value)) {
-        return Promise.resolve(value).then(
-          (settled) => {
-            emitObservation(state, fn, phase, startedAt, "ok");
-            return settled;
-          },
-          (error: unknown) => {
-            emitObservation(state, fn, phase, startedAt, safeOutcome(error));
-            throw error;
-          },
-        );
-      }
-      emitObservation(state, fn, phase, startedAt, "ok");
-      return value;
-    } catch (error) {
-      emitObservation(state, fn, phase, startedAt, safeOutcome(error));
-      throw error;
-    }
-  };
-  const observed = (): T | Promise<T> => {
-    const runPhase = state.scope.runPhase;
-    if (runPhase === undefined) return run();
-    return runPhase(Object.freeze({
-      fn,
-      invocationId: state.invocationId!,
-      ...(state.parentInvocationId === undefined
-        ? {}
-        : { parentInvocationId: state.parentInvocationId }),
-      depth: state.depth,
-      phase,
-    }), run);
-  };
-  return observed();
-}
 
 function runHandler<Ctx extends InvocationContext, Args, R>(
   fn: { readonly handler: (ctx: Ctx, args: Args) => R | Promise<R> },
@@ -651,66 +438,7 @@ export function invokeFunction<
   rawArgs: unknown,
   options?: InvocationOptions<Ctx, Expand<InferShape<A>>>,
 ): Promise<InvokedFunctionResult<K, H>> {
-  const instrumentation = invocationInstrumentation.getStore();
-  if (instrumentation === undefined) {
-    return invokeUnobserved(fn, ctx, rawArgs, options);
-  }
-
-  const state: InvocationInstrumentationState = {
-    scope: instrumentation.scope,
-    invocationId: ++instrumentation.scope.nextInvocationId,
-    ...(instrumentation.invocationId === null
-      ? {}
-      : { parentInvocationId: instrumentation.invocationId }),
-    depth: instrumentation.depth + 1,
-    ...(instrumentation.invocationId === null ? {} : { parent: instrumentation }),
-    fn: fn as unknown as AnyInvocable,
-  };
-  const observedFn = fn as unknown as AnyInvocable;
-  return invocationInstrumentation.run(state, () => {
-    try {
-      const compiled = compiledInvocation(fn);
-      const parent = currentInvocationState();
-      let invocation!: InvocationState;
-      let safeCtx!: Ctx;
-      let args!: Expand<InferShape<A>>;
-      const authenticate = observePhase(state, observedFn, "auth", () => {
-        safeCtx = validateContext(ctx, parent);
-        invocation = invocationStateFor(
-          safeCtx,
-          parent,
-          options?.mutationAccess,
-        );
-        args = compiled.validateArgs(rawArgs);
-      });
-      const handle = (activeState: InvocationState): H | Promise<H> =>
-        observePhase(state, observedFn, "handler", () =>
-          runHandler(fn, safeCtx, args, options));
-      const authorize = (activeState: InvocationState): H | Promise<H> => {
-        const access = observePhase(state, observedFn, "policy", () =>
-          compiled.enforceAccess(safeCtx, args));
-        return isPromiseLike(access)
-          ? Promise.resolve(access).then(() => handle(activeState))
-          : handle(activeState);
-      };
-      const execute = (activeState: InvocationState) =>
-        isPromiseLike(authenticate)
-          ? Promise.resolve(authenticate).then(() => authorize(activeState))
-          : authorize(activeState);
-      return runInvocation(
-        fn,
-        execute,
-        invocation,
-        parent === undefined,
-      ) as Promise<InvokedFunctionResult<K, H>>;
-    } catch (error) {
-      return Promise.reject(markPoisoned(
-        currentInvocationState(),
-        error,
-        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
-      ));
-    }
-  });
+  return invokeUnobserved(fn, ctx, rawArgs, options);
 }
 
 /**
@@ -718,7 +446,7 @@ export function invokeFunction<
  *
  * Channels authorize once when membership starts. Their later lifecycle and
  * event callbacks still need a registered invocation frame so `ctx.tx`,
- * transaction poisoning, principal isolation, and telemetry keep the same
+ * transaction poisoning and principal isolation keep the same
  * guarantees as procedures without re-running membership policy per message.
  */
 export function invokeRegisteredHandler<
@@ -733,51 +461,17 @@ export function invokeRegisteredHandler<
   ctx: Ctx,
   work: (ctx: Ctx) => T | Promise<T>,
 ): Promise<T | OkResult<T>> {
-  const instrumentation = invocationInstrumentation.getStore();
-  if (instrumentation === undefined) {
-    try {
-      const parent = currentInvocationState();
-      const safeCtx = validateContext(ctx, parent);
-      const state = invocationStateFor(safeCtx, parent, undefined);
-      return runInvocation(
-        fn,
-        (activeState) =>
-          withInvocationState(activeState, () => work(safeCtx)),
-        state,
-        parent === undefined,
-      );
-    } catch (error) {
-      return Promise.reject(markPoisoned(currentInvocationState(), error, true));
-    }
+  try {
+    const parent = currentInvocationState();
+    const safeCtx = validateContext(ctx, parent);
+    const state = invocationStateFor(safeCtx, parent, undefined);
+    return runInvocation(
+      fn,
+      (activeState) => withInvocationState(activeState, () => work(safeCtx)),
+      state,
+      parent === undefined,
+    );
+  } catch (error) {
+    return Promise.reject(markPoisoned(currentInvocationState(), error, true));
   }
-
-  const state: InvocationInstrumentationState = {
-    scope: instrumentation.scope,
-    invocationId: ++instrumentation.scope.nextInvocationId,
-    ...(instrumentation.invocationId === null
-      ? {}
-      : { parentInvocationId: instrumentation.invocationId }),
-    depth: instrumentation.depth + 1,
-    ...(instrumentation.invocationId === null ? {} : { parent: instrumentation }),
-    fn: fn as unknown as AnyInvocable,
-  };
-  const observedFn = fn as unknown as AnyInvocable;
-  return invocationInstrumentation.run(state, () => {
-    try {
-      const parent = currentInvocationState();
-      const safeCtx = validateContext(ctx, parent);
-      const invocation = invocationStateFor(safeCtx, parent, undefined);
-      return runInvocation(
-        fn,
-        (activeState) =>
-          observePhase(state, observedFn, "handler", () =>
-            withInvocationState(activeState, () => work(safeCtx))
-          ),
-        invocation,
-        parent === undefined,
-      );
-    } catch (error) {
-      return Promise.reject(markPoisoned(currentInvocationState(), error, true));
-    }
-  });
 }

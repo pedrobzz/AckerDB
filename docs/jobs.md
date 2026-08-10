@@ -314,11 +314,7 @@ table.
 
 ## Operations
 
-Job state transitions emit telemetry events (`job_claimed`, `job_settled`,
-`job_retried`, `job_failed`, `job_canceled`, `job_slept`) under the `job` operation, and
-the runner reports `jobs.running`, `jobs.due_backlog`, and
-`jobs.oldest_due_age_ms` gauges — the last is the one that catches a starved
-runner; `/status` reports `declaredJobs` and `jobsArmed`. The
+`/status` reports `declaredJobs` and `jobsArmed`. The
 runner wakes on the commits that touch the jobs tables and on a timer armed to
 the next due Job — a quiet application spends nothing.
 

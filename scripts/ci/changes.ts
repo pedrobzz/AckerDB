@@ -13,7 +13,6 @@ interface ChangeSet {
   readonly code: boolean;
   readonly native: boolean;
   readonly performance: boolean;
-  readonly telemetry: boolean;
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
   readonly workflows: boolean;
@@ -85,13 +84,12 @@ export function classifyChanges(base: string, head: string): ChangeSet {
 
   const native = nativeInputsChanged(files);
   const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
-  const telemetry = telemetryInputsChanged(base, head, files);
   const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
-  return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
+  return { files, testPackages, code, native, performance, verifyPackages, mcp, workflows };
 }
 
 /** The packages whose code the benchmark workload actually executes. */
@@ -124,43 +122,6 @@ export function measuredDependenciesChanged(base: string, head: string): boolean
   return externals(base) !== externals(head);
 }
 
-/**
- * Whether the benchmark must run the telemetry profiles beside the default one.
- *
- * This classifier is wider than it looks like it needs to be, and stays that
- * way on evidence: the telemetry sidecar rework cost eighty-six percent of
- * query throughput with telemetry on and nothing measurable with it off. The
- * profiles it selects are the only place that class of regression is visible,
- * so narrowing it to buy runner minutes would be spending the gate to save
- * change. What it does tighten is the failure mode — a git invocation that
- * neither says "no match" nor "match" is an error, where it used to be read as
- * "no telemetry changed" and quietly drop the profiles that catch the largest
- * regressions this benchmark has ever recorded.
- */
-export function telemetryInputsChanged(
-  base: string,
-  head: string,
-  files: readonly string[],
-): boolean {
-  if (
-    files.some((file) =>
-      file.startsWith("packages/server/src/telemetry/") ||
-      file.startsWith("packages/server/src/runtime/telemetry/")
-    )
-  ) {
-    return true;
-  }
-  const probe = Bun.spawnSync(
-    ["git", "diff", "--quiet", "-G", "[Tt]elemetry", `${base}...${head}`, "--", "packages/*/src", "bench"],
-    { stdout: "ignore", stderr: "pipe" },
-  );
-  if (probe.exitCode === 0) return false;
-  if (probe.exitCode === 1) return true;
-  throw new Error(
-    `git could not classify telemetry changes (exit ${probe.exitCode}): ${probe.stderr.toString().trim()}`,
-  );
-}
-
 export function codeInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
     !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
@@ -172,10 +133,7 @@ export function codeInputsChanged(files: readonly string[]): boolean {
  * packed-package gate.
  *
  * The native directories are here because those packages publish built
- * binaries; `packages/studio/` is here for the same reason, and it is the
- * stronger case: nothing else in the pipeline builds its bundle, so without
- * this a pull request touching only the SPA would skip the one check that
- * proves it compiles, packs, and opens.
+ * binaries.
  */
 export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
@@ -186,8 +144,7 @@ export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
     file.startsWith("scripts/verify-packages") ||
     file.startsWith("scripts/packed-consumer") ||
     file.startsWith("packages/realtime/native/") ||
-    file.startsWith("packages/realtime-native/") ||
-    file.startsWith("packages/studio/")
+    file.startsWith("packages/realtime-native/")
   );
 }
 
@@ -223,7 +180,6 @@ if (import.meta.main) {
       `code=${changes.code}`,
       `native=${changes.native}`,
       `performance=${changes.performance}`,
-      `telemetry=${changes.telemetry}`,
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,

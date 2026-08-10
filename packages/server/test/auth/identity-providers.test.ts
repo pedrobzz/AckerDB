@@ -88,7 +88,6 @@ function open(path: string): { readonly engine: Engine; readonly runtime: Runtim
   const runtime = new Runtime({
     engine,
     registry: new Registry({}),
-    telemetry: false,
   });
   instances.set(runtime, engine);
   return { engine, runtime };

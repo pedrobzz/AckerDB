@@ -235,7 +235,6 @@ describe("File HTTP flow", () => {
       engine,
       registry: new Registry(functions),
       verifier: new TestVerifier(),
-      telemetry: false,
       files: {
         publicUrl: "https://files.example.test/",
         store: fileStore,
@@ -434,7 +433,6 @@ describe("File HTTP flow", () => {
       resource: "idempotency",
     });
 
-    const providerErrors = runtime.status().files.providerErrors.total;
     const short = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
         method: "PUT",
@@ -450,8 +448,6 @@ describe("File HTTP flow", () => {
       retryable: false,
       resource: "idempotency",
     });
-    expect(runtime.status().files.providerErrors.total).toBe(providerErrors);
-
     const retried = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
         method: "PUT",

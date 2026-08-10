@@ -107,7 +107,6 @@ async function fixture(limits?: ServiceLimits): Promise<Fixture> {
     registry: new Registry(modules),
     scopes: APP_SCOPES,
     ...(limits === undefined ? {} : { limits }),
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   cleanups.push(async () => {

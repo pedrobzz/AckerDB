@@ -8,7 +8,6 @@ import {
   defineServiceLimits,
   PRODUCTION_LIMITS,
   validateQueueLimits,
-  validateTelemetryLimits,
 } from "../../src/runtime/limits.ts";
 import { AckerDBError, isAckerDBError } from "../../src/shared/errors.ts";
 import { BoundedExecutor } from "../../src/runtime/executor.ts";
@@ -31,27 +30,11 @@ describe("production limits", () => {
       maxBytes: 32 * 1024 * 1024,
       maxAgeMs: 30_000,
     });
-    expect(PRODUCTION_LIMITS.telemetry.maxRecords).toBe(2_048);
     expect(PRODUCTION_LIMITS.revalidationConcurrency).toBe(4);
 
     expect(() => validateQueueLimits({ maxItems: 1, maxBytes: Infinity, maxAgeMs: 1 })).toThrow(
       "positive safe integer",
     );
-    expect(() =>
-      validateTelemetryLimits({
-        ...PRODUCTION_LIMITS.telemetry,
-        maxRecords: 2,
-        maxBatchRecords: 3,
-      }),
-    ).toThrow("cannot exceed");
-    expect(validateTelemetryLimits({
-      ...PRODUCTION_LIMITS.telemetry,
-      slowOperationMs: 0,
-    }).slowOperationMs).toBe(0);
-    expect(() => validateTelemetryLimits({
-      ...PRODUCTION_LIMITS.telemetry,
-      slowOperationMs: -1,
-    })).toThrow("non-negative safe integer");
     expect(() =>
       defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerCaller: 5_000 }),
     ).toThrow("cannot exceed");
@@ -81,10 +64,10 @@ describe("AdmissionQueue", () => {
       limits: { maxItems: 2, maxBytes: 5, maxAgeMs: 100 },
       now: () => 10,
     });
-    const first = queue.enqueue("first", { operation: "mutation", bytes: 2 });
-    const second = queue.enqueue("second", { operation: "mutation", bytes: 3 });
+    const first = queue.enqueue("first", { bytes: 2 });
+    const second = queue.enqueue("second", { bytes: 3 });
     const rejected = await settled(
-      queue.enqueue("third", { operation: "mutation", bytes: 0 }),
+      queue.enqueue("third", { bytes: 0 }),
     );
 
     expect(rejected).toBeInstanceOf(AdmissionRejected);
@@ -113,9 +96,9 @@ describe("AdmissionQueue", () => {
       resource: "reader",
       limits: { maxItems: 3, maxBytes: 4, maxAgeMs: 100 },
     });
-    const admitted = byteQueue.enqueue("fits", { operation: "query", bytes: 3 });
+    const admitted = byteQueue.enqueue("fits", { bytes: 3 });
     const byteRejection = await settled(
-      byteQueue.enqueue("too-large", { operation: "query", bytes: 2 }),
+      byteQueue.enqueue("too-large", { bytes: 2 }),
     );
     expect(byteRejection).toMatchObject({ reason: "bytes", code: "overloaded" });
     byteQueue.take();
@@ -130,12 +113,12 @@ describe("AdmissionQueue", () => {
       now: () => 0,
     });
     const tickets = [
-      queue.enqueue("a1", { operation: "query", bytes: 1, fairnessKey: "a" }),
-      queue.enqueue("a2", { operation: "query", bytes: 1, fairnessKey: "a" }),
-      queue.enqueue("a3", { operation: "query", bytes: 1, fairnessKey: "a" }),
-      queue.enqueue("b1", { operation: "query", bytes: 1, fairnessKey: "b" }),
-      queue.enqueue("b2", { operation: "query", bytes: 1, fairnessKey: "b" }),
-      queue.enqueue("c1", { operation: "query", bytes: 1, fairnessKey: "c" }),
+      queue.enqueue("a1", { bytes: 1, fairnessKey: "a" }),
+      queue.enqueue("a2", { bytes: 1, fairnessKey: "a" }),
+      queue.enqueue("a3", { bytes: 1, fairnessKey: "a" }),
+      queue.enqueue("b1", { bytes: 1, fairnessKey: "b" }),
+      queue.enqueue("b2", { bytes: 1, fairnessKey: "b" }),
+      queue.enqueue("c1", { bytes: 1, fairnessKey: "c" }),
     ];
 
     const leases: AdmissionLease<string>[] = [];
@@ -153,14 +136,14 @@ describe("AdmissionQueue", () => {
       now: () => 0,
     });
     const tickets = [
-      queue.enqueue("hot-1", { operation: "subscription", bytes: 1, fairnessKey: "hot" }),
-      queue.enqueue("hot-2", { operation: "subscription", bytes: 1, fairnessKey: "hot" }),
-      queue.enqueue("warm-1", { operation: "subscription", bytes: 1, fairnessKey: "warm" }),
-      queue.enqueue("warm-2", { operation: "subscription", bytes: 1, fairnessKey: "warm" }),
+      queue.enqueue("hot-1", { bytes: 1, fairnessKey: "hot" }),
+      queue.enqueue("hot-2", { bytes: 1, fairnessKey: "hot" }),
+      queue.enqueue("warm-1", { bytes: 1, fairnessKey: "warm" }),
+      queue.enqueue("warm-2", { bytes: 1, fairnessKey: "warm" }),
     ];
     expect(queue.take()!.value).toBe("hot-1");
     tickets.push(
-      queue.enqueue("cold-1", { operation: "subscription", bytes: 1, fairnessKey: "cold" }),
+      queue.enqueue("cold-1", { bytes: 1, fairnessKey: "cold" }),
     );
 
     expect(queue.snapshot().activeFairnessKeys).toBe(3);
@@ -177,17 +160,17 @@ describe("AdmissionQueue", () => {
     let now = 0;
     const queue = new AdmissionQueue<string>({
       discipline: "fifo",
-      resource: "operation",
+      resource: "reader",
       limits: { maxItems: 3, maxBytes: 9, maxAgeMs: 10 },
       now: () => now,
     });
     const controller = new AbortController();
     const deadline = settled(
-      queue.enqueue("deadline", { operation: "query", bytes: 3, deadlineMs: 5 }),
+      queue.enqueue("deadline", { bytes: 3, deadlineMs: 5 }),
     );
-    const aged = settled(queue.enqueue("aged", { operation: "query", bytes: 3 }));
+    const aged = settled(queue.enqueue("aged", { bytes: 3 }));
     const canceled = settled(
-      queue.enqueue("canceled", { operation: "query", bytes: 3, signal: controller.signal }),
+      queue.enqueue("canceled", { bytes: 3, signal: controller.signal }),
     );
     expect(queue.snapshot()).toMatchObject({
       queuedItems: 3,
@@ -218,10 +201,10 @@ describe("AdmissionQueue", () => {
       resource: "writer",
       limits: { maxItems: 2, maxBytes: 2, maxAgeMs: 100 },
     });
-    const queued = settled(queue.enqueue("queued", { operation: "mutation", bytes: 1 }));
+    const queued = settled(queue.enqueue("queued", { bytes: 1 }));
     queue.close();
     expect(await queued).toMatchObject({ reason: "closed", code: "draining" });
-    expect(await settled(queue.enqueue("late", { operation: "mutation", bytes: 1 }))).toMatchObject({
+    expect(await settled(queue.enqueue("late", { bytes: 1 }))).toMatchObject({
       reason: "closed",
     });
     expect(queue.snapshot()).toMatchObject({ queuedItems: 0, closed: true });
@@ -242,12 +225,10 @@ describe("BoundedExecutor", () => {
       limits: { maxItems: 2, maxBytes: 2, maxAgeMs: 5 },
     });
     const active = executor.submit(() => gate, {
-      operation: "subscription",
       bytes: 1,
       fairnessKey: "active",
     });
     const queued = settled(executor.submit(() => undefined, {
-      operation: "subscription",
       bytes: 1,
       fairnessKey: "queued",
     }));

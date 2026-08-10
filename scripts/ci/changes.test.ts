@@ -3,7 +3,6 @@ import {
   codeInputsChanged,
   nativeInputsChanged,
   performanceInputsChanged,
-  telemetryInputsChanged,
   verifyPackagesInputsChanged,
 } from "./changes.ts";
 
@@ -63,33 +62,6 @@ describe("benchmark selection", () => {
   });
 });
 
-describe("telemetry profile selection", () => {
-  const unreachable = "0000000000000000000000000000000000000000";
-
-  test("selects the profiles from the telemetry directories without consulting git", () => {
-    // No commit range is valid here: a path under either telemetry directory is
-    // enough on its own, so the probe below must never run.
-    expect(telemetryInputsChanged(unreachable, unreachable, [
-      "packages/server/src/telemetry/storage/store.ts",
-    ])).toBe(true);
-    expect(telemetryInputsChanged(unreachable, unreachable, [
-      "packages/server/src/runtime/telemetry/sampler.ts",
-    ])).toBe(true);
-  });
-
-  test("fails loudly when git cannot classify the range", () => {
-    // The old classifier read any non-matching exit code as "no telemetry
-    // changed", which would silently drop the only profiles that make a
-    // telemetry regression visible.
-    expect(() => telemetryInputsChanged(unreachable, unreachable, ["README.md"]))
-      .toThrow(/could not classify telemetry changes/);
-  });
-
-  test("reads a real range and finds the telemetry work in it", () => {
-    expect(telemetryInputsChanged("HEAD", "HEAD", ["README.md"])).toBe(false);
-  });
-});
-
 describe("repository check selection", () => {
   test("skips typechecks and boundary checks when only documentation changed", () => {
     expect(codeInputsChanged([
@@ -108,14 +80,9 @@ describe("repository check selection", () => {
   });
 
   test("packs and verifies whenever a published package's built contents could change", () => {
-    // The Studio bundle is built by the packing gate and by nothing else, so a
-    // pull request touching only the SPA must still reach it.
-    expect(verifyPackagesInputsChanged(["packages/studio/src/app/connect.tsx"])).toBe(true);
-    expect(verifyPackagesInputsChanged(["packages/studio/vite.config.ts"])).toBe(true);
     expect(verifyPackagesInputsChanged(["bun.lock"])).toBe(true);
     expect(verifyPackagesInputsChanged(["packages/realtime-native/darwin-arm64/README.md"]))
       .toBe(true);
     expect(verifyPackagesInputsChanged(["packages/server/src/app/registry.ts"])).toBe(false);
-    expect(verifyPackagesInputsChanged(["docs/studio.md"])).toBe(false);
   });
 });

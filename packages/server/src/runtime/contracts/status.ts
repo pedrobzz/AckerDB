@@ -3,19 +3,8 @@ import type { Engine } from "../../database/engine.ts";
 import type { RealtimeRuntimeSnapshot } from "../../realtime/host.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
-import type {
-  TelemetryExportersSnapshot,
-} from "../../telemetry/application-signals/exporters.ts";
-import type {
-  TelemetryJournalSnapshot,
-} from "../../telemetry/application-signals/journal.ts";
-import type {
-  TelemetryAggregateSnapshot,
-  TelemetrySnapshot,
-} from "../../telemetry/telemetry.ts";
 import type { ExecutorSnapshot } from "../executor.ts";
 import type { RuntimeLifecycleState } from "./lifecycle.ts";
-import type { FileObservabilitySnapshot } from "../../files/observability.ts";
 
 interface RuntimeReactiveContext {
   readonly principal: Principal;
@@ -30,7 +19,6 @@ export interface RuntimeStatus {
   readonly realtime: RealtimeRuntimeSnapshot | null;
   readonly declaredJobs: number;
   readonly jobsArmed: boolean;
-  readonly files: FileObservabilitySnapshot;
   readonly reader: ExecutorSnapshot;
   readonly writer: ExecutorSnapshot;
   readonly reactive: ReturnType<OrderedReactive<RuntimeReactiveContext>["snapshot"]>;
@@ -39,9 +27,5 @@ export interface RuntimeStatus {
   >;
   readonly authCaptureBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
-  readonly telemetry: TelemetrySnapshot;
-  readonly telemetryAggregates: TelemetryAggregateSnapshot;
-  readonly telemetryJournal: TelemetryJournalSnapshot;
-  readonly telemetryExporters: TelemetryExportersSnapshot | null;
   readonly storage: ReturnType<Engine["status"]>;
 }

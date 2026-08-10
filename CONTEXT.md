@@ -226,115 +226,21 @@ top-level function begins execution. Nested application functions, plugin
 functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
-**Application log record** — A developer-authored diagnostic message with
-structured metadata, registered at its call site independently of the function
-result and any application transaction. Its occurrence time and order describe
-application execution, not later persistence.
-_Avoid_: Transactional log, telemetry event
+**Application log** — A developer-authored diagnostic message with optional
+structured metadata, sent immediately to the configured `LoggerStrategy`.
+The default strategy writes to `console.log`; AckerDB does not retain it.
+_Avoid_: Durable log record, framework event
 
-**Application log order** — The total call-site registration order of
-application log records within one process generation. Persistence batching
-preserves this order across concurrent function executions.
-_Avoid_: Persistence order, timestamp order
-
-**Analytics event** — A named occurrence of product behavior with structured
-properties and the caller's durable Identity when one exists. It describes what
-a user or application did rather than the diagnostic severity of application
-execution.
+**Analytics event** — A named occurrence of product behavior with optional
+structured properties, sent immediately to the configured
+`AnalyticsStrategy`. The default strategy writes to `console.log`; AckerDB does
+not retain, enrich, batch, or export it.
 _Avoid_: Application log record, log event
 
-**Telemetry value** — A portable value shared by application-log metadata and
-analytics-event properties: null, text, numbers, booleans, big integers, bytes,
-arrays, and objects composed recursively from the same values.
-_Avoid_: Arbitrary JavaScript value, provider-native value
-
-**Telemetry journal** — The bounded local durable record of application logs
-and committed analytics events. It is independent of application state and is
-the common source consumed by telemetry exporters.
-_Avoid_: Application table, exporter queue
-
-**Telemetry exporter** — An isolated adapter that delivers the signal kinds a
-provider represents without changing application execution or other exporters.
-_Avoid_: Telemetry provider, application integration
-
-**Trace** — The tree of spans sharing one trace identifier, describing a single
-operation's execution from boundary to settlement across framework stages and
-nested application functions.
-_Avoid_: request log, execution history
-
-**Span** — One timed unit of work inside a trace: start, duration, and outcome,
-attached to a parent span so spans compose into a tree. All spans are
-framework-emitted; application code does not create spans.
-_Avoid_: timing event, log entry
-
-**Unattributed time** — The portion of a span's duration not covered by any
-child span: work the framework cannot observe inside an application function's
-body, such as external calls or computation. It marks where manual
-instrumentation would attach if it existed.
-_Avoid_: gap, overhead, missing time
-
-**Error group** — The durable identity of one distinct unhandled failure,
-keyed by a stack fingerprint. It accumulates occurrence counts and first/last
-seen times, never expires, and carries a two-state lifecycle: unresolved or
-resolved, where any new occurrence reopens a resolved group as regressed.
-Expected failure outcomes and handled, logged errors never form groups.
-_Avoid_: issue, error bucket, exception type
-
-**Error occurrence** — One capture of an unhandled failure joined to its error
-group: when it happened, in which function, and in which trace. Occurrences
-expire on the error retention clock; their group outlives them.
-_Avoid_: error event, error instance
-
-**Funnel** — An ordered sequence of analytics-event steps evaluated exactly,
-per durable Identity, within a conversion window: how many identities advanced
-through each step and which ones stalled where. Never sampled or approximated.
-_Avoid_: conversion pipeline, journey
-
-**Identity timeline** — The chronological record of one Identity's analytics
-events. It shows what that identity did, never an inferred profile or
-aggregated person attributes.
-_Avoid_: person timeline, user profile, person page
-
-**Pressure hint** — A static severity badge derived from a configured hard
-limit the runtime already enforces, shown when a resource approaches its cap.
-It is a reading of existing budgets, never a user-defined threshold, rule, or
-notification.
-_Avoid_: alert, alarm, threshold rule
-
-**Direct write** — A Studio operator's single-row insert, edit, or delete,
-validated by the table's schema and committed through the ordinary application
-transaction path, so reactivity and constraints apply exactly as they would to
-application code. Every direct write leaves a durable audit event naming the
-administrative identity.
-_Avoid_: raw write, manual SQL, database patch
-
-**Impersonated run** — A Studio function execution performed under a chosen
-application Identity by an administrative operator, so the function observes
-exactly what that identity would observe. Gated by its own scope and always
-audit-evented naming both the administrative and the impersonated identity.
-_Avoid_: act as user, sudo, identity switch
-
-**Visitor id** — The server-issued first-party identifier naming one browser
-or installation, always present so that abuse is attributable and anonymous
-activity is countable. It identifies a client, never a person: it is unreadable
-by application code, is never shared or correlated across sites, and carries no
-personal data. When a durable Identity is present it accompanies the Visitor
-id rather than being derived from it.
-_Avoid_: user id, device fingerprint, tracking id
-
-**First-party capture** — Client-side measurement that travels to the
-application's own origin over the connection the application already holds,
-carrying no cross-site identity, no stored network address, and no device
-fingerprint. It observes what a user does inside one application rather than
-who they are across the web, and it fails silently rather than degrading the
-application when a user blocks it.
-_Avoid_: tracking, telemetry beacon, analytics pixel
-
-**Live inventory** — A read of who is connected, listening, or joined right
-now, taken by walking the runtime's existing in-memory structures at call
-time. It observes ephemeral state without retaining or instrumenting it, and
-so has no history of its own and no effect on execution.
-_Avoid_: registry, presence table, connection log
+**Signal strategy** — The replaceable destination behind `Logger` or
+`Analytics`. Application contexts depend only on these two narrow interfaces,
+so a future integration can be supplied without changing execution ownership.
+_Avoid_: Provider SDK in application contexts, global signal singleton
 
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
@@ -729,13 +635,6 @@ track wrappers/clones, combined with per-generation peer, stream, handler, and
 media limits. Admission claims capacity before retaining the native resource;
 explicit close, stop, or generation cleanup releases it exactly once.
 _Avoid_: Best-effort native cleanup, unbounded track registry, preallocated capacity
-
-**Realtime health sample** — A bounded rotating observation of a small number
-of active peer generations, collected by the existing Runtime telemetry tick.
-It reports aggregate selected-path, loss, jitter, RTT, bitrate, buffering,
-pressure, media-flow, and native queue information without retaining SDP,
-candidates, addresses, credentials, or a per-peer background polling loop.
-_Avoid_: Realtime packet log, peer inventory, independent stats timer
 
 **Realtime native packages** — `@ackerdb/realtime` owns the generated NAPI-RS
 loader and declarations but no native binary. Five optional, host-filtered
@@ -1257,8 +1156,8 @@ on demand.
 **Admin API** — The built-in administration surface every application carries:
 framework-declared functions that observe the application and administer it.
 It is the server side of administration, named for what it does rather than for
-any client that consumes it — Studio is one such client, not its owner.
-_Avoid_: Studio surface, system UDFs, dashboard API
+any client that consumes it.
+_Avoid_: Client-specific surface, system UDFs, dashboard API
 
 **Framework-declared function** — A function AckerDB declares on every
 application's behalf, contributed to the registry beside the application's own
@@ -1273,7 +1172,7 @@ because an operator reasons about administration as one thing rather than as a
 setting beside each subsystem it touches. It is where the surface is
 configured, never where authority is decided — that is the grant a credential
 holds.
-_Avoid_: Studio config, dashboard settings
+_Avoid_: Client config, dashboard settings
 
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
 across every namespace an application shares with it: API paths, HTTP roots, and
@@ -1343,7 +1242,7 @@ _Avoid_: Function name, ref string, route
 **Admin scope** — A scope in the framework's own reserved vocabulary, naming one
 verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB
 defines the whole vocabulary and an application never declares one.
-_Avoid_: Studio scope, system permission
+_Avoid_: Client scope, system permission
 
 **Scope wildcard** — A pattern in a grant that stands for every scope it
 matches, resolved against the vocabulary known at the moment of the check. The
@@ -1373,54 +1272,6 @@ a chosen subset of an Admin Credential's authority. It is an ordinary child
 credential: an agent is a first-class identity, and its grant never exceeds its
 parent's, at issuance or afterwards.
 _Avoid_: MCP token, API key, service account
-
-## Studio
-
-**Studio** — The opt-in observability and administration client for one AckerDB
-application. It runs outside the application's process as a client on the public
-AckerDB client stack, authenticates with an Admin Credential rather than as an
-application user, and consumes only the Admin API. The name is provisional.
-_Avoid_: Dashboard, admin panel, embedded console
-
-**Studio origin** — The single origin `acker studio` serves: the Studio bundle
-under one reserved path prefix, and the whole application proxied onto every
-other path. The browser only ever addresses this origin, so Studio needs no
-CORS negotiation and has no mechanism for being pointed at another server.
-_Avoid_: Studio host, dashboard server, UI port
-
-**Studio bundle** — The prebuilt static single-page application `@ackerdb/studio`
-ships. It is built at release time rather than on an installer's machine, and it
-is the one artifact this repository publishes that is compiled rather than
-source.
-_Avoid_: Studio build, dist, frontend assets
-
-**Studio shell** — The frame every Studio screen renders inside: the navigation,
-the connected-application header, and the region a screen occupies. It is what
-remains standing when a screen has nothing to show or fails outright, and it
-belongs to no feature.
-_Avoid_: layout, chrome, dashboard frame
-
-**Screen** — One addressable surface of Studio, occupying one route beneath the
-Studio origin's reserved prefix and named in the navigation. A screen an
-operator can send to a colleague is a screen whose whole state is in its URL.
-_Avoid_: page, view, tab, panel
-
-**Vendored component** — Interface code copied into this repository from a
-component registry to be modified and maintained by hand. It carries no version
-and no upstream release cadence: once copied it is ours, updated deliberately or
-not at all. Each such file names its origin and licence in its header.
-_Avoid_: third-party component, UI library, imported widget
-
-**Log source** — The origin of a record in Studio's Logs stream: application
-(developer-authored application log records) or framework (framework-emitted
-diagnostic events made durable). Analytics events are never part of the Logs
-stream.
-_Avoid_: log kind, log channel
-
-**Live tail** — The Logs stream's default mode: the newest records arrive
-continuously, newest first. Reading pauses it — scrolling into history or
-pinning a time range — and resuming is one explicit action.
-_Avoid_: follow mode, streaming view
 
 ## Demo app (Savoria restaurant)
 

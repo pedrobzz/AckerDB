@@ -18,7 +18,7 @@ import type { ObjectShape, InferShape, InferInputShape } from "../validation/com
 import type { Expand } from "../validation/validator.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
-import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
+import type { Logger } from "../signals/logger.ts";
 import type { AnyJobsNamespace } from "./api.ts";
 import type { SystemPrincipal } from "../auth/credentials.ts";
 import { cronNext, parseCronExpression } from "./cron.ts";
@@ -117,7 +117,7 @@ export type JobStepQueryCtx<
 > = {
   readonly db: DbReader<S>;
   readonly auth: SystemPrincipal;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
   readonly timestamp: number;
   readonly runNumber: number;
   /** Declared jobs, read-only: the reactive builder scoped per definition. */
@@ -423,7 +423,7 @@ export function isJob(value: unknown): value is AnyJob {
   return hasBrand(value, JOB_IDENTITY);
 }
 
-/** One job and the exact name rows, telemetry, and ctx.jobs report. */
+/** One job and the exact name rows and ctx.jobs report. */
 export interface DeclaredJob {
   readonly name: string;
   readonly job: AnyJob;

@@ -148,7 +148,6 @@ function open(): Harness {
     engine,
     registry: new Registry(functions),
     verifier,
-    telemetry: false,
     now: () => NOW,
   });
   const harness = { directory, engine, runtime, verifier };

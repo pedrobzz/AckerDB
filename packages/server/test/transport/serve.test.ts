@@ -491,7 +491,6 @@ beforeEach(() => {
     registry: new Registry(functions, APP_API_PATHS),
     verifier,
     limits,
-    telemetry: false,
   });
   server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
@@ -676,7 +675,6 @@ describe("health and protected status", () => {
         registry: new Registry(functions, APP_API_PATHS),
         verifier,
         limits,
-        telemetry: false,
       });
       early.activate(earlyRuntime);
 
@@ -743,7 +741,6 @@ describe("health and protected status", () => {
           lastCheckpointAtMs: expect.any(Number),
           lastCheckpoint: checkpoint,
         },
-        telemetryAggregates: { maxSeries: 0, overflowedRecords: 0, series: [] },
       },
     });
     expect(verifier.verified).toEqual(["user-token", "workload-alias-token", "workload-token"]);
@@ -1169,7 +1166,6 @@ describe("exposed HTTP procedures", () => {
         maxOperationsPerCaller: 1,
         readQueue: { ...limits.readQueue, maxAgeMs: 500 },
       }),
-      telemetry: false,
     });
     const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
@@ -1834,7 +1830,6 @@ describe("the opt-in OpenAPI endpoint", () => {
       registry,
       verifier: new TestVerifier(),
       limits,
-      telemetry: false,
     });
     // Recorded before activation so a refused document is still torn down.
     owned = { dir, engine, runtime: documentedRuntime };
@@ -2175,7 +2170,6 @@ describe("WebSocket Session transport", () => {
       registry: new Registry(functions, APP_API_PATHS),
       verifier: new TestVerifier(),
       limits: fairLimits,
-      telemetry: false,
     });
     const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
@@ -2294,7 +2288,6 @@ describe("WebSocket Session transport", () => {
       engine: overlapEngine,
       registry: new Registry(functions, APP_API_PATHS),
       limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
-      telemetry: false,
     });
     const overlapServer = serve({ runtime: overlapRuntime, port: 0 });
     const url = `ws://127.0.0.1:${overlapServer.port}/_ws`;
@@ -2403,7 +2396,6 @@ describe("lifecycle drain", () => {
       engine: slowEngine,
       registry: new Registry(functions, APP_API_PATHS),
       limits: slowLimits,
-      telemetry: false,
     });
     const slowServer = serve({ runtime: slowRuntime, port: 0 });
     const slowBase = `http://127.0.0.1:${slowServer.port}`;

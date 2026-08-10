@@ -118,7 +118,7 @@ export function buildJobRunsTable(): TableDef {
     state: v.string(),
     /** Canonical-encoded successful output: the Job's authoritative result. */
     outputJson: v.string().nullable(),
-    /** The failure's outcome code, exactly as telemetry reports it. */
+    /** The failure's public outcome code. */
     errorCode: v.string().nullable(),
     /** The failure, described and truncated for storage. */
     errorText: v.string().nullable(),

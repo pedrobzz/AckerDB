@@ -80,7 +80,7 @@ function spawnCli(args: string[], dir: string, capture: boolean) {
     stdin: "ignore",
     stdout: "ignore",
     stderr: capture ? Bun.file(stderrPath) : "inherit",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   });
   children.add(child);
   return {

@@ -8,9 +8,8 @@
  * Everything a human reads goes to stderr. Stdout is the protocol the pair
  * driver parses, and a stray log line on it would be read as a measurement.
  */
-import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
-import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
+import { arch, cpus, platform, release, totalmem } from "node:os";
 import { join } from "node:path";
 import { runCodegen } from "../packages/cli/src/app/codegen.ts";
 import { loadConfig } from "../packages/cli/src/app/config.ts";
@@ -18,15 +17,8 @@ import { benchmarkConfigFromEnv, type DriverResult } from "./benchmark.ts";
 import {
   assertAckerDBStartup,
   expectedAckerDBStartupMode,
-  type AckerDBBenchmarkProfile,
   type AckerDBStartupMode,
 } from "./ackerdb-profile.ts";
-import {
-  assertAckerDBTelemetryWorkload,
-  AckerDBOutputCollector,
-  parseAckerDBTelemetryReport,
-  type AckerDBTelemetryReport,
-} from "./ackerdb-telemetry.ts";
 import {
   ProcessTreeMonitor,
   readProcessTable,
@@ -82,7 +74,6 @@ interface SideSample {
   schemaVersion: 2;
   source: { readonly side: "base" | "head"; readonly commit: string; readonly version: string };
   harnessCommit: string;
-  telemetryProfile: AckerDBBenchmarkProfile;
   timestamp: string;
   machine: MachineRecord;
   executionHost: string;
@@ -90,7 +81,6 @@ interface SideSample {
   startupIdle: { snapshot: ProcessTreeSnapshot; window: ProcessTreeWindowSummary };
   seededIdle: { snapshot?: ProcessTreeSnapshot; window?: ProcessTreeWindowSummary };
   units: UnitRecord[];
-  telemetryReport: AckerDBTelemetryReport;
   observations: BenchmarkObservations;
   harnessObservations: string[];
 }
@@ -347,7 +337,6 @@ const sourceCommit = process.env.BENCH_SOURCE_COMMIT;
 const harnessCommit = process.env.BENCH_HARNESS_COMMIT;
 const outputPath = process.env.BENCH_OUTPUT;
 const port = Number(process.env.BENCH_PORT);
-const profile = process.env.BENCH_TELEMETRY_PROFILE as AckerDBBenchmarkProfile | undefined;
 const executionHost = process.env.BENCH_EXECUTION_HOST;
 if (
   (side !== "base" && side !== "head") ||
@@ -356,12 +345,11 @@ if (
   !outputPath ||
   !Number.isInteger(port) ||
   port <= 0 ||
-  (profile !== "enabled" && profile !== "exporter" && profile !== "disabled") ||
   !executionHost
 ) {
   throw new Error(
     "BENCH_SIDE=base|head, BENCH_SOURCE_COMMIT, BENCH_HARNESS_COMMIT, BENCH_OUTPUT, BENCH_PORT, " +
-      "BENCH_TELEMETRY_PROFILE=enabled|exporter|disabled, and BENCH_EXECUTION_HOST are required",
+      "and BENCH_EXECUTION_HOST are required",
   );
 }
 const benchmarkConfig = benchmarkConfigFromEnv();
@@ -369,16 +357,13 @@ if (benchmarkConfig.profile !== "default") {
   throw new Error("protected-branch benchmarks use the default workload only");
 }
 
-const expectedMode = expectedAckerDBStartupMode(profile, "balanced");
-const telemetry = profile === "disabled" ? "disabled" : "enabled";
-const reportPath = join(tmpdir(), `ackerdb-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
+const expectedMode = expectedAckerDBStartupMode("balanced");
 await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
   ACKERDB_DURABILITY: "balanced",
-  ACKERDB_TELEMETRY: telemetry,
 }));
 assertPortFree(port);
 rmSync(join(BENCH, "ackerdb-app", ".ackerdb"), { recursive: true, force: true });
-log(`→ ${side}: fresh server on ${port} (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile})`);
+log(`→ ${side}: fresh server on ${port}`);
 
 const server = Bun.spawn(
   [process.execPath, join(BENCH, "ackerdb-server.ts"), join(BENCH, "ackerdb-app")],
@@ -388,21 +373,17 @@ const server = Bun.spawn(
     env: {
       ...process.env,
       ACKERDB_BENCH_PORT: String(port),
-      ACKERDB_BENCH_TELEMETRY: telemetry,
-      ACKERDB_TELEMETRY: telemetry,
-      ACKERDB_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_BENCH_TELEMETRY_REPORT: reportPath,
     },
   },
 );
-const serverOutput = new AckerDBOutputCollector();
+const serverOutput = new BoundedTextTail();
 const serverDrained = Promise.allSettled([
   (async () => {
-    for await (const chunk of server.stdout) serverOutput.writeStdout(chunk);
+    for await (const chunk of server.stdout) serverOutput.write(chunk);
   })(),
   (async () => {
-    for await (const chunk of server.stderr) serverOutput.writeStderr(chunk);
+    for await (const chunk of server.stderr) serverOutput.write(chunk);
   })(),
 ]).then(() => serverOutput.finish());
 
@@ -472,11 +453,6 @@ try {
   }
   await withTimeout(serverDrained, 2_000, "ackerdb output drain");
 
-  const telemetryReport = parseAckerDBTelemetryReport(
-    readFileSync(reportPath, "utf8"),
-    startupMode,
-    serverOutput.snapshot(),
-  );
   // A repetition is one complete pass over every unit, so it reconstructs
   // exactly the record the old whole-workload driver produced — which is what
   // lets the structural and accounting checks stay unchanged.
@@ -492,14 +468,6 @@ try {
       failures: slice.flatMap((unit) => [...unit.result.failures]),
     };
   });
-  for (const driver of drivers) {
-    try {
-      assertAckerDBTelemetryWorkload(telemetryReport, driver);
-    } catch (error) {
-      harnessObservations.push(error instanceof Error ? error.message : String(error));
-    }
-  }
-
   const sample: SideSample = {
     schemaVersion: 2,
     source: {
@@ -508,7 +476,6 @@ try {
       version: packageVersion(join(REPO, "packages", "core", "package.json")),
     },
     harnessCommit,
-    telemetryProfile: profile,
     timestamp: new Date().toISOString(),
     machine: machineRecord(),
     executionHost,
@@ -516,9 +483,8 @@ try {
     startupIdle,
     seededIdle,
     units,
-    telemetryReport,
     observations: collectBenchmarkObservations(drivers.map((workload, index) => ({
-      label: `ackerdb/${profile}/repetition-${repetitions[index]}`,
+      label: `ackerdb/repetition-${repetitions[index]}`,
       system: "ackerdb" as const,
       workload,
     }))),
@@ -537,5 +503,4 @@ try {
 } finally {
   await client?.kill();
   await stopSubprocess(server, 1_000).catch(() => undefined);
-  rmSync(reportPath, { force: true });
 }

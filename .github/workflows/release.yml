@@ -47,16 +47,6 @@ jobs:
           node-version: 24.18.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      # @ackerdb/studio is the one package that publishes a built artifact, and
-      # every install and pack in this pipeline disables lifecycle scripts by
-      # design — so the build is an ordered stage here rather than a prepack
-      # hook. It builds and packs twice and compares digests, because an
-      # existing version is skipped only when its tarball is byte-identical and
-      # a non-reproducible bundle would make a resumed publication collide.
-      # `publish.ts` repeats the same check once the manifests carry the version
-      # being released; this run is the one that fails before any of them move.
-      - name: Build the Studio bundle and prove it packs reproducibly
-        run: bun scripts/release/studio-dist.ts
       - name: Require trusted-publishing support
         run: >-
           node -e 'const version = require("node:child_process").execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();

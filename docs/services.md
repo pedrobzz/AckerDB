@@ -67,7 +67,7 @@ Configure a different directory with `services` in `.ackerdb.config.json`.
 | `fail` | Reports an unrecoverable failure. Ends the application, naming this service. |
 
 `system.run` behaves exactly as it does anywhere else: normal admission,
-transaction, telemetry, and cancellation ownership, under the frozen system
+transaction and cancellation ownership, under the frozen system
 principal. See [ADR-0015](adr/0015-system-runs-are-explicit-host-capabilities.md).
 
 Passing `abortSignal` to `system.run` is worth doing for work started from a

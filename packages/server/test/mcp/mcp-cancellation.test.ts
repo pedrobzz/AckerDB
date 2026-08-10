@@ -277,7 +277,6 @@ beforeEach(() => {
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: false,
     hooks: {
       wait: async () => {
         if (!pauseAfterCommit) return;

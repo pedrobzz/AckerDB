@@ -1,9 +1,7 @@
 import type { DbReader, DbWriter } from "../database/query/types.ts";
 import type { Schema } from "../schema/definition.ts";
-import type {
-  AnalyticsTracker,
-  ApplicationLogger,
-} from "../telemetry/application-signals/types.ts";
+import type { Analytics } from "../signals/analytics.ts";
+import type { Logger } from "../signals/logger.ts";
 import type { Expand, InferValidator } from "../validation/validator.ts";
 import type { InferShape, ObjectShape } from "../validation/composites.ts";
 import type {
@@ -75,7 +73,7 @@ export type DependencyCapabilities<
 export interface PluginInvocationCtx {
   readonly timestamp: number;
   readonly mount: string;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
 }
 
 export type PluginQueryCtx<
@@ -89,7 +87,7 @@ export type PluginMutationCtx<
   S extends Schema,
   Dependencies extends PluginDependencyContracts = Readonly<Record<never, never>>,
 > = PluginInvocationCtx &
-  { readonly analytics: AnalyticsTracker; readonly db: DbWriter<S> } &
+  { readonly analytics: Analytics; readonly db: DbWriter<S> } &
   DependencyCapabilities<Dependencies, "mutation">;
 
 export type PluginProcedureCtx<

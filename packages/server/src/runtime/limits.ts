@@ -13,18 +13,6 @@ export interface QueueLimits extends CapacityLimits {
   readonly maxAgeMs: number;
 }
 
-export interface TelemetryLimits {
-  readonly maxRecords: number;
-  readonly maxBytes: number;
-  readonly maxMetricSeries: number;
-  readonly maxBatchRecords: number;
-  readonly batchIntervalMs: number;
-  readonly exportTimeoutMs: number;
-  readonly retentionMs: number;
-  readonly slowOperationMs: number;
-  readonly sampleIntervalMs: number;
-}
-
 export interface ServiceLimits {
   readonly maxConnections: number;
   readonly maxOperations: number;
@@ -87,14 +75,7 @@ export interface ServiceLimits {
     /** Maximum explicitly registered tools on one named MCP endpoint. */
     readonly maxToolsPerEndpoint: number;
   };
-  readonly telemetry: TelemetryLimits;
   readonly gracefulShutdownMs: number;
-}
-
-function nonNegativeInteger(value: number, path: string): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`${path} must be a non-negative safe integer`);
-  }
 }
 
 export function validateCapacityLimits(limits: CapacityLimits, path = "capacity"): CapacityLimits {
@@ -109,23 +90,11 @@ export function validateQueueLimits(limits: QueueLimits, path = "queue"): QueueL
   return Object.freeze({ ...capacity, maxAgeMs: limits.maxAgeMs });
 }
 
-export function validateTelemetryLimits(limits: TelemetryLimits): TelemetryLimits {
-  for (const [path, value] of Object.entries(limits)) {
-    if (path === "slowOperationMs") nonNegativeInteger(value, `telemetry.${path}`);
-    else positiveSafeInteger(value, `telemetry.${path}`);
-  }
-  if (limits.maxBatchRecords > limits.maxRecords) {
-    throw new RangeError("telemetry.maxBatchRecords cannot exceed telemetry.maxRecords");
-  }
-  return Object.freeze({ ...limits });
-}
-
 export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   const readQueue = validateQueueLimits(limits.readQueue, "readQueue");
   const writeQueue = validateQueueLimits(limits.writeQueue, "writeQueue");
   const revalidationQueue = validateQueueLimits(limits.revalidationQueue, "revalidationQueue");
   const publication = validateCapacityLimits(limits.publication, "publication");
-  const telemetry = validateTelemetryLimits(limits.telemetry);
 
   const scalarLimits: ReadonlyArray<readonly [string, number]> = [
     ["maxConnections", limits.maxConnections],
@@ -200,7 +169,6 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     writeQueue,
     revalidationQueue,
     publication,
-    telemetry,
     webSocket: Object.freeze({ ...limits.webSocket }),
     sse: Object.freeze({ ...limits.sse }),
     resume: Object.freeze({ ...limits.resume }),
@@ -252,17 +220,6 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
   mcp: {
     maxHeaderBytes: 32 * KiB,
     maxToolsPerEndpoint: 256,
-  },
-  telemetry: {
-    maxRecords: 2_048,
-    maxBytes: 4 * MiB,
-    maxMetricSeries: 2_000,
-    maxBatchRecords: 512,
-    batchIntervalMs: 1_000,
-    exportTimeoutMs: 5_000,
-    retentionMs: 5 * 60 * 1_000,
-    slowOperationMs: 100,
-    sampleIntervalMs: 1_000,
   },
   gracefulShutdownMs: 10_000,
 });

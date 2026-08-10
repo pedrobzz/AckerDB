@@ -13,23 +13,8 @@ import {
   type SessionSink,
 } from "../session/contract.ts";
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
+import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
-import {
-  SYSTEM_CLOCK,
-  captureDeliveryObserver,
-  deliveryInstrumentation,
-  deliveryTiming,
-  observationNow,
-  observeEncoding,
-  observeTiming,
-  safeDeliveryOutcome,
-  type DeliveryClock,
-  type DeliveryInstrumentation,
-  type DeliveryObserver,
-  type DeliveryObserverCapture,
-  type DeliveryOutcome,
-  type DeliveryTiming,
-} from "./observation.ts";
 
 export interface WebSocketDeliverySocket {
   send(data: string): number;
@@ -42,8 +27,6 @@ export interface WebSocketSessionSinkOptions {
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
   readonly clock?: DeliveryClock;
-  readonly observer?: DeliveryObserver;
-  readonly captureObserver?: DeliveryObserverCapture;
 }
 
 export interface WebSocketDeliverySnapshot {
@@ -61,7 +44,6 @@ interface PendingFrame {
   readonly text: string;
   readonly bytes: number;
   readonly reservation: OutboundReservation;
-  readonly timing?: DeliveryTiming;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
 }
@@ -69,7 +51,6 @@ interface PendingFrame {
 interface BufferedFrame {
   readonly lane: OutboundLane;
   readonly reservation: OutboundReservation;
-  readonly timing?: DeliveryTiming;
 }
 
 const utf8 = new TextEncoder();
@@ -95,7 +76,6 @@ export class WebSocketSessionSink implements SessionSink {
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
   private readonly clock: DeliveryClock;
-  private readonly delivery: DeliveryInstrumentation | undefined;
   private readonly queue: PendingFrame[] = [];
   private readonly buffered: BufferedFrame[] = [];
   private applicationBytes = 0;
@@ -116,13 +96,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.socket = options.socket;
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_CLOCK;
-    this.delivery = deliveryInstrumentation(
-      options.observer,
-      this.clock,
-      "websocket",
-      options.captureObserver,
-    );
+    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
     this.controlReserveBytes = options.limits.maxFrameBytes;
   }
 
@@ -144,9 +118,6 @@ export class WebSocketSessionSink implements SessionSink {
         retained.push(frame);
         continue;
       }
-      if (frame.timing !== undefined) {
-        observeTiming(this.delivery, frame.lane, frame.timing, "queue", "dropped");
-      }
       this.release(frame.reservation);
       frame.resolve();
     }
@@ -159,8 +130,8 @@ export class WebSocketSessionSink implements SessionSink {
     this.closed = true;
     this.clearStall();
     const error = unavailable("outbound", outcome.message);
-    this.releasePending(error, outcome.code);
-    this.releaseBuffered(this.bufferedBytes, outcome.code);
+    this.releasePending(error);
+    this.releaseBuffered(this.bufferedBytes);
     this.socket.close(outcomeWebSocketClose(outcome), outcome.code);
   }
 
@@ -193,13 +164,8 @@ export class WebSocketSessionSink implements SessionSink {
     authEpoch: number | null,
     frame: SessionControlMessage | RuntimePublication,
   ): Promise<void> {
-    const observer = captureDeliveryObserver(this.delivery, lane);
     if (this.closed) {
       const error = this.terminalError ?? unavailable("outbound", "WebSocket is closed");
-      if (this.delivery !== undefined) {
-        const timing = deliveryTiming(this.delivery, observer, "send", 0);
-        observeTiming(this.delivery, lane, timing, "queue", safeDeliveryOutcome(error));
-      }
       return Promise.reject(error);
     }
     let text: string;
@@ -209,43 +175,20 @@ export class WebSocketSessionSink implements SessionSink {
       try {
         assertRuntimePublication(publication);
       } catch (error) {
-        const timing = this.delivery === undefined
-          ? undefined
-          : deliveryTiming(this.delivery, observer, "send", 0);
-        observeTiming(this.delivery, lane, timing, "queue", safeDeliveryOutcome(error));
         return Promise.reject(error);
       }
       text = publication.text;
       bytes = publication.bytes;
     } else {
-      const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
       try {
         text = encode(frame);
       } catch (error) {
-        if (this.delivery !== undefined) {
-          observeEncoding(
-            this.delivery,
-            observer,
-            lane,
-            "send",
-            encodingStartedAt,
-            0,
-            safeDeliveryOutcome(error),
-          );
-        }
         return Promise.reject(error);
       }
       bytes = utf8.encode(text).byteLength;
-      if (this.delivery !== undefined) {
-        observeEncoding(this.delivery, observer, lane, "send", encodingStartedAt, bytes, "ok");
-      }
     }
-    const timing = this.delivery === undefined
-      ? undefined
-      : deliveryTiming(this.delivery, observer, "send", bytes);
     if (bytes > this.limits.maxFrameBytes) {
       const error = overloaded("outbound", "WebSocket frame exceeds maxFrameBytes");
-      observeTiming(this.delivery, lane, timing, "queue", error.code);
       this.fail(error);
       return Promise.reject(error);
     }
@@ -261,14 +204,12 @@ export class WebSocketSessionSink implements SessionSink {
       total + bytes > this.limits.webSocket.maxBytesPerConnection
     ) {
       const error = slowConsumer("outbound", "WebSocket outbound byte limit exceeded");
-      observeTiming(this.delivery, lane, timing, "queue", error.code);
       this.fail(error);
       return Promise.reject(error);
     }
     const reservation = this.budget.reserve(bytes, lane);
     if (reservation === null) {
       const error = overloaded("outbound", "global WebSocket outbound byte limit exceeded");
-      observeTiming(this.delivery, lane, timing, "queue", error.code);
       this.fail(error);
       return Promise.reject(error);
     }
@@ -276,11 +217,7 @@ export class WebSocketSessionSink implements SessionSink {
     else this.controlBytes += bytes;
 
     return new Promise<void>((resolve, reject) => {
-      if (timing === undefined) {
-        this.queue.push({ lane, authEpoch, text, bytes, reservation, resolve, reject });
-      } else {
-        this.queue.push({ lane, authEpoch, text, bytes, reservation, timing, resolve, reject });
-      }
+      this.queue.push({ lane, authEpoch, text, bytes, reservation, resolve, reject });
       this.pump();
     });
   }
@@ -314,22 +251,8 @@ export class WebSocketSessionSink implements SessionSink {
           break;
         }
 
-        if (frame.timing !== undefined) {
-          observeTiming(this.delivery, frame.lane, frame.timing, "queue", "ok");
-        }
-        if (frame.timing !== undefined) {
-          frame.timing.deliveryStartedAt = observationNow(this.delivery);
-        }
         this.queue.shift();
-        if (frame.timing === undefined) {
-          this.buffered.push({ lane: frame.lane, reservation: frame.reservation });
-        } else {
-          this.buffered.push({
-            lane: frame.lane,
-            reservation: frame.reservation,
-            timing: frame.timing,
-          });
-        }
+        this.buffered.push({ lane: frame.lane, reservation: frame.reservation });
         this.bufferedBytes += frame.bytes;
         frame.resolve();
         if (sent === -1) {
@@ -367,7 +290,7 @@ export class WebSocketSessionSink implements SessionSink {
     return observed;
   }
 
-  private releaseBuffered(bytes: number, outcome: DeliveryOutcome = "ok"): void {
+  private releaseBuffered(bytes: number): void {
     let remaining = bytes;
     while (remaining > 0) {
       const frame = this.buffered[0];
@@ -378,9 +301,6 @@ export class WebSocketSessionSink implements SessionSink {
       remaining -= released;
       if (frame.reservation.remainingBytes === 0) {
         this.buffered.shift();
-        if (frame.timing !== undefined) {
-          observeTiming(this.delivery, frame.lane, frame.timing, "delivery", outcome);
-        }
       }
     }
   }
@@ -391,14 +311,8 @@ export class WebSocketSessionSink implements SessionSink {
     else this.controlBytes -= bytes;
   }
 
-  private releasePending(
-    error: AckerDBError,
-    outcome: DeliveryOutcome = safeDeliveryOutcome(error),
-  ): void {
+  private releasePending(error: AckerDBError): void {
     for (const frame of this.queue.splice(0)) {
-      if (frame.timing !== undefined) {
-        observeTiming(this.delivery, frame.lane, frame.timing, "queue", outcome);
-      }
       this.release(frame.reservation);
       frame.reject(error);
     }
@@ -467,58 +381,22 @@ export class WebSocketSessionSink implements SessionSink {
     this.closed = true;
     this.terminalError = terminal;
     this.clearStall();
-    this.releasePending(terminal, terminal.code);
-    this.releaseBuffered(this.bufferedBytes, terminal.code);
+    this.releasePending(terminal);
+    this.releaseBuffered(this.bufferedBytes);
 
-    const terminalOutcome = outcomeFromError(terminal).code;
-    const observer = captureDeliveryObserver(this.delivery, "control");
-    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     const text = webSocketErrorText(terminal, this.limits.maxFrameBytes);
     const bytes = text === null ? 0 : utf8.encode(text).byteLength;
-    observeEncoding(
-      this.delivery,
-      observer,
-      "control",
-      "terminal",
-      encodingStartedAt,
-      bytes,
-      text === null ? "overloaded" : "ok",
-      terminalOutcome,
-    );
-    const timing = deliveryTiming(
-      this.delivery,
-      observer,
-      "terminal",
-      bytes,
-      terminalOutcome,
-    );
     const reservation = text === null ? null : this.budget.reserve(bytes, "control");
-    observeTiming(
-      this.delivery,
-      "control",
-      timing,
-      "queue",
-      reservation === null ? "overloaded" : "ok",
-    );
     try {
       if (reservation !== null && text !== null) {
-        if (timing !== undefined) {
-          timing.deliveryStartedAt = observationNow(this.delivery);
-        }
-        let outcome: DeliveryOutcome = "ok";
         try {
           const sent = this.socket.send(text);
-          if (sent === 0 || !Number.isSafeInteger(sent) || sent < -1) outcome = "unavailable";
+          if (sent === 0 || !Number.isSafeInteger(sent) || sent < -1) {
+            throw new Error("WebSocket terminal send failed");
+          }
         } catch {
-          outcome = "unavailable";
+          // The authoritative close below does not depend on the best-effort frame.
         }
-        observeTiming(
-          this.delivery,
-          "control",
-          timing,
-          "delivery",
-          outcome,
-        );
       }
     } catch {
       // The authoritative close below does not depend on the best-effort frame.

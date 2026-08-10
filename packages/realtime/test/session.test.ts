@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { noopLogger } from "ackerdb-test-support/telemetry";
+import { noopLogger } from "ackerdb-test-support/signals";
 import {
   ANONYMOUS_PRINCIPAL,
   realtime,

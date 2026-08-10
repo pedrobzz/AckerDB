@@ -116,12 +116,6 @@ export {
 } from "./files/api.ts";
 export { type RuntimeFilesOptions } from "./files/namespace.ts";
 export {
-  type FileObservabilitySnapshot,
-  type FileTransferOutcome,
-  type FileTransferSnapshot,
-  type FileUsageSnapshot,
-} from "./files/observability.ts";
-export {
   FileStoreError,
   type FileStore,
   type FileStoreAttributes,
@@ -280,10 +274,6 @@ export {
   type WriteCollector,
   type EventEmit,
 } from "./database/access.ts";
-export type {
-  DbStatementObservation,
-  DbStatementObserver,
-} from "./database/statement-observation.ts";
 export {
   emitFullTextWriteKeys,
   emitWriteKeys,
@@ -430,75 +420,20 @@ export {
   type CapacityLimits,
   type QueueLimits,
   type ServiceLimits,
-  type TelemetryLimits,
 } from "./runtime/limits.ts";
 export {
-  captureTelemetryLink,
-  Telemetry,
-  TELEMETRY_EVENT_NAMES,
-  TELEMETRY_OPERATIONS,
-  TELEMETRY_OUTCOMES,
-  TELEMETRY_RESOURCES,
-  TELEMETRY_SCHEMA_VERSION,
-  TELEMETRY_STAGES,
-  type TelemetryAggregateSeries,
-  type TelemetryAggregateSnapshot,
-  type TelemetryDropSnapshot,
-  type TelemetryEventInput,
-  type TelemetryEventName,
-  type TelemetryEventRecord,
-  type TelemetryExporter,
-  type TelemetryExportSnapshot,
-  type TelemetryLevel,
-  type TelemetryLifecycleState,
-  type TelemetryLink,
-  type TelemetryLocalSinkDropSnapshot,
-  type TelemetryLocalSinkSnapshot,
-  type TelemetryMetricInput,
-  type TelemetryMetricLabels,
-  type TelemetryMetricRecord,
-  type TelemetryMetricUnit,
-  type TelemetryOperation,
-  type TelemetryOptions,
-  type TelemetryOutcome,
-  type TelemetryRecord,
-  type TelemetryResource,
-  type TelemetryScheduler,
-  type TelemetrySnapshot,
-  type TelemetrySpanInput,
-  type TelemetrySpanRecord,
-  type TelemetryStage,
-  type TelemetryTraceContext,
-} from "./telemetry/telemetry.ts";
+  Logger,
+  consoleLoggerStrategy,
+  type LoggerStrategy,
+  type LogLevel,
+  type LogMetadata,
+} from "./signals/logger.ts";
 export {
-  TelemetryJournal,
-  type TelemetryJournalLimits,
-  type TelemetryJournalOptions,
-  type TelemetryJournalSnapshot,
-} from "./telemetry/application-signals/journal.ts";
-export {
-  TelemetryJournalExporters,
-  type TelemetryExporterSnapshot,
-  type TelemetryExportersSnapshot,
-  type TelemetryJournalExporterLimits,
-  type TelemetryJournalExportersOptions,
-  type TelemetrySignalExportContext,
-  type TelemetrySignalExporter,
-  type TelemetrySignalKind,
-} from "./telemetry/application-signals/exporters.ts";
-export type {
-  ApplicationLogger,
-  AnalyticsTracker,
-  AnalyticsEventRecord,
-  ApplicationLogLevel,
-  ApplicationLogRecord,
-  TelemetryJournalEntry,
-  TelemetryJournalRecord,
-} from "./telemetry/application-signals/types.ts";
-export type {
-  TelemetryMetadata,
-  TelemetryValue,
-} from "./telemetry/application-signals/value.ts";
+  Analytics,
+  consoleAnalyticsStrategy,
+  type AnalyticsProperties,
+  type AnalyticsStrategy,
+} from "./signals/analytics.ts";
 export { invokeFunction } from "./app/invocation.ts";
 export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {
@@ -583,7 +518,7 @@ export type {
   RealtimeCloseReason,
   RealtimeGlobalResourceLimits,
   RealtimeGlobalResourceSnapshot,
-  RealtimeHealthSnapshot,
+  RealtimePressureSnapshot,
   RealtimeMediaFlowDiagnostic,
   RealtimeNetworkAdapterType,
   RealtimeNetworkDiagnostic,
@@ -682,16 +617,7 @@ export {
   type OutboundLane,
   type OutboundReservation,
 } from "./subscriptions/delivery/budget.ts";
-export {
-  type DeliveryClock,
-  type DeliveryObservation,
-  type DeliveryObserver,
-  type DeliveryObserverCapture,
-  type DeliveryOutcome,
-  type DeliverySource,
-  type DeliveryStage,
-  type DeliveryTransport,
-} from "./subscriptions/delivery/observation.ts";
+export { type DeliveryClock } from "./subscriptions/delivery/clock.ts";
 export {
   WebSocketSessionSink,
   type WebSocketDeliverySnapshot,
@@ -715,10 +641,6 @@ export {
   type QuerySubscriptionOptions,
   type ReactiveCommitResult,
   type ReactiveEvent,
-  type ReactiveObservation,
-  type ReactiveObservationOutcome,
-  type ReactiveObservationPhase,
-  type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
 } from "./subscriptions/reactive/contract.ts";

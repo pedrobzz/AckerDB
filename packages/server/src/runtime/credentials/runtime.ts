@@ -125,12 +125,10 @@ export class RuntimeCredentials {
         (open, root) => this.options.engine.accountsForIdentity(open, root),
       ),
       {
-        operation: "procedure",
         bytes: 1,
         fairnessKey: externalAccountFairnessKey(account),
         signal: this.options.operationSignal(),
       },
-      false,
     );
   };
 
@@ -143,12 +141,10 @@ export class RuntimeCredentials {
         account.subject,
       ),
       {
-        operation: "procedure",
         bytes: 1,
         fairnessKey: externalAccountFairnessKey(account),
         signal: this.options.operationSignal(signal),
       },
-      false,
     );
     if (identity === null) throw unauthenticated();
     return identity;
@@ -189,12 +185,10 @@ export class RuntimeCredentials {
         });
       },
       {
-        operation: "procedure",
         bytes: parsed.bytes,
         fairnessKey,
         signal: operationSignal,
       },
-      false,
     );
     throwIfAborted(operationSignal);
     return principal;
@@ -277,12 +271,10 @@ export class RuntimeCredentials {
     const authenticated = await this.options.reads().submit(
       (connection) => this.options.engine[credentialVaultOwner].authenticate(connection, parsed),
       {
-        operation: "procedure",
         bytes: parsed.bytes,
         fairnessKey: externalAccountFairnessKey(account),
         signal: this.options.operationSignal(),
       },
-      false,
     );
     return Object.freeze({
       kind: "user",

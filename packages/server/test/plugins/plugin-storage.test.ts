@@ -103,7 +103,7 @@ function open(path: string): Engine {
 }
 
 function dbFor(engine: Engine, scope: ReturnType<Engine["createPluginScope"]>): any {
-  return makeDbWriter(engine, newWriteCollector(), () => 0n, undefined, scope) as any;
+  return makeDbWriter(engine, newWriteCollector(), () => 0n, scope) as any;
 }
 
 function requirementsOf(work: () => unknown): PluginStorageRequirementsError {

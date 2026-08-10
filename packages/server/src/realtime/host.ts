@@ -197,23 +197,7 @@ export type RealtimeCloseReason =
   | "draining"
   | "setup";
 
-export interface RealtimeHealthSnapshot {
-  readonly sampledPeers: number;
-  readonly sampleFailures: number;
-  readonly directPaths: number;
-  readonly relayPaths: number;
-  readonly udpPaths: number;
-  readonly tcpPaths: number;
-  readonly roundTripTimeAverageMs: number;
-  readonly roundTripTimeMaxMs: number;
-  readonly jitterMaxMs: number;
-  readonly packets: number;
-  readonly packetsLost: number;
-  readonly frames: number;
-  readonly framesDropped: number;
-  readonly availableIncomingBitrate: number;
-  readonly availableOutgoingBitrate: number;
-  readonly dataChannelBufferedAmountMax: number;
+export interface RealtimePressureSnapshot {
   readonly nativeQueueDrops: number;
   /**
    * Process-wide native queue-capacity reservations, read once and never
@@ -253,7 +237,7 @@ export interface RealtimeRuntimeSnapshot {
   readonly recoveryFailed: number;
   readonly closeReasons: Readonly<Record<RealtimeCloseReason, number>>;
   readonly resources: RealtimeGlobalResourceSnapshot;
-  readonly health: RealtimeHealthSnapshot;
+  readonly pressure: RealtimePressureSnapshot;
 }
 
 export interface RealtimeRuntime {
@@ -273,7 +257,6 @@ export interface RealtimeRuntime {
     sessionId: string,
     owner: string,
   ): Promise<RealtimePeerDiagnostic>;
-  sampleHealth(maxPeers?: number): Promise<void>;
   drain(): Promise<void>;
 }
 

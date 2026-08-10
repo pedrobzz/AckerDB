@@ -32,14 +32,6 @@ import {
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import { WebSocketSessionSink } from "../subscriptions/delivery/websocket.ts";
 import { AckerDBError } from "../shared/errors.ts";
-import {
-  beginHttpTrace,
-  beginSessionAuthTrace,
-  finishHttpTrace,
-  identifyHttpTrace,
-  observeHttpAuth,
-  recordHttpTraceFailure,
-} from "../telemetry/external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
 import {
   ACKERDB_HTTP_ROUTES,
@@ -68,17 +60,13 @@ import {
 } from "../mcp/wire.ts";
 import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
-import {
-  CAPTURE_DELIVERY_OBSERVER,
-  type Runtime,
-} from "../runtime/runtime.ts";
+import type { Runtime } from "../runtime/runtime.ts";
 import type { CredentialLease } from "../runtime/credentials/runtime.ts";
 import type {
   HttpMutationReceipt,
   RuntimeHttpResponder,
 } from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
-import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
@@ -751,11 +739,10 @@ export class AckerDBServer {
   private startup: AckerDBStartupPhase | null = "listening";
   private startupService: string | null = null;
   private connectionRejections = 0;
-  /** Server-owned request ids for path-addressed calls; telemetry correlation only. */
+  /** Server-owned request ids for path-addressed calls. */
   private httpRequests = 0;
   private sseAckIngress = 0;
   private sseAckNoops = 0;
-  private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
   constructor(options: AckerDBServerOptions) {
@@ -932,7 +919,6 @@ export class AckerDBServer {
     this.startup = null;
     this.startupService = null;
     this.lifecycle = "ready";
-    this.startTransportSampler();
   }
 
   /**
@@ -946,7 +932,6 @@ export class AckerDBServer {
     if (this.lifecycle !== "starting" && this.lifecycle !== "ready") return;
     // Readiness and every admission path observe this before the first await.
     this.lifecycle = "draining";
-    this.stopTransportSampler();
   }
 
   drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
@@ -1166,7 +1151,6 @@ export class AckerDBServer {
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
-    const externalTrace = beginHttpTrace(runtime.telemetry, exposed.kind);
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
     // The listener owns the response handoff, so it owns the release of any
@@ -1181,10 +1165,7 @@ export class AckerDBServer {
       // names the function, so even a malformed body reports what it targeted.
       const id = ++this.httpRequests;
       const address = exposed.address;
-      identifyHttpTrace(externalTrace, address, String(id));
-      lease = externalTrace === undefined
-        ? await this.authenticate(request)
-        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      lease = await this.authenticate(request);
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
@@ -1206,7 +1187,7 @@ export class AckerDBServer {
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, bytes, externalTrace, invalidations);
+      }, bytes, invalidations);
       if (exposed.kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
@@ -1238,10 +1219,8 @@ export class AckerDBServer {
         ? runtime.runQuery(httpRequest)
         : runtime.runProcedure(httpRequest));
     } catch (error) {
-      recordHttpTraceFailure(externalTrace, error);
       return outcomeError(error);
     } finally {
-      finishHttpTrace(externalTrace);
       invalidations?.finish();
       lease?.release();
       admission?.release();
@@ -1488,24 +1467,14 @@ export class AckerDBServer {
         socket,
         budget: this.outbound,
         limits: runtime.limits,
-        ...(runtime.telemetry.enabled
-          ? {
-              captureObserver: (lane) => runtime[CAPTURE_DELIVERY_OBSERVER](
-                lane,
-                data.session?.currentClientSessionId ?? undefined,
-              ),
-            }
-          : {}),
       });
-      data.session = new Session(withSessionAuthObserver({
+      data.session = new Session({
         runtime,
         sink: data.sink,
         source: data.source,
         revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
         limits: runtime.limits,
-      }, runtime.telemetry.enabled
-        ? (input) => beginSessionAuthTrace(runtime.telemetry, input)
-        : undefined));
+      });
       if (this.lifecycle !== "ready") void data.session.close(unavailableWhile(this.lifecycle));
     } catch (error) {
       this.connections.delete(data);
@@ -1535,53 +1504,6 @@ export class AckerDBServer {
 
   private preHelloConnections(): number {
     return Math.max(0, this.connections.size - (this.activeRuntime?.connectionCount ?? 0));
-  }
-
-  private startTransportSampler(): void {
-    const runtime = this.requireRuntime();
-    if (!runtime.telemetry.enabled) return;
-    this.sampleTransport();
-    this.transportSampleTimer = setInterval(
-      () => this.sampleTransport(),
-      runtime.telemetry.sampleIntervalMs,
-    );
-    this.transportSampleTimer.unref?.();
-  }
-
-  private stopTransportSampler(): void {
-    if (this.transportSampleTimer === null) return;
-    clearInterval(this.transportSampleTimer);
-    this.transportSampleTimer = null;
-  }
-
-  private sampleTransport(): void {
-    const runtime = this.activeRuntime;
-    if (runtime === null || !runtime.telemetry.enabled || this.lifecycle !== "ready") return;
-    if (runtime.state !== "ready") {
-      this.stopTransportSampler();
-      return;
-    }
-    const http = this.httpAdmission.snapshot();
-    const files = this.fileAdmission.snapshot();
-    const metrics = [
-      ["runtime.transport_websocket_connections", this.connections.size, "gauge"],
-      ["runtime.transport_websocket_pre_hello", this.preHelloConnections(), "gauge"],
-      ["runtime.transport_websocket_rejections", this.connectionRejections, "count"],
-      ["runtime.transport_websocket_outbound_bytes", this.outbound.snapshot().bytes, "bytes"],
-      ["runtime.transport_http_ingress", http.active, "gauge"],
-      ["runtime.transport_http_fairness_keys", http.fairnessKeys, "gauge"],
-      ["runtime.transport_http_global_rejections", http.globalRejections, "count"],
-      ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
-      ["runtime.files_transfers", files.active, "gauge"],
-      ["runtime.files_transfer_fairness_keys", files.fairnessKeys, "gauge"],
-      ["runtime.files_transfer_global_rejections", files.globalRejections, "count"],
-      ["runtime.files_transfer_fair_share_rejections", files.fairShareRejections, "count"],
-      ["runtime.transport_sse_ack_ingress", this.sseAckIngress, "count"],
-      ["runtime.transport_sse_ack_noops", this.sseAckNoops, "count"],
-    ] as const;
-    for (const [name, value, unit] of metrics) {
-      runtime.telemetry.recordMetric({ name, value, unit });
-    }
   }
 
   private requireRuntime(): Runtime {

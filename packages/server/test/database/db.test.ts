@@ -19,10 +19,6 @@ import {
   ValidationError,
   type WriteCollector,
 } from "@ackerdb/server";
-import type {
-  DbStatementObservation,
-  DbStatementObserver,
-} from "../../src/database/statement-observation.ts";
 
 const schema = () =>
   defineSchema({
@@ -83,9 +79,6 @@ afterEach(() => {
 
 const pay = (userId: bigint, status: string, amount: number, currency = "USD") =>
   db.payments.insert({ userId, status, amount, currency, note: null });
-
-const observedDb = (observer: DbStatementObserver): any =>
-  makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
   test("keeps the native wildcard read path for tables without logical ints", () => {
@@ -296,94 +289,6 @@ describe("writes", () => {
     }
   });
 
-  test("observes frozen safe summaries and observer failures stay fail-open", async () => {
-    const canary = "never-export-this-row";
-    const observations: DbStatementObservation[] = [];
-    const observed = observedDb((observation) => observations.push(observation));
-    const id = await observed.payments.insert({
-      userId: 1n,
-      status: "active",
-      amount: 10,
-      currency: "USD",
-      note: canary,
-    });
-    await observed.payments.get(id);
-    await observed.payments.query().collect();
-    await observed.payments.delete(id);
-
-    expect(observations.map((observation) => observation.statement)).toEqual([
-      "insert",
-      "get",
-      "collect",
-      "delete",
-    ]);
-    expect(observations).toEqual(observations.map((observation) => expect.objectContaining({
-      table: "payments",
-      outcome: "ok",
-      durationMs: expect.any(Number),
-      rowCount: 1,
-    })));
-    expect(observations.every(Object.isFrozen)).toBe(true);
-    const allowedKeys = new Set([
-      "kind",
-      "table",
-      "statement",
-      "outcome",
-      "durationMs",
-      "rowCount",
-    ]);
-    expect(observations.every((observation) =>
-      Object.keys(observation).every((key) => allowedKeys.has(key))
-    )).toBe(true);
-    expect(JSON.stringify(observations)).not.toContain(canary);
-
-    let observerCalls = 0;
-    const failOpen = observedDb(() => {
-      if (++observerCalls === 1) throw new Error("telemetry failed synchronously");
-      return Promise.reject(new Error("telemetry failed asynchronously"));
-    });
-    await expect(failOpen.payments.insert({
-      userId: 2n,
-      status: "active",
-      amount: 20,
-      currency: "BRL",
-      note: null,
-    })).resolves.toBeGreaterThan(0n);
-    await expect(failOpen.payments.insert({
-      userId: 3n,
-      status: "active",
-      amount: 30,
-      currency: "BRL",
-      note: null,
-    })).resolves.toBeGreaterThan(0n);
-    await Promise.resolve();
-    expect(observerCalls).toBe(2);
-  });
-
-  test("upsert is the sole observation owner on insert, patch, and failure", async () => {
-    const observations: DbStatementObservation[] = [];
-    const observed = observedDb((observation) => observations.push(observation));
-    const key = { email: "owner@x.com" };
-    const inserted = await observed.users.upsert(key, {
-      name: "Owner",
-      payload: { tag: "nothing", value: null },
-    }).returning();
-    await observed.users.upsert(key, { name: "Updated" });
-    await expect(observed.users.upsert(key, () => {
-      throw new Error("resolver failed");
-    })).rejects.toThrow("resolver failed");
-
-    expect(inserted).toMatchObject({ email: key.email, name: "Owner" });
-    expect(observations.map(({ statement, outcome, rowCount }) => ({
-      statement,
-      outcome,
-      rowCount,
-    }))).toEqual([
-      { statement: "upsert", outcome: "ok", rowCount: 1 },
-      { statement: "upsert", outcome: "ok", rowCount: 1 },
-      { statement: "upsert", outcome: "failed", rowCount: undefined },
-    ]);
-  });
 
   test("insert returns sequential bigint ids and validates", async () => {
     expect(await pay(1n, "active", 10)).toBe(1n);
@@ -430,13 +335,7 @@ describe("writes", () => {
     const second = await pay(2n, "failed", 20);
     const survivor = await pay(3n, "active", 30);
     const batchWrites = newWriteCollector();
-    const observations: DbStatementObservation[] = [];
-    const batchDb: any = makeDbWriter(
-      engine,
-      batchWrites,
-      () => ++eventSeq,
-      (observation) => observations.push(observation),
-    );
+    const batchDb: any = makeDbWriter(engine, batchWrites, () => ++eventSeq);
 
     expect(await batchDb.payments.deleteMany([first, second, second, 999n])).toBe(2);
     expect(await batchDb.payments.query().collect()).toEqual([
@@ -445,20 +344,9 @@ describe("writes", () => {
     expect(batchWrites.keys).toContain(idKey("payments", first));
     expect(batchWrites.keys).toContain(idKey("payments", second));
     expect(batchWrites.keys).not.toContain(idKey("payments", 999n));
-    expect(observations.filter(({ statement }) => statement === "deleteMany")).toEqual([
-      expect.objectContaining({ kind: "write", outcome: "ok", rowCount: 2 }),
-    ]);
-
     expect(await batchDb.payments.deleteMany([])).toBe(0);
-    expect(observations.filter(({ statement }) => statement === "deleteMany").at(-1))
-      .toEqual(expect.objectContaining({ outcome: "ok", rowCount: 0 }));
     await expect(batchDb.payments.deleteMany([survivor, 1]))
       .rejects.toThrow("expected bigint ids");
-    const failedBulkDelete = observations
-      .filter(({ statement }) => statement === "deleteMany")
-      .at(-1)!;
-    expect(failedBulkDelete).toEqual(expect.objectContaining({ outcome: "failed" }));
-    expect(Object.hasOwn(failedBulkDelete, "rowCount")).toBe(false);
     expect(await batchDb.payments.get(survivor)).toEqual(expect.objectContaining({ id: survivor }));
     const oversizedIds: bigint[] = [];
     for (let index = 0; index < 257; index++) {
@@ -466,11 +354,6 @@ describe("writes", () => {
     }
     await expect(batchDb.payments.deleteMany(oversizedIds))
       .rejects.toThrow("at most 256 distinct ids");
-    const oversizedFailure = observations
-      .filter(({ statement }) => statement === "deleteMany")
-      .at(-1)!;
-    expect(oversizedFailure).toEqual(expect.objectContaining({ outcome: "failed" }));
-    expect(Object.hasOwn(oversizedFailure, "rowCount")).toBe(false);
     const remainingIds = new Set(
       (await batchDb.payments.query().collect()).map((row: { id: bigint }) => row.id),
     );
@@ -610,47 +493,6 @@ describe("reads", () => {
     expect(await db.payments.get(99n)).toBe(null);
   });
 
-  test("each public read materializer owns exactly one success or failure observation", async () => {
-    const observations: DbStatementObservation[] = [];
-    const observed = observedDb((observation) => observations.push(observation));
-
-    await observed.payments.query().collect();
-    await observed.payments.query().take(2);
-    await observed.payments.query().where((row: any) => row.userId.eq(2n)).first();
-    await observed.payments.query().where((row: any) => row.userId.eq(2n)).unique();
-    await observed.payments.query().count();
-    await observed.payments.query().where((row: any) => row.currency.eq("BRL")).count();
-    await observed.payments.query().paginate({ pageSize: 2 });
-
-    let iterated = 0;
-    for await (const _row of observed.payments.query().iter()) iterated++;
-    expect(iterated).toBe(5);
-    for await (const _row of observed.payments.query().iter()) break;
-
-    await expect(
-      observed.payments.query().where((row: any) => row.userId.eq(1n)).unique(),
-    ).rejects.toThrow("more than one");
-    expect(() => observed.payments.query().where(() => {
-      throw new Error("predicate failed");
-    })).toThrow("predicate failed");
-
-    expect(observations.map(({ statement, outcome, rowCount }) => ({
-      statement,
-      outcome,
-      rowCount,
-    }))).toEqual([
-      { statement: "collect", outcome: "ok", rowCount: 5 },
-      { statement: "take", outcome: "ok", rowCount: 2 },
-      { statement: "first", outcome: "ok", rowCount: 1 },
-      { statement: "unique", outcome: "ok", rowCount: 1 },
-      { statement: "count", outcome: "ok", rowCount: 5 },
-      { statement: "count", outcome: "ok", rowCount: 1 },
-      { statement: "paginate", outcome: "ok", rowCount: 2 },
-      { statement: "iter", outcome: "ok", rowCount: 5 },
-      { statement: "iter", outcome: "ok", rowCount: 1 },
-      { statement: "unique", outcome: "failed", rowCount: undefined },
-    ]);
-  });
 
   test("predicates, ordering, and take compose independently from declared indexes", async () => {
     const rows = await db.payments

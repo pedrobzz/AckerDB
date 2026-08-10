@@ -433,27 +433,6 @@ only byte release, while the original SSE lease continues to own the verified
 principal and revocation signal. This proves receiver participation in the
 wire exchange, not durable processing of application side effects.
 
-## Authentication telemetry
-
-When telemetry is enabled, credential verification for an HTTP procedure or
-SSE call emits a sanitized `auth` span. A parsed call carries the same
-request/function trace through Runtime: an HTTP procedure keeps it through the
-encoded `Response` handoff, while SSE keeps it through the Runtime producer's
-acknowledged terminal path or terminal-grace force close. Malformed calls or
-credential failures before Runtime still close their own pre-Runtime trace and
-emit one sanitized failure event. HTTP response handoff does not claim network
-receipt; SSE delivery observations classify valid receiver acknowledgement,
-cancellation, and terminal timeout without capturing the capability or chunk.
-
-WebSocket hello, bearer refresh, and anonymous sign-out verification use
-separate lifecycle traces. Their connection correlation is a hash of the client
-session ID, and their request correlation is `hello` or the auth attempt ID.
-Telemetry never records credentials, authorization headers, principals/claims,
-arguments, results, stream chunks, or verifier error messages/causes. Disabled
-telemetry attaches no auth observer or trace state. See
-[Telemetry](telemetry.md#credential-verification-correlation) for the exact
-stages, ownership, and limitations.
-
 ## Operational status authority
 
 `GET /status` is not a user endpoint. It requires a `workload` principal whose

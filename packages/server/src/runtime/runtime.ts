@@ -1,7 +1,5 @@
-import { createHash } from "node:crypto";
 import {
   EVENTS_ADDRESS_PREFIX,
-  stableEncode,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
   type ChannelSendMessage,
@@ -38,14 +36,9 @@ import {
 } from "../auth/invalidation.ts";
 import { assertCredentialVerifier } from "../auth/lease.ts";
 import { externalAccountFairnessKey } from "./caller.ts";
-import {
-  OutboundBudget,
-  type OutboundLane,
-} from "../subscriptions/delivery/budget.ts";
-import type { DeliveryObserver } from "../subscriptions/delivery/observation.ts";
+import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { telemetryJournalPath } from "../database/artifacts.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
@@ -61,16 +54,8 @@ import {
 } from "../channels/hub.ts";
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
-import { Telemetry } from "../telemetry/telemetry.ts";
-import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
-import {
-  TelemetryJournal,
-} from "../telemetry/application-signals/journal.ts";
-import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
-import {
-  TelemetryJournalExporters,
-  validateTelemetryJournalExportersOptions,
-} from "../telemetry/application-signals/exporters.ts";
+import { Analytics } from "../signals/analytics.ts";
+import { Logger } from "../signals/logger.ts";
 import {
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -90,7 +75,6 @@ import type {
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
 import type { RuntimeStatus } from "./contracts/status.ts";
-import { RuntimeTraceBridge } from "./telemetry/trace-bridge.ts";
 import { RuntimeOperationRunner } from "./execution/operation-runner.ts";
 import { RuntimeReadExecutor } from "./execution/read.ts";
 import {
@@ -107,9 +91,6 @@ import {
   type RuntimeSession,
 } from "./sessions/store.ts";
 import { RuntimeSessionApplication } from "./sessions/application.ts";
-import { RuntimeSampler } from "./telemetry/sampler.ts";
-import { FileObservability } from "../files/observability.ts";
-import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 import { RuntimeJobs } from "./jobs/runtime.ts";
 import { RuntimeControl } from "./lifecycle/control.ts";
 import { RuntimeQueries } from "./queries/runtime.ts";
@@ -121,13 +102,6 @@ import {
 } from "../files/http.ts";
 import { FileCleanupRuntime } from "../files/cleanup.ts";
 
-/** Package-private transport hook; intentionally absent from the public index. */
-export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
-}
-
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
  * Engine lifetime remains with the caller so storage closes exactly once.
@@ -137,15 +111,12 @@ export class Runtime implements RuntimePort {
   readonly registry: Registry;
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
-  readonly telemetry: Telemetry;
-  readonly telemetryJournal: TelemetryJournal;
-  readonly telemetryExporters: TelemetryJournalExporters | undefined;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
+  readonly analytics: Analytics;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
-  readonly deliveryObserver: DeliveryObserver;
 
   private readonly now: () => number;
   private readonly files: RuntimeFiles;
@@ -172,25 +143,16 @@ export class Runtime implements RuntimePort {
   private readonly sessionApplication: RuntimeSessionApplication;
   private readonly authCaptureBudget: OutboundBudget;
   private readonly http: RuntimeHttp;
-  private readonly tracing: RuntimeTraceBridge;
-  private readonly deliveryTelemetry: RuntimeDeliveryTelemetry;
   private readonly operations: RuntimeOperationRunner<RuntimeSession>;
-  private readonly sampler: RuntimeSampler;
   private readonly control: RuntimeControl;
-  private readonly applicationSignals: ApplicationSignals;
 
   constructor(options: RuntimeOptions) {
-    if (options.telemetryExporters !== undefined) {
-      // Fail before opening the journal; the exporter owns the same validation at direct construction.
-      validateTelemetryJournalExportersOptions(options.telemetryExporters);
-    }
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
-    this.files = new RuntimeFiles(
-      options.files,
-      new FileObservability(this.engine, this.now),
-    );
+    this.log = new Logger(options.loggerStrategy);
+    this.analytics = new Analytics(options.analyticsStrategy);
+    this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
       throw new TypeError("Runtime requires a ready Plugin runtime");
@@ -203,12 +165,6 @@ export class Runtime implements RuntimePort {
       maxMembers: this.limits.maxSubscriptions,
       maxMembersPerSession: this.limits.maxSubscriptionsPerConnection,
       disconnectTimeoutMs: Math.min(5_000, this.limits.gracefulShutdownMs),
-      observeDisconnectTimeout: () =>
-        this.telemetry.recordMetric({
-          name: "runtime.channel_disconnect_timeouts",
-          value: 1,
-          unit: "count",
-        }),
     });
     if (this.registry.realtime.size > 0) {
       if (options.realtime === undefined) {
@@ -257,69 +213,21 @@ export class Runtime implements RuntimePort {
     this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
-    const ownsTelemetry = !(options.telemetry instanceof Telemetry);
-    this.telemetry = options.telemetry instanceof Telemetry
-      ? options.telemetry
-      : new Telemetry(options.telemetry === false
-        ? { enabled: false }
-        : {
-            ...options.telemetry,
-            limits: {
-              ...this.limits.telemetry,
-              ...options.telemetry?.limits,
-            },
-          });
-    this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
-    this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
-      this.telemetry,
-      this.tracing,
-      (clientSessionId) => digest(clientSessionId),
-    );
-    this.deliveryObserver = this.deliveryTelemetry.observer;
     this.operations = new RuntimeOperationRunner({
-      telemetry: this.telemetry,
-      tracing: this.tracing,
       assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
       admit: (session, fairnessKey, sessionOrder) =>
         this.control.admit(session, fairnessKey, sessionOrder),
     });
-    const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
-    this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
-      ? options.telemetryJournal
-      : new TelemetryJournal({
-          path: this.engine.path === ":memory:"
-            ? ":memory:"
-            : telemetryJournalPath(this.engine.path),
-          ...options.telemetryJournal,
-        });
-    if (this.telemetryJournal.snapshot().state !== "ready") {
-      throw new TypeError("Runtime requires a ready telemetry journal");
-    }
-    this.applicationSignals = new ApplicationSignals(
-      this.telemetryJournal,
-      this.now,
-      () => this.tracing.applicationLogContext(),
-    );
-    this.log = this.applicationSignals.log;
-    this.telemetryExporters = options.telemetryExporters === undefined
-      ? undefined
-      : new TelemetryJournalExporters({
-          journal: this.telemetryJournal,
-          ...options.telemetryExporters,
-        });
     this.reads = new RuntimeReadExecutor({
       engine: this.engine,
       limits: this.limits,
       now: this.now,
-      telemetryEnabled: this.telemetry.enabled,
-      tracing: this.tracing,
     });
     this.reactive = new OrderedReactive<RuntimeReactiveContext>({
       limits: this.limits,
       initialVersion: this.engine.commitVersion(),
       now: this.now,
       evaluate: (input) => this.queries.evaluate(input),
-      ...(this.telemetry.enabled ? { observer: this.tracing.observeReactive } : {}),
     });
     this.functions = new RuntimeFunctionExecutor({
       engine: this.engine,
@@ -327,14 +235,13 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       reads: this.reads,
       reactive: this.reactive,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      applicationSignals: this.applicationSignals,
       log: this.log,
+      analytics: this.analytics,
       pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
       publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
+      files: this.files,
       ...(hasMcpCapabilities
         ? {
             mcp: {
@@ -345,7 +252,6 @@ export class Runtime implements RuntimePort {
         : {}),
       armJobs: () => this.jobs.arm(),
       jobs: () => this.jobs,
-      files: this.files,
       fileLifecycleSignal: () => this.control.shutdownSignal,
       hooks: options.hooks,
       now: this.now,
@@ -355,8 +261,6 @@ export class Runtime implements RuntimePort {
       reads: this.reads,
       functions: this.functions,
       shutdownSignal: () => this.control.shutdownSignal,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
     });
     this.fileHttp = new FileHttpRuntime({
       files: this.files,
@@ -380,13 +284,10 @@ export class Runtime implements RuntimePort {
       functions: this.functions,
       queries: this.queries,
       immediateInvalidations: this.immediateProcedureInvalidations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
       admittedRequestBytes: (request, receivedBytes) =>
         this.control.admittedRequestBytes(request, receivedBytes),
       operationSignal: (signal) => this.control.operationSignal(signal),
       admit: (fairnessKey) => this.control.admit(null, fairnessKey),
-      captureDeliveryObserver: () => this.deliveryTelemetry.capture(),
       now: this.now,
     });
     this.mcp = new RuntimeMcp({
@@ -417,25 +318,12 @@ export class Runtime implements RuntimePort {
       reactive: this.reactive,
       operations: this.operations,
       authCaptureBudget: this.authCaptureBudget,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      ...(this.telemetry.enabled
-        ? { telemetryConnectionId: (clientSessionId) => digest(clientSessionId) }
-        : {}),
       createChannelContext: (state, signal, requestBytes) =>
         this.channelProcedureContext(state, signal, requestBytes),
-      observeConnectionCount: (connections) =>
-        this.telemetry.recordMetric({
-          name: "runtime.connections",
-          value: connections,
-          unit: "gauge",
-        }),
     });
     this.system = new RuntimeSystem({
       functions: this.functions,
       operations: this.operations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
       invalidations: this.immediateProcedureInvalidations,
       signal: (signal) => this.control.systemSignal(signal),
       now: this.now,
@@ -446,7 +334,7 @@ export class Runtime implements RuntimePort {
       registry: this.registry,
       reads: this.reads,
       system: this.system,
-      telemetry: this.telemetry,
+      log: this.log,
       limits: this.limits.jobs,
       now: this.now,
       signal: () => this.control.shutdownSignal,
@@ -455,13 +343,6 @@ export class Runtime implements RuntimePort {
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
-      telemetry: this.telemetry,
-      telemetryJournal: this.telemetryJournal,
-      ...(this.telemetryExporters === undefined
-        ? {}
-        : { telemetryExporters: this.telemetryExporters }),
-      ownsTelemetry,
-      ownsTelemetryJournal,
       ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
       ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
       reads: this.reads,
@@ -470,12 +351,9 @@ export class Runtime implements RuntimePort {
       sessions: this.sessionStore,
       jobs: this.jobs,
       fileCleanup: this.fileCleanup,
-      files: this.files,
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
-      stopSampler: () => this.sampler.stop(),
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sessionApplication = new RuntimeSessionApplication({
       engine: this.engine,
@@ -488,31 +366,6 @@ export class Runtime implements RuntimePort {
       operationSignal: (signal) => this.control.operationSignal(signal),
       now: this.now,
     });
-    this.sampler = new RuntimeSampler({
-      telemetry: this.telemetry,
-      isReady: () => this.control.isReady,
-      state: () => ({
-        connections: this.sessionStore.size,
-        activeOperations: this.control.activeOperationCount,
-        activeOperationCallers: this.control.activeCallerCount,
-        activeSse: this.http.sseProducers.size,
-        realtime: this.realtime?.snapshot() ?? null,
-        reader: this.reads.snapshot(),
-        writer: this.functions.snapshot(),
-        reactive: this.reactive.metricsSnapshot(),
-        publication: this.reactive.publication.snapshot(),
-        authCaptureBudget: this.authCaptureBudget.snapshot(),
-        sseBudget: this.http.sseBudget.snapshot(),
-        telemetry: this.telemetry.snapshot(),
-        files: this.files.observability.snapshot(),
-        storage: this.engine.status(),
-      }),
-      sampleRealtime: () => {
-        void this.realtime?.sampleHealth(8);
-      },
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.sampler.start();
     this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
     void this.jobs.activate();
   }
@@ -544,8 +397,6 @@ export class Runtime implements RuntimePort {
     const fairnessKey = externalAccountFairnessKey(account);
     return this.operations.run(
       null,
-      "transaction",
-      undefined,
       requestBytes,
       () => this.functions.resolveIdentity(
         account,
@@ -553,7 +404,7 @@ export class Runtime implements RuntimePort {
         operationSignal,
         requestBytes,
       ),
-      { synthesizeHandler: false, fairnessKey },
+      { fairnessKey },
     );
   }
 
@@ -765,13 +616,10 @@ export class Runtime implements RuntimePort {
         work,
       ) => this.operations.run(
         null,
-        "realtime",
-        address,
         requestBytes,
         work,
         {
           fairnessKey,
-          synthesizeHandler: false,
           abortSignal: signal,
         },
       ),
@@ -809,12 +657,6 @@ export class Runtime implements RuntimePort {
       },
     });
   }
-
-  readonly [CAPTURE_DELIVERY_OBSERVER] = (
-    lane: OutboundLane = "application",
-    clientSessionId?: string,
-  ): DeliveryObserver | undefined =>
-    this.deliveryTelemetry.capture(lane, clientSessionId);
 
   private readNow(): number {
     const now = this.now();

@@ -75,7 +75,7 @@ const MARK: Readonly<Record<PairedComparison["signal"], string>> = Object.freeze
 const lines: string[] = [];
 const say = (line = "") => lines.push(line);
 
-const firstProfile = run.profiles[0]?.profile ?? "disabled";
+const firstProfile = run.profiles[0]?.profile ?? "default";
 const firstBase = await readSide(firstProfile, "base");
 const firstHead = await readSide(firstProfile, "head");
 say(`# AckerDB paired benchmark: v${firstBase?.source.version ?? "?"} → v${firstHead?.source.version ?? "?"}`);
@@ -112,7 +112,7 @@ const everyComparison: PairedComparison[] = [];
 
 for (const profile of run.profiles) {
   say();
-  say(`## Telemetry: ${profile.profile}`);
+  say(`## Profile: ${profile.profile}`);
   say();
   for (const failure of profile.terminalFailures) {
     failures++;
@@ -170,8 +170,7 @@ for (const profile of run.profiles) {
       failures++;
       say(`- **${side} integrity** ${anomaly.message}`);
     }
-    // A startup mode that did not match, or telemetry accounting that does not
-    // cover the work the workload says it did, means the numbers above describe
+    // A startup mode that did not match means the numbers above describe
     // something other than what this run claims to have measured.
     for (const observation of sample.harnessObservations) {
       failures++;

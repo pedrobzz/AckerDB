@@ -28,7 +28,6 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
-import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import type {
   RuntimeHttpResponse,
   RuntimeSseResponse,
@@ -43,11 +42,6 @@ import type {
   SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
-import {
-  Telemetry,
-  type TelemetryRecord,
-  type TelemetrySpanRecord,
-} from "../../src/telemetry/telemetry.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
@@ -742,38 +736,25 @@ let engine: Engine;
 let runtime: Runtime;
 let session: SessionHarness;
 
-class HangingTelemetry extends Telemetry {
-  override flush(): Promise<void> {
-    return new Promise(() => {});
-  }
-}
-
-function start(
-  customLimits = limits(),
-  telemetry: RuntimeOptions["telemetry"] = false,
-): void {
+function start(customLimits = limits()): void {
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     limits: customLimits,
-    telemetry,
     jobs: declaredJobs(),
     now: () => currentTime ?? Date.now(),
   });
   session = new SessionHarness(runtime, "session-a");
 }
 
-async function restart(
-  customLimits: ServiceLimits,
-  telemetry: RuntimeOptions["telemetry"] = false,
-): Promise<void> {
+async function restart(customLimits: ServiceLimits): Promise<void> {
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
   directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-restart-"));
-  start(customLimits, telemetry);
+  start(customLimits);
 }
 
 beforeEach(() => {
@@ -1284,11 +1265,7 @@ describe("ordered convergence", () => {
   });
 
   test("does not encode an old-epoch error rejected by auth capture", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      exporter: { export: (records) => void exported.push(...records) },
-    });
+    await restart(limits());
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
       t: "sub",
@@ -1335,7 +1312,6 @@ describe("ordered convergence", () => {
       ]);
       queryFailureGate.resolve(undefined);
       await expect(failedQuery).rejects.toThrow("stale query failure");
-      await runtime.telemetry.flush();
     } finally {
       queryFailureGate.resolve(undefined);
       revalidationGate.resolve(undefined);
@@ -1343,14 +1319,6 @@ describe("ordered convergence", () => {
       batch?.release();
       nextController.abort();
     }
-
-    const requestSpans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.requestId === "90"
-    );
-    expect(requestSpans.some((record) => record.stage === "handler" && record.outcome !== "ok")).toBe(true);
-    expect(requestSpans.filter((record) =>
-      record.stage === "encoding" && record.resource === "outbound"
-    )).toEqual([]);
   });
 
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
@@ -1851,7 +1819,7 @@ describe("system execution root", () => {
     }))).toMatchObject([{ body: "owner" }]);
   });
 
-  test("preserves a system invocation queued for the writer with telemetry disabled", async () => {
+  test("preserves a system invocation queued for the writer", async () => {
     const writerEntered = deferred<void>();
     const releaseWriter = deferred<void>();
     const held = runtime.system.run("test.queued-owner", (ctx) =>
@@ -1956,115 +1924,6 @@ describe("system execution root", () => {
     }))).toEqual([]);
   });
 
-  test("records the operation name and nested application work under one system trace", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      limits: { slowOperationMs: 0 },
-      exporter: { export: (records) => void exported.push(...records) },
-    });
-
-    await runtime.system.run("test.observed", async (ctx) => {
-      await fetch("data:text/plain,observed");
-      return functions.ops.echo(ctx, { value: "done" });
-    });
-    await runtime.telemetry.flush();
-
-    const spans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.operation === "system"
-    );
-    const traceIds = new Set(spans.map((span) => span.traceId));
-    expect(traceIds.size).toBe(1);
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "admission",
-      outcome: "ok",
-      function: "test.observed",
-    }));
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "fetch",
-      outcome: "ok",
-      function: "test.observed",
-    }));
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "handler",
-      outcome: "ok",
-      function: "api.ops.echo",
-    }));
-    expect(runtime.status()).toMatchObject({
-      activeOperations: 0,
-      activeOperationCallers: 0,
-    });
-  });
-
-  test("records every system terminal class without dynamic callback data", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      limits: { slowOperationMs: 0 },
-      exporter: { export: (records) => void exported.push(...records) },
-    });
-
-    const preCanceled = new AbortController();
-    preCanceled.abort();
-    await expect(runtime.system.run(
-      "test.telemetry.pre-canceled",
-      () => "unreachable",
-      { signal: preCanceled.signal },
-    )).rejects.toMatchObject({ code: "unavailable" });
-
-    const applicationFailure = Err(
-      "stock-unavailable",
-      { sku: "dynamic-value-must-not-be-recorded" },
-      Status.Conflict,
-    );
-    await expect(runtime.system.run(
-      "test.telemetry.application-error",
-      () => applicationFailure,
-    )).resolves.toBe(applicationFailure);
-
-    const unhandled = new Error("dynamic failure details must not be recorded");
-    await expect(runtime.system.run("test.telemetry.unhandled", () => {
-      throw unhandled;
-    })).rejects.toBe(unhandled);
-
-    const entered = deferred<void>();
-    const release = deferred<void>();
-    const cancellation = new AbortController();
-    const canceled = runtime.system.run("test.telemetry.canceled", async () => {
-      entered.resolve(undefined);
-      await release.promise;
-    }, { signal: cancellation.signal });
-    const canceledOutcome = canceled.catch((error: unknown) => error);
-    await entered.promise;
-    cancellation.abort();
-    release.resolve(undefined);
-    await expect(canceledOutcome).resolves.toMatchObject({ code: "indeterminate" });
-
-    await expect(runtime.system.run(
-      "test.telemetry.success",
-      () => "dynamic success value must not be recorded",
-    )).resolves.toBe("dynamic success value must not be recorded");
-    await runtime.telemetry.flush();
-
-    const spans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.operation === "system"
-    );
-    const hasSpan = (
-      operationName: string,
-      stage: TelemetrySpanRecord["stage"],
-      outcome: string,
-    ) => spans.some((span) =>
-      span.function === operationName &&
-      span.stage === stage &&
-      span.outcome === outcome
-    );
-    expect(hasSpan("test.telemetry.pre-canceled", "admission", "unavailable")).toBe(true);
-    expect(hasSpan("test.telemetry.application-error", "handler", "application_error")).toBe(true);
-    expect(hasSpan("test.telemetry.unhandled", "handler", "internal")).toBe(true);
-    expect(hasSpan("test.telemetry.canceled", "handler", "indeterminate")).toBe(true);
-    expect(hasSpan("test.telemetry.success", "handler", "ok")).toBe(true);
-    expect(JSON.stringify(spans)).not.toContain("dynamic");
-  });
 
   test("signals accepted system work, refuses new work, and drains only after settlement", async () => {
     const entered = deferred<void>();
@@ -2876,47 +2735,6 @@ describe("jobs runner and lifecycle", () => {
     expect(runtime.status().state).toBe("failed");
   });
 
-  test("a hanging external telemetry flush cannot exceed Runtime's deadline", async () => {
-    await restart(
-      limits({ gracefulShutdownMs: 20 }),
-      new HangingTelemetry({ localSink: false }),
-    );
-
-    const startedAt = performance.now();
-    await expect(runtime.drain()).rejects.toMatchObject({
-      code: "deadline_exceeded",
-      resource: "operation",
-    });
-    const elapsed = performance.now() - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(15);
-    expect(elapsed).toBeLessThan(250);
-    expect(runtime.status().state).toBe("failed");
-  });
-
-  test("includes the stopped lifecycle event in its owned telemetry drain", async () => {
-    const exported: unknown[] = [];
-    await restart(limits(), {
-      localSink: false,
-      exporter: {
-        export: (records) => {
-          exported.push(...records);
-        },
-      },
-    });
-
-    await runtime.drain();
-
-    expect(exported.filter(
-      (record): record is { kind: string; name: string; lifecycleState: string } =>
-        typeof record === "object" &&
-        record !== null &&
-        "kind" in record &&
-        "name" in record &&
-        "lifecycleState" in record &&
-        record.kind === "event" &&
-        record.name === "lifecycle",
-    ).map((record) => record.lifecycleState)).toEqual(["ready", "draining", "stopped"]);
-  });
 
   test("stops admission, waits for accepted work, and becomes stopped", async () => {
     await session.open();
@@ -2964,11 +2782,10 @@ describe("configured capacity", () => {
     start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
   });
 
-  test("reports the selected durability and disabled telemetry state", () => {
+  test("reports the selected durability", () => {
     expect(runtime.status()).toMatchObject({
       state: "ready",
       connections: 0,
-      telemetry: { enabled: false },
       storage: { durability: "production", synchronous: "FULL" },
     });
   });

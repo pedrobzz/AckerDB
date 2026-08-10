@@ -4,7 +4,7 @@ The Admin API is the built-in administration surface every AckerDB application
 carries: functions the framework declares itself, in a group it publishes on
 every application's behalf, authorized by a vocabulary of its own. It is the
 server side of administration, named for what it does rather than for any client
-that consumes it — Studio is one such client, not its owner.
+that consumes it.
 
 There is no administrative transport, no second registry, and no private
 side-channel. An admin function is an ordinary registered function: it has an
@@ -67,7 +67,6 @@ _admin:errors:read       _admin:errors:write
 _admin:functions:run     _admin:impersonate
 _admin:jobs:read         _admin:jobs:write
 _admin:logs:read         _admin:system:read
-_admin:traces:read
 ```
 
 A domain is what an operator authorizes — `logs`, `jobs`, `database` — so the
@@ -136,7 +135,7 @@ admin.ops.audit;     // yours, typed from your module
 ```
 
 Both forms name one address. A package with no application of its own — an
-operator's tool, or Studio — imports `adminApi` directly and gets exactly the
+operator's tool — imports `adminApi` directly and gets exactly the
 same typed references, which is the reason the tree lives in core rather than
 being generated per application.
 

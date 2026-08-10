@@ -11,16 +11,9 @@ import type {
   QueryEvaluation,
   QueryEvaluationInput,
 } from "../../subscriptions/reactive/contract.ts";
-import {
-  FINISH_OPERATION_TRACE,
-  type Telemetry,
-} from "../../telemetry/telemetry.ts";
 import type { RuntimeReactiveContext } from "../sessions/store.ts";
 import type { RuntimeFunctionExecutor } from "../execution/functions.ts";
-import { transportError } from "../execution/operation-runner.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
-import { outcomeFromError } from "../outcome.ts";
-import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
 
 interface QueryExecution {
   readonly value: unknown;
@@ -33,8 +26,6 @@ export interface RuntimeQueriesOptions {
   readonly reads: RuntimeReadExecutor;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly shutdownSignal: () => AbortSignal;
-  readonly telemetry: Telemetry;
-  readonly tracing: RuntimeTraceBridge;
 }
 
 /** Owns transport-independent query execution and reactive query evaluation. */
@@ -51,7 +42,6 @@ export class RuntimeQueries {
   ): Promise<unknown> {
     const fn = this.expect(address);
     return this.options.reads.execute(
-      "query",
       fairnessKey,
       signal,
       requestBytes,
@@ -66,7 +56,6 @@ export class RuntimeQueries {
       const readSet = new Set<string>();
       const reads: ReadRecorder = { add: (key) => readSet.add(key) };
       return this.options.reads.execute(
-        "subscription",
         input.fairnessKey,
         this.options.shutdownSignal(),
         byteLength(input.args),
@@ -82,69 +71,24 @@ export class RuntimeQueries {
         },
       ).then((execution) => this.encode(execution));
     };
-    const scope = this.options.tracing.currentScope();
-    if (scope === undefined) {
-      const evaluationScope = this.options.tracing.open(
-        undefined,
-        "subscription",
-        input.address,
-        {},
-      );
-      const evaluation = this.options.tracing.runOperation(evaluationScope, execute);
-      return evaluation.finally(() => {
-        this.options.telemetry[FINISH_OPERATION_TRACE](evaluationScope.trace);
-      });
-    }
-    return this.options.tracing.runScope({
-      ...scope,
-      operation: "subscription",
-      rootFunction: input.address,
-    }, execute);
+    return execute();
   }
 
   private encode(execution: QueryExecution): QueryEvaluation {
-    const startedAt = this.options.telemetry.enabled ? performance.now() : 0;
-    try {
-      if (!isResult(execution.value)) {
-        throw new AckerDBError("internal", "subscription query boundary returned no Result");
-      }
-      const wireValue = execution.value.ok
-        ? execution.value.data
-        : execution.value.error;
-      const encoded = encode(wireValue);
-      if (this.options.telemetry.enabled) {
-        this.options.tracing.span({
-          stage: "encoding",
-          outcome: "ok",
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: Buffer.byteLength(encoded),
-          resultCount: Array.isArray(wireValue)
-            ? wireValue.length
-            : wireValue === null
-              ? 0
-              : 1,
-        }, "subscription");
-      }
-      return Object.freeze({
-        ...execution,
-        value: execution.value.ok ? execution.value.data : undefined,
-        ...(execution.value.ok
-          ? {}
-          : { applicationError: applicationError(execution.value.error) }),
-        encoded,
-      });
-    } catch (error) {
-      if (this.options.telemetry.enabled) {
-        this.options.tracing.span({
-          stage: "encoding",
-          outcome: outcomeFromError(transportError(error)).code,
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-        }, "subscription");
-      }
-      throw error;
+    if (!isResult(execution.value)) {
+      throw new AckerDBError("internal", "subscription query boundary returned no Result");
     }
+    const wireValue = execution.value.ok
+      ? execution.value.data
+      : execution.value.error;
+    return Object.freeze({
+      ...execution,
+      value: execution.value.ok ? execution.value.data : undefined,
+      ...(execution.value.ok
+        ? {}
+        : { applicationError: applicationError(execution.value.error) }),
+      encoded: encode(wireValue),
+    });
   }
 
   private expect(address: string) {

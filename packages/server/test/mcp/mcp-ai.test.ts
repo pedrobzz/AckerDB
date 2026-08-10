@@ -24,7 +24,6 @@ import {
   type McpAiToolSet,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
-import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -34,7 +33,6 @@ import type {
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
@@ -267,22 +265,14 @@ const modules = {
 
 let directory: string;
 let engine: Engine;
-let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  telemetry = [];
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: {
-      enabled: true,
-      exporter: { export: (batch) => void telemetry.push(...batch) },
-      localSink: false,
-      limits: { ...PRODUCTION_LIMITS.telemetry, slowOperationMs: 0 },
-    },
   });
   nativeInput = undefined;
   roundTripCalls = 0;
@@ -332,10 +322,6 @@ async function collectSse(response: RuntimeSseResponse): Promise<SseMessage[]> {
   return messages;
 }
 
-function spans(): TelemetrySpanRecord[] {
-  return telemetry.filter((record): record is TelemetrySpanRecord => record.kind === "span");
-}
-
 async function eventually(check: () => boolean): Promise<void> {
   for (let attempts = 0; !check(); attempts++) {
     if (attempts === 100) throw new Error("condition did not become true");
@@ -372,19 +358,6 @@ describe("MCP zero-hop AI SDK tools", () => {
       expect(authenticate).not.toHaveBeenCalled();
       expect(engine.reader.query('SELECT label FROM "calls"').all()).toEqual([{ label: "anonymous" }]);
 
-      await runtime.telemetry.flush();
-      const admission = spans().find((span) =>
-        span.operation === "procedure" && span.stage === "admission" && span.requestId === "1"
-      );
-      // A tool executes as the function it names, so spans carry the function's
-      // address rather than "<endpoint>:<tool>". The local adapter dispatches
-      // straight to the tool, so no operation-level tool name is emitted here.
-      const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "api.tools.roundTrip" && span.requestId === "1"
-      );
-      expect(admission).toBeDefined();
-      expect(nested).toBeDefined();
-      expect(nested?.traceId).toBe(admission?.traceId);
     } finally {
       fetch.mockRestore();
       authenticate.mockRestore();

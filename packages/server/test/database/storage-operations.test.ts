@@ -191,21 +191,6 @@ describe("durability and internal state", () => {
     restore.close();
   });
 
-  test("restore vacancy clears the framework-owned telemetry journal family", () => {
-    const { database } = fresh();
-    const telemetry = `${database}.telemetry`;
-    for (const artifact of [telemetry, `${telemetry}-wal`, `${telemetry}-shm`]) {
-      writeFileSync(artifact, artifact);
-    }
-
-    const restore = DatabaseRestoreTarget.acquire(database);
-    for (const artifact of [telemetry, `${telemetry}-wal`, `${telemetry}-shm`]) {
-      expect(existsSync(artifact)).toBe(false);
-    }
-    restore.assertVacant();
-    restore.close();
-  });
-
   test("restore explicitly refuses a symbolic-link target instead of creating a second path", () => {
     const { root, database } = fresh();
     const alias = join(root, "data-alias.db");
@@ -241,14 +226,11 @@ describe("durability and internal state", () => {
     const restore = `${canonical}.ackerdb-restore-00000000-0000-4000-8000-000000000002`;
     const lookalike = `${canonical}.ackerdb-restore-not-a-uuid`;
     const unrelated = join(root, "keep-me");
-    const telemetry = `${canonical}.telemetry`;
     for (const artifact of [
       init,
       `${init}-journal`,
       restore,
       `${restore}-shm`,
-      telemetry,
-      `${telemetry}-wal`,
       lookalike,
       unrelated,
     ]) {
@@ -264,8 +246,6 @@ describe("durability and internal state", () => {
       `${init}-journal`,
       restore,
       `${restore}-shm`,
-      telemetry,
-      `${telemetry}-wal`,
     ]));
     for (const removed of result.removed) expect(existsSync(removed)).toBe(false);
     expect(readFileSync(lookalike, "utf8")).toBe(lookalike);

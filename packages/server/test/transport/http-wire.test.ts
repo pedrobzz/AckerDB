@@ -83,7 +83,7 @@ beforeEach(() => {
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   const registry = new Registry(functions);
-  runtime = new Runtime({ engine, registry, limits, telemetry: false });
+  runtime = new Runtime({ engine, registry, limits });
   server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
   document = openApiDocument(registry, info);

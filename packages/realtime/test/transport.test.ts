@@ -17,8 +17,6 @@ import {
   type AckerDBServer,
   type ProcedureBuilder,
   type RealtimeBuilder,
-  type TelemetryMetricRecord,
-  type TelemetryRecord,
 } from "@ackerdb/server";
 import {
   ACKERDB_VERSION,
@@ -63,7 +61,6 @@ let peer: FakePeerConnection;
 let clientChannel: FakeDataChannel;
 let handlerRuns: number;
 let base: string;
-let telemetryRecords: TelemetryRecord[];
 let authorizationGate: Promise<never> | null;
 
 beforeEach(() => {
@@ -75,7 +72,6 @@ beforeEach(() => {
   peer.channel.peer = clientChannel;
   clientChannel.peer = peer.channel;
   handlerRuns = 0;
-  telemetryRecords = [];
   authorizationGate = null;
   const assistant = typedRealtime({
     args: {},
@@ -112,17 +108,6 @@ beforeEach(() => {
       procedures: { externalEcho },
     }),
     limits: PRODUCTION_LIMITS,
-    telemetry: {
-      localSink: false,
-      exporter: {
-        export: (records) => void telemetryRecords.push(...records),
-      },
-      limits: {
-        batchIntervalMs: 5,
-        sampleIntervalMs: 10,
-        slowOperationMs: 0,
-      },
-    },
     realtime: testRealtimeRuntime(
       testRealtimeEngine(
         () => peer as unknown as RTCPeerConnection,
@@ -216,65 +201,6 @@ describe("realtime HTTP signaling", () => {
     });
   });
 
-  test("exports bounded setup, recovery, path, media, and cleanup telemetry", async () => {
-    const answer = await establish(true);
-
-    peer.iceConnectionState = "connected";
-    peer.connectionState = "connected";
-    peer.dispatchEvent(new Event("iceconnectionstatechange"));
-    peer.dispatchEvent(new Event("connectionstatechange"));
-    await runtime.realtime!.sampleHealth(1);
-
-    expect(runtime.status().realtime).toMatchObject({
-      activeSessions: 1,
-      recoveryAttempts: 1,
-      recoveryAccepted: 1,
-      health: {
-        directPaths: 1,
-        relayPaths: 0,
-        udpPaths: 1,
-        roundTripTimeAverageMs: 20,
-        jitterMaxMs: 4,
-        packets: 5,
-        packetsLost: 1,
-        frames: 1,
-        framesDropped: 2,
-      },
-    });
-
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_direct_paths" && metric.value === 1
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_frames_dropped" && metric.value === 2
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_recovery_accepted" &&
-      metric.value === 1
-    );
-
-    const closed = await fetch(`${base}/_realtime/${answer.sessionId}`, {
-      method: "DELETE",
-    });
-    expect(closed.status).toBe(204);
-    expect(runtime.status().realtime?.health).toMatchObject({
-      sampledPeers: 0,
-      directPaths: 0,
-      relayPaths: 0,
-      udpPaths: 0,
-      tcpPaths: 0,
-      roundTripTimeAverageMs: 0,
-      packets: 0,
-      frames: 0,
-      dataChannelBufferedAmountMax: 0,
-    });
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_closed_client" && metric.value === 1
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_sessions" && metric.value === 0
-    );
-  });
 
   test("prepares, creates, trickles, and closes one authenticated generation", async () => {
     const legacy = await fetch(`${base}/_realtime/config`);
@@ -416,21 +342,3 @@ describe("realtime HTTP signaling", () => {
     expect(closed.status).toBe(204);
   });
 });
-
-async function expectMetric(
-  predicate: (metric: TelemetryMetricRecord) => boolean,
-): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await runtime.telemetry.flush();
-    if (
-      telemetryRecords.some(
-        (record): record is TelemetryMetricRecord =>
-          record.kind === "metric" && predicate(record),
-      )
-    ) {
-      return;
-    }
-    await Bun.sleep(10);
-  }
-  throw new Error("Runtime did not export the expected realtime metric");
-}

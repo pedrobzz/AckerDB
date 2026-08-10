@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { noopAnalytics, noopLogger } from "ackerdb-test-support/telemetry";
+import { noopAnalytics, noopLogger } from "ackerdb-test-support/signals";
 import { Engine } from "../../src/database/engine.ts";
 import { PluginRuntime } from "../../src/plugins/runtime.ts";
 import {

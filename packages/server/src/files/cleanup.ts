@@ -169,7 +169,6 @@ export class FileCleanupRuntime {
       this.lastFailure = null;
     }).catch((error) => {
       this.lastFailure = error;
-      this.options.files.observability.recordCleanupFailure();
       if (!this.stopped) this.arm(this.options.now() + 1_000);
     }).finally(() => {
       this.running = null;
@@ -343,11 +342,6 @@ export class FileCleanupRuntime {
     try {
       await store.delete(task.objectKey, { signal: this.controller.signal });
     } catch (error) {
-      if (!(error instanceof FileStoreError) || error.code !== "cancelled") {
-        this.options.files.observability.recordProviderError(
-          error instanceof FileStoreError ? error.operation : "delete",
-        );
-      }
       if (!this.stopped) await this.retry(task, error);
       return;
     }
@@ -365,7 +359,6 @@ export class FileCleanupRuntime {
   }
 
   private async retry(task: CleanupTask, error: unknown): Promise<void> {
-    this.options.files.observability.recordCleanupFailure();
     const attempt = task.attempt + 1;
     const delay = Math.min(60 * 60_000, 1_000 * 2 ** Math.min(attempt, 12));
     const runAt = this.options.now() + delay;

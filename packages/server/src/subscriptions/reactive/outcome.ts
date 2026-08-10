@@ -1,10 +1,6 @@
 import type { Outcome } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 
-export function observationOutcome(error: unknown): Outcome["code"] {
-  return isAckerDBError(error) ? error.code : "internal";
-}
-
 export function isAuthFailure(outcome: Outcome): boolean {
   return outcome.code === "auth_stale" ||
     outcome.code === "auth_unavailable" ||

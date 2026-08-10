@@ -3,7 +3,6 @@ import {
   defineEventTable,
   defineSchema,
   defineTable,
-  type DbStatementObservation,
   Engine,
   indexSqlName,
   makeDbReader,
@@ -41,8 +40,8 @@ describe("Plugin storage scopes", () => {
     const alpha = engine.createPluginScope("alpha", privateSchema(["ready"]));
     const beta = engine.createPluginScope("beta", privateSchema(["blocked"]));
     const writes = newWriteCollector();
-    const alphaDb: any = makeDbWriter(engine, writes, () => 0n, undefined, alpha);
-    const betaDb: any = makeDbWriter(engine, writes, () => 0n, undefined, beta);
+    const alphaDb: any = makeDbWriter(engine, writes, () => 0n, alpha);
+    const betaDb: any = makeDbWriter(engine, writes, () => 0n, beta);
 
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
@@ -73,11 +72,8 @@ describe("Plugin storage scopes", () => {
     const firstPlan = first.plan("entries");
     const secondPlan = second.plan("entries");
     const writes = newWriteCollector();
-    const observations: DbStatementObservation[] = [];
-    const firstDb: any = makeDbWriter(engine, writes, () => 0n, (observation) => {
-      observations.push(observation);
-    }, first);
-    const secondDb: any = makeDbWriter(engine, writes, () => 0n, undefined, second);
+    const firstDb: any = makeDbWriter(engine, writes, () => 0n, first);
+    const secondDb: any = makeDbWriter(engine, writes, () => 0n, second);
 
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
@@ -93,7 +89,7 @@ describe("Plugin storage scopes", () => {
 
     expect(Object.keys(firstDb)).toEqual(["entries"]);
     expect(Object.keys(secondDb)).toEqual(["entries"]);
-    const firstReader: any = makeDbReader(engine, engine.reader, null, undefined, first);
+    const firstReader: any = makeDbReader(engine, engine.reader, null, first);
     expect(Object.keys(firstReader)).toEqual(["entries"]);
     expect(await firstReader.entries.query().collect()).toEqual([
       { id: 1n, status: "ready", value: "one" },
@@ -113,12 +109,6 @@ describe("Plugin storage scopes", () => {
     expect(writes.keys).not.toContain(scanKey("entries"));
     await expect(firstDb.entries.insert({ status: "missing", value: "bad" }))
       .rejects.toThrow("a.entries.insert.status");
-    expect(observations).toContainEqual(expect.objectContaining({
-      table: "a.entries",
-      statement: "insert",
-      outcome: "failed",
-    }));
-    expect(observations.some((observation) => observation.table === firstPlan.name)).toBe(false);
     engine.close("clean");
   });
 
@@ -221,7 +211,7 @@ describe("Plugin storage scopes", () => {
     });
     const currentScope = engine.createPluginScope("constraints", before);
     createScopePhysical(engine, currentScope);
-    const db: any = makeDbWriter(engine, newWriteCollector(), () => 0n, undefined, currentScope);
+    const db: any = makeDbWriter(engine, newWriteCollector(), () => 0n, currentScope);
     await db.records.insert({ payload: { tag: "text", value: "x" } });
 
     const targetScope = engine.createPluginScope("constraints", target);

@@ -50,7 +50,6 @@ import {
 } from "../realtime/definition.ts";
 import {
   isMcpDeclaration,
-  isRegisteredMcpTool,
   type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
@@ -561,13 +560,6 @@ export class Registry {
 
   addressOf(value: object): string | undefined {
     return this.addressByObject.get(value);
-  }
-
-  /** Stable telemetry name for exported functions or endpoint-owned MCP tools. */
-  invocationNameOf(value: object): string | undefined {
-    return this.addressByObject.get(value) ?? (isRegisteredMcpTool(value)
-      ? `${value.mcp.name}:${value.name}`
-      : undefined);
   }
 
 }

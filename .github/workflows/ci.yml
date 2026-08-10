@@ -26,7 +26,6 @@ jobs:
       code: ${{ steps.changes.outputs.code }}
       native: ${{ steps.changes.outputs.native }}
       performance: ${{ steps.changes.outputs.performance }}
-      telemetry: ${{ steps.changes.outputs.telemetry }}
       verify_packages: ${{ steps.changes.outputs.verify_packages }}
       mcp: ${{ steps.changes.outputs.mcp }}
       workflows: ${{ steps.changes.outputs.workflows }}
@@ -114,11 +113,8 @@ jobs:
     if: always()
     needs: [changes, native]
     runs-on: ubuntu-24.04
-    # One telemetry profile is a single-digit number of minutes; a pull request
-    # that touches telemetry pays for three of them, and the ceiling has to hold
-    # that case rather than the common one. It is still a hard cap: a hung
-    # process cannot keep a runner past it.
-    timeout-minutes: 45
+    # The cap is finite so a hung process cannot retain a runner indefinitely.
+    timeout-minutes: 25
     steps:
       - name: Validate prerequisite jobs
         env:
@@ -137,7 +133,6 @@ jobs:
         if: needs.changes.outputs.performance == 'true'
         env:
           BENCH_EXECUTION_HOST: github-hosted
-          BENCH_TELEMETRY_PROFILES: ${{ needs.changes.outputs.telemetry == 'true' && 'enabled,exporter,disabled' || 'disabled' }}
         run: >-
           bun bench/compare-commits.ts
           "${{ github.event.pull_request.base.sha }}"

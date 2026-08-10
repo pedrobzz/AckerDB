@@ -19,21 +19,15 @@ application-code boundary: query re-evaluation and event-listener matching —
 under that root. A subscriber evaluation's context derives from the
 subscription alone (its principal, its fairness key); the identity of whatever
 triggered the commit is irrelevant to it. The root deliberately wraps *only*
-the application-code calls, not the surrounding bookkeeping: observer calls
-stay on the ambient causal chain, because evaluation spans correlate to their
-triggering operation through the trace context, and severing that would trade
-an authority leak for an observability one. Authority must never cross a
-scheduling boundary implicitly; diagnostic causality should. This makes an existing house rule structural: **async context never
-crosses a scheduling boundary implicitly** — the commit coordinator already
-follows it by passing an explicit snapshot when telemetry needs to cross.
+the application-code calls, not the surrounding bookkeeping. This makes the
+authority rule structural: **async context never crosses a scheduling boundary
+implicitly**.
 
 ## Considered options
 
-- **Detach context at every executor boundary**: rejected — the commit
-  coordinator deliberately *restores* the caller's context snapshot around
-  commit + publication for telemetry correlation, which re-leaks past any
-  executor-level detach; and the reader executor serves direct queries whose
-  trace context legitimately should flow.
+- **Detach context at every executor boundary**: rejected — executor ownership
+  is broader than subscriber work, and the reader executor also serves direct
+  queries whose application context must remain intact.
 - **Detach at `ctx.tx` entry**: rejected — transaction bodies are application
   code; exiting invocation context around them would blind the confused-deputy
   guard inside transactions, a security regression.

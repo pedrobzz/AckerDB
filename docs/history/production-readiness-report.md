@@ -838,7 +838,6 @@ Detailed local evidence:
 - [Authentication contract](../authentication.md)
 - [Realtime contract](../realtime.md)
 - [Operations and recovery](../operations.md)
-- [Telemetry contract](../telemetry.md)
 - [Benchmark methodology](../../bench/README.md)
 - [Workflow final report](../../.workflow/production-safety-operational-visibility/final-report.md)
 - [Hetzner comparison evidence](../../.workflow/production-safety-operational-visibility/results/P1-hetzner-current-comparison.md)

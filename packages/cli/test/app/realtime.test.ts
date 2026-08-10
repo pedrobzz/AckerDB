@@ -50,7 +50,7 @@ describe("configured realtime runtime", () => {
       }),
     });
 
-    await expect(startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" })))
+    await expect(startApp(loadConfig(dir, { })))
       .rejects.toThrow("configured realtime selected");
   });
 
@@ -63,7 +63,7 @@ describe("configured realtime runtime", () => {
         realtime: "./missing-realtime.ts",
       }),
     });
-    await expect(startApp(loadConfig(missing, { ACKERDB_TELEMETRY: "disabled" })))
+    await expect(startApp(loadConfig(missing, { })))
       .rejects.toThrow(
         `.ackerdb.config.json "realtime" module not found at ${join(missing, "missing-realtime.ts")}`,
       );
@@ -77,7 +77,7 @@ describe("configured realtime runtime", () => {
         realtime: "./realtime.ts",
       }),
     });
-    await expect(startApp(loadConfig(malformed, { ACKERDB_TELEMETRY: "disabled" })))
+    await expect(startApp(loadConfig(malformed, { })))
       .rejects.toThrow(
         `.ackerdb.config.json "realtime" module at ${join(malformed, "realtime.ts")} must default-export the result of createRealtimeRuntime(...)`,
       );
@@ -91,7 +91,7 @@ describe("configured realtime runtime", () => {
         realtime: "./realtime.ts",
       }),
     });
-    await expect(startApp(loadConfig(failedImport, { ACKERDB_TELEMETRY: "disabled" })))
+    await expect(startApp(loadConfig(failedImport, { })))
       .rejects.toThrow(
         `failed to import .ackerdb.config.json "realtime" module at ${join(failedImport, "realtime.ts")}: missing TURN_SECRET`,
       );
@@ -116,7 +116,7 @@ describe("configured realtime runtime", () => {
       ".ackerdb.config.json": JSON.stringify({ port: await freePort() }),
     });
 
-    await expect(startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" })))
+    await expect(startApp(loadConfig(dir, { })))
       .rejects.toThrow("packaged default realtime selected");
   });
 
@@ -142,7 +142,7 @@ describe("configured realtime runtime", () => {
       }),
     });
 
-    const running = await startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }));
+    const running = await startApp(loadConfig(dir, { }));
     await running.drain();
   });
 
@@ -163,7 +163,7 @@ describe("configured realtime runtime", () => {
     };
 
     await expect(startApp(
-      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      loadConfig(dir, { }),
       { realtime },
     )).rejects.toThrow("programmatic realtime selected");
   });

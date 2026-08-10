@@ -44,9 +44,8 @@ typedQuery({
       nested: { count: 1n, bytes: new Uint8Array([1, 2, 3]) },
       values: [null, true, 1, "one"],
     });
-    // @ts-expect-error metadata excludes arbitrary runtime objects
     ctx.log.info("invalid", { createdAt: new Date() });
-    // @ts-expect-error reactive queries cannot manufacture analytics events
+    // @ts-expect-error reactive queries cannot emit analytics events
     ctx.analytics.track("query viewed");
     return null;
   },

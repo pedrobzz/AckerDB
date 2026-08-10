@@ -903,7 +903,6 @@ async function createRealApp(): Promise<RealApp> {
     engine,
     registry: realRegistry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
@@ -1383,7 +1382,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         engine,
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
-        telemetry: false,
       });
       const server = serve({ runtime, port: 0 });
       const serverPort = server.port;
@@ -1456,7 +1454,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           engine: engine2,
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
-          telemetry: false,
         });
         restarted = { server: serve({ runtime: runtime2, port: serverPort }), engine: engine2 };
 
@@ -1515,7 +1512,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         engine,
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
-        telemetry: false,
       });
       const server = serve({ runtime, port: 0 });
       const upstreamPort = server.port;
@@ -1579,7 +1575,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           engine: engine2,
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
-          telemetry: false,
         });
         restarted = { server: serve({ runtime: runtime2, port: upstreamPort }), engine: engine2 };
 

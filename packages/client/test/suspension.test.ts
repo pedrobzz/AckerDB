@@ -783,7 +783,7 @@ describe("suspension against a real ackerdb server", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     const server = serve({ runtime, port: 0 });
     // A fake clock against the real server: every timer the client sets is
     // inert unless advanced, so recovery reaching ready proves the whole

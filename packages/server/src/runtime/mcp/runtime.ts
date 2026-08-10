@@ -17,7 +17,6 @@ import {
 import type { McpCallToolResult } from "../../mcp/content.ts";
 import { isMcpToolAuthorized } from "../../mcp/tool-access.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
-import { claimHttpTrace } from "../../telemetry/external-trace.ts";
 import {
   callerFairnessKey,
   transportSource,
@@ -119,21 +118,12 @@ export class RuntimeMcp {
       method: "tools/call",
       params: { name: tool.name, arguments: request.args },
     }, provenance?.bytes);
-    const functionName = `${tool.mcp.name}:${tool.name}`;
-    const claimedTrace = claimHttpTrace(
-      provenance?.trace,
-      "procedure",
-      functionName,
-      String(request.id),
-    );
     const fairnessKey = request.fairnessKey ?? callerFairnessKey(
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
     return this.options.operations.run(
       null,
-      "procedure",
-      functionName,
       requestBytes,
       () => {
         const signal = this.options.operationSignal(request.signal);
@@ -158,8 +148,6 @@ export class RuntimeMcp {
         );
       },
       {
-        identifiers: { requestId: String(request.id) },
-        claimedTrace,
         fairnessKey,
       },
     );
@@ -268,7 +256,6 @@ export class RuntimeMcp {
     throwIfAborted(signal);
     if (fn.kind === "query") {
       const value = await this.options.reads.execute(
-        "query",
         fairnessKey,
         signal,
         requestBytes,
