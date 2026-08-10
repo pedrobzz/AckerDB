@@ -1,0 +1,114 @@
+name: Benchmark ledger
+
+# The gate computes a median paired ratio and an interval for every metric on
+# every pull request, prints them, uploads them for thirty days, and forgets
+# them. This workflow is the memory: it takes the paired deltas the `Benchmark`
+# job already produced and appends them to a data branch, so that "would this
+# metric have gated on unchanged code?" becomes a query over the runs that
+# already happened instead of a null campaign run on purpose.
+#
+# It is a separate workflow triggered by `workflow_run` for one reason: a
+# `pull_request` job has a read-only token and runs code the pull request wrote,
+# so it can neither push nor be trusted to. A `workflow_run` job runs the
+# **default branch's** copy of this file with write access, which is what makes
+# the appender something a pull request cannot edit.
+#
+# It reads the run's raw paired samples and recomputes every verdict with the
+# default branch's own statistic and metric policy, rather than accepting head's
+# summary of them. Head supplies numbers; it does not supply conclusions.
+#
+# Nothing reads the ledger. No threshold, floor, or gated-metric set consults it.
+on:
+  workflow_run:
+    workflows: [Pull request]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  append:
+    name: Remember the paired deltas
+    # A cancelled run has no artifact to take. A failed one does, and its rows
+    # are the most interesting in the ledger: they are the true positives.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # Outside the workspace, so the checkout below cannot clean it away. Most
+      # pull requests change nothing the benchmark measures and upload nothing,
+      # which is a skip rather than a failure.
+      - name: Take the deltas from the run that produced them
+        id: deltas
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ackerdb-benchmark-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/incoming
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - if: steps.deltas.outcome == 'success'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - if: steps.deltas.outcome == 'success'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      # The ledger branch is an orphan: it shares no file with any code branch,
+      # so it can never conflict with one and is never merged into one. Two runs
+      # finishing together race on the push instead of on the file — the loser
+      # fetches the winner's state, folds its own rows in again, and pushes. That
+      # is safe because folding is order-independent, which `bench/ledger.test.ts`
+      # asserts. There is deliberately no concurrency group: GitHub cancels a
+      # previously pending run in a group, and a cancelled append is a lost run.
+      - name: Fold them into the ledger branch
+        if: steps.deltas.outcome == 'success'
+        shell: bash
+        env:
+          BRANCH: bench-ledger
+          PAIR: ${{ runner.temp }}/incoming/pair.json
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git worktree remove --force ledger-branch 2>/dev/null || true
+            git branch -D "$BRANCH" 2>/dev/null || true
+            if ! git fetch --no-tags origin "+refs/heads/$BRANCH:refs/heads/$BRANCH"; then
+              empty_tree="$(git hash-object -t tree /dev/null)"
+              git branch "$BRANCH" "$(git commit-tree "$empty_tree" -m 'Begin the benchmark ledger')"
+            fi
+            git worktree add --quiet ledger-branch "$BRANCH"
+            mkdir -p ledger-branch/ledger
+            cp bench/ledger-branch.md ledger-branch/README.md
+            bun bench/ledger.ts "$PAIR" ledger-branch/ledger "$RUN_ID" "$RUN_ATTEMPT" "$HEAD_SHA"
+            git -C ledger-branch add -A
+            if git -C ledger-branch diff --cached --quiet; then
+              echo "The ledger already holds run $RUN_ID attempt $RUN_ATTEMPT." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            git -C ledger-branch commit --quiet \
+              -m "Record run $RUN_ID attempt $RUN_ATTEMPT ($HEAD_BRANCH @ ${HEAD_SHA:0:12})"
+            if git -C ledger-branch push --quiet origin "HEAD:refs/heads/$BRANCH"; then
+              {
+                echo "Recorded run \`$RUN_ID\` attempt \`$RUN_ATTEMPT\` (\`$HEAD_BRANCH\` @ \`${HEAD_SHA:0:12}\`) on \`$BRANCH\`."
+                echo
+                git -C ledger-branch show --stat --oneline HEAD
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Another run pushed first; folding again (attempt $attempt)."
+            sleep $((attempt * 5))
+          done
+          echo "The ledger branch could not be advanced after five attempts." >&2
+          exit 1

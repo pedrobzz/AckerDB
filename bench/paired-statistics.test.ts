@@ -30,6 +30,7 @@ describe("median interval rank", () => {
     // statement as "every repetition must agree".
     expect(medianIntervalRank(8, 0.05)).toBe(1);
     expect(medianIntervalRank(10, 0.05)).toBe(2);
+    expect(medianIntervalRank(16, 0.05)).toBe(4);
     expect(medianIntervalRank(20, 0.05)).toBe(6);
   });
 
@@ -41,6 +42,13 @@ describe("median interval rank", () => {
   test("the default repetition count is even so neither side leads more often", () => {
     expect(DEFAULT_REPETITIONS % 2).toBe(0);
     expect(medianIntervalRank(DEFAULT_REPETITIONS, DEFAULT_POLICY.alpha)).toBeDefined();
+  });
+
+  test("the default count buys an interval that survives a dissenting repetition", () => {
+    // The reason to leave eight behind: at rank 1 a metric is called whenever
+    // every repetition happens to agree, which scatter alone can arrange. The
+    // default must afford a deeper rank than the extreme pair.
+    expect(medianIntervalRank(DEFAULT_REPETITIONS, DEFAULT_POLICY.alpha)).toBeGreaterThan(1);
   });
 });
 
@@ -63,14 +71,28 @@ describe("paired comparison", () => {
     expect(comparison.signal).toBe("improvement");
   });
 
-  test("reports no signal when one repetition disagrees, however large the median", () => {
+  test("reports no signal when eight repetitions cannot agree, however large the median", () => {
     // Seven repetitions lose a third of throughput and one gains a little. The
     // median is far past the floor, but scatter that changes sign is not a
-    // measurement of the change.
+    // measurement of the change. Eight pairs can only afford rank 1, so one
+    // dissenter is enough — which is exactly why eight is no longer the default.
     const comparison = comparePaired(pairs([0.66, 0.7, 0.63, 0.68, 0.65, 0.71, 0.67, 1.04]), higher);
     expect(comparison.medianPercent).toBeLessThan(-30);
     expect(comparison.signal).toBe("no signal");
     expect(comparison.reason).toContain("spans zero");
+  });
+
+  test("tolerates dissent up to the interval's rank at the default count, and no further", () => {
+    const rank = medianIntervalRank(DEFAULT_REPETITIONS, DEFAULT_POLICY.alpha)!;
+    const series = (dissenting: number) =>
+      pairs([
+        ...(Array(DEFAULT_REPETITIONS - dissenting).fill(0.66) as number[]),
+        ...(Array(dissenting).fill(1.04) as number[]),
+      ]);
+    expect(comparePaired(series(rank - 1), higher).signal).toBe("regression");
+    const beyond = comparePaired(series(rank), higher);
+    expect(beyond.signal).toBe("no signal");
+    expect(beyond.reason).toContain("spans zero");
   });
 
   test("reports no signal for a consistent move that is too small to matter", () => {
