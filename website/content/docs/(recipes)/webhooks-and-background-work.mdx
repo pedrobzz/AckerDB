@@ -3,4 +3,94 @@ title: "Process Webhooks Reliably"
 description: "Connect HTTP handlers, transactions, Jobs, and idempotent external work."
 ---
 
-Complete documentation for Process Webhooks Reliably is coming soon.
+Webhooks cross a trust boundary twice: an external provider can retry the same
+delivery, and your follow-up work can fail after the provider has received an
+HTTP response. The reliable shape is a raw HTTP handler for verification, one
+transaction that records an idempotent receipt and schedules work, then a Job
+that performs the external side effect.
+
+## Receive the raw request
+
+Use `httpHandler` for a provider-specific webhook. It receives untouched
+headers and body bytes; that is necessary when a signature covers the exact
+payload:
+
+```ts title="apps/server/functions/webhooks.ts"
+import { httpHandler } from "@workspace/ackerdb-generated/server";
+
+export const payment = httpHandler({
+  methods: ["POST"],
+  handler: async (ctx, request) => {
+    const body = await request.text();
+    const signature = request.headers.get("provider-signature");
+
+    if (!signature || !verifyProviderSignature(body, signature)) {
+      return new Response("invalid signature", { status: 401 });
+    }
+
+    const event = parseProviderEvent(body);
+    await ctx.tx((tx) => recordDeliveryAndEnqueue(tx, event));
+    return new Response(null, { status: 202 });
+  },
+});
+```
+
+Raw handlers do not validate a Function argument shape, resolve a bearer
+credential, or appear in generated client APIs. The handler owns signature
+verification, parsing, CORS choices, and its exact `Response`.
+
+## Make the receipt idempotent
+
+Create a table keyed by the provider's immutable delivery ID. In the same
+transaction, insert the receipt only once and enqueue the work only if the
+receipt was new:
+
+```text
+provider delivery ID
+        │
+        ▼
+unique webhook_receipts row ──► enqueue one durable Job
+        │
+        └── duplicate delivery: return 202 without duplicate work
+```
+
+The unique database constraint is the authority. An in-memory `Set`, a cache,
+or a process-local mutex cannot survive a retry arriving on a restarted process.
+
+## Perform side effects in a Job
+
+Use a Job for work that can retry: notifying another API, sending email,
+rendering a document, or reconciling a payment. The receipt row establishes
+that the input is durable; the Job owns retries and its own terminal outcome.
+
+When a Job calls an external system, carry a stable idempotency key derived
+from the receipt or Job ID. AckerDB can retry after a process failure, so the
+external provider must also be able to recognize a repeated request.
+
+For a multi-step workflow, put each side effect in a named `ctx.step.procedure`
+step. The name is part of the durable contract: changing its meaning creates a
+new step, not a hidden reinterpretation of an old completed one.
+
+## Return quickly, but only after durability
+
+Do not wait for the external side effect before answering the webhook provider.
+Return a success response after the transaction commits the receipt and Job
+enqueue. If the process fails before that commit, the provider's retry can
+deliver the event again. If it fails after commit, the Job remains durable and
+will recover according to its retry policy.
+
+## Observe and repair
+
+Store the provider delivery ID, event type, timestamps, and a safe summary of
+the outcome. Never persist secrets from signed headers or raw payload fields
+that are not needed for recovery.
+
+Operators should be able to answer:
+
+1. Did AckerDB verify and persist the delivery?
+2. Which Job handled it, and what is its state?
+3. Did the external side effect accept the idempotency key?
+4. Is a retry safe, or does the delivery require an explicit repair action?
+
+See [HTTP Handlers](/docs/http-handlers), [Background Jobs](/docs/background-jobs),
+and [Durable Workflows](/docs/durable-workflows) for the individual contracts.

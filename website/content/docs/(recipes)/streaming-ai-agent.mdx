@@ -3,4 +3,113 @@ title: "Build a Streaming AI Agent"
 description: "Connect SSE Procedures, MCP tools, an AI SDK, and React chat behavior."
 ---
 
-Complete documentation for Build a Streaming AI Agent is coming soon.
+An AckerDB AI agent is one application operation with a streaming response. An
+SSE Procedure owns the authenticated request, validates the chat input, gives
+the model a deliberately scoped MCP tool set, and cancels generation when the
+client leaves. React receives the same validated UI-message chunks through a
+typed chat transport.
+
+## Define tools as ordinary Functions
+
+Start with Queries, Mutations, or Procedures that already enforce the business
+rules. Give every MCP-exposed Function a precise title and description, then
+publish it through one MCP endpoint with the smallest scope grant it needs.
+
+```ts title="apps/server/functions/admin/mcp.ts"
+import { mcp } from "@workspace/ackerdb-generated/server";
+import { getOrder, cancelOrder } from "./tools";
+
+export const admin = mcp({
+  name: "admin",
+  tools: {
+    get_order: { fn: getOrder, access: { anyOf: ["read"] } },
+    cancel_order: {
+      fn: cancelOrder,
+      access: { anyOf: ["operate"] },
+      annotations: { destructiveHint: true },
+    },
+  },
+});
+```
+
+The endpoint is the tool-policy boundary. It decides wire names, scopes, and
+annotations; the Functions remain the only place that owns domain behavior.
+
+## Stream through an SSE Procedure
+
+Use the standard AI SDK chat arguments so React needs no mapping layer:
+
+```ts title="apps/server/functions/chat.ts"
+import { v } from "@ackerdb/server";
+import { sseProcedure } from "@workspace/ackerdb-generated/server";
+import {
+  convertToModelMessages,
+  stepCountIs,
+  streamText,
+  toUIMessageStream,
+  type InferUIMessageChunk,
+  type UIMessage,
+} from "ai";
+import { admin } from "./admin/mcp";
+
+const MAX_STEPS = 8;
+
+export const stream = sseProcedure({
+  access: "authenticated",
+  args: {
+    trigger: v.string(),
+    chatId: v.string(),
+    messageId: v.string().nullable(),
+    messages: v.jsonb<UIMessage[]>(),
+  },
+  yields: v.jsonb<InferUIMessageChunk<UIMessage>>(),
+  handler: async (ctx, args) => {
+    const tools = admin.aiTools(ctx, { scopes: ["read"] });
+    const result = streamText({
+      model: createModel(),
+      messages: await convertToModelMessages(args.messages),
+      tools,
+      stopWhen: stepCountIs(MAX_STEPS),
+      abortSignal: ctx.abortSignal,
+    });
+    return toUIMessageStream({ stream: result.stream, tools });
+  },
+});
+```
+
+Use a finite model-step policy in a production agent. The model can call a tool
+more than once; without a limit, an accidental loop turns one user request into
+unbounded external work.
+
+## Connect AI SDK React
+
+`@ackerdb/client-react/ai` adapts the generated SSE reference to AI SDK v7's
+`ChatTransport`:
+
+```tsx title="apps/web/src/chat.tsx"
+import { useChat } from "@ai-sdk/react";
+import { useChatTransport } from "@ackerdb/client-react/ai";
+import { api } from "@workspace/ackerdb-generated/api";
+
+export function Chat() {
+  const transport = useChatTransport(api.chat.stream);
+  const chat = useChat({ transport });
+  // Render chat.messages and call chat.sendMessage(...).
+}
+```
+
+Stopping the AI SDK request aborts the AckerDB SSE call. Unmounting the hook
+also aborts streams it owns. SSE Procedures are intentionally non-resumable:
+if a client disconnects, present an interrupted response or let the user ask
+again rather than silently starting a replacement model run.
+
+## Keep authority small and explicit
+
+The model never receives a database connection or an all-powerful tool bag.
+Give `aiTools` the exact endpoint and scopes required for the chat's role. A
+read-only support assistant should not gain a mutation because the same MCP
+endpoint happens to offer one for an administrator.
+
+Use [MCP Tools](/docs/mcp-tools) for tool publication, [SSE Procedures](/docs/sse-procedures)
+for streaming behavior, and [Access Policies](/docs/access-policies) to put
+the final authorization decision in the Functions themselves.

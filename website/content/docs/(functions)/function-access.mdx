@@ -1,6 +1,49 @@
 ---
 title: "Function Access"
-description: "Choose public, authenticated, system, or policy-based Function access."
+description: "Attach an access declaration to a Function, then follow the authorization contract."
 ---
 
-Complete documentation for Function Access is coming soon.
+Every published Function has an access declaration. It is part of the
+declaration—not a separate route setting—and it is evaluated before the
+handler runs.
+
+~~~ts title="apps/server/functions/notes.ts"
+export const publish = mutation({
+  access: "authenticated",
+  args: { id: v.bigint() },
+  handler: async (ctx, args) => {
+    // The handler runs only after this admission check succeeds.
+  },
+});
+~~~
+
+[Access Policies](/docs/access-policies) owns the policy contract: public,
+authenticated, system, and callback policies; verified principals; denial
+outcomes; and resource filtering. Read it before designing a policy callback.
+
+## Add scopes when capability is the rule
+
+A Function can additionally require named scopes. Access decides whether a
+caller may attempt the operation; scopes express reusable capabilities after
+that admission check.
+
+~~~ts
+export const moderate = mutation({
+  access: "authenticated",
+  scopes: { allOf: ["notes:moderate"] },
+  args: { id: v.bigint() },
+  handler: (ctx, args) => ctx.db.notes.patch(args.id, { status: "hidden" }),
+});
+~~~
+
+[Scopes](/docs/scopes) owns the application vocabulary, grants, wildcard
+expansion, and scope-resolution lifecycle.
+
+## Keep routing separate from authorization
+
+apiPath changes the generated reference namespace and HTTP route root. It does
+not grant access. Declare a custom group only for a real interface boundary,
+then keep the Function's access declaration equally explicit.
+
+See [Application Model](/docs/application-model) for API groups and
+[Function HTTP API](/docs/function-http-api) for exposing a Function over HTTP.

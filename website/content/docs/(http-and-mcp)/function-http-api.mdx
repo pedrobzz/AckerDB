@@ -3,4 +3,99 @@ title: "Function HTTP API"
 description: "Expose supported Function declarations without rebuilding parallel handlers."
 ---
 
-Complete documentation for Function HTTP API is coming soon.
+The Function HTTP API exposes an existing query, mutation, procedure, or SSE
+procedure without creating a second handler. It uses the same validators,
+authentication, access policy, transactions, and declared application errors
+as every other call to that Function.
+
+## Opt in per Function
+
+Set http: true on a Function declaration. A module path and export determine
+the default route: functions/catalog.ts exporting lookup becomes
+/api/catalog/lookup.
+
+~~~ts title="functions/catalog.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const lookup = query({
+  access: "public",
+  http: true,
+  title: "Look up a catalog item",
+  description: "Return one catalog item by SKU.",
+  args: { sku: v.bigint() },
+  returns: v.object({
+    sku: v.bigint(),
+    name: v.string(),
+  }).nullable(),
+  handler: async (ctx, args) => {
+    const item = await ctx.db.catalog
+      .query()
+      .where((item) => item.sku.eq(args.sku))
+      .unique();
+    return item === null ? null : { sku: item.sku, name: item.name };
+  },
+});
+~~~
+
+`http: true` is shorthand for `http: { openapi: true }`. Use
+`http: { openapi: false }` for a callable endpoint that is intentionally absent
+from [OpenAPI](/docs/openapi). Omitting http, or setting it to false, leaves
+the Function unreachable over HTTP.
+
+## Methods and arguments
+
+| Function kind | Methods |
+| --- | --- |
+| Query | GET and POST |
+| Mutation | POST |
+| Procedure | POST |
+| SSE procedure | POST |
+
+POST sends the entire args object as an application/json body. A query GET
+sends that same object as URL-encoded JSON in one args parameter:
+
+~~~sh
+curl 'https://api.example.com/api/catalog/lookup?args=%7B%22sku%22%3A%229007199254740993%22%7D'
+~~~
+
+Per-field query parameters such as ?sku=123 are deliberately unsupported.
+Omit args or send an empty request body only when the Function accepts an
+empty argument object.
+
+The HTTP boundary uses standard JSON. Bigints, identities, file IDs, and file
+grant IDs cross as decimal strings; byte values cross as base64 strings. The
+response is the Function value itself, not a WebSocket protocol frame.
+
+## Authentication and errors
+
+Send the normal Authorization credential accepted by the application. The
+Function's declared access policy runs unchanged. Validation, authentication,
+authorization, capacity, and other framework failures return typed AckerDB
+outcomes; declared application errors retain their declared status and body.
+
+Keep the HTTP Function contract explicit with args, returns, errors, title,
+and description. Those declarations protect callers at runtime and make the
+same API useful to the OpenAPI generator.
+
+## Mutation retries
+
+HTTP mutations accept an optional `Idempotency-Key` header. It must be a
+caller-generated UUIDv7 within the server's retained replay window. Reuse a
+key only for the same mutation and arguments: a retry receives the stored
+outcome instead of running another write. Reusing a key with a different target
+or arguments is a conflict.
+
+Mutation responses include commit and delivery information in these headers:
+
+- x-ackerdb-commit-version
+- x-ackerdb-durability
+- x-ackerdb-replay
+- x-ackerdb-obligations
+
+Without an Idempotency-Key, each POST is a new mutation. Generate a fresh key
+for each mutation intent, then reuse it only when an HTTP client retries that
+same intent after an unknown network outcome.
+
+Use [HTTP Handlers](/docs/http-handlers) only when the endpoint genuinely needs
+raw HTTP semantics such as signature verification over untouched bytes.

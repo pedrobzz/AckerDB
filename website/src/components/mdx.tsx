@@ -1,5 +1,6 @@
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { CodeBlock, Pre } from "fumadocs-ui/components/codeblock";
+import { TriangleAlert } from "lucide-react";
 import type { MDXComponents } from "mdx/types";
 import {
   Children,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import type { DocumentationIdentity } from "@/lib/documentation/identity";
 import { versionedDocumentationHref } from "@/lib/documentation/identity";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 
 const languageLabels: Record<string, string> = {
@@ -63,6 +65,28 @@ function DocumentationCodeBlock({
   );
 }
 
+function DocumentationWarning({
+  children,
+  title = "Warning",
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { title?: ReactNode }) {
+  return (
+    <Alert
+      {...props}
+      className={cn(
+        "border-l-amber-500 bg-amber-500/10 text-amber-950 dark:text-amber-100",
+        props.className,
+      )}
+    >
+      <TriangleAlert aria-hidden="true" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="text-amber-900/80 dark:text-amber-100/80">
+        {children}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 function versionedLink(identity: DocumentationIdentity) {
   const Link = defaultMdxComponents.a;
 
@@ -81,6 +105,7 @@ export function getMdxComponents(
   return {
     ...defaultMdxComponents,
     pre: DocumentationCodeBlock,
+    Warning: DocumentationWarning,
     ...(identity ? { a: versionedLink(identity) } : {}),
     ...components,
   };

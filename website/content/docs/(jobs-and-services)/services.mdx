@@ -3,4 +3,67 @@ title: "Services"
 description: "Own complex or unsupported runtime capabilities beside the application."
 ---
 
-Complete documentation for Services is coming soon.
+<Warning title="Experimental">
+  Services are experimental. Their API and capabilities will probably change
+  before the feature is stable. Use them only where you can update alongside
+  AckerDB.
+</Warning>
+
+Services own long-lived runtime capabilities that do not fit a request,
+procedure, or job: a connection to a provider, a native watcher, a worker
+pool, or another resource with an explicit start and cleanup phase. They are
+not a queue; use [Background Jobs](/docs/background-jobs) for durable work.
+
+## Declare a service
+
+Place a service in services/. The module path and export name identify it in
+startup diagnostics.
+
+~~~ts title="services/provider.ts"
+import { service } from "@workspace/ackerdb-generated/server";
+
+export const emailProvider = service({
+  start: async ({ system, abortSignal, fail }) => {
+    const connection = await connectToEmailProvider();
+
+    connection.onError((error) => {
+      fail(error);
+    });
+
+    abortSignal.addEventListener("abort", () => {
+      connection.stopReceiving();
+    });
+
+    return async () => {
+      await connection.close();
+    };
+  },
+});
+~~~
+
+start receives a system runner, an AbortSignal, and fail. The returned cleanup
+function may be synchronous or asynchronous. A service starts before the
+server is ready to accept traffic, so a startup failure prevents a partially
+ready application.
+
+The system runner has trusted application authority. Keep its use behind the
+service's narrow responsibility: validate and translate provider events before
+running database work, and avoid treating an external payload as a privileged
+internal request.
+
+## Discovery and server commands
+
+Export only actual service declarations from the module. Helpers are ignored;
+an object that resembles a service but was not created by service() is rejected
+at startup. Service modules are loaded by serving commands, not by code
+generation or file-store migration tooling, so importing a module must not be
+needed merely to generate types.
+
+Use a service when it must stay available for the lifetime of this server
+generation. Put one-off provider calls in a procedure or a job instead. A
+service can enqueue or run trusted application work through its system runner,
+but it should not become an unbounded in-memory task queue.
+
+Read [Service Lifecycle](/docs/service-lifecycle) before connecting to an
+external system. It defines how startup failure, runtime failure, shutdown,
+and cleanup behave.

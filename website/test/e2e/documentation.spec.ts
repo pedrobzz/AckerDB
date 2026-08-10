@@ -103,7 +103,12 @@ test("searches pages from the command palette and runs the theme command", async
   await page.keyboard.press("ControlOrMeta+K");
   palette = page.getByRole("dialog", { name: "Command Palette" });
   await palette.getByRole("combobox", { name: /search/i }).fill("defineTable");
-  await palette.getByText("defineTable", { exact: true }).click();
+  const defineTableResult = palette
+    .getByRole("option")
+    .filter({ hasText: "defineTable" })
+    .filter({ hasText: "Basic Usage · Declare The Todos Schema" });
+  await expect(defineTableResult).toHaveCount(1);
+  await defineTableResult.click();
   await expect(page).toHaveURL(/\/docs\/basic-usage#declare-the-todos-schema$/);
 
   await page.keyboard.press("ControlOrMeta+K");
@@ -227,11 +232,11 @@ test("switches between Latest and Canary while preserving the page route", async
   await expect(page).toHaveURL(/\/docs\/basic-usage$/);
 });
 
-test("navigates from the generated sidebar tree to placeholder documentation", async ({ page }) => {
+test("navigates from the generated sidebar tree to authored documentation", async ({ page }) => {
   await openDocumentation(page, "/docs/application-model");
 
   await expect(page.getByRole("heading", { level: 1, name: "Application Model" })).toBeVisible();
-  await expect(page.getByText("Complete documentation for Application Model is coming soon.")).toBeVisible();
+  await expect(page.getByText(/coming soon/i)).toHaveCount(0);
 
   const sidebar = page.getByTestId("docs-sidebar");
   await expect(
@@ -245,7 +250,7 @@ test("navigates from the generated sidebar tree to placeholder documentation", a
 
   await expect(page).toHaveURL(/\/docs\/queries$/);
   await expect(page.getByRole("heading", { level: 1, name: "Queries" })).toBeVisible();
-  await expect(page.getByText("Complete documentation for Queries is coming soon.")).toBeVisible();
+  await expect(page.getByText(/coming soon/i)).toHaveCount(0);
 });
 
 test("reveals nested page children only inside their active documentation branch", async ({

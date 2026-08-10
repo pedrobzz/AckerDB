@@ -3,4 +3,73 @@ title: "OpenAPI"
 description: "Generate the application HTTP surface as an OpenAPI document."
 ---
 
-Complete documentation for OpenAPI is coming soon.
+AckerDB generates an OpenAPI 3.1.1 document from the HTTP-exposed Function
+surface. The document and listener share the same function validators, routes,
+methods, argument encoding, response schemas, errors, and mutation receipt
+headers.
+
+## Export a document
+
+Run the CLI from the application directory:
+
+~~~sh
+acker openapi ./openapi.json
+~~~
+
+Or provide the application directory explicitly:
+
+~~~sh
+acker openapi ./openapi.json ./apps/api
+~~~
+
+The command runs code generation, loads the application manifest and Function
+modules, and writes a deterministic JSON document. It does not start a server
+or require database, port, or credential authority.
+
+## What appears in the document
+
+Only Functions with `http: true` or `http: { openapi: true }` appear. A Function
+with `http: { openapi: false }` remains callable but is hidden. Functions without
+HTTP exposure and raw [HTTP Handlers](/docs/http-handlers) do not appear.
+
+The document is a faithful representation of the exposed Function contract.
+[Function HTTP API](/docs/function-http-api) owns route methods, argument
+encoding, JSON values, and mutation retry headers.
+
+An exposed Function with no returns validator is still documented, but its
+success response is marked x-ackerdb-untyped because the response body has no
+declared schema. Add a returns validator for a useful generated client contract.
+
+## Mutation and authentication metadata
+
+Mutation operations document the optional Idempotency-Key request header and
+the x-ackerdb receipt response headers. The document also includes bearer
+authentication and the standard AckerDB outcome schema for framework failures.
+
+Do not hand-edit the generated file. Change the Function declaration instead:
+add http, args, returns, errors, title, or description, then re-export.
+
+## Serve the document at runtime
+
+The CLI export is the default. An embedded host can additionally opt in to
+GET /_openapi.json:
+
+~~~ts
+import { serve } from "@ackerdb/server";
+
+serve({
+  runtime,
+  port: 3000,
+  openapiEndpoint: {
+    title: "Example API",
+    version: "1.0.0",
+  },
+});
+~~~
+
+Without openapiEndpoint, /_openapi.json is an ordinary 404. This runtime option
+serves the same document shape as a CLI export; it does not discover an
+application identity on its own, so supply the title and version deliberately.
+
+For endpoint behavior and standard JSON encoding, see
+[Function HTTP API](/docs/function-http-api).

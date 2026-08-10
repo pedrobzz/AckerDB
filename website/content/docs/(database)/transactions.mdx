@@ -1,6 +1,72 @@
 ---
 title: "Transactions"
-description: "Understand atomic Function execution and transaction boundaries."
+description: "Understand the atomic boundary shared by durable AckerDB state changes."
 ---
 
-Complete documentation for Transactions is coming soon.
+A transaction is the boundary between an observed state transition and a durable
+one. AckerDB commits all of its table changes together, or rolls them all back.
+Only a successful outermost commit can publish the resulting reactive changes.
+
+## A Mutation already owns the boundary
+
+Every [Mutation](/docs/mutations) enters this boundary automatically. Its
+Function declaration owns the handler context; this page owns the generic
+atomicity, rollback, and nesting contract.
+
+Keep the read that decides whether a transition is valid and the write that
+performs it inside the same Mutation. A prior Query result is not an authority
+that remains true until a later write.
+
+## A Procedure opens the boundary explicitly
+
+A [Procedure](/docs/procedures) has no ambient writer. It can complete remote or
+otherwise bounded work, then open one short transaction for its durable effect.
+
+~~~ts
+const source = await fetch(args.url, { signal: ctx.abortSignal });
+if (!source.ok) throw new Error("source fetch failed");
+
+const parsed = await source.json();
+
+return ctx.tx((tx) =>
+  tx.db.importedNotes.upsert(
+    { externalId: parsed.id },
+    {
+      title: parsed.title,
+      batchId: args.batchId,
+      updatedAt: tx.timestamp,
+    },
+  ),
+);
+~~~
+
+The external operation is not made transactional by this structure. If a
+product needs reconciliation across a remote system, persist an operation
+identity and state instead of holding a database lock over the network.
+
+## Keep the transaction free of external waits
+
+External, human, and unbounded work does not belong inside a database
+boundary. Keep it before or after the durable transition, then commit only the
+small state change that records its outcome.
+
+## Nested Function calls retain a real boundary
+
+A server-side Function call still validates arguments and applies the callee's
+access policy. A nested Mutation uses a savepoint: its failure rolls back its
+own writes before the outer handler decides whether to recover or fail the
+whole operation. The outermost successful transaction is the only durable
+publication point.
+
+Use a shared server helper when the logic has no independent address, policy,
+or Result contract. Use a nested Function when that boundary is intentional.
+
+## Commit precedes reactive publication
+
+AckerDB collects the rows a transaction changes, commits SQLite, and then lets
+the reactivity system inspect affected live Queries. A failed transaction
+publishes nothing, so subscribers cannot observe a half-written database state.
+
+[Reactivity](/docs/reactivity) owns the invalidation and reevaluation mechanism.
+[Writing Data](/docs/writing-data) owns individual table operations, and
+[Arguments and Results](/docs/arguments-and-results) owns business failures.

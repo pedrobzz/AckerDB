@@ -3,4 +3,71 @@ title: "HTTP Handlers"
 description: "Handle HTTP-specific requests inside the typed application context."
 ---
 
-Complete documentation for HTTP Handlers is coming soon.
+An HTTP handler is the raw HTTP escape hatch. It receives the original Request
+and returns a Response unchanged by AckerDB. Use it for a webhook signature,
+an external protocol callback, a redirect, or a non-JSON response—not for a
+normal application operation that a typed Function can describe.
+
+## Declare a raw route
+
+~~~ts title="functions/hooks.ts"
+import { httpHandler } from "@workspace/ackerdb-generated/server";
+
+export const paymentProvider = httpHandler({
+  methods: ["POST"],
+  handler: async (ctx, request) => {
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const signature = request.headers.get("x-provider-signature");
+
+    if (!verifyProviderSignature(bytes, signature)) {
+      return new Response("invalid signature", { status: 401 });
+    }
+
+    const event = JSON.parse(new TextDecoder().decode(bytes));
+    await ctx.tx((tx) =>
+      tx.db.paymentEvents.insert({ type: event.type }),
+    );
+
+    return new Response(null, { status: 204 });
+  },
+});
+~~~
+
+The module and export name make this route available at
+/api/hooks/paymentProvider. A handler can set apiPath to place it under a
+registered non-default API group.
+
+Allowed methods are GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS. Declare
+every method you handle; an undeclared method receives 405 with an Allow header.
+If a browser needs CORS preflight, include OPTIONS and return the exact CORS
+headers your endpoint needs.
+
+## What the handler owns
+
+Raw handlers receive no automatic validator, JSON decoding, authentication, or
+authorization. Authorization is an ordinary request header. Verify it yourself
+before opening a trusted transaction, and validate every request field before
+using it.
+
+The context provides:
+
+- log and timestamp for observability;
+- abortSignal for cancellation when the client disconnects or the runtime stops;
+- files for trusted immutable file byte access; and
+- tx for deliberate application transactions.
+
+The request body and headers cross intact, including Authorization. AckerDB
+enforces the configured request-byte limit before invoking the handler, but
+does not turn the request into an application contract. Its Response headers
+and body pass through as returned.
+
+## What a raw route does not get
+
+An httpHandler has no generated client reference, no Function HTTP exposure,
+no access policy, and no OpenAPI operation. It must not be used as a parallel
+implementation of a query or mutation merely because manual parsing feels
+convenient.
+
+Prefer [Function HTTP API](/docs/function-http-api) when validators, typed
+errors, client bindings, idempotency, or generated [OpenAPI](/docs/openapi)
+are part of the endpoint contract.

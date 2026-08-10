@@ -34,6 +34,8 @@ import type {
 } from "@/lib/documentation/identity";
 import { useVersionNavigation } from "./version-navigation";
 
+const searchCandidateLimit = 200;
+
 interface DocumentationCommandPaletteProps {
   catalog: DocumentationVersionCatalog;
   currentAncestry: string[];
@@ -54,8 +56,65 @@ function plainSearchText(value: string): string {
   return value.replaceAll(/<\/?mark>/g, "");
 }
 
-function searchResultValue(result: { content: string; url: string }): string {
-  return `${result.url}:${plainSearchText(result.content)}`;
+interface SearchResult {
+  breadcrumbs?: string[];
+  content: string;
+  id: string;
+  type: "heading" | "page" | "text";
+  url: string;
+}
+
+function searchResultValue(result: SearchResult): string {
+  return result.id;
+}
+
+function titleCase(value: string): string {
+  return decodeURIComponent(value)
+    .replaceAll(/[-_]+/g, " ")
+    .replace(/\b[a-z]/g, (character) => character.toUpperCase());
+}
+
+function searchResultLocation(result: SearchResult): string {
+  if (result.breadcrumbs && result.breadcrumbs.length > 0) {
+    return result.breadcrumbs.join(" · ");
+  }
+
+  const [pathname, fragment] = result.url.split("#", 2);
+  const page = pathname.split("/").filter(Boolean).at(-1);
+  const location = page ? titleCase(page) : "Documentation";
+
+  return fragment ? `${location} · ${titleCase(fragment)}` : location;
+}
+
+function uniqueResults(results: SearchResult[]): SearchResult[] {
+  const urls = new Set<string>();
+
+  return results.filter((result) => {
+    if (urls.has(result.url)) return false;
+    urls.add(result.url);
+    return true;
+  });
+}
+
+function normalizedSearchText(value: string): string {
+  return plainSearchText(value).toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function searchMatchScore(result: SearchResult, search: string): number {
+  const content = normalizedSearchText(result.content);
+  const query = normalizedSearchText(search);
+  if (!query) return 0;
+  if (content === query) return 4;
+  if (content.includes(query)) return 3;
+
+  const terms = new Set(query.split(" ").filter(Boolean));
+  return Array.from(terms).filter((term) => content.includes(term)).length / terms.size;
+}
+
+function orderResults(results: SearchResult[], search: string): SearchResult[] {
+  return [...results].sort(
+    (left, right) => searchMatchScore(right, search) - searchMatchScore(left, search),
+  );
 }
 
 export function DocumentationCommandPalette({
@@ -73,11 +132,19 @@ export function DocumentationCommandPalette({
   const { resolvedTheme, setTheme } = useTheme();
   const navigation = useVersionNavigation(currentIdentity, catalog, currentAncestry);
   const client = useMemo(
-    () => staticClient({ from: `/api/search/${versionId(currentIdentity)}` }),
+    () =>
+      staticClient({
+        from: `/api/search/${versionId(currentIdentity)}`,
+        search: { limit: searchCandidateLimit },
+      }),
     [currentIdentity],
   );
   const { query, search, setSearch } = useDocsSearch({ client, delayMs: 60 });
   const results = query.data === "empty" || query.data === undefined ? [] : query.data;
+  const displayedResults = useMemo(
+    () => uniqueResults(orderResults(results, search)),
+    [results, search],
+  );
   const [selectedSearchResult, setSelectedSearchResult] = useState("");
 
   useEffect(() => {
@@ -85,9 +152,9 @@ export function DocumentationCommandPalette({
   }, [open, setSearch]);
 
   useEffect(() => {
-    if (!search || results.length === 0) return;
-    setSelectedSearchResult(searchResultValue(results[0]));
-  }, [results, search]);
+    if (!search || displayedResults.length === 0) return;
+    setSelectedSearchResult(searchResultValue(displayedResults[0]));
+  }, [displayedResults, search]);
 
   const go = (url: string) => {
     onOpenChange(false);
@@ -131,21 +198,31 @@ export function DocumentationCommandPalette({
             <CommandEmpty>No documentation found.</CommandEmpty>
           )}
 
-          {results.length > 0 && (
+          {displayedResults.length > 0 && (
             <CommandGroup heading="Documentation">
-              {results.slice(0, 12).map((result) => (
-                <CommandItem
-                  key={result.id}
-                  onSelect={() => go(result.url)}
-                  value={searchResultValue(result)}
-                >
-                  <Search aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">
-                    {plainSearchText(result.content)}
-                  </span>
-                  <span className="text-[10px] uppercase text-muted-foreground">{result.type}</span>
-                </CommandItem>
-              ))}
+              {displayedResults.slice(0, 12).map((result) => {
+                const content = plainSearchText(result.content);
+                const location = searchResultLocation(result);
+
+                return (
+                  <CommandItem
+                    key={result.id}
+                    onSelect={() => go(result.url)}
+                    value={searchResultValue(result)}
+                  >
+                    <Search aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{content}</span>
+                      {location !== content && (
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {location}
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[10px] uppercase text-muted-foreground">{result.type}</span>
+                  </CommandItem>
+                );
+              })}
             </CommandGroup>
           )}
 

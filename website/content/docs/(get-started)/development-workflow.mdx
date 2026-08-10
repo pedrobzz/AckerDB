@@ -3,4 +3,89 @@ title: Development Workflow
 description: Run code generation, server development, and client type checking as one local loop.
 ---
 
-Detailed Development Workflow documentation is coming soon.
+The normal AckerDB loop has two long-running processes: AckerDB supervises the
+Bun server, and the existing frontend tooling supervises React. Generated
+bindings connect them without a third service or a manual synchronization step.
+
+## Add stable workspace commands
+
+Give the server package direct commands for its own lifecycle, then expose the
+few commands developers need from the workspace root:
+
+~~~json title="package.json"
+{
+  "scripts": {
+    "server:dev": "bun run --cwd apps/server dev",
+    "web:dev": "bun run --cwd apps/web dev",
+    "codegen": "acker codegen apps/server"
+  }
+}
+~~~
+
+The web command delegates to the React application already in the workspace.
+AckerDB does not choose its framework or bundler.
+
+## Run the daily loop
+
+Start the server and web application in separate terminals:
+
+~~~bash title="Terminal 1 — AckerDB"
+bun run server:dev
+~~~
+
+~~~bash title="Terminal 2 — React"
+bun run web:dev
+~~~
+
+Development mode loads the server configuration, generates the application
+contract, starts the Bun process, and watches valid server source changes. A
+successful source change regenerates the bindings and restarts the server; the
+database persists across that ordinary restart.
+
+[CLI Reference](/docs/cli-reference) owns exact command arguments and
+production-mode behavior. [Client Lifecycle](/docs/client-lifecycle) owns how
+connected clients recover after a development reconnect.
+
+## Edit the source owner
+
+| Change | Edit |
+| --- | --- |
+| Schema and application capabilities | apps/server/app.ts |
+| Published Functions | apps/server/functions |
+| Server-only domain code | apps/server/lib |
+| Jobs and workflows | apps/server/jobs |
+| Long-lived integrations | apps/server/services |
+| React behavior | apps/web/src |
+| Generated contract | Its source; never generated output |
+
+Codegen is the only writer of the generated package. It rewrites a file only
+when the content changed, so frontend tools observe real contract changes
+instead of timestamp churn. [Generated Files](/docs/generated-files) owns the
+file-level rules.
+
+## Treat schema changes as data changes
+
+A compatible schema change can apply during the development restart. A change
+that needs an explicit data transformation stops before changing the database
+and creates an ordered migration for review. Complete the transform and commit
+it with its generated metadata.
+
+[Schema Migrations](/docs/schema-migrations) owns the migration lifecycle,
+renames, and reset boundary. [CLI Reference](/docs/cli-reference) owns the
+generate and reset commands.
+
+## Verify one shared contract
+
+When development mode is not running, generate before a workspace-wide
+typecheck:
+
+~~~bash title="CI"
+bun install --frozen-lockfile
+bun run codegen
+git diff --exit-code -- packages/ackerdb-generated
+bun run typecheck
+bun test
+~~~
+
+The diff check proves the committed bindings match server source. The workspace
+typecheck then validates server and client against that exact contract.

@@ -3,4 +3,114 @@ title: "External Cache Adapters"
 description: "Connect the Cache Plugin to Redis or Upstash."
 ---
 
-Complete documentation for External Cache Adapters is coming soon.
+An external Cache store delegates cache bytes to a provider such as Redis or
+Upstash. It is a procedure-kind Plugin because every operation may perform
+network I/O. Mount it when the cache must be shared outside the local AckerDB
+database or needs provider-managed capacity.
+
+## Redis
+
+Install the cache package and import the Redis adapter from its subpath:
+
+~~~ts title="app.ts"
+import { cachePlugin } from "@ackerdb/cache";
+import { redisCacheStore } from "@ackerdb/cache/redis";
+import { defineApp, defineSchema, v } from "@ackerdb/server";
+
+const cache = cachePlugin({
+  store: redisCacheStore({
+    url: process.env.REDIS_URL!,
+    keyPrefix: "example",
+  }),
+  namespaces: {
+    profile: v.object({ name: v.string() }),
+  },
+});
+
+export default defineApp({
+  schema: defineSchema({}),
+  plugins: { cache },
+});
+~~~
+
+The adapter checks connectivity during application startup, passes expiration
+as Redis PX, and maps conditional writes to Redis NX and XX. It closes its
+connection when the application shuts down.
+
+## Upstash
+
+~~~ts title="app.ts"
+import { cachePlugin } from "@ackerdb/cache";
+import { upstashCacheStore } from "@ackerdb/cache/upstash";
+
+const cache = cachePlugin({
+  store: upstashCacheStore({
+    url: process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+    keyPrefix: "example",
+  }),
+});
+~~~
+
+The Upstash URL must be HTTPS and may not embed credentials, query parameters,
+or a fragment. The adapter sends authenticated Redis commands through its REST
+endpoint. Keep both the endpoint and token in the runtime environment, not in
+source control.
+
+## Procedure boundary
+
+External cache operations are available only where procedure operations are
+allowed. Use them from a procedure, SSE procedure, system context, or another
+procedure-kind Plugin—not from a query or mutation.
+
+~~~ts title="functions/profile.ts"
+import { procedure } from "@workspace/ackerdb-generated/server";
+
+export const lookup = procedure({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => ctx.cache.get("current"),
+});
+~~~
+
+The cache API is otherwise the same: get returns a value or undefined, set
+returns whether it was stored, and delete returns whether a live value was
+removed. External stores own their own capacity policy, so maxBytes,
+maxEntryBytes, and maxEntries are intentionally unavailable in this mode.
+
+## Custom adapters
+
+Use defineCacheStore to adapt another provider. Its keyPrefix must be nonblank;
+the cache plugin adds its own framed mount, namespace, and typed-key segments
+after that prefix.
+
+~~~ts
+import { defineCacheStore } from "@ackerdb/cache";
+
+const store = defineCacheStore({
+  keyPrefix: "example",
+  async open({ abortSignal }) {
+    const client = await connectProvider({ abortSignal });
+    return {
+      get: (key, request) => client.get(key, request.abortSignal),
+      set: (key, payload, request) =>
+        client.setAtomically(key, payload, request),
+      delete: (key, request) => client.delete(key, request.abortSignal),
+      close: () => client.close(),
+    };
+  },
+});
+~~~
+
+The handle must provide get, an atomic conditional set, and delete; close is
+optional. Respect the AbortSignal on opening and every request. If a provider
+call fails, AckerDB surfaces it as a cache-store error rather than treating a
+network failure as a cache miss.
+
+
+## Related boundaries
+
+[Cache](/docs/cache-plugin) owns the Plugin's application API and lifecycle.
+[Installing Plugins](/docs/installing-plugins) owns mounting it, and
+[Procedures](/docs/procedures) explains why remote adapter work belongs outside
+a durable database transaction.

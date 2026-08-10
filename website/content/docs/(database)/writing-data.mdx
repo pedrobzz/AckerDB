@@ -3,4 +3,127 @@ title: "Writing Data"
 description: "Insert, update, patch, and delete rows through typed database capabilities."
 ---
 
-Complete documentation for Writing Data is coming soon.
+Write access exists only in a Mutation or inside a Procedure's `ctx.tx(...)`
+callback. The generated database type lets those contexts change durable
+tables, while a Query receives the read-only version of the same table API.
+
+## Insert rows without their primary key
+
+SQLite assigns the primary key. An insert accepts the table's remaining
+insert-shaped fields; [Tables](/docs/tables) and [Validators and
+Indexes](/docs/validators-and-indexes) own primary-key and nullability rules.
+
+~~~ts title="apps/server/functions/notes.ts"
+import { v } from "@ackerdb/server";
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const create = mutation({
+  access: (ctx, args) =>
+    ctx.auth.kind === "user" && ctx.auth.identity === args.ownerId,
+  args: {
+    ownerId: v.identity(),
+    title: v.string().min(1).max(200),
+  },
+  handler: async (ctx, args) => {
+    const id = await ctx.db.notes.insert({
+      ownerId: args.ownerId,
+      title: args.title,
+      body: null,
+      status: "open",
+      updatedAt: ctx.timestamp,
+    });
+
+    return { id };
+  },
+});
+~~~
+
+Do not provide `id` yourself. The insert result is an awaitable ID; add
+`.returning()` when the handler needs the complete stored row:
+
+~~~ts
+const note = await ctx.db.notes
+  .insert({ ownerId, title, body: null, status: "open", updatedAt: ctx.timestamp })
+  .returning();
+~~~
+
+## Patch a known row
+
+`patch(id, partial)` validates only the fields being changed and never allows
+a primary-key edit. It rejects when the row does not exist, which is useful for
+a state transition that must affect exactly one existing row.
+
+~~~ts
+await ctx.db.notes.patch(args.id, {
+  title: args.title,
+  updatedAt: ctx.timestamp,
+});
+~~~
+
+An empty patch is valid and leaves the row intact. Use it only when that is
+actually useful; it is not a substitute for checking whether the update should
+happen.
+
+## Replace or delete a row
+
+`replace(id, row)` requires a complete insert-shaped row (all non-nullable
+fields, no primary key) and rejects if there is no existing row. Use it when
+the replacement is truly the full next state rather than a partial change.
+
+~~~ts
+await ctx.db.notes.replace(args.id, {
+  ownerId: existing.ownerId,
+  title: args.title,
+  body: args.body,
+  status: existing.status,
+  updatedAt: ctx.timestamp,
+});
+~~~
+
+`delete(id)` is idempotent. Its ordinary result is `void`, and its
+`.returning()` projection resolves to the deleted row or `null`.
+
+~~~ts
+const removed = await ctx.db.notes.delete(args.id).returning();
+if (removed === null) return;
+~~~
+
+For bounded maintenance work, `deleteMany(ids)` accepts at most 256 distinct
+primary keys, deletes them in one statement, and returns the number removed.
+
+## Upsert only on a real unique key
+
+A table exposes `upsert` only when its schema contains the exact, non-null
+unique index. Supply the unique-key fields separately from values; the values
+cannot change that key.
+
+~~~ts
+const id = await ctx.db.preferences.upsert(
+  { ownerId: args.ownerId },
+  (existing) => ({
+    theme: args.theme,
+    updatedAt: ctx.timestamp,
+    revision: (existing?.revision ?? 0) + 1,
+  }),
+);
+~~~
+
+The example requires a non-null unique `["ownerId"]` index. The callback
+receives the existing row or `null`, which makes the create-versus-update
+decision explicit without a separate read.
+
+## Treat constraints as a contract
+
+AckerDB validates every write against the table schema. A unique-index conflict
+throws `UniqueConstraintError`; writes also reject invalid fields, invalid
+value shapes, primary-key edits, and missing rows where the operation promises
+one.
+
+Turn a product-level conflict into a declared Function error at the Function
+boundary when callers need to branch on it. Do not pre-read merely to predict a
+unique conflict: the database constraint is the authoritative concurrent
+check.
+
+All writes from one Mutation or transaction commit together. Continue with
+[Transactions](/docs/transactions) for atomicity, and
+[Arguments and Results](/docs/arguments-and-results) for typed outcomes.

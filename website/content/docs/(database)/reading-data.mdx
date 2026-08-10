@@ -3,4 +3,154 @@ title: "Reading Data"
 description: "Build typed table queries, filters, ordering, and pagination."
 ---
 
-Complete documentation for Reading Data is coming soon.
+Read durable tables from a Query or a Procedure transaction through `ctx.db`.
+The table accessor is generated from the schema, so a query cannot refer to a
+missing table or use an operation that its column type does not support.
+
+## Read one row by primary key
+
+`get` takes a bigint primary key and resolves to the row or `null`. It is the
+most direct choice when the caller already has an ID.
+
+~~~ts title="apps/server/functions/notes.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const byId = query({
+  access: "public",
+  args: { id: v.bigint() },
+  handler: (ctx, args) => ctx.db.notes.get(args.id),
+});
+~~~
+
+This is a public-resource example. Apply ownership or visibility rules before
+returning a private row; a table reference is not an authorization rule.
+
+## Build a typed table query
+
+Call `query()` and compose predicates with `where`. Field operations are
+selected from the validator: strings, numbers, IDs, and enums support their
+respective comparison operations; nullable fields also support `isNull()` and
+`isNotNull()`.
+
+~~~ts
+export const listOpen = query({
+  access: (ctx, args) =>
+    ctx.auth.kind === "user" && ctx.auth.identity === args.ownerId,
+  args: {
+    ownerId: v.identity(),
+    after: v.int().optional(),
+  },
+  handler: (ctx, args) => {
+    let notes = ctx.db.notes
+      .query()
+      .where((note) => note.ownerId.eq(args.ownerId))
+      .where((note) => note.status.eq("open"));
+
+    if (args.after !== undefined) {
+      notes = notes.where((note) => note.updatedAt.gt(args.after));
+    }
+
+    return notes
+      .orderBy((note) => note.updatedAt.desc())
+      .thenBy((note) => note.title.asc())
+      .collect();
+  },
+});
+~~~
+
+Use `and()`, `or()`, and `not()` to form one predicate when that reads more
+clearly:
+
+~~~ts
+.where((note) =>
+  note.status.eq("open").and(note.body.isNotNull()),
+)
+~~~
+
+The database adds the primary key as a deterministic tie-breaker after your
+declared ordering. Align indexes with the equality, range, and ordering
+operations you use; see [Validators and Indexes](/docs/validators-and-indexes).
+
+## Choose a materializer deliberately
+
+A table query stays lazy until a materializer runs it.
+
+| Method | Use when |
+| --- | --- |
+| `collect()` | You need every matching row and the set is bounded by the product. |
+| `take(count)` | You need at most a known count. |
+| `first()` | Any one matching row is acceptable. |
+| `unique()` | More than one matching row is a programming or data invariant failure. |
+| `count()` | You need the number of matches, not their rows. |
+| `iter()` | You can consume rows incrementally in server code. |
+| `sum`, `avg`, `min`, `max` | You need a scalar aggregate over the filtered set. |
+
+`first()` and `unique()` return `null` when nothing matches. Unlike
+`first()`, `unique()` throws if it finds a second row. Prefer a unique
+index plus an exact lookup where uniqueness is a real domain invariant.
+
+Aggregates ignore ordering. SQL-null values are skipped for aggregates;
+`sum` returns zero for an empty set, while `avg`, `min`, and `max`
+return `null`.
+
+~~~ts
+const total = await ctx.db.invoices
+  .query()
+  .where((invoice) => invoice.accountId.eq(args.accountId))
+  .sum((invoice) => invoice.amount);
+
+const latest = await ctx.db.notes
+  .query()
+  .where((note) => note.ownerId.eq(args.ownerId))
+  .max((note) => note.updatedAt);
+~~~
+
+## Page with the opaque cursor
+
+Use `paginate` for a public or unbounded list. Pass `nextCursor` back
+unchanged for the next page; do not inspect, construct, or persist assumptions
+about its contents.
+
+~~~ts
+export const page = query({
+  access: (ctx, args) =>
+    ctx.auth.kind === "user" && ctx.auth.identity === args.ownerId,
+  args: {
+    ownerId: v.identity(),
+    cursor: v.string().nullish(),
+  },
+  handler: (ctx, args) =>
+    ctx.db.notes
+      .query()
+      .where((note) => note.ownerId.eq(args.ownerId))
+      .orderBy((note) => note.updatedAt.desc())
+      .paginate({ cursor: args.cursor, pageSize: 50 }),
+});
+~~~
+
+A page contains `items` and `nextCursor`; `nextCursor: null` means there
+is no next page. Page sizes must be positive safe integers and are capped at
+256. A byte budget can make a page shorter than its requested row count so
+that page delivery remains bounded.
+
+## Use specialized accessors only when declared
+
+A table with a full-text declaration exposes `fullText(column, text)`; a
+table with a vector column exposes `nearest(column, vector, { metric })`.
+Those methods are absent from other table types.
+
+~~~ts
+const matches = await ctx.db.articles
+  .fullText("title", args.term)
+  .take(20);
+
+const nearest = await ctx.db.documents
+  .nearest("embedding", args.embedding, { metric: "cosine" })
+  .take(10);
+~~~
+
+Keep result sizes product-bounded, especially for a live Query. Read
+[Queries](/docs/queries) to expose a read to clients and
+[Reactivity](/docs/reactivity) to understand how its reads become a
+subscription dependency.

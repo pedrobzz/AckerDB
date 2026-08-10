@@ -3,4 +3,93 @@ title: "Installing Plugins"
 description: "Install and mount a Plugin in an AckerDB application."
 ---
 
-Complete documentation for Installing Plugins is coming soon.
+An AckerDB Plugin is an application-local capability mounted in the app
+manifest. It can own private schema, typed operations, dependencies on other
+Plugins, and a lifecycle. Installing a package only makes its factory
+available; mounting an instance makes its capabilities appear on function
+contexts.
+
+## Add and mount a Plugin
+
+Install the package with your package manager, then create one instance and
+pass it to defineApp under a stable mount name.
+
+~~~sh
+bun add @ackerdb/cache
+~~~
+
+~~~ts title="app.ts"
+import { cachePlugin } from "@ackerdb/cache";
+import { defineApp, defineSchema, v } from "@ackerdb/server";
+
+const cache = cachePlugin({
+  namespaces: {
+    profiles: v.object({ name: v.string() }),
+  },
+});
+
+export default defineApp({
+  schema: defineSchema({}),
+  plugins: { cache },
+});
+~~~
+
+After code generation, the mount name becomes a typed context field. The
+example above gives compatible functions ctx.cache.profiles.get,
+ctx.cache.profiles.set, and ctx.cache.profiles.delete.
+
+~~~ts title="functions/profile.ts"
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const remember = mutation({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) =>
+    ctx.cache.profiles.set("current", { name: "Pedro" }, {
+      expiresInMs: 60_000,
+    }),
+});
+~~~
+
+The app manifest is the single assembly point. Do not create a new Plugin
+instance inside a function handler: it would not be mounted, initialized, or
+included in the generated application contract.
+
+## Choose a mount name deliberately
+
+Mount names must be identifiers and cannot collide with built-in context
+fields. They are part of application source: renaming cache to sharedCache
+changes function code and, for Plugins with private storage, changes the
+storage mount identity. Treat a rename as a migration decision rather than a
+cosmetic change.
+
+One Plugin instance cannot be mounted twice. You may create separate instances
+of the same factory when they are genuinely separate capabilities, each with
+its own mount name and configuration.
+
+## Dependencies
+
+A Plugin can require a contract supplied by another mounted Plugin. Supply the
+provider when creating the consumer instance, and mount both:
+
+~~~ts
+const notes = notesPlugin();
+const reporting = reportingPlugin({ notes });
+
+export default defineApp({
+  schema,
+  plugins: { notes, reporting },
+});
+~~~
+
+The provider must be mounted, must satisfy the requested contract, and starts
+before its dependents. Cycles are rejected during manifest assembly.
+
+## Next steps
+
+- Read [Building Plugins](/docs/building-plugins) to create a reusable
+  capability.
+- Read [Plugin Storage](/docs/plugin-storage) before changing a Plugin schema.
+- Use [Cache](/docs/cache-plugin) for the official in-process transactional
+  cache or [External Cache Adapters](/docs/external-cache-adapters) for Redis
+  and Upstash.

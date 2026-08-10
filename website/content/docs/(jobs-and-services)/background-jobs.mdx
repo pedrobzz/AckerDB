@@ -3,4 +3,94 @@ title: "Background Jobs"
 description: "Enqueue typed work outside the request path."
 ---
 
-Complete documentation for Background Jobs is coming soon.
+Jobs are durable units of background work. A mutation or procedure enqueues a
+typed job, and the runtime persists its state, runs it outside the request
+path, and records the outcome. They are suited to work such as email delivery,
+media processing, and scheduled maintenance—not to long-lived connections.
+
+## Declare a job
+
+Job modules live in jobs/. Their module path and export name become the
+generated jobs namespace: jobs/receipts.ts exporting send creates
+ctx.jobs.receipts.send.
+
+~~~ts title="jobs/receipts.ts"
+import { v } from "@ackerdb/server";
+import { job } from "@workspace/ackerdb-generated/server";
+
+export const send = job({
+  args: {
+    receiptId: v.bigint(),
+    recipient: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const response = await fetch("https://mailer.example.com/send", {
+      method: "POST",
+      body: JSON.stringify(args),
+      signal: ctx.abortSignal,
+    });
+
+    if (!response.ok) throw new Error("mailer request failed");
+
+    await ctx.tx((tx) =>
+      tx.db.receipts.patch(args.receiptId, { deliveredAt: tx.timestamp }),
+    );
+  },
+});
+~~~
+
+Procedure-kind is the default. It may perform external I/O, so its handler is
+at-least-once across a process crash. Make external side effects idempotent
+with a provider-side idempotency key or a business identifier.
+
+Use kind: "mutation" only for work that is entirely one database write
+transaction. It is exactly-once, but may not make network calls or other
+external side effects.
+
+~~~ts title="jobs/counters.ts"
+export const rebuild = job({
+  kind: "mutation",
+  args: { accountId: v.bigint() },
+  handler: (tx, args) =>
+    tx.db.accounts.patch(args.accountId, { needsRebuild: false }),
+});
+~~~
+
+## Enqueue work
+
+Enqueue from an application mutation transaction. If the mutation commits, the
+job exists; if it rolls back, the job does not.
+
+~~~ts title="functions/receipts.ts"
+import { v } from "@ackerdb/server";
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const request = mutation({
+  access: "authenticated",
+  args: { receiptId: v.bigint(), recipient: v.string() },
+  handler: (ctx, args) =>
+    ctx.jobs.receipts.send.enqueue(args, { delayMs: 5_000 }),
+});
+~~~
+
+enqueue returns a handle with a durable ID and a deduped flag. A caller can
+schedule a job at an absolute millisecond timestamp with at or after a delay
+with delayMs. Procedure and trusted contexts also have operational controls
+for waiting, cancellation, retrying, running again, rescheduling, and
+deletion; expose those through deliberate application functions rather than
+giving clients raw job administration.
+
+## Execution boundaries
+
+Jobs run as the system principal, not as the user that enqueued them. Persist
+the user or tenant identity in job arguments when the business operation needs
+that context, and re-check domain permissions in the job's own transaction.
+
+The runtime gives each handler an AbortSignal. Treat cancellation as
+cooperative: stop external requests and do not begin new work after it is
+aborted. A job failure is recorded durably and follows its declared retry
+policy; no retry policy means one failed run fails the job.
+
+For multistep crash recovery, use [Durable Workflows](/docs/durable-workflows).
+For retry, schedule, and deduplication policy, see
+[Retries and Schedules](/docs/retries-and-schedules).

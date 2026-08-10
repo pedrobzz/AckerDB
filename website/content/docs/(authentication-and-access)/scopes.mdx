@@ -3,4 +3,131 @@ title: "Scopes"
 description: "Declare and enforce one application scope vocabulary."
 ---
 
-Complete documentation for Scopes is coming soon.
+Scopes are AckerDB's shared capability vocabulary. Declare the vocabulary
+once in the application manifest, resolve user grants against it, and require
+concrete scopes on Functions. The runtime applies a Function's normal access
+policy first and its scope requirement second.
+
+## Declare application scopes once
+
+Add a non-empty, unique list of application scope names to "defineApp":
+
+~~~ts title="app.ts"
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
+
+export default defineApp({
+  schema: defineSchema({
+    documents: defineTable({
+      id: v.primaryKey(),
+      body: v.string(),
+    }),
+  }),
+  scopes: [
+    "documents:read",
+    "documents:write",
+    "documents:admin",
+  ],
+});
+~~~
+
+Application scope names are concrete names, not patterns. They cannot contain
+"*", cannot start with the reserved "_" marker, and cannot be duplicated. The
+reserved namespace belongs to framework scopes such as Admin API capabilities.
+
+Run code generation after changing the vocabulary. Generated server builders
+then type-check Function requirements against exactly these names.
+
+## Require one or more scopes
+
+Use "anyOf" when either capability is enough and "allOf" when each is
+required:
+
+~~~ts title="functions/documents.ts"
+import { mutation, query } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const read = query({
+  access: "authenticated",
+  scopes: { anyOf: ["documents:read", "documents:admin"] },
+  args: { documentId: v.bigint() },
+  handler: (ctx, args) => ctx.db.documents.get(args.documentId),
+});
+
+export const update = mutation({
+  access: "authenticated",
+  scopes: { allOf: ["documents:read", "documents:write"] },
+  args: {
+    documentId: v.bigint(),
+    body: v.string(),
+  },
+  handler: (ctx, args) => ctx.db.documents.patch(args.documentId, { body: args.body }),
+});
+~~~
+
+Requirements name concrete scopes only. A wildcard belongs in a grant, never
+in "anyOf" or "allOf". "scopes" cannot combine with "access: "public"" because
+anonymous callers cannot hold a scope, and it cannot combine with
+"access: "system"" because system authority already bypasses scope checks.
+Use "authenticated" or a policy callback as the base rule.
+
+## Resolve grants
+
+A verified user principal has an expanded concrete grant. Configure a
+"scopeResolver" module when the application's roles or entitlements decide
+that grant:
+
+~~~json title=".ackerdb.config.json"
+{
+  "scopeResolver": "./auth/scopes.ts"
+}
+~~~
+
+The module default-exports a "ScopeResolver". It receives the durable Identity
+and the external account that authenticated it, and returns grant patterns or
+an object containing patterns and credential lineage:
+
+~~~ts title="auth/scopes.ts"
+import type {
+  ExternalAccount,
+  Identity,
+  ScopeResolver,
+} from "@ackerdb/server";
+
+const resolveScopes: ScopeResolver = async (
+  identity: Identity,
+  account: ExternalAccount | null,
+) => {
+  const role = await rolesFor(identity, account);
+  return role === "admin"
+    ? ["documents:*"]
+    : ["documents:read"];
+};
+
+export default resolveScopes;
+~~~
+
+Patterns are a concrete scope or a prefix followed by one trailing "*".
+"documents:*" expands against the current vocabulary. A bare "*" means every
+application scope, not framework scopes; "_*" is the separate framework
+half. Patterns that match no current scope grant nothing.
+
+Scope requirements apply to user principals. Workload principals authenticate
+successfully but carry no user Identity grant, so they do not pass a scope
+requirement unless the invocation is system authority. Use an access callback
+when workload issuer, subject, or selected claims are the appropriate
+authorization rule.
+
+## Treat scope changes as authorization changes
+
+The resolver is evaluated when a credential is verified and on an
+authentication transition. A live session does not discover a changed
+entitlement by polling the resolver. To make a narrowing or revocation take
+effect immediately, the credential authority must publish an appropriate
+invalidation; otherwise a fresh credential presentation creates the next
+authorization boundary.
+
+The built-in credentials API preserves subset authority for child credentials:
+a user can only issue a child grant whose expanded scopes are inside the
+user's current expanded grant. See [Credentials](/docs/credentials) for the
+authentication boundary and [Access Policies](/docs/access-policies) for
+resource-specific admission checks.

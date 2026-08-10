@@ -3,4 +3,221 @@ title: "Configuration Reference"
 description: "Reference every .ackerdb.config.json field and default."
 ---
 
-Complete documentation for Configuration Reference is coming soon.
+Place `.ackerdb.config.json` in the AckerDB application directory—the same
+directory passed to `acker dev`, `acker start`, or `acker codegen`.
+Every field is optional. The default layout is designed to make a minimal
+application work with no configuration at all.
+
+The file is strict JSON: unknown fields fail startup rather than being ignored.
+Relative paths resolve from the application directory, never from the current
+shell directory or the workspace root.
+
+~~~json title="apps/server/.ackerdb.config.json"
+{
+  "generated": "../../packages/ackerdb-generated/src",
+  "hostname": "0.0.0.0",
+  "port": 3211
+}
+~~~
+
+## Application paths
+
+These fields locate source and generated files. Change a path only when the
+owning folder actually lives elsewhere.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `app` | string | `./app.ts` | Application manifest whose default export is `defineApp(...)`. |
+| `functions` | string | `./functions` | Auto-discovered Function modules. |
+| `jobs` | string | `./jobs` | Auto-discovered Job and workflow modules. |
+| `services` | string | `./services` | Auto-discovered Service modules. |
+| `migrations` | string | `./migrations` | Ordered application migration modules and generated metadata. |
+| `generated` | string | `./_generated` | Directory AckerDB owns for `api.ts`, `server.ts`, and `types.ts`. |
+| `db` | string | `./.ackerdb` | Directory that owns the local SQLite database and runtime state. |
+
+All path fields accept an absolute path or an application-relative path. A
+monorepo usually changes only `generated`:
+
+~~~json title="Generated bindings in a workspace package"
+{
+  "generated": "../../packages/ackerdb-generated/src"
+}
+~~~
+
+Never use the generated directory as a handwritten source folder. Codegen
+rewrites its three files deterministically.
+
+## Listener
+
+| Field | Type | Default | Rules |
+| --- | --- | --- | --- |
+| `hostname` | string | `127.0.0.1` | A non-empty host name or IP address. Use a deliberate public bind only behind your intended network boundary. |
+| `port` | integer | `3211` | An integer from `1` through `65535`. |
+| `statusScope` | string | `ackerdb:status` | The workload OAuth scope required by the authenticated `/status` endpoint. |
+
+The default listener is loopback-only. Production deployments commonly put a
+TLS-capable reverse proxy in front of an explicit listener address. See
+[Production Server](/docs/production-server) for the operational boundary.
+
+## Authentication and authorization
+
+Configure one authentication authority, or deliberately configure none for an
+application that uses only anonymous access. Bearer credentials fail closed
+when no authority is configured.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `oidc` | OIDC verifier options | omitted | Runs the built-in OIDC verifier. |
+| `credentialVerifier` | module path | omitted | Loads a module whose default export is an application-owned credential verifier. |
+| `scopeResolver` | module path | omitted | Loads a module whose default export resolves an Identity’s scope grant. |
+
+`oidc` and `credentialVerifier` are mutually exclusive. The OIDC object
+contains a required `providers` array and optional bounds for token and JWKS
+handling:
+
+~~~json title="OIDC with a named provider preset"
+{
+  "oidc": {
+    "providers": [
+      {
+        "preset": "clerk",
+        "issuer": "https://example.clerk.accounts.dev",
+        "audiences": ["ackerdb-api"]
+      }
+    ],
+    "maxTokenBytes": 16384,
+    "jwksTimeoutMs": 5000
+  },
+  "scopeResolver": "./auth/scopes.ts"
+}
+~~~
+
+Each provider can be a named preset (`clerk`, `auth0`, `workos`, or
+`betterauth`) or an exact provider object. Exact providers declare the
+issuer, JWKS URI, accepted audiences, permitted JWT algorithms, token type,
+principal kind, and selected claims. Keep verification input explicit rather
+than accepting a token shape by convention.
+
+A custom credential verifier module is appropriate when another system owns
+verification:
+
+~~~json title="Application-owned verifier"
+{
+  "credentialVerifier": "./auth/credential-verifier.ts",
+  "scopeResolver": "./auth/scopes.ts"
+}
+~~~
+
+Its default export must implement the server’s `CredentialVerifier` contract.
+The scope resolver’s default export implements `ScopeResolver`. See
+[Custom Credential Verifiers](/docs/custom-credential-verifiers) and
+[Access Policies](/docs/access-policies) for those contracts.
+
+## Realtime runtime
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `realtime` | module path | omitted | Loads a serving-only module whose default export configures the Realtime runtime. |
+
+Declare the Realtime session shape in application code, then add this path
+only when the server needs the runtime implementation. It remains separate
+from a React client’s WebRTC configuration. Read
+[Realtime Sessions](/docs/realtime-sessions) before enabling it.
+
+## File storage
+
+`files` selects the one active immutable FileStore. Omit it for the local
+filesystem backend:
+
+~~~json title="Filesystem FileStore (the default)"
+{
+  "files": {
+    "backend": "filesystem",
+    "path": "./files",
+    "publicUrl": "https://api.example.com",
+    "maxBytes": 1073741824
+  }
+}
+~~~
+
+| Common field | Default | Meaning |
+| --- | --- | --- |
+| `files.backend` | `filesystem` | Either `filesystem` or `s3`. |
+| `files.publicUrl` | `http://{hostname}:{port}` | Absolute HTTP(S) origin used to create client-facing File URLs. |
+| `files.maxBytes` | `1073741824` | Maximum permitted File size: a positive integer up to `5368709120` bytes. |
+| `files.path` | `{db}/files` | Filesystem storage root. It must not equal or contain the database directory. |
+
+For S3-compatible storage, `region` and `bucket` are required. Optional
+fields are `endpoint`, `forcePathStyle`, `checksum`
+(`sha256` or `disabled`), and `encryption`.
+
+~~~json title="S3-compatible FileStore"
+{
+  "files": {
+    "backend": "s3",
+    "endpoint": "https://s3.us-east-1.amazonaws.com",
+    "region": "us-east-1",
+    "bucket": "ackerdb-files",
+    "checksum": "sha256",
+    "encryption": {
+      "type": "aws:kms",
+      "keyId": "alias/ackerdb-files",
+      "bucketKeyEnabled": true
+    },
+    "publicUrl": "https://api.example.com"
+  }
+}
+~~~
+
+An S3 encryption object accepts `type: "disabled"`, `"AES256"`, or
+`"aws:kms"`; the latter may also carry `keyId` and
+`bucketKeyEnabled`. Move an existing FileStore with the dedicated
+[Migrating File Storage](/docs/migrating-file-storage) workflow rather than
+changing this field against live data.
+
+## Environment profiles
+
+Durability and telemetry are process environment settings, not JSON fields.
+That keeps the application definition stable while an operator selects a
+deployment profile:
+
+| Environment variable | Values | Default |
+| --- | --- | --- |
+| `ACKERDB_DURABILITY` | `production`, `balanced` | `production` |
+| `ACKERDB_TELEMETRY` | `enabled`, `disabled` | `enabled` |
+
+`production` uses the strongest SQLite synchronization policy. `balanced`
+can acknowledge recent commits before they survive sudden power loss. Read
+[Durability Profiles](/docs/durability-profiles) before changing it.
+
+## Complete shape
+
+This example shows fields together without turning them into required
+configuration:
+
+~~~json title=".ackerdb.config.json"
+{
+  "app": "./app.ts",
+  "functions": "./functions",
+  "jobs": "./jobs",
+  "services": "./services",
+  "migrations": "./migrations",
+  "generated": "../../packages/ackerdb-generated/src",
+  "db": "./.ackerdb",
+  "hostname": "127.0.0.1",
+  "port": 3211,
+  "statusScope": "ackerdb:status",
+  "credentialVerifier": "./auth/credential-verifier.ts",
+  "scopeResolver": "./auth/scopes.ts",
+  "realtime": "./realtime.ts",
+  "files": {
+    "backend": "filesystem",
+    "path": "./files",
+    "publicUrl": "http://127.0.0.1:3211",
+    "maxBytes": 1073741824
+  }
+}
+~~~
+
+Do not combine `credentialVerifier` with `oidc`; choose one authority.
+Everything else can stay omitted until it has a concrete owner.

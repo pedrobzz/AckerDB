@@ -1,6 +1,44 @@
 ---
 title: "Execution Model"
-description: "Understand in-process execution, transactions, and transport boundaries."
+description: "Understand the shared invocation path and the boundaries between application capabilities."
 ---
 
-Complete documentation for Execution Model is coming soon.
+AckerDB runs application code in the Bun server process beside SQLite. A client
+request is still a validation, authorization, and transport boundary, but it
+does not become a network hop to a separately hosted database.
+
+## Every Function starts at the same boundary
+
+Queries, Mutations, and Procedures use one invocation path:
+
+~~~text
+raw arguments → validator → access policy → scope requirement → handler → Result
+~~~
+
+Arguments are validated before an access callback sees them. The callback must
+explicitly allow the call, then an optional scope requirement is applied. The
+handler receives the verified principal and only the capabilities appropriate
+to that Function kind.
+
+SSE Procedures follow the same admission sequence, then deliver a stream rather
+than one Result value. [Access Policies](/docs/access-policies),
+[Scopes](/docs/scopes), and [Arguments and Results](/docs/arguments-and-results)
+own those individual contracts.
+
+## Choose the narrowest capability boundary
+
+| Need | Function boundary |
+| --- | --- |
+| Read a durable view, once or live | [Query](/docs/queries) |
+| Make one atomic durable change | [Mutation](/docs/mutations) |
+| Coordinate external work and an explicit commit | [Procedure](/docs/procedures) |
+| Deliver progressive, one-way output | [SSE Procedure](/docs/sse-procedures) |
+
+The distinction is the capability boundary, not a second application model.
+Queries receive a read snapshot; Mutations own one writer transaction;
+Procedures opt into a short transaction; and SSE Procedures add a stream source
+to Procedure capabilities.
+
+[Transactions](/docs/transactions) covers commit and rollback behavior.
+[Reactivity](/docs/reactivity) covers how committed writes update live
+Queries. The Function pages above own the declaration and lifecycle details.

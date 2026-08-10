@@ -3,4 +3,80 @@ title: "Application Model"
 description: "Understand how schema, Functions, clients, and runtime capabilities form one application."
 ---
 
-Complete documentation for Application Model is coming soon.
+An AckerDB application is one typed backend boundary. Its schema, published
+Functions, generated client references, authentication, storage, and runtime
+capabilities share a single application model instead of being separate
+services joined by handwritten DTOs.
+
+## Start with the application manifest
+
+app.ts default-exports defineApp(...). The manifest owns the durable schema and
+declares application-wide capabilities such as Plugins, extra API groups, and a
+scope vocabulary.
+
+~~~ts title="apps/server/app.ts"
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
+
+const schema = defineSchema({
+  notes: defineTable({
+    id: v.primaryKey(),
+    ownerId: v.identity(),
+    text: v.string().min(1).max(10_000),
+    archived: v.boolean(),
+    updatedAt: v.int(),
+  }).index(["ownerId", "updatedAt"]),
+});
+
+export default defineApp({ schema });
+~~~
+
+The schema validates stored rows, plans SQLite storage, and becomes the source
+for generated row types and schema-aware server builders. [Tables](/docs/tables)
+and [Validators and Indexes](/docs/validators-and-indexes) own its database
+contract.
+
+## Publish Functions, not implementation details
+
+Files in the configured functions directory become addressable Function modules.
+Their path and export name form the generated client address: an export named
+list in functions/notes.ts is api.notes.list by default. Keep shared domain
+code in server-only modules such as lib; a helper does not become public merely
+because a Function calls it.
+
+~~~text
+app.ts + functions/notes.ts
+            │
+            ▼
+       acker codegen
+            │
+            ├── generated server builders for server modules
+            ├── generated callable references for clients
+            └── generated shared application types
+~~~
+
+[Generated Types](/docs/generated-types) explains why this bridge exists;
+[Generated Files](/docs/generated-files) is the exact file reference; and
+[Project Structure](/docs/project-structure) shows where these ownership
+boundaries live in a workspace.
+
+## Treat API groups as interface boundaries
+
+Functions normally use the api group. A Function that declares
+apiPath: "internal" is generated under internal.* and requires that group in the
+manifest:
+
+~~~ts title="apps/server/app.ts"
+export default defineApp({
+  schema,
+  apiPaths: ["internal"],
+});
+~~~
+
+An API group changes generated names and the HTTP route root. It does not
+authorize a caller. Keep admission in a Function's access and optional scopes
+declarations; [Function Access](/docs/function-access) links to the complete
+authorization model.
+
+The unified application model is what lets one declared Function be used from a
+typed client, exposed deliberately over HTTP, or surfaced through MCP without
+rebuilding its arguments, result types, and admission rule at every boundary.

@@ -3,4 +3,115 @@ title: "File Grants"
 description: "Issue time- and access-bounded capabilities for file operations."
 ---
 
-Complete documentation for File Grants is coming soon.
+<Warning title="Experimental">
+  Files are experimental. Their API and capabilities will probably change before
+  the feature is stable. Use them only where you can update alongside AckerDB.
+</Warning>
+
+A file grant is a revocable capability to read one active file. It is separate
+from the file itself: a grant has its own access policy and expiration, while
+the file keeps its metadata and bytes private.
+
+## Create a grant
+
+Create grants in a mutation, or inside ctx.tx from a procedure or trusted
+system context. Every grant must choose exactly one lifetime: a finite expiry
+or a permanent grant.
+
+~~~ts title="functions/reports.ts"
+import { v } from "@ackerdb/server";
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const download = mutation({
+  access: "authenticated",
+  args: { fileId: v.file() },
+  handler: async (ctx, args) =>
+    ctx.files.createUrl(args.fileId, {
+      expiresIn: "15m",
+      access: { type: "authenticated" },
+      filename: "monthly-report.pdf",
+      inline: true,
+    }),
+});
+~~~
+
+Creating a URL for a pending file activates it. A missing or deleting file
+cannot receive a grant.
+
+## Access policies
+
+| Policy | Who can use the grant |
+| --- | --- |
+| bearer | Anyone who has the unguessable URL. This is the default. |
+| authenticated | Any authenticated user identity. Workload credentials do not qualify. |
+| validated | A registered query decides whether the requesting principal may read this file. |
+
+A validated grant receives the file ID plus the static arguments supplied at
+grant creation. Its query must return a boolean.
+
+~~~ts title="functions/fileAccess.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const canReadReport = query({
+  access: "authenticated",
+  args: {
+    fileId: v.file(),
+    organizationId: v.bigint(),
+  },
+  handler: async (ctx, args) => {
+    // Look up the authenticated principal's membership here.
+    return true;
+  },
+});
+~~~
+
+~~~ts title="grant creation"
+import { api } from "@workspace/ackerdb-generated/api";
+
+const grant = await ctx.files.createUrl(fileId, {
+  permanent: true,
+  access: {
+    type: "validated",
+    authorize: api.fileAccess.canReadReport,
+    args: { organizationId },
+  },
+});
+~~~
+
+Denied, expired, revoked, missing, and inactive-file grants all return 404.
+This intentionally avoids revealing whether a protected file or grant exists.
+
+## Delivery behavior
+
+Grant URLs support GET and HEAD, byte ranges, and normal conditional request
+headers. Responses include an ETag, disable caching with Cache-Control:
+no-store, and set X-Content-Type-Options: nosniff.
+
+By default a grant downloads as an attachment. Set inline only for browser-safe
+types: images other than SVG, audio, video, or application/pdf. A custom
+filename is sanitized for delivery and is limited to safe text.
+
+The bearer URL is returned only when the grant is created; later grant
+metadata deliberately does not reveal it. Store that URL only where the
+selected access policy allows it to live.
+
+## Revoke and delete
+
+~~~ts title="functions/reports.ts"
+export const revokeDownload = mutation({
+  access: "authenticated",
+  args: { grantId: v.fileGrant() },
+  handler: async (ctx, args) => {
+    await ctx.files.revokeGrant(args.grantId);
+  },
+});
+~~~
+
+Revocation makes the grant unavailable immediately. Deleting the file revokes
+all of its grants, marks the file for deletion, and eventually removes its
+bytes. Prefer a short-lived grant for ordinary downloads; use a permanent
+grant only when your product has a deliberate revocation path.
+
+See [Uploads and Downloads](/docs/uploads-and-downloads) for how a file
+becomes active.

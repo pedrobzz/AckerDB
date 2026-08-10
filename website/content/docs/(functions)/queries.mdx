@@ -3,4 +3,79 @@ title: "Queries"
 description: "Declare reactive read operations with typed arguments and access."
 ---
 
-Complete documentation for Queries is coming soon.
+A Query is the read boundary of an AckerDB application. It validates a caller's
+arguments, applies its access policy, reads from a snapshot, and returns the
+view the caller is allowed to see. The same declaration can serve one request
+or a live subscription.
+
+## Declare a bounded view
+
+Import the schema-aware query builder from the generated package. Its database
+context knows the application's table and column names and exposes no writer
+methods.
+
+~~~ts title="apps/server/functions/notes.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const published = query({
+  access: "public",
+  args: {
+    limit: v.int().min(1).max(50),
+  },
+  returns: v.array(v.object({
+    id: v.bigint(),
+    title: v.string(),
+    publishedAt: v.int(),
+  })),
+  handler: (ctx, args) =>
+    ctx.db.notes
+      .query()
+      .where((note) => note.status.eq("published"))
+      .orderBy((note) => note.publishedAt.desc())
+      .take(args.limit),
+});
+~~~
+
+Return the actual product view rather than a broad table dump that every caller
+filters independently. Bound list size in the argument contract, especially
+when the view may become live.
+
+[Arguments and Results](/docs/arguments-and-results) owns input validators,
+declared output validators, and typed business failures. [Reading
+Data](/docs/reading-data) owns the table query, ordering, materializer, and
+pagination API used inside the handler.
+
+## Make the read model observable
+
+A Query's tracked reads drive precise updates after a commit.
+[Reactivity](/docs/reactivity) owns that mechanism and its determinism rule;
+[Validators and Indexes](/docs/validators-and-indexes) owns the query-shape
+design that keeps a view bounded and selective.
+
+## Choose the caller experience
+
+Use a generated Query reference for a one-off request when a snapshot is
+enough. Use the same reference with a live client or React hook when the view
+should remain current. The call and subscription contracts are intentionally
+separate.
+
+[Calling Functions](/docs/calling-functions) owns one-off request outcomes.
+[Live Queries](/docs/live-queries) owns the client-side state and subscription
+lifecycle.
+
+## Compose server-side when needed
+
+Queries are directly callable from server code. The invocation still validates
+the inner arguments and applies the Query's access policy, so a nested call
+does not bypass the public contract.
+
+~~~ts
+const result = await published(ctx, { limit: 20 });
+if (!result.ok) return result;
+
+return result.data;
+~~~
+
+Use a shared server module instead when the logic has no independent Function
+address, policy, or Result contract.

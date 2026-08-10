@@ -3,4 +3,74 @@ title: "Durability"
 description: "Understand commit points, persisted state, and recovery guarantees."
 ---
 
-Complete documentation for Durability is coming soon.
+Durable application state lives in AckerDB's SQLite database. A successful
+Mutation or `ctx.tx(...)` transaction becomes visible to other work only after
+its SQLite commit succeeds. Until then, its table writes, transactional job
+enqueues, and reactive publication inputs are one unit that can be rolled
+back.
+
+## The commit is the durable boundary
+
+For a Mutation or explicit transaction, AckerDB performs this sequence:
+
+1. Validate arguments and authorize the caller.
+2. Run application code against one writer transaction.
+3. Validate the result and prepare the reactive publication.
+4. Commit SQLite.
+5. Publish the committed change to affected subscribers.
+
+Returning an application `Err(...)` or throwing before the commit rolls back
+the transaction. A live Query is never updated from writes that did not
+commit. Conversely, a client whose connection breaks after the commit may not
+know whether its request completed; treat retried side effects and caller
+outcomes explicitly rather than assuming a network failure means no write
+occurred.
+
+## SQLite runs in WAL mode
+
+AckerDB enables SQLite write-ahead logging (WAL). Readers use independent
+read snapshots while the single writer commits changes, so an ordinary Query
+does not wait for every prior read to finish. WAL is a concurrency mechanism,
+not a replacement for backups or a reason to skip a durability policy.
+
+## Choose the durability profile deliberately
+
+The runtime reads `ACKERDB_DURABILITY` when it starts. It accepts two exact
+values and defaults to `production`:
+
+| Profile | SQLite synchronous mode | Use it when |
+| --- | --- | --- |
+| `production` | `FULL` | A committed write needs the strongest SQLite durability setting AckerDB configures. |
+| `balanced` | `NORMAL` | You have explicitly accepted a lower-cost profile for the deployment. |
+
+```bash title="Terminal"
+ACKERDB_DURABILITY=production bunx acker start apps/server
+```
+
+`balanced` is not a synonym for production durability. It exists for an
+intentional operational trade-off; do not select it accidentally through a
+development shell or a deployment default.
+
+## Recovery preserves evidence
+
+On startup, AckerDB opens the existing database, validates storage before
+serving, and records whether the prior shutdown was clean. It does not silently
+replace a database it cannot validate. Schema reconciliation and migrations
+also run before the application begins handling requests, so a process does
+not serve a schema it has not established.
+
+Graceful shutdown drains the runtime and closes the engine cleanly. A process
+crash is different: SQLite recovery restores the database to a valid committed
+state according to the active durability profile, while in-flight work has no
+successful response to rely on.
+
+## Durability does not replace backup and restore
+
+Durability protects the active database's commit path. It does not protect
+against deleting the database, an operator error, a bad migration, or the loss
+of the host and its storage. Use verified backups and practice restoration for
+the recovery point your product requires.
+
+See [Transactions](/docs/transactions) for rollback behavior,
+[Durability Profiles](/docs/durability-profiles) for operating the setting,
+and [Backups and Restore](/docs/backups-and-restore) for recovery workflows.

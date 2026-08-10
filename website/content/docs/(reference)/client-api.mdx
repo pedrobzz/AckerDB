@@ -3,4 +3,185 @@ title: "Client API"
 description: "Reference exports and types from @ackerdb/client."
 ---
 
-Complete documentation for Client API is coming soon.
+`@ackerdb/client` is the framework-neutral TypeScript client. It owns one
+authenticated connection, reconnects it when needed, and exposes typed
+queries, mutations, procedures, subscriptions, files, Channels, and Realtime
+sessions. React applications normally use
+[`@ackerdb/client-react`](/docs/react-api), which owns this client through
+its provider.
+
+## Create one client for one application lifetime
+
+Construct the client outside render loops and close it when the owning
+application shuts down:
+
+~~~ts title="A browser or non-React client"
+import { AckerDBClient } from "@ackerdb/client";
+import { api } from "@workspace/ackerdb-generated/api";
+
+const client = new AckerDBClient({
+  url: "http://127.0.0.1:3211",
+  credential: { kind: "anonymous" },
+});
+
+const result = await client.query(api.todos.list, {});
+if (result.ok) {
+  console.log(result.data);
+}
+
+client.close();
+~~~
+
+The constructor accepts exactly one authentication source:
+
+| Option | Use it when |
+| --- | --- |
+| `credential` | The client has a fixed explicit credential, including `{ kind: "anonymous" }`. |
+| `credentialSource` | Another identity library owns token refresh. AckerDB calls it when it needs a current credential. |
+
+Both forms require a `url`. Optional constructor settings include
+`clientSessionId`, reconnect timing, client limits, an injected `fetch`,
+WebSocket or WebRTC factories, and a lifecycle adapter for native
+environments. Keep those defaults unless a real platform boundary needs an
+adapter.
+
+## One-off calls
+
+Generated references infer arguments, successful data, and declared
+application errors:
+
+| Method | Calls | Result |
+| --- | --- | --- |
+| `client.query(ref, args)` | A Query once | `Promise<ClientResult<Data, Error>>` |
+| `client.mutation(ref, args)` | A durable Mutation | `Promise<ClientResult<Data, Error>>` |
+| `client.procedure(ref, args, options?)` | A one-off Procedure | `Promise<ClientResult<Data, Error>>` |
+| `client.sse(ref, args, options?)` | An SSE Procedure | `AsyncGenerator<Chunk>` |
+
+`ClientResult` is an explicit success-or-failure result. Check `ok`
+before reading `data`; a failed result carries the exact
+`AckerDBClientError`:
+
+~~~ts title="Calling a Mutation"
+const outcome = await client.mutation(api.todos.create, { text: "Ship docs" });
+
+if (!outcome.ok) {
+  console.error(outcome.error.code, outcome.error.message);
+  return;
+}
+
+console.log(outcome.data);
+~~~
+
+Procedures and SSE calls accept an `AbortSignal` through their optional
+call options. A Mutation is a durable operation, not a cancellable fetch:
+handle its returned outcome rather than assuming an interrupted caller means
+the write did not happen.
+
+## Live Query subscriptions
+
+`subscribe` retains a live Query subscription and returns one teardown
+function. The client restores standing subscriptions after an ordinary
+reconnect; the server is still authoritative about the fresh result.
+
+~~~ts title="Framework-neutral live Query"
+const stop = client.subscribe(
+  api.todos.list,
+  {},
+  (todos) => renderTodos(todos),
+  (error) => reportConnectionError(error),
+);
+
+// When the consumer is gone:
+stop();
+~~~
+
+The optional subscription options expose application-error handling and
+cursor confirmation for code that owns a low-level subscription. In React,
+prefer `useQuery`; it shares equal subscriptions and owns component
+lifetime automatically.
+
+`subscribeEvent` has the analogous lifecycle for an Event Table. Its event
+callback receives one of `row`, `gap`, or `reset`; Event Tables do not
+replay a missing interval. Pair event handling with a Query when the consumer
+also needs current durable state.
+
+## Authentication and connection state
+
+Read immutable snapshots and subscribe only when a framework integration does
+not already do it:
+
+~~~ts title="Observe a standalone client"
+const stopConnection = client.subscribeConnectionState((state) => {
+  console.log(state.phase);
+});
+
+const stopAuthentication = client.subscribeAuthenticationState((state) => {
+  console.log(state.phase);
+});
+
+await client.refreshCredential({ kind: "bearer", token: nextToken });
+
+stopConnection();
+stopAuthentication();
+~~~
+
+The client exposes:
+
+- `currentConnectionState` and `subscribeConnectionState`.
+- `currentAuthenticationState` and `subscribeAuthenticationState`.
+- `currentAuthentication`, the server-confirmed principal for the current
+  authentication epoch.
+- `refreshCredential(...) `, which presents a fixed credential or asks a
+  configured credential source for a fresh one.
+- `close()`, which stops transport work, rejects unrecoverable pending work,
+  and releases lifecycle observers.
+
+The exact credential-source, refresh, and sign-out contract is documented in
+[Credentials](/docs/credentials).
+
+## Files, Channels, and Realtime
+
+These methods retain separate typed handles under the same client lifetime:
+
+| Method | Returns | Ownership |
+| --- | --- | --- |
+| `client.files` | `AckerDBFiles` | Uploads, download URLs, and File grants. |
+| `client.channel(ref, args, options?)` | `AckerDBChannel` | One ephemeral Channel membership. Close it when its consumer leaves. |
+| `client.realtime(ref, args)` | `AckerDBRealtime` | One retained WebRTC session. Release it when finished. |
+
+~~~ts title="An ephemeral Channel"
+const presence = client.channel(api.presence.room, { documentId });
+
+const stop = presence.subscribe((state) => {
+  console.log(state.phase);
+});
+
+presence.send("cursor", { x: 42, y: 18 });
+
+stop();
+presence.close();
+~~~
+
+For React, use `useFileUpload`, `useChannel`, and `useRealtime`
+instead. They bind these handles to component lifetime and preserve stable
+identities through normal rerenders.
+
+## References and helpers
+
+`@ackerdb/client` re-exports the reference and protocol types needed by
+framework adapters:
+
+- `QueryRef`, `MutationRef`, `ProcedureRef`, `SseRef`,
+  `EventRef`, `ChannelRef`, and `RealtimeRef` describe generated
+  callables.
+- `AckerDBClientError` is the typed failure for connection, protocol, and
+  application boundaries.
+- `AckerDBConnectionState`, `AckerDBAuthenticationState`, and
+  `AckerDBLiveEvent` describe observable state.
+- `anyApi`, `apiGroup`, and `getRef` support generated or framework
+  integration code. Application clients should import the generated
+  `api` object instead.
+
+Use [Calling Functions](/docs/calling-functions) for the client-facing
+Function contract and [Client Lifecycle](/docs/client-lifecycle) for
+reconnect, credential, and shutdown behavior.

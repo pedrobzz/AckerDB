@@ -3,4 +3,85 @@ title: "Cache"
 description: "Use the official Cache Plugin inside Functions."
 ---
 
-Complete documentation for Cache is coming soon.
+The official Cache Plugin provides a bounded, transactional cache inside
+AckerDB's Plugin storage. It is useful for derived values, short-lived product
+state, and compare-and-set coordination that belongs with a mutation.
+
+## Mount the built-in cache
+
+~~~ts title="app.ts"
+import { cachePlugin } from "@ackerdb/cache";
+import { defineApp, defineSchema, v } from "@ackerdb/server";
+
+const cache = cachePlugin({
+  maxBytes: 64 * 1024 * 1024,
+  maxEntryBytes: 1024 * 1024,
+  maxEntries: 10_000,
+  namespaces: {
+    profile: v.object({
+      name: v.string(),
+      plan: v.string(),
+    }),
+  },
+});
+
+export default defineApp({
+  schema: defineSchema({}),
+  plugins: { cache },
+});
+~~~
+
+Without namespaces, cache exposes ctx.cache.get, ctx.cache.set, and
+ctx.cache.delete for JSON-compatible values. Namespaces make values typed and
+separate the key space, yielding ctx.cache.profile.get, set, and delete.
+
+## Use it in a mutation
+
+~~~ts title="functions/profile.ts"
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const remember = mutation({
+  access: "authenticated",
+  args: {},
+  handler: async (ctx) => {
+    const stored = await ctx.cache.profile.set(
+      "current",
+      { name: "Pedro", plan: "pro" },
+      { expiresInMs: 5 * 60_000, if: "missing" },
+    );
+
+    return stored
+      ? ctx.cache.profile.get("current")
+      : undefined;
+  },
+});
+~~~
+
+set returns false when its condition is not met. Use if: "missing" for an
+atomic create-if-absent operation and if: "present" for an atomic replace-only
+operation. delete returns true only when it removes a live entry.
+
+Keys may be strings, finite numbers, or bigints. Their types are distinct:
+the string "1", number 1, and bigint 1n are different cache keys.
+
+## Capacity and expiry
+
+The defaults are 64 MiB total, 1 MiB per entry, and 10,000 entries. All three
+limits must be positive, and maxEntryBytes cannot exceed maxBytes. Oversized
+entries are rejected rather than silently truncated.
+
+An entry with expiresInMs is invisible after its expiration. On write, the
+cache removes expired entries and evicts the oldest live entries until it
+fits the configured capacity. Cache content persists across server restarts
+because it lives in Plugin storage.
+
+The built-in cache exposes mutation-kind operations. Use it from mutation
+contexts or from a procedure's transactional capabilities; do not treat it as
+a query cache. A query must remain read-only.
+
+Cache is not a replacement for durable product data. Every caller must tolerate
+a miss, expiration, eviction, reset, or manually cleared storage. Changing its
+private schema follows [Plugin Storage](/docs/plugin-storage).
+
+Use [External Cache Adapters](/docs/external-cache-adapters) when cache traffic
+must go to Redis or Upstash instead.

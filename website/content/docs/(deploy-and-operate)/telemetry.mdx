@@ -3,4 +3,71 @@ title: "Telemetry"
 description: "Export bounded, fail-open runtime telemetry."
 ---
 
-Complete documentation for Telemetry is coming soon.
+Telemetry measures AckerDB without becoming another reason the application is
+slow, unavailable, or unbounded. The Runtime records sanitized spans, events,
+and metrics in finite buffers, and telemetry failures never replace the outcome
+of the operation being observed.
+
+## Keep telemetry enabled by default
+
+The CLI enables telemetry unless the deployment says otherwise:
+
+```bash title="Environment"
+ACKERDB_TELEMETRY=enabled
+```
+
+Set `ACKERDB_TELEMETRY=disabled` only when the deployment cannot afford local
+observability work or is performing an intentional control measurement. The
+setting is read on process start.
+
+## What AckerDB records
+
+The Runtime records operational signals for the work it owns, including:
+
+- Function execution and database stages.
+- Mutations, commit versions, and idempotent replays.
+- Subscription delivery, reconnects, resets, and bounded-drop outcomes.
+- File, Job, Service, credential, and transport lifecycle events.
+- Storage, queue, connection, and WAL-size samples.
+
+Records carry operation and outcome labels, timing, bounded size/count fields,
+and safe identifiers for correlation. They deliberately do not turn literal SQL
+or arbitrary request payloads into telemetry attributes.
+
+## Export through a bounded adapter
+
+The programmatic `Telemetry` API accepts a `TelemetryExporter` with one method:
+
+```ts title="Telemetry exporter"
+import type {
+  TelemetryAggregateSnapshot,
+  TelemetryRecord,
+} from "@ackerdb/server";
+
+const exporter = {
+  export(
+    records: readonly TelemetryRecord[],
+    aggregates?: TelemetryAggregateSnapshot,
+  ) {
+    // Hand records to the observability system your deployment already uses.
+  },
+};
+```
+
+An exporter receives bounded batches. It must be fast, tolerate duplicate or
+missing observations, and never throw work back into the request path. AckerDB
+tracks exporter failures and drops inside its own status snapshot rather than
+making application calls fail because an observability endpoint is down.
+
+## Read the state, not only the happy path
+
+Telemetry snapshots report configured exporters, in-flight work, exported
+records, timeout/failure counts, bounded-buffer drops, aggregate series, and
+retained trace decisions. These counters explain whether a signal is absent
+because nothing happened, telemetry is disabled, or an intentional bound was
+reached.
+
+Use [Status and Health](/docs/status-and-health) to expose the Runtime status
+to authorized operations tooling. Keep high-cardinality values such as user IDs,
+request bodies, raw SQL, and arbitrary URL parameters out of exporter labels;
+they defeat the bounded design and make telemetry less useful at scale.

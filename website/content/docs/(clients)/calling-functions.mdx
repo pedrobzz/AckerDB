@@ -1,6 +1,153 @@
 ---
 title: "Calling Functions"
-description: "Invoke Mutations and Procedures through generated React hooks."
+description: "Invoke Queries, Mutations, Procedures, and SSE Procedures from generated references."
 ---
 
-Complete documentation for Calling Functions is coming soon.
+AckerDB generates a reference for every published Function. Pass that
+reference to the client or React hook; do not reconstruct its string address.
+The reference is the type contract for arguments, successful data, and
+declared application errors.
+
+## Read once with a Query
+
+Use "client.query" for a one-off read outside React. In a React component,
+use [Live Queries](/docs/live-queries) instead when the result should remain
+current.
+
+~~~ts
+const result = await client.query(api.projects.byId, {
+  projectId,
+});
+
+if (result.ok) {
+  useProject(result.data);
+}
+~~~
+
+A Query call is a request/response read. It is distinct from a subscription:
+it does not keep live demand after the result settles.
+
+## Write with a Mutation
+
+Use a Mutation for an atomic database write. The base client gives every
+Mutation a request identity and retains that pending work across a reconnect,
+so application code should await the one result instead of issuing a second
+write because a socket closed.
+
+~~~ts
+const result = await client.mutation(api.todos.create, {
+  listId,
+  text,
+});
+
+if (!result.ok) {
+  return showError(result.error);
+}
+
+return result.data;
+~~~
+
+The Mutation result does not resolve until its required live Query
+convergence has completed for subscriptions held by this client. This is why a
+component can await the mutation and then read its own subscribed value
+without manually appending a speculative cache entry.
+
+A sent Mutation can still end in a typed "indeterminate" error when the client
+cannot prove whether the server completed it, including a client close after
+dispatch. If the server confirmed the commit but held live Queries do not
+converge before the retention deadline, the client instead reports
+"convergence_unavailable". Treat either outcome as a reason to read
+authoritative state, or use an application-level idempotency key where the
+product needs a stronger UX.
+
+## Run a Procedure deliberately
+
+Use a Procedure for non-reactive work. It accepts an optional "AbortSignal":
+
+~~~ts
+const controller = new AbortController();
+
+const result = await client.procedure(
+  api.reports.export,
+  { reportId },
+  { signal: controller.signal },
+);
+
+if (!result.ok) {
+  showError(result.error);
+}
+~~~
+
+Cancellation is best effort once the server may have started work. If a
+Procedure's connection is lost after dispatch, its result is "indeterminate";
+the client does not silently replay it. Design a Procedure's own durable
+operation identity when the product requires safe retry after uncertain
+completion.
+
+## Handle Result values exhaustively
+
+All three request/response APIs resolve to a Result rather than throwing
+normal server failures. The false branch is either a declared application
+error or "AckerDBClientError":
+
+~~~ts
+const result = await client.mutation(api.billing.charge, { invoiceId });
+
+if (result.ok) {
+  showReceipt(result.data);
+} else if (result.error.kind === "application") {
+  switch (result.error.code) {
+    case "invoice.closed":
+      showClosedInvoice(result.error.body);
+      break;
+    default:
+      showError(result.error);
+  }
+} else if (result.error.retryable) {
+  showRetryLater(result.error.retryAfterMs);
+} else {
+  showError(result.error);
+}
+~~~
+
+"AckerDBClientError" exposes the framework outcome code, "retryable",
+optional "retryAfterMs", resource class, and when applicable "committed".
+Do not collapse it into a generic network error: "unauthorized",
+"deadline_exceeded", "indeterminate", and "overloaded" require different
+product decisions.
+
+## Use React call hooks
+
+"useMutation" and "useProcedure" return stable callables whose argument and
+result types come from the generated reference:
+
+~~~tsx
+import { useMutation, useProcedure } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+export function ProjectActions({ projectId }: { projectId: bigint }) {
+  const archive = useMutation(api.projects.archive);
+  const exportProject = useProcedure(api.projects.export);
+
+  async function archiveProject() {
+    const result = await archive({ projectId });
+    if (!result.ok) showError(result.error);
+  }
+
+  async function download() {
+    const result = await exportProject({ projectId });
+    if (result.ok) startDownload(result.data.url);
+  }
+
+  return <button onClick={archiveProject}>Archive</button>;
+}
+~~~
+
+Calls made before the provider's client reaches its commit phase wait for that
+client. A call retained after its component lifetime ends settles with a typed
+unavailable result instead of dispatching through a stale provider.
+
+For typed streaming output, declare an SSE Procedure and use "client.sse" or
+"useSseProcedure". The stream starts on its first pull, applies backpressure
+through iteration, and does not restart after a disconnect or application
+suspension.

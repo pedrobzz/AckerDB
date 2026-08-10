@@ -3,4 +3,75 @@ title: "S3 File Storage"
 description: "Use an S3-compatible object store as the active file backend."
 ---
 
-Complete documentation for S3 File Storage is coming soon.
+<Warning title="Experimental">
+  Files are experimental. Their API and capabilities will probably change before
+  the feature is stable. Use them only where you can update alongside AckerDB.
+</Warning>
+
+Use the S3 backend when file bytes should live in an S3-compatible object
+store instead of the application host's filesystem. AckerDB stores opaque
+objects there while keeping file metadata, grants, and lifecycle state in the
+database.
+
+## Configuration
+
+Add an S3 files section to .ackerdb.config.json:
+
+~~~json title=".ackerdb.config.json"
+{
+  "files": {
+    "backend": "s3",
+    "region": "us-east-1",
+    "bucket": "example-ackerdb-files",
+    "publicUrl": "https://api.example.com",
+    "maxBytes": 104857600,
+    "checksum": "sha256",
+    "encryption": { "type": "AES256" }
+  }
+}
+~~~
+
+Use the [Configuration Reference](/docs/configuration-reference#file-storage)
+for required and optional S3 fields. This guide focuses on selecting and
+operating the S3 backend.
+
+~~~json
+{
+  "files": {
+    "backend": "s3",
+    "endpoint": "https://objects.example.net",
+    "region": "us-east-1",
+    "bucket": "example-ackerdb-files",
+    "forcePathStyle": true,
+    "publicUrl": "https://api.example.com"
+  }
+}
+~~~
+
+checksum defaults to sha256 and may be disabled only when the storage service
+cannot support it. encryption defaults to AES256; use aws:kms when the bucket
+policy and key configuration require KMS, or disabled only when that is an
+intentional infrastructure decision.
+
+## Credentials and permissions
+
+Do not put access keys in .ackerdb.config.json. The running process supplies
+credentials through its normal execution environment. The store verifies its
+capability on startup, so the configured identity must be able to write,
+inspect, read—including ranged reads—and delete objects in the chosen bucket.
+
+The configured publicUrl is still the application origin that serves AckerDB
+upload and grant endpoints. It is not a presigned bucket URL and should be the
+HTTPS origin users can actually reach.
+
+## Storage safety
+
+AckerDB uses internal object keys and binds the database to the active physical
+store. Do not edit its objects, attach a bucket already used by an unrelated
+deployment, or change storage configuration in place after files exist. The
+startup check detects a mismatched store instead of silently serving the wrong
+bytes.
+
+Move an existing deployment through
+[Migrating File Storage](/docs/migrating-file-storage). For the application
+API, see [Uploads and Downloads](/docs/uploads-and-downloads).

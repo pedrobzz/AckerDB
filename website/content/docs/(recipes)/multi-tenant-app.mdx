@@ -3,4 +3,138 @@ title: "Build a Multi-tenant App"
 description: "Combine identity, access, schema, and queries around tenant ownership."
 ---
 
-Complete documentation for Build a Multi-tenant App is coming soon.
+Multi-tenancy is a data-ownership rule, not a frontend route convention. Every
+tenant-owned row carries its tenant ID, every request resolves membership from
+the authenticated Identity, and every query or mutation verifies that
+membership before reading or writing a tenant row.
+
+## Model the ownership boundary
+
+Start with tenants, memberships, and tenant-owned data. Make membership unique
+so an Identity has one role for one tenant:
+
+```ts title="apps/server/app.ts"
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
+
+const schema = defineSchema({
+  tenants: defineTable({
+    id: v.primaryKey(),
+    slug: v.string(),
+    name: v.string(),
+  }).index(["slug"], { unique: true }),
+
+  memberships: defineTable({
+    id: v.primaryKey(),
+    tenantId: v.bigint(),
+    identity: v.identity(),
+    role: v.enum(["owner", "member"]),
+  }).index(["tenantId", "identity"], { unique: true }),
+
+  projects: defineTable({
+    id: v.primaryKey(),
+    tenantId: v.bigint(),
+    name: v.string(),
+  }).index(["tenantId"]),
+});
+
+export default defineApp({ schema });
+```
+
+The `tenantId` column is not optional bookkeeping. It is the query boundary,
+the index boundary, and the value every write must preserve.
+
+## Resolve membership once per operation
+
+Build one server-only helper. It turns an authenticated Identity and tenant ID
+into the row every Function can trust:
+
+```ts title="apps/server/lib/tenant-access.ts"
+import { AckerDBError, type Principal } from "@ackerdb/server";
+import type { DatabaseReader } from "@workspace/ackerdb-generated/server";
+
+export async function requireMembership(
+  db: DatabaseReader,
+  auth: Principal,
+  tenantId: bigint,
+) {
+  if (auth.kind !== "user") {
+    throw new AckerDBError("unauthenticated", "sign in before selecting a tenant");
+  }
+
+  const membership = await db.memberships
+    .query()
+    .where((row) => row.tenantId.eq(tenantId).and(row.identity.eq(auth.identity)))
+    .unique();
+
+  if (membership === null) {
+    throw new AckerDBError("unauthorized", "you are not a member of this tenant");
+  }
+
+  return membership;
+}
+```
+
+Keep this helper in `lib/`, not `functions/`: it is a reusable authorization
+rule, not a public API operation.
+
+## Put authorization beside the data access
+
+Every tenant-facing Function receives a tenant ID, resolves membership, then
+filters or writes with that same tenant ID:
+
+```ts title="apps/server/functions/projects.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+import { requireMembership } from "../lib/tenant-access";
+
+export const list = query({
+  access: "authenticated",
+  args: { tenantId: v.bigint() },
+  handler: async (ctx, args) => {
+    await requireMembership(ctx.db, ctx.auth, args.tenantId);
+    return ctx.db.projects
+      .query()
+      .where((row) => row.tenantId.eq(args.tenantId))
+      .collect();
+  },
+});
+```
+
+Do not rely on a tenant slug in a URL, a React context value, or an API client
+filter as an authorization check. Those select a tenant for the caller; the
+server still proves that the caller belongs to it.
+
+## Separate membership from capability scopes
+
+Membership answers “which tenant may this user act in?” Scopes answer “which
+operation may this credential perform?” Use memberships for row ownership and
+use [Scopes](/docs/scopes) for workload credentials, MCP clients, or privileged
+application operations.
+
+For example, an internal billing worker might require a `billing:write` scope
+and still receive a tenant ID that it validates before it changes tenant data.
+One check never replaces the other.
+
+## Make the React route a convenience, not authority
+
+The web application may store an active tenant in its router or state, then
+pass that ID to generated queries and mutations:
+
+```tsx title="apps/web/src/projects.tsx"
+const projects = useQuery(api.projects.list, { tenantId });
+```
+
+Changing `tenantId` creates a different live query. AckerDB tracks the rows
+that query reads and revalidates it when those rows change. The server's
+membership check remains the authority on every subscription and call.
+
+## Test the negative path
+
+For every tenant Function, write an integration test for all three cases:
+
+1. A member can read or write their own tenant.
+2. A member cannot read or write another tenant.
+3. An anonymous or invalid credential cannot select any tenant.
+
+Those tests protect the real multi-tenant invariant: no operation returns or
+changes a row outside the caller's verified tenant boundary.

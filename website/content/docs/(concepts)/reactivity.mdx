@@ -1,6 +1,58 @@
 ---
 title: "Reactivity"
-description: "Learn how reads and writes drive precise live-query updates."
+description: "Learn how durable reads and writes drive precise live-query updates."
 ---
 
-Complete documentation for Reactivity is coming soon.
+AckerDB makes a [Query](/docs/queries) live by tracking the durable reads it
+performs, comparing them with each committed write, and re-evaluating only the
+subscriptions that can be affected. There is no application invalidate call for
+ordinary table changes.
+
+## A Query declares the read model
+
+A primary-key lookup records a row dependency. A table query records a
+dependency derived from its predicates and declared indexes; an unbounded scan
+uses a safe table-level dependency. [Reading Data](/docs/reading-data) owns the
+query DSL and [Validators and Indexes](/docs/validators-and-indexes) explains
+how index prefixes make both reads and invalidation more selective.
+
+## A committed write drives reevaluation
+
+A Mutation or explicit transaction records the old and new shapes it writes.
+At commit, AckerDB emits keys for the affected row, table, and relevant index
+prefixes, then looks up subscribed Queries whose recorded reads intersect them.
+
+~~~text
+Query read set                 Committed write set
+----------------------------   ---------------------------------
+notes where ownerId = 42       changed note → row + table + index keys
+                 \                         /
+                  \── intersection ───────/
+                              │
+                              ▼
+                     re-evaluate the Query
+~~~
+
+An index is not a correctness requirement. When a predicate has no useful
+exact prefix, AckerDB widens the dependency safely and may reevaluate more
+subscriptions.
+
+## Re-evaluation does not always update the UI
+
+A write can plausibly affect a Query but leave its returned value unchanged.
+AckerDB compares the new encoded value with the previous result and sends a
+value update only when the value—or an application error—changed. It may still
+advance the commit cursor through a checkpoint, preserving ordered convergence
+without redundant UI data.
+
+## Keep query output durable and deterministic
+
+Make the output a function of validated arguments, authorization, and data read
+through the database context. Process-local mutable state and remote responses
+create dependencies AckerDB cannot observe. For time-sensitive views, pass an
+explicit boundary in the arguments or write durable state from a Mutation or
+Job.
+
+[Live Queries](/docs/live-queries) owns client rendering and state.
+[Transactions](/docs/transactions) owns the commit boundary that precedes
+reactive publication.

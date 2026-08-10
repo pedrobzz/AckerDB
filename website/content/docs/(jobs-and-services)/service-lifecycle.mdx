@@ -3,4 +3,66 @@ title: "Service Lifecycle"
 description: "Start, observe, fail, and clean up long-lived Services."
 ---
 
-Complete documentation for Service Lifecycle is coming soon.
+<Warning title="Experimental">
+  Services are experimental. Their API and capabilities will probably change
+  before the feature is stable. Use them only where you can update alongside
+  AckerDB.
+</Warning>
+
+Services have a strict lifecycle so that the application either becomes ready
+with all required capabilities or fails honestly. Startup and shutdown order is
+deterministic: services start sequentially, and cleanup runs in reverse order.
+
+## Startup
+
+Before serving requests, AckerDB starts every declared service. If one service
+fails during setup, services that already started are cleaned up in reverse
+order and the server never becomes ready.
+
+This lets dependent services rely on their providers having completed startup.
+Do not hide a failed connection behind a background retry loop that leaves the
+application accepting traffic without its required capability. If the service
+is optional, model that explicitly in the application's behavior instead.
+
+## Runtime failure
+
+Call fail when a service encounters an irrecoverable runtime error:
+
+~~~ts
+export const subscriptions = service({
+  start: async ({ fail }) => {
+    const client = await connect();
+    client.on("fatal", fail);
+    return () => client.close();
+  },
+});
+~~~
+
+The first reported failure wins. The server drains and exits with a failure
+after cleanup; AckerDB does not silently restart only that service because
+doing so would conceal its relationship to the rest of the application. In
+development, the supervisor can start a fresh server generation after the
+previous one exits.
+
+## Shutdown
+
+On normal shutdown or service failure, the runtime aborts every service signal
+before cleanup begins. Treat that signal as a request to stop receiving work,
+cancel requests, and release resource ownership. Cleanup still has system
+authority until it returns, so it can persist a final checkpoint when that is
+part of the service contract.
+
+Cleanup runs under a bounded shutdown deadline. A cleanup exception is reported
+with other shutdown failures rather than being discarded. Keep cleanup finite:
+close sockets, stop timers, and return; do not wait indefinitely for a remote
+system that is already unavailable.
+
+## Design checklist
+
+- Start only resources required for this server generation.
+- Register external listeners during setup and remove them during cleanup.
+- Pass abortSignal to every cancellable operation.
+- Use fail for an unrecoverable loss of capability, not for an expected retry.
+- Keep durable tasks in jobs and transient request work in procedures.
+
+For declaration and system authority, see [Services](/docs/services).

@@ -3,4 +3,89 @@ title: "Client Lifecycle"
 description: "Handle connection, authentication, suspension, and reconnect state."
 ---
 
-Complete documentation for Client Lifecycle is coming soon.
+The client exposes immutable connection and authentication snapshots. Render
+those snapshots instead of inferring state from a browser event, token promise,
+or last request error.
+
+## Observe connection state
+
+Read currentConnectionState before subscribing; a subscription receives future
+transitions only.
+
+~~~ts
+function renderConnection() {
+  updateConnectionUI(client.currentConnectionState);
+}
+
+const stop = client.subscribeConnectionState(updateConnectionUI);
+~~~
+
+| Phase | Meaning |
+| --- | --- |
+| connecting | The first authenticated handshake is unfinished. |
+| ready | The server confirmed a principal and provides its secret-free descriptor. |
+| reconnecting | A formerly ready foreground connection is retrying. |
+| authentication-blocked | A credential was rejected or expired; no reconnect occurs until refresh. |
+| terminal-error | A non-recoverable protocol failure stopped the client. |
+| suspended | An application lifecycle adapter retired the transport. |
+| resuming | The adapter returned to active and a fresh handshake is underway. |
+| closed | close() finished. This is terminal. |
+
+React exposes the same snapshot through useConnectionState. See [React
+API](/docs/react-api) for that binding.
+
+## Observe authentication separately
+
+Authentication has a separate state because a connection can be active while a
+credential is being presented.
+
+| Phase | Meaning |
+| --- | --- |
+| authenticating | An anonymous, bearer, or source-provided credential is being presented. |
+| unauthenticated | The server confirmed the anonymous principal. |
+| authenticated | The server confirmed a user or workload principal. |
+| refresh-required | A credential cannot continue. |
+| failed | A terminal client error ended authentication. |
+| closed | The client was closed. |
+
+Use currentAuthenticationState and subscribeAuthenticationState in TypeScript,
+or useAuthentication in React. [Credentials](/docs/credentials) owns the
+credential-source, refresh, and sign-out rules.
+
+## Know which demand can reconnect
+
+Across normal transport reconnects, the client retains its logical session ID,
+live Query subscriptions, Channel memberships, and pending resumable work. A
+fresh handshake always rechecks the credential before demand is flushed.
+
+Queries converge from a cursor or a reset boundary. Mutations retain their
+request identity until they settle or reach their deadline. A dispatched
+Procedure is different: a lost connection yields an indeterminate result rather
+than a silent replay.
+
+[Live Queries](/docs/live-queries) and [Resume and
+Reset](/docs/resume-and-reset) own subscription convergence. [Calling
+Functions](/docs/calling-functions) owns the result actions a caller takes.
+
+## Connect platform suspension
+
+The base client does not guess what backgrounding means. Supply a lifecycle
+source from the platform adapter:
+
+~~~ts
+const client = new AckerDBClient({
+  url: "https://api.example.com",
+  credential: { kind: "anonymous" },
+  lifecycle(port) {
+    return platformLifecycle.onChange((state) => {
+      if (state === "background") port.suspend();
+      if (state === "active") port.resume();
+    });
+  },
+});
+~~~
+
+Suspension retires the physical transport and stops its timers while preserving
+the logical demand the protocol can resume. Procedures and SSE streams are
+non-resumable; new non-resumable work is refused while suspended instead of
+being silently queued. Realtime peers move to their own reconnect states.

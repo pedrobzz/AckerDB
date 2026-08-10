@@ -3,4 +3,171 @@ title: "Generated Files"
 description: "Reference generated API, server builders, row types, and ownership rules."
 ---
 
-Complete documentation for Generated Files is coming soon.
+`acker codegen` writes the typed contract between an AckerDB application and
+its consumers. The server declaration is the source of truth; generated files
+are deterministic output and must never be edited by hand.
+
+By default, AckerDB writes them to `_generated/` in the application
+directory:
+
+~~~text title="Default generated directory"
+apps/server/
+  app.ts
+  functions/
+  _generated/
+    api.ts
+    server.ts
+    types.ts
+~~~
+
+In a Bun workspace, point `generated` at a dedicated package:
+
+~~~json title="apps/server/.ackerdb.config.json"
+{
+  "generated": "../../packages/ackerdb-generated/src"
+}
+~~~
+
+The path is relative to the server application directory. That package is the
+only supported way for a client application to consume the server’s contract;
+clients must not import Function source with relative paths.
+
+## When code generation runs
+
+Run a one-shot generation after a fresh checkout or before typechecking:
+
+~~~bash title="Terminal"
+bunx acker codegen apps/server
+~~~
+
+`acker dev` runs code generation before it starts the server and after a
+valid backend source change. `acker start` also generates once before
+serving. Codegen rewrites a file only when its content changes, so it does not
+create timestamp churn for editors or frontend tools.
+
+Commit the generated package with the server change. CI should run codegen
+then fail when it produces a diff:
+
+~~~bash title="CI"
+bunx acker codegen apps/server
+git diff --exit-code -- packages/ackerdb-generated
+~~~
+
+## `server.ts`: typed server builders
+
+`server.ts` imports the application manifest as a type and specializes
+server declarations to its exact schema, scopes, mounted Plugins, and Jobs.
+Server-owned modules import their builders from here:
+
+~~~ts title="apps/server/functions/todos.ts"
+import { v } from "@ackerdb/server";
+import {
+  mutation,
+  query,
+  type DatabaseReader,
+} from "@workspace/ackerdb-generated/server";
+
+export const list = query({
+  access: "public",
+  args: {},
+  handler: (ctx) => ctx.db.todos.query().collect(),
+});
+
+export function findTodo(db: DatabaseReader, id: bigint) {
+  return db.todos.get(id);
+}
+
+export const create = mutation({
+  access: "public",
+  args: { text: v.string() },
+  handler: (ctx, { text }) => ctx.db.todos.insert({ text }),
+});
+~~~
+
+It exports the specialized builders:
+
+| Export | Use in |
+| --- | --- |
+| `query`, `mutation`, `procedure`, `sseProcedure` | Function modules |
+| `httpHandler`, `channel`, `realtime`, `mcp` | Transport and integration modules |
+| `job`, `service` | Background work and long-lived service modules |
+| `QueryCtx`, `MutationCtx`, `ProcedureCtx`, `SseCtx`, `HttpHandlerCtx` | Helpers that need the right context type |
+| `JobCtx`, `JobTxCtx`, `ServiceCtx`, `SystemCtx` | Background and lifecycle helpers |
+| `DatabaseReader`, `DatabaseWriter` | Schema-aware domain helpers |
+| `Schema`, `Scope` | Advanced type-level integration code |
+
+The generic equivalents live in `@ackerdb/server`, but direct application
+code should use this generated specialization. That is what prevents a helper
+from silently losing knowledge of the application’s tables or capabilities.
+
+## `api.ts`: typed callable references
+
+`api.ts` walks Function modules and exports a tree of references that
+clients pass to the AckerDB client or React hooks. It imports modules as types
+only: importing `api.ts` never executes server code.
+
+~~~ts title="apps/web/src/todos.tsx"
+import { useMutation, useQuery } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+export function Todos() {
+  const todos = useQuery(api.todos.list, {});
+  const createTodo = useMutation(api.todos.create);
+
+  // The arguments and results are inferred from the server Function.
+  void createTodo({ text: "Write docs" });
+
+  return todos.status === "success" ? <p>{todos.data.length}</p> : null;
+}
+~~~
+
+For a module at `functions/todos.ts`, an exported `list` becomes
+`api.todos.list`. Nested folders become nested object groups. AckerDB
+reserves the generated names it needs, so use normal module and export names
+instead of trying to assemble address strings manually.
+
+Event Tables appear under `api.events`. If an application declares extra
+HTTP API groups, codegen also writes one typed reference root per declared
+`apiPath`. Use the generated root so every reference carries the correct
+transport group.
+
+## `types.ts`: shared data types
+
+`types.ts` exposes application data without importing the server runtime:
+
+| Export | Meaning |
+| --- | --- |
+| A singular Table type such as `Todo` | Stored-row type for each declared Table. |
+| An Event Table type such as `OrderEventArgs` | Argument type for each Event Table subscription. |
+| Named enum types and value objects | A declared named enum and its convenient values. |
+| Named union types and constructors | A declared tagged union and helpers for constructing its variants. |
+| `FileId`, `FileGrantId`, `Identity` | Shared AckerDB identity and File identifiers. |
+
+~~~ts title="Shared row type"
+import type { Todo } from "@workspace/ackerdb-generated/types";
+
+export function TodoLabel(todo: Todo) {
+  return todo.completed ? `Done: ${todo.text}` : todo.text;
+}
+~~~
+
+Generated types describe the application schema at the moment of code
+generation. They do not replace input validation or access control in server
+Functions.
+
+## Ownership rules
+
+Treat these rules as one contract:
+
+1. Edit `app.ts`, Function modules, Jobs, Services, and configuration—not
+   `api.ts`, `server.ts`, or `types.ts`.
+2. Run codegen after a schema or callable-surface change before typechecking a
+   client.
+3. Commit generated output beside the source change that produced it.
+4. Keep handwritten helpers outside the generated directory.
+5. Let the server own generation; let every client consume the generated
+   package by its workspace name.
+
+See [Project Structure](/docs/project-structure) for the recommended
+workspace boundary and [Development Workflow](/docs/development-workflow) for
+the daily generation loop.

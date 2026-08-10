@@ -3,4 +3,124 @@ title: "Validators and Indexes"
 description: "Constrain stored values and design indexes for application queries."
 ---
 
-Complete documentation for Validators and Indexes is coming soon.
+Validators describe one contract in three places: TypeScript inference, runtime
+validation, and durable storage. Use the same v declaration for a table field,
+Function argument, result, or SSE chunk where the domain rule is the same.
+
+## Choose a value shape first
+
+The validator DSL includes these common values:
+
+| Validator | Type accepted by application code |
+| --- | --- |
+| v.string() | string |
+| v.int() | safe integer number |
+| v.float() | finite number |
+| v.bigint() | signed 64-bit bigint |
+| v.boolean() | boolean |
+| v.bytes() | Uint8Array |
+| `v.identity()`, `v.file()`, `v.fileGrant()` | branded bigint identifiers |
+| `v.array(...)`, `v.object({...})`, `v.jsonb<T>()` | structured values |
+| v.enum(...), v.union(...) | named closed variants |
+| v.vector(dimensions) | a finite numeric vector of that exact length |
+
+Use constraints where they belong instead of repeating checks in every
+handler.
+
+~~~ts
+const title = v.string().min(1).max(200);
+const priority = v.int().min(0).max(5);
+const tags = v.array(v.string().min(1).max(32)).max(12);
+
+const noteKind = v.union("NoteKind", {
+  text: v.string(),
+  checklist: v.array(v.string()).min(1),
+  tombstone: v.tag(),
+});
+~~~
+
+A validator rejects unknown object fields and invalid nested values. The
+generated TypeScript type follows the same structure.
+
+## Nullability depends on the boundary
+
+Use nullable for a field that is stored as SQL NULL:
+
+~~~ts
+body: v.string().nullable(),
+~~~
+
+Stored table columns cannot use optional or nullish. A nullable column is
+optional in an insert shape and is stored as null when omitted.
+
+Use optional when a Function argument may be omitted, and nullish when it may
+be omitted or explicitly null:
+
+~~~ts
+args: {
+  cursor: v.string().optional(),
+  filter: v.string().nullish(),
+},
+~~~
+
+Do not chain these modifiers. Pick the one contract the caller needs.
+
+## Declare an index for the query shape
+
+Indexes are declared on the table definition. The default algorithm is btree.
+
+~~~ts
+const schema = defineSchema({
+  notes: defineTable({
+    id: v.primaryKey(),
+    ownerId: v.identity(),
+    title: v.string(),
+    status: v.enum("Status", ["open", "done"]),
+    updatedAt: v.int(),
+  })
+    .index(["ownerId", "updatedAt"])
+    .index(["ownerId", "title"], { unique: true }),
+});
+~~~
+
+Put equality fields first, then the field you order or range over. For example,
+a query constrained by ownerId and ordered by updatedAt matches the first
+index. A unique index makes duplicate writes fail and enables the typed upsert
+method for that exact non-null key.
+
+A direct index is available only for one int, bigint, identity, enum, or union
+column:
+
+~~~ts
+.index(["bucket"], { algorithm: "direct" })
+~~~
+
+Use it only when the field is a known dense direct key. Otherwise use the
+default btree index. Arrays, objects, JSON values, and bytes are not ordinary
+index columns; promote the scalar value you query into its own field.
+
+## Full-text declarations are separate
+
+A table can declare one full-text target over one or more string columns:
+
+~~~ts
+const articles = defineTable({
+  id: v.primaryKey(),
+  title: v.string(),
+  body: v.string().nullable(),
+}).fullText(["title", "body"]);
+~~~
+
+Only string columns are valid full-text targets. The declaration enables the
+typed fullText accessor on that table; it is not an ordinary btree index.
+
+## Indexes also help live Queries
+
+AckerDB uses index prefixes to record a more precise reactive dependency for
+an equality-constrained Query. An index is never required for correctness:
+when a predicate does not map to a safe prefix, the subscription widens to a
+table-level dependency and may re-evaluate more often.
+
+Adding a unique index or tightening a validator can require a data check on an
+existing database. See [Schema Migrations](/docs/schema-migrations) before
+shipping that change, and [Reading Data](/docs/reading-data) for the query DSL.

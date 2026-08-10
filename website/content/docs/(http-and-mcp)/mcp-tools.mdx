@@ -3,4 +3,127 @@ title: "MCP Tools"
 description: "Design typed, authorized tools over application Functions."
 ---
 
-Complete documentation for MCP Tools is coming soon.
+An MCP tool is a named, authorized view of one registered query, mutation, or
+procedure. The Function owns business behavior and validation; the MCP entry
+owns the model-facing name, visibility, and additional tool-level access rule.
+
+## Tool requirements
+
+The referenced Function must:
+
+- be a query, mutation, or procedure—not an SSE procedure;
+- declare a non-empty description;
+- declare a returns validator; and
+- not use system-only Function access.
+
+Tool names are lower_snake_case. The tool's input schema comes from the
+Function args validator. For ordinary structured returns, its output schema
+comes from the returns validator. Standard JSON encoding applies, including
+decimal strings for bigints and base64 strings for bytes.
+
+~~~ts
+import { v } from "@ackerdb/server";
+import { mcp, query } from "@workspace/ackerdb-generated/server";
+
+export const findOrder = query({
+  access: "authenticated",
+  title: "Find order",
+  description: "Return one order by its number.",
+  args: { orderNumber: v.string() },
+  returns: v.object({
+    orderNumber: v.string(),
+    state: v.string(),
+  }).nullable(),
+  handler: async (ctx, args) => {
+    const order = await ctx.db.orders
+      .query()
+      .where((order) => order.orderNumber.eq(args.orderNumber))
+      .unique();
+    return order === null
+      ? null
+      : { orderNumber: order.orderNumber, state: order.state };
+  },
+});
+
+export const ordersMcp = mcp({
+  name: "orders",
+  path: "/mcp/orders",
+  tools: {
+    find_order: {
+      fn: findOrder,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+      },
+    },
+  },
+});
+~~~
+
+The omitted tool access defaults to authenticated. That means any
+authenticated identity may discover and call it, subject to the Function's
+own access policy.
+
+## Tool access
+
+Choose tool access explicitly when the model-facing audience differs from the
+underlying Function:
+
+| Access | Meaning |
+| --- | --- |
+| public | Anonymous callers may discover and call the tool. |
+| authenticated | Any authenticated identity may discover and call it. This is the default. |
+| `{ anyOf: [...] }` | The caller needs at least one named application scope. |
+| `{ allOf: [...] }` | The caller needs every named application scope. |
+
+Scopes come from the application scope vocabulary in defineApp. Tool access is
+checked before execution and is also used to filter tools/list. It adds a
+curation rule; it does not bypass or weaken the Function's own access policy.
+The scope example below assumes app.ts declares the orders:write scope.
+
+~~~ts
+tools: {
+  cancel_order: {
+    fn: cancelOrder,
+    access: { allOf: ["orders:write"] },
+    annotations: {
+      destructiveHint: true,
+      idempotentHint: true,
+    },
+  },
+}
+~~~
+
+Use annotations as accurate hints for the MCP client, never as a replacement
+for authorization or mutation safeguards.
+
+## Private tools
+
+Set private: true on a tool entry to make it available only through the
+endpoint's same-process aiTools capability. It is absent from remote
+tools/list and remote calls are refused. This is the right form for an
+application-internal agent action; do not expose a system-only Function to
+MCP.
+
+## Results and failures
+
+For a successful tool call, object results become structured content. A scalar
+or array result is wrapped as a value field so every tool has an object-shaped
+structured output. A declared application error becomes an MCP tool result
+with isError set, preserving a readable typed failure for the model.
+
+A Function that returns mcpContent() supplies MCP content blocks instead. It
+has no structured output schema and cannot also set http: true.
+
+Keep a tool narrow and phrase its description as a concrete operation. An MCP
+tool list is part of the model's prompt: expose only actions that the connected
+identity is meant to use.
+
+
+## Keep the layers distinct
+
+[MCP Servers](/docs/mcp-servers) owns endpoint transport, route, and publishing
+rules. [Queries](/docs/queries), [Mutations](/docs/mutations), and
+[Procedures](/docs/procedures) own the Function behavior a tool invokes.
+[Access Policies](/docs/access-policies) and [Scopes](/docs/scopes) own the
+authorization rules that tool-level curation can only narrow.

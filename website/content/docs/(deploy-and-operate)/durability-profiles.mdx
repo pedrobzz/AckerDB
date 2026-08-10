@@ -3,4 +3,69 @@ title: "Durability Profiles"
 description: "Choose the durability point that matches the deployment contract."
 ---
 
-Complete documentation for Durability Profiles is coming soon.
+AckerDB stores durable application state in SQLite WAL mode. The durability
+profile chooses when an acknowledged commit is forced through the operating
+system's storage stack.
+
+## Use `production` by default
+
+`production` is the default and uses SQLite `synchronous=FULL`:
+
+```bash title="Environment"
+ACKERDB_DURABILITY=production
+```
+
+Use it for any database whose acknowledged writes must survive a machine or
+power failure as far as the storage device can honor that guarantee. It is the
+right default for user data, credentials, workflow state, and irreversible
+business operations.
+
+## Use `balanced` only with an explicit loss window
+
+`balanced` uses SQLite `synchronous=NORMAL`:
+
+```bash title="Environment"
+ACKERDB_DURABILITY=balanced
+```
+
+It can reduce write latency and storage flush pressure, but a power loss can
+lose recently acknowledged commits. It is appropriate only when the application
+has a concrete, accepted recovery story for that window—such as rebuildable
+cache-like data or a downstream source of truth.
+
+| Profile | SQLite setting | Acknowledged-write contract |
+| --- | --- | --- |
+| `production` | `FULL` | Prefer durability at the storage boundary. |
+| `balanced` | `NORMAL` | Faster normal writes, with potential loss of recent commits on power failure. |
+
+The profile is recorded with mutation receipts and verified backup metadata, so
+operators can see which contract produced a commit or artifact.
+
+## Preserve the complete SQLite state
+
+WAL mode means a database can have state in `data.db`, `data.db-wal`, and
+`data.db-shm` while running. Keep the configured database directory on a
+filesystem with appropriate durability characteristics, and never implement
+backups by copying one live file.
+
+Use `acker backup` for a verified snapshot and `acker restore` for a verified
+restore. A clean AckerDB shutdown checkpoints and closes storage, but a crash
+recovery must still see every SQLite artifact in the database directory.
+
+## Make the choice at deployment time
+
+The profile is read from `ACKERDB_DURABILITY` when the application starts. A
+configuration or environment change requires a process restart; it does not
+mutate the policy of an already-open database.
+
+Do not set `balanced` merely because a benchmark improves. State the data,
+failure mode, and acceptable loss window first. If those are not explicit,
+keep `production`.
+
+
+## Related boundaries
+
+[Durability](/docs/durability) explains the commit guarantee behind these
+profiles. [Backups and Restore](/docs/backups-and-restore) covers recovery, and
+[Production Server](/docs/production-server) covers selecting the profile in a
+deployed process.

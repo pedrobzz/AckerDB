@@ -3,4 +3,186 @@ title: "Realtime Sessions"
 description: "Build low-latency sessions with typed events and streams."
 ---
 
-Complete documentation for Realtime Sessions is coming soon.
+Realtime sessions are typed WebRTC sessions for low-latency, bidirectional
+events, binary streams, media tracks, and peer-connection access. They are a
+separate transport from the base application connection: AckerDB performs the
+authenticated signaling and manages reconnection, while the session data plane
+runs over WebRTC.
+
+Use a Channel for short application-room messages. Use a Realtime Session when
+the interaction needs WebRTC primitives or continuous binary/media transfer.
+
+## Enable the server runtime
+
+An application that declares realtime handlers needs the server runtime:
+
+~~~sh
+bun add --exact @ackerdb/realtime@%ACKERDB_PACKAGE_VERSION%
+~~~
+
+When that package is installed, the CLI loads its default runtime only for an
+application that actually declares realtime handlers. For deployment-specific
+network, TURN, session, or resource limits, default-export a configured runtime
+and point to it from the application configuration.
+
+~~~ts
+// realtime.ts
+import { createRealtimeRuntime } from "@ackerdb/realtime";
+
+export default createRealtimeRuntime({
+  maxSessions: 1_000,
+  maxSessionsPerPrincipal: 4,
+});
+~~~
+
+~~~json
+{
+  "realtime": "./realtime.ts"
+}
+~~~
+
+The runtime owns finite handshakes, sessions, candidate intake, streams, and
+native peer resources. Treat its limits as part of the deployment envelope,
+not as optional client-side safeguards.
+
+## Declare a typed session
+
+Define both directions of events and streams. Each stream has typed metadata
+and can declare a maximum byte size.
+
+~~~ts
+import { realtime } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const live = realtime({
+  args: { assistantId: v.bigint() },
+  clientEvents: {
+    prompt: v.object({ text: v.string() }),
+  },
+  serverEvents: {
+    transcript: v.object({ text: v.string() }),
+  },
+  clientStreams: {
+    photo: {
+      metadata: v.object({ contentType: v.literal("image/jpeg") }),
+      maxBytes: 2_000_000,
+    },
+  },
+  serverStreams: {
+    audio: {
+      metadata: v.object({ contentType: v.literal("audio/ogg") }),
+      maxBytes: 5_000_000,
+    },
+  },
+  access: "authenticated",
+  handler: (ctx, args) => {
+    ctx.on("prompt", ({ text }) => {
+      ctx.send("transcript", { text: "Heard: " + text });
+    });
+
+    ctx.onStream("photo", ({ metadata, readable, abortSignal }) => {
+      void storePhoto(args.assistantId, metadata, readable, abortSignal);
+    });
+  },
+});
+~~~
+
+The handler receives the authorization state from **authorize**, the session
+peer connection, typed **on** and **send** functions, typed stream registration
+and opening functions, and an abort-aware application context. Server handlers
+can also create a session-owned auxiliary peer connection through
+**ctx.createPeerConnection**. It closes with the session.
+
+## Use a session from React
+
+Generated references carry all event and stream payload types into
+**useRealtime**.
+
+~~~tsx
+import { useRealtime } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+function Assistant({ assistantId }: { assistantId: bigint }) {
+  const session = useRealtime(api.assistants.live, { assistantId }, {
+    on: {
+      event: {
+        transcript({ text }) {
+          appendTranscript(text);
+        },
+      },
+      stream: {
+        audio({ readable, metadata }) {
+          void playAudio(readable, metadata.contentType);
+        },
+      },
+      connected(peerConnection) {
+        inspectConnection(peerConnection);
+      },
+    },
+  });
+
+  const sendPrompt = () => {
+    if (!session.send("prompt", { text: "Summarize this image." })) {
+      showConnectionNotice();
+    }
+  };
+
+  const sendPhoto = async (photo: File) => {
+    if (session.state.phase !== "connected") return;
+    const { writable } = session.openStream(
+      "photo",
+      { contentType: "image/jpeg" },
+      { size: photo.size },
+    );
+    await photo.stream().pipeTo(writable);
+  };
+
+  return <button onClick={sendPrompt}>Send prompt</button>;
+}
+~~~
+
+**send** returns false while a usable data plane is unavailable. **openStream**
+requires a connected session and returns a writable byte stream; propagate
+writer failures instead of treating a stream as durable delivery.
+
+## Session states and recovery
+
+| State | Meaning |
+| --- | --- |
+| **connecting** | Signaling or WebRTC setup is in progress. A peer connection may already exist. |
+| **connected** | The typed data plane is ready. |
+| **reconnecting** | A recoverable connection error occurred and the client is attempting a new generation. |
+| **disconnected** | The application explicitly called **disconnect**; automatic recovery is paused. |
+| **rejected** | Authorization returned a typed application error. |
+| **failed** | A non-recoverable client or transport failure ended the session. |
+
+Call **reconnect** after an explicit disconnect to start a new attempt. The
+client can recover from transport loss with a new peer generation, but it does
+not replay events or partially written streams across that boundary. Design
+the protocol so the receiver can safely reject, restart, or identify
+application-level work.
+
+Equivalent client, reference, and canonical argument values share one native
+peer session. Each React hook keeps an independent current handler bundle, and
+unmounting releases its observation. The last release closes the shared
+session.
+
+## Media and observability
+
+The **peerConnection**, **connected**, and **track** callbacks are for native
+WebRTC integration. Return a cleanup function from **peerConnection** when a
+listener owns peer-specific resources. On the server, **ctx.media** gives
+lazy raw-media access; decoding does not begin merely because the session
+exists.
+
+Keep authorization and durable state outside the media path. A session is
+excellent for immediacy, but a Mutation and Query remain the right contract for
+data that must survive a peer restart or browser reload.
+
+
+## Related boundaries
+
+[Channels](/docs/channels) are the lighter room-event surface. [Resume and
+Reset](/docs/resume-and-reset) owns reconnection boundaries for retained
+subscription state, and [Access Policies](/docs/access-policies) owns the
+admission rule before a session opens.

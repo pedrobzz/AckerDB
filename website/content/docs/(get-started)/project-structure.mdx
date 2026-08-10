@@ -3,4 +3,108 @@ title: Project Structure
 description: Organize server declarations, generated bindings, and client applications by ownership.
 ---
 
-Detailed Project Structure documentation is coming soon.
+AckerDB fits best in a Bun workspace where backend source, generated bindings,
+and each client have explicit owners. These folders are dependency boundaries,
+not layers that hide the application from one another.
+
+## Use one canonical workspace
+
+~~~text title="Workspace"
+apps/
+  server/
+    .ackerdb.config.json
+    app.ts
+    functions/
+    lib/
+  web/
+    src/
+packages/
+  ackerdb-generated/
+    src/
+package.json
+bun.lock
+~~~
+
+The root coordinates the workspace and lockfile. The server owns AckerDB
+declarations; the web app owns React, routing, and client environment handling;
+and the generated package carries the typed contract between them. Server and
+web depend on that package by its workspace name—they never import each other
+with relative paths.
+
+[Basic Usage](/docs/basic-usage) creates this shape step by step.
+
+## Keep server source authoritative
+
+apps/server is the AckerDB application directory. Its manifest owns the schema
+and application-wide capabilities. Its auto-discovered Function modules publish
+the callable application surface. Keep ordinary domain helpers in lib so a
+helper does not accidentally become an addressable Function.
+
+Add jobs, services, or migrations only when the application uses those
+capabilities:
+
+~~~text title="Expanded server application"
+apps/server/
+  app.ts
+  functions/
+  jobs/
+  services/
+  migrations/
+  lib/
+~~~
+
+[Application Model](/docs/application-model) owns the manifest and publish
+boundary. [Jobs](/docs/background-jobs), [Services](/docs/services), and
+[Schema Migrations](/docs/schema-migrations) own those optional directories.
+
+## Put generated output in its own package
+
+Configure generated output once:
+
+~~~json title="apps/server/.ackerdb.config.json"
+{
+  "generated": "../../packages/ackerdb-generated/src"
+}
+~~~
+
+Code generation is the only writer of that directory. Server modules import
+schema-aware builders from its server entrypoint; clients import callable
+references and shared types from its client entrypoints. Generated output never
+becomes a home for handwritten helpers.
+
+[Generated Types](/docs/generated-types) explains the contract boundary.
+[Generated Files](/docs/generated-files) is the exact entrypoint and ownership
+reference. [Configuration Reference](/docs/configuration-reference#application-paths)
+owns the full path configuration.
+
+## Let each client own its runtime
+
+apps/web owns the React runtime and the deployed server URL. AckerDB needs one
+provider near the client root and generated references where Functions are
+called. Vite, TanStack Router, or another React framework can own the web
+application without changing this boundary.
+
+Additional clients are sibling applications, not server subdirectories:
+
+~~~text
+apps/
+  server/
+  web/
+  admin/
+  worker/
+packages/
+  ackerdb-generated/
+~~~
+
+Every client consumes the generated contract; none owns it.
+
+## Preserve the ownership rules
+
+1. Server source is the application source of truth.
+2. Code generation is the only writer of the generated package.
+3. Clients depend on generated output, never server source.
+4. Server-only helpers stay outside auto-discovered directories.
+5. Local database state is runtime data, not source control.
+
+[Development Workflow](/docs/development-workflow) turns this structure into a
+fast local loop.

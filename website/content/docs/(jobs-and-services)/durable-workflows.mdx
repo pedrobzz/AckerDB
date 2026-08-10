@@ -3,4 +3,86 @@ title: "Durable Workflows"
 description: "Compose persisted multistep work with explicit outcomes."
 ---
 
-Complete documentation for Durable Workflows is coming soon.
+A procedure job is at-least-once. Use durable steps when it contains a sequence
+whose progress must survive a crash without repeating completed work blindly.
+Each step has a stable name and stores its result in the job run journal.
+
+## Build a step-based job
+
+~~~ts title="jobs/invoices.ts"
+import { v } from "@ackerdb/server";
+import { job } from "@workspace/ackerdb-generated/server";
+
+export const collect = job({
+  args: { invoiceId: v.bigint() },
+  handler: async (ctx, args) => {
+    const charge = await ctx.step.procedure("charge-card", async () => {
+      return chargeCard(args.invoiceId);
+    });
+
+    await ctx.step.mutation("record-charge", (tx) =>
+      tx.db.invoices.patch(args.invoiceId, {
+        chargeId: charge.id,
+        paidAt: tx.timestamp,
+      }),
+    );
+
+    await ctx.step.sleep("settlement-window", 60_000);
+
+    await ctx.step.procedure("send-receipt", () =>
+      sendReceipt(args.invoiceId),
+    );
+  },
+});
+~~~
+
+On resume, a completed step returns its journaled value instead of running
+again. This makes the first external charge, durable database record, delay,
+and later notification explicit parts of one recoverable workflow.
+
+## Choose the right step
+
+| Step | Use it for | Delivery behavior |
+| --- | --- | --- |
+| step.query | A read-only inline calculation | The result is journaled. |
+| step.mutation | A database transaction | The write and journal entry commit exactly once. |
+| step.procedure | External I/O or computation | At least once until its result is journaled. |
+| step.run | A registered query, mutation, or procedure | Uses that function's typed contract and journals its result. |
+| step.sleep | A durable delay | Suspends the same run until the chosen duration. |
+
+Use step.run when a stable application function already owns the operation:
+
+~~~ts
+import { api } from "@workspace/ackerdb-generated/api";
+
+const result = await ctx.step.run(
+  api.billing.capturePayment,
+  { invoiceId: args.invoiceId },
+  { name: "capture-payment" },
+);
+~~~
+
+A returned application Err is a normal journaled result. Throw only when the
+job should fail and use its retry policy. For a procedure step, assume a crash
+can happen after the provider sees the request but before the result is
+journaled. Give the provider an idempotency key derived from durable business
+data.
+
+## Step names are a compatibility contract
+
+The same step name must keep the same meaning and kind for every in-flight
+run. Do not rename a step, turn a procedure step into a mutation step, or
+reuse one name for two calls in a deployed workflow. Give repeated calls
+explicit names:
+
+~~~ts
+await ctx.step.procedure("notify-buyer", () => notify("buyer"));
+await ctx.step.procedure("notify-seller", () => notify("seller"));
+~~~
+
+If code changes while a run is in flight, redeploy a compatible workflow before
+manually retrying it. The runtime refuses inconsistent or corrupt step journals
+instead of executing an ambiguous workflow.
+
+Durable steps are for procedure-kind jobs. For simple single-transaction work,
+use a mutation-kind [Background Job](/docs/background-jobs) instead.

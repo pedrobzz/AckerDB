@@ -3,4 +3,72 @@ title: "Status and Health"
 description: "Inspect operational state and expose authorized health information."
 ---
 
-Complete documentation for Status and Health is coming soon.
+AckerDB separates anonymous health probes from privileged operational detail.
+Do not use one endpoint for both: load balancers need a cheap readiness answer,
+while operators need real state without exposing it to the public internet.
+
+## Liveness and readiness
+
+The listener always reserves these paths:
+
+```text
+GET /live
+GET /ready
+```
+
+`/live` returns `200` while the AckerDB process is starting, ready, or draining.
+It returns `503` only after failure or stop. Point a liveness probe here so a
+slow migration does not look like a dead process.
+
+`/ready` returns `200` only after the Runtime has activated. During startup,
+draining, or failure it returns `503` with a small JSON body containing the
+current lifecycle state and, while applicable, the startup phase or Service
+being started. Point traffic admission and readiness probes here.
+
+## Protect detailed status
+
+`GET /status` is an authorized operational endpoint. It requires a workload
+credential carrying one configured scope:
+
+```json title="apps/server/.ackerdb.config.json"
+{
+  "statusScope": "ackerdb:status"
+}
+```
+
+The default scope is `ackerdb:status`. A user credential, anonymous request,
+or workload credential without that exact scope receives an unauthorized
+protocol outcome. Do not expose `/status` through an unauthenticated public
+health check.
+
+The response includes server lifecycle, active connection and admission
+counters, delivery budgets, file-transfer counters, and the Runtime status
+snapshot. It is designed for operators and automation that already hold
+workload authority.
+
+## Inspect storage without a listener
+
+For an offline check, run:
+
+```bash title="Terminal"
+bunx acker status apps/server
+```
+
+This opens the configured database with the current schema, runs its integrity
+validation, then emits JSON. It does not bind a network port or start the
+application Runtime.
+
+## Use probes as decisions
+
+Use the results to make clear infrastructure decisions:
+
+| Signal | Meaning | Typical action |
+| --- | --- | --- |
+| `/live` is `503` | The process failed or stopped. | Restart or replace the process. |
+| `/ready` is `503` during startup | AckerDB is not safe to receive traffic yet. | Keep it out of the load balancer and inspect the phase. |
+| `/ready` is `503` while draining | Graceful shutdown is in progress. | Stop routing new requests; allow the termination grace period. |
+| `/status` reports pressure or rejections | A bounded resource is protecting unrelated work. | Inspect load shape and capacity before increasing limits. |
+
+Health checks are not telemetry. Use [Telemetry](/docs/telemetry) for bounded
+runtime signals and [Backups and Restore](/docs/backups-and-restore) for storage
+integrity and recovery evidence.

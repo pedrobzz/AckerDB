@@ -3,4 +3,193 @@ title: "Server API"
 description: "Reference exports and types from @ackerdb/server."
 ---
 
-Complete documentation for Server API is coming soon.
+The `@ackerdb/server` package owns the declarative application surface:
+schemas, validators, Function definitions, Jobs, Services, transport
+declarations, authentication, and storage capabilities. It is the package the
+Bun server imports directly.
+
+For a real application, pair it with generated bindings:
+
+~~~ts title="Function module"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const list = query({
+  access: "public",
+  args: {},
+  handler: (ctx) => ctx.db.todos.query().collect(),
+});
+~~~
+
+The generated `query` knows the application schema. The generic
+`@ackerdb/server` export is useful for framework and library authors, but
+application Functions should import builders and context types from generated
+`server.ts`.
+
+## Application and schema
+
+Use these exports in `app.ts`, where the application is declared:
+
+| Export | Purpose |
+| --- | --- |
+| `defineApp` | Declares the one AckerDB application: schema, scopes, Plugins, and application-level capabilities. |
+| `defineSchema` | Builds the table schema passed to `defineApp`. |
+| `defineTable` | Declares a durable relational table. |
+| `defineEventTable` | Declares a transient, append-only event stream. |
+| `v` | Defines input, stored-row, and result validators. |
+| `AppSchema`, `AppScope` | Extract the schema or scope vocabulary from an application declaration. |
+
+~~~ts title="apps/server/app.ts"
+import {
+  defineApp,
+  defineSchema,
+  defineTable,
+  v,
+} from "@ackerdb/server";
+
+export default defineApp({
+  schema: defineSchema({
+    todos: defineTable({
+      id: v.primaryKey(),
+      text: v.string(),
+      completed: v.boolean(),
+    }),
+  }),
+  scopes: ["todos:read", "todos:write"],
+});
+~~~
+
+Read [Tables](/docs/tables), [Validators & Indexes](/docs/validators-and-indexes),
+and [Application Model](/docs/application-model) before extending this
+declaration.
+
+## Typed application builders
+
+Code generation produces these exports in
+`@workspace/ackerdb-generated/server`. They are the main entry point for
+server modules because each one carries the exact schema, Plugin capabilities,
+Jobs, and declared scopes for the application.
+
+| Builder | Declares |
+| --- | --- |
+| `query` | A read-only, reactive Function. |
+| `mutation` | A durable write transaction. |
+| `procedure` | A one-off request/response operation. |
+| `sseProcedure` | A pull-driven server-sent event stream. |
+| `httpHandler` | A raw HTTP request handler. |
+| `channel` | An ephemeral, typed message room. |
+| `realtime` | A typed WebRTC session. |
+| `mcp` | A Model Context Protocol endpoint or tool declaration. |
+| `job` | A background Job or durable workflow. |
+| `service` | A long-lived server resource with lifecycle ownership. |
+
+Every builder validates declared arguments before the handler runs. Function
+access is declared at the boundary; do not substitute a client-side check for
+that contract.
+
+~~~ts title="apps/server/functions/todos.ts"
+import { v } from "@ackerdb/server";
+import {
+  mutation,
+  query,
+} from "@workspace/ackerdb-generated/server";
+
+export const get = query({
+  access: "authenticated",
+  scopes: { anyOf: ["todos:read"] },
+  args: { id: v.bigint() },
+  handler: (ctx, { id }) => ctx.db.todos.get(id),
+});
+
+export const complete = mutation({
+  access: "authenticated",
+  scopes: { anyOf: ["todos:write"] },
+  args: { id: v.bigint() },
+  handler: (ctx, { id }) => ctx.db.todos.patch(id, { completed: true }),
+});
+~~~
+
+The builder selects the context:
+
+| Context | Available in |
+| --- | --- |
+| `QueryCtx` | Queries: schema-aware reads plus declared query capabilities. |
+| `MutationCtx` | Mutations: schema-aware reads and writes in one durable transaction. |
+| `ProcedureCtx` | Procedures: application work outside a Query or Mutation transaction. |
+| `SseCtx` | SSE Procedures: procedure facilities plus cancellation-aware streaming. |
+| `HttpHandlerCtx` | Raw HTTP handlers: explicitly controlled request work and transaction access. |
+| `JobCtx` / `JobTxCtx` | Job steps and their transactional work. |
+| `ServiceCtx` | A Service’s owned lifecycle. |
+
+Import the context type only when a helper needs it. Most Functions should
+keep their domain logic directly in the typed handler.
+
+## Database types and errors
+
+The server package exports the low-level schema-aware database contracts used
+by helpers and Plugins:
+
+- `DbReader` and `DbWriter` describe typed table access.
+- `TableReader`, `TableWriter`, and `TableQuery` describe one table’s
+  reads, writes, and fluent query surface.
+- `QueryPage`, `DEFAULT_PAGE_SIZE`, and `MAX_PAGE_SIZE` support cursor
+  pagination.
+- `AckerDBError` is an intentional application failure with a typed code.
+  `isAckerDBError` narrows an unknown error at a boundary.
+- `UniqueConstraintError` and `isUniqueConstraintError` identify a
+  uniqueness conflict rather than turning it into an untyped database error.
+
+Use `AckerDBError` when a caller needs a deliberate, stable failure. Let
+unexpected errors remain unexpected so the server reports them as faults.
+
+~~~ts title="A typed application rejection"
+import { AckerDBError } from "@ackerdb/server";
+
+function requireOwner(ownerId: bigint, identity: bigint | undefined) {
+  if (identity !== ownerId) {
+    throw new AckerDBError("unauthorized", "Only the owner can change this todo.");
+  }
+}
+~~~
+
+See [Reading Data](/docs/reading-data), [Writing Data](/docs/writing-data),
+and [Function Access](/docs/function-access) for the operational contract.
+
+## Facilities beyond Functions
+
+The same package also exposes the declarations and types behind the rest of
+the application model:
+
+| Facility | Main exports | Start here |
+| --- | --- | --- |
+| Authentication | `createOidcVerifier`, `CredentialVerifier`, `ScopeResolver`, `credentials` | [Credentials](/docs/credentials) |
+| Files | `LocalFileStore`, File grant and FileStore types | [Uploads & Downloads](/docs/uploads-and-downloads) |
+| Jobs | `job`, Job definition and outcome types | [Background Jobs](/docs/background-jobs) |
+| Services | `service`, `ServiceRuntime`, lifecycle types | [Services](/docs/services) |
+| Plugins | `definePlugin`, `definePluginContract`, Plugin builders | [Building Plugins](/docs/building-plugins) |
+| HTTP | `httpHandler`, HTTP handler types | [HTTP Handlers](/docs/http-handlers) |
+| MCP | `mcp`, `mcpContent`, MCP content and tool types | [MCP Servers](/docs/mcp-servers) |
+| Realtime | `realtime`, realtime declarations and host types | [Realtime Sessions](/docs/realtime-sessions) |
+
+The public package also exports engine, migration, storage, telemetry, and
+framework types for deliberate integration work. They are not a second
+application API. Prefer the typed declarations above; reach for a lower-level
+export only when your application is actually implementing that boundary.
+
+## Import boundary
+
+Use the package roots deliberately:
+
+~~~ts title="Recommended imports"
+// app.ts: schema and application declaration
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
+
+// Function, Job, Service, HTTP, MCP, Channel, and Realtime modules:
+import { query, mutation } from "@workspace/ackerdb-generated/server";
+
+// Client applications:
+import { api } from "@workspace/ackerdb-generated/api";
+~~~
+
+This is the contract code generation preserves. It keeps server source
+authoritative and makes the exact client surface visible at compile time.

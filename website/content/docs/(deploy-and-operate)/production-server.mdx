@@ -3,4 +3,93 @@ title: "Production Server"
 description: "Run the Bun application as a finite, observable production process."
 ---
 
-Complete documentation for Production Server is coming soon.
+AckerDB is deployed as one Bun process with one durable database directory. The
+process owns the HTTP listener, SQLite connection, application Runtime, Jobs,
+Services, and the graceful shutdown sequence.
+
+## Start the application once
+
+Run the production command from the workspace root or make the server
+application directory the process working directory:
+
+```bash title="Terminal"
+bunx acker start apps/server
+```
+
+`acker start` performs code generation once, opens the configured database,
+reconciles the schema and pending migrations, starts Services, then accepts
+requests. It does not watch files. Use [Development Workflow](/docs/development-workflow)
+and `acker dev` locally; use `acker start` for a deployment process.
+
+The server is ready only after the database, File store, Function registry,
+Plugins, credentials, Jobs, and Services are ready. The startup line reports
+the listener URL, number of Functions and tables, and the database directory.
+
+## Give persistent state a real home
+
+The default state directory is `apps/server/.ackerdb/`. It contains the SQLite
+database and SQLite sidecars, and it must live on persistent storage:
+
+```json title="apps/server/.ackerdb.config.json"
+{
+  "db": "/var/lib/my-app/ackerdb",
+  "hostname": "0.0.0.0",
+  "port": 3211
+}
+```
+
+Mount or back up the whole configured database directory. Do not copy only
+`data.db` from a live process: SQLite WAL sidecars may contain committed work
+that has not been checkpointed into the main file. Use
+[Backups and Restore](/docs/backups-and-restore) for a verified snapshot.
+
+The database path is application state, not build output. A redeploy may
+replace source and dependencies, but it must preserve that directory and the
+configured File store.
+
+## Put a supervisor around the process
+
+Run AckerDB under the process supervisor your host already uses: a container
+orchestrator, systemd, a VM service manager, or another runtime that restarts a
+failed process. A Service that fails after startup ends the AckerDB process;
+the external supervisor owns the retry policy rather than AckerDB silently
+restarting part of the application.
+
+Deliver `SIGTERM` or `SIGINT` for shutdown. AckerDB stops new admission,
+drains transport work, stops Services, commits and closes storage, and then
+exits. Give the process enough termination grace for that finite sequence;
+do not send an immediate hard kill as the normal deploy path.
+
+## Use the operational endpoints
+
+Every listener exposes three operational endpoints:
+
+| Endpoint | Purpose | Success |
+| --- | --- | --- |
+| `GET /live` | The process is alive and has not failed or stopped. | `200` |
+| `GET /ready` | The Runtime is accepting application work. | `200` |
+| `GET /status` | Detailed Runtime status for an authorized workload principal. | `200` |
+
+`/live` is appropriate for a liveness probe. `/ready` is the load-balancer
+readiness probe: it returns `503` during startup, draining, or failure and
+includes the current startup phase. `/status` requires a workload credential
+with the configured `ackerdb:status` scope by default. See
+[Status and Health](/docs/status-and-health) for its authentication boundary.
+
+## Keep deployment boring
+
+The desired production shape is intentionally small:
+
+```text
+reverse proxy or load balancer
+             │
+             ▼
+      one Bun / AckerDB process
+             │
+             ├── SQLite database on persistent storage
+             └── configured File store
+```
+
+Bring ordinary Bun libraries and Services into that process when they belong
+to the same application. Add another service only when it owns a genuinely
+separate failure, lifecycle, or scaling boundary.

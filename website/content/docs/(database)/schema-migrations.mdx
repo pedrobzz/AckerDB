@@ -3,4 +3,133 @@ title: "Schema Migrations"
 description: "Change schemas deliberately while preserving durable data."
 ---
 
-Complete documentation for Schema Migrations is coming soon.
+A schema declaration is a durable contract. When an existing database cannot
+prove that a changed declaration preserves every stored row, AckerDB refuses to
+start until the change is represented by a migration or the development data is
+intentionally reset.
+
+## Start with the schema change
+
+Make the intended schema edit first. Safe changes, such as adding a nullable
+column or loosening a constraint, can be reconciled automatically. Changes that
+may lose, reinterpret, or invalidate data need an explicit migration: dropping
+a table or column, adding a required field, making a nullable column required,
+changing a value shape, removing an enum or union variant, or introducing a
+unique constraint when existing rows contain duplicates or need repair before
+the constraint can hold.
+
+Run the development supervisor and follow its migration prompt:
+
+~~~bash title="Terminal"
+bunx acker dev apps/server
+~~~
+
+The prompt shows the refused changes, offers rename declarations when it can
+identify candidates, and generates a numbered migration scaffold plus its
+metadata. The server stays down until a pending migration is complete and you
+approve applying it. This prevents a schema edit from silently rewriting or
+discarding local durable state.
+
+## Complete the generated transform
+
+A generated migration imports its types and `defineMigration` from the
+migration's `meta/` companion. The old-row input and new-row output are typed
+against the snapshots captured for that migration.
+
+~~~ts title="apps/server/migrations/0001_add_note_slug.ts"
+import {
+  defineMigration,
+  type NotesRow,
+} from "./meta/0001_add_note_slug.types.ts";
+
+export default defineMigration({
+  tables: {
+    notes: (row): NotesRow => ({
+      ...row,
+      slug: row.title
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, ""),
+    }),
+  },
+});
+~~~
+
+A transform returns the new row, `null` to delete that row deliberately, or
+`undefined` to keep the row it received. Use the generated row type
+annotation whenever the migration fills a newly required field; it turns an
+unfinished transform into a compile failure rather than an accidental write.
+
+## Model renames as renames
+
+Use `renames` when an old and new name represent the same durable thing.
+A table mapping is old name to new name; column mappings are grouped by the
+target table name.
+
+~~~ts
+export default defineMigration({
+  renames: {
+    tables: { todos: "notes" },
+    columns: {
+      notes: { text: "title" },
+    },
+  },
+});
+~~~
+
+A rename is different from dropping a value and re-creating it. Declare it so
+the migration planner can retain its identity and data rather than treating
+both names as unrelated storage.
+
+## Read old state and emit new rows when needed
+
+A transform can use `ctx.before` for read-only lookups against the frozen old
+schema. It can use `ctx.insert(table, row)` to populate another table in the
+new schema.
+
+~~~ts
+export default defineMigration({
+  tables: {
+    projects: async (row, ctx) => {
+      const owner = await ctx.before.users.get(row.ownerId);
+      if (owner !== null) {
+        ctx.insert("projectOwners", {
+          projectId: row.id,
+          ownerName: owner.name,
+        });
+      }
+
+      return row;
+    },
+  },
+});
+~~~
+
+Use this for a real split or backfill. Keep cross-table transforms bounded and
+deterministic: a migration runs against a fixed before-state and one target
+schema, not the live application API.
+
+## Applied migrations are immutable
+
+Each migration has a numbered source file and generated metadata that records
+its before and target snapshots. AckerDB stores an identity for every applied
+step, including the migration source. Editing an applied migration is refused
+on the next open because it would make the same history mean two different data
+transformations.
+
+Create a new migration for the next schema change. Do not edit generated
+`meta/*.types.ts` or `meta/*.json` files: regenerate them from the changed
+schema so the source, before-state, target, and transform stay aligned.
+
+## Know the failure behavior
+
+Each migration applies in a transaction. If a transform throws or produces an
+invalid target row, that entire migration step rolls back and its history entry
+is not recorded. Correct the transform and re-run the development flow; never
+paper over the failure with a manual schema change.
+
+For a brand-new disposable development database, `acker reset` is the
+explicit way to discard local data instead of writing a migration. Use
+[Tables](/docs/tables) and [Validators and Indexes](/docs/validators-and-indexes)
+to make the target schema clear before you generate the step.

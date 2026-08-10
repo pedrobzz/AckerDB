@@ -156,20 +156,16 @@ describe("Product documentation static artifact", () => {
     }
   });
 
-  test("publishes exactly three substantive pages and placeholders everywhere else", async () => {
+  test("publishes authored content for every Product documentation route", async () => {
     const { routes } = await routeManifest("docs/routes.json");
     const llmsFull = await readFile(join(publicArtifact, "llms-full.txt"), "utf8");
-    const substantiveRoutes = new Set(["/", "/installation", "/basic-usage"]);
 
     for (const route of routes) {
       const [, markdownPath] = emittedPagePaths("", route);
       const markdown = await readFile(join(publicArtifact, markdownPath), "utf8");
 
-      if (substantiveRoutes.has(route)) {
-        expect(markdown).not.toContain("is coming soon.");
-      } else {
-        expect(markdown.trim()).toMatch(/\bcoming soon\.$/);
-      }
+      expect(markdown).not.toMatch(/\bcoming soon\b/i);
+      expect(markdown.trim().length).toBeGreaterThan(300);
       expect(llmsFull).toContain(markdown.trim());
     }
   });
