@@ -8,11 +8,10 @@ code, realtime updates, background work, and integrations behave like one
 system. You write TypeScript, run one Bun process, and keep the application’s
 SQLite database in that process.
 
-That shape is the foundation, not a limitation to apologize for. A Query can
-reach SQLite without an application-to-database network hop. A Mutation can
-commit data and invalidate exactly the live Queries affected by its writes.
-The same process can respond before a collection of remote services has
-finished negotiating its first round trip.
+Queries read directly from the in-process SQLite database. Mutations commit
+data and invalidate exactly the live Queries affected by their writes. A single
+Bun process keeps request handling, database work, and reactivity close
+together.
 
 ## One server. One application model.
 
