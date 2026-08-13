@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage, type QueryMessage, type Identity } from "@ackerdb/core";
+import { ACKERDB_VERSION, encode, type MutationMessage, type QueryMessage, type Identity } from "@ackerdb/core";
 import {
   verifyClientCredential,
   type CredentialVerifier,
@@ -78,7 +78,6 @@ function open(path: string): { engine: Engine; runtime: Runtime } {
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
-    telemetry: false,
   });
   instances.set(runtime, engine);
   return { engine, runtime };
@@ -171,6 +170,7 @@ describe("durable provider-neutral Identity", () => {
     expect([...engine.plans.keys()]).toEqual([
       "owned",
       "_ackerdb_jobs",
+      "_ackerdb_job_runs",
       "_ackerdb_files",
       "_ackerdb_file_uploads",
       "_ackerdb_file_grants",
@@ -199,10 +199,9 @@ describe("durable provider-neutral Identity", () => {
     await first.runtime.openSession(firstSession);
     const issuedAt = Date.now();
     const mutationMessage: MutationMessage = {
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 1,
-      ref: "owned.create",
+      ref: "api.owned.create",
       args: { value: "persisted" },
       mutationRequestId: uuidV7(1),
       issuedAt,
@@ -226,10 +225,9 @@ describe("durable provider-neutral Identity", () => {
     const secondSession = session(secondPrincipal, "second-session");
     await second.runtime.openSession(secondSession);
     const queryMessage: QueryMessage = {
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "owned.current",
+      ref: "api.owned.current",
       args: {},
     };
     expect(await second.runtime.query(secondSession, request(queryMessage))).toEqual({

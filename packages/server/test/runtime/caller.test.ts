@@ -14,6 +14,7 @@ function user(
 ): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.example",
     subject: "alice",

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   encode,
   encodeRealtimeEvent,
   type RealtimeRef,
@@ -16,7 +16,7 @@ import {
 } from "@ackerdb/client-react";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 
 class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
@@ -103,7 +103,7 @@ type Assistant = RealtimeRef<
   never
 >;
 
-const assistant = { $ref: "assistant.live" } as Assistant;
+const assistant = { $ref: "api.assistant.live" } as Assistant;
 const results = new Map<string, UseRealtimeResult<Assistant>>();
 
 interface ProbeProps {
@@ -174,18 +174,18 @@ describe("useRealtime", () => {
       },
       fetch: async (url, init) => {
         const path = new URL(url).pathname;
-        if (path === "/api/_realtime/prepare" && init?.method === "POST") {
+        if (path === "/_realtime/prepare" && init?.method === "POST") {
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_prepared",
             ticket: "A".repeat(43),
             configuration: {},
           }));
         }
-        if (path === "/api/_realtime" && init?.method === "POST") {
+        if (path === "/_realtime" && init?.method === "POST") {
           offers++;
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_answer",
             sessionId: "abcdefghijklmnopqrstuvwxyzABCDEF",
             answer: { type: "answer", sdp: "v=0\r\nserver" },
@@ -197,7 +197,7 @@ describe("useRealtime", () => {
         if (init?.method === "PATCH") {
           patches++;
           return new Response(encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_candidates",
             candidates: [],
             complete: true,

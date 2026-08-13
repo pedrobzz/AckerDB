@@ -5,7 +5,12 @@ import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
-import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp } from "../../src/mcp/index.ts";
+import {
+  ACKERDB_HTTP_ROUTES,
+  claimsReservedName,
+  isAckerDBHttpRoute,
+} from "../../src/transport/http-surface.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 const exposed = procedure({
@@ -43,52 +48,130 @@ describe("HTTP-exposed function paths", () => {
       notes: { echo: exposed },
     });
 
+    // The framework's own group is registered in every application, so its
+    // routes are here beside the application's rather than in a second table.
     expect([...registry.exposed.keys()]).toEqual([
+      "/admin/credentials/list",
+      "/admin/credentials/rotate",
+      "/admin/system/info",
       "/api/admin/messages/purge",
       "/api/messages/list",
       "/api/notes/echo",
     ]);
     const echo = registry.exposed.get("/api/notes/echo");
     expect(echo).toMatchObject({
-      address: "notes.echo",
+      address: "api.notes.echo",
       path: "/api/notes/echo",
       openapi: true,
     });
-    expect(echo?.fn).toBe(registry.get("notes.echo")!);
+    expect(echo?.fn).toBe(registry.get("api.notes.echo")!);
     expect(registry.exposed.get("/api/admin/messages/purge")).toMatchObject({
-      address: "admin.messages.purge",
+      address: "api.admin.messages.purge",
       openapi: false,
     });
     expect(registry.exposed.get("/api/messages/internal")).toBeUndefined();
-    expect(registry.get("messages.internal")).toBe(internal);
+    expect(registry.get("api.messages.internal")).toBe(internal);
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { echo: exposed } })).toThrow(
-      'HTTP-exposed function "_internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "/api/_" is reserved',
+      'HTTP-exposed function "api._internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "_" is reserved to AckerDB',
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
     expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
+    // The reservation is the marker, not the `/api/` root: it holds in every
+    // group, which is what keeps a future built-in route collision-free.
+    const grouped = { ...exposed, apiPath: "internal" } as never;
+    expect(() => new Registry({ _internal: { echo: grouped } }, ["internal"])).toThrow(
+      'claims AckerDB-owned path "/internal/_internal/echo"; "_" is reserved to AckerDB',
+    );
+  });
+
+  test("owns the root the protocol endpoints moved to, and nothing deeper", () => {
+    // The protocol endpoints all live behind the marker at the root, and the
+    // operational ones deliberately do not — the reserved-name list is what
+    // keeps an application route off `/live`, `/ready`, and `/status`.
+    for (const path of ["/_ws", "/_sse/ack", "/_realtime", "/_files/x", "/_openapi.json"]) {
+      expect(isAckerDBHttpRoute(path)).toBe(true);
+    }
+    for (const operational of [
+      ACKERDB_HTTP_ROUTES.live,
+      ACKERDB_HTTP_ROUTES.ready,
+      ACKERDB_HTTP_ROUTES.status,
+    ]) {
+      expect(operational.startsWith("/_")).toBe(false);
+      expect(isAckerDBHttpRoute(operational)).toBe(true);
+    }
+
+    // One reservation, applied wherever a path is claimed: the group, the
+    // module namespace under it, and an MCP endpoint's free-form path alike.
+    expect(claimsReservedName("/api/_realtime")).toBe(true);
+    expect(claimsReservedName("/_ws")).toBe(true);
+    expect(claimsReservedName("/mcp/_private")).toBe(true);
+    expect(claimsReservedName("/api/notes/_echo")).toBe(false);
+    expect(claimsReservedName("/mcp/my_endpoint")).toBe(false);
+  });
+
+  test("refuses an MCP endpoint reaching into a marked name", () => {
+    // `/api/_realtime` holds no framework route any more, but the marker is
+    // still AckerDB's — and the rule cannot hold for functions while lapsing
+    // for the one surface that picks its path by hand.
+    const squatter = mcp({
+      name: "squatter",
+      path: "/api/_realtime",
+      tools: {},
+    });
+    expect(() => new Registry({ mcp: { squatter } })).toThrow(
+      'MCP "squatter" path "/api/_realtime" claims a "_"-marked name reserved to AckerDB',
+    );
+    // A path that really is a built-in route says so instead.
+    const collider = mcp({
+      name: "collider",
+      path: "/_ws",
+      tools: {},
+    });
+    expect(() => new Registry({ mcp: { collider } })).toThrow(
+      'MCP "collider" path "/_ws" collides with AckerDB route "/_ws"',
+    );
   });
 
   test("refuses a path claimed by both a function and an MCP endpoint, in either order", () => {
     const endpoint = mcp({
       name: "agent",
-      auth: mcpAuth({ name: "agent" }),
       path: "/api/notes/echo",
       tools: {},
     });
-    const message = 'HTTP-exposed function "notes.echo" and MCP "agent" both use path "/api/notes/echo"';
+    const message = 'HTTP-exposed function "api.notes.echo" and MCP "agent" both use path "/api/notes/echo"';
 
     expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, notes: { echo: exposed } })).toThrow(message);
     expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
   });
 
+  test("refuses two addresses projecting onto one path", () => {
+    // Unique addresses do not imply unique paths: the projection joins on `/`
+    // where the address joined on `.`, and a string-named export may contain
+    // either. Two functions with two access policies at one URL would
+    // otherwise be settled by whichever was registered second.
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: listing } })
+    ).toThrow(
+      'HTTP-exposed function "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+    // A raw handler meets the same check: handler paths are claimed after
+    // exposed ones, so one check covers both orders and both kinds.
+    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    expect(() =>
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: hook } })
+    ).toThrow(
+      'http handler "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+    );
+  });
+
   test("refuses a malformed http field from an untyped export", () => {
     const untyped = { ...exposed, http: { openapi: "yes" } } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(
-      'function "notes.untyped" http must be true, false, or { openapi: boolean }',
+      'function "api.notes.untyped" http must be true, false, or { openapi: boolean }',
     );
   });
 
@@ -98,7 +181,7 @@ describe("HTTP-exposed function paths", () => {
     // and a silent omission from the document.
     const untyped = { ...exposed, kind: "queryy" } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(
-      'HTTP-exposed function "notes.untyped" is a queryy, which the HTTP surface does not serve',
+      'HTTP-exposed function "api.notes.untyped" is a queryy, which the HTTP surface does not serve',
     );
     // Unexposed, no HTTP surface reads its kind and the load stands.
     const internalKind = { ...exposed, kind: "queryy", http: false } as never;
@@ -113,31 +196,30 @@ describe("raw http handler routes", () => {
     const registry = new Registry({ hooks: { stripe: hook } });
 
     const route = registry.httpRoutes.get("/api/hooks/stripe");
-    expect(route).toMatchObject({ address: "hooks.stripe", path: "/api/hooks/stripe" });
+    expect(route).toMatchObject({ address: "api.hooks.stripe", path: "/api/hooks/stripe" });
     // The route serves the registry's own validated snapshot; the handler it
     // calls is the exported one.
     expect(route?.fn.handler).toBe(hook.handler);
     expect(route?.fn.methods).toEqual(["POST"]);
-    expect(registry.httpHandler("hooks.stripe")).toBe(route?.fn);
+    expect(registry.httpHandler("api.hooks.stripe")).toBe(route?.fn);
     // Not a contract function: it is neither addressable nor exposed.
-    expect(registry.get("hooks.stripe")).toBeUndefined();
+    expect(registry.get("api.hooks.stripe")).toBeUndefined();
     expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { hook } })).toThrow(
-      'http handler "_internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "/api/_" is reserved',
+      'http handler "api._internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
     );
   });
 
   test("refuses a path claimed by both a handler and an MCP endpoint, in either order", () => {
     const endpoint = mcp({
       name: "agent",
-      auth: mcpAuth({ name: "agent" }),
       path: "/api/hooks/stripe",
       tools: {},
     });
-    const message = 'http handler "hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
+    const message = 'http handler "api.hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
 
     expect(() => new Registry({ hooks: { stripe: hook }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, hooks: { stripe: hook } })).toThrow(message);
@@ -145,7 +227,7 @@ describe("raw http handler routes", () => {
 
   test("refuses one handler exported at two addresses", () => {
     expect(() => new Registry({ hooks: { stripe: hook, again: hook } })).toThrow(
-      'registered http handler is exported at both "hooks.again" and "hooks.stripe"',
+      'registered http handler is exported at both "api.hooks.again" and "api.hooks.stripe"',
     );
   });
 
@@ -189,6 +271,25 @@ describe("raw http handler routes", () => {
     expect(route.fn.methods).toEqual(["POST"]);
     expect(typeof route.fn.handler).toBe("function");
     expect(Object.isFrozen(route.fn)).toBe(true);
+  });
+
+  test("stores the handler it type-checked, not a second read of the field", () => {
+    // An accessor that answers a function once and something else afterwards
+    // would otherwise pass validation and put a non-function into a live
+    // route: the field must be read exactly once and that value kept.
+    let reads = 0;
+    const shifty = {
+      isAckerDB: true,
+      isAckerDBServerOnly: true,
+      kind: "http",
+      methods: ["POST"],
+      get handler() {
+        reads++;
+        return reads === 1 ? () => new Response(null) : ("not a function" as never);
+      },
+    };
+    const registry = new Registry({ hooks: { shifty: shifty as never } });
+    expect(typeof registry.httpRoutes.get("/api/hooks/shifty")!.fn.handler).toBe("function");
   });
 
   test("refuses a shape hiding fields behind non-enumerable keys", () => {
@@ -322,7 +423,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       handler: () => 1n,
     });
     expect(() => new Registry({ notes: { unrepresentable } })).toThrow(
-      /HTTP-exposed function "notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary: .*v\.primaryKey\(\) is not a standard-JSON value/,
+      /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary: .*v\.primaryKey\(\) is not a standard-JSON value/,
     );
     // Unexposed, the same contract is only the WebSocket protocol's business.
     expect(() => new Registry({ notes: { unrepresentable: { ...unrepresentable, http: false } } }))

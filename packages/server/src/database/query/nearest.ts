@@ -10,10 +10,7 @@ import {
 } from "../../validation/vector.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
-import {
-  observeStatement,
-  type DbStatementObserver,
-} from "../statement-observation.ts";
+import { runStatement } from "../transaction-statement.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
@@ -201,7 +198,6 @@ class NearestQueryRuntime {
     private readonly queryVector: Float32Array,
     private readonly metric: VectorMetric,
     private readonly state: NearestState,
-    private readonly observer?: DbStatementObserver,
   ) {}
 
   where(callback: unknown): NearestQueryRuntime {
@@ -219,7 +215,6 @@ class NearestQueryRuntime {
       this.queryVector,
       this.metric,
       { predicates: [...this.state.predicates, predicate] },
-      this.observer,
     );
   }
 
@@ -355,18 +350,7 @@ class NearestQueryRuntime {
   }
 
   private async observed(work: () => NearestExecution): Promise<NearestExecution> {
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "nearest",
-      work,
-      (execution) => execution.matches.length,
-      (execution) => ({
-        candidateRowCount: execution.candidateRowCount,
-        retainedRowCount: execution.retainedRowCount,
-      }),
-    );
+    return await runStatement(work);
   }
 }
 
@@ -379,7 +363,6 @@ export function createNearestQuery(
   column: unknown,
   query: unknown,
   options: unknown,
-  observer?: DbStatementObserver,
 ): unknown {
   const selected = vectorColumn(plan, column);
   const normalized = selected.validator.check(
@@ -400,6 +383,5 @@ export function createNearestQuery(
     queryVector,
     metric,
     { predicates: [] },
-    observer,
   );
 }

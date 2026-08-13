@@ -30,7 +30,6 @@ describe("File references and grants", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       files: {
         publicUrl: "https://files.example.test/",
         store: new LocalFileStore({ root: join(directory, "files") }),

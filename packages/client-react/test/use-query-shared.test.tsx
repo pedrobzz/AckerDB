@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   stableEncode,
   type ServerMessage,
   type SubscriptionCursor,
@@ -17,14 +17,14 @@ const SESSION = "use-query-shared-session";
 const APP = { url: "http://use-query-shared.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly list: bigint };
-const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
+const todos = { $ref: "api.todos.list" } as QueryRef<TodoArgs, string[]>;
 
 function cursor(commitVersion: bigint): SubscriptionCursor {
   return {
     generation: "generation-1",
     commitVersion,
     authEpoch: 0,
-    identity: "todos.list:{list:1}",
+    identity: "api.todos.list:{list:1}",
   };
 }
 
@@ -125,7 +125,6 @@ describe("shared query registry", () => {
     expect(subs).toHaveLength(1);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -136,7 +135,6 @@ describe("shared query registry", () => {
     expect(snapshot).toMatchObject({ status: "success", stale: false });
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -151,8 +149,8 @@ describe("shared query registry", () => {
     const container = mountPoint();
     const root = createRoot(container);
     type PairArgs = { readonly a: bigint; readonly b: string };
-    const pairs = { $ref: "todos.pairs" } as QueryRef<PairArgs, string[]>;
-    const similar = { $ref: "todos.similar" } as QueryRef<Record<string, unknown>, string[]>;
+    const pairs = { $ref: "api.todos.pairs" } as QueryRef<PairArgs, string[]>;
+    const similar = { $ref: "api.todos.similar" } as QueryRef<Record<string, unknown>, string[]>;
 
     function Pairs({ args }: { args: PairArgs }): ReactNode {
       const state = useQuery(pairs, args);
@@ -178,8 +176,8 @@ describe("shared query registry", () => {
     );
     await ready(harness);
     const subs = harness.frames("sub");
-    expect(subs.filter((frame) => frame.ref === "todos.pairs")).toHaveLength(1);
-    const similarSubs = subs.filter((frame) => frame.ref === "todos.similar");
+    expect(subs.filter((frame) => frame.ref === "api.todos.pairs")).toHaveLength(1);
+    const similarSubs = subs.filter((frame) => frame.ref === "api.todos.similar");
     expect(similarSubs).toHaveLength(4);
     expect(new Set(similarSubs.map((frame) => stableEncode(frame.args))).size).toBe(4);
     await render(root, <></>);
@@ -188,8 +186,8 @@ describe("shared query registry", () => {
   test("different addresses with identical arguments never collide", async () => {
     const harness = createHarness(APP);
     const root = createRoot(mountPoint());
-    const first = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
-    const second = { $ref: "todos.listArchived" } as QueryRef<TodoArgs, string[]>;
+    const first = { $ref: "api.todos.list" } as QueryRef<TodoArgs, string[]>;
+    const second = { $ref: "api.todos.listArchived" } as QueryRef<TodoArgs, string[]>;
 
     function Pair(): ReactNode {
       useQuery(first, { list: 1n });
@@ -205,7 +203,7 @@ describe("shared query registry", () => {
     );
     await ready(harness);
     const subs = harness.frames("sub");
-    expect(subs.map((frame) => frame.ref).sort()).toEqual(["todos.list", "todos.listArchived"]);
+    expect(subs.map((frame) => frame.ref).sort()).toEqual(["api.todos.list", "api.todos.listArchived"]);
     await render(root, <></>);
   });
 
@@ -293,7 +291,6 @@ describe("shared query registry", () => {
     await ready(harness);
     const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -310,7 +307,6 @@ describe("shared query registry", () => {
     );
     expect(harness.frames("unsub")).toHaveLength(0);
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -330,7 +326,6 @@ describe("shared query registry", () => {
     expect(subs[1]!.id).not.toBe(firstId);
     expect(subs[1]!.cursor).toBeUndefined();
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subs[1]!.id,
       transition: { kind: "reset", from: null, to: cursor(3n), value: ["three"] },
@@ -364,7 +359,6 @@ describe("shared query registry", () => {
     expect(live.framesOf("unsub")).toHaveLength(0);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: live.framesOf("sub")[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -396,7 +390,6 @@ describe("shared query registry", () => {
     expect(harness.frames("unsub")).toHaveLength(0);
 
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -414,7 +407,6 @@ describe("shared query registry", () => {
     await ready(harness);
     const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -433,7 +425,6 @@ describe("shared query registry", () => {
 
     // Updates keep flowing to the adopting consumer.
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
@@ -451,7 +442,6 @@ describe("shared query registry", () => {
     await ready(harness);
     const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -493,7 +483,6 @@ describe("shared query registry", () => {
     await ready(harness);
     const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: firstId,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -513,7 +502,6 @@ describe("shared query registry", () => {
         });
       });
       await receive(harness, {
-        v: PROTOCOL_VERSION,
         t: "transition",
         id: firstId,
         transition: {
@@ -562,7 +550,6 @@ describe("shared query registry", () => {
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
     await ready(harness);
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: harness.frames("sub")[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -586,7 +573,6 @@ describe("shared query registry", () => {
     expect(subs).toHaveLength(1);
     expect(subs[0]!.cursor).toBeUndefined();
     await receive(harness, {
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subs[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["two"] },
@@ -603,7 +589,7 @@ describe("shared query registry", () => {
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
     const argsKey = stableEncode({ list: 1n });
-    const source = registry.source<string[]>("todos.list", argsKey, { list: 1n });
+    const source = registry.source<string[]>("api.todos.list", argsKey, { list: 1n });
 
     // A discarded React render reads the snapshot and never commits: no
     // subscription may start and no entry may be registered.
@@ -612,13 +598,12 @@ describe("shared query registry", () => {
     expect(harness.frames("sub")).toHaveLength(0);
 
     // Two independently created sources for the same key share one entry.
-    const sibling = registry.source<string[]>("todos.list", argsKey, { list: 1n });
+    const sibling = registry.source<string[]>("api.todos.list", argsKey, { list: 1n });
     const stopSource = source.listen(() => {});
     const stopSibling = sibling.listen(() => {});
     expect(harness.frames("sub")).toHaveLength(1);
     const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
-      v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -647,12 +632,11 @@ describe("shared query registry", () => {
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
     const argsKey = stableEncode({ list: 1n });
-    const source = registry.source<string[]>("todos.list", argsKey, { list: 1n });
+    const source = registry.source<string[]>("api.todos.list", argsKey, { list: 1n });
 
     const stopFirst = source.listen(() => {});
     const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
-      v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -685,10 +669,10 @@ describe("shared query registry", () => {
     const argsKey = stableEncode({ list: 1n });
 
     const stopA = queryRegistryFor(clientA)
-      .source<string[]>("todos.list", argsKey, { list: 1n })
+      .source<string[]>("api.todos.list", argsKey, { list: 1n })
       .listen(() => {});
     const stopB = queryRegistryFor(clientB)
-      .source<string[]>("todos.list", argsKey, { list: 1n })
+      .source<string[]>("api.todos.list", argsKey, { list: 1n })
       .listen(() => {});
     // One subscription per client: sharing never crosses a client lifetime.
     expect(first.frames("sub")).toHaveLength(1);

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ApplicationError,
   type ClientMessage,
   type ServerMessage,
@@ -28,18 +28,18 @@ const APP = {
 };
 
 type UppercaseError = ApplicationError<
-  "tools.unavailable",
+  "api.tools.unavailable",
   { readonly source: string },
   503
 >;
 
-const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
+const uppercase = { $ref: "api.tools.uppercase" } as ProcedureRef<
   { readonly value: string },
   { readonly value: string },
   UppercaseError
 >;
-const reverse = { $ref: "tools.reverse" } as typeof uppercase;
-const unencodable = { $ref: "tools.unencodable" } as ProcedureRef<
+const reverse = { $ref: "api.tools.reverse" } as typeof uppercase;
+const unencodable = { $ref: "api.tools.unencodable" } as ProcedureRef<
   { readonly value: unknown },
   { readonly value: string }
 >;
@@ -125,7 +125,6 @@ describe("useQueryProcedure", () => {
     const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -154,7 +153,6 @@ describe("useQueryProcedure", () => {
     const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: second.id,
         kind: "procedure",
@@ -183,9 +181,9 @@ describe("useQueryProcedure", () => {
     });
 
     expect(harness.live().framesOf("p").map(({ ref }) => ref).sort()).toEqual([
-      "tools.reverse",
-      "tools.uppercase",
-      "tools.uppercase",
+      "api.tools.reverse",
+      "api.tools.uppercase",
+      "api.tools.uppercase",
     ]);
     await act(async () => root.unmount());
   });
@@ -216,7 +214,6 @@ describe("useQueryProcedure", () => {
     const firstRequest = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: firstRequest.id,
         kind: "procedure",
@@ -227,14 +224,13 @@ describe("useQueryProcedure", () => {
 
     await render(root, page(reverse));
     const secondRequest = harness.live().framesOf("p")[1]!;
-    expect(secondRequest.ref).toBe("tools.reverse");
+    expect(secondRequest.ref).toBe("api.tools.reverse");
     expect(observed.get("identity")).not.toBe(first);
     expect(observed.get("identity")!.refresh).not.toBe(first.refresh);
     first.refresh();
     expect(harness.live().framesOf("p")).toHaveLength(2);
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: secondRequest.id,
         kind: "procedure",
@@ -307,7 +303,6 @@ describe("useQueryProcedure", () => {
     const request = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: request.id,
         kind: "procedure",
@@ -340,7 +335,6 @@ describe("useQueryProcedure", () => {
     const firstRequest = firstHarness.live().framesOf("p")[0]!;
     await act(async () => {
       firstHarness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: firstRequest.id,
         kind: "procedure",
@@ -378,7 +372,6 @@ describe("useQueryProcedure", () => {
     const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -393,13 +386,12 @@ describe("useQueryProcedure", () => {
     const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "app_err",
         id: second.id,
         kind: "procedure",
         error: {
           kind: "application",
-          code: "tools.unavailable",
+          code: "api.tools.unavailable",
           body: { source: "upstream" },
           status: 503,
         },
@@ -416,7 +408,7 @@ describe("useQueryProcedure", () => {
     const third = harness.live().framesOf("p")[2]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: third.id,
         outcome: {
@@ -506,7 +498,6 @@ describe("useQueryProcedure", () => {
     const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -537,7 +528,6 @@ describe("useQueryProcedure", () => {
     const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -548,7 +538,7 @@ describe("useQueryProcedure", () => {
     const second = harness.live().framesOf("p")[1]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: second.id,
         outcome: {
@@ -592,7 +582,6 @@ describe("useQueryProcedure", () => {
     const first = harness.live().framesOf("p")[0]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -602,7 +591,7 @@ describe("useQueryProcedure", () => {
     const second = (await untilProcedureCount(harness, 2))[1]!;
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: second.id,
         outcome: {
@@ -644,7 +633,6 @@ describe("useQueryProcedure", () => {
 
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -663,7 +651,6 @@ describe("useQueryProcedure", () => {
 
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: afterInterval[1]!.id,
         kind: "procedure",
@@ -675,7 +662,6 @@ describe("useQueryProcedure", () => {
 
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: withTrailing[2]!.id,
         kind: "procedure",
@@ -706,7 +692,6 @@ describe("useQueryProcedure", () => {
 
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: first.id,
         kind: "procedure",
@@ -726,7 +711,6 @@ describe("useQueryProcedure", () => {
     expect(procedures).toHaveLength(2);
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: procedures[1]!.id,
         kind: "procedure",
@@ -762,7 +746,6 @@ describe("useQueryProcedure", () => {
     expect(socket.frames().filter(({ t }) => t === "cancel")).toHaveLength(0);
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: initial.id,
         kind: "procedure",
@@ -776,14 +759,13 @@ describe("useQueryProcedure", () => {
     const abandoned = socket.framesOf("p")[1]!;
     await render(root, page([]));
     expect(socket.frames().filter(({ t }) => t === "cancel")).toEqual([
-      { v: PROTOCOL_VERSION, t: "cancel", id: abandoned.id },
+      { t: "cancel", id: abandoned.id },
     ]);
 
     // A late server result for canceled work cannot repopulate the evicted
     // observation. Equal demand starts one clean pending lifetime.
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: abandoned.id,
         kind: "procedure",
@@ -837,13 +819,12 @@ describe("useQueryProcedure", () => {
     });
     const request = harness.live().framesOf("p")[0]!;
     expect(request).toMatchObject({
-      ref: "tools.uppercase",
+      ref: "api.tools.uppercase",
       args: { value: "one" },
     });
 
     await act(async () => {
       harness.live().receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: request.id,
         kind: "procedure",

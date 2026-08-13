@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { mcp } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -12,13 +12,12 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import { AckerDBServer, serve, type McpHttpOptions } from "../../src/transport/server.ts";
-import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 
-const PROTOCOL_VERSION = "2025-11-25";
+const ACKERDB_VERSION = "2025-11-25";
 const ARGUMENT_CANARY = "private-mcp-argument-canary";
 const RESULT_CANARY = "private-mcp-result-canary";
 const HANDLER_ERROR_CANARY = "private-mcp-handler-error-canary";
-const TOKEN_CANARY = `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
+const TOKEN_CANARY = `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`;
 const PROVIDER_CREDENTIAL_CANARY = "private-provider-credential-canary";
 
 const schema = defineSchema({});
@@ -41,7 +40,6 @@ const protectedTool = query({
 });
 const securityMcp = mcp({
   name: "security",
-  auth: mcpAuth({ name: "security" }),
   tools: {
     echo_secret: { fn: echoSecret, access: "public" },
     protected_tool: { fn: protectedTool, access: "authenticated" },
@@ -67,7 +65,6 @@ function fixture(options: {
   readonly hostname?: string;
   readonly limits?: ServiceLimits;
   readonly mcpHttp?: McpHttpOptions;
-  readonly telemetry?: ConstructorParameters<typeof Runtime>[0]["telemetry"];
 } = {}): Fixture {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-security-"));
   const engine = new Engine(schema, join(directory, "data.db"));
@@ -76,7 +73,6 @@ function fixture(options: {
     engine,
     registry: new Registry(modules),
     limits: options.limits,
-    telemetry: options.telemetry ?? false,
   });
   const server = serve({
     runtime,
@@ -104,7 +100,7 @@ function headers(overrides: Record<string, string> = {}): Record<string, string>
   return {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
-    "mcp-protocol-version": PROTOCOL_VERSION,
+    "mcp-protocol-version": ACKERDB_VERSION,
     ...overrides,
   };
 }
@@ -208,7 +204,7 @@ describe("MCP HTTP security boundary", () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-deployment-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
-    const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
+    const runtime = new Runtime({ engine, registry: new Registry(modules) });
     expect(() => serve({ runtime, port: 0, hostname: "0.0.0.0" })).toThrow(
       'mcpHttp.transport "trusted-https-proxy"',
     );
@@ -251,7 +247,6 @@ describe("MCP HTTP security boundary", () => {
     const noMcpRuntime = new Runtime({
       engine: noMcpEngine,
       registry: new Registry({}),
-      telemetry: false,
     });
     const noMcpServer = serve({ runtime: noMcpRuntime, port: 0, hostname: "0.0.0.0" });
     cleanups.push(async () => {
@@ -291,7 +286,7 @@ describe("MCP HTTP security boundary", () => {
     expect(await rejected.text()).not.toContain(canary);
   });
 
-  test("bounds registered tools and every attacker-controlled telemetry dimension", async () => {
+  test("bounds registered tools and attacker-controlled request dimensions", async () => {
     const emptyReturns = v.object({});
     const one = query({
       description: "First.",
@@ -309,7 +304,6 @@ describe("MCP HTTP security boundary", () => {
     });
     const limitedMcp = mcp({
       name: "limited",
-      auth: mcpAuth({ name: "limited" }),
       path: "/limited",
       tools: { one: { fn: one }, two: { fn: two } },
     });
@@ -323,7 +317,6 @@ describe("MCP HTTP security boundary", () => {
         ...PRODUCTION_LIMITS,
         mcp: { ...PRODUCTION_LIMITS.mcp, maxToolsPerEndpoint: 1 },
       },
-      telemetry: false,
     })).toThrow("mcp.maxToolsPerEndpoint");
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
@@ -345,19 +338,16 @@ describe("MCP HTTP security boundary", () => {
     });
     expect(() => mcp({
       name: "invalid_name",
-      auth: mcpAuth({ name: "invalid_name" }),
       path: "/invalid-name",
       tools: { [`a${"b".repeat(63)}`]: { fn: one } },
     })).toThrow("at most 63 UTF-8 bytes");
     expect(() => mcp({
       name: "invalid_title",
-      auth: mcpAuth({ name: "invalid_title" }),
       path: "/invalid-title",
       tools: { long_title: { fn: longTitle } },
     })).toThrow("title exceeds 256 UTF-8 bytes");
     expect(() => mcp({
       name: "invalid_description",
-      auth: mcpAuth({ name: "invalid_description" }),
       path: "/invalid-description",
       tools: { long_description: { fn: longDescription } },
     })).toThrow("description exceeds 4096 UTF-8 bytes");
@@ -405,23 +395,8 @@ describe("MCP HTTP security boundary", () => {
     }
   });
 
-  test("keeps bearer credentials, arguments, results, and errors out of logs and telemetry", async () => {
-    const exported: TelemetryRecord[] = [];
-    const localLines: string[] = [];
-    const value = fixture({
-      telemetry: {
-        enabled: true,
-        exporter: { export: (batch) => void exported.push(...batch) },
-        localSink: (line) => void localLines.push(line),
-        limits: {
-          ...PRODUCTION_LIMITS.telemetry,
-          maxMetricSeries: 16,
-          slowOperationMs: 0,
-          sampleIntervalMs: 60_000,
-          batchIntervalMs: 60_000,
-        },
-      },
-    });
+  test("keeps bearer credentials and handler errors out of framework responses", async () => {
+    const value = fixture();
 
     const success = await rpc(value, "tools/call", {
       name: "echo_secret",
@@ -444,24 +419,5 @@ describe("MCP HTTP security boundary", () => {
     expect(providerToken.status).toBe(401);
     expect(await providerToken.text()).not.toContain(PROVIDER_CREDENTIAL_CANARY);
 
-    await value.runtime.telemetry.flush();
-    await eventually(() => localLines.length > 0);
-    const observed = JSON.stringify({
-      exported,
-      localLines,
-      aggregates: value.runtime.status().telemetryAggregates,
-      snapshot: value.runtime.status().telemetry,
-    });
-    for (const secret of [
-      TOKEN_CANARY,
-      PROVIDER_CREDENTIAL_CANARY,
-      ARGUMENT_CANARY,
-      RESULT_CANARY,
-      HANDLER_ERROR_CANARY,
-    ]) {
-      expect(observed).not.toContain(secret);
-    }
-    expect(observed).toContain("security:echo_secret");
-    expect(value.runtime.status().telemetry.metricSeries).toBeLessThanOrEqual(16);
   });
 });

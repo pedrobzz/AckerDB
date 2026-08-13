@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode } from "@ackerdb/core";
+import { ACKERDB_VERSION, encode } from "@ackerdb/core";
 import type { UserPrincipal } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
@@ -16,8 +16,6 @@ import {
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
-  type McpAuthBuilder,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -57,7 +55,6 @@ const schema = defineSchema({
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
 const statusReturns = v.object({ status: v.string() });
 
@@ -91,10 +88,8 @@ const emitSignal = typedProcedure({
   },
 });
 
-const actionsAuth = typedMcpAuth({ name: "actions" });
 const actionsMcp = typedMcp({
   name: "actions",
-  auth: actionsAuth,
   path: "/actions/mcp",
   tools: {
     add_record: { fn: addRecord },
@@ -140,7 +135,6 @@ function fixture(): { runtime: Runtime } {
       mcp: { actionsMcp },
       records: { addRecord, listRecords, commitRecord, emitSignal },
     }),
-    telemetry: false,
     limits: PRODUCTION_LIMITS,
   });
   cleanups.push(async () => {
@@ -157,6 +151,7 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   });
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject,
@@ -197,7 +192,7 @@ test("a subscription recomputes cleanly after another principal's MCP tool commi
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 7, ref: "records.listRecords", args: {} }),
+    request({ t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -229,7 +224,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 7, ref: "records.listRecords", args: {} }),
+    request({ t: "sub", id: 7, ref: "api.records.listRecords", args: {} }),
   );
   await until(() => publications.length >= 1, "initial snapshot");
 
@@ -239,7 +234,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
   const bob = await user(runtime, "bob");
   const response = await runtime.runProcedure({
     id: 1,
-    address: "records.commitRecord",
+    address: "api.records.commitRecord",
     args: { value: "burger" },
     principal: bob,
     respond: ({ body, status }) => new Response(body, { status }),
@@ -264,7 +259,7 @@ test("an event subscription delivers cleanly after another principal's MCP tool 
   await runtime.openSession(aliceSession);
   await runtime.subscribe(
     aliceSession,
-    request({ v: PROTOCOL_VERSION, t: "sub", id: 9, ref: "events.signals", args: {} }),
+    request({ t: "sub", id: 9, ref: "api.events.signals", args: {} }),
   );
   await until(() => publications.length >= 1, "event reset");
 

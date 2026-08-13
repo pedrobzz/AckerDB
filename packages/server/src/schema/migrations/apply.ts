@@ -46,6 +46,7 @@ import {
   type TagsOf,
 } from "../../database/engine.ts";
 import { fullTextTargetPlan } from "../../database/full-text.ts";
+import { isFrameworkTable } from "../../database/framework-schema.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
 import { constraintDirection, diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
@@ -73,6 +74,47 @@ import {
 
 const quote = (name: string) => `"${name}"`;
 
+/**
+ * Which tables a step owns — and therefore both what it may move and whether it
+ * has a place in the application's chain.
+ *
+ * An `application` step owns application tables. The framework's own tables are
+ * `framework.ts`'s business, so they are pinned out of the step's before- and
+ * after-state: a step generated under one framework version must not push them
+ * backwards under another, and must not be refused for a change it never
+ * declared. A `framework` step is the one thing that moves them, and it is
+ * recognized by the shape it reads rather than by a recorded identity, so it
+ * takes no number in the chain and writes no history row.
+ */
+export type StepOwner = "application" | "framework";
+
+/**
+ * `snapshot` with every framework table replaced by what the database actually
+ * stores, and dropped entirely where the database has none — a framework table
+ * the database has yet to gain is added by the ordinary safe hop, not by an
+ * application's migration.
+ */
+function pinFrameworkTables(snapshot: SchemaSnapshot, stored: SchemaSnapshot): SchemaSnapshot {
+  const tables = Object.create(null) as Record<string, TableSnapshot>;
+  let pinned = false;
+  for (const [name, snap] of Object.entries(snapshot.tables)) {
+    if (!isFrameworkTable(name)) {
+      tables[name] = snap;
+      continue;
+    }
+    pinned = true;
+    const physical = stored.tables[name];
+    if (physical !== undefined) tables[name] = physical;
+  }
+  for (const [name, snap] of Object.entries(stored.tables)) {
+    if (isFrameworkTable(name) && !Object.hasOwn(tables, name)) {
+      tables[name] = snap;
+      pinned = true;
+    }
+  }
+  return pinned ? { version: 2, tables } : snapshot;
+}
+
 // -- one step -----------------------------------------------------------------
 
 /** Everything a single step's transforms and swaps read, all snapshot-derived. */
@@ -95,16 +137,20 @@ interface StepScope {
  * replays every transform against the before-state, swaps rebuilt tables in,
  * performs pure renames last (so transforms read old physical names), drops
  * acknowledged tables, saves the target snapshot (augmented with any carried
- * columns so it keeps describing physical reality), records the history row, and
- * commits. Returns the applied lines (unprefixed) and the snapshot it saved.
+ * columns so it keeps describing physical reality), records the history row when
+ * the step owns one, and commits. Returns the applied lines (unprefixed) and the
+ * snapshot it saved.
  */
 export async function applyStep(
   engine: Engine,
   stored: SchemaSnapshot,
   step: MigrationStep,
+  owner: StepOwner = "application",
 ): Promise<{ applied: string[]; saved: SchemaSnapshot }> {
   const writer = engine.writer;
-  const { pre, target, migration } = step;
+  const { migration } = step;
+  const pre = owner === "framework" ? step.pre : pinFrameworkTables(step.pre, stored);
+  const target = owner === "framework" ? step.target : pinFrameworkTables(step.target, stored);
   const renames = planRenames(writer, stored, target, migration);
   const diff = diffSnapshots(renames.renamedCurrent, target);
   const { safe, optimistic, refusals } = classifySchemaDiff(diff);
@@ -115,7 +161,7 @@ export async function applyStep(
   const targetPlans = buildTargetPlans(target, stepTags);
   const planOf = (t: string): PhysicalTablePlan => targetPlans.get(t)!;
 
-  validateEntries(renames.renamedCurrent, targetPlans, refusals, entries);
+  validateEntries(renames.renamedCurrent, targetPlans, refusals, entries, owner);
 
   // A surviving table with an entry is rebuilt from its new plan; a table the
   // schema no longer keeps is dropped (after an optional salvage transform).
@@ -185,7 +231,7 @@ export async function applyStep(
     }
     persistTagMaps(writer, stepTags);
     for (const op of plan.ops) op();
-    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf);
+    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf, owner);
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
       // in which case the rebuilt tmp simply becomes the (empty) new table.
@@ -212,9 +258,11 @@ export async function applyStep(
       applied.push(`dropped table ${name}`);
     }
     engine.saveSnapshot(saved);
-    writer
-      .query("INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
-      .run(step.number, step.name, migrationIdentity(step), Date.now());
+    if (owner === "application") {
+      writer
+        .query("INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
+        .run(step.number, step.name, migrationIdentity(step), Date.now());
+    }
     writer.exec("COMMIT");
   } catch (error) {
     writer.exec("ROLLBACK");
@@ -273,7 +321,21 @@ function validateEntries(
   targetPlans: Map<string, PhysicalTablePlan>,
   refusals: SchemaRefusal[],
   entries: Record<string, RowTransform | null>,
+  owner: StepOwner,
 ): void {
+  // Ownership is a rule about writes, not only about shapes. Pinning keeps an
+  // application step from *reshaping* a framework table; this keeps it from
+  // rebuilding one — a transform over `_ackerdb_jobs` returning `null` would
+  // delete every durable job, which is precisely the promise ADR-0018 makes.
+  if (owner === "application") {
+    const framework = Object.keys(entries).filter(isFrameworkTable).sort();
+    if (framework.length > 0) {
+      throw new MigrationError(
+        `migration transforms framework-owned table(s): ${framework.join(", ")}. ` +
+          "The framework migrates its own tables; remove the entry.",
+      );
+    }
+  }
   const missing = [...new Set(refusals.map((r) => r.table))].filter((t) => !Object.hasOwn(entries, t)).sort();
   if (missing.length > 0) {
     throw new MigrationError(`migration is missing a transform for refused table(s): ${missing.join(", ")}`);
@@ -587,6 +649,7 @@ async function runTransforms(
   rebuilt: Set<string>,
   identityRebuilt: Set<string>,
   driftOf: Map<string, DriftColumn[]>,
+  owner: StepOwner,
 ): Promise<Map<string, string>> {
   const { engine, pre, stored, target, renames, targetPlans, oldTags } = scope;
   const writer = engine.writer;
@@ -644,6 +707,13 @@ async function runTransforms(
     before: buildBefore(engine, pre, stored, oldTags),
     insert(table, row) {
       if (!targetPlans.has(table)) throw new ValidationError(`migration insert: unknown table "${table}"`);
+      // The same ownership rule the entries carry: an emit is a write, and a
+      // forged `_ackerdb_jobs` row would be a job nothing admitted.
+      if (owner === "application" && isFrameworkTable(table)) {
+        throw new MigrationError(
+          `migration insert: "${table}" is framework-owned; the framework writes its own tables`,
+        );
+      }
       const validated = checkRow(table, target.tables[table]!, row, "insert"); // eager: error locality stays here
       if (!tmpOf.has(table)) {
         spoolInsert.run(table, encode(validated));

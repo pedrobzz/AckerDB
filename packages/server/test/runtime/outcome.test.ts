@@ -50,8 +50,8 @@ describe("structured transport outcomes", () => {
   });
 
   test("maps protocol, validation, and admission failures exactly", () => {
-    expect(outcomeFromError(new ProtocolError("unsupported_protocol", "version"))).toMatchObject({
-      code: "unsupported_protocol",
+    expect(outcomeFromError(new ProtocolError("version_mismatch", "version"))).toMatchObject({
+      code: "version_mismatch",
     });
     expect(outcomeFromError(new ValidationError("args.id: expected bigint"))).toMatchObject({
       code: "validation",

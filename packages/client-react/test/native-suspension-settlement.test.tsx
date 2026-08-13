@@ -9,8 +9,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts).
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+// suite must do this first (see ackerdb-test-support/dom).
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { FakeAppState, setAppState } from "./support/app-state.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -182,7 +182,6 @@ function createApp(): App {
     engine,
     registry: registry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   return {
@@ -197,11 +196,11 @@ function createApp(): App {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 // Records SSE request and acknowledgement traffic so the tests can prove no
 // hidden replacement stream starts and no acknowledgement leaks after
-// settlement. Resolves `fetch` at call time: after support/dom.ts registers
+// settlement. Resolves `fetch` at call time: after ackerdb-test-support/dom registers
 // happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
@@ -215,7 +214,7 @@ function recordingFetch(log: string[]): AckerDBFetch {
 }
 
 type Message = { readonly id: bigint; readonly body: string };
-const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
+const messagesList = { $ref: "api.messages.list" } as QueryRef<Record<never, never>, Message[]>;
 type StandardRef = SseRef<
   { trigger: string; chatId: string; messageId: string | null; messages: UIMessage[] },
   UIMessageChunk
@@ -251,7 +250,7 @@ beforeAll(async () => {
   app = createApp();
   // Real data behind the mounted query, seeded through an ordinary client.
   const writer = new AckerDBClient({ url: app.base, credential: { kind: "anonymous" } });
-  await writer.mutation("messages.add", { body: "one" });
+  await writer.mutation("api.messages.add", { body: "one" });
   writer.close();
 });
 afterAll(() => app.close());
@@ -288,7 +287,7 @@ describe("suspension settlement through the native entry against a real server",
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
       queryText = describeQuery(useQuery(messagesList, {}));
-      const transport = useChatTransport({ $ref: "ai.holdMidStream" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdMidStream" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-independence",
         transport,
@@ -366,7 +365,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-hold-before",
         transport,
@@ -411,7 +410,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdMidStream" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdMidStream" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-replacement",
         transport,
@@ -482,7 +481,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-send-suspended",
         transport,
@@ -543,7 +542,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
       chat = useChat<UIMessage>({
         id: "native-error-body",
         transport,
@@ -592,7 +591,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("stream.holdAfterFirst");
+      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
       return null;
     }
 
@@ -640,7 +639,7 @@ describe("suspension settlement through the native entry against a real server",
 
     function Probe(): ReactNode {
       phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("stream.holdAfterFirst");
+      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
       return null;
     }
 

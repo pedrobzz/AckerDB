@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { noopLogger } from "ackerdb-test-support/telemetry";
+import { noopLogger } from "ackerdb-test-support/signals";
 import {
   ANONYMOUS_PRINCIPAL,
   realtime,
@@ -176,7 +176,7 @@ function prepareInput(
   overrides: Partial<RealtimePrepareInput> = {},
 ): RealtimePrepareInput {
   return {
-    address: "assistants.live",
+    address: "api.assistants.live",
     args: { assistantId: 1n },
     principal: ANONYMOUS_PRINCIPAL,
     owner: TEST_OWNER,
@@ -308,39 +308,15 @@ describe("RealtimeHub", () => {
     expect(JSON.stringify(nativeHub.snapshot())).not.toContain(secret);
   });
 
-  test("bounds health sampling, ignores late stats, and cancels diagnostics on drain", async () => {
+  test("cancels diagnostics on drain", async () => {
     const peer = new FakePeerConnection();
-    const validStats = peer.getStats.bind(peer);
-    let statsCalls = 0;
-    let resolveStats!: (report: RTCStatsReport) => void;
-    peer.getStats = () => new Promise((resolve) => {
-      statsCalls++;
-      resolveStats = resolve;
-    });
+    peer.getStats = () => new Promise(() => {});
     const hub = createHub(peer, undefined, undefined, {
-      diagnosticTimeoutMs: 10,
+      diagnosticTimeoutMs: 10_000,
     });
     const offer = await prepareAndOffer(hub);
     if (!offer.ok) throw new Error("expected accepted offer");
 
-    await hub.sampleHealth(1);
-    expect(hub.snapshot().health).toMatchObject({
-      sampledPeers: 0,
-      sampleFailures: 1,
-    });
-    await hub.sampleHealth(1);
-    expect(statsCalls).toBe(1);
-    resolveStats(await validStats());
-    await Promise.resolve();
-    expect(hub.snapshot().health).toMatchObject({
-      sampledPeers: 0,
-      sampleFailures: 1,
-    });
-
-    let resolveDrainStats!: (report: RTCStatsReport) => void;
-    peer.getStats = () => new Promise((resolve) => {
-      resolveDrainStats = resolve;
-    });
     const pending = hub.diagnostic(offer.sessionId, TEST_OWNER);
     await Promise.resolve();
     await hub.drain();
@@ -348,8 +324,6 @@ describe("RealtimeHub", () => {
       code: "draining",
       message: "realtime service is draining",
     });
-    resolveDrainStats(await validStats());
-    await Promise.resolve();
     expect(peer.closed).toBe(true);
   });
 
@@ -1513,23 +1487,6 @@ describe("RealtimeHub", () => {
     });
     expect(JSON.stringify(diagnostic)).not.toContain("10.0.0.1");
     expect(JSON.stringify(diagnostic)).not.toContain("203.0.113.1");
-
-    await hub.sampleHealth(1);
-    expect(hub.snapshot().health).toMatchObject({
-      sampledPeers: 1,
-      sampleFailures: 0,
-      directPaths: 1,
-      relayPaths: 0,
-      udpPaths: 1,
-      tcpPaths: 0,
-      roundTripTimeAverageMs: 20,
-      roundTripTimeMaxMs: 20,
-      jitterMaxMs: 4,
-      packets: 5,
-      packetsLost: 1,
-      frames: 1,
-      framesDropped: 2,
-    });
 
     hub.close(result.sessionId, TEST_OWNER);
     expect(hub.snapshot().closeReasons.client).toBe(1);

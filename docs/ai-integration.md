@@ -24,11 +24,9 @@ last step can only produce text. The demo uses `N = 16`.
 
 ## Sandboxed CLI tools: materialize eagerly
 
-just-bash blocks `globalThis.performance.now` while `exec()` runs. AckerDB reads
-are telemetry-timed, so *lazy* file providers that query the database from
-inside the sandbox die mid-command (surfacing as `ENOENT`). Materialize every
-workspace file eagerly — inside one `ctx.tx`, before constructing the sandbox
-— so the sandbox only ever touches plain strings. This is also what makes the
+Materialize every workspace file eagerly — inside one `ctx.tx`, before
+constructing the sandbox — so the sandbox only ever touches plain strings and
+does not need a host database capability. This is also what makes the
 workspace transactionally consistent: one snapshot, no torn reads.
 
 ## Dev database across engine-schema bumps
@@ -39,7 +37,8 @@ workflow is wipe + reseed; there is no migration story before 1.0 by design.
 
 ## An MCP tool is a registered function
 
-`acker codegen` emits schema-bound `mcp` and `mcpAuth` builders. A tool is an
+`acker codegen` emits a schema-bound `mcp` builder typed by the app's scope
+vocabulary. A tool is an
 ordinary `query`, `mutation`, or `procedure` — it knows nothing about MCP:
 
 ```ts
@@ -65,27 +64,18 @@ export const getOrder = query({
 });
 ```
 
-Scopes and tokens live on a provider, in a leaf module both the functions and
-the endpoint can import:
-
-```ts
-// mcp/auth.ts
-import { mcpAuth } from "../_generated/server";
-
-export const adminAuth = mcpAuth({ name: "admin", scopes: ["read"] as const });
-```
-
-The endpoint is the curation surface: it assigns each wire name, the scopes
-that gate it, and the hints a model reads.
+The scope vocabulary lives on the app manifest —
+`defineApp({ schema, scopes: ["read"] as const })` — and the endpoint is the
+curation surface: it assigns each wire name, the scopes that gate it, and the
+hints a model reads. Credentials are ordinary identity credentials issued
+through the app-wide `credentials` API (see `docs/scopes.md`).
 
 ```ts
 import { mcp } from "../_generated/server";
 import { api } from "../_generated/api";
-import { adminAuth } from "./auth.ts";
 
 export const admin = mcp({
   name: "admin",
-  auth: adminAuth,
   tools: {
     get_order: {
       fn: api.orders.getOrder,

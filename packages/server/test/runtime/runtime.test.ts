@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Err,
   Status,
   encode,
@@ -28,14 +28,13 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
-import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import type {
   RuntimeHttpResponse,
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { declareJobs, job } from "../../src/jobs/definition.ts";
-import { JOBS_TABLE } from "../../src/jobs/table.ts";
+import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import type {
   RuntimePublication,
   RuntimePublicationBatch,
@@ -43,11 +42,6 @@ import type {
   SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
-import {
-  Telemetry,
-  type TelemetryRecord,
-  type TelemetrySpanRecord,
-} from "../../src/telemetry/telemetry.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
@@ -78,6 +72,7 @@ function user(subject: string): UserPrincipal {
   return Object.freeze({
     kind: "user",
     identity,
+    scopes: [],
     issuer: "https://issuer.example",
     subject,
     claims: Object.freeze({ role: "member" }),
@@ -651,7 +646,6 @@ class SessionHarness {
     issuedAt = Date.now(),
   ) {
     const message: MutationMessage = {
-      v: PROTOCOL_VERSION,
       t: "m",
       id,
       ref,
@@ -702,7 +696,7 @@ async function collectSse(
   response: RuntimeSseResponse,
   acknowledge: (message: SseMessage) => void = (message) => {
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: message.seq,
@@ -742,38 +736,25 @@ let engine: Engine;
 let runtime: Runtime;
 let session: SessionHarness;
 
-class HangingTelemetry extends Telemetry {
-  override flush(): Promise<void> {
-    return new Promise(() => {});
-  }
-}
-
-function start(
-  customLimits = limits(),
-  telemetry: RuntimeOptions["telemetry"] = false,
-): void {
+function start(customLimits = limits()): void {
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     limits: customLimits,
-    telemetry,
     jobs: declaredJobs(),
     now: () => currentTime ?? Date.now(),
   });
   session = new SessionHarness(runtime, "session-a");
 }
 
-async function restart(
-  customLimits: ServiceLimits,
-  telemetry: RuntimeOptions["telemetry"] = false,
-): Promise<void> {
+async function restart(customLimits: ServiceLimits): Promise<void> {
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
   directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-restart-"));
-  start(customLimits, telemetry);
+  start(customLimits);
 }
 
 beforeEach(() => {
@@ -824,10 +805,9 @@ describe("application channels", () => {
       [otherRoom, 3, "sales"],
     ] as const) {
       await runtime.joinChannel(target.context, request({
-        v: PROTOCOL_VERSION,
         t: "channel_join",
         id,
-        ref: "chat.room",
+        ref: "api.chat.room",
         args: { threadId: 7n },
         room,
       }));
@@ -839,7 +819,6 @@ describe("application channels", () => {
     }
 
     await runtime.sendChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_send",
       id: 1,
       event: "message",
@@ -863,10 +842,9 @@ describe("application channels", () => {
     )).toEqual([]);
 
     const stored = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 4,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 7n },
     }));
     expect(stored).toEqual([
@@ -874,12 +852,10 @@ describe("application channels", () => {
     ]);
 
     await runtime.leaveChannel(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_leave",
       id: 2,
     }));
     await runtime.sendChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_send",
       id: 1,
       event: "message",
@@ -896,7 +872,7 @@ describe("application channels", () => {
 describe("runtime commit and replay ownership", () => {
   test("reuses the precommit mutation publication after idempotency encoding", async () => {
     await session.open();
-    const result = await session.mutation(1, "messages.canaryResult", {});
+    const result = await session.mutation(1, "api.messages.canaryResult", {});
     const publication = session.preparedPublications.at(-1);
 
     expect(result.value).toBe(mutationResultValue);
@@ -911,10 +887,9 @@ describe("runtime commit and replay ownership", () => {
   test("publishes one safe error when a query result is not wire-representable", async () => {
     await session.open();
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "messages.nonWireQuery",
+      ref: "api.messages.nonWireQuery",
       args: {},
     }))).rejects.toMatchObject({ code: "validation" });
 
@@ -929,15 +904,14 @@ describe("runtime commit and replay ownership", () => {
   test("answers one query's declared error identically over the session and HTTP", async () => {
     await session.open();
     const framed = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 20,
-      ref: "messages.missing",
+      ref: "api.messages.missing",
       args: { id: 7n },
     }));
     const response = await runtime.runQuery({
       id: 21,
-      address: "messages.missing",
+      address: "api.messages.missing",
       args: { id: 7n },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -957,7 +931,7 @@ describe("runtime commit and replay ownership", () => {
 
     const value = await runtime.runQuery({
       id: 22,
-      address: "messages.list",
+      address: "api.messages.list",
       args: { channelId: 1n },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -968,7 +942,7 @@ describe("runtime commit and replay ownership", () => {
     // Kind dispatch is the registry's, so a procedure address is never a query.
     const mismatched = await runtime.runQuery({
       id: 23,
-      address: "ops.echo",
+      address: "api.ops.echo",
       args: { value: "x" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -980,10 +954,9 @@ describe("runtime commit and replay ownership", () => {
   test("publishes application errors separately and uses a procedure's named HTTP status", async () => {
     await session.open();
     const queryResult = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 10,
-      ref: "messages.missing",
+      ref: "api.messages.missing",
       args: { id: 99n },
     }));
     expect(queryResult).toMatchObject({
@@ -998,7 +971,7 @@ describe("runtime commit and replay ownership", () => {
 
     const response = await runtime.runProcedure({
       id: 11,
-      address: "ops.reject",
+      address: "api.ops.reject",
       args: { reason: "not now" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -1015,25 +988,23 @@ describe("runtime commit and replay ownership", () => {
 
   test("validates queries and keeps failed transaction writes invisible", async () => {
     await session.open();
-    const first = await session.mutation(1, "messages.send", { channelId: 1n, body: "hello" });
+    const first = await session.mutation(1, "api.messages.send", { channelId: 1n, body: "hello" });
     expect(first.value).toBe(1n);
     expect(first.receipt).toMatchObject({ replay: "executed", durability: "production" });
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1 },
     }))).rejects.toMatchObject({ code: "validation" });
-    await expect(session.mutation(3, "messages.fetchInside", {})).rejects.toThrow("fetch is not allowed");
-    await expect(session.mutation(4, "messages.composeFail", { channelId: 2n })).rejects.toThrow("compose failed");
+    await expect(session.mutation(3, "api.messages.fetchInside", {})).rejects.toThrow("fetch is not allowed");
+    await expect(session.mutation(4, "api.messages.composeFail", { channelId: 2n })).rejects.toThrow("compose failed");
 
     const rolledBack = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 5,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 2n },
     })) as unknown[];
     expect(rolledBack).toEqual([]);
@@ -1042,13 +1013,12 @@ describe("runtime commit and replay ownership", () => {
   test("rolls back returned Err scopes and poisons caught nested throws", async () => {
     await session.open();
 
-    const handled = await session.mutation(20, "messages.handleChildErr", { channelId: 20n });
+    const handled = await session.mutation(20, "api.messages.handleChildErr", { channelId: 20n });
     expect(handled.value).toBe("queued");
     const handledRows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 21,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 20n },
     })) as Array<{ body: string }>;
     expect(handledRows.map((row) => row.body)).toEqual(["parent-before", "parent-after"]);
@@ -1061,7 +1031,7 @@ describe("runtime commit and replay ownership", () => {
     const errRequestId = uuidV7(errIssuedAt, 22);
     const propagated = await session.mutation(
       22,
-      "messages.propagateChildErr",
+      "api.messages.propagateChildErr",
       { channelId: 22n },
       errRequestId,
       errIssuedAt,
@@ -1085,7 +1055,7 @@ describe("runtime commit and replay ownership", () => {
     const callsAfterErr = writeThenErrCalls;
     const replayedErr = await session.mutation(
       23,
-      "messages.propagateChildErr",
+      "api.messages.propagateChildErr",
       { channelId: 22n },
       errRequestId,
       errIssuedAt,
@@ -1100,23 +1070,21 @@ describe("runtime commit and replay ownership", () => {
     });
     expect(writeThenErrCalls).toBe(callsAfterErr);
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 24,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 22n },
     }))).toEqual([]);
 
     await expect(session.mutation(
       25,
-      "messages.catchNestedThrow",
+      "api.messages.catchNestedThrow",
       { channelId: 24n },
     )).rejects.toThrow("storage exploded");
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 26,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 24n },
     }))).toEqual([]);
   });
@@ -1128,16 +1096,15 @@ describe("runtime commit and replay ownership", () => {
 
     await expect(session.mutation(
       27,
-      "messages.overlapNestedMutation",
+      "api.messages.overlapNestedMutation",
       { channelId: 27n },
     )).rejects.toThrow(
       "concurrent database access crossed a nested mutation boundary",
     );
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 28,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 27n },
     }))).toEqual([]);
   });
@@ -1146,14 +1113,13 @@ describe("runtime commit and replay ownership", () => {
     await session.open();
     await expect(session.mutation(
       29,
-      "messages.catchDatabaseThrow",
+      "api.messages.catchDatabaseThrow",
       { channelId: 29n },
     )).rejects.toThrow("row 9999 not found");
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 30,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 29n },
     }))).toEqual([]);
   });
@@ -1164,7 +1130,7 @@ describe("runtime commit and replay ownership", () => {
     const requestId = uuidV7(now, 99);
     const first = await session.mutation(
       1,
-      "messages.send",
+      "api.messages.send",
       { channelId: 5n, body: "once" },
       requestId,
       now,
@@ -1174,7 +1140,7 @@ describe("runtime commit and replay ownership", () => {
     ).run(session.context.clientSessionId, requestId);
     const replay = await session.mutation(
       2,
-      "messages.send",
+      "api.messages.send",
       { channelId: 5n, body: "once" },
       requestId,
       now,
@@ -1183,17 +1149,16 @@ describe("runtime commit and replay ownership", () => {
     expect(replay.receipt).toMatchObject({ replay: "replayed", durability: "balanced" });
     await expect(session.mutation(
       3,
-      "messages.send",
+      "api.messages.send",
       { channelId: 5n, body: "different" },
       requestId,
       now,
     )).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
 
     const rows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 4,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 5n },
     })) as unknown[];
     expect(rows).toHaveLength(1);
@@ -1206,10 +1171,9 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const subscribing = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 40,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await revalidationEntered.promise;
@@ -1217,7 +1181,6 @@ describe("ordered convergence", () => {
     let resetSettled = false;
     let unsubscribeSettled = false;
     const resetting = runtime.reset(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "reset",
       id: 40,
       cursor: { generation: "stale", commitVersion: 0n, authEpoch: 0, identity: "stale" },
@@ -1225,17 +1188,15 @@ describe("ordered convergence", () => {
       resetSettled = true;
     });
     const unsubscribing = runtime.unsubscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "unsub",
       id: 40,
     })).finally(() => {
       unsubscribeSettled = true;
     });
     const independent = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 41,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 2n },
     }));
     await independent;
@@ -1255,20 +1216,18 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const priorSubscription = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 50,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await revalidationEntered.promise;
 
-    const mutation = session.mutation(51, "messages.send", { channelId: 3n, body: "after-control" });
+    const mutation = session.mutation(51, "api.messages.send", { channelId: 3n, body: "after-control" });
     const laterSubscription = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 52,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 2n },
     }));
     await laterSubscription;
@@ -1284,10 +1243,9 @@ describe("ordered convergence", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const subscribing = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 60,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await revalidationEntered.promise;
@@ -1307,26 +1265,20 @@ describe("ordered convergence", () => {
   });
 
   test("does not encode an old-epoch error rejected by auth capture", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      exporter: { export: (records) => void exported.push(...records) },
-    });
+    await restart(limits());
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 89,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     queryFailureGate = deferred<void>();
     queryFailureEntered = deferred<void>();
     const failedQuery = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 90,
-      ref: "messages.blockFail",
+      ref: "api.messages.blockFail",
       args: {},
     }));
     void failedQuery.catch(() => {});
@@ -1360,7 +1312,6 @@ describe("ordered convergence", () => {
       ]);
       queryFailureGate.resolve(undefined);
       await expect(failedQuery).rejects.toThrow("stale query failure");
-      await runtime.telemetry.flush();
     } finally {
       queryFailureGate.resolve(undefined);
       revalidationGate.resolve(undefined);
@@ -1368,28 +1319,19 @@ describe("ordered convergence", () => {
       batch?.release();
       nextController.abort();
     }
-
-    const requestSpans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.requestId === "90"
-    );
-    expect(requestSpans.some((record) => record.stage === "handler" && record.outcome !== "ok")).toBe(true);
-    expect(requestSpans.filter((record) =>
-      record.stage === "encoding" && record.resource === "outbound"
-    )).toEqual([]);
   });
 
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 10,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1n },
     }));
     expect(session.publications[0]).toMatchObject({ t: "transition", id: 10, transition: { kind: "reset" } });
 
-    const result = await session.mutation(1, "messages.send", { channelId: 1n, body: "new" });
+    const result = await session.mutation(1, "api.messages.send", { channelId: 1n, body: "new" });
     expect(result.receipt.obligations).toEqual([10]);
     const update = session.publications.findLast(
       (frame) => frame.t === "transition" && frame.id === 10,
@@ -1399,7 +1341,7 @@ describe("ordered convergence", () => {
       transition: { kind: "update", to: { commitVersion: result.receipt.commitVersion } },
     });
 
-    await session.mutation(2, "messages.rewrite", { id: result.value as bigint });
+    await session.mutation(2, "api.messages.rewrite", { id: result.value as bigint });
     expect(session.publications.findLast((frame) => frame.t === "transition")).toMatchObject({
       t: "transition",
       transition: { kind: "checkpoint" },
@@ -1411,23 +1353,21 @@ describe("ordered convergence", () => {
     const secondSession = new SessionHarness(runtime, "session-b");
     await secondSession.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 60,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await runtime.subscribe(secondSession.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 61,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 2n },
     }));
 
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
-    const first = session.mutation(70, "messages.send", { channelId: 1n, body: "first" });
+    const first = session.mutation(70, "api.messages.send", { channelId: 1n, body: "first" });
     await revalidationEntered.promise;
     let firstSettled = false;
     void first.then(
@@ -1439,7 +1379,7 @@ describe("ordered convergence", () => {
       },
     );
 
-    const second = secondSession.mutation(71, "messages.send", { channelId: 2n, body: "second" });
+    const second = secondSession.mutation(71, "api.messages.send", { channelId: 2n, body: "second" });
     let secondResult: Awaited<typeof second>;
     try {
       secondResult = await Promise.race([
@@ -1479,20 +1419,18 @@ describe("ordered convergence", () => {
   test("event subscriptions receive reset then committed rows", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 20,
-      ref: "events.typing",
+      ref: "api.events.typing",
       args: { channelId: 7n },
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 21,
-      ref: "events.typing",
+      ref: "api.events.typing",
       args: { channelId: 8n },
     }));
-    await session.mutation(1, "messages.send", { channelId: 7n, body: "typing" });
+    await session.mutation(1, "api.messages.send", { channelId: 7n, body: "typing" });
     expect(session.publications.filter(
       (frame) => frame.t === "event" && frame.event.kind === "row",
     )).toMatchObject([
@@ -1503,18 +1441,16 @@ describe("ordered convergence", () => {
   test("authorizes and freezes event subscriptions across refresh and terminal sign-out", async () => {
     await session.open(user("alice"));
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 22,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: "wrong" },
     }))).rejects.toMatchObject({ code: "validation" });
 
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 23,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: 9n },
     }));
     expect(Object.isFrozen(eventAccessInputs.at(-1)!.ctx)).toBe(true);
@@ -1522,7 +1458,7 @@ describe("ordered convergence", () => {
     expect("token" in eventAccessInputs.at(-1)!.ctx).toBe(false);
     expect("credential" in eventAccessInputs.at(-1)!.ctx).toBe(false);
 
-    await session.mutation(1, "messages.send", { channelId: 9n, body: "private" });
+    await session.mutation(1, "api.messages.send", { channelId: 9n, body: "private" });
     expect(Object.isFrozen(eventMatchInputs.at(-1)!.row)).toBe(true);
     expect(Object.isFrozen(eventMatchInputs.at(-1)!.args)).toBe(true);
 
@@ -1543,10 +1479,9 @@ describe("ordered convergence", () => {
   test("denies an event policy before listener attachment", async () => {
     await session.open();
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 24,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: 1n },
     }))).rejects.toMatchObject({ code: "unauthenticated" });
     expect(runtime.status().reactive.eventListeners).toBe(0);
@@ -1555,10 +1490,9 @@ describe("ordered convergence", () => {
   test("auth rotation revokes then re-evaluates saved subscriptions under the new identity", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 30,
-      ref: "messages.secure",
+      ref: "api.messages.secure",
       args: {},
     }));
     expect(session.publications[0]).toMatchObject({
@@ -1578,24 +1512,21 @@ describe("ordered convergence", () => {
   test("reattaches the reactive-owned query and event definitions in id order", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 32,
-      ref: "messages.secure",
+      ref: "api.messages.secure",
       args: {},
     }));
     await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 32,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: 8n },
     }))).rejects.toMatchObject({ code: "conflict" });
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 31,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: 7n },
     }));
 
@@ -1618,17 +1549,15 @@ describe("ordered convergence", () => {
   test("disconnect releases query and event ownership at the reactive boundary", async () => {
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 33,
-      ref: "messages.secure",
+      ref: "api.messages.secure",
       args: {},
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 34,
-      ref: "events.privateTyping",
+      ref: "api.events.privateTyping",
       args: { channelId: 9n },
     }));
 
@@ -1670,7 +1599,7 @@ describe("system execution root", () => {
   test("does not inherit authority from the invocation that triggered it", async () => {
     const response = await runtime.runProcedure({
       id: 301,
-      address: "ops.enterSystem",
+      address: "api.ops.enterSystem",
       args: {},
       principal: user("system-caller"),
       respond: ({ body, status }) => new Response(body, { status }),
@@ -1883,15 +1812,14 @@ describe("system execution root", () => {
     await expect(held).resolves.toMatchObject({ ok: true });
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 305,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 14n },
     }))).toMatchObject([{ body: "owner" }]);
   });
 
-  test("preserves a system invocation queued for the writer with telemetry disabled", async () => {
+  test("preserves a system invocation queued for the writer", async () => {
     const writerEntered = deferred<void>();
     const releaseWriter = deferred<void>();
     const held = runtime.system.run("test.queued-owner", (ctx) =>
@@ -1938,10 +1866,9 @@ describe("system execution root", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 306,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 15n },
     }))).toMatchObject([{ body: "committed" }]);
   });
@@ -1961,7 +1888,7 @@ describe("system execution root", () => {
     ]);
 
     await session.open(user("not-system"));
-    await expect(session.mutation(307, "reminders.fire", {
+    await expect(session.mutation(307, "api.reminders.fire", {
       id: 2n,
       message: "denied",
       attempt: 1,
@@ -1990,123 +1917,13 @@ describe("system execution root", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 304,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 13n },
     }))).toEqual([]);
   });
 
-  test("records the operation name and nested application work under one system trace", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      limits: { slowOperationMs: 0 },
-      exporter: { export: (records) => void exported.push(...records) },
-    });
-
-    await runtime.system.run("test.observed", async (ctx) => {
-      await fetch("data:text/plain,observed");
-      return functions.ops.echo(ctx, { value: "done" });
-    });
-    await runtime.telemetry.flush();
-
-    const spans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.operation === "system"
-    );
-    const traceIds = new Set(spans.map((span) => span.traceId));
-    expect(traceIds.size).toBe(1);
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "admission",
-      outcome: "ok",
-      function: "test.observed",
-    }));
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "fetch",
-      outcome: "ok",
-      function: "test.observed",
-    }));
-    expect(spans).toContainEqual(expect.objectContaining({
-      stage: "handler",
-      outcome: "ok",
-      function: "ops.echo",
-    }));
-    expect(runtime.status()).toMatchObject({
-      activeOperations: 0,
-      activeOperationCallers: 0,
-    });
-  });
-
-  test("records every system terminal class without dynamic callback data", async () => {
-    const exported: TelemetryRecord[] = [];
-    await restart(limits(), {
-      localSink: false,
-      limits: { slowOperationMs: 0 },
-      exporter: { export: (records) => void exported.push(...records) },
-    });
-
-    const preCanceled = new AbortController();
-    preCanceled.abort();
-    await expect(runtime.system.run(
-      "test.telemetry.pre-canceled",
-      () => "unreachable",
-      { signal: preCanceled.signal },
-    )).rejects.toMatchObject({ code: "unavailable" });
-
-    const applicationFailure = Err(
-      "stock-unavailable",
-      { sku: "dynamic-value-must-not-be-recorded" },
-      Status.Conflict,
-    );
-    await expect(runtime.system.run(
-      "test.telemetry.application-error",
-      () => applicationFailure,
-    )).resolves.toBe(applicationFailure);
-
-    const unhandled = new Error("dynamic failure details must not be recorded");
-    await expect(runtime.system.run("test.telemetry.unhandled", () => {
-      throw unhandled;
-    })).rejects.toBe(unhandled);
-
-    const entered = deferred<void>();
-    const release = deferred<void>();
-    const cancellation = new AbortController();
-    const canceled = runtime.system.run("test.telemetry.canceled", async () => {
-      entered.resolve(undefined);
-      await release.promise;
-    }, { signal: cancellation.signal });
-    const canceledOutcome = canceled.catch((error: unknown) => error);
-    await entered.promise;
-    cancellation.abort();
-    release.resolve(undefined);
-    await expect(canceledOutcome).resolves.toMatchObject({ code: "indeterminate" });
-
-    await expect(runtime.system.run(
-      "test.telemetry.success",
-      () => "dynamic success value must not be recorded",
-    )).resolves.toBe("dynamic success value must not be recorded");
-    await runtime.telemetry.flush();
-
-    const spans = exported.filter((record): record is TelemetrySpanRecord =>
-      record.kind === "span" && record.operation === "system"
-    );
-    const hasSpan = (
-      operationName: string,
-      stage: TelemetrySpanRecord["stage"],
-      outcome: string,
-    ) => spans.some((span) =>
-      span.function === operationName &&
-      span.stage === stage &&
-      span.outcome === outcome
-    );
-    expect(hasSpan("test.telemetry.pre-canceled", "admission", "unavailable")).toBe(true);
-    expect(hasSpan("test.telemetry.application-error", "handler", "application_error")).toBe(true);
-    expect(hasSpan("test.telemetry.unhandled", "handler", "internal")).toBe(true);
-    expect(hasSpan("test.telemetry.canceled", "handler", "indeterminate")).toBe(true);
-    expect(hasSpan("test.telemetry.success", "handler", "ok")).toBe(true);
-    expect(JSON.stringify(spans)).not.toContain("dynamic");
-  });
 
   test("signals accepted system work, refuses new work, and drains only after settlement", async () => {
     const entered = deferred<void>();
@@ -2159,10 +1976,9 @@ describe("system execution root", () => {
   test("rolls back application Err and publishes successful transaction effects", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 302,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 12n },
     }));
     const transitionsBefore = session.publications.filter((frame) =>
@@ -2177,10 +1993,9 @@ describe("system execution root", () => {
       error: { code: "stock-unavailable" },
     });
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 303,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 12n },
     }))).toEqual([]);
     expect(session.publications.filter((frame) =>
@@ -2209,12 +2024,11 @@ describe("system execution root", () => {
 describe("procedures and bounded SSE", () => {
   test("reports cancellation after every handler completion path as indeterminate", async () => {
     await session.open();
-    for (const [index, ref] of ["ops.block", "ops.blockRejectingCancellation"].entries()) {
+    for (const [index, ref] of ["api.ops.block", "api.ops.blockRejectingCancellation"].entries()) {
       externalProcedureStarted = deferred<void>();
       externalProcedureRelease = deferred<void>();
       const controller = new AbortController();
       const message: ProcedureMessage = {
-        v: PROTOCOL_VERSION,
         t: "p",
         id: index + 1,
         ref,
@@ -2247,7 +2061,7 @@ describe("procedures and bounded SSE", () => {
       ]);
     }
 
-    for (const [index, ref] of ["ops.block", "ops.blockRejectingCancellation"].entries()) {
+    for (const [index, ref] of ["api.ops.block", "api.ops.blockRejectingCancellation"].entries()) {
       externalProcedureStarted = deferred<void>();
       externalProcedureRelease = deferred<void>();
       const controller = new AbortController();
@@ -2277,7 +2091,7 @@ describe("procedures and bounded SSE", () => {
   test("runs external work outside an atomic procedure transaction", async () => {
     const response = await runtime.runProcedure({
       id: 1,
-      address: "ops.pipeline",
+      address: "api.ops.pipeline",
       args: { channelId: 4n },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -2286,7 +2100,7 @@ describe("procedures and bounded SSE", () => {
     expect(JSON.parse(await response.text())).toEqual({ external: "external", body: "external" });
     const failed = await runtime.runProcedure({
       id: 2,
-      address: "ops.nestedTx",
+      address: "api.ops.nestedTx",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -2298,7 +2112,7 @@ describe("procedures and bounded SSE", () => {
   test("a caught ctx.tx throw still poisons the procedure and rolls back", async () => {
     const response = await runtime.runProcedure({
       id: 3,
-      address: "ops.catchTxThrow",
+      address: "api.ops.catchTxThrow",
       args: { channelId: 30n },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -2308,10 +2122,9 @@ describe("procedures and bounded SSE", () => {
 
     await session.open();
     expect(await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 31,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 30n },
     }))).toEqual([]);
   });
@@ -2340,7 +2153,7 @@ describe("procedures and bounded SSE", () => {
         respond: ({ body, status }) => new Response(body, { status }),
       });
 
-    const held = invoke(10, "ops.block", {}, hot);
+    const held = invoke(10, "api.ops.block", {}, hot);
     try {
       await externalProcedureStarted.promise;
       expect(runtime.status()).toMatchObject({
@@ -2348,7 +2161,7 @@ describe("procedures and bounded SSE", () => {
         activeOperationCallers: 1,
       });
 
-      const rejected = await invoke(11, "ops.echo", { value: "same" }, rotatedHot);
+      const rejected = await invoke(11, "api.ops.echo", { value: "same" }, rotatedHot);
       expect(rejected.status).toBe(429);
       expect(JSON.parse(await rejected.text())).toMatchObject({
         code: "overloaded",
@@ -2357,7 +2170,7 @@ describe("procedures and bounded SSE", () => {
         resource: "operation",
       });
 
-      const admitted = await invoke(12, "ops.echo", { value: "cold" }, cold);
+      const admitted = await invoke(12, "api.ops.echo", { value: "cold" }, cold);
       expect(admitted.status).toBe(200);
       expect(JSON.parse(await admitted.text())).toBe("cold");
     } finally {
@@ -2374,7 +2187,7 @@ describe("procedures and bounded SSE", () => {
 
     const response = await runtime.runProcedure({
       id: 89,
-      address: "ops.failEmoji",
+      address: "api.ops.failEmoji",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
@@ -2388,7 +2201,7 @@ describe("procedures and bounded SSE", () => {
   test("streams generator chunks receiver-credited and a terminal marker", async () => {
     const response = await runtime.runSse({
       id: 1,
-      address: "ops.stream",
+      address: "api.ops.stream",
       args: { count: 2 },
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -2400,21 +2213,21 @@ describe("procedures and bounded SSE", () => {
         const before = runtime.status().sseBudget.bytes;
         expect(runtime.status().activeSse).toBe(1);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: "AAAAAAAAAAAAAAAAAAAAAA",
           seq: message.seq,
           proof: message.proof,
         })).toBe(false);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: response.streamId,
           seq: message.seq,
           proof: `${message.proof}x`,
         })).toBe(false);
         expect(runtime.ackSse({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "sse_ack",
           stream: response.streamId,
           seq: message.seq + 100,
@@ -2424,7 +2237,7 @@ describe("procedures and bounded SSE", () => {
       }
       if (message.t !== "sse_chunk") expect(runtime.status().activeSse).toBe(1);
       expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "sse_ack",
         stream: response.streamId,
         seq: message.seq,
@@ -2438,7 +2251,7 @@ describe("procedures and bounded SSE", () => {
     ]);
     expect(messages.at(-1)?.t).toBe("sse_done");
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: messages.at(-1)!.seq,
@@ -2451,7 +2264,7 @@ describe("procedures and bounded SSE", () => {
   test("streams a handler-returned ReadableStream to completion", async () => {
     const response = await runtime.runSse({
       id: 1,
-      address: "ops.streamed",
+      address: "api.ops.streamed",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -2463,7 +2276,7 @@ describe("procedures and bounded SSE", () => {
   test("fails a stream on the first invalid chunk with the exact validation error", async () => {
     const response = await runtime.runSse({
       id: 1,
-      address: "ops.invalidChunk",
+      address: "api.ops.invalidChunk",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -2479,7 +2292,7 @@ describe("procedures and bounded SSE", () => {
   test("turns a post-start SSE failure into a terminal ackerdb-error event", async () => {
     const response = await runtime.runSse({
       id: 1,
-      address: "ops.failingStream",
+      address: "api.ops.failingStream",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -2504,17 +2317,15 @@ describe("direct ingress", () => {
     };
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 81,
       ref: oversized,
       args: {},
     }, 0))).rejects.toMatchObject(expected);
     await expect(runtime.mutation(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 82,
-      ref: "messages.send",
+      ref: "api.messages.send",
       args: { channelId: 1n, body: oversized },
       mutationRequestId: uuidV7(Date.now(), 82),
       issuedAt: Date.now(),
@@ -2550,16 +2361,15 @@ describe("direct ingress", () => {
     await session.open();
 
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 87,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1n },
     }, 257))).resolves.toEqual([]);
 
     const procedureRequest = {
       id: 88,
-      address: "ops.echo",
+      address: "api.ops.echo",
       args: { value: "accepted" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -2570,7 +2380,7 @@ describe("direct ingress", () => {
 
     const sseRequest = {
       id: 89,
-      address: "ops.stream",
+      address: "api.ops.stream",
       args: { count: 0 },
       principal: ANONYMOUS_PRINCIPAL,
       bytes: 257,
@@ -2583,7 +2393,7 @@ describe("direct ingress", () => {
     await restart(limits({ maxRequestBytes: 256 }));
     const carried = carryHttpRequestProvenance({
       id: 90,
-      address: "ops.echo",
+      address: "api.ops.echo",
       args: { value: "accepted canonically after the claim" },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -2612,14 +2422,14 @@ describe("direct ingress", () => {
       },
     };
     const calls = [
-      { kind: "query", address: "messages.list", args: { channelId: 1n } },
+      { kind: "query", address: "api.messages.list", args: { channelId: 1n } },
       {
         kind: "mutation",
-        address: "reminders.schedule",
+        address: "api.reminders.schedule",
         args: { message: "soon", attempt: 1, at: Date.now() + 100_000 },
       },
-      { kind: "procedure", address: "ops.echo", args: { value: "hello" } },
-      { kind: "sse", address: "ops.stream", args: { count: 0 } },
+      { kind: "procedure", address: "api.ops.echo", args: { value: "hello" } },
+      { kind: "sse", address: "api.ops.stream", args: { count: 0 } },
     ] as const;
 
     for (const [index, { kind, address, args }] of calls.entries()) {
@@ -2641,39 +2451,36 @@ describe("direct ingress", () => {
 describe("jobs runner and lifecycle", () => {
   const jobRows = () =>
     engine.reader
-      .query(`SELECT state, attempt FROM "${JOBS_TABLE}" ORDER BY id`)
-      .all() as { state: string; attempt: number | bigint }[];
+      .query(`SELECT state, runCount FROM "${JOBS_TABLE}" ORDER BY id`)
+      .all() as { state: string; runCount: number | bigint }[];
 
   test("runs a due mutation-kind job exactly once in one commit", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     const attempt = Number.MAX_SAFE_INTEGER;
-    await session.mutation(1, "reminders.schedule", { message: "ok", attempt, at: dueAt });
+    await session.mutation(1, "api.reminders.schedule", { message: "ok", attempt, at: dueAt });
     expect(jobRows()).toMatchObject([{ state: "pending" }]);
     currentTime = dueAt;
     await runtime.runJobs();
     expect(scheduledAttempt).toBe(attempt);
     expect(scheduledAttempts).toBe(1);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:ok" }]);
-    expect(jobRows()).toMatchObject([{ state: "completed", attempt: 1n }]);
+    expect(jobRows()).toMatchObject([{ state: "completed", runCount: 1n }]);
   });
 
-  test("rolls handler writes back on failure and records the discarded attempt", async () => {
+  test("rolls handler writes back on failure and records the failed run", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
-    await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt });
+    await session.mutation(1, "api.reminders.schedule", { message: "fail", attempt: 1, at: dueAt });
     currentTime = dueAt;
     await runtime.runJobs();
-    // The handler's log insert rolled back whole; the failed attempt settled
-    // in its own transaction as discarded (no retry policy declared).
+    // The handler's log insert rolled back whole; the failed run settled in the
+    // same transaction and failed the Job (no retry policy declared).
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
-    expect(jobRows()).toMatchObject([{ state: "discarded", attempt: 1n }]);
-    const attempts = engine.reader
-      .query(`SELECT attemptsJson FROM "${JOBS_TABLE}"`)
-      .get() as { attemptsJson: string };
-    expect(JSON.parse(attempts.attemptsJson)).toMatchObject([
-      { outcome: "discarded", error: "Error: scheduled failure" },
-    ]);
+    expect(jobRows()).toMatchObject([{ state: "failed", runCount: 1n }]);
+    expect(
+      engine.reader.query(`SELECT number, state, errorText FROM "${JOB_RUNS_TABLE}"`).all(),
+    ).toMatchObject([{ number: 1n, state: "failed", errorText: "Error: scheduled failure" }]);
   });
 
   test("arms the runner for a due job an HTTP mutation committed", async () => {
@@ -2681,7 +2488,7 @@ describe("jobs runner and lifecycle", () => {
     // job enqueued over HTTP must fire without a WebSocket ever opening.
     const response = await runtime.runMutation({
       id: 96,
-      address: "reminders.schedule",
+      address: "api.reminders.schedule",
       args: { message: "http", attempt: 1, at: Date.now() - 1 },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -2695,23 +2502,22 @@ describe("jobs runner and lifecycle", () => {
   test("a poisoned job cannot block other due work", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
-    await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt - 10 });
-    await session.mutation(2, "reminders.schedule", { message: "after", attempt: 2, at: dueAt });
+    await session.mutation(1, "api.reminders.schedule", { message: "fail", attempt: 1, at: dueAt - 10 });
+    await session.mutation(2, "api.reminders.schedule", { message: "after", attempt: 2, at: dueAt });
     currentTime = dueAt;
     await runtime.runJobs();
-    // The earlier-due failing job discarded; the later job still ran.
+    // The earlier-due failing job failed; the later job still ran.
     expect(scheduledAttempts).toBe(2);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:after" }]);
-    expect(jobRows()).toMatchObject([{ state: "discarded" }, { state: "completed" }]);
+    expect(jobRows()).toMatchObject([{ state: "failed" }, { state: "completed" }]);
   });
 
   test("job rows are live: a subscription over the jobs table updates on enqueue and settle", async () => {
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 70,
-      ref: "reminders.pending",
+      ref: "api.reminders.pending",
       args: {},
     }));
     const pendingRows = (): Ctx => {
@@ -2723,7 +2529,7 @@ describe("jobs runner and lifecycle", () => {
     expect(pendingRows()).toEqual([]);
 
     const dueAt = Date.now() + 100_000;
-    await session.mutation(1, "reminders.schedule", { message: "live", attempt: 1, at: dueAt });
+    await session.mutation(1, "api.reminders.schedule", { message: "live", attempt: 1, at: dueAt });
     await eventually(() => pendingRows()?.length === 1);
     expect(pendingRows()[0]).toMatchObject({ name: "reminders.fire", state: "pending" });
 
@@ -2738,7 +2544,7 @@ describe("jobs runner and lifecycle", () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     for (let index = 0; index < 5; index++) {
-      await session.mutation(1 + index, "reminders.schedule", {
+      await session.mutation(1 + index, "api.reminders.schedule", {
         message: `batch-${index}`,
         attempt: index,
         at: dueAt + index,
@@ -2754,7 +2560,7 @@ describe("jobs runner and lifecycle", () => {
   test("fails an open SSE immediately and completes Runtime drain", async () => {
     const response = await runtime.runSse({
       id: 85,
-      address: "ops.waitForAbort",
+      address: "api.ops.waitForAbort",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
@@ -2777,7 +2583,7 @@ describe("jobs runner and lifecycle", () => {
       externalSseReturned = returned;
       const response = await runtime.runSse({
         id,
-        address: "ops.holdSse",
+        address: "api.ops.holdSse",
         args: {},
         principal: ANONYMOUS_PRINCIPAL,
       });
@@ -2800,7 +2606,7 @@ describe("jobs runner and lifecycle", () => {
     });
     expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: acknowledged.response.streamId,
       seq: acknowledgedTerminal.seq,
@@ -2826,7 +2632,7 @@ describe("jobs runner and lifecycle", () => {
     await eventually(() => runtime.status().activeSse === 0);
     await eventually(() => runtime.status().activeOperations === 0);
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: forced.response.streamId,
       seq: forcedTerminal.seq,
@@ -2848,10 +2654,9 @@ describe("jobs runner and lifecycle", () => {
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const attaching = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 85,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     await revalidationEntered.promise;
@@ -2862,10 +2667,9 @@ describe("jobs runner and lifecycle", () => {
       activeOperations: 1,
     });
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 86,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1n },
     }))).rejects.toMatchObject({ code: "auth_stale" });
 
@@ -2884,15 +2688,14 @@ describe("jobs runner and lifecycle", () => {
     await restart(limits({ gracefulShutdownMs: 500 }));
     await session.open();
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 86,
-      ref: "messages.parallelList",
+      ref: "api.messages.parallelList",
       args: { channelId: 1n },
     }));
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
-    const mutation = session.mutation(87, "messages.send", { channelId: 1n, body: "blocked" });
+    const mutation = session.mutation(87, "api.messages.send", { channelId: 1n, body: "blocked" });
     await revalidationEntered.promise;
 
     const startedAt = performance.now();
@@ -2906,10 +2709,9 @@ describe("jobs runner and lifecycle", () => {
       reactive: { queryListeners: 1, eventListeners: 0 },
     });
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 88,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1n },
     }))).rejects.toMatchObject({
       code: "draining",
@@ -2933,66 +2735,23 @@ describe("jobs runner and lifecycle", () => {
     expect(runtime.status().state).toBe("failed");
   });
 
-  test("a hanging external telemetry flush cannot exceed Runtime's deadline", async () => {
-    await restart(
-      limits({ gracefulShutdownMs: 20 }),
-      new HangingTelemetry({ localSink: false }),
-    );
-
-    const startedAt = performance.now();
-    await expect(runtime.drain()).rejects.toMatchObject({
-      code: "deadline_exceeded",
-      resource: "operation",
-    });
-    const elapsed = performance.now() - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(15);
-    expect(elapsed).toBeLessThan(250);
-    expect(runtime.status().state).toBe("failed");
-  });
-
-  test("includes the stopped lifecycle event in its owned telemetry drain", async () => {
-    const exported: unknown[] = [];
-    await restart(limits(), {
-      localSink: false,
-      exporter: {
-        export: (records) => {
-          exported.push(...records);
-        },
-      },
-    });
-
-    await runtime.drain();
-
-    expect(exported.filter(
-      (record): record is { kind: string; name: string; lifecycleState: string } =>
-        typeof record === "object" &&
-        record !== null &&
-        "kind" in record &&
-        "name" in record &&
-        "lifecycleState" in record &&
-        record.kind === "event" &&
-        record.name === "lifecycle",
-    ).map((record) => record.lifecycleState)).toEqual(["ready", "draining", "stopped"]);
-  });
 
   test("stops admission, waits for accepted work, and becomes stopped", async () => {
     await session.open();
     queryGate = deferred<void>();
     const accepted = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
-      ref: "messages.block",
+      ref: "api.messages.block",
       args: {},
     }));
     await Promise.resolve();
     const drain = runtime.drain();
     expect(runtime.status().state).toBe("draining");
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "messages.block",
+      ref: "api.messages.block",
       args: {},
     }))).rejects.toMatchObject({ code: "draining" });
     queryGate.resolve(undefined);
@@ -3023,11 +2782,10 @@ describe("configured capacity", () => {
     start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
   });
 
-  test("reports the selected durability and disabled telemetry state", () => {
+  test("reports the selected durability", () => {
     expect(runtime.status()).toMatchObject({
       state: "ready",
       connections: 0,
-      telemetry: { enabled: false },
       storage: { durability: "production", synchronous: "FULL" },
     });
   });
@@ -3060,10 +2818,9 @@ describe("configured capacity", () => {
     queryGate = gate;
     const blocked = (owner: SessionHarness, id: number) =>
       runtime.query(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "q",
         id,
-        ref: "messages.block",
+        ref: "api.messages.block",
         args: {},
       }));
     const held: Promise<unknown>[] = [];
@@ -3119,18 +2876,16 @@ describe("configured capacity", () => {
     };
 
     const held = runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 70,
-      ref: "messages.block",
+      ref: "api.messages.block",
       args: {},
     }));
     await eventually(() => runtime.status().activeOperations === 1);
     const rejectedControl = runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 71,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 1n },
     }));
     void rejectedControl.catch(() => {});
@@ -3142,7 +2897,7 @@ describe("configured capacity", () => {
       let mutationSettled = false;
       let mutationValue: unknown;
       let mutationError: unknown;
-      const mutation = session.mutation(72, "messages.send", {
+      const mutation = session.mutation(72, "api.messages.send", {
         channelId: 1n,
         body: "not behind rejected control",
       }).then(
@@ -3179,15 +2934,13 @@ describe("configured capacity", () => {
     await Promise.all([session.open(), second.open(), third.open()]);
     const subscribe = (owner: SessionHarness, id: number, channelId: bigint) =>
       runtime.subscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "sub",
         id,
-        ref: "messages.list",
+        ref: "api.messages.list",
         args: { channelId },
       }));
     const unsubscribe = (owner: SessionHarness, id: number) =>
       runtime.unsubscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "unsub",
         id,
       }));
@@ -3239,26 +2992,23 @@ describe("configured capacity", () => {
     await Promise.all([session.open(), second.open()]);
 
     await runtime.joinChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_join",
       id: 1,
-      ref: "chat.room",
+      ref: "api.chat.room",
       args: { threadId: 7n },
       room: "support",
     }));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 2,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 7n },
     }));
 
     await expect(runtime.joinChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_join",
       id: 3,
-      ref: "chat.room",
+      ref: "api.chat.room",
       args: { threadId: 8n },
       room: "sales",
     }))).rejects.toMatchObject({
@@ -3267,10 +3017,9 @@ describe("configured capacity", () => {
       resource: "subscription",
     });
     await expect(runtime.subscribe(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 1,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 8n },
     }))).rejects.toMatchObject({
       code: "overloaded",
@@ -3279,31 +3028,28 @@ describe("configured capacity", () => {
     });
 
     await runtime.leaveChannel(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "channel_leave",
       id: 1,
     }));
     await expect(runtime.subscribe(second.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 1,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 8n },
     }))).resolves.toBeUndefined();
   });
 
   test("rejects an oversized mutation response before its write commits", async () => {
     await session.open();
-    await expect(session.mutation(1, "messages.largeResult", {
+    await expect(session.mutation(1, "api.messages.largeResult", {
       channelId: 9n,
       size: 512,
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     expect(engine.commitVersion()).toBe(0n);
     const rows = await runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
-      ref: "messages.list",
+      ref: "api.messages.list",
       args: { channelId: 9n },
     }));
     expect(rows).toEqual([]);
@@ -3312,10 +3058,9 @@ describe("configured capacity", () => {
   test("publishes an error instead of an oversized query success frame", async () => {
     await session.open();
     await expect(runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 3,
-      ref: "messages.largeQuery",
+      ref: "api.messages.largeQuery",
       args: { size: 512 },
     }))).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
 
@@ -3341,10 +3086,9 @@ describe("configured capacity", () => {
     }));
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 50,
-      ref: "messages.secure",
+      ref: "api.messages.secure",
       args: {},
     }));
 
@@ -3361,10 +3105,9 @@ describe("configured capacity", () => {
     await restart(limits({ maxConnections: 2, maxFrameBytes }));
     await session.open(user("alice"));
     await runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: 51,
-      ref: "messages.secure",
+      ref: "api.messages.secure",
       args: {},
     }));
     const calibration = await session.rotateBatch(user("robin"));
@@ -3389,10 +3132,9 @@ describe("configured capacity", () => {
     await Promise.all([first.open(user("alice")), second.open(user("alice"))]);
     for (const owner of [first, second]) {
       await runtime.subscribe(owner.context, request({
-        v: PROTOCOL_VERSION,
         t: "sub",
         id: 51,
-        ref: "messages.secure",
+        ref: "api.messages.secure",
         args: {},
       }));
     }

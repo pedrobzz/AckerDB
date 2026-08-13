@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { noopLogger } from "ackerdb-test-support/telemetry";
+import { noopLogger } from "ackerdb-test-support/signals";
 import {
   ANONYMOUS_PRINCIPAL,
   realtime,
@@ -14,7 +14,7 @@ import {
 import {
   Ok,
   RealtimeDataPlane,
-  REALTIME_PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type PortableMediaStreamTrack,
   type PortableRTCConfiguration,
   type PortableRTCDataChannel,
@@ -735,7 +735,7 @@ describe("RealtimeServerSession", () => {
           return;
         }
         await client.sendSignal({
-          v: REALTIME_PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "signal_description",
           description: { type: "answer", sdp: "v=0\r\nclient-answer" },
         });
@@ -802,12 +802,12 @@ describe("RealtimeServerSession", () => {
     expect(peer.signalingState).toBe("have-local-offer");
 
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_description",
       description: { type: "offer", sdp: "v=0\r\nignored-client-offer" },
     });
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_candidate",
       candidate,
     });
@@ -817,12 +817,12 @@ describe("RealtimeServerSession", () => {
 
     peer.signalingState = "stable";
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_description",
       description: { type: "offer", sdp: "v=0\r\naccepted-client-offer" },
     });
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_candidate",
       candidate,
     });
@@ -884,7 +884,7 @@ describe("RealtimeServerSession", () => {
       candidate: "candidate:1 1 UDP 1 8.8.8.8 9 typ host",
     };
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_candidate",
       candidate: accepted,
     });
@@ -892,7 +892,7 @@ describe("RealtimeServerSession", () => {
     expect(peer.candidates).toEqual([accepted]);
 
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_candidate",
       candidate: {
         candidate: "candidate:1 1 UDP 1 browser-opaque-id.local 9 typ host",
@@ -903,7 +903,7 @@ describe("RealtimeServerSession", () => {
     expect(peer.closed).toBe(false);
 
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_description",
       description: {
         type: "offer",
@@ -925,7 +925,7 @@ describe("RealtimeServerSession", () => {
     expect(peer.closed).toBe(false);
 
     await client.sendSignal({
-      v: REALTIME_PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "signal_candidate",
       candidate: {
         candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ srflx",

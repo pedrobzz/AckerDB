@@ -1,5 +1,6 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +58,7 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   const server = serve({ runtime, port: 0 });
   return {
     base: `http://127.0.0.1:${server.port}`,
@@ -70,7 +71,7 @@ function createApp(): App {
 }
 
 type Message = { readonly id: bigint; readonly body: string };
-const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
+const messagesList = { $ref: "api.messages.list" } as QueryRef<Record<never, never>, Message[]>;
 
 const observed = new Map<string, AckerDBQueryState<Message[]>>();
 
@@ -121,8 +122,9 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
       createWebSocket: (url: string) => {
         const socket = new NativeWebSocket(url);
         const send = socket.send.bind(socket);
+        let sent = 0;
         socket.send = (data) => {
-          frames.push(parseClientMessage(decode(data as string)));
+          frames.push(parseSentFrame(data as string, sent++));
           send(data);
         };
         sockets.push(socket);
@@ -144,7 +146,7 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
     expect(framesOf("sub")).toHaveLength(1);
 
     // One live mutation reaches both consumers as the same snapshot object.
-    await writer.mutation("messages.add", { body: "hello" });
+    await writer.mutation("api.messages.add", { body: "hello" });
     await until(
       () => container.textContent === "a=fresh:hello;b=fresh:hello;",
       "the shared live update",
@@ -154,7 +156,7 @@ describe("shared useQuery consumers against a real ackerdb server", () => {
     // One board leaving keeps the shared subscription alive for the other.
     render(["a"]);
     expect(framesOf("unsub")).toHaveLength(0);
-    await writer.mutation("messages.add", { body: "again" });
+    await writer.mutation("api.messages.add", { body: "again" });
     await until(
       () => container.textContent === "a=fresh:hello,again;",
       "the update after one board left",

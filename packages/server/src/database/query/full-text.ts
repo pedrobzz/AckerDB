@@ -3,10 +3,7 @@ import { ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
 import { ftsCorpusKey } from "../keys.ts";
-import {
-  observeStatement,
-  type DbStatementObserver,
-} from "../statement-observation.ts";
+import { runStatement } from "../transaction-statement.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
@@ -44,7 +41,6 @@ class FullTextQueryRuntime {
     private readonly target: FullTextTarget,
     private readonly expression: string | null,
     private readonly state: FullTextState,
-    private readonly observer?: DbStatementObserver,
   ) {}
 
   where(callback: unknown): FullTextQueryRuntime {
@@ -61,7 +57,6 @@ class FullTextQueryRuntime {
       this.target,
       this.expression,
       { predicates: [...this.state.predicates, predicate] },
-      this.observer,
     );
   }
 
@@ -127,14 +122,7 @@ class FullTextQueryRuntime {
   }
 
   private observed(count: number): Record<string, unknown>[] | Promise<Record<string, unknown>[]> {
-    return observeStatement(
-      this.observer,
-      "read",
-      this.plan.displayName,
-      "fullText",
-      () => this.execute(count),
-      (rows) => rows.length,
-    );
+    return runStatement(() => this.execute(count));
   }
 }
 
@@ -145,7 +133,6 @@ export function createFullTextQuery(
   plan: TablePlan,
   column: unknown,
   query: unknown,
-  observer?: DbStatementObserver,
 ): FullTextQueryRuntime {
   const target = declaredTarget(plan, column);
   const expression = engine.prepareFullTextLiteral(
@@ -160,6 +147,5 @@ export function createFullTextQuery(
     target,
     expression,
     { predicates: [] },
-    observer,
   );
 }

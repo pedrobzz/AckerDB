@@ -15,18 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  CorruptDatabaseError,
   Engine,
-  IncompatibleDatabaseError,
-  PRODUCTION_LIMITS,
   restoreVerifiedDatabase,
-  Telemetry,
-  isAckerDBError,
   type BackupManifest,
   type EngineStatus,
-  type TelemetryOperation,
-  type TelemetryOutcome,
-  type TelemetryTraceContext,
 } from "@ackerdb/server";
 import {
   rebindRestoredFileStore,
@@ -52,93 +44,6 @@ export type { BackupFilesManifest } from "./backup-files.ts";
 const SHA256 = /^[0-9a-f]{64}$/;
 const DECIMAL_BIGINT = /^(?:0|[1-9][0-9]*)$/;
 const MAX_MANIFEST_BYTES = 16 * 1024;
-
-interface OperationTelemetryDetails {
-  readonly sizeBytes?: number;
-  readonly commitId?: string;
-}
-
-function operationOutcome(error: unknown): TelemetryOutcome {
-  if (isAckerDBError(error)) return error.code;
-  if (error instanceof CorruptDatabaseError || error instanceof IncompatibleDatabaseError) {
-    return "validation";
-  }
-  return "internal";
-}
-
-export async function observeStorageOperation<T>(
-  config: AppConfig,
-  operation: Extract<TelemetryOperation, "backup" | "restore" | "file_migration">,
-  work: () => Promise<T>,
-  details: (value: T) => OperationTelemetryDetails,
-): Promise<T> {
-  const telemetry = new Telemetry(config.telemetry === "disabled"
-    ? { enabled: false }
-    : { limits: { slowOperationMs: 0 } });
-  const context: TelemetryTraceContext = {
-    traceId: crypto.randomUUID(),
-    spanId: crypto.randomUUID(),
-  };
-  const startedAt = performance.now();
-  let failed = false;
-  let failure: unknown;
-  let value: T | undefined;
-  try {
-    value = await work();
-    const observed = details(value);
-    telemetry.recordSpan({
-      operation,
-      stage: "storage",
-      outcome: "ok",
-      resource: "operation",
-      durationMs: Math.max(0, performance.now() - startedAt),
-      ...(observed.sizeBytes === undefined ? {} : { sizeBytes: observed.sizeBytes }),
-      context: observed.commitId === undefined ? context : { ...context, commitId: observed.commitId },
-    });
-  } catch (error) {
-    failed = true;
-    failure = error;
-    const outcome = operationOutcome(error);
-    try {
-      telemetry.recordSpan({
-        operation,
-        stage: "storage",
-        outcome,
-        resource: "operation",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        context,
-      });
-      telemetry.recordEvent({
-        name: "failure",
-        level: "error",
-        operation,
-        stage: "storage",
-        outcome,
-        resource: "operation",
-        errorClass: error instanceof Error ? error.name : "UnknownError",
-        context,
-      });
-    } catch (telemetryError) {
-      failure = new AggregateError(
-        [error, telemetryError],
-        `${operation} failed and failure telemetry also failed`,
-      );
-    }
-  }
-  try {
-    await telemetry.drain(Date.now() + PRODUCTION_LIMITS.gracefulShutdownMs);
-  } catch (drainError) {
-    if (failed) {
-      throw new AggregateError(
-        [failure, drainError],
-        `${operation} failed and telemetry cleanup also failed`,
-      );
-    }
-    throw drainError;
-  }
-  if (failed) throw failure;
-  return value!;
-}
 
 export interface VerifiedBackupManifest extends Omit<BackupManifest, "format"> {
   format: 2;
@@ -442,25 +347,24 @@ export async function createVerifiedBackup(
   verify: FreshProcessVerifier,
   options: { metadataOnly?: boolean } = {},
 ): Promise<BackupReport> {
-  return observeStorageOperation(config, "backup", async () => {
-    const source = databasePath(config);
-    requireDatabase(source);
-    const artifact = resolve(destination);
-    const manifestPath = backupManifestPath(artifact);
-    const filesPath = backupFilesPath(artifact);
-    if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
-    if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
-    if (existsSync(filesPath)) throw new Error(`backup File destination already exists: ${filesPath}`);
+  const source = databasePath(config);
+  requireDatabase(source);
+  const artifact = resolve(destination);
+  const manifestPath = backupManifestPath(artifact);
+  const filesPath = backupFilesPath(artifact);
+  if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
+  if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
+  if (existsSync(filesPath)) throw new Error(`backup File destination already exists: ${filesPath}`);
 
-    const app = await importApp(config);
-    let manifest: VerifiedBackupManifest | null = null;
-    let filesPublished = false;
-    const engine = new Engine(app.schema, source, {
-      durability: config.durability,
-      integrityCheck: "full",
-    });
-    let backupFailed = false;
-    let backupFailure: unknown;
+  const app = await importApp(config);
+  let manifest: VerifiedBackupManifest | null = null;
+  let filesPublished = false;
+  const engine = new Engine(app.schema, source, {
+    durability: config.durability,
+    integrityCheck: "full",
+  });
+  let backupFailed = false;
+  let backupFailure: unknown;
     try {
       resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
       const engineManifest = engine.backup(artifact);
@@ -527,10 +431,6 @@ export async function createVerifiedBackup(
       manifestPath,
       manifest: serializeBackupManifest(manifest),
     };
-  }, (report) => ({
-    sizeBytes: report.manifest.bytes + report.manifest.files.bytes,
-    commitId: report.manifest.commitVersion,
-  }));
 }
 
 /** Restore an artifact into a throwaway database and exercise its next commit. */
@@ -570,8 +470,7 @@ export async function restoreVerifiedBackup(
   source: string,
   verify: FreshProcessVerifier,
 ): Promise<RestoreReport> {
-  return observeStorageOperation(config, "restore", async () => {
-    const artifact = resolve(source);
+  const artifact = resolve(source);
     if (!existsSync(artifact) || !statSync(artifact).isFile()) {
       throw new Error(`backup artifact not found at ${artifact}`);
     }
@@ -610,8 +509,4 @@ export async function restoreVerifiedBackup(
       manifest: serializeBackupManifest(manifest),
       status: statusJson(status),
     };
-  }, (report) => ({
-    sizeBytes: report.manifest.bytes + report.manifest.files.bytes,
-    commitId: report.manifest.commitVersion,
-  }));
 }

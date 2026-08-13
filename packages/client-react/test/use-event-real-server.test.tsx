@@ -1,5 +1,6 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +69,7 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   const server = serve({ runtime, port: 0 });
   return {
     base: `http://127.0.0.1:${server.port}`,
@@ -81,7 +82,7 @@ function createApp(): App {
 }
 
 type PingRow = { readonly id: bigint; readonly n: number };
-const pings = { $ref: "events.pings" } as EventRef<{ min: number }, PingRow>;
+const pings = { $ref: "api.events.pings" } as EventRef<{ min: number }, PingRow>;
 
 interface SocketRecord {
   readonly socket: WebSocket;
@@ -94,8 +95,9 @@ function recordingFactory(records: SocketRecord[]): (url: string) => AckerDBWebS
     const record: SocketRecord = { socket, frames: [] };
     records.push(record);
     const send = socket.send.bind(socket);
+    let sent = 0;
     socket.send = ((data: string) => {
-      record.frames.push(parseClientMessage(decode(data)));
+      record.frames.push(parseSentFrame(data, sent++));
       send(data);
     }) as typeof socket.send;
     return socket as unknown as AckerDBWebSocket;
@@ -141,7 +143,7 @@ describe("useEvent against a real ackerdb server", () => {
     });
     const emit = async (n: number): Promise<number> => {
       const result = await emitter.mutation<{ n: number }, number, never>(
-        "pings.emit",
+        "api.pings.emit",
         { n },
       );
       if (!result.ok) throw result.error;
@@ -196,7 +198,7 @@ describe("useEvent against a real ackerdb server", () => {
       (record) => record.socket.readyState === WebSocket.OPEN,
     );
     expect(openRecords).toHaveLength(1);
-    expect(subscriptionFrames(openRecords[0]!)).toMatchObject([{ t: "sub", ref: "events.pings" }]);
+    expect(subscriptionFrames(openRecords[0]!)).toMatchObject([{ t: "sub", ref: "api.events.pings" }]);
 
     // Disconnect. Events published while offline are gone for good: the hook
     // must surface one fresh reset boundary and only events after it.
@@ -220,7 +222,7 @@ describe("useEvent against a real ackerdb server", () => {
       (record) => record.socket !== dropped && record.socket.readyState === WebSocket.OPEN,
     )!;
     const resub = subscriptionFrames(reconnected);
-    expect(resub).toMatchObject([{ t: "sub", ref: "events.pings" }]);
+    expect(resub).toMatchObject([{ t: "sub", ref: "api.events.pings" }]);
     expect((resub[0] as Extract<ClientMessage, { t: "sub" }>).cursor).toBeUndefined();
 
     // Unmount closes the socket; later publications reach nobody.

@@ -2,9 +2,10 @@ import type { Identity } from "./identity.ts";
 import {
   boundedString as string,
   exactFields as exact,
+  frameVersion,
   malformed,
   protocolObject as object,
-  ProtocolError,
+  type FrameSender,
   type ProtocolObject as ObjectValue,
 } from "./protocol-validation.ts";
 import {
@@ -12,16 +13,29 @@ import {
   type ApplicationError,
   type ErrorHttpStatus,
 } from "./result.ts";
+import { ACKERDB_VERSION } from "./version.ts";
 
-export { ProtocolError } from "./protocol-validation.ts";
+// `FrameSender` is part of the public surface because two exported decoders
+// take it: a shape that travels both ways cannot read its own direction, and a
+// refusal that cannot say which end sent the frame cannot name the two versions
+// in the order its reader expects.
+export { ProtocolError, type FrameSender } from "./protocol-validation.ts";
 
 /**
- * Protocol 3 is the executable client/server envelope contract. Application
- * arguments, results, and event rows remain opaque and keep their inferred
- * TypeScript types; every framework-owned field is validated after wire decode.
+ * The executable client/server envelope contract. Application arguments,
+ * results, and event rows remain opaque and keep their inferred TypeScript
+ * types; every framework-owned field is validated after wire decode.
+ *
+ * `v` is the AckerDB version of the build that produced the frame, and a
+ * decoder accepts exactly its own — see {@link frameVersion} for why that is
+ * the whole of the compatibility contract. Every frame carries it rather than
+ * only the handshake pair, because several of these frames reach a decoder
+ * through a door that has no handshake: an SSE stream and the realtime
+ * signaling exchange are HTTP, where the first frame *is* the greeting. One
+ * uniform rule guards all of them without depending on which frame arrives
+ * first.
  */
 
-export const PROTOCOL_VERSION = 5 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -38,7 +52,7 @@ const MAX_IDENTITY = 2n ** 63n - 1n;
 export const OUTCOME_CODES = [
   "malformed",
   "validation",
-  "unsupported_protocol",
+  "version_mismatch",
   "unauthenticated",
   "auth_unavailable",
   "auth_stale",
@@ -69,7 +83,6 @@ export const RESOURCE_CLASSES = [
   "sse",
   "history",
   "idempotency",
-  "telemetry",
 ] as const;
 
 export type ResourceClass = (typeof RESOURCE_CLASSES)[number];
@@ -96,14 +109,20 @@ export type AuthenticationDescriptor =
       readonly principal: "user";
       readonly identity: Identity;
       readonly provenance: CredentialProvenance;
-      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs: number;
+      /**
+       * Credential TTL disclosure: remaining validity of the accepted
+       * credential as a relative duration, or `null` when it does not expire.
+       * An identity credential is revoked rather than aged out, so `null` is a
+       * real answer and not a missing one — the field stays required so a
+       * client can never mistake silence for it.
+       */
+      readonly credentialTtlMs: number | null;
     }
   | {
       readonly principal: "workload";
       readonly provenance: CredentialProvenance;
-      /** Credential TTL disclosure: remaining validity of the accepted credential, as a relative duration. */
-      readonly credentialTtlMs: number;
+      /** As above: a relative duration, or `null` for a credential that does not expire. */
+      readonly credentialTtlMs: number | null;
     };
 
 export interface Outcome {
@@ -181,54 +200,85 @@ export interface MutationReceipt {
   obligations: readonly number[];
 }
 
-interface Frame<T extends string> {
-  v: typeof PROTOCOL_VERSION;
+/**
+ * A frame that can be decoded on a connection whose handshake has not been
+ * verified, so it declares the AckerDB build that produced it.
+ *
+ * There are exactly three on the socket — a client's `hello`, a server's
+ * `welcome`, and `err` — plus every frame of the transports that have no
+ * handshake at all. `err` is a member of this set and not an exception to it:
+ * a client admits a connection-level `err` before its `welcome` deliberately,
+ * because that is how a server delivers a refusal it will not open a session
+ * for, and a version-refusing server's refusal *is* an `err`. Leaving it
+ * unversioned would make the one frame that explains a mixed install the one
+ * frame nobody could check.
+ */
+interface VersionedFrame<T extends string> {
+  v: typeof ACKERDB_VERSION;
   t: T;
 }
 
-export interface HelloMessage extends Frame<"hello"> {
+/**
+ * A frame that only ever follows a verified handshake on its own connection,
+ * and therefore carries no version.
+ *
+ * The peer's build is established once, by the handshake, and no connection
+ * changes builds under itself — so repeating it on every frame afterwards buys
+ * nothing and spends the hottest field in the system. It is measurable where
+ * frames are small: a cursor fan-out or an `unsub` is 9% to 65% larger for a
+ * fact already known, and the field's own width grows with the release
+ * suffix's run number rather than staying fixed.
+ *
+ * Which base a message extends is what enforces that, not a convention: a
+ * session frame has no `v` to set, and `exactFields` refuses one that appears.
+ */
+interface SessionFrame<T extends string> {
+  t: T;
+}
+
+export interface HelloMessage extends VersionedFrame<"hello"> {
   clientSessionId: string;
   credential: Credential;
 }
 
-export interface ClientAuthMessage extends Frame<"auth"> {
+export interface ClientAuthMessage extends SessionFrame<"auth"> {
   attemptId: number;
   credential: Credential;
 }
 
-export interface SubscribeMessage extends Frame<"sub"> {
+export interface SubscribeMessage extends SessionFrame<"sub"> {
   id: number;
   ref: string;
   args: unknown;
   cursor?: SubscriptionCursor;
 }
 
-export interface UnsubscribeMessage extends Frame<"unsub"> {
+export interface UnsubscribeMessage extends SessionFrame<"unsub"> {
   id: number;
 }
 
-export interface ResetRequestMessage extends Frame<"reset"> {
+export interface ResetRequestMessage extends SessionFrame<"reset"> {
   id: number;
   cursor: SubscriptionCursor;
 }
 
-export interface QueryMessage extends Frame<"q"> {
+export interface QueryMessage extends SessionFrame<"q"> {
   id: number;
   ref: string;
   args: unknown;
 }
 
-export interface ProcedureMessage extends Frame<"p"> {
+export interface ProcedureMessage extends SessionFrame<"p"> {
   id: number;
   ref: string;
   args: unknown;
 }
 
-export interface ProcedureCancelMessage extends Frame<"cancel"> {
+export interface ProcedureCancelMessage extends SessionFrame<"cancel"> {
   id: number;
 }
 
-export interface MutationMessage extends Frame<"m"> {
+export interface MutationMessage extends SessionFrame<"m"> {
   id: number;
   ref: string;
   args: unknown;
@@ -236,27 +286,27 @@ export interface MutationMessage extends Frame<"m"> {
   issuedAt: number;
 }
 
-export interface ChannelJoinMessage extends Frame<"channel_join"> {
+export interface ChannelJoinMessage extends SessionFrame<"channel_join"> {
   id: number;
   ref: string;
   args: unknown;
   room?: unknown;
 }
 
-export interface ChannelLeaveMessage extends Frame<"channel_leave"> {
+export interface ChannelLeaveMessage extends SessionFrame<"channel_leave"> {
   id: number;
 }
 
-export interface ChannelSendMessage extends Frame<"channel_send"> {
+export interface ChannelSendMessage extends SessionFrame<"channel_send"> {
   id: number;
   event: string;
   payload: unknown;
 }
 
-export type PingMessage = Frame<"ping">;
+export type PingMessage = SessionFrame<"ping">;
 
-export type ClientMessage =
-  | HelloMessage
+/** Everything a client may send once its handshake has been accepted. */
+export type ClientSessionMessage =
   | ClientAuthMessage
   | SubscribeMessage
   | UnsubscribeMessage
@@ -270,46 +320,48 @@ export type ClientMessage =
   | ChannelSendMessage
   | PingMessage;
 
-export type WelcomeMessage = Frame<"welcome"> & AuthenticationDescriptor & {
+export type ClientMessage = HelloMessage | ClientSessionMessage;
+
+export type WelcomeMessage = VersionedFrame<"welcome"> & AuthenticationDescriptor & {
   clientSessionId: string;
   authEpoch: number;
 };
 
-export type AuthenticatedMessage = Frame<"auth"> & AuthenticationDescriptor & {
+export type AuthenticatedMessage = SessionFrame<"auth"> & AuthenticationDescriptor & {
   attemptId: number;
   authEpoch: number;
 };
 
-export interface TransitionMessage extends Frame<"transition"> {
+export interface TransitionMessage extends SessionFrame<"transition"> {
   id: number;
   transition: SubscriptionTransition;
 }
 
-export interface EventMessage extends Frame<"event"> {
+export interface EventMessage extends SessionFrame<"event"> {
   id: number;
   event: LiveEvent;
 }
 
-export interface QueryOkMessage extends Frame<"ok"> {
+export interface QueryOkMessage extends SessionFrame<"ok"> {
   id: number;
   kind: "query";
   value: unknown;
 }
 
-export interface ProcedureOkMessage extends Frame<"ok"> {
+export interface ProcedureOkMessage extends SessionFrame<"ok"> {
   id: number;
   kind: "procedure";
   value: unknown;
 }
 
-export interface MutationOkMessage extends Frame<"ok"> {
+export interface MutationOkMessage extends SessionFrame<"ok"> {
   id: number;
   kind: "mutation";
   value: unknown;
   receipt: MutationReceipt;
 }
 
-export interface ApplicationErrorMessage extends Frame<"app_err"> {
+export interface ApplicationErrorMessage extends SessionFrame<"app_err"> {
   id: number;
   kind: "query" | "mutation" | "procedure";
   error: ApplicationError;
@@ -317,33 +369,39 @@ export interface ApplicationErrorMessage extends Frame<"app_err"> {
   receipt?: MutationReceipt;
 }
 
-export interface ChannelReadyMessage extends Frame<"channel_ready"> {
+export interface ChannelReadyMessage extends SessionFrame<"channel_ready"> {
   id: number;
   authEpoch: number;
 }
 
-export interface ChannelEventMessage extends Frame<"channel_event"> {
+export interface ChannelEventMessage extends SessionFrame<"channel_event"> {
   id: number;
   event: string;
   payload: unknown;
 }
 
-export interface ChannelRejectedMessage extends Frame<"channel_rejected"> {
+export interface ChannelRejectedMessage extends SessionFrame<"channel_rejected"> {
   id: number;
   authEpoch: number;
   error: ApplicationError;
 }
 
-export interface ErrorMessage extends Frame<"err"> {
+export interface ErrorMessage extends VersionedFrame<"err"> {
   /** Null identifies a connection-level failure rather than one operation. */
   id: number | null;
   outcome: Outcome;
 }
 
-export type PongMessage = Frame<"pong">;
+export type PongMessage = SessionFrame<"pong">;
 
-export type ServerMessage =
-  | WelcomeMessage
+/**
+ * Everything a server may send on an open session. `err` is here as well as in
+ * the handshake surface because a connection-level failure — draining,
+ * overload, a revoked credential — happens at any point in a session's life,
+ * and one frame type for it is what keeps the two parse surfaces from
+ * disagreeing about its shape.
+ */
+export type ServerSessionMessage =
   | AuthenticatedMessage
   | TransitionMessage
   | EventMessage
@@ -357,7 +415,15 @@ export type ServerMessage =
   | ErrorMessage
   | PongMessage;
 
-interface SseFrame<T extends string> extends Frame<T> {
+export type ServerMessage = WelcomeMessage | ServerSessionMessage;
+
+/**
+ * What a client may decode before it holds a session: the welcome that opens
+ * one, or the connection-level refusal that explains why it will not get one.
+ */
+export type ServerHandshakeMessage = WelcomeMessage | ErrorMessage;
+
+interface SseFrame<T extends string> extends VersionedFrame<T> {
   seq: number;
   proof: string;
 }
@@ -429,15 +495,91 @@ function enumValue<T extends string>(value: unknown, name: string, values: Set<s
 
 function frame(value: unknown): ObjectValue {
   const result = object(value, "frame");
-  if (!Object.hasOwn(result, "v")) malformed("missing field v");
-  if (result.v !== PROTOCOL_VERSION) {
-    if (Number.isInteger(result.v)) {
-      throw new ProtocolError("unsupported_protocol", "unsupported protocol version");
-    }
-    malformed("v must be an integer protocol version");
-  }
   if (typeof result.t !== "string") malformed("t must be a frame type");
   return result;
+}
+
+/**
+ * The one decoder for `err`, shared by both surfaces so they cannot disagree
+ * about its shape. The version is read here because an `err` is admissible
+ * before a welcome; a session that has already verified its peer decodes the
+ * same frame through the same function rather than a second copy of it.
+ */
+function parseErrorMessage(result: ObjectValue): ErrorMessage {
+  frameVersion(result.v, "application");
+  exact(result, ["v", "t", "id", "outcome"]);
+  if (result.id !== null) protocolId(result.id, "request id");
+  parseOutcome(result.outcome);
+  return result as unknown as ErrorMessage;
+}
+
+/**
+ * A connection-level refusal: a failure that belongs to the connection rather
+ * than to any operation on it. It names no operation by construction, which is
+ * what separates "this connection is going away" from "this call failed".
+ *
+ * It is the third surface with no handshake behind it — every framework HTTP
+ * route answers with one — and it decodes through the same `err` decoder as the
+ * socket, so a refusal reads identically wherever it arrives.
+ */
+function connectionError(result: ObjectValue): ErrorMessage {
+  const error = parseErrorMessage(result);
+  if (error.id !== null) malformed("a connection error must not name an operation");
+  return error;
+}
+
+export function parseConnectionError(value: unknown): ErrorMessage {
+  const result = frame(value);
+  if (result.t !== "err") malformed("a connection error must be an err frame");
+  return connectionError(result);
+}
+
+/**
+ * The first frame of a client's connection, and the only one it may send
+ * before the server has accepted it.
+ *
+ * This is the whole of the pre-handshake surface on the server's side, and it
+ * is why "hello must be the first frame" is a property of the decoder rather
+ * than of a phase check somewhere downstream: a frame that is not a hello is
+ * refused here, before anything reads it.
+ */
+export function parseClientHandshake(value: unknown): HelloMessage {
+  const result = frame(value);
+  // The frame type is read first. A client that opens with something other
+  // than a hello has not told us what build it is — a session frame carries no
+  // version to read — so the honest refusal is that it did not greet, not a
+  // version comparison against a field that was never there.
+  if (result.t !== "hello") malformed("the first client frame must be a hello");
+  frameVersion(result.v, "client");
+  exact(result, ["v", "t", "clientSessionId", "credential"]);
+  string(result.clientSessionId, "clientSessionId", MAX_SESSION_ID_LENGTH);
+  parseCredential(result.credential);
+  return result as unknown as HelloMessage;
+}
+
+/**
+ * What a client may decode before its session exists.
+ *
+ * Admitting a new frame to this surface means adding a case here, and every
+ * case here reads the version — so a frame that reaches a client on an
+ * unverified connection is either version-checked or refused, and there is no
+ * third outcome to forget about.
+ */
+export function parseServerHandshake(value: unknown): ServerHandshakeMessage {
+  const result = frame(value);
+  if (result.t === "welcome") {
+    frameVersion(result.v, "application");
+    parseAuthenticationDescriptor(result, ["v", "t", "clientSessionId", "authEpoch"]);
+    string(result.clientSessionId, "clientSessionId", MAX_SESSION_ID_LENGTH);
+    nonNegativeInteger(result.authEpoch, "authEpoch");
+    return result as unknown as WelcomeMessage;
+  }
+  // An operation-level failure before any operation exists would name an id the
+  // client never issued, so only a connection-level refusal decodes here.
+  // As above: a frame that is neither is refused for that, because it carries
+  // no version to compare.
+  if (result.t === "err") return connectionError(result);
+  return malformed("a server frame before the welcome must be a welcome or a connection error");
 }
 
 export function parseCredential(value: unknown): Credential {
@@ -466,7 +608,10 @@ function parseCredentialProvenance(value: unknown): CredentialProvenance {
 }
 
 // Every accepted bearer presentation discloses its TTL; omission is malformed.
+// `null` is the disclosure for a credential that does not expire, which is what
+// an identity credential is: it ends by revocation, never by the clock.
 function parseCredentialTtl(result: ObjectValue): void {
+  if (result.credentialTtlMs === null) return;
   nonNegativeInteger(result.credentialTtlMs, "credentialTtlMs");
 }
 
@@ -681,48 +826,50 @@ export function parseMutationReceipt(value: unknown): MutationReceipt {
   return result as unknown as MutationReceipt;
 }
 
-export function parseClientMessage(value: unknown): ClientMessage {
+/**
+ * What a client may send once its handshake has been accepted, and nothing
+ * else: a session frame carries no version, because its connection's build was
+ * established by the hello this session was opened with.
+ */
+export function parseClientMessage(value: unknown): ClientSessionMessage {
   const result = frame(value);
   switch (result.t) {
     case "hello":
-      exact(result, ["v", "t", "clientSessionId", "credential"]);
-      string(result.clientSessionId, "clientSessionId", MAX_SESSION_ID_LENGTH);
-      parseCredential(result.credential);
-      break;
+      return malformed("hello has already been received");
     case "auth":
-      exact(result, ["v", "t", "attemptId", "credential"]);
+      exact(result, ["t", "attemptId", "credential"]);
       protocolId(result.attemptId, "attemptId");
       parseCredential(result.credential);
       break;
     case "sub":
-      exact(result, ["v", "t", "id", "ref", "args"], ["cursor"]);
+      exact(result, ["t", "id", "ref", "args"], ["cursor"]);
       protocolId(result.id, "subscription id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
       if (Object.hasOwn(result, "cursor")) parseSubscriptionCursor(result.cursor);
       break;
     case "unsub":
-      exact(result, ["v", "t", "id"]);
+      exact(result, ["t", "id"]);
       protocolId(result.id, "subscription id");
       break;
     case "reset":
-      exact(result, ["v", "t", "id", "cursor"]);
+      exact(result, ["t", "id", "cursor"]);
       protocolId(result.id, "subscription id");
       parseSubscriptionCursor(result.cursor);
       break;
     case "q":
     case "p":
-      exact(result, ["v", "t", "id", "ref", "args"]);
+      exact(result, ["t", "id", "ref", "args"]);
       protocolId(result.id, "request id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
       break;
     case "cancel":
-      exact(result, ["v", "t", "id"]);
+      exact(result, ["t", "id"]);
       protocolId(result.id, "request id");
       break;
     case "m": {
-      exact(result, ["v", "t", "id", "ref", "args", "mutationRequestId", "issuedAt"]);
+      exact(result, ["t", "id", "ref", "args", "mutationRequestId", "issuedAt"]);
       protocolId(result.id, "request id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
@@ -732,60 +879,61 @@ export function parseClientMessage(value: unknown): ClientMessage {
       break;
     }
     case "channel_join":
-      exact(result, ["v", "t", "id", "ref", "args"], ["room"]);
+      exact(result, ["t", "id", "ref", "args"], ["room"]);
       protocolId(result.id, "channel id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
       if (Object.hasOwn(result, "room")) payload(result.room, "room");
       break;
     case "channel_leave":
-      exact(result, ["v", "t", "id"]);
+      exact(result, ["t", "id"]);
       protocolId(result.id, "channel id");
       break;
     case "channel_send":
-      exact(result, ["v", "t", "id", "event", "payload"]);
+      exact(result, ["t", "id", "event", "payload"]);
       protocolId(result.id, "channel id");
       string(result.event, "channel event", MAX_REFERENCE_LENGTH);
       payload(result.payload, "channel payload");
       break;
     case "ping":
-      exact(result, ["v", "t"]);
+      exact(result, ["t"]);
       break;
     default:
       return malformed("unknown client frame type");
   }
-  return result as unknown as ClientMessage;
+  return result as unknown as ClientSessionMessage;
 }
 
-export function parseServerMessage(value: unknown): ServerMessage {
+/**
+ * What a server may send on an open session. A second welcome is refused here
+ * rather than silently re-opening a session that already exists.
+ */
+export function parseServerMessage(value: unknown): ServerSessionMessage {
   const result = frame(value);
   switch (result.t) {
     case "welcome":
-      parseAuthenticationDescriptor(result, ["v", "t", "clientSessionId", "authEpoch"]);
-      string(result.clientSessionId, "clientSessionId", MAX_SESSION_ID_LENGTH);
-      nonNegativeInteger(result.authEpoch, "authEpoch");
-      break;
+      return malformed("welcome has already been received");
     case "auth":
-      parseAuthenticationDescriptor(result, ["v", "t", "attemptId", "authEpoch"]);
+      parseAuthenticationDescriptor(result, ["t", "attemptId", "authEpoch"]);
       protocolId(result.attemptId, "attemptId");
       nonNegativeInteger(result.authEpoch, "authEpoch");
       break;
     case "transition":
-      exact(result, ["v", "t", "id", "transition"]);
+      exact(result, ["t", "id", "transition"]);
       protocolId(result.id, "subscription id");
       parseSubscriptionTransition(result.transition);
       break;
     case "event":
-      exact(result, ["v", "t", "id", "event"]);
+      exact(result, ["t", "id", "event"]);
       protocolId(result.id, "subscription id");
       parseLiveEvent(result.event);
       break;
     case "ok":
       if (result.kind === "mutation") {
-        exact(result, ["v", "t", "id", "kind", "value", "receipt"]);
+        exact(result, ["t", "id", "kind", "value", "receipt"]);
         parseMutationReceipt(result.receipt);
       } else if (result.kind === "query" || result.kind === "procedure") {
-        exact(result, ["v", "t", "id", "kind", "value"]);
+        exact(result, ["t", "id", "kind", "value"]);
       } else {
         return malformed("unknown ok frame kind");
       }
@@ -794,10 +942,10 @@ export function parseServerMessage(value: unknown): ServerMessage {
       break;
     case "app_err":
       if (result.kind === "mutation") {
-        exact(result, ["v", "t", "id", "kind", "error", "receipt"]);
+        exact(result, ["t", "id", "kind", "error", "receipt"]);
         parseMutationReceipt(result.receipt);
       } else if (result.kind === "query" || result.kind === "procedure") {
-        exact(result, ["v", "t", "id", "kind", "error"]);
+        exact(result, ["t", "id", "kind", "error"]);
       } else {
         return malformed("unknown application-error frame kind");
       }
@@ -805,38 +953,36 @@ export function parseServerMessage(value: unknown): ServerMessage {
       parseApplicationError(result.error);
       break;
     case "channel_ready":
-      exact(result, ["v", "t", "id", "authEpoch"]);
+      exact(result, ["t", "id", "authEpoch"]);
       protocolId(result.id, "channel id");
       nonNegativeInteger(result.authEpoch, "authEpoch");
       break;
     case "channel_event":
-      exact(result, ["v", "t", "id", "event", "payload"]);
+      exact(result, ["t", "id", "event", "payload"]);
       protocolId(result.id, "channel id");
       string(result.event, "channel event", MAX_REFERENCE_LENGTH);
       payload(result.payload, "channel payload");
       break;
     case "channel_rejected":
-      exact(result, ["v", "t", "id", "authEpoch", "error"]);
+      exact(result, ["t", "id", "authEpoch", "error"]);
       protocolId(result.id, "channel id");
       nonNegativeInteger(result.authEpoch, "authEpoch");
       parseApplicationError(result.error);
       break;
     case "err":
-      exact(result, ["v", "t", "id", "outcome"]);
-      if (result.id !== null) protocolId(result.id, "request id");
-      parseOutcome(result.outcome);
-      break;
+      return parseErrorMessage(result);
     case "pong":
-      exact(result, ["v", "t"]);
+      exact(result, ["t"]);
       break;
     default:
       return malformed("unknown server frame type");
   }
-  return result as unknown as ServerMessage;
+  return result as unknown as ServerSessionMessage;
 }
 
 export function parseSseMessage(value: unknown): SseMessage {
   const result = frame(value);
+  frameVersion(result.v, "application");
   switch (result.t) {
     case "sse_chunk":
       exact(result, ["v", "t", "seq", "proof", "value"]);
@@ -859,6 +1005,7 @@ export function parseSseMessage(value: unknown): SseMessage {
 
 export function parseSseAckRequest(value: unknown): SseAckRequest {
   const result = frame(value);
+  frameVersion(result.v, "client");
   if (result.t !== "sse_ack") malformed("SSE acknowledgment must be an sse_ack frame");
   exact(result, ["v", "t", "stream", "seq", "proof"]);
   string(result.stream, "SSE stream", MAX_SSE_TOKEN_LENGTH);

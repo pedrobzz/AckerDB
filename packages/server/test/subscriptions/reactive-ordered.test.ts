@@ -12,10 +12,11 @@ import {
   ReactiveCommit,
   type QueryEvaluation,
   type ReactiveCommitResult,
-  type ReactiveObservation,
   type Subscriber,
 } from "../../src/subscriptions/reactive/contract.ts";
 import { OrderedReactive } from "../../src/subscriptions/reactive/ordered.ts";
+import { policyScope, type Principal } from "../../src/auth/credentials.ts";
+import type { Identity } from "@ackerdb/core";
 import { deferred } from "ackerdb-test-support/async";
 
 class RecordingSubscriber implements Subscriber {
@@ -290,7 +291,7 @@ describe("ordered reactive ownership", () => {
     });
     const caller = new RecordingSubscriber();
     const subscription = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "caller",
@@ -328,7 +329,7 @@ describe("ordered reactive ownership", () => {
     const peer = new RecordingSubscriber();
     const isolated = new RecordingSubscriber();
     const common = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: { room: 7 },
       policyScopeFingerprint: "room:7",
       fairnessKey: "caller",
@@ -373,7 +374,7 @@ describe("ordered reactive ownership", () => {
     const first = new RecordingSubscriber();
     const peer = new RecordingSubscriber();
     const common = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "same-claim-sensitive-scope",
       context: undefined,
@@ -421,7 +422,7 @@ describe("ordered reactive ownership", () => {
     const subscriber = new RecordingSubscriber();
 
     const subscribing = reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -457,7 +458,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -688,7 +689,7 @@ describe("ordered reactive ownership", () => {
       },
     });
     await reactive.subscribeQuery({
-      address: "messages.byIds",
+      address: "api.messages.byIds",
       args: input,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -935,7 +936,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     const options = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -979,7 +980,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1144,7 +1145,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1184,7 +1185,7 @@ describe("ordered reactive ownership", () => {
     const first = new RecordingSubscriber();
     const second = new RecordingSubscriber();
     const options = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1238,7 +1239,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "room:7",
       fairnessKey: "room:7",
@@ -1414,7 +1415,7 @@ describe("ordered reactive ownership", () => {
     });
     const subscriber = new RecordingSubscriber();
     const base = {
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "user:1",
       fairnessKey: "user:1",
@@ -1433,8 +1434,8 @@ describe("ordered reactive ownership", () => {
     const rotated = await reactive.rotateAuth(subscriber, 2);
     expect(rotated).toMatchObject({
       subscriptions: [
-        { id: 1, address: "events.messages", args: {} },
-        { id: 2, address: "messages.list", args: null },
+        { id: 1, address: "api.events.messages", args: {} },
+        { id: 2, address: "api.messages.list", args: null },
       ],
       deliveryFailures: [],
     });
@@ -1603,7 +1604,7 @@ describe("ordered reactive ownership", () => {
       evaluate: async () => evaluation(value, version, "messages"),
     });
     await reactive.subscribeQuery({
-      address: "messages.list",
+      address: "api.messages.list",
       args: null,
       policyScopeFingerprint: "public",
       fairnessKey: "public",
@@ -1647,283 +1648,65 @@ describe("ordered reactive ownership", () => {
       evaluatingEntries: 0,
     });
   });
+});
 
-  test("observes query stages with safe metadata and exact queue timing", async () => {
-    const secret = "never-emit-this-query-payload";
-    let now = 0;
-    let version = 0n;
-    let stalled = false;
-    const entered = deferred();
-    const release = deferred();
-    const observations: ReactiveObservation[] = [];
-    const values = new Map<string, unknown>([
-      ["a", { state: "initial", secret }],
-      ["b", { state: "stable" }],
-      ["c", { state: "unaffected" }],
-    ]);
-    const reactive = new OrderedReactive({
-      limits: testLimits({ revalidationConcurrency: 1 }),
-      now: () => now,
-      generation: generationSequence(),
-      observer: (observation) => observations.push(observation),
-      evaluate: async ({ address }) => {
-        const observedVersion = version;
-        if (stalled && address === "a") {
-          entered.resolve();
-          await release.promise;
-        }
-        return evaluation(values.get(address), observedVersion, address);
-      },
-    });
-    const subscriber = new RecordingSubscriber();
-    for (const [id, address] of [[1, "a"], [2, "b"], [3, "c"]] as const) {
-      await reactive.subscribeQuery({
-        address,
-        args: { secret },
-        policyScopeFingerprint: `scope:${secret}`,
-        fairnessKey: `scope:${secret}`,
-        context: undefined,
-        subscriber,
-        id,
-        authEpoch: 0,
-      });
-    }
+describe("who a shared query may be shared with", () => {
+  // The composition these prove: `policyScope` is what the session store keys a
+  // shared entry by, so a fact it drops is a fact two principals can differ in
+  // while receiving one evaluation. Every one of them is visible to a handler
+  // as `ctx.auth`, so dropping any of them lets one caller read a result
+  // computed from another's credential.
+  const ADMIN: Principal = {
+    kind: "user",
+    issuer: "ackerdb:credentials",
+    subject: "cred_1",
+    claims: {},
+    expiresAt: Number.POSITIVE_INFINITY,
+    tokenId: null,
+    identity: 1n as Identity,
+    scopes: ["*", "_*"],
+  };
 
-    expect(observations.filter(({ phase }) => phase === "initial_evaluation").map(({ address }) => address))
-      .toEqual(["a", "b", "c"]);
-    expect(observations.filter(({ phase }) => phase === "delivery").map(({ subscriptionId }) => subscriptionId))
-      .toEqual([1, 2, 3]);
-    expect(observations.every(Object.isFrozen)).toBe(true);
-    observations.length = 0;
-
-    stalled = true;
-    now = 10;
-    values.set("a", { state: "changed", secret });
-    const slot = reactive.publication.reserve(64);
-    version = slot.version;
-    slot.commit(new ReactiveCommit(new Set(["a", "b"])));
-    await entered.promise;
-    now = 25;
-    release.resolve();
-    await slot.completion;
-
-    const invalidations = observations.filter(({ phase }) => phase === "invalidation_match");
-    expect(invalidations).toEqual([{
-      kind: "query",
-      phase: "invalidation_match",
-      outcome: "matched",
-      durationMs: expect.any(Number),
-      commitVersion: 1n,
-      dependencyCount: 2,
-      resultCount: 2,
-    }]);
-    expect(observations.filter(({ phase }) => phase === "evaluation").map(({ address }) => address))
-      .toEqual(["a", "b"]);
-    expect(observations.filter(({ phase }) => phase === "changed").map(({ address }) => address))
-      .toEqual(["a"]);
-    expect(observations.filter(({ phase }) => phase === "unchanged").map(({ address }) => address))
-      .toEqual(["b"]);
-    expect(observations.find(({ phase, address }) => phase === "revalidation_queue" && address === "b"))
-      .toMatchObject({ outcome: "ok", durationMs: 15, commitVersion: 1n });
-    expect(observations.filter(({ phase }) => phase === "fanout").map(({ address, resultCount }) => [address, resultCount]))
-      .toEqual([["a", 1], ["b", 1]]);
-    expect(observations.filter(({ phase }) => phase === "delivery").map(({ subscriptionId }) => subscriptionId))
-      .toEqual([1, 2]);
-    expect(observations.some(({ phase, address }) => phase === "evaluation" && address === "c"))
-      .toBe(false);
-
-    observations.length = 0;
-    const unmatched = reactive.publication.reserve(64);
-    version = unmatched.version;
-    unmatched.commit(new ReactiveCommit(new Set(["unobserved-key"])));
-    await unmatched.completion;
-    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toEqual([
-      {
-        kind: "query",
-        phase: "invalidation_match",
-        outcome: "unmatched",
-        durationMs: expect.any(Number),
-        commitVersion: 2n,
-        dependencyCount: 1,
-        resultCount: 0,
-      },
-    ]);
-    expect(observations.filter(({ phase }) => phase === "evaluation")).toHaveLength(0);
-
-    observations.length = 0;
-    await publish(reactive, new Set(), (nextVersion) => {
-      version = nextVersion;
-    });
-    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toHaveLength(0);
-
-    const emptyObservations: ReactiveObservation[] = [];
-    const empty = new OrderedReactive({
-      observer: (observation) => emptyObservations.push(observation),
-      evaluate: async () => evaluation(null, 0n, "unused"),
-    });
-    const emptyPublication = empty.publication.reserve(64);
-    emptyPublication.commit(new ReactiveCommit(new Set(["unobserved-key"])));
-    await emptyPublication.completion;
-    expect(emptyObservations).toHaveLength(0);
-
-    now = 30;
-    const gate = subscriber.gateNextTransition(1);
-    const firstReset = reactive.reset(subscriber, 1, subscriber.cursor(1));
-    await gate.entered;
-    const queuedFrom = observations.length;
-    const secondReset = reactive.reset(subscriber, 1, subscriber.cursor(1));
-    now = 45;
-    gate.release();
-    await Promise.all([firstReset, secondReset]);
-    expect(observations.slice(queuedFrom).find(({ phase }) => phase === "listener_queue"))
-      .toMatchObject({
-        kind: "query",
-        subscriptionId: 1,
-        commitVersion: 1n,
-        outcome: "ok",
-        durationMs: 15,
-      });
-
-    const allowedKeys = new Set([
-      "kind",
-      "phase",
-      "outcome",
-      "durationMs",
-      "address",
-      "subscriptionId",
-      "commitVersion",
-      "dependencyCount",
-      "resultCount",
-      "byteCount",
-    ]);
-    expect(observations.every((observation) =>
-      Object.keys(observation).every((key) => allowedKeys.has(key))
-    )).toBe(true);
-    expect(observations.every(Object.isFrozen)).toBe(true);
-    const serialized = JSON.stringify(observations, (_key, value) =>
-      typeof value === "bigint" ? value.toString() : value
-    );
-    expect(serialized).not.toContain(secret);
-    for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
-      expect(serialized).not.toContain(`\"${forbidden}\"`);
-    }
-  });
-
-  test("observes invalidation work in proportion to affected query state", async () => {
-    const observations: ReactiveObservation[] = [];
-    let version = 0n;
-    const reactive = new OrderedReactive({
-      observer: (observation) => observations.push(observation),
-      evaluate: async ({ address }) => evaluation(address, version, `read:${address}`),
-    });
-    const subscriber = new RecordingSubscriber();
-    for (let id = 1; id <= 256; id++) {
-      await reactive.subscribeQuery({
-        address: `query-${id}`,
-        args: {},
-        policyScopeFingerprint: "scope",
-        fairnessKey: "caller",
-        context: undefined,
-        subscriber,
-        id,
-        authEpoch: 0,
-      });
-    }
-    observations.length = 0;
-
-    await publish(reactive, new Set(["read:query-256"]), (nextVersion) => {
-      version = nextVersion;
-    });
-
-    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toEqual([{
-      kind: "query",
-      phase: "invalidation_match",
-      outcome: "matched",
-      durationMs: expect.any(Number),
-      commitVersion: 1n,
-      dependencyCount: 1,
-      resultCount: 1,
-    }]);
-  });
-
-  test("observer failures are fail-open across event matching and failed delivery", async () => {
-    const secret = "never-emit-this-event-row";
-    const observations: ReactiveObservation[] = [];
-    let observerCalls = 0;
+  async function entriesFor(principals: readonly Principal[]): Promise<number> {
     const reactive = new OrderedReactive({
       generation: generationSequence(),
-      observer: (observation) => {
-        observations.push(observation);
-        observerCalls++;
-        if (observerCalls % 2 === 1) throw new Error("observer failed synchronously");
-        return Promise.reject(new Error("observer failed asynchronously"));
-      },
-      evaluate: async () => evaluation(null, 0n, "unused"),
+      evaluate: async () => evaluation("rows", 0n, "messages"),
     });
-    const subscriber = new RecordingSubscriber();
-    await reactive.subscribeEvent({
-      subscriber,
-      id: 10,
-      table: "typing",
-      authEpoch: 0,
-      args: { room: "a", secret },
-      matches: (row, args) =>
-        (row as { room: string }).room === (args as { room: string }).room,
-    });
-    await reactive.subscribeEvent({
-      subscriber,
-      id: 11,
-      table: "typing",
-      authEpoch: 0,
-      args: { room: "b", secret },
-      matches: (row, args) =>
-        (row as { room: string }).room === (args as { room: string }).room,
-    });
-    observations.length = 0;
-    subscriber.failNextEvent.add(10);
-
-    const failed = await publish(reactive, new Set(), () => {}, {
-      events: [{ table: "typing", row: { room: "a", secret } }],
-    });
-    expect(failed.deliveryFailures).toMatchObject([{
-      subscriptionId: 10,
-      kind: "event",
-      phase: "delivery",
-    }]);
-    expect(observations.filter(({ phase }) => phase === "event_match")).toMatchObject([
-      { subscriptionId: 10, outcome: "matched", resultCount: 1 },
-      { subscriptionId: 11, outcome: "unmatched", resultCount: 0 },
-    ]);
-    expect(observations).toContainEqual(expect.objectContaining({
-      kind: "event",
-      phase: "delivery",
-      outcome: "internal",
-      subscriptionId: 10,
-    }));
-    expect(observations).toContainEqual(expect.objectContaining({
-      kind: "event",
-      phase: "failure",
-      outcome: "internal",
-      subscriptionId: 10,
-    }));
-    expect(observations.some(({ phase, subscriptionId }) =>
-      phase === "delivery" && subscriptionId === 11
-    )).toBe(false);
-
-    const recovered = await publish(reactive, new Set(), () => {}, {
-      events: [{ table: "typing", row: { room: "a", secret } }],
-    });
-    expect(recovered.deliveryFailures).toEqual([]);
-    expect(subscriber.events.filter(({ id }) => id === 10).at(-1)?.event.kind).toBe("gap");
-    await Promise.resolve();
-    expect(observerCalls).toBeGreaterThan(0);
-    expect(observations.every(Object.isFrozen)).toBe(true);
-    const serialized = JSON.stringify(observations, (_key, value) =>
-      typeof value === "bigint" ? value.toString() : value
-    );
-    expect(serialized).not.toContain(secret);
-    for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
-      expect(serialized).not.toContain(`\"${forbidden}\"`);
+    let id = 0;
+    for (const principal of principals) {
+      id += 1;
+      await reactive.subscribeQuery({
+        address: "admin.logs.list",
+        args: null,
+        policyScopeFingerprint: stableEncode(policyScope(principal)),
+        context: { principal },
+        authEpoch: 0,
+        fairnessKey: `caller-${id}`,
+        subscriber: new RecordingSubscriber(),
+        id,
+      });
     }
+    const { sharedEntries } = reactive.snapshot() as { sharedEntries: number };
+    await reactive.close();
+    return sharedEntries;
+  }
+
+  test("one principal subscribing twice shares one evaluation", async () => {
+    // The point of sharing: a credential that never expires is re-presented on
+    // every reconnect, so a client reload must not multiply entries.
+    expect(await entriesFor([ADMIN, { ...ADMIN }])).toBe(1);
+  });
+
+  test("two credentials of one identity do not", async () => {
+    // They differ only in what a handler would read as `ctx.auth.tokenId` and
+    // `ctx.auth.expiresAt` — which is precisely why they may not share.
+    expect(await entriesFor([ADMIN, { ...ADMIN, tokenId: "jti-2" }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, expiresAt: 1_800_000 }])).toBe(2);
+  });
+
+  test("two identities never do", async () => {
+    expect(await entriesFor([ADMIN, { ...ADMIN, identity: 2n as Identity }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, scopes: ["_admin:logs:read"] }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, claims: { tenant: "b" } }])).toBe(2);
   });
 });

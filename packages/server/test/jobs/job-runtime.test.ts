@@ -2,8 +2,8 @@
  * The jobs feature at the Runtime seam: a real Engine and Runtime over a real
  * database file, an injected clock, and job definitions declared per test
  * app. Everything is observed through public surfaces — enqueue/run/wait
- * outcomes, `_ackerdb_jobs` rows, and lifecycle effects — never through
- * runner internals.
+ * outcomes, `_ackerdb_jobs` / `_ackerdb_job_runs` rows, and lifecycle effects
+ * — never through runner internals.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +17,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts";
-import { JOBS_TABLE } from "../../src/jobs/table.ts";
+import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 
@@ -71,7 +71,6 @@ function start(
   runtime = new Runtime({
     engine,
     registry: new Registry(functions),
-    telemetry: false,
     limits: customLimits,
     jobs,
     now: () => clock,
@@ -87,7 +86,6 @@ async function restart(jobs: DeclaredJob[], customLimits = limits()): Promise<vo
   runtime = new Runtime({
     engine,
     registry: new Registry({}),
-    telemetry: false,
     limits: customLimits,
     jobs,
     now: () => clock,
@@ -98,14 +96,61 @@ function jobRows(): Array<{
   id: bigint;
   name: string;
   state: string;
-  runAt: number;
-  attempt: bigint;
+  trigger: string;
+  parentJobId: bigint | null;
+  scheduledAt: number;
+  nextRunAt: number;
+  runCount: bigint;
+  nextRunTrigger: string | null;
   key: string | null;
-  attemptsJson: string;
+  deleteAfter: number | null;
 }> {
   return engine.reader
-    .query(`SELECT id, name, state, runAt, attempt, key, attemptsJson FROM "${JOBS_TABLE}" ORDER BY id`)
+    .query(
+      `SELECT id, name, state, trigger, parentJobId, scheduledAt, nextRunAt, runCount, nextRunTrigger, key, deleteAfter FROM "${JOBS_TABLE}" ORDER BY id`,
+    )
     .all() as never;
+}
+
+function runRows(): Array<{
+  id: bigint;
+  jobId: bigint;
+  number: bigint;
+  trigger: string;
+  state: string;
+  scheduledAt: number;
+  startedAt: number;
+  settledAt: number | null;
+  outputJson: string | null;
+  errorCode: string | null;
+  errorText: string | null;
+  deleteAfter: number | null;
+}> {
+  return engine.reader
+    .query(
+      `SELECT id, jobId, number, trigger, state, scheduledAt, startedAt, settledAt, outputJson, errorCode, errorText, deleteAfter FROM "${JOB_RUNS_TABLE}" ORDER BY jobId, number`,
+    )
+    .all() as never;
+}
+
+/** Stable text of a row set, bigints included: an exact "nothing moved" probe. */
+function snapshotOf(rows: readonly unknown[]): string {
+  return JSON.stringify(rows, (_key, value) =>
+    typeof value === "bigint" ? `${value}n` : value);
+}
+
+/**
+ * The primary keys the jobs tables have handed out. Unlike the row sets, this
+ * still moves when a row is inserted and then removed, so it catches a write
+ * that a later delete would hide.
+ */
+function jobKeysIssued(): string {
+  const rows = engine.reader
+    .query(
+      `SELECT name, seq FROM sqlite_sequence WHERE name IN ('${JOBS_TABLE}', '${JOB_RUNS_TABLE}') ORDER BY name`,
+    )
+    .all() as { name: string; seq: number | bigint }[];
+  return rows.map((row) => `${row.name}=${row.seq}`).join(",");
 }
 
 afterEach(async () => {
@@ -125,7 +170,7 @@ describe("procedure-kind jobs", () => {
         greet: job({
           args: { who: v.string() },
           handler: async (ctx: Ctx, args: Ctx) => {
-            seen.push({ attempt: ctx.attempt, who: args.who });
+            seen.push({ runNumber: ctx.runNumber, who: args.who });
             const written = await ctx.tx((tx: Ctx) => tx.db.log.insert({ line: `hi ${args.who}` }));
             expect(written.ok).toBe(true);
             return { greeting: `hi ${args.who}` };
@@ -140,22 +185,27 @@ describe("procedure-kind jobs", () => {
     await runtime.runJobs();
     const outcome = await wait;
     expect(outcome).toEqual({ ok: true, value: { greeting: "hi ana" } });
-    expect(seen).toEqual([{ attempt: 1, who: "ana" }]);
-    expect(jobRows()).toMatchObject([{ state: "completed", attempt: 1n }]);
+    expect(seen).toEqual([{ runNumber: 1, who: "ana" }]);
+    expect(jobRows()).toMatchObject([{ state: "completed", runCount: 1n, trigger: "enqueue" }]);
+    // The claim created exactly one run; the outcome lives on it, not the Job.
+    expect(runRows()).toMatchObject([
+      { jobId: handle.id, number: 1n, trigger: "initial", state: "completed", settledAt: 1_000_000 },
+    ]);
+    expect(runRows()[0]!.outputJson).toContain("hi ana");
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "hi ana" }]);
 
-    // A terminal row answers waiters immediately from its recorded output.
+    // A terminal Job answers waiters immediately from its latest run's output.
     expect(await runtime.jobs.wait(handle.id)).toEqual({ ok: true, value: { greeting: "hi ana" } });
   });
 
-  test("a failed attempt reports nextRetryAt and retries on schedule", async () => {
+  test("a failed run reports nextRetryAt and the next run retries on schedule", async () => {
     clock = 2_000_000;
     let attempts = 0;
     start(declareJobs({
       work: {
         flaky: job({
           args: {},
-          retry: (attempt: number) => (attempt < 3 ? attempt * 1_000 : null),
+          retry: (runNumber: number) => (runNumber < 3 ? runNumber * 1_000 : null),
           handler: async () => {
             attempts++;
             if (attempts < 3) throw new Error(`boom ${attempts}`);
@@ -168,8 +218,9 @@ describe("procedure-kind jobs", () => {
     const handle = await runtime.jobs.enqueue("work.flaky", {});
     const first = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
-    expect(await first).toMatchObject({ ok: false, state: "pending", nextRetryAt: 2_001_000 });
-    expect(jobRows()).toMatchObject([{ state: "pending", attempt: 1n, runAt: 2_001_000 }]);
+    expect(await first).toMatchObject({ ok: false, state: "retrying", nextRetryAt: 2_001_000 });
+    expect(jobRows()).toMatchObject([{ state: "retrying", runCount: 1n, nextRunAt: 2_001_000 }]);
+    expect(runRows()).toMatchObject([{ number: 1n, trigger: "initial", state: "failed" }]);
 
     // Not due yet: nothing runs.
     await runtime.runJobs();
@@ -178,17 +229,24 @@ describe("procedure-kind jobs", () => {
     clock = 2_001_000;
     const second = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
-    expect(await second).toMatchObject({ ok: false, state: "pending", nextRetryAt: 2_003_000 });
+    expect(await second).toMatchObject({ ok: false, state: "retrying", nextRetryAt: 2_003_000 });
 
     clock = 2_003_000;
     const third = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
     expect(await third).toEqual({ ok: true, value: "recovered" });
-    const history = JSON.parse(jobRows()[0]!.attemptsJson) as Array<{ outcome: string }>;
-    expect(history.map((entry) => entry.outcome)).toEqual(["failed", "failed", "completed"]);
+    // Every execution is its own run of the same Job; the Job stays one row.
+    expect(jobRows()).toHaveLength(1);
+    expect(runRows().map((run) => [Number(run.number), run.trigger, run.state])).toEqual([
+      [1, "initial", "failed"],
+      [2, "automatic_retry", "failed"],
+      [3, "automatic_retry", "completed"],
+    ]);
+    // The Job's admitted occurrence never moved with the retries.
+    expect(jobRows()[0]).toMatchObject({ scheduledAt: 2_000_000, runCount: 3n });
   });
 
-  test("exhausted retries discard with the error recorded, and retryNow revives", async () => {
+  test("exhausted retries fail the Job, and a manual retry adds a run to it", async () => {
     clock = 3_000_000;
     let runs = 0;
     start(declareJobs({
@@ -206,19 +264,24 @@ describe("procedure-kind jobs", () => {
     const handle = await runtime.jobs.enqueue("work.doomed", {});
     const wait = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
-    expect(await wait).toMatchObject({ ok: false, state: "discarded", nextRetryAt: null });
-    expect(jobRows()).toMatchObject([{ state: "discarded" }]);
-    expect(jobRows()[0]!.attemptsJson).toContain("always fails");
+    expect(await wait).toMatchObject({ ok: false, state: "failed", nextRetryAt: null });
+    expect(jobRows()).toMatchObject([{ state: "failed" }]);
+    expect(runRows()[0]!.errorText).toContain("always fails");
+    expect(runRows()[0]!.errorCode).toBe("internal");
 
-    // The sanctioned transition re-runs a settled row, keeping its history.
-    await runtime.jobs.retryNow(handle.id);
-    expect(jobRows()).toMatchObject([{ state: "pending", attempt: 1n }]);
+    // Manual retry keeps the Job's identity and history, and adds a run.
+    await runtime.jobs.retry(handle.id);
+    expect(jobRows()).toMatchObject([
+      { state: "retrying", runCount: 1n, nextRunTrigger: "manual_retry" },
+    ]);
     const second = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
     await second;
     expect(runs).toBe(2);
-    const history = JSON.parse(jobRows()[0]!.attemptsJson) as unknown[];
-    expect(history).toHaveLength(2);
+    expect(runRows().map((run) => [Number(run.number), run.trigger])).toEqual([
+      [1, "initial"],
+      [2, "manual_retry"],
+    ]);
   });
 
   test("cancel aborts a running handler cooperatively and discards its result", async () => {
@@ -251,18 +314,21 @@ describe("procedure-kind jobs", () => {
     expect(await wait).toMatchObject({ ok: false, state: "canceled" });
     expect(abortedInHandler).toBe(true);
     expect(jobRows()).toMatchObject([{ state: "canceled" }]);
+    // The run in flight settles as canceled with its Job.
+    expect(runRows()).toMatchObject([{ number: 1n, state: "canceled", settledAt: 4_000_000 }]);
 
     // The late result self-discards on the stale lease: still canceled.
     finish.resolve("too late");
     await Bun.sleep(10);
     expect(jobRows()).toMatchObject([{ state: "canceled" }]);
+    expect(runRows()).toMatchObject([{ state: "canceled", outputJson: null }]);
     // Cancel on a terminal row is a no-op reporting the state.
     expect(await runtime.jobs.cancel(handle.id)).toBe("canceled");
   });
 });
 
-describe("dedup and memoization", () => {
-  test("in-flight dedup collapses equal args into one row; fresh args run fresh", async () => {
+describe("dedupe and memoization", () => {
+  test("in-flight dedupe collapses equal args into one Job; fresh args run fresh", async () => {
     clock = 5_000_000;
     start(declareJobs({
       work: {
@@ -280,6 +346,8 @@ describe("dedup and memoization", () => {
     expect(duplicate).toEqual({ id: first.id, deduped: true });
     expect(different.deduped).toBe(false);
     expect(jobRows()).toHaveLength(2);
+    // No handler ran, so no run exists for either Job yet.
+    expect(runRows()).toHaveLength(0);
 
     // Two awaiters of the deduped row observe one settle.
     clock = 5_060_000;
@@ -288,12 +356,85 @@ describe("dedup and memoization", () => {
     expect(await one).toEqual({ ok: true, value: "sent:a" });
     expect(await two).toEqual({ ok: true, value: "sent:a" });
 
-    // The completed row does not dedupe (no window): a new call runs fresh.
+    // The completed Job does not dedupe (no window): a new call runs fresh.
     const again = await runtime.jobs.enqueue("work.send", { to: "a" });
     expect(again.deduped).toBe(false);
   });
 
-  test("a completed window memoizes; expiry and failure windows behave per outcome", async () => {
+  test("a dedupe hit is write-free: it changes no row and creates no run", async () => {
+    clock = 5_500_000;
+    start(declareJobs({
+      work: {
+        once: job({
+          args: { key: v.string() },
+          dedupe: { completed: "forever" },
+          handler: async (_ctx: Ctx, args: Ctx) => `done:${args.key}`,
+        }),
+      },
+    }));
+
+    const first = await runtime.jobs.enqueue("work.once", { key: "k" });
+    const wait = runtime.jobs.wait(first.id);
+    await runtime.runJobs();
+    expect(await wait).toEqual({ ok: true, value: "done:k" });
+
+    const jobsBefore = snapshotOf(jobRows());
+    const runsBefore = snapshotOf(runRows());
+    const keysBefore = jobKeysIssued();
+
+    clock = 5_600_000;
+    const hit = await runtime.jobs.enqueue("work.once", { key: "k" });
+    expect(hit).toEqual({ id: first.id, deduped: true });
+    // A dedupe hit executes no handler, so it stores nothing: not a Job row,
+    // not a run, not a touched timestamp, and not even a primary key it later
+    // gave back. (It still takes the writer turn that makes the check and the
+    // insert one atomic step, so the engine's global commit counter advances
+    // as it does for any transaction that writes nothing.)
+    expect(snapshotOf(jobRows())).toBe(jobsBefore);
+    expect(snapshotOf(runRows())).toBe(runsBefore);
+    expect(jobKeysIssued()).toBe(keysBefore);
+    // ...and the hit still answers with the memoized outcome.
+    expect(await runtime.jobs.wait(hit.id)).toEqual({ ok: true, value: "done:k" });
+  });
+
+  test("two settles in one millisecond resolve to the newer outcome, not the luckier row", async () => {
+    clock = 5_800_000;
+    let runs = 0;
+    start(declareJobs({
+      work: {
+        beat: job({
+          args: {},
+          // A recurrence due the instant it is minted: the successor settles
+          // in the same millisecond as the occurrence that created it.
+          repeat: () => (runs >= 2 ? null : clock),
+          dedupe: { completed: "forever", failed: "forever" },
+          handler: async () => {
+            if (++runs === 1) return "first";
+            throw new Error("second fails");
+          },
+        }),
+      },
+    }));
+    await runtime.jobs.activate();
+    await Bun.sleep(5);
+
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    const settled = jobRows().filter((row) => row.state === "completed" || row.state === "failed");
+    expect(settled.map((row) => row.state)).toEqual(["completed", "failed"]);
+    expect(settled.every((row) => row.deleteAfter === null)).toBe(true);
+
+    // "Newest" has to mean one row: the later Job, not whichever the index
+    // reached first.
+    const hit = await runtime.jobs.enqueue("work.beat", {});
+    expect(hit.deduped).toBe(true);
+    expect(hit.id).toBe(settled.at(-1)!.id);
+    expect(await runtime.jobs.wait(hit.id)).toMatchObject({ ok: false, state: "failed" });
+  });
+
+  test("a completed window memoizes, and expiry releases a fresh run", async () => {
     clock = 6_000_000;
     let runs = 0;
     start(declareJobs({
@@ -431,15 +572,19 @@ describe("recurrence", () => {
     await runtime.jobs.activate();
     await Bun.sleep(5);
     let rows = jobRows();
-    expect(rows).toMatchObject([{ state: "pending", runAt: 9_060_000 }]);
+    expect(rows).toMatchObject([{ state: "pending", nextRunAt: 9_060_000, trigger: "repeat" }]);
 
     clock = 9_060_000;
     await runtime.runJobs();
     await Bun.sleep(10);
     rows = jobRows();
     expect(runs).toBe(1);
-    // The settled occurrence is retained; the next one is a fresh row.
-    expect(rows).toMatchObject([{ state: "completed" }, { state: "pending", runAt: 9_120_000 }]);
+    // The settled occurrence is retained; the next one is a fresh Job that
+    // names the occurrence it followed.
+    expect(rows).toMatchObject([
+      { state: "completed" },
+      { state: "pending", nextRunAt: 9_120_000, trigger: "repeat", parentJobId: rows[0]!.id },
+    ]);
 
     // A failed occurrence still mints the next one: recurrence cannot die.
     clock = 9_120_000;
@@ -447,7 +592,7 @@ describe("recurrence", () => {
     await Bun.sleep(10);
     rows = jobRows();
     expect(runs).toBe(2);
-    expect(rows.at(-1)).toMatchObject({ state: "pending", runAt: 9_180_000 });
+    expect(rows.at(-1)).toMatchObject({ state: "pending", nextRunAt: 9_180_000 });
 
     // A missed window coalesces to one occurrence, late, not a replay per slot.
     clock = 9_180_000 + 10 * 60_000;
@@ -486,7 +631,7 @@ describe("durability", () => {
     expect(jobRows()).toMatchObject([{ state: "completed" }]);
   });
 
-  test("an expired lease is recovered as a failed attempt through the retry policy", async () => {
+  test("an expired lease is recovered as a failed run through the retry policy", async () => {
     clock = 11_000_000;
     const hang = deferred<never>();
     let secondRun = false;
@@ -507,16 +652,16 @@ describe("durability", () => {
     const handle = await runtime.jobs.enqueue("work.crashy", {});
     await runtime.runJobs();
     await Bun.sleep(10);
-    expect(jobRows()).toMatchObject([{ state: "running", attempt: 1n }]);
+    expect(jobRows()).toMatchObject([{ state: "running", runCount: 1n }]);
+    expect(runRows()).toMatchObject([{ number: 1n, state: "running" }]);
 
-    // Crash: the process dies mid-attempt; the lease outlives it.
+    // Crash: the process dies mid-run; the lease outlives it.
     engine.close("clean");
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       limits: limits({ leaseMs: 30_000 }),
       jobs: jobs(false),
       now: () => clock,
@@ -527,16 +672,17 @@ describe("durability", () => {
     await runtime.runJobs();
     expect(jobRows()).toMatchObject([{ state: "running" }]);
 
-    // Past the deadline: the attempt fails through the policy and reschedules.
+    // Past the deadline: the run fails through the policy and reschedules.
     clock = 11_000_000 + 31_000;
     await runtime.runJobs();
-    expect(jobRows()).toMatchObject([{ state: "pending", attempt: 1n }]);
-    expect(jobRows()[0]!.attemptsJson).toContain("lease expired");
+    expect(jobRows()).toMatchObject([{ state: "retrying", runCount: 1n }]);
+    expect(runRows()[0]!.errorText).toContain("lease expired");
 
     clock += 5_000;
     const wait = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
     expect(await wait).toEqual({ ok: true, value: "second life" });
+    expect(runRows().map((run) => run.state)).toEqual(["failed", "completed"]);
   });
 
   test("an abandoned lease wakes the runner by itself: no manual drive needed", async () => {
@@ -549,7 +695,7 @@ describe("durability", () => {
           args: {},
           retry: { attempts: 2, backoff: "fixed", delayMs: 0 },
           handler: async (ctx: Ctx) => {
-            if (ctx.attempt === 1) return await hang.promise;
+            if (ctx.runNumber === 1) return await hang.promise;
             recovered++;
             return "recovered";
           },
@@ -570,7 +716,6 @@ describe("durability", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       limits: limits({ leaseMs: 30_000 }),
       jobs: jobs(),
       now: () => clock,
@@ -583,7 +728,7 @@ describe("durability", () => {
     expect(jobRows()).toMatchObject([{ state: "completed" }]);
   });
 
-  test("dedup identity survives more than 64 retained same-identity rows", async () => {
+  test("dedupe identity survives more than 64 retained same-identity Jobs", async () => {
     clock = 15_000_000;
     start(declareJobs({
       work: {
@@ -694,7 +839,7 @@ describe("durability", () => {
     await drained;
   });
 
-  test("terminal rows are reaped after their retention window", async () => {
+  test("a terminal Job and its runs are reaped after the retention window", async () => {
     clock = 12_000_000;
     start(declareJobs({
       work: {
@@ -709,12 +854,106 @@ describe("durability", () => {
     const handle = await runtime.jobs.enqueue("work.brief", {});
     void handle;
     await runtime.runJobs();
-    expect(jobRows()).toMatchObject([{ state: "completed" }]);
+    expect(jobRows()).toMatchObject([{ state: "completed", deleteAfter: 12_001_000 }]);
+    expect(runRows()).toMatchObject([{ state: "completed", deleteAfter: 12_001_000 }]);
 
-    // Past retention (and past the reap interval), the row is deleted.
+    // Past retention (and past the reap interval), the Job goes and takes its
+    // run history with it — no run is left parented to nothing.
     clock = 12_000_000 + 120_000;
     await runtime.runJobs();
     expect(jobRows()).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
+  });
+
+  test("retention outlives a longer dedupe window rather than cutting it short", async () => {
+    clock = 19_000_000;
+    start(declareJobs({
+      work: {
+        cached: job({
+          kind: "mutation" as const,
+          args: {},
+          retention: 1_000,
+          dedupe: { completed: 500_000 },
+          handler: async () => "cached",
+        }),
+      },
+    }));
+    await runtime.jobs.enqueue("work.cached", {});
+    await runtime.runJobs();
+    // The stamp is the longer of retention and the dedupe window, so the run a
+    // dedupe hit reads can never be reaped while the hit still resolves.
+    expect(jobRows()).toMatchObject([{ deleteAfter: 19_500_000 }]);
+    expect(runRows()).toMatchObject([{ deleteAfter: 19_500_000 }]);
+
+    clock = 19_000_000 + 120_000;
+    await runtime.runJobs();
+    expect(jobRows()).toHaveLength(1);
+    const hit = await runtime.jobs.enqueue("work.cached", {});
+    expect(hit.deduped).toBe(true);
+  });
+
+  test("a failed run of a live Job expires on its own, bounding a long retry chain", async () => {
+    clock = 20_000_000;
+    start(declareJobs({
+      work: {
+        grinding: job({
+          args: {},
+          retention: 1_000,
+          retry: { attempts: 100, backoff: "fixed", delayMs: 60_000 },
+          handler: async () => {
+            throw new Error("still bad");
+          },
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.grinding", {});
+    void handle;
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    expect(runRows()).toHaveLength(1);
+    expect(jobRows()).toMatchObject([{ state: "retrying", deleteAfter: null }]);
+
+    // The Job is alive and never reaped, but its settled runs are not history
+    // the operator asked to keep forever — except the latest, which is the run
+    // its outcome is read from and only ever leaves with its Job.
+    clock = 20_000_000 + 120_000;
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    const surviving = runRows();
+    expect(jobRows()).toHaveLength(1);
+    expect(surviving.map((run) => Number(run.number))).toEqual([Number(jobRows()[0]!.runCount)]);
+  });
+
+  test("a terminal Job never loses the run its outcome is read from", async () => {
+    clock = 25_000_000;
+    start(declareJobs({
+      work: {
+        brief: job({
+          kind: "mutation" as const,
+          args: { n: v.int() },
+          retention: 1_000,
+          handler: async (_tx: Ctx, args: Ctx) => `value:${args.n}`,
+        }),
+      },
+    }), limits({ claimBatchSize: 1 }));
+    // More expired Jobs than one sweep of the Job reaper can take, so the run
+    // reaper meets the leftovers' runs on its own.
+    for (let index = 0; index < 3; index++) {
+      await runtime.jobs.enqueue("work.brief", { n: index });
+      await runtime.runJobs();
+    }
+    expect(jobRows()).toHaveLength(3);
+
+    clock = 25_000_000 + 120_000;
+    await runtime.runJobs();
+    // Whatever the sweep managed, no surviving Job is left without its outcome.
+    for (const survivor of jobRows()) {
+      const outcome = runRows().find(
+        (run) => run.jobId === survivor.id && run.number === survivor.runCount,
+      );
+      expect(outcome).toBeDefined();
+      expect(outcome!.outputJson).toContain("value:");
+    }
   });
 });
 
@@ -733,8 +972,8 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       args: { id: v.bigint(), field: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         switch (args.field) {
-          case "runAt":
-            await ctx.db[JOBS_TABLE].patch(args.id, { runAt: 13_120_000 });
+          case "nextRunAt":
+            await ctx.db[JOBS_TABLE].patch(args.id, { nextRunAt: 13_120_000 });
             return "ok";
           case "state":
             await ctx.db[JOBS_TABLE].patch(args.id, { state: "completed" });
@@ -744,7 +983,13 @@ describe("the jobs table is guarded exactly at the state machine", () => {
             return "unreachable";
           case "delete":
             await ctx.db[JOBS_TABLE].delete(args.id);
-            return "ok";
+            return "unreachable";
+          case "insertRun":
+            await ctx.db[JOB_RUNS_TABLE].insert({ jobId: args.id, number: 1 });
+            return "unreachable";
+          case "deleteRun":
+            await ctx.db[JOB_RUNS_TABLE].delete(args.id);
+            return "unreachable";
         }
         return "unknown";
       },
@@ -759,7 +1004,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
 
     const enqueued = await runtime.runMutation({
       id: 1,
-      address: "admin.enqueue",
+      address: "api.admin.enqueue",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
@@ -769,15 +1014,15 @@ describe("the jobs table is guarded exactly at the state machine", () => {
 
     const patch = (field: string, requestId: number) => runtime.runMutation({
       id: requestId,
-      address: "admin.surgery",
+      address: "api.admin.surgery",
       args: { id, field },
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });
 
     // Open column: scheduling intent moves.
-    expect((await patch("runAt", 2)).status).toBe(200);
-    expect(jobRows()[0]).toMatchObject({ runAt: 13_120_000 });
+    expect((await patch("nextRunAt", 2)).status).toBe(200);
+    expect(jobRows()[0]).toMatchObject({ nextRunAt: 13_120_000 });
 
     // Guarded column: refused, named.
     const guarded = await patch("state", 3);
@@ -790,8 +1035,243 @@ describe("the jobs table is guarded exactly at the state machine", () => {
     expect(inserted.status).not.toBe(200);
     expect(await inserted.text()).toContain("enqueue");
 
-    // Deletes are ordinary CRUD: a pending row deletes cleanly.
-    expect((await patch("delete", 5)).status).toBe(200);
+    // Deleting a Job through CRUD would strand its run history: the one door
+    // is the transition that removes both.
+    const deleted = await patch("delete", 5);
+    expect(deleted.status).not.toBe(200);
+    expect(await deleted.text()).toContain("delete");
+    expect(jobRows()).toHaveLength(1);
+
+    // Runs are the runner's record of what executed: read-only, entirely.
+    for (const [index, field] of ["insertRun", "deleteRun"].entries()) {
+      const refused = await patch(field, 6 + index);
+      expect(refused.status).not.toBe(200);
+      expect(await refused.text()).toContain("runner");
+    }
+
+    await runtime.jobs.delete(id);
     expect(jobRows()).toHaveLength(0);
+  });
+});
+
+describe("administration transitions", () => {
+  test("run again re-submits through dedupe; force adds a run under one identity", async () => {
+    clock = 21_000_000;
+    let runs = 0;
+    start(declareJobs({
+      work: {
+        report: job({
+          args: { day: v.string() },
+          dedupe: { completed: "forever" },
+          handler: async (_ctx: Ctx, args: Ctx) => `${args.day}:${++runs}`,
+        }),
+      },
+    }));
+
+    const first = await runtime.jobs.enqueue("work.report", { day: "mon" });
+    const wait = runtime.jobs.wait(first.id);
+    await runtime.runJobs();
+    expect(await wait).toEqual({ ok: true, value: "mon:1" });
+
+    // Run again goes through ordinary enqueue, so a forever window resolves it
+    // to the same Job and the same outcome — no second execution.
+    const again = await runtime.jobs.runAgain(first.id);
+    expect(again).toEqual({ id: first.id, deduped: true });
+    expect(runs).toBe(1);
+    expect(runRows()).toHaveLength(1);
+
+    // Force run again keeps the identity and replaces the outcome dedupe hands out.
+    clock = 21_010_000;
+    await runtime.jobs.forceRunAgain(first.id);
+    expect(jobRows()).toMatchObject([{ state: "pending", runCount: 1n, nextRunTrigger: "force" }]);
+    const forced = runtime.jobs.wait(first.id);
+    await runtime.runJobs();
+    expect(await forced).toEqual({ ok: true, value: "mon:2" });
+    expect(jobRows()).toHaveLength(1);
+    expect(runRows().map((run) => [Number(run.number), run.trigger])).toEqual([
+      [1, "initial"],
+      [2, "force"],
+    ]);
+    // Future dedupe hits receive the new outcome.
+    const hit = await runtime.jobs.enqueue("work.report", { day: "mon" });
+    expect(hit).toEqual({ id: first.id, deduped: true });
+    expect(await runtime.jobs.wait(hit.id)).toEqual({ ok: true, value: "mon:2" });
+  });
+
+  test("canceling one occurrence does not disable the definition's repeat policy", async () => {
+    clock = 24_000_000;
+    start(declareJobs({
+      work: {
+        tick: job({
+          args: {},
+          repeat: { everyMs: 60_000 },
+          handler: async () => "tick",
+        }),
+      },
+    }));
+    await runtime.jobs.activate();
+    await Bun.sleep(5);
+    const upcoming = jobRows();
+    expect(upcoming).toMatchObject([{ state: "pending", nextRunAt: 24_060_000 }]);
+
+    // Cancel is an operator ending one occurrence, not the recurrence: the
+    // next Job is still persisted, exactly as a failed occurrence's would be.
+    expect(await runtime.jobs.cancel(upcoming[0]!.id)).toBe("canceled");
+    expect(jobRows()).toMatchObject([
+      { state: "canceled", runCount: 0n },
+      { state: "pending", nextRunAt: 24_120_000, trigger: "repeat", parentJobId: upcoming[0]!.id },
+    ]);
+    expect(runRows()).toHaveLength(0);
+  });
+
+  test("retention wakes an idle runner, and a full page brings it straight back", async () => {
+    clock = 26_000_000;
+    start(declareJobs({
+      work: {
+        brief: job({
+          kind: "mutation" as const,
+          args: { n: v.int() },
+          retention: 1_000,
+          handler: async () => "done",
+        }),
+      },
+    }), limits({ claimBatchSize: 1 }));
+    for (let index = 0; index < 3; index++) {
+      await runtime.jobs.enqueue("work.brief", { n: index });
+      await runtime.runJobs();
+    }
+    expect(jobRows()).toHaveLength(3);
+
+    // Nothing is due and nothing is enqueued ever again: the only reason left
+    // to wake is the retention the operator asked for. No runJobs() below —
+    // the runner has to schedule every one of these sweeps itself.
+    clock = 26_000_000 + 120_000;
+    runtime.jobs.arm();
+    const deadline = Date.now() + 5_000;
+    let swept = jobRows().length;
+    while (swept > 0 && Date.now() < deadline) {
+      await Bun.sleep(5);
+      if (jobRows().length === swept) continue;
+      swept = jobRows().length;
+      // A page went; the sweep interval is the next wake, so move the clock
+      // onto it. A runner that parked after a full page would stop here.
+      clock += 120_000;
+      runtime.jobs.arm("requeue");
+    }
+    expect(jobRows()).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
+  });
+
+  test("cancel before the claim creates no run at all", async () => {
+    clock = 22_000_000;
+    start(declareJobs({
+      work: { later: job({ args: {}, handler: async () => "never" }) },
+    }));
+    const handle = await runtime.jobs.enqueue("work.later", {}, { delayMs: 60_000 });
+    expect(await runtime.jobs.cancel(handle.id)).toBe("canceled");
+    expect(jobRows()).toMatchObject([{ state: "canceled", runCount: 0n }]);
+    expect(runRows()).toHaveLength(0);
+    expect(await runtime.jobs.wait(handle.id)).toMatchObject({ ok: false, state: "canceled" });
+  });
+
+  test("reopening a terminal Job restamps the run it leaves behind as history", async () => {
+    clock = 27_000_000;
+    start(declareJobs({
+      work: {
+        cached: job({
+          kind: "mutation" as const,
+          args: {},
+          retention: 1_000,
+          dedupe: { completed: "forever" },
+          handler: async () => "value",
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.cached", {});
+    await runtime.runJobs();
+    // Settled as the Job's outcome, so it carries the forever dedupe stamp.
+    expect(runRows()).toMatchObject([{ number: 1n, deleteAfter: null }]);
+
+    clock = 27_010_000;
+    await runtime.jobs.forceRunAgain(handle.id);
+    // It is history now, and history keeps the plain retention it was settled
+    // with — not the forever stamp of an outcome nothing can reach again.
+    expect(runRows()).toMatchObject([{ number: 1n, deleteAfter: 27_001_000 }]);
+    await runtime.runJobs();
+    expect(runRows().map((run) => Number(run.number))).toEqual([1, 2]);
+    expect(runRows()[1]!.deleteAfter).toBeNull();
+  });
+
+  test("deleting a Job removes every run it owns", async () => {
+    clock = 23_000_000;
+    start(declareJobs({
+      work: {
+        twice: job({
+          args: {},
+          retry: { attempts: 2, backoff: "fixed", delayMs: 0 },
+          handler: async () => {
+            throw new Error("nope");
+          },
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.twice", {});
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    expect(runRows().length).toBeGreaterThan(1);
+
+    await runtime.jobs.delete(handle.id);
+    expect(jobRows()).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
+  });
+
+  test("a mutation Job whose stored arguments no longer decode fails instead of wedging", async () => {
+    // ADR-0018 promises an admitted Job is durable, and durable includes
+    // reaching an end. Arguments that cannot be decoded — bytes corrupted
+    // underneath us, or an encoding this version no longer reads — used to
+    // throw out of the claim transaction before any savepoint existed, rolling
+    // the claim back and leaving the Job due: claimed again, thrown out of
+    // again, forever, with no run to show for it. It must fail once, durably.
+    //
+    // The kind matters. A procedure-kind Job decodes inside its settlement
+    // boundary and always failed correctly; the mutation envelope collapses
+    // claim, handler and settle into one transaction, and decoding before the
+    // savepoint took the claim down with it. The two envelopes had drifted.
+    clock = 31_000_000;
+    let ran = 0;
+    start(declareJobs({
+      work: {
+        readArgs: job({
+          kind: "mutation",
+          args: { note: v.string() },
+          handler: async () => {
+            ran++;
+            return "ok";
+          },
+        }),
+      },
+    }));
+    const handle = await runtime.jobs.enqueue("work.readArgs", { note: "fine" }, {
+      delayMs: 60_000,
+    });
+    engine.writer.query(`UPDATE ${JOBS_TABLE} SET argsJson = ?, nextRunAt = ? WHERE id = ?`)
+      .run("{ not canonical json", clock, handle.id);
+
+    await runtime.runJobs();
+    await Bun.sleep(10);
+
+    expect(ran).toBe(0);
+    expect(runRows()).toHaveLength(1);
+    expect(runRows()[0]).toMatchObject({ state: "failed" });
+    expect(jobRows()[0]).toMatchObject({ state: "failed" });
+    // And it stays settled: a second sweep adds no run, which is the assertion
+    // that would have failed forever before — a wedged Job produces a claim
+    // every sweep and a run from none of them.
+    await runtime.runJobs();
+    await Bun.sleep(10);
+    expect(runRows()).toHaveLength(1);
+    expect(ran).toBe(0);
   });
 });

@@ -22,7 +22,7 @@ import {
   positiveSafeInteger,
   settleOnAbort,
   type RealtimeCloseReason,
-  type RealtimeHealthSnapshot,
+  type RealtimePressureSnapshot,
   type RealtimeOfferInput,
   type RealtimeOfferResult,
   type RealtimePatchResult,
@@ -140,23 +140,7 @@ export const REALTIME_HUB_DEFAULTS = Object.freeze({
   resourceLimits: REALTIME_GLOBAL_RESOURCE_DEFAULTS,
 });
 
-const EMPTY_HEALTH: RealtimeHealthSnapshot = Object.freeze({
-  sampledPeers: 0,
-  sampleFailures: 0,
-  directPaths: 0,
-  relayPaths: 0,
-  udpPaths: 0,
-  tcpPaths: 0,
-  roundTripTimeAverageMs: 0,
-  roundTripTimeMaxMs: 0,
-  jitterMaxMs: 0,
-  packets: 0,
-  packetsLost: 0,
-  frames: 0,
-  framesDropped: 0,
-  availableIncomingBitrate: 0,
-  availableOutgoingBitrate: 0,
-  dataChannelBufferedAmountMax: 0,
+const EMPTY_PRESSURE: RealtimePressureSnapshot = Object.freeze({
   nativeQueueDrops: 0,
   nativeProcessReservedBytes: 0,
   nativeProcessQueueSaturations: 0,
@@ -400,10 +384,6 @@ export class RealtimeHub {
   private readonly closeReasons = Object.fromEntries(
     CLOSE_REASONS.map((reason) => [reason, 0]),
   ) as Record<RealtimeCloseReason, number>;
-  private readonly sampleIds: string[] = [];
-  private readonly sampleIndex = new Map<string, number>();
-  private sampleCursor = 0;
-  private sampling = false;
   private nativeQueueDrops = 0;
   private nativeGenerationQueueSaturations = 0;
   private nativeQueueLimitTerminations = 0;
@@ -414,7 +394,6 @@ export class RealtimeHub {
   private streamBufferPressure = 0;
   private handlerSaturation = 0;
   private resourceSaturation = 0;
-  private health: RealtimeHealthSnapshot = EMPTY_HEALTH;
   private accepting = true;
 
   constructor(options: RealtimeHubOptions) {
@@ -548,10 +527,10 @@ export class RealtimeHub {
       recoveryFailed: this.recoveryFailed,
       closeReasons: Object.freeze({ ...this.closeReasons }),
       resources: this.resourceBudget.snapshot(),
-      health: Object.freeze({
-        ...this.health,
+      pressure: Object.freeze({
+        ...EMPTY_PRESSURE,
         nativeQueueDrops: this.nativeQueueDrops,
-        ...this.nativeQueueTelemetry(),
+        ...this.nativeQueueSnapshot(),
         dataChannelPressure: this.dataChannelPressure,
         streamCapacityPressure: this.streamCapacityPressure,
         streamBufferPressure: this.streamBufferPressure,
@@ -604,148 +583,6 @@ export class RealtimeHub {
         "realtime diagnostic failed",
         { resource: "connection" },
       );
-    }
-  }
-
-  async sampleHealth(maxPeers = 8): Promise<void> {
-    positiveSafeInteger(maxPeers, "maxPeers");
-    if (this.sampling) return;
-    if (this.sampleIds.length === 0) {
-      this.clearLiveHealth();
-      return;
-    }
-    this.sampling = true;
-    try {
-      const count = Math.min(maxPeers, this.sampleIds.length);
-      const ids: string[] = [];
-      for (let index = 0; index < count; index++) {
-        if (this.sampleCursor >= this.sampleIds.length) this.sampleCursor = 0;
-        ids.push(this.sampleIds[this.sampleCursor++]!);
-      }
-      let samples: ({
-        readonly generation: Generation;
-        readonly diagnostic: RealtimePeerDiagnostic | null;
-      } | null)[];
-      try {
-        samples = await this.withTimeout(
-          () => Promise.all(ids.map(async (id) => {
-            const generation = this.generations.get(id);
-            if (generation === undefined || !generation.active) return null;
-            this.captureNativeDrops(generation);
-            try {
-              const diagnostic = realtimePeerDiagnostic({
-                observedAtMs: this.now(),
-                connectionState: generation.peer.connectionState,
-                signalingState: generation.peer.signalingState,
-                iceGatheringState: generation.peer.iceGatheringState,
-                report: await this.stats(generation),
-              });
-              return { generation, diagnostic };
-            } catch {
-              return { generation, diagnostic: null };
-            }
-          })),
-          this.diagnosticTimeoutMs,
-          "realtime health sample",
-          this.diagnosticController.signal,
-          "deadline_exceeded",
-        );
-      } catch {
-        if (this.diagnosticController.signal.aborted) return;
-        samples = ids.map((id) => {
-          const generation = this.generations.get(id);
-          return generation === undefined || !generation.active
-            ? null
-            : { generation, diagnostic: null };
-        });
-      }
-
-      let failures = 0;
-      let direct = 0;
-      let relay = 0;
-      let udp = 0;
-      let tcp = 0;
-      let rttCount = 0;
-      let rttTotal = 0;
-      let rttMax = 0;
-      let jitterMax = 0;
-      let packets = 0;
-      let packetsLost = 0;
-      let frames = 0;
-      let framesDropped = 0;
-      let incomingBitrate = 0;
-      let outgoingBitrate = 0;
-      let bufferedAmount = 0;
-      let sampled = 0;
-      for (const sample of samples) {
-        if (sample === null) continue;
-        if (sample.diagnostic === null) {
-          failures++;
-          continue;
-        }
-        sampled++;
-        const { generation, diagnostic } = sample;
-        const path = diagnostic.path;
-        if (
-          path?.localCandidateType === "relay" ||
-          path?.remoteCandidateType === "relay"
-        ) {
-          relay++;
-        } else if (path !== undefined) {
-          direct++;
-        }
-        if (path?.protocol === "udp") udp++;
-        if (path?.protocol === "tcp") tcp++;
-        if (diagnostic.roundTripTimeMs !== undefined) {
-          rttCount++;
-          rttTotal += diagnostic.roundTripTimeMs;
-          rttMax = Math.max(rttMax, diagnostic.roundTripTimeMs);
-        }
-        incomingBitrate += diagnostic.availableIncomingBitrate ?? 0;
-        outgoingBitrate += diagnostic.availableOutgoingBitrate ?? 0;
-        bufferedAmount = Math.max(
-          bufferedAmount,
-          generation.dataChannel.bufferedAmount,
-        );
-        for (const direction of ["inbound", "outbound"] as const) {
-          for (const kind of ["audio", "video"] as const) {
-            const flow = diagnostic[direction]?.[kind];
-            if (flow === undefined) continue;
-            packets += flow.packets ?? 0;
-            packetsLost += flow.packetsLost ?? 0;
-            frames += flow.frames ?? 0;
-            framesDropped += flow.framesDropped ?? 0;
-            jitterMax = Math.max(jitterMax, flow.jitterMs ?? 0);
-          }
-        }
-      }
-      this.health = Object.freeze({
-        sampledPeers: sampled,
-        sampleFailures: failures,
-        directPaths: direct,
-        relayPaths: relay,
-        udpPaths: udp,
-        tcpPaths: tcp,
-        roundTripTimeAverageMs: rttCount === 0 ? 0 : rttTotal / rttCount,
-        roundTripTimeMaxMs: rttMax,
-        jitterMaxMs: jitterMax,
-        packets,
-        packetsLost,
-        frames,
-        framesDropped,
-        availableIncomingBitrate: sampled === 0 ? 0 : incomingBitrate / sampled,
-        availableOutgoingBitrate: sampled === 0 ? 0 : outgoingBitrate / sampled,
-        dataChannelBufferedAmountMax: bufferedAmount,
-        nativeQueueDrops: this.nativeQueueDrops,
-        ...this.nativeQueueTelemetry(),
-        dataChannelPressure: this.dataChannelPressure,
-        streamCapacityPressure: this.streamCapacityPressure,
-        streamBufferPressure: this.streamBufferPressure,
-        handlerSaturation: this.handlerSaturation,
-        resourceSaturation: this.resourceSaturation,
-      });
-    } finally {
-      this.sampling = false;
     }
   }
 
@@ -961,7 +798,6 @@ export class RealtimeHub {
         observedNativeQueueTerminals: EMPTY_NATIVE_QUEUE_TERMINALS,
       };
       this.generations.set(id, generation);
-      this.addSampleId(id);
       this.active++;
       prepared = undefined;
       let nativeTerminalFailure: AckerDBError | undefined;
@@ -1495,40 +1331,7 @@ export class RealtimeHub {
     this.nativeGenerationBudgetTerminations += generationBudgetDelta;
   }
 
-  private addSampleId(id: string): void {
-    this.sampleIndex.set(id, this.sampleIds.length);
-    this.sampleIds.push(id);
-  }
-
-  private removeSampleId(id: string): void {
-    const index = this.sampleIndex.get(id);
-    if (index === undefined) return;
-    const last = this.sampleIds.pop()!;
-    this.sampleIndex.delete(id);
-    if (index < this.sampleIds.length) {
-      this.sampleIds[index] = last;
-      this.sampleIndex.set(last, index);
-      this.sampleCursor = index;
-    } else if (this.sampleCursor > this.sampleIds.length) {
-      this.sampleCursor = 0;
-    }
-    if (this.sampleIds.length === 0) this.clearLiveHealth();
-  }
-
-  private clearLiveHealth(): void {
-    this.health = Object.freeze({
-      ...EMPTY_HEALTH,
-      nativeQueueDrops: this.nativeQueueDrops,
-      ...this.nativeQueueTelemetry(),
-      dataChannelPressure: this.dataChannelPressure,
-      streamCapacityPressure: this.streamCapacityPressure,
-      streamBufferPressure: this.streamBufferPressure,
-      handlerSaturation: this.handlerSaturation,
-      resourceSaturation: this.resourceSaturation,
-    });
-  }
-
-  private nativeQueueTelemetry() {
+  private nativeQueueSnapshot() {
     const process = this.engine.nativeQueueMetrics();
     return Object.freeze({
       nativeProcessReservedBytes: process.reservedBytes,
@@ -1557,8 +1360,8 @@ export class RealtimeHub {
       ));
     }
     // A native getStats() call cannot be cancelled. Attach at most one caller
-    // to a stalled promise so repeated health ticks cannot accumulate an
-    // unbounded chain of pending Promise reactions for the same peer.
+    // to a stalled promise so repeated requests cannot accumulate an unbounded
+    // chain of pending Promise reactions for the same peer.
     request.claimed = true;
     return request.promise;
   }
@@ -1608,7 +1411,6 @@ export class RealtimeHub {
         clearTimeout(timer);
       }
       generation.active = false;
-      this.removeSampleId(generation.id);
       this.active--;
       this.closed++;
       this.closeReasons[closeReason]++;
@@ -1620,7 +1422,6 @@ export class RealtimeHub {
       generation.releaseAuthentication();
       generation.session?.close(reason);
       this.captureNativeDrops(generation);
-      if (this.sampleIds.length === 0) this.clearLiveHealth();
       generation.session = null;
       if (generation.peer.connectionState !== "closed") {
         generation.peer.close();

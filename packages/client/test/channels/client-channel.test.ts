@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   decode,
   encode,
@@ -37,7 +37,7 @@ type Chat = ChannelRef<
   }
 >;
 
-const chat = { $ref: "chat.room" } as Chat;
+const chat = { $ref: "api.chat.room" } as Chat;
 
 describe("AckerDBClient channels", () => {
   test("uses the existing socket, shares one join, dispatches once per observer, and leaves once", () => {
@@ -62,7 +62,7 @@ describe("AckerDBClient channels", () => {
 
     socket.onopen?.();
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: "channel-client",
       authEpoch: 0,
@@ -71,7 +71,6 @@ describe("AckerDBClient channels", () => {
     const joins = socket.framesOf("channel_join");
     expect(joins).toHaveLength(1);
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "channel_ready",
       id: joins[0]!.id,
       authEpoch: 0,
@@ -81,7 +80,6 @@ describe("AckerDBClient channels", () => {
     expect(socket.framesOf("channel_send")).toHaveLength(1);
 
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "channel_event",
       id: joins[0]!.id,
       event: "message",
@@ -109,7 +107,7 @@ describe("AckerDBClient channels", () => {
     const handle = client.channel(chat, { threadId: 1n }, { room: "closed" });
     socket.onopen?.();
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: "rejected-client",
       authEpoch: 0,
@@ -117,7 +115,6 @@ describe("AckerDBClient channels", () => {
     });
     const join = socket.framesOf("channel_join")[0]!;
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "channel_rejected",
       id: join.id,
       authEpoch: 0,

@@ -1,7 +1,5 @@
-import {
-  REALTIME_PROTOCOL_VERSION,
-  type RealtimeSignalFrame,
-} from "./protocol.ts";
+import type { RealtimeSignalFrame } from "./protocol.ts";
+import { ACKERDB_VERSION } from "../version.ts";
 import type {
   RealtimeIceCandidate,
   RealtimeSessionDescription,
@@ -90,7 +88,7 @@ export class PerfectNegotiation {
     if (!this.ready) return false;
     this.run(() =>
       this.options.sendSignal({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "signal_candidate",
         candidate,
       })
@@ -126,7 +124,7 @@ export class PerfectNegotiation {
           "missing-answer",
         );
         await this.options.sendSignal({
-          v: REALTIME_PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "signal_description",
           description: answer,
         });
@@ -169,7 +167,7 @@ export class PerfectNegotiation {
           "missing-offer",
         );
         await this.options.sendSignal({
-          v: REALTIME_PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "signal_description",
           description,
         });

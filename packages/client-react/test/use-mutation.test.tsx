@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ClientMessage,
   type ServerMessage,
 } from "@ackerdb/core";
@@ -63,7 +63,6 @@ function mutationOk(
   replay: "executed" | "replayed" = "executed",
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",
@@ -177,14 +176,14 @@ describe("useMutation", () => {
     });
     const send = probe.latest();
     void send({ text: "x" }).catch(() => {});
-    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("addTodo");
+    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("api.addTodo");
 
     // The callable's identity belongs to the hook instance, not the
     // reference; the commit-phase ref sync redirects it to the new address.
     await render(root, app("removeTodo"));
     expect(probe.latest()).toBe(send);
     void send({ text: "x" }).catch(() => {});
-    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("removeTodo");
+    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("api.removeTodo");
 
     await act(async () => {
       root.unmount();
@@ -209,7 +208,7 @@ describe("useMutation", () => {
 
     const result = probe.latest()({ text: "milk" });
     const frame = lastMutationFrame(socket);
-    expect(frame.ref).toBe("todos.add");
+    expect(frame.ref).toBe("api.todos.add");
     expect(frame.args).toEqual({ text: "milk" });
     expect(frame.mutationRequestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -241,7 +240,7 @@ describe("useMutation", () => {
     // Determinate failure: the server's exact outcome is the rejection.
     const failed = probe.latest()({ text: "rejected" });
     socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: lastMutationFrame(socket).id,
       outcome: {
@@ -267,7 +266,7 @@ describe("useMutation", () => {
     const blocked = probe.latest()({ text: "blocked" });
     await act(async () => {
       socket.receive({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "err",
         id: null,
         outcome: {

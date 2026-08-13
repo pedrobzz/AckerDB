@@ -3,9 +3,11 @@ import { rmSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import type { Subprocess } from "bun";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
+  parseConnectionError,
+  parseServerHandshake,
   parseServerMessage,
   type ServerMessage,
 } from "@ackerdb/core";
@@ -192,7 +194,7 @@ function spawnFixture(dir: string, port: number): ProcessHarness {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env },
   }) as FixtureProcess;
   let stdout = "";
   let stderr = "";
@@ -279,8 +281,13 @@ function rawWebSocket(url: string): Promise<WsClient> {
   const waiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors the client's own two phases: nothing but the versioned
+  // handshake pair decodes until a welcome has landed.
+  let open = false;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const text = decode(String(event.data));
+    const frame = open ? parseServerMessage(text) : parseServerHandshake(text);
+    if (frame.t === "welcome") open = true;
     const waiter = waiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -314,7 +321,7 @@ let sessionSequence = 0;
 async function connectWebSocket(url: string): Promise<WsClient> {
   const client = await rawWebSocket(url);
   client.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId: `resource-safety-${++sessionSequence}`,
     credential: { kind: "anonymous" },
@@ -378,7 +385,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
     rejectOpen = reject;
     socket.once("connect", () => {
       socket.write([
-        "GET /ws HTTP/1.1",
+        "GET /_ws HTTP/1.1",
         "Host: 127.0.0.1",
         "Upgrade: websocket",
         "Connection: Upgrade",
@@ -416,15 +423,20 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
         frameBytes = frameBytes.subarray(offset + length);
         const opcode = first & 0x0f;
         if (opcode === 1) {
-          const frame = parseServerMessage(decode(payload.toString("utf8")));
+          // Same two-phase read the client performs: the welcome decodes
+          // through the handshake parser, everything after it through the
+          // session parser.
+          const text = decode(payload.toString("utf8"));
+          const frame = subscriptionSent
+            ? parseServerMessage(text)
+            : parseServerHandshake(text);
           frames.push(frame);
           if (frame.t === "welcome" && !subscriptionSent) {
             subscriptionSent = true;
             socket.write(maskedWebSocketFrame({
-              v: PROTOCOL_VERSION,
               t: "sub",
               id: 1,
-              ref: "items.large",
+              ref: "api.items.large",
               args: {},
             }));
           } else if (
@@ -473,7 +485,7 @@ function pausedWebSocket(port: number): Promise<PausedWebSocket> {
         handshakeBytes = Buffer.alloc(0);
         opened = true;
         socket.write(maskedWebSocketFrame({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "hello",
           clientSessionId: "resource-safety-unread",
           credential: { kind: "anonymous" },
@@ -693,36 +705,6 @@ function queueReleased(queue: RuntimeStatus["reader"]["queue"]): boolean {
     queue.activeFairnessKeys === 0;
 }
 
-function everyNumberIsZero(value: object): boolean {
-  return Object.values(value).every((entry) =>
-    typeof entry === "number"
-      ? entry === 0
-      : typeof entry === "object" && entry !== null
-        ? everyNumberIsZero(entry)
-        : true
-  );
-}
-
-function telemetryReleased(telemetry: RuntimeStatus["telemetry"]): boolean {
-  return telemetry.enabled === false &&
-    telemetry.queuedRecords === 0 &&
-    telemetry.queuedBytes === 0 &&
-    telemetry.oldestAgeMs === 0 &&
-    telemetry.metricSeries === 0 &&
-    telemetry.traceRetention.activeTraces === 0 &&
-    telemetry.traceRetention.completedDecisions === 0 &&
-    telemetry.traceRetention.stagedRecords === 0 &&
-    telemetry.traceRetention.stagedBytes === 0 &&
-    telemetry.localSink.configured === false &&
-    telemetry.localSink.inFlight === false &&
-    telemetry.localSink.pendingRecords === 0 &&
-    telemetry.localSink.pendingBytes === 0 &&
-    telemetry.localSink.oldestAgeMs === 0 &&
-    telemetry.exporter.configured === false &&
-    telemetry.exporter.inFlight === false &&
-    everyNumberIsZero(telemetry);
-}
-
 function resourcesReleased(value: ResourceStatus): boolean {
   return (
     value.connections === 0 &&
@@ -760,8 +742,7 @@ function resourcesReleased(value: ResourceStatus): boolean {
     value.runtime.authCaptureBudget.controlBytes === 0 &&
     value.runtime.sseBudget.bytes === 0 &&
     value.runtime.sseBudget.applicationBytes === 0 &&
-    value.runtime.sseBudget.controlBytes === 0 &&
-    telemetryReleased(value.runtime.telemetry)
+    value.runtime.sseBudget.controlBytes === 0
   );
 }
 
@@ -798,27 +779,6 @@ function assertResourcesReleased(value: ResourceStatus): void {
       publication: { items: 0, bytes: 0, oldestAgeMs: 0 },
       authCaptureBudget: { bytes: 0, applicationBytes: 0, controlBytes: 0 },
       sseBudget: { bytes: 0, applicationBytes: 0, controlBytes: 0 },
-      telemetry: {
-        enabled: false,
-        queuedRecords: 0,
-        queuedBytes: 0,
-        oldestAgeMs: 0,
-        metricSeries: 0,
-        traceRetention: {
-          activeTraces: 0,
-          completedDecisions: 0,
-          stagedRecords: 0,
-          stagedBytes: 0,
-        },
-        localSink: {
-          configured: false,
-          inFlight: false,
-          pendingRecords: 0,
-          pendingBytes: 0,
-          oldestAgeMs: 0,
-        },
-        exporter: { configured: false, inFlight: false },
-      },
     },
   });
   for (const queue of [
@@ -1084,11 +1044,11 @@ processResourceTest(
   const processHarness = spawnFixture(dir, port);
   await processHarness.waitForCount("@@ready", 1);
   const base = `http://127.0.0.1:${port}`;
-  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const wsUrl = `ws://127.0.0.1:${port}/_ws`;
 
   // Warm every measured path so the baseline excludes one-time module/JIT work.
   const warm = await connectWebSocket(wsUrl);
-  warm.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
+  warm.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
   expect(await withTimeout(warm.next(), "warm subscription reset")).toMatchObject({
     t: "transition",
     id: 1,
@@ -1114,8 +1074,8 @@ processResourceTest(
   const first = await connectWebSocket(wsUrl);
   const second = await connectWebSocket(wsUrl);
   const third = await connectWebSocket(wsUrl);
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
-  second.send({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "items.list", args: {} });
+  first.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
+  second.send({ t: "sub", id: 1, ref: "api.items.list", args: {} });
   for (const client of [first, second]) {
     expect(await withTimeout(client.next(), "subscription reset")).toMatchObject({
       t: "transition",
@@ -1124,7 +1084,7 @@ processResourceTest(
     });
   }
 
-  first.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "items.list", args: {} });
+  first.send({ t: "sub", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(first.next(), "subscription overload")).toMatchObject({
     t: "err",
     id: 2,
@@ -1137,10 +1097,9 @@ processResourceTest(
   });
 
   third.send({
-    v: PROTOCOL_VERSION,
     t: "m",
     id: 1,
-    ref: "items.add",
+    ref: "api.items.add",
     args: { sequence: 1 },
     mutationRequestId: uuidV7(1),
     issuedAt: Date.now(),
@@ -1171,11 +1130,11 @@ processResourceTest(
   const unread = await pausedWebSocket(port);
   await processHarness.waitForCount("@@large-eval", 1);
 
-  const connectionExcess = await fetch(`${base}/ws`, {
+  const connectionExcess = await fetch(`${base}/_ws`, {
     headers: { connection: "close" },
   });
   expect(connectionExcess.status).toBe(503);
-  expect(parseServerMessage(decode(await connectionExcess.text()))).toMatchObject({
+  expect(parseConnectionError(decode(await connectionExcess.text()))).toMatchObject({
     t: "err",
     id: null,
     outcome: {
@@ -1195,8 +1154,8 @@ processResourceTest(
     },
   });
 
-  first.send({ v: PROTOCOL_VERSION, t: "unsub", id: 1 });
-  second.send({ v: PROTOCOL_VERSION, t: "unsub", id: 1 });
+  first.send({ t: "unsub", id: 1 });
+  second.send({ t: "unsub", id: 1 });
   const unreadOnlyStatus = await eventually(
     () => status(base),
     (value) => value.runtime.reactive.queryListeners === 1 &&
@@ -1214,10 +1173,9 @@ processResourceTest(
   while (maximum(unreadOutboundSamples) === 0 && pressureSequence < 512) {
     pressureSequence++;
     third.send({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: pressureSequence,
-      ref: "items.add",
+      ref: "api.items.add",
       args: { sequence: pressureSequence },
       mutationRequestId: uuidV7(pressureSequence),
       issuedAt: Date.now(),
@@ -1254,7 +1212,7 @@ processResourceTest(
   }
   await processHarness.waitForCount("@@block-start", 4);
 
-  third.send({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "items.list", args: {} });
+  third.send({ t: "q", id: 2, ref: "api.items.list", args: {} });
   expect(await withTimeout(third.next(), "operation overload")).toMatchObject({
     t: "err",
     id: 2,
@@ -1542,7 +1500,7 @@ processResourceTest(
 
   await eventually(
     async () => {
-      const response = await fetch(`${base}/ws`, { headers: { connection: "close" } });
+      const response = await fetch(`${base}/_ws`, { headers: { connection: "close" } });
       await response.arrayBuffer();
       return response.status;
     },

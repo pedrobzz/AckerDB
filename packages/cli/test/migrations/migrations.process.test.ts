@@ -129,7 +129,7 @@ function spawnServer(dir: string): {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -206,11 +206,11 @@ describe("ackerdb startup migrations", () => {
     await first.waitFor("ready on");
     const seeder = makeClient(port, "migrations-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "beta", count: 42 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "beta", count: 42 }),
       "seed beta",
     )).toBe(2n);
     closeClient(seeder);
@@ -238,7 +238,7 @@ describe("ackerdb startup migrations", () => {
     expect(second.output()).toContain("migrated table items");
 
     const reader = makeClient(port, "migrations-read");
-    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("items.list", {}), "list after migration");
+    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("api.items.list", {}), "list after migration");
     expect(rows.map((row) => [row.label, row.count])).toEqual([
       ["alpha", "5"],
       ["beta", "42"],
@@ -251,7 +251,9 @@ describe("ackerdb startup migrations", () => {
     const status: StatusReport = await inspectDatabase(loadConfig(dir));
     expect(status.operation).toBe("status");
     expect(status.schemaFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(status.status.commitVersion).toBe("2");
+    // Two application mutations, plus the first boot's Admin Credential mint.
+    // Only the boot that finds no master writes, so the restarts cost nothing.
+    expect(status.status.commitVersion).toBe("3");
   }, TEST_TIMEOUT_MS);
 
   test("applies pending migrations before loading runtime-only modules", async () => {
@@ -267,7 +269,7 @@ describe("ackerdb startup migrations", () => {
     await waitForReady(port);
     const seeder = makeClient(port, "runtime-loading-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed before runtime loading failure",
     )).toBe(1n);
     closeClient(seeder);
@@ -330,7 +332,7 @@ throw new Error("runtime-only verifier failure");
     await first.waitFor("ready on");
     const seeder = makeClient(port, "immutable-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     closeClient(seeder);
@@ -374,7 +376,7 @@ throw new Error("runtime-only verifier failure");
     await first.waitFor("ready on");
     const seeder = makeClient(port, "migrations-refusal-seed");
     expect(await withTimeout(
-      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }),
       "seed alpha",
     )).toBe(1n);
     closeClient(seeder);

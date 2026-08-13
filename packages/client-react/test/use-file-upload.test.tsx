@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import { createBoundary } from "./support/boundary.tsx";
 import { createHarness } from "./support/harness.ts";
 import type { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type ClientMessage,
   type FileId,
   type FileUploadSession,
@@ -32,7 +32,7 @@ import {
 
 const SESSION = "react-file-session";
 const createUpload = {
-  $ref: "documents.createUpload",
+  $ref: "api.documents.createUpload",
 } as MutationRef<{ readonly folder: string }, FileUploadSession>;
 
 type MutationRequest = Extract<ClientMessage, { readonly t: "m" }>;
@@ -51,7 +51,6 @@ function acceptSession(
   url: string,
 ): void {
   socket.receive({
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: mutation.id,
     kind: "mutation",
@@ -124,12 +123,12 @@ describe("useFileUpload", () => {
     acceptSession(
       current,
       mutation,
-      "https://public-files.test/api/_files/uploads/31.current-session",
+      "https://public-files.test/_files/uploads/31.current-session",
     );
 
     expect(mustOk(await result)).toBe(71n as FileId);
     expect(requests.map(({ url }) => url)).toEqual([
-      "http://two.test/api/_files/uploads/31.current-session",
+      "http://two.test/_files/uploads/31.current-session",
     ]);
     expect(harness.sockets[0]!.framesOf("m")).toHaveLength(0);
 
@@ -170,7 +169,7 @@ describe("useFileUpload", () => {
     acceptSession(
       socket,
       mutation,
-      "https://public-files.test/api/_files/uploads/32.queued-session",
+      "https://public-files.test/_files/uploads/32.queued-session",
     );
 
     expect(mustOk(await result!)).toBe(72n as FileId);

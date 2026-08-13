@@ -33,6 +33,8 @@ export function useSseProcedure<A, Chunk>(
   ref: SseRef<A, Chunk> | string,
 ): SseProcedureCall<A, Chunk> {
   const client = useProviderClient("useSseProcedure");
+  // The address identifies the callable, group included: it is the address's
+  // first segment, so the root the stream is fetched from travels with it.
   const address = getRef(ref);
   return useCallback<SseProcedureCall<A, Chunk>>(
     (args, options = {}) => {
@@ -65,7 +67,9 @@ export function useSseProcedure<A, Chunk>(
         }
       }
       return sseReadableStream<Chunk>(
-        client.sse<A, Chunk>(address, args, { signal: abort.signal }),
+        client.sse<A, Chunk>(address, args, {
+          signal: abort.signal,
+        }),
         abort,
       );
     },

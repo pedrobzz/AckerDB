@@ -1,23 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION } from "@ackerdb/core";
+import { ACKERDB_VERSION } from "@ackerdb/core";
 import { SseEventDecoder } from "../../src/sse/event-decoder.ts";
 
 const utf8 = new TextEncoder();
+// The frames are literal SSE bytes, so the version appears in them quoted.
+const version = JSON.stringify(ACKERDB_VERSION);
 const chunk = (seq: number): string =>
-  `data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":${seq},"proof":"p","value":${seq}}`;
+  `data: {"v":${version},"t":"sse_chunk","seq":${seq},"proof":"p","value":${seq}}`;
 
 describe("SseEventDecoder", () => {
   test("decodes fragmented LF, CRLF, and bare-CR event boundaries", () => {
     const decoder = new SseEventDecoder(1_024);
     expect(decoder.push(utf8.encode(`\uFEFF${chunk(1)}\n`))).toEqual([]);
     expect(decoder.push(utf8.encode(`\n${chunk(2)}\r\n\r`))).toEqual([
-      { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "p", value: 1 },
+      { v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "p", value: 1 },
     ]);
     expect(decoder.push(utf8.encode(`\n${chunk(3)}\r\r`))).toEqual([
-      { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 2, proof: "p", value: 2 },
+      { v: ACKERDB_VERSION, t: "sse_chunk", seq: 2, proof: "p", value: 2 },
     ]);
     expect(decoder.push(utf8.encode("\n"))).toEqual([
-      { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 3, proof: "p", value: 3 },
+      { v: ACKERDB_VERSION, t: "sse_chunk", seq: 3, proof: "p", value: 3 },
     ]);
     expect(decoder.hasPendingEvent).toBe(false);
   });

@@ -1,13 +1,77 @@
 /**
  * Function references: the typed, opaque addresses clients use to name server
  * functions. At runtime a reference is just a dot-joined address string
- * ("messages.list"); the generic parameters carry kind/args/data/error types so
- * every call is end-to-end typed through codegen.
+ * ("api.messages.list"); the generic parameters carry kind/args/data/error
+ * types so every call is end-to-end typed through codegen.
+ *
+ * **An address begins with its group.** `<apiPath>.<...module segments>.<export
+ * name>` is the whole rule, and it holds everywhere an address appears — the
+ * socket, the registry's keys, the URL. A group is therefore a namespace and
+ * not a label: `api.messages.list` and `internal.messages.list` are two
+ * functions, and one group's names can never be squatted from another.
  */
 
 import type { ErrResult, OkResult } from "./result.ts";
 
 export type FunctionKind = "query" | "mutation" | "procedure" | "sse" | "event";
+
+/**
+ * The API path every function without an explicit one is published in, and so
+ * the first segment of its address. It is an ordinary group, not a privileged
+ * category: the framework names this one so a declaration need not. It lives
+ * here because the generated trees below and the server's declaration builders
+ * must agree on it exactly.
+ */
+export const DEFAULT_API_PATH = "api";
+export type DefaultApiPath = typeof DEFAULT_API_PATH;
+
+/**
+ * The group the framework publishes its own administration functions in, and
+ * so the first segment of every Admin API address. It is an ordinary group
+ * carrying no reserved marker — the marker belongs to roots and scopes, and a
+ * group's name becomes a generated binding, which the marker is reserved
+ * against. What keeps the surface unsquattable is the address rule itself: an
+ * application's `logs.list` is `api.logs.list`, never `admin.logs.list`, so
+ * the two can never name one function. An application may still publish its
+ * own functions here, which is why the group is shared rather than sealed.
+ *
+ * Like {@link DEFAULT_API_PATH} it lives here because the generated trees, the
+ * server's registry, and the declaration builders must agree on it exactly.
+ */
+export const ADMIN_API_PATH = "admin";
+export type AdminApiPath = typeof ADMIN_API_PATH;
+
+/**
+ * The namespace the generated api module gives event-table references. It is
+ * reserved in three places that must agree — a function module may not be
+ * called it, an API path may not be named it, and code generation writes the
+ * export that causes both — so the name lives here, with the tree it belongs
+ * to.
+ */
+export const EVENTS_NAMESPACE = "events";
+
+/**
+ * The address prefix every event-table reference carries. Event tables are not
+ * modules, but they are leaves of the default group's tree, so they are
+ * addressed like everything else in it. The subscription path that parses a
+ * table out of an address and the generated module that writes one must agree
+ * on this exactly, so it is spelled once.
+ */
+export const EVENTS_ADDRESS_PREFIX = `${DEFAULT_API_PATH}.${EVENTS_NAMESPACE}.`;
+
+/**
+ * The character marking a name as the framework's own, across every namespace
+ * an application shares with it: API paths, HTTP roots, and scopes. An
+ * application may never declare a name carrying it, so the two vocabularies
+ * cannot collide.
+ *
+ * It lives here for the same reason the two names above do — the rule is
+ * enforced in the server's routing, its authorization vocabulary, and the
+ * declaration builders that refuse it, and those must agree on one character.
+ * The one exception is framework tables, which carry the older `_ackerdb_`
+ * prefix released in 0.16.0 data; see CONTEXT.md.
+ */
+export const RESERVED_MARKER = "_";
 
 export interface FunctionReference<
   K extends FunctionKind = FunctionKind,
@@ -121,6 +185,16 @@ export function getRef(
   return address;
 }
 
+/**
+ * The wire contract for an exposed function's URL: the address, segment for
+ * segment. The group needs no separate argument because it is already the
+ * first segment, so the listener claiming the path and the client building it
+ * read one rule over one value and cannot drift.
+ */
+export function httpPathForAddress(address: string): string {
+  return `/${address.replaceAll(".", "/")}`;
+}
+
 export type ChannelArgs<Ref extends AnyChannelRef> =
   Ref extends ChannelRef<infer Args, unknown, EventMap, EventMap, unknown> ? Args : never;
 export type ChannelRoom<Ref extends AnyChannelRef> =
@@ -186,25 +260,34 @@ export type RealtimeError<Ref extends AnyRealtimeRef> =
     infer Error
   > ? Error : never;
 
-function makeRefProxy(path: string): unknown {
+function makeRefProxy(address: string): unknown {
   return new Proxy(
-    { $ref: path },
+    { $ref: address },
     {
       get(target, prop) {
-        if (prop === "$ref") return path;
+        if (prop === "$ref") return address;
         if (typeof prop !== "string") return Reflect.get(target, prop);
-        return makeRefProxy(path === "" ? prop : `${path}.${prop}`);
+        return makeRefProxy(`${address}.${prop}`);
       },
     },
   );
 }
 
 /**
- * Untyped reference builder: `anyApi.messages.list` yields the reference for
- * address "messages.list". Generated `api.ts` casts this to the typed api.
+ * Untyped reference builder for one group: `apiGroup("internal").messages.list`
+ * yields the reference for address "internal.messages.list", resolving under
+ * `/internal/messages/list`. The group is the address's first segment, so the
+ * builder is seeded with it and every property access appends the next.
+ * Generated `api.ts` casts each group's builder to that group's typed tree.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const anyApi: any = makeRefProxy("");
+export function apiGroup(apiPath: string): any {
+  return makeRefProxy(apiPath);
+}
+
+/** The same builder for the default group: `anyApi.messages.list`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const anyApi: any = apiGroup(DEFAULT_API_PATH);
 
 /**
  * The marker interface every registered server function satisfies (the server
@@ -267,16 +350,55 @@ export interface RegisteredServerOnly {
   readonly isAckerDBServerOnly: true;
 }
 
+/**
+ * The API path a registered function was published in — the first segment of
+ * its address — carried on its type so a generated tree can select one group.
+ * Every registered function has one.
+ */
+export interface RegisteredApiPath<Path extends string> {
+  readonly apiPath: Path;
+}
+
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
 type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Error : never;
 
+type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
+  ? Kd extends "query" | "mutation" | "procedure"
+    ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
+    : FunctionReference<Kd, A, R>
+  : never;
+
+/** The one owner of group membership: whether an export appears in this tree. */
+type InApiPath<Export, Path extends string> = Export extends RegisteredServerOnly
+  ? // A server-only export has no reference in any group.
+    false
+  : Export extends RegisteredFunction
+    ? // A function carries the group it was declared in.
+      Export extends RegisteredApiPath<Path>
+      ? true
+      : false
+    : Export extends RegisteredChannelContract | RegisteredRealtimeContract
+      ? // Socket-addressed contracts refuse `apiPath`, so their addresses
+        // begin with the default group and they live in that tree alone.
+        [Path] extends [DefaultApiPath]
+        ? true
+        : false
+      : // A namespace, kept in every group and filtered by its own recursion.
+        // Testing it for emptiness here — so `internal.` listed only modules
+        // that reach it — makes this type and `ApiFromModules` mutually
+        // recursive, which TypeScript reports as an excessively deep
+        // instantiation on real module trees. A group's binding therefore
+        // shows every module namespace; only its leaves are selected.
+        true;
+
 /**
- * Maps a record of module namespaces (arbitrarily nested) to the typed `api`
- * shape. Function files should export only ackerdb functions (same convention as
- * Convex); other exports produce unusable branches, not errors.
+ * Maps a record of module namespaces (arbitrarily nested) to the typed shape of
+ * one API path — `api` by default, and one tree per group the application
+ * declares. Function files should export only ackerdb functions (same
+ * convention as Convex); other exports produce unusable branches, not errors.
  */
-export type ApiFromModules<T> = {
-  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
+export type ApiFromModules<T, Path extends string = DefaultApiPath> = {
+  [K in keyof T as InApiPath<T[K], Path> extends true ? K : never]:
   T[K] extends RegisteredChannelContract<
     infer A,
     infer Room,
@@ -301,9 +423,7 @@ export type ApiFromModules<T> = {
       ServerStreams,
       Error
     >
-    : T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
-    ? Kd extends "query" | "mutation" | "procedure"
-      ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
-      : FunctionReference<Kd, A, R>
-    : ApiFromModules<T[K]>;
+    : T[K] extends RegisteredFunction
+    ? FunctionRefOf<T[K]>
+    : ApiFromModules<T[K], Path>;
 };

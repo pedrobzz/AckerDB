@@ -28,8 +28,7 @@ AckerDB owns:
   negotiation;
 - one internal reliable ordered data channel for typed events, typed finite
   byte streams, and post-connect signaling control;
-- shared client demand, bounded recovery, generation cleanup, and runtime
-  telemetry; and
+- shared client demand, bounded recovery, and generation cleanup; and
 - a native server peer based on the focused LiveKit Rust libwebrtc binding.
 
 Applications own:
@@ -128,6 +127,16 @@ filters, UDP range, advertised-address mappings, ICE timing, and TURN.
 Configuration is validated before accepting traffic. Direct UDP remains
 preferred; standard coturn REST credentials provide fallback relay access.
 
+The standard CLI configuration may name a serving-only module whose default
+export is the result of `createRealtimeRuntime(options)`. The CLI imports that
+module only when the assembled application declares realtime handlers; schema,
+code-generation, migration, backup, and other manifest consumers never import
+it. When no module is configured, an application with realtime handlers keeps
+the default `createRealtimeRuntime()` behavior. An explicitly supplied
+programmatic runtime overrides the configured module without importing it.
+This keeps deployment secrets and native network policy outside `defineApp`
+without requiring an application-owned process bootstrap.
+
 Remote candidate admission parses and charges every candidate before native
 WebRTC sees it. Consistent with the [W3C `addIceCandidate` behavior for an
 administratively prohibited candidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate), AckerDB omits unusable `typ host`
@@ -159,12 +168,9 @@ errors, configuration, cloning, and raw data channels. A deliberately
 unsupported standard capability throws `NotSupportedError`; it is never a
 silent stub.
 
-Aggregate metrics have fixed cardinality and contain no principals, session or
-track IDs, addresses, SDP, credentials, or payloads. A bounded authorized
-diagnostic snapshot exposes redacted standard stats for one session. The
-existing runtime telemetry tick samples only a rotating subset of active
-generations, and closed or idle realtime service creates no independent
-polling loop.
+A bounded authorized diagnostic snapshot exposes redacted standard stats for
+one session. It contains no credentials, addresses, SDP, or payloads and runs
+only when explicitly requested.
 
 ## Native distribution
 

@@ -7,8 +7,10 @@
  * outside the app may see it — lives on the entry, because the endpoint is the
  * curation surface and a tool list is a prompt.
  *
- * Scopes and tokens live on an `mcpAuth` provider rather than here. See
- * `auth.ts` for why that extraction is structural.
+ * A tool's access requirement draws from the application scope vocabulary
+ * (`defineApp({ scopes })`) and is evaluated against the caller Identity's
+ * grant — endpoints authenticate ordinary identity credentials, not a parallel
+ * token system of their own.
  */
 import type { ApplicationError, RegisteredServerOnly, Result } from "@ackerdb/core";
 import type { Validator } from "../validation/validator.ts";
@@ -26,15 +28,9 @@ import {
 } from "./ai.ts";
 import {
   normalizeMcpToolAccess,
-  type McpScopeDescriptor,
   type McpToolAccessPolicy,
   type NormalizedMcpToolAccessPolicy,
-} from "./scopes.ts";
-import {
-  isMcpAuthProvider,
-  type AnyMcpAuthProvider,
-  type McpAuthScope,
-} from "./auth.ts";
+} from "./tool-access.ts";
 import {
   byteLength,
   mcpName,
@@ -79,16 +75,6 @@ export type {
   McpAiTool,
   McpAiToolSet,
 } from "./ai.ts";
-export {
-  mcpAuth,
-  isMcpAuthProvider,
-  type AnyMcpAuthProvider,
-  type McpAuthBuilder,
-  type McpAuthConfig,
-  type McpAuthProvider,
-  type McpAuthScope,
-  type ScopedMcpAuthConfig,
-} from "./auth.ts";
 export { MCP_OUTPUT_WRAP_KEY, type McpToolCodec } from "./tool-codec.ts";
 export { mcpContent, isMcpContentValidator, type McpContentValidator } from "./content.ts";
 
@@ -141,11 +127,11 @@ export type McpToolFunction<S extends Schema = Schema> = {
  * One tool: the function, plus everything about publishing it that belongs to
  * this endpoint rather than to the function.
  *
- * `access` is typed against the endpoint's provider, so a scope the provider
+ * `access` is typed against the application's scope vocabulary, so a scope it
  * never declared is a compile error. It defaults to `"authenticated"` — any
- * valid token on the provider, never an anonymous caller. `"public"` exists and
- * must be written, so opening a tool to unauthenticated callers reads as a
- * decision rather than as an omission.
+ * authenticated Identity, never an anonymous caller. `"public"` exists and must
+ * be written, so opening a tool to unauthenticated callers reads as a decision
+ * rather than as an omission.
  */
 export interface McpToolEntry<
   S extends Schema = Schema,
@@ -191,12 +177,9 @@ export type RegisteredMcpTools<Tools extends AnyMcpToolEntryRecord> = Readonly<{
 
 interface McpConfigBase<
   Name extends string,
-  Auth extends AnyMcpAuthProvider,
   Tools extends AnyMcpToolEntryRecord,
 > {
   readonly name: Name;
-  /** The provider owning this endpoint's scope vocabulary and its tokens. */
-  readonly auth: Auth;
   readonly tools: Tools;
   readonly instructions?: string;
   readonly metadata?: McpEndpointMetadata;
@@ -204,9 +187,8 @@ interface McpConfigBase<
 
 export interface DefaultMcpConfig<
   Name extends string,
-  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
   Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
-> extends McpConfigBase<Name, Auth, Tools> {
+> extends McpConfigBase<Name, Tools> {
   readonly path?: undefined;
   readonly private?: false;
 }
@@ -214,9 +196,8 @@ export interface DefaultMcpConfig<
 export interface CustomMcpConfig<
   Name extends string,
   Path extends string,
-  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
   Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
-> extends McpConfigBase<Name, Auth, Tools> {
+> extends McpConfigBase<Name, Tools> {
   readonly path: Path;
   readonly private?: false;
 }
@@ -228,9 +209,8 @@ export interface CustomMcpConfig<
  */
 export interface PrivateMcpConfig<
   Name extends string,
-  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
   Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
-> extends McpConfigBase<Name, Auth, Tools> {
+> extends McpConfigBase<Name, Tools> {
   readonly private: true;
   readonly path?: never;
 }
@@ -245,7 +225,6 @@ export interface McpEndpointDeclaration<
   /** `null` when the endpoint is private and therefore claims no route. */
   readonly path: Path;
   readonly private: boolean;
-  readonly auth: AnyMcpAuthProvider;
   readonly instructions?: string;
   readonly metadata: McpEndpointMetadata;
   readonly tools: [Tools] extends [AnyMcpToolEntryRecord]
@@ -275,29 +254,26 @@ export type McpDeclaration<
 /** Runtime-facing endpoint shape with schema and exact tool keys deliberately erased. */
 export type AnyMcpDeclaration = McpEndpointDeclaration<string, string | null>;
 
-export interface McpBuilder<S extends Schema> {
+export interface McpBuilder<S extends Schema, Scope extends string = string> {
   <
     const Name extends string,
-    const Auth extends AnyMcpAuthProvider,
-    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
+    const Tools extends McpToolEntryRecord<S, Scope>,
   >(
-    config: DefaultMcpConfig<Name, Auth, Tools>,
-  ): McpDeclaration<Name, S, "/mcp", McpAuthScope<Auth>, Tools>;
+    config: DefaultMcpConfig<Name, Tools>,
+  ): McpDeclaration<Name, S, "/mcp", Scope, Tools>;
   <
     const Name extends string,
     const Path extends string,
-    const Auth extends AnyMcpAuthProvider,
-    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
+    const Tools extends McpToolEntryRecord<S, Scope>,
   >(
-    config: CustomMcpConfig<Name, Path, Auth, Tools>,
-  ): McpDeclaration<Name, S, Path, McpAuthScope<Auth>, Tools>;
+    config: CustomMcpConfig<Name, Path, Tools>,
+  ): McpDeclaration<Name, S, Path, Scope, Tools>;
   <
     const Name extends string,
-    const Auth extends AnyMcpAuthProvider,
-    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
+    const Tools extends McpToolEntryRecord<S, Scope>,
   >(
-    config: PrivateMcpConfig<Name, Auth, Tools>,
-  ): McpDeclaration<Name, S, null, McpAuthScope<Auth>, Tools>;
+    config: PrivateMcpConfig<Name, Tools>,
+  ): McpDeclaration<Name, S, null, Scope, Tools>;
 }
 
 function endpointMetadata(value: unknown): McpEndpointMetadata {
@@ -375,7 +351,6 @@ function assembleMcpTool(
   name: string,
   entry: AnyMcpToolEntry,
   mcp: AnyMcpDeclaration,
-  scopeDescriptor: McpScopeDescriptor | undefined,
 ): AnyRegisteredMcpTool {
   const where = `MCP tool "${name}"`;
   if (!TOOL_NAME.test(name) || byteLength(name) > MAX_MCP_TOOL_NAME_BYTES) {
@@ -427,13 +402,9 @@ function assembleMcpTool(
   if (entry.private !== undefined && typeof entry.private !== "boolean") {
     throw new TypeError(`${where} private must be a boolean`);
   }
-  // Absent access is "authenticated": any valid token on the provider, never an
+  // Absent access is "authenticated": any authenticated Identity, never an
   // anonymous caller. Opening a tool to those is spelled `"public"`.
-  const accessPolicy = normalizeMcpToolAccess(
-    entry.access ?? "authenticated",
-    scopeDescriptor,
-    name,
-  );
+  const accessPolicy = normalizeMcpToolAccess(entry.access ?? "authenticated", name);
   const codec = compileMcpToolCodec(where, fn);
   const tool = {
     isAckerDBServerOnly: true as const,
@@ -456,20 +427,17 @@ function assembleMcpTool(
 
 export function mcp<
   const Name extends string,
-  const Auth extends AnyMcpAuthProvider,
-  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
->(config: DefaultMcpConfig<Name, Auth, Tools>): McpDeclaration<Name, Schema, "/mcp", McpAuthScope<Auth>, Tools>;
+  const Tools extends McpToolEntryRecord<Schema, string>,
+>(config: DefaultMcpConfig<Name, Tools>): McpDeclaration<Name, Schema, "/mcp", string, Tools>;
 export function mcp<
   const Name extends string,
   const Path extends string,
-  const Auth extends AnyMcpAuthProvider,
-  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
->(config: CustomMcpConfig<Name, Path, Auth, Tools>): McpDeclaration<Name, Schema, Path, McpAuthScope<Auth>, Tools>;
+  const Tools extends McpToolEntryRecord<Schema, string>,
+>(config: CustomMcpConfig<Name, Path, Tools>): McpDeclaration<Name, Schema, Path, string, Tools>;
 export function mcp<
   const Name extends string,
-  const Auth extends AnyMcpAuthProvider,
-  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
->(config: PrivateMcpConfig<Name, Auth, Tools>): McpDeclaration<Name, Schema, null, McpAuthScope<Auth>, Tools>;
+  const Tools extends McpToolEntryRecord<Schema, string>,
+>(config: PrivateMcpConfig<Name, Tools>): McpDeclaration<Name, Schema, null, string, Tools>;
 export function mcp(
   config:
     | DefaultMcpConfig<string>
@@ -482,7 +450,6 @@ export function mcp(
   for (const key of Object.keys(config).sort()) {
     if (
       key !== "name" &&
-      key !== "auth" &&
       key !== "path" &&
       key !== "private" &&
       key !== "instructions" &&
@@ -493,10 +460,6 @@ export function mcp(
     }
   }
   const name = mcpName(config.name, "MCP name");
-  if (!isMcpAuthProvider(config.auth)) {
-    throw new TypeError(`MCP "${name}" auth must be an mcpAuth(...) provider`);
-  }
-  const auth = config.auth;
   const isPrivate = (config as { readonly private?: unknown }).private === true;
   if ((config as { readonly private?: unknown }).private !== undefined &&
     typeof (config as { readonly private?: unknown }).private !== "boolean") {
@@ -534,7 +497,6 @@ export function mcp(
     name,
     path,
     private: isPrivate,
-    auth,
     ...(instructions === undefined ? {} : { instructions }),
     metadata,
     aiTools(
@@ -563,7 +525,7 @@ export function mcp(
   const claimed = new Map<AnyRegistered, string>();
   for (const toolName of Object.keys(config.tools).sort()) {
     const entry = (config.tools as AnyMcpToolEntryRecord)[toolName]!;
-    const tool = assembleMcpTool(toolName, entry, declaration, auth.scopes);
+    const tool = assembleMcpTool(toolName, entry, declaration);
     const existing = claimed.get(tool.fn);
     if (existing !== undefined) {
       throw new TypeError(
@@ -621,16 +583,6 @@ export function finalizeMcpToolResult(
 }
 
 export type {
-  CreatedMcpToken,
-  McpTokenCreateInput,
-  McpTokenDescriptor,
-  McpTokenOperations,
-  McpTokenUpdateInput,
-  SystemMcpTokenOperations,
-} from "./token-context.ts";
-export type {
-  McpScopeDescriptor,
-  McpScopeValues,
   McpToolAccessPolicy,
   NormalizedMcpToolAccessPolicy,
-} from "./scopes.ts";
+} from "./tool-access.ts";

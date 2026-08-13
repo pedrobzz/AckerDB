@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseSseAckRequest,
@@ -49,7 +49,7 @@ const encoder = new TextEncoder();
 interface HttpJournal {
   /** Chronological per-function stream paths the client dispatched to. */
   readonly dispatches: string[];
-  /** Every `/api/_sse/ack` request the client issued, parsed. */
+  /** Every `/_sse/ack` request the client issued, parsed. */
   readonly acknowledgments: SseAckRequest[];
 }
 
@@ -72,7 +72,7 @@ function harness(
   const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
   const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
-    if (path === "/api/_sse/ack") {
+    if (path === "/_sse/ack") {
       journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
       return Promise.resolve(new Response(null, { status: 204 }));
     }
@@ -158,7 +158,7 @@ function openSse(stream = "stream-1"): OpenBody & { chunk(seq: number, value: un
     ...open,
     chunk(seq, value) {
       return open.push(
-        `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_chunk", seq, proof: `proof-${seq}`, value })}\n\n`,
+        `data: ${encode({ v: ACKERDB_VERSION, t: "sse_chunk", seq, proof: `proof-${seq}`, value })}\n\n`,
       );
     },
   };
@@ -183,7 +183,7 @@ describe("non-resumable work started while suspended", () => {
     const { client, clock, sockets, port, journal } = harness({});
     port.suspend();
 
-    const refusal = await client.procedure("tools.echo", {});
+    const refusal = await client.procedure("api.tools.echo", {});
     if (refusal.ok) throw new Error("expected a suspended procedure to fail");
     expectSuspensionOutcome(refusal.error, {
       code: "unavailable",
@@ -200,12 +200,11 @@ describe("non-resumable work started while suspended", () => {
     expect(sockets).toHaveLength(2);
 
     // The client itself is fully usable again after activation.
-    const resumed = client.procedure<Record<never, never>, string>("tools.echo", {});
+    const resumed = client.procedure<Record<never, never>, string>("api.tools.echo", {});
     expect(sockets).toHaveLength(2);
     sockets[1]!.welcome(client.clientSessionId);
     const request = sockets[1]!.lastFrame("p");
     sockets[1]!.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -228,7 +227,7 @@ describe("non-resumable work started while suspended", () => {
     });
     port.suspend();
 
-    const iterator = client.sse("stream.ticks", {})[Symbol.asyncIterator]();
+    const iterator = client.sse("api.stream.ticks", {})[Symbol.asyncIterator]();
     const refusal = await iterator.next().catch((error) => error);
     expectSuspensionOutcome(refusal, {
       code: "unavailable",
@@ -246,7 +245,7 @@ describe("non-resumable work started while suspended", () => {
     expect(journal.dispatches).toEqual([]);
 
     // A fresh stream after activation is ordinary work.
-    const fresh = client.sse<Record<never, never>, { tick: number }>("stream.ticks", {})[
+    const fresh = client.sse<Record<never, never>, { tick: number }>("api.stream.ticks", {})[
       Symbol.asyncIterator
     ]();
     expect(await fresh.next()).toEqual({ done: false, value: { tick: 0 } });
@@ -266,7 +265,7 @@ describe("non-resumable work started while suspended", () => {
     const { client, port, journal } = harness({ sse: () => scripted.response });
 
     port.suspend();
-    const createdSuspended = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const createdSuspended = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     // Nothing dispatched, nothing reserved, nothing pending: no work exists.
@@ -284,7 +283,7 @@ describe("non-resumable work started while suspended", () => {
     const scripted = openSse();
     const { client, port, journal } = harness({ sse: () => scripted.response });
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     port.suspend();
@@ -305,13 +304,13 @@ describe("non-resumable work started while suspended", () => {
     controller.abort();
 
     const procedureOutcome = mustErr(
-      await client.procedure("tools.echo", {}, { signal: controller.signal }),
+      await client.procedure("api.tools.echo", {}, { signal: controller.signal }),
     );
     expect(procedureOutcome.message).toBe("procedure request was canceled");
     expect(procedureOutcome.interruption).toBeUndefined();
 
     const sseOutcome = (await client
-      .sse("stream.ticks", {}, { signal: controller.signal })
+      .sse("api.stream.ticks", {}, { signal: controller.signal })
       .next()
       .catch((error) => error)) as AckerDBClientError;
     expect(sseOutcome.message).toBe("SSE request was canceled");
@@ -327,7 +326,7 @@ describe("suspension settles in-flight procedures", () => {
 
     // A caller abort before suspension keeps the plain indeterminate outcome.
     const canceled = client
-      .procedure("tools.echo", {}, { signal: abortable.signal })
+      .procedure("api.tools.echo", {}, { signal: abortable.signal })
       .then(mustErr);
     sockets[0]!.welcome(client.clientSessionId);
     const canceledRequest = sockets[0]!.lastFrame("p");
@@ -338,7 +337,7 @@ describe("suspension settles in-flight procedures", () => {
     expect(callerOutcome.interruption).toBeUndefined();
     expect(sockets[0]!.lastFrame("cancel").id).toBe(canceledRequest.id);
 
-    const suspended = client.procedure("tools.echo", {}).then(mustErr);
+    const suspended = client.procedure("api.tools.echo", {}).then(mustErr);
     const suspendedRequest = sockets[0]!.lastFrame("p");
     port.suspend();
     expectSuspensionOutcome(await suspended, {
@@ -353,7 +352,7 @@ describe("suspension settles in-flight procedures", () => {
 
     // close() on a fresh client settles the same boundary without the marker.
     const closing = harness({});
-    const closed = closing.client.procedure("tools.echo", {}).then(mustErr);
+    const closed = closing.client.procedure("api.tools.echo", {}).then(mustErr);
     closing.sockets[0]!.welcome(closing.client.clientSessionId);
     closing.client.close();
     const closedOutcome = (await closed) as AckerDBClientError;
@@ -363,7 +362,7 @@ describe("suspension settles in-flight procedures", () => {
 
   test("suspension sends a best-effort cancel and a late result is inert", async () => {
     const { client, clock, sockets, port } = harness({});
-    const call = client.procedure("tools.echo", {}).then(mustErr);
+    const call = client.procedure("api.tools.echo", {}).then(mustErr);
     sockets[0]!.welcome(client.clientSessionId);
     const request = sockets[0]!.lastFrame("p");
     port.suspend();
@@ -374,7 +373,6 @@ describe("suspension settles in-flight procedures", () => {
     });
     expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: request.id,
       kind: "procedure",
@@ -387,7 +385,7 @@ describe("suspension settles in-flight procedures", () => {
   test("a stale frame after resume settles nothing on the replacement generation", async () => {
     const { client, sockets, port, journal } = harness({});
 
-    const interrupted = client.procedure("tools.echo", {});
+    const interrupted = client.procedure("api.tools.echo", {});
     sockets[0]!.welcome(client.clientSessionId);
     const staleRequest = sockets[0]!.lastFrame("p");
     port.suspend();
@@ -400,20 +398,18 @@ describe("suspension settles in-flight procedures", () => {
     });
 
     port.resume();
-    const replacement = client.procedure("tools.echo", {});
+    const replacement = client.procedure("api.tools.echo", {});
     expect(sockets).toHaveLength(2);
     sockets[1]!.welcome(client.clientSessionId);
     const replacementRequest = sockets[1]!.lastFrame("p");
 
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: staleRequest.id,
       kind: "procedure",
       value: "stale",
     });
     sockets[1]!.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: replacementRequest.id,
       kind: "procedure",
@@ -432,7 +428,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const pending = deferred<Response>();
     const { client, clock, port, journal } = harness({ sse: () => pending.promise });
 
-    const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const iterator = client.sse("api.stream.hold", {})[Symbol.asyncIterator]();
     const first = iterator.next().catch((error) => error);
     await Bun.sleep(0);
     expect(journal.dispatches).toEqual(["/api/stream/hold"]);
@@ -463,7 +459,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const scripted = openSse();
     const { client, clock, port, journal } = harness({ sse: () => scripted.response });
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     scripted.chunk(1, { tick: 0 });
@@ -502,7 +498,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const scripted = openSse();
     const { client, clock, port, journal } = harness({ sse: () => scripted.response });
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     scripted.chunk(1, { tick: 0 });
@@ -512,7 +508,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const second = iterator.next().catch((error) => error);
     await Bun.sleep(0);
     expect(journal.acknowledgments).toEqual([
-      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
 
     port.suspend();
@@ -539,7 +535,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
         clock,
         fetch: (url, init) => {
           const path = new URL(url).pathname;
-          if (path === "/api/_sse/ack") {
+          if (path === "/_sse/ack") {
             heldAcks++;
             journalAcks.push(parseSseAckRequest(decode(String(init?.body))));
             return new Promise<Response>(() => {});
@@ -549,7 +545,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
       },
     );
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     scripted.chunk(1, { tick: 0 });
@@ -582,7 +578,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const errorBody = openBody({ status: 503 });
     const { client, port } = harness({ sse: () => errorBody.response });
 
-    const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const iterator = client.sse("api.stream.hold", {})[Symbol.asyncIterator]();
     const first = iterator.next().catch((error) => error);
     await Bun.sleep(0);
 
@@ -602,7 +598,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const scripted = openSse();
     const { client, port } = harness({ sse: () => scripted.response });
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     scripted.chunk(1, { tick: 0 });
@@ -631,7 +627,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
       sse: () => (++dispatches === 1 ? stale.promise : replacement.response),
     });
 
-    const interrupted = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const interrupted = client.sse("api.stream.hold", {})[Symbol.asyncIterator]();
     const first = interrupted.next().catch((error) => error);
     await Bun.sleep(0);
     port.suspend();
@@ -643,7 +639,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     port.resume();
 
     // Replacement stream on the fresh generation.
-    const fresh = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const fresh = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     replacement.chunk(1, { tick: 7 });
@@ -661,7 +657,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     replacement.chunk(2, { tick: 8 });
     expect(await fresh.next()).toEqual({ done: false, value: { tick: 8 } });
     replacement.push(
-      `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_done", seq: 3, proof: "proof-3" })}\n\n`,
+      `data: ${encode({ v: ACKERDB_VERSION, t: "sse_done", seq: 3, proof: "proof-3" })}\n\n`,
     );
     expect(await fresh.next()).toEqual({ done: true, value: undefined });
     expect(journal.acknowledgments.map((acknowledgment) => acknowledgment.stream)).toEqual([
@@ -679,12 +675,11 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     const scripted = openSse();
     const { client, sockets, port, journal } = harness({ sse: () => scripted.response });
     const updates: unknown[] = [];
-    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
     sockets[0]!.welcome(client.clientSessionId);
     const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
     sockets[0]!.onmessage?.({
       data: encode({
-        v: PROTOCOL_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "reset", from: null, to: cursor(5n), value: ["one"] },
@@ -692,7 +687,7 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     });
     expect(updates).toEqual([["one"]]);
 
-    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
       Symbol.asyncIterator
     ]();
     scripted.chunk(1, { tick: 0 });
@@ -767,7 +762,7 @@ describe("suspension settlement against a real ackerdb server", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     const server = serve({ runtime, port: 0 });
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.
@@ -780,7 +775,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       clock,
       fetch: (url, init) => {
         const path = new URL(url).pathname;
-        if (path !== "/api/_sse/ack") requests.push(path);
+        if (path !== "/_sse/ack") requests.push(path);
         return fetch(url, init);
       },
       lifecycle: (livePort) => {
@@ -790,7 +785,7 @@ describe("suspension settlement against a real ackerdb server", () => {
     });
     try {
       const iterator = client.sse<Record<never, never>, { phase: string }>(
-        "stream.holdAfterFirst",
+        "api.stream.holdAfterFirst",
         {},
       )[Symbol.asyncIterator]();
       expect(await within(iterator.next(), "the first chunk")).toEqual({
@@ -801,7 +796,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       await until(() => runtime.status().activeSse === 1, "the server stream to register");
 
       // A real procedure held open on the server at the same moment.
-      const held = client.procedure("tools.hold", {}).then(mustErr);
+      const held = client.procedure("api.tools.hold", {}).then(mustErr);
       await within(procedureStarted.promise, "the held procedure to start");
 
       port!.suspend();
@@ -830,7 +825,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       port!.resume();
       await Bun.sleep(10);
       expect(requests.length).toBe(dispatched);
-      const fresh = client.sse<Record<never, never>, { tick: number }>("stream.ticks", {})[
+      const fresh = client.sse<Record<never, never>, { tick: number }>("api.stream.ticks", {})[
         Symbol.asyncIterator
       ]();
       expect(await within(fresh.next(), "the fresh stream's chunk")).toEqual({

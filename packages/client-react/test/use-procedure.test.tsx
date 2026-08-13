@@ -1,5 +1,6 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,13 +59,13 @@ type Ctx = any;
 // Typed references as codegen would emit them for the registry below.
 const api = {
   tools: {
-    echo: { $ref: "tools.echo" } as ProcedureRef<{ value: string }, string>,
-    observe: { $ref: "tools.observe" } as ProcedureRef<
+    echo: { $ref: "api.tools.echo" } as ProcedureRef<{ value: string }, string>,
+    observe: { $ref: "api.tools.observe" } as ProcedureRef<
       { value: string },
       { readonly run: number; readonly value: string }
     >,
-    fail: { $ref: "tools.fail" } as ProcedureRef<Record<never, never>, never>,
-    block: { $ref: "tools.block" } as ProcedureRef<Record<never, never>, string>,
+    fail: { $ref: "api.tools.fail" } as ProcedureRef<Record<never, never>, never>,
+    block: { $ref: "api.tools.block" } as ProcedureRef<Record<never, never>, string>,
   },
 };
 
@@ -139,7 +140,7 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
   return {
@@ -163,13 +164,14 @@ function createApp(): App {
 
 function observingSocket(url: string, onProcedure: () => void): AckerDBWebSocket {
   const native = new NativeWebSocket(url);
+  let sent = 0;
   const socket: AckerDBWebSocket = {
     onopen: null,
     onmessage: null,
     onclose: null,
     onerror: null,
     send(data) {
-      if (parseClientMessage(decode(data)).t === "p") onProcedure();
+      if (parseSentFrame(data, sent++).t === "p") onProcedure();
       native.send(data);
     },
     close(code, reason) {

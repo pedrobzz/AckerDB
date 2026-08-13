@@ -7,6 +7,7 @@ import {
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
+  refuseApiPathDeclaration,
   type ArgsInput,
   type Invocable,
   type ProcedureCtx,
@@ -345,6 +346,7 @@ export type RealtimeBuilder<
 >;
 
 export const realtime: RealtimeBuilder<Schema> = (definition) => {
+  refuseApiPathDeclaration(definition, "a realtime declaration");
   if (!isAccessPolicy(definition.access)) {
     throw new TypeError(
       "realtime access must be public, authenticated, system, or a policy callback",

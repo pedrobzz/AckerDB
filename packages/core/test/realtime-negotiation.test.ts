@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PerfectNegotiation,
-  REALTIME_PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type NativeRTCIceCandidateInit,
   type NativeRTCSessionDescriptionInit,
   type NativeRTCSignalingState,
@@ -89,19 +89,19 @@ function fixture(options?: {
 }
 
 const candidateFrame = (candidate = CANDIDATE): RealtimeSignalFrame => ({
-  v: REALTIME_PROTOCOL_VERSION,
+  v: ACKERDB_VERSION,
   t: "signal_candidate",
   candidate,
 });
 
 const offerFrame = (sdp: string): RealtimeSignalFrame => ({
-  v: REALTIME_PROTOCOL_VERSION,
+  v: ACKERDB_VERSION,
   t: "signal_description",
   description: { type: "offer", sdp },
 });
 
 const answerFrame = (sdp: string): RealtimeSignalFrame => ({
-  v: REALTIME_PROTOCOL_VERSION,
+  v: ACKERDB_VERSION,
   t: "signal_description",
   description: { type: "answer", sdp },
 });

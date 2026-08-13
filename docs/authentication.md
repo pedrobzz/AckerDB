@@ -8,7 +8,7 @@ decides whether that principal may perform the operation.
 ## Credentials and principals
 
 `AckerDBClientOptions.credential` is required. A WebSocket sends that credential
-in its Protocol 5 `hello` frame and can replace it in-band with
+in its `hello` frame and can replace it in-band with
 `client.refreshCredential(...)`. HTTP procedures and SSE procedures send the
 same credential as an `Authorization` header on every request.
 
@@ -222,6 +222,12 @@ of principal, and its cause is not exposed. Access is checked after argument
 validation and before the handler starts. Nested calls run the callee's
 validation and policy too.
 
+A function may additionally declare a `scopes` requirement, enforced at this
+same funnel immediately after the policy above. The policy decides whether a
+caller is admitted at all; the requirement decides what an admitted caller may
+reach. See [Scopes and identity credentials](scopes.md) for the vocabulary,
+wildcard grants, and the credential vault that issues them.
+
 ## External OIDC configuration
 
 The CLI reads OIDC configuration from `.ackerdb.config.json` and passes it to
@@ -373,12 +379,15 @@ old principal is never silently restored.
 Every accepted bearer presentation — the `welcome` and each `auth`
 acknowledgement — carries `credentialTtlMs`, the server's **credential TTL
 disclosure**: the remaining validity of the accepted credential as a relative
-duration, computed at frame send. It exists so a client can refresh
-proactively without assuming any credential format (client-side token
-parsing would break the format-opaque `credentialVerifier` contract).
-Anonymous principals disclose nothing. The client's
-[credential source](client-react.md#credential-source) schedules its
-proactive re-pull from this disclosure.
+duration, computed at frame send — or `null` for a credential that does not
+expire. It exists so a client can refresh proactively without assuming any
+credential format (client-side token parsing would break the format-opaque
+`credentialVerifier` contract). Anonymous principals disclose nothing. The
+client's [credential source](client-react.md#credential-source) schedules its
+proactive re-pull from this disclosure, and arms nothing for `null`: an
+[identity credential](scopes.md#identity-credentials) ends by revocation rather
+than by the clock, so there is no expiry to get ahead of. The field is still
+always present, because a client must never have to read silence as a value.
 
 The server owns a hard timer for `expiresAt` and closes a session that is not
 refreshed in time. The built-in OIDC verifier advertises
@@ -404,7 +413,7 @@ with an exact expiry timer and a matching invalidation subscription. An
 anonymous request allocates neither a verifier listener nor an expiry timer.
 
 For an HTTP procedure, AckerDB holds the lease through Runtime execution,
-Protocol 5 encoding, and handoff of the constructed `Response`. Expiry, a
+wire encoding, and handoff of the constructed `Response`. Expiry, a
 matching invalidation, or caller cancellation aborts the Runtime signal and
 prevents it from accepting a stale result. The lease releases at that encoded
 `Response` handoff, not at response-body or network completion.
@@ -415,35 +424,14 @@ Runtime-shutdown signal so long-running asynchronous work can cooperate;
 For SSE, ownership transfers to the response body. The lease remains held
 until that body completes, errors, or is canceled, and those same abort sources
 fail the Runtime producer closed. The response body itself remains open while
-the Runtime owns unacknowledged Protocol 5 frames: application chunks require a
+the Runtime owns unacknowledged wire frames: application chunks require a
 valid capability/proof acknowledgement, and completion or failure requires a
 terminal acknowledgement or finite terminal-grace expiry. The acknowledgement
 endpoint deliberately carries no bearer credential and performs no second
 identity verification; its unguessable stream/frame capabilities authorize
 only byte release, while the original SSE lease continues to own the verified
 principal and revocation signal. This proves receiver participation in the
-Protocol 5 exchange, not durable processing of application side effects.
-
-## Authentication telemetry
-
-When telemetry is enabled, credential verification for an HTTP procedure or
-SSE call emits a sanitized `auth` span. A parsed call carries the same
-request/function trace through Runtime: an HTTP procedure keeps it through the
-encoded `Response` handoff, while SSE keeps it through the Runtime producer's
-acknowledged terminal path or terminal-grace force close. Malformed calls or
-credential failures before Runtime still close their own pre-Runtime trace and
-emit one sanitized failure event. HTTP response handoff does not claim network
-receipt; SSE delivery observations classify valid receiver acknowledgement,
-cancellation, and terminal timeout without capturing the capability or chunk.
-
-WebSocket hello, bearer refresh, and anonymous sign-out verification use
-separate lifecycle traces. Their connection correlation is a hash of the client
-session ID, and their request correlation is `hello` or the auth attempt ID.
-Telemetry never records credentials, authorization headers, principals/claims,
-arguments, results, stream chunks, or verifier error messages/causes. Disabled
-telemetry attaches no auth observer or trace state. See
-[Telemetry](telemetry.md#credential-verification-correlation) for the exact
-stages, ownership, and limitations.
+wire exchange, not durable processing of application side effects.
 
 ## Operational status authority
 

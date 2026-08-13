@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   parseClientMessage,
   type AuthenticationDescriptor,
@@ -30,7 +30,7 @@ import {
   type AckerDBLiveEvent,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
-import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+import { FakeSocket, ManualClock, parseSentFrame } from "ackerdb-test-support/client-transport";
 import { createHarness, cursor, mustOk } from "./support/harness.ts";
 
 import {
@@ -75,7 +75,6 @@ function transition(
   from: SubscriptionCursor | null = null,
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "transition",
     id,
     transition:
@@ -95,7 +94,6 @@ function mutationOk(
   } = {},
 ): ServerMessage {
   return {
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: frame.id,
     kind: "mutation",
@@ -116,7 +114,7 @@ function liveEvent(
     | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: unknown }
     | { readonly kind: "gap" | "reset"; readonly cursor: LiveEventCursor },
 ): ServerMessage {
-  return { v: PROTOCOL_VERSION, t: "event", id, event };
+  return { t: "event", id, event };
 }
 
 /** Total mutation frames carrying `mutationRequestId` across every socket. */
@@ -138,7 +136,7 @@ describe("mutation convergence across suspension", () => {
     port.suspend();
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -166,7 +164,7 @@ describe("mutation convergence across suspension", () => {
     first.welcome(client.clientSessionId);
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -199,7 +197,7 @@ describe("mutation convergence across suspension", () => {
   test("boundary mid-response: a receipt held for convergence survives suspension and settles once with its original result", async () => {
     const { client, sockets, port } = createHarness();
     const updates: unknown[] = [];
-    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
@@ -208,7 +206,7 @@ describe("mutation convergence across suspension", () => {
     first.receive(transition(subscription.id, c1, ["one"]));
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -253,7 +251,7 @@ describe("mutation convergence across suspension", () => {
 
   test("boundary mid-response: a replayed receipt may settle before subscription convergence, and the late transition cannot double-settle", async () => {
     const { client, sockets, port } = createHarness();
-    client.subscribe("todos.list", { list: 1n }, () => {});
+    client.subscribe("api.todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
@@ -261,7 +259,7 @@ describe("mutation convergence across suspension", () => {
     first.receive(transition(subscription.id, c1, ["one"]));
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -294,7 +292,7 @@ describe("mutation convergence across suspension", () => {
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
 
-    const result = client.mutation("todos.add", { text: "milk" }).then(mustOk);
+    const result = client.mutation("api.todos.add", { text: "milk" }).then(mustOk);
     const issued = first.lastFrame("m");
     first.receive(mutationOk(issued, 7n));
     expect(await result).toBe(7n);
@@ -313,7 +311,7 @@ describe("mutation convergence across suspension", () => {
       credential: { kind: "bearer", token: "token-a" },
     });
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -321,7 +319,7 @@ describe("mutation convergence across suspension", () => {
     first.receive(liveEvent(first.lastFrame("sub").id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -337,7 +335,7 @@ describe("mutation convergence across suspension", () => {
     // fresh connection must verify it before any retained work is sent.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -350,7 +348,6 @@ describe("mutation convergence across suspension", () => {
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
 
     second.receive({
-      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 2,
@@ -383,7 +380,7 @@ describe("mutation convergence across suspension", () => {
     first.welcome(client.clientSessionId);
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -421,7 +418,7 @@ describe("mutation convergence across suspension", () => {
     });
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
-    const result = client.mutation("todos.add", { text: "milk" });
+    const result = client.mutation("api.todos.add", { text: "milk" });
     const issued = first.lastFrame("m");
 
     port.suspend();
@@ -445,9 +442,9 @@ describe("mutation convergence across suspension", () => {
   test("close during suspension settles sent mutations as indeterminate and unsent ones as unavailable", async () => {
     const { client, sockets, port } = createHarness();
     sockets[0]!.welcome(client.clientSessionId);
-    const sent = client.mutation("todos.add", { text: "milk" });
+    const sent = client.mutation("api.todos.add", { text: "milk" });
     port.suspend();
-    const unsent = client.mutation("todos.add", { text: "bread" });
+    const unsent = client.mutation("api.todos.add", { text: "bread" });
     client.close();
     const sentResult = await sent;
     const unsentResult = await unsent;
@@ -459,7 +456,7 @@ describe("mutation convergence across suspension", () => {
   test("a server Retry-After deadline holds recovery for both families, then one replay and one fresh reset land", async () => {
     const { client, clock, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -467,14 +464,14 @@ describe("mutation convergence across suspension", () => {
     first.receive(liveEvent(first.lastFrame("sub").id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
     });
     const issued = first.lastFrame("m");
     first.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -515,7 +512,7 @@ describe("event convergence across suspension", () => {
   test("backgrounding during subscription application delivers exactly one reset on recovery", () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -544,7 +541,7 @@ describe("event convergence across suspension", () => {
   test("a byte-identical reset cursor after recovery is still one fresh boundary, and a duplicate within a connection is not", () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -573,7 +570,7 @@ describe("event convergence across suspension", () => {
   test("backgrounding during live delivery: missed events are never replayed and one reset precedes new rows", () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -617,7 +614,7 @@ describe("event convergence across suspension", () => {
     const h = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     h.client.subscribeEvent<Record<never, never>, { n: number }>(
-      "events.pings",
+      "api.events.pings",
       {},
       (event) => {
         events.push(event);
@@ -664,7 +661,7 @@ describe("event convergence across suspension", () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     const unsubscribe = client.subscribeEvent<Record<never, never>, { n: number }>(
-      "events.pings",
+      "api.events.pings",
       {},
       (event) => events.push(event),
     );
@@ -686,7 +683,7 @@ describe("event convergence across suspension", () => {
   test("repeated lifecycle cycles with stale-generation injection cannot duplicate identities, resets, or delivery", async () => {
     const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
-    client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
+    client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
@@ -695,7 +692,7 @@ describe("event convergence across suspension", () => {
     first.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
-    const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const result = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       settlements++;
       if (!value.ok) throw value.error;
       return value.data;
@@ -711,7 +708,7 @@ describe("event convergence across suspension", () => {
       for (const retired of sockets) {
         retired.open();
         retired.receive({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "welcome",
           clientSessionId: client.clientSessionId,
           authEpoch: 9,
@@ -732,7 +729,6 @@ describe("event convergence across suspension", () => {
           }),
         );
         retired.receive({
-          v: PROTOCOL_VERSION,
           t: "auth",
           attemptId: 99,
           authEpoch: 9,
@@ -815,7 +811,7 @@ const realSchema = defineSchema({
 type Ctx = any;
 
 /**
- * A test-controlled pause inside the real `messages.send` handler, keyed by
+ * A test-controlled pause inside the real `api.messages.send` handler, keyed by
  * message body: the one deterministic way to background a client while its
  * mutation is admitted but not yet committed. `entries` counts handler
  * executions — the direct observation that a replay arriving during the
@@ -907,7 +903,6 @@ async function createRealApp(): Promise<RealApp> {
     engine,
     registry: realRegistry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
@@ -959,8 +954,9 @@ function suspendableClient(
     createWebSocket: (target) => {
       const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
       const send = socket.send.bind(socket);
+      let sent = 0;
       socket.send = (data: string) => {
-        clientFrames.push(parseClientMessage(decode(data)));
+        clientFrames.push(parseSentFrame(data, sent++));
         send(data);
       };
       return socket;
@@ -988,7 +984,7 @@ function proxiedMutations(proxy: FrameProxy, body: string): Extract<ClientMessag
 }
 
 async function committedRows(app: RealApp, channelId: bigint, body: string): Promise<MessageRow[]> {
-  const rows = mustOk(await app.observer.query("messages.list", { channelId })) as MessageRow[];
+  const rows = mustOk(await app.observer.query("api.messages.list", { channelId })) as MessageRow[];
   return rows.filter((row) => row.body === body);
 }
 
@@ -1008,7 +1004,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     port.suspend();
     let settlements = 0;
     const result = client
-      .mutation("messages.send", { channelId: 10n, body: "before-send" })
+      .mutation("api.messages.send", { channelId: 10n, body: "before-send" })
       .then((value) => {
         settlements++;
         if (!value.ok) throw value.error;
@@ -1037,7 +1033,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     );
     let settlements = 0;
     const result = client
-      .mutation("messages.send", { channelId: 11n, body: "held-send" })
+      .mutation("api.messages.send", { channelId: 11n, body: "held-send" })
       .then((value) => {
         settlements++;
         if (!value.ok) throw value.error;
@@ -1097,7 +1093,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
       try {
         let settlements = 0;
         const result = client
-          .mutation("messages.send", { channelId: 15n, body: "in-flight" })
+          .mutation("api.messages.send", { channelId: 15n, body: "in-flight" })
           .then((value) => {
             settlements++;
             if (!value.ok) throw value.error;
@@ -1189,7 +1185,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     );
     let settlements = 0;
     const result = client
-      .mutation("messages.send", { channelId: 12n, body: "held-receipt" })
+      .mutation("api.messages.send", { channelId: 12n, body: "held-receipt" })
       .then((value) => {
         settlements++;
         if (!value.ok) throw value.error;
@@ -1233,7 +1229,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
   test("background mid-convergence: a live subscription and the replay converge to one effect and one settlement", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
     const updates: MessageRow[][] = [];
-    client.subscribe("messages.list", { channelId: 14n }, (value) =>
+    client.subscribe("api.messages.list", { channelId: 14n }, (value) =>
       updates.push(value as MessageRow[]),
     );
     await waitForPhase(client, "ready");
@@ -1246,7 +1242,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     const held = app.proxy.holdNextServerFrame((message) => message.t === "transition");
     let settlements = 0;
     const result = client
-      .mutation("messages.send", { channelId: 14n, body: "converge" })
+      .mutation("api.messages.send", { channelId: 14n, body: "converge" })
       .then((value) => {
         settlements++;
         if (!value.ok) throw value.error;
@@ -1283,7 +1279,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
 
     let settlements = 0;
     const result = client
-      .mutation("messages.send", { channelId: 13n, body: "settled" })
+      .mutation("api.messages.send", { channelId: 13n, body: "settled" })
       .then((value) => {
         settlements++;
         if (!value.ok) throw value.error;
@@ -1297,7 +1293,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     await waitForPhase(client, "ready");
     // A round-trip through the recovered connection is the barrier proving
     // the recovery flush finished without replaying the settled identity.
-    await within(client.query("messages.list", { channelId: 13n }), "the barrier query");
+    await within(client.query("api.messages.list", { channelId: 13n }), "the barrier query");
     expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
     expect(await committedRows(app, 13n, "settled")).toEqual([
       { id: id as bigint, channelId: 13n, body: "settled" },
@@ -1313,7 +1309,7 @@ describe("event boundaries against a real ackerdb server", () => {
     const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
     const kinds = (): string[] => events.map((event) => event.kind);
     client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
-      "events.pings",
+      "api.events.pings",
       { min: 100 },
       (event) => events.push(event),
     );
@@ -1321,20 +1317,20 @@ describe("event boundaries against a real ackerdb server", () => {
     await until(() => kinds().length === 1, "the initial reset boundary");
     expect(kinds()).toEqual(["reset"]);
 
-    await app.observer.mutation("pings.emit", { n: 101 });
+    await app.observer.mutation("api.pings.emit", { n: 101 });
     await until(() => kinds().length === 2, "the first live row");
     expect(events[1]).toMatchObject({ kind: "row", row: { n: 101 } });
 
     port.suspend();
     // Published while backgrounded: lost for good, never replayed.
-    await app.observer.mutation("pings.emit", { n: 102 });
+    await app.observer.mutation("api.pings.emit", { n: 102 });
     await Bun.sleep(50);
     expect(kinds()).toEqual(["reset", "row"]);
 
     port.resume();
     await until(() => kinds().length === 3, "the recovery reset boundary");
     expect(kinds()).toEqual(["reset", "row", "reset"]);
-    await app.observer.mutation("pings.emit", { n: 103 });
+    await app.observer.mutation("api.pings.emit", { n: 103 });
     await until(() => kinds().length === 4, "the first row after recovery");
     expect(kinds()).toEqual(["reset", "row", "reset", "row"]);
     expect(events.flatMap((event) => (event.kind === "row" ? [event.row.n] : []))).toEqual([
@@ -1352,7 +1348,7 @@ describe("event boundaries against a real ackerdb server", () => {
     );
     const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
     client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
-      "events.pings",
+      "api.events.pings",
       { min: 200 },
       (event) => events.push(event),
     );
@@ -1367,7 +1363,7 @@ describe("event boundaries against a real ackerdb server", () => {
     port.resume();
     await until(() => events.length === 1, "the recovery reset boundary");
     expect(events.map((event) => event.kind)).toEqual(["reset"]);
-    await app.observer.mutation("pings.emit", { n: 201 });
+    await app.observer.mutation("api.pings.emit", { n: 201 });
     await until(() => events.length === 2, "the first row after recovery");
     expect(events[1]).toMatchObject({ kind: "row", row: { n: 201 } });
     client.close();
@@ -1386,7 +1382,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         engine,
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
-        telemetry: false,
       });
       const server = serve({ runtime, port: 0 });
       const serverPort = server.port;
@@ -1403,8 +1398,9 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         createWebSocket: (target) => {
           const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
           const send = socket.send.bind(socket);
+          let sent = 0;
           socket.send = (data: string) => {
-            clientFrames.push(parseClientMessage(decode(data)));
+            clientFrames.push(parseSentFrame(data, sent++));
             send(data);
           };
           return socket;
@@ -1420,7 +1416,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
         client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
-          "events.pings",
+          "api.events.pings",
           { min: 300 },
           (event) => events.push(event),
         );
@@ -1430,7 +1426,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         lifecyclePort!.suspend();
         let settlements = 0;
         const result = client
-          .mutation("messages.send", { channelId: 30n, body: "restart" })
+          .mutation("api.messages.send", { channelId: 30n, body: "restart" })
           .then((value) => {
             settlements++;
             if (!value.ok) throw value.error;
@@ -1458,7 +1454,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           engine: engine2,
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
-          telemetry: false,
         });
         restarted = { server: serve({ runtime: runtime2, port: serverPort }), engine: engine2 };
 
@@ -1478,7 +1473,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         });
         try {
           const rows = mustOk(
-            await observer.query("messages.list", { channelId: 30n }),
+            await observer.query("api.messages.list", { channelId: 30n }),
           ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "restart")).toEqual([
             { id: id as bigint, channelId: 30n, body: "restart" },
@@ -1488,7 +1483,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           // failed dials while the server was down added none.
           await until(() => kinds().length === 2, "the post-restart reset boundary");
           expect(kinds()).toEqual(["reset", "reset"]);
-          await observer.mutation("pings.emit", { n: 301 });
+          await observer.mutation("api.pings.emit", { n: 301 });
           await until(() => kinds().length === 3, "the first row after restart");
           expect(kinds()).toEqual(["reset", "reset", "row"]);
         } finally {
@@ -1517,7 +1512,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         engine,
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
-        telemetry: false,
       });
       const server = serve({ runtime, port: 0 });
       const upstreamPort = server.port;
@@ -1528,7 +1522,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
         client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
-          "events.pings",
+          "api.events.pings",
           { min: 400 },
           (event) => events.push(event),
         );
@@ -1542,7 +1536,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         );
         let settlements = 0;
         const result = client
-          .mutation("messages.send", { channelId: 40n, body: "durable" })
+          .mutation("api.messages.send", { channelId: 40n, body: "durable" })
           .then((value) => {
             settlements++;
             if (!value.ok) throw value.error;
@@ -1562,7 +1556,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         let committedId: bigint;
         try {
           const rows = mustOk(
-            await observerBefore.query("messages.list", { channelId: 40n }),
+            await observerBefore.query("api.messages.list", { channelId: 40n }),
           ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "durable")).toHaveLength(1);
           committedId = rows.find(({ body }) => body === "durable")!.id;
@@ -1581,7 +1575,6 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           engine: engine2,
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
-          telemetry: false,
         });
         restarted = { server: serve({ runtime: runtime2, port: upstreamPort }), engine: engine2 };
 
@@ -1620,14 +1613,14 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         });
         try {
           const rows = mustOk(
-            await observerAfter.query("messages.list", { channelId: 40n }),
+            await observerAfter.query("api.messages.list", { channelId: 40n }),
           ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "durable")).toEqual([
             { id: committedId, channelId: 40n, body: "durable" },
           ]);
           await until(() => kinds().length === 2, "the post-restart reset boundary");
           expect(kinds()).toEqual(["reset", "reset"]);
-          await observerAfter.mutation("pings.emit", { n: 401 });
+          await observerAfter.mutation("api.pings.emit", { n: 401 });
           await until(() => kinds().length === 3, "the first row after the durable replay");
           expect(kinds()).toEqual(["reset", "reset", "row"]);
         } finally {

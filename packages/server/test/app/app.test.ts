@@ -23,7 +23,8 @@ describe("defineApp", () => {
     expect(app.plugins).toEqual({});
     expect(Object.isFrozen(app.plugins)).toBe(true);
     expect(isApp(app)).toBe(true);
-    expect(Object.keys(app)).toEqual(["schema", "plugins"]);
+    expect(app.apiPaths).toEqual([]);
+    expect(Object.keys(app)).toEqual(["schema", "plugins", "apiPaths", "scopes"]);
     expect(Object.isFrozen(app)).toBe(true);
     expect(Reflect.set(app, "schema", defineSchema({}))).toBe(false);
     expect(app.schema).toBe(schema);
@@ -123,6 +124,48 @@ describe("defineApp", () => {
     );
     expect(() => defineApp({ schema, components: {} } as never)).toThrow(
       'unknown application option "components"',
+    );
+  });
+
+  test("declares the extra API paths whose bindings code generation emits", () => {
+    const schema = defineSchema({});
+
+    // Sorted like every other list code generation reads, so reordering the
+    // manifest never rewrites a generated file.
+    expect(defineApp({ schema, apiPaths: ["reports", "internal"] }).apiPaths).toEqual([
+      "internal",
+      "reports",
+    ]);
+    expect(Object.isFrozen(defineApp({ schema, apiPaths: [] }).apiPaths)).toBe(true);
+  });
+
+  test("rejects malformed API path declarations", () => {
+    const schema = defineSchema({});
+
+    expect(() => defineApp({ schema, apiPaths: "internal" as never })).toThrow(
+      "application apiPaths must be an array of group names",
+    );
+    expect(() => defineApp({ schema, apiPaths: ["_admin"] })).toThrow(
+      '"_" is reserved to AckerDB',
+    );
+    expect(() => defineApp({ schema, apiPaths: ["api"] })).toThrow(
+      'application apiPaths must not list "api" — every application publishes it',
+    );
+    // The framework publishes `admin` on every application's behalf too, so
+    // listing it would emit the binding twice into one generated file.
+    expect(() => defineApp({ schema, apiPaths: ["admin"] })).toThrow(
+      'application apiPaths must not list "admin" — every application publishes it',
+    );
+    // `events` is refused by the group rule itself, wherever it is written, so
+    // the manifest needs no separate carve-out for it.
+    expect(() => defineApp({ schema, apiPaths: ["events"] })).toThrow(
+      'must not be "events" — the generated api module already binds that name',
+    );
+    expect(() => defineApp({ schema, apiPaths: ["class"] })).toThrow(
+      'must not be "class"',
+    );
+    expect(() => defineApp({ schema, apiPaths: ["internal", "internal"] })).toThrow(
+      'application apiPaths repeats "internal"',
     );
   });
 

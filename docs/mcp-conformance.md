@@ -56,7 +56,7 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs the seven public and five native lockstep `@ackerdb/*` tarballs,
+This gate packs the eight public and five native lockstep `@ackerdb/*` tarballs,
 then installs the public packages plus the host-selected native package in a
 temporary consumer. It verifies:
 
@@ -65,7 +65,7 @@ temporary consumer. It verifies:
 - `@ackerdb/server/mcp` resolves and executes under Bun;
 - `@ackerdb/cache`, `@ackerdb/cache/redis`, and `@ackerdb/cache/upstash` resolve and
   construct without opening external connections;
-- packaged `acker codegen` emits schema-bound `mcp` and `mcpAuth` builders,
+- packaged `acker codegen` emits the schema-bound, vocabulary-typed `mcp` builder,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
 - `@ackerdb/server` pins `@modelcontextprotocol/sdk` to `1.30.0`. The clean

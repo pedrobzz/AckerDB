@@ -11,9 +11,9 @@ interface ChangeSet {
   readonly files: readonly string[];
   readonly testPackages: readonly string[];
   readonly code: boolean;
-  readonly native: boolean;
+  readonly nativeBuild: boolean;
+  readonly nativeTests: boolean;
   readonly performance: boolean;
-  readonly telemetry: boolean;
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
   readonly workflows: boolean;
@@ -83,33 +83,81 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const testPackages = [...dependentClosure(directlyChanged, packageGraph(head))]
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
-  const native = nativeInputsChanged(files);
-  const performance = performanceInputsChanged(files);
-  const telemetry = files.some((file) => file.startsWith("packages/server/src/telemetry/")) ||
-    Bun.spawnSync(
-      ["git", "diff", "--quiet", "-G", "(telemetry|Telemetry)", `${base}...${head}`, "--", "packages/*/src", "bench"],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exitCode === 1;
-  const verifyPackages = files.some((file) =>
+  const nativeBuild = nativeBuildInputsChanged(files);
+  const nativeTests = nativeTestInputsChanged(files);
+  const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
+  const verifyPackages = verifyPackagesInputsChanged(files);
+  const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
+    files.some((file) => file.startsWith("scripts/mcp-conformance"));
+  const workflows = files.some((file) => file.startsWith(".github/workflows/"));
+  const code = codeInputsChanged(files);
+  return {
+    files,
+    testPackages,
+    code,
+    nativeBuild,
+    nativeTests,
+    performance,
+    verifyPackages,
+    mcp,
+    workflows,
+  };
+}
+
+/** The packages whose code the benchmark workload actually executes. */
+const MEASURED_PACKAGES = Object.freeze(["core", "client", "server", "cli"]);
+
+const DEPENDENCY_FIELDS = Object.freeze([
+  "dependencies",
+  "peerDependencies",
+  "optionalDependencies",
+]);
+
+/**
+ * Whether a measured package's third-party dependencies moved. A dependency
+ * update changes the executable product without touching a single line of
+ * source, so a path list alone would report a successful no-op for it.
+ *
+ * Workspace `@ackerdb/*` entries are excluded deliberately: every release step
+ * rewrites all twelve of them in lockstep, and a version bump that ships the
+ * same code is exactly the case the benchmark must not spend a runner on.
+ */
+export function measuredDependenciesChanged(base: string, head: string): boolean {
+  const externals = (ref: string): string =>
+    JSON.stringify(MEASURED_PACKAGES.map((pkg) => {
+      const manifest = JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, unknown>;
+      return DEPENDENCY_FIELDS.map((field) => {
+        const entries = Object.entries((manifest[field] ?? {}) as Record<string, string>);
+        return entries.filter(([name]) => !name.startsWith("@ackerdb/")).sort();
+      });
+    }));
+  return externals(base) !== externals(head);
+}
+
+export function codeInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
+  );
+}
+
+/**
+ * What changes the tarballs a release would produce, and therefore needs the
+ * packed-package gate.
+ *
+ * The native directories are here because those packages publish built
+ * binaries.
+ */
+export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
     file === "package.json" ||
     file === "bun.lock" ||
     file.endsWith("/package.json") ||
     file.startsWith("scripts/release/") ||
     file.startsWith("scripts/verify-packages") ||
     file.startsWith("scripts/packed-consumer") ||
-    file.startsWith("packages/realtime/native/") ||
+    (file.startsWith("packages/realtime/native/") &&
+      !file.startsWith("packages/realtime/native/webrtc/test/")) ||
     file.startsWith("packages/realtime-native/")
-  );
-  const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
-    files.some((file) => file.startsWith("scripts/mcp-conformance"));
-  const workflows = files.some((file) => file.startsWith(".github/workflows/"));
-  const code = codeInputsChanged(files);
-  return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
-}
-
-export function codeInputsChanged(files: readonly string[]): boolean {
-  return files.some((file) =>
-    !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
   );
 }
 
@@ -127,10 +175,19 @@ export function performanceInputsChanged(files: readonly string[]): boolean {
   );
 }
 
-export function nativeInputsChanged(files: readonly string[]): boolean {
+export function nativeBuildInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
     file === ".github/workflows/native.yml" ||
-    /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|test\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
+    file === "packages/realtime/native/webrtc/test/candidate.test.ts" ||
+    file === "packages/realtime/native/webrtc/test/distribution.test.ts" ||
+    /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
+  );
+}
+
+export function nativeTestInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    /^packages\/realtime\/native\/webrtc\/test\/(?:native-engine|public-session)\.test\.ts$/.test(file) ||
+    file === "packages/realtime/native/webrtc/test/public-session-fixture.ts"
   );
 }
 
@@ -143,9 +200,9 @@ if (import.meta.main) {
     appendFileSync(output, [
       `test_packages=${JSON.stringify(changes.testPackages)}`,
       `code=${changes.code}`,
-      `native=${changes.native}`,
+      `native_build=${changes.nativeBuild}`,
+      `native_tests=${changes.nativeTests}`,
       `performance=${changes.performance}`,
-      `telemetry=${changes.telemetry}`,
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,

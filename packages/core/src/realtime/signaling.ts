@@ -1,5 +1,4 @@
 import {
-  PROTOCOL_VERSION,
   parseApplicationError,
   parseOutcome,
   type Outcome,
@@ -7,11 +6,13 @@ import {
 import {
   boundedString,
   exactFields as exact,
+  frameVersion,
   malformed,
   protocolObject as object,
-  ProtocolError,
+  type FrameSender,
   type ProtocolObject as ObjectValue,
 } from "../protocol-validation.ts";
+import { ACKERDB_VERSION } from "../version.ts";
 import type { ApplicationError } from "../result.ts";
 import type { NativeRTCConfiguration } from "./webrtc.ts";
 
@@ -38,7 +39,7 @@ export interface RealtimeStreamLimits {
 }
 
 export interface RealtimePrepareRequest {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_prepare";
   readonly ref: string;
   readonly args: unknown;
@@ -47,7 +48,7 @@ export interface RealtimePrepareRequest {
 }
 
 export interface RealtimePreparedMessage {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_prepared";
   /** One 256-bit opaque capability, encoded as unpadded base64url. */
   readonly ticket: string;
@@ -55,14 +56,14 @@ export interface RealtimePreparedMessage {
 }
 
 export interface RealtimeOfferRequest {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_offer";
   readonly ticket: string;
   readonly offer: RealtimeSessionDescription;
 }
 
 export interface RealtimeAnswerMessage extends RealtimeCandidateBatch {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_answer";
   readonly sessionId: string;
   readonly answer: RealtimeSessionDescription;
@@ -70,7 +71,7 @@ export interface RealtimeAnswerMessage extends RealtimeCandidateBatch {
 }
 
 export interface RealtimeRejectedMessage {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_rejected";
   readonly error: ApplicationError;
 }
@@ -84,12 +85,12 @@ export type RealtimePrepareResponse =
   | RealtimeRejectedMessage;
 
 export interface RealtimeCandidatesMessage extends RealtimeCandidateBatch {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_candidates";
 }
 
 export interface RealtimeEndedMessage {
-  readonly v: typeof PROTOCOL_VERSION;
+  readonly v: typeof ACKERDB_VERSION;
   readonly t: "realtime_ended";
   readonly outcome: Outcome;
 }
@@ -105,18 +106,13 @@ const MAX_SDP_BYTES = 256 * 1024;
 const MAX_CANDIDATES_PER_FRAME = 4_096;
 const utf8 = new TextEncoder();
 
-function frame(value: unknown, type: string): ObjectValue {
+// Realtime signaling is HTTP, so it has no handshake of its own and its first
+// frame is its greeting. The sender is the frame type's own direction: every
+// shape here travels one way, except the candidate batch a client PATCHes and
+// the one the answer to that PATCH carries back.
+function frame(value: unknown, type: string, sender: FrameSender): ObjectValue {
   const result = object(value, "realtime signaling frame");
-  if (!Object.hasOwn(result, "v")) malformed("missing field v");
-  if (result.v !== PROTOCOL_VERSION) {
-    if (Number.isInteger(result.v)) {
-      throw new ProtocolError(
-        "unsupported_protocol",
-        "unsupported protocol version",
-      );
-    }
-    malformed("v must be an integer protocol version");
-  }
+  frameVersion(result.v, sender);
   if (result.t !== type) {
     malformed(`realtime signaling frame must be ${type}`);
   }
@@ -220,7 +216,7 @@ function streamLimits(value: unknown): RealtimeStreamLimits {
 }
 
 export function parseRealtimePrepareRequest(value: unknown): RealtimePrepareRequest {
-  const result = frame(value, "realtime_prepare");
+  const result = frame(value, "realtime_prepare", "client");
   exact(result, ["v", "t", "ref", "args"], ["recovery"]);
   boundedString(result.ref, "realtime ref", MAX_REFERENCE_LENGTH);
   if (result.args === undefined) malformed("realtime args must be wire-representable");
@@ -238,7 +234,7 @@ function ticket(value: unknown): string {
 }
 
 export function parseRealtimeOfferRequest(value: unknown): RealtimeOfferRequest {
-  const result = frame(value, "realtime_offer");
+  const result = frame(value, "realtime_offer", "client");
   exact(result, ["v", "t", "ticket", "offer"]);
   ticket(result.ticket);
   parseRealtimeSessionDescription(result.offer, "offer");
@@ -246,7 +242,7 @@ export function parseRealtimeOfferRequest(value: unknown): RealtimeOfferRequest 
 }
 
 function rejected(result: ObjectValue): RealtimeRejectedMessage {
-  frame(result, "realtime_rejected");
+  frame(result, "realtime_rejected", "application");
   exact(result, ["v", "t", "error"]);
   parseApplicationError(result.error);
   return result as unknown as RealtimeRejectedMessage;
@@ -255,7 +251,7 @@ function rejected(result: ObjectValue): RealtimeRejectedMessage {
 export function parseRealtimePrepareResponse(value: unknown): RealtimePrepareResponse {
   const result = object(value, "realtime prepare response");
   if (result.t === "realtime_prepared") {
-    frame(result, "realtime_prepared");
+    frame(result, "realtime_prepared", "application");
     exact(result, ["v", "t", "ticket", "configuration"]);
     ticket(result.ticket);
     object(result.configuration, "realtime configuration");
@@ -269,7 +265,7 @@ export function parseRealtimeOfferResponse(value: unknown): RealtimeOfferRespons
   const result = object(value, "realtime offer response");
   switch (result.t) {
     case "realtime_answer": {
-      frame(result, "realtime_answer");
+      frame(result, "realtime_answer", "application");
       exact(
         result,
         [
@@ -299,8 +295,9 @@ export function parseRealtimeOfferResponse(value: unknown): RealtimeOfferRespons
 
 export function parseRealtimeCandidatesMessage(
   value: unknown,
+  sender: FrameSender,
 ): RealtimeCandidatesMessage {
-  const result = frame(value, "realtime_candidates");
+  const result = frame(value, "realtime_candidates", sender);
   exact(result, ["v", "t", "candidates", "complete"]);
   candidateBatch(result);
   return result as unknown as RealtimeCandidatesMessage;
@@ -309,10 +306,10 @@ export function parseRealtimeCandidatesMessage(
 export function parseRealtimePatchResponse(value: unknown): RealtimePatchResponse {
   const result = object(value, "realtime patch response");
   if (result.t === "realtime_candidates") {
-    return parseRealtimeCandidatesMessage(result);
+    return parseRealtimeCandidatesMessage(result, "application");
   }
   if (result.t === "realtime_ended") {
-    frame(result, "realtime_ended");
+    frame(result, "realtime_ended", "application");
     exact(result, ["v", "t", "outcome"]);
     parseOutcome(result.outcome);
     return result as unknown as RealtimeEndedMessage;

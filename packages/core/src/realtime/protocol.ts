@@ -2,8 +2,11 @@ import { Packr } from "msgpackr";
 import { parseOutcome, type Outcome } from "../protocol.ts";
 import {
   exactFields as exact,
+  frameVersion,
   protocolObject as record,
+  type FrameSender,
 } from "../protocol-validation.ts";
+import { ACKERDB_VERSION } from "../version.ts";
 import {
   parseRealtimeIceCandidate,
   parseRealtimeSessionDescription,
@@ -11,7 +14,14 @@ import {
   type RealtimeSessionDescription,
 } from "./signaling.ts";
 
-export const REALTIME_PROTOCOL_VERSION = 1 as const;
+/**
+ * The realtime data channel carries the same `v` as every other AckerDB frame:
+ * the version of the build that produced it. It had a protocol number of its
+ * own, which made the same promise the main one did and had the same answer —
+ * both peers of a media session are halves of one lockstep install, so the only
+ * skew this wire can see is a mixed install, and one refusal names it. Two
+ * numbers for one fact is one number too many.
+ */
 export const REALTIME_EVENT_MAX_BYTES = 16 * 1024;
 export const REALTIME_PACKET_MAX_BYTES = 16 * 1024;
 export const REALTIME_STREAM_CHUNK_MAX_BYTES = 12 * 1024;
@@ -19,25 +29,25 @@ export const REALTIME_SIGNAL_DESCRIPTION_MAX_BYTES = 256 * 1024;
 
 export type RealtimeSignalFrame =
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "signal_description";
       readonly description: RealtimeSessionDescription;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "signal_candidate";
       readonly candidate: RealtimeIceCandidate | null;
     };
 
 export type RealtimeDataFrame =
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "event";
       readonly event: string;
       readonly payload: unknown;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "stream_open";
       readonly id: string;
       readonly stream: string;
@@ -45,24 +55,24 @@ export type RealtimeDataFrame =
       readonly size?: number;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "stream_chunk";
       readonly id: string;
       readonly chunk: Uint8Array;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "stream_end";
       readonly id: string;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "stream_cancel";
       readonly id: string;
       readonly reason: string;
     }
   | {
-      readonly v: typeof REALTIME_PROTOCOL_VERSION;
+      readonly v: typeof ACKERDB_VERSION;
       readonly t: "session_error";
       readonly outcome: Outcome;
     }
@@ -153,7 +163,7 @@ export function encodeRealtimeEvent(
   payload: unknown,
 ): Uint8Array {
   return pack({
-    v: REALTIME_PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "event",
     event: name(event, "event"),
     payload,
@@ -183,6 +193,7 @@ export function encodeRealtimeFrame(frame: RealtimeDataFrame): Uint8Array {
 
 export function decodeRealtimeFrame(
   raw: ArrayBuffer | Uint8Array,
+  sender: FrameSender,
 ): RealtimeDataFrame {
   const packet = bytes(raw);
   if (
@@ -202,9 +213,7 @@ export function decodeRealtimeFrame(
     });
   }
   const frame = record(decoded, "realtime frame");
-  if (frame.v !== REALTIME_PROTOCOL_VERSION) {
-    throw new RealtimeProtocolError("unsupported realtime protocol version");
-  }
+  frameVersion(frame.v, sender);
   if (
     packet.byteLength > REALTIME_PACKET_MAX_BYTES &&
     frame.t !== "event" &&
@@ -224,7 +233,7 @@ export function decodeRealtimeFrame(
       }
       exact(frame, ["v", "t", "event", "payload"]);
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "event",
         event: name(frame.event, "event"),
         payload: frame.payload,
@@ -239,7 +248,7 @@ export function decodeRealtimeFrame(
           : ["v", "t", "id", "stream", "metadata"],
       );
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_open",
         id: transferId(frame.id),
         stream: name(frame.stream, "stream"),
@@ -258,7 +267,7 @@ export function decodeRealtimeFrame(
         );
       }
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_chunk",
         id: transferId(frame.id),
         chunk: frame.chunk,
@@ -267,7 +276,7 @@ export function decodeRealtimeFrame(
     case "stream_end": {
       exact(frame, ["v", "t", "id"]);
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_end",
         id: transferId(frame.id),
       });
@@ -281,7 +290,7 @@ export function decodeRealtimeFrame(
         );
       }
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "stream_cancel",
         id: transferId(frame.id),
         reason,
@@ -290,7 +299,7 @@ export function decodeRealtimeFrame(
     case "session_error": {
       exact(frame, ["v", "t", "outcome"]);
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "session_error",
         outcome: parseOutcome(frame.outcome),
       });
@@ -301,7 +310,7 @@ export function decodeRealtimeFrame(
         ["v", "t", "description"],
       );
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "signal_description",
         description: parseRealtimeSessionDescription(frame.description),
       });
@@ -309,7 +318,7 @@ export function decodeRealtimeFrame(
     case "signal_candidate": {
       exact(frame, ["v", "t", "candidate"]);
       return Object.freeze({
-        v: REALTIME_PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "signal_candidate",
         candidate: frame.candidate === null
           ? null

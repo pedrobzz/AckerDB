@@ -14,15 +14,10 @@ import type {
   RuntimeHttpResponse,
 } from "../contracts/requests.ts";
 import type { RuntimeOperationOutcome } from "../execution/operation-runner.ts";
-import type { RuntimeTraceSpan } from "../telemetry/trace-bridge.ts";
-import type { TelemetryOperation } from "../../telemetry/telemetry.ts";
 
 const utf8 = new TextEncoder();
 
-export type HttpValueOperation = Extract<
-  TelemetryOperation,
-  "query" | "mutation" | "procedure"
->;
+export type HttpValueOperation = "query" | "mutation" | "procedure";
 
 export type EncodedHttpBody = Pick<RuntimeHttpResponse, "body" | "bytes">;
 
@@ -32,22 +27,9 @@ export interface CommittedHttpMutation {
   readonly encoded?: EncodedHttpBody;
 }
 
-export interface RuntimeHttpResponseTelemetry {
-  readonly enabled: boolean;
-  span(input: RuntimeTraceSpan, operation: HttpValueOperation): void;
-  failure(
-    error: unknown,
-    operation: HttpValueOperation,
-    stage: "encoding" | "delivery",
-  ): void;
-}
-
 /** Owns bounded HTTP encoding and the one responder handoff. */
 export class RuntimeHttpResponses {
-  constructor(
-    private readonly maxFrameBytes: number,
-    private readonly telemetry: RuntimeHttpResponseTelemetry,
-  ) {}
+  constructor(private readonly maxFrameBytes: number) {}
 
   /**
    * The HTTP body is the plain value the caller asked for: the return value,
@@ -102,13 +84,12 @@ export class RuntimeHttpResponses {
       encoded = proven ?? this.encodeBody(body, toJson, operation, failure);
     } catch (error) {
       if (failure !== null) throw error;
-      this.telemetry.failure(error, operation, "encoding");
       failure = outcomeFromError(error);
       status = outcomeHttpStatus(failure);
       encoded = this.encodeBody(failure, identityJson, operation, failure);
     }
 
-    return this.handoff(request, operation, Object.freeze({
+    return this.handoff(request, Object.freeze({
       ...encoded,
       status,
       // A committed mutation answers with its receipt even when the application
@@ -123,7 +104,6 @@ export class RuntimeHttpResponses {
     operation: HttpValueOperation,
     failure: Outcome | null,
   ): EncodedHttpBody {
-    const startedAt = this.telemetry.enabled ? performance.now() : 0;
     let bytes: number | undefined;
     try {
       const body = standardJsonText(toJson(value));
@@ -140,15 +120,6 @@ export class RuntimeHttpResponses {
         encoded = this.fitOutcome(failure, operation);
         bytes = encoded.bytes;
       }
-      if (this.telemetry.enabled) {
-        this.telemetry.span({
-          stage: "encoding",
-          outcome: "ok",
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: bytes,
-        }, operation);
-      }
       return encoded;
     } catch (cause) {
       const error = isAckerDBError(cause)
@@ -158,15 +129,6 @@ export class RuntimeHttpResponses {
             `${operation} result is not wire-representable`,
             { cause },
           );
-      if (this.telemetry.enabled) {
-        this.telemetry.span({
-          stage: "encoding",
-          outcome: error.code,
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          ...(bytes === undefined ? {} : { sizeBytes: bytes }),
-        }, operation);
-      }
       throw error;
     }
   }
@@ -191,23 +153,12 @@ export class RuntimeHttpResponses {
 
   private handoff(
     request: RuntimeHttpRequest,
-    operation: HttpValueOperation,
     response: RuntimeHttpResponse,
   ): Response {
-    const startedAt = this.telemetry.enabled ? performance.now() : 0;
     try {
       const delivered = request.respond(response);
       if (!(delivered instanceof Response)) {
         throw new TypeError("HTTP responder must return a Response");
-      }
-      if (this.telemetry.enabled) {
-        this.telemetry.span({
-          stage: "delivery",
-          outcome: "ok",
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: response.bytes,
-        }, operation);
       }
       return delivered;
     } catch (cause) {
@@ -216,16 +167,6 @@ export class RuntimeHttpResponses {
         "HTTP response handoff failed",
         { cause },
       );
-      if (this.telemetry.enabled) {
-        this.telemetry.span({
-          stage: "delivery",
-          outcome: error.code,
-          resource: "operation",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: response.bytes,
-        }, operation);
-      }
-      this.telemetry.failure(error, operation, "delivery");
       throw error;
     }
   }

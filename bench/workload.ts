@@ -27,7 +27,6 @@ import {
   type BenchmarkConfig,
   type ChannelRow,
   type ConnectionLevelResult,
-  type DriverResult,
   type OperationCaseResult,
   type OperationName,
   type OperationProfile,
@@ -44,10 +43,10 @@ import {
   withTimeout,
   type ClosedLoopReleaseResult,
 } from "./load-engine.ts";
+import { capacityMetricName, type BenchUnit, type UnitMetric } from "./units.ts";
 
 const COMPUTE_ROUNDS = 8;
 const TRANSFER_AMOUNT = 1;
-export const READINESS_SAMPLES = 20;
 
 interface AccountModel {
   balances: number[];
@@ -462,97 +461,86 @@ async function runOperationCase(
   }
 }
 
-export async function runConnectionScale(
+export interface ConnectionLevelOptions {
+  /**
+   * Whether to hold the connected fleet idle for a resource window. That window
+   * is a second of deliberate sleeping which measures resident cost rather than
+   * work, so the pair driver asks for it once per side and reads it as context
+   * beside the comparison rather than through it.
+   */
+  readonly measureIdle: boolean;
+}
+
+export interface ConnectionLevelOutcome {
+  measurement?: ConnectionLevelResult;
+  failures: BenchmarkCaseFailure[];
+}
+
+/**
+ * One connection level, on a cohort it opens and releases itself. The levels
+ * used to share one growing cohort, which made each level's cost depend on
+ * every level before it and made a single level impossible to repeat. A unit
+ * the pair driver alternates has to start from the same place every time, so a
+ * level now pays for its own connections and the ladder is a set of independent
+ * levels rather than one sequence.
+ *
+ * Connect readiness used to be sampled twenty times inside the one-client
+ * level, each draw preceded by a full idle second so it measured post-idle
+ * readiness — nineteen seconds of deliberate sleeping per side. Interleaving
+ * supplies that idle for free: while the other side holds the machine, this one
+ * has no traffic in flight, so a single draw per repetition is already a
+ * post-idle draw and the repetitions are the distribution.
+ */
+export async function runConnectionLevel(
   adapter: BenchAdapter,
   config: BenchmarkConfig,
+  target: number,
   nextNonce: () => number,
-): Promise<{ measurements: ConnectionLevelResult[]; failures: BenchmarkCaseFailure[] }> {
+  options: ConnectionLevelOptions,
+): Promise<ConnectionLevelOutcome> {
   const cohort: BenchConnection[] = [];
-  const results: ConnectionLevelResult[] = [];
-  const failures: BenchmarkCaseFailure[] = [];
-  let terminalFailure: ReturnType<typeof failureDetails> | undefined;
+  const connectLatencies: number[] = [];
+  const errors: string[] = [];
+  let setupFailure: BenchmarkCaseFailure | undefined;
+  let interrupted: BenchmarkCaseFailure | undefined;
+  let measurement: ConnectionLevelResult | undefined;
+  let released: ClosedLoopReleaseResult = { released: true, errors: [] };
+  const rampPhaseId = `connections:${target}:ramp`;
+  const setupStartedAt = phaseStart(rampPhaseId);
   try {
-    for (const target of config.connections.levels) {
-      if (terminalFailure !== undefined) {
-        failures.push(connectionFailure(target, terminalFailure));
-        continue;
+    let setupTerminal = false;
+    for (let remaining = target; remaining > 0; remaining -= config.connections.batchSize) {
+      const count = Math.min(config.connections.batchSize, remaining);
+      const opened = await openConnections(adapter, count, nextNonce, config.connections.timeoutMs);
+      cohort.push(...opened.connections);
+      connectLatencies.push(...opened.latencies);
+      errors.push(...opened.errors);
+      if (opened.connections.length !== count) {
+        setupTerminal = opened.timedOut;
+        break;
       }
-      const needed = target - cohort.length;
-      const cohortBefore = cohort.length;
-      const setupStartedAt = performance.now();
-      const connectLatencies: number[] = [];
-      const errors: string[] = [];
-      let setupTerminal = false;
-      const rampPhaseId = `connections:${target}:ramp`;
-      phaseStart(rampPhaseId);
-      if (needed === 1) {
-        // A level that adds one connection would otherwise report a single connect draw as its
-        // whole readiness distribution, and one post-idle draw has a heavy scheduling tail on
-        // macOS. Sample connect → ready → close sequentially instead, with an idle gap before
-        // every draw (at the standard 1-client first level, the caller's baseline idle covers
-        // the first sample), so each draw still measures post-idle readiness with no benchmark
-        // traffic in flight during the gap. The last sample's connection is kept as the cohort
-        // member, leaving the earlier gaps free of extra live connections. This is shared
-        // workload code: the protocol is identical for every benchmarked system.
-        for (let sample = 0; sample < READINESS_SAMPLES; sample++) {
-          if (sample > 0) await Bun.sleep(config.resources.idleMs);
-          const opened = await openConnections(adapter, 1, nextNonce, config.connections.timeoutMs);
-          connectLatencies.push(...opened.latencies);
-          errors.push(...opened.errors);
-          if (opened.connections.length !== 1) {
-            setupTerminal = opened.timedOut;
-            break;
-          }
-          if (sample === READINESS_SAMPLES - 1) cohort.push(...opened.connections);
-          else {
-            const released = await releaseResources(
-              `${rampPhaseId} sample connection release`,
-              config.operation.drainTimeoutMs,
-              connectionReleases(opened.connections),
-            );
-            errors.push(...released.errors);
-            if (!released.released) {
-              setupTerminal = true;
-              break;
-            }
-          }
-        }
-      } else {
-        for (let remaining = needed; remaining > 0; remaining -= config.connections.batchSize) {
-          const count = Math.min(config.connections.batchSize, remaining);
-          const opened = await openConnections(adapter, count, nextNonce, config.connections.timeoutMs);
-          cohort.push(...opened.connections);
-          connectLatencies.push(...opened.latencies);
-          errors.push(...opened.errors);
-          if (opened.connections.length !== count) {
-            setupTerminal = opened.timedOut;
-            break;
-          }
-        }
-      }
-      phaseEnd(rampPhaseId);
-      if (cohort.length !== target) {
-        const details = failureDetails(
+    }
+    const setupMs = phaseEnd(rampPhaseId) - setupStartedAt;
+    if (cohort.length !== target) {
+      setupFailure = connectionFailure(
+        target,
+        failureDetails(
           "setup",
           [`connected ${cohort.length}/${target}`, ...errors].join("; "),
           setupTerminal,
-        );
-        failures.push(connectionFailure(target, details));
-        if (setupTerminal) terminalFailure = details;
-        continue;
+        ),
+      );
+    } else {
+      let connectedSnapshotId: string | undefined;
+      let connectedIdlePhaseId: string | undefined;
+      if (options.measureIdle) {
+        connectedSnapshotId = `connections:${target}:connected`;
+        connectedIdlePhaseId = `connections:${target}:idle`;
+        phaseStart(connectedIdlePhaseId);
+        await Bun.sleep(config.resources.idleMs);
+        snapshot(connectedSnapshotId);
+        phaseEnd(connectedIdlePhaseId);
       }
-      // Sampled levels report aggregate measured connect time; the deliberate idle gaps and
-      // closes are sampling protocol, not setup work. Batched levels keep ramp wall time,
-      // which contains no deliberate gaps.
-      const setupMs = needed === 1 && connectLatencies.length > 0
-        ? connectLatencies.reduce((total, latency) => total + latency, 0)
-        : performance.now() - setupStartedAt;
-      const connectedSnapshotId = `connections:${target}:connected`;
-      const connectedIdlePhaseId = `connections:${target}:idle`;
-      phaseStart(connectedIdlePhaseId);
-      await Bun.sleep(config.resources.idleMs);
-      snapshot(connectedSnapshotId);
-      phaseEnd(connectedIdlePhaseId);
 
       const phaseId = `connections:${target}:work`;
       const work = await runClosedLoop({
@@ -575,63 +563,55 @@ export async function runConnectionScale(
         validate: ({ nonce, partition, value }) => validateSearch(value, partition, nonce),
       });
       phaseEndAt(phaseId, work.windowEndedAtMs);
-      const connected = cohort.length;
-      const measurement: ConnectionLevelResult = {
-        targetConnections: target,
-        connected,
-        addedConnections: connected - cohortBefore,
-        setupMs,
-        readyConnectionsPerSec: connectLatencies.length / (setupMs / 1_000),
-        readyLatency: latencyStats(connectLatencies),
-        connectedSnapshotId,
-        connectedIdlePhaseId,
-        work: { ...work, phaseId },
-        errors,
-      };
-      if (work.interruption !== null) {
-        const details = failureDetails(
-          work.interruption.resourcesReleased ? "phase" : "cleanup",
-          work.interruption.reason,
-          !work.interruption.resourcesReleased,
-          work,
-        );
-        failures.push(connectionFailure(target, details));
-        cohort.length = 0;
-        if (!work.interruption.resourcesReleased) {
-          terminalFailure = details;
-        }
+      if (work.interruption === null) {
+        measurement = {
+          targetConnections: target,
+          connected: cohort.length,
+          setupMs,
+          readyConnectionsPerSec: connectLatencies.length / (setupMs / 1_000),
+          readyLatency: latencyStats(connectLatencies),
+          connectedSnapshotId,
+          connectedIdlePhaseId,
+          work: { ...work, phaseId },
+          errors,
+        };
       } else {
-        results.push(measurement);
+        interrupted = connectionFailure(
+          target,
+          failureDetails(
+            work.interruption.resourcesReleased ? "phase" : "cleanup",
+            work.interruption.reason,
+            !work.interruption.resourcesReleased,
+            work,
+          ),
+        );
+        // The closed loop's own cancellation already closed this cohort; leaving
+        // it in the list would close every connection a second time.
+        if (work.interruption.resourcesReleased) cohort.length = 0;
       }
     }
   } finally {
-    const released = await releaseResources(
-      "connection-scale release",
+    released = await releaseResources(
+      `connections:${target} release`,
       config.operation.drainTimeoutMs,
       connectionReleases(cohort),
     );
-    const target = config.connections.levels.at(-1);
-    if (!released.released && target !== undefined) {
-      const measured = results.find((result) => result.targetConnections === target);
-      const existing = failures.find(
-        (failure) => failure.kind === "connection" && failure.targetConnections === target,
-      );
-      const resultIndex = measured === undefined ? -1 : results.indexOf(measured);
-      if (resultIndex !== -1) results.splice(resultIndex, 1);
-      const failureIndex = existing === undefined ? -1 : failures.indexOf(existing);
-      if (failureIndex !== -1) failures.splice(failureIndex, 1);
-      failures.push(connectionFailure(
+  }
+  const failure = setupFailure ?? interrupted;
+  if (!released.released) {
+    return {
+      failures: [connectionFailure(
         target,
         failureDetails(
           "cleanup",
-          [...(existing === undefined ? [] : [existing.message]), ...released.errors].join("; "),
+          [...(failure === undefined ? [] : [failure.message]), ...released.errors].join("; "),
           true,
-          existing?.partial ?? measured?.work,
+          failure?.partial ?? measurement?.work,
         ),
-      ));
-    }
+      )],
+    };
   }
-  return { measurements: results, failures };
+  return { measurement, failures: failure === undefined ? [] : [failure] };
 }
 
 interface PendingDelivery {
@@ -678,6 +658,7 @@ export async function runSubscriptionCase(
   pattern: SubscriptionPattern,
   config: BenchmarkConfig,
   nextNonce: () => number,
+  options: ConnectionLevelOptions,
 ): Promise<SubscriptionCaseOutcome> {
   const { users, queriesPerUser, setupTimeoutMs, drainTimeoutMs } = config.subscriptions;
   const subscribers: BenchConnection[] = [];
@@ -689,15 +670,25 @@ export async function runSubscriptionCase(
   let unexpected = 0;
   let corrupt = 0;
   let measuring = false;
-  const baselineIdlePhaseId = `subscriptions:${pattern}:baseline-idle`;
-  phaseStart(baselineIdlePhaseId);
-  await Bun.sleep(config.resources.idleMs);
-  phaseEnd(baselineIdlePhaseId);
+  let baselineIdlePhaseId: string | undefined;
+  if (options.measureIdle) {
+    baselineIdlePhaseId = `subscriptions:${pattern}:baseline-idle`;
+    phaseStart(baselineIdlePhaseId);
+    await Bun.sleep(config.resources.idleMs);
+    phaseEnd(baselineIdlePhaseId);
+  }
   const setupPhaseId = `subscriptions:${pattern}:setup`;
   const setupStartedAt = phaseStart(setupPhaseId);
   let acceptingSubscribers = true;
 
   const onUpdate = (user: number, row: ChannelRow) => {
+    // A channel keeps its version in the database, so a second run of this unit
+    // does not start again at one. Every subscriber's first row carries the
+    // version the server is actually on, and that is the only place the writer
+    // can learn it — predict the wrong next version and every delivery looks
+    // unexpected, every probe waits out its drain, and the unit reports a
+    // fabricated delivery failure instead of a measurement.
+    if (row.version > (versions.get(row.channel) ?? 0)) versions.set(row.channel, row.version);
     if (!measuring) return;
     const probe = pending.get(`${row.channel}:${row.version}`);
     if (!probe || probe.expectedUsers[user] !== 1) {
@@ -804,12 +795,16 @@ export async function runSubscriptionCase(
     }
     writers.push(...openedWriter.connections);
     const setupEndedAt = phaseEnd(setupPhaseId);
-    const subscribedSnapshotId = `subscriptions:${pattern}:subscribed`;
-    const subscribedIdlePhaseId = `subscriptions:${pattern}:idle`;
-    phaseStart(subscribedIdlePhaseId);
-    await Bun.sleep(config.resources.idleMs);
-    snapshot(subscribedSnapshotId);
-    phaseEnd(subscribedIdlePhaseId);
+    let subscribedSnapshotId: string | undefined;
+    let subscribedIdlePhaseId: string | undefined;
+    if (options.measureIdle) {
+      subscribedSnapshotId = `subscriptions:${pattern}:subscribed`;
+      subscribedIdlePhaseId = `subscriptions:${pattern}:idle`;
+      phaseStart(subscribedIdlePhaseId);
+      await Bun.sleep(config.resources.idleMs);
+      snapshot(subscribedSnapshotId);
+      phaseEnd(subscribedIdlePhaseId);
+    }
 
     const phaseId = `subscriptions:${pattern}:updates`;
     const phaseStartedAt = phaseStart(phaseId);
@@ -1067,10 +1062,83 @@ export async function runSubscriptionCase(
   }
 }
 
-export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> {
+function operationMetrics(result: OperationCaseResult): UnitMetric[] {
+  return [
+    { name: "throughput/s", value: result.medianThroughputPerSec },
+    { name: "p50 ms", value: result.medianLatencyP50Ms },
+    { name: "p95 ms", value: result.medianLatencyP95Ms },
+    { name: "p99 ms", value: result.medianLatencyP99Ms },
+  ];
+}
+
+function connectionMetrics(result: ConnectionLevelResult): UnitMetric[] {
+  return [
+    { name: "ready/s", value: result.readyConnectionsPerSec },
+    { name: "ready p50 ms", value: result.readyLatency.p50Ms },
+    { name: "ready p95 ms", value: result.readyLatency.p95Ms },
+    { name: "throughput/s", value: result.work.throughputPerSec },
+    { name: "p50 ms", value: result.work.latency.p50Ms },
+    { name: "p95 ms", value: result.work.latency.p95Ms },
+    { name: "p99 ms", value: result.work.latency.p99Ms },
+  ];
+}
+
+function subscriptionMetrics(result: SubscriptionResult): UnitMetric[] {
+  return [
+    { name: "updates/s", value: result.updateThroughputPerSec },
+    { name: "deliveries/s", value: result.deliveryThroughputPerSec },
+    { name: "delivery p50 ms", value: result.deliveryLatency.p50Ms },
+    { name: "delivery p95 ms", value: result.deliveryLatency.p95Ms },
+    { name: "delivery p99 ms", value: result.deliveryLatency.p99Ms },
+    ...result.capacity.flatMap((capacity) => [
+      { name: capacityMetricName(capacity.slots, "updates/s"), value: capacity.throughputPerSec },
+      { name: capacityMetricName(capacity.slots, "deliveries/s"), value: capacity.deliveryThroughputPerSec },
+      { name: capacityMetricName(capacity.slots, "ack p50 ms"), value: capacity.updateAckLatency.p50Ms },
+      { name: capacityMetricName(capacity.slots, "ack p95 ms"), value: capacity.updateAckLatency.p95Ms },
+      { name: capacityMetricName(capacity.slots, "all p50 ms"), value: capacity.latency.p50Ms },
+      { name: capacityMetricName(capacity.slots, "all p95 ms"), value: capacity.latency.p95Ms },
+      { name: capacityMetricName(capacity.slots, "all p99 ms"), value: capacity.latency.p99Ms },
+    ]),
+  ];
+}
+
+/** One unit's slice of a repetition: its comparable numbers and its full record. */
+export interface WorkloadUnitResult {
+  readonly metrics: readonly UnitMetric[];
+  readonly operations: readonly OperationCaseResult[];
+  readonly connections: readonly ConnectionLevelResult[];
+  readonly subscriptions: readonly SubscriptionResult[];
+  readonly failures: readonly BenchmarkCaseFailure[];
+}
+
+export interface WorkloadSession {
+  readonly config: BenchmarkConfig;
+  readonly seededIdle: { readonly snapshotId: string; readonly phaseId: string };
+  runUnit(unit: BenchUnit, options: ConnectionLevelOptions): Promise<WorkloadUnitResult>;
+}
+
+/**
+ * A seeded server and the state that must survive between units, held open so a
+ * caller outside this process can ask for one unit at a time. The workload used
+ * to run itself start to finish in a single call, which forced the comparison
+ * to be one side's whole pass against the other's. The pair driver instead
+ * keeps a session on each side and alternates units between them, so every
+ * number head reports has a base number measured seconds away from it under the
+ * same conditions.
+ *
+ * The nonce stream and the account model are per session, so each side stays
+ * consistent with its own server. The two sides drift apart in how many
+ * operations they complete — that difference is the measurement — and nothing
+ * in the validation depends on them agreeing.
+ */
+export async function openWorkloadSession(adapter: BenchAdapter): Promise<WorkloadSession> {
   const config = benchmarkConfigFromEnv();
   let nonce = config.seed;
   const nextNonce = () => nonce++ >>> 0;
+  const accountModel: AccountModel = {
+    balances: Array<number>(ACCOUNT_COUNT).fill(ACCOUNT_BALANCE),
+    versions: Array<number>(ACCOUNT_COUNT).fill(0),
+  };
 
   const seeder = await adapter.connect(nextNonce(), false);
   try {
@@ -1083,79 +1151,53 @@ export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> 
     );
     if (!released.released) throw new Error(released.errors.join("; "));
   }
-  const seededIdle = "server:seeded-idle";
-  const seededIdlePhaseId = "server:seeded-idle-window";
-  phaseStart(seededIdlePhaseId);
+
+  const seededIdle = { snapshotId: "server:seeded-idle", phaseId: "server:seeded-idle-window" } as const;
+  phaseStart(seededIdle.phaseId);
   await Bun.sleep(config.resources.idleMs);
-  snapshot(seededIdle);
-  phaseEnd(seededIdlePhaseId);
-
-  const operations: OperationCaseResult[] = [];
-  const failures: BenchmarkCaseFailure[] = [];
-  const accountModel: AccountModel = {
-    balances: Array<number>(ACCOUNT_COUNT).fill(ACCOUNT_BALANCE),
-    versions: Array<number>(ACCOUNT_COUNT).fill(0),
-  };
-  let terminalFailure: BenchmarkCaseFailure | undefined;
-  for (const operation of OPERATION_NAMES) {
-    for (const profile of config.operation.profiles) {
-      if (terminalFailure !== undefined) {
-        failures.push(operationFailure(
-          operation,
-          profile,
-          failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure.message}`),
-        ));
-        continue;
-      }
-      const result = await runOperationCase(adapter, operation, profile, config, nextNonce, accountModel);
-      if ("kind" in result) {
-        failures.push(result);
-        if (result.terminal) terminalFailure = result;
-      } else {
-        operations.push(result);
-      }
-    }
-  }
-
-  const connectionBaselineIdlePhaseId = "connections:baseline-idle";
-  let connections: ConnectionLevelResult[];
-  if (terminalFailure === undefined) {
-    phaseStart(connectionBaselineIdlePhaseId);
-    await Bun.sleep(config.resources.idleMs);
-    phaseEnd(connectionBaselineIdlePhaseId);
-    const outcome = await runConnectionScale(adapter, config, nextNonce);
-    connections = outcome.measurements;
-    failures.push(...outcome.failures);
-    terminalFailure = outcome.failures.find((failure) => failure.terminal);
-  } else {
-    connections = [];
-    failures.push(...config.connections.levels.map((target) => connectionFailure(
-      target,
-      failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure!.message}`),
-    )));
-  }
-  const subscriptions: SubscriptionResult[] = [];
-  for (const pattern of config.subscriptions.patterns) {
-    if (terminalFailure !== undefined) {
-      failures.push(subscriptionFailure(
-        pattern,
-        failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure.message}`),
-      ));
-      continue;
-    }
-    const outcome = await runSubscriptionCase(adapter, pattern, config, nextNonce);
-    if (outcome.measurement !== undefined) subscriptions.push(outcome.measurement);
-    failures.push(...outcome.failures);
-    terminalFailure = outcome.failures.find((failure) => failure.terminal);
-  }
+  snapshot(seededIdle.snapshotId);
+  phaseEnd(seededIdle.phaseId);
 
   return {
-    system: adapter.system,
     config,
-    snapshots: { seededIdle, seededIdlePhaseId, connectionBaselineIdlePhaseId },
-    operations,
-    connections,
-    subscriptions,
-    failures,
+    seededIdle,
+    async runUnit(unit, options) {
+      const empty = { metrics: [], operations: [], connections: [], subscriptions: [] };
+      if (unit.kind === "operation") {
+        const result = await runOperationCase(
+          adapter,
+          unit.operation,
+          unit.profile,
+          config,
+          nextNonce,
+          accountModel,
+        );
+        return "kind" in result
+          ? { ...empty, failures: [result] }
+          : { ...empty, metrics: operationMetrics(result), operations: [result], failures: [] };
+      }
+      if (unit.kind === "connection") {
+        const outcome = await runConnectionLevel(adapter, config, unit.targetConnections, nextNonce, options);
+        const measurement = outcome.measurement;
+        return measurement === undefined
+          ? { ...empty, failures: outcome.failures }
+          : {
+              ...empty,
+              metrics: connectionMetrics(measurement),
+              connections: [measurement],
+              failures: outcome.failures,
+            };
+      }
+      const outcome = await runSubscriptionCase(adapter, unit.pattern, config, nextNonce, options);
+      const measurement = outcome.measurement;
+      return measurement === undefined
+        ? { ...empty, failures: outcome.failures }
+        : {
+            ...empty,
+            metrics: subscriptionMetrics(measurement),
+            subscriptions: [measurement],
+            failures: outcome.failures,
+          };
+    },
   };
 }

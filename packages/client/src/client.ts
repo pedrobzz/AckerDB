@@ -1,7 +1,7 @@
 import {
   MAX_PROTOCOL_ID,
   MAX_RETRY_AFTER_MS,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   ProtocolError,
   WireError,
   Err,
@@ -10,10 +10,16 @@ import {
   decode,
   encode,
   getRef,
+  httpPathForAddress,
   parseClientMessage,
   parseCredential,
   parseOutcome,
+  parseClientHandshake,
+  parseConnectionError,
+  parseServerHandshake,
   parseServerMessage,
+  type ClientSessionMessage,
+  type ErrorMessage,
   toStandardJson,
   type AuthenticatedMessage,
   type ApplicationError,
@@ -326,7 +332,7 @@ export class AckerDBClientError extends Error {
       ? "unhandled"
       : outcome.code === "malformed" ||
           outcome.code === "validation" ||
-          outcome.code === "unsupported_protocol" ||
+          outcome.code === "version_mismatch" ||
           outcome.code === "unauthenticated" ||
           outcome.code === "auth_unavailable" ||
           outcome.code === "auth_stale" ||
@@ -782,7 +788,7 @@ export class AckerDBClient {
   constructor(options: AckerDBClientOptions) {
     this.httpUrl = options.url.replace(/\/$/, "");
     if (!/^https?:\/\//.test(this.httpUrl)) throw new TypeError("url must use http or https");
-    this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/ws`;
+    this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/_ws`;
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.scheduler = Object.freeze({
       now: () => this.clock.now(),
@@ -881,8 +887,8 @@ export class AckerDBClient {
     // A credential-source client validates each pulled credential when it is
     // presented; a fixed credential is validated here, before any dial.
     if (this.credential !== undefined) {
-      parseClientMessage({
-        v: PROTOCOL_VERSION,
+      parseClientHandshake({
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: this.clientSessionId,
         credential: this.credential,
@@ -980,7 +986,7 @@ export class AckerDBClient {
     // any state changes, so an unencodable credential rejects here instead of
     // installing an attempt whose frame can never be sent.
     this.frameBytes(
-      this.encodeClient({ v: PROTOCOL_VERSION, t: "auth", attemptId: id, credential: nextCredential }),
+      this.encodeClient({ t: "auth", attemptId: id, credential: nextCredential }),
       "connection",
     );
     if (this.authAttempt) {
@@ -1159,8 +1165,12 @@ export class AckerDBClient {
    */
   private acceptedCredential(): void {
     const authentication = this.authentication;
+    // A `null` disclosure is a credential that does not expire, so it has no
+    // deadline to record — the same absence anonymous has, reached honestly.
     this.credentialExpiresAtMs =
-      authentication === undefined || authentication.principal === "anonymous"
+      authentication === undefined ||
+      authentication.principal === "anonymous" ||
+      authentication.credentialTtlMs === null
         ? undefined
         : this.now() + authentication.credentialTtlMs;
     this.scheduleSourceRefresh();
@@ -1171,7 +1181,9 @@ export class AckerDBClient {
    * ~80% of the TTL, clamped to land at least the margin before expiry and
    * floored so tiny TTLs cannot hot-loop the source. Anonymous principals
    * disclose no TTL and arm nothing — the next sign-in arrives by
-   * `refreshCredential()`.
+   * `refreshCredential()`. A credential that does not expire arms nothing for
+   * the same reason: there is no expiry to get ahead of, and re-pulling a
+   * non-expiring secret on a timer would be work with no outcome.
    */
   private scheduleSourceRefresh(): void {
     this.clearSourceRefreshTimer();
@@ -1179,6 +1191,7 @@ export class AckerDBClient {
     const authentication = this.authentication;
     if (authentication === undefined || authentication.principal === "anonymous") return;
     const ttl = authentication.credentialTtlMs;
+    if (ttl === null) return;
     const delay = Math.min(
       MAX_SOURCE_REFRESH_DELAY_MS,
       Math.max(MIN_SOURCE_REFRESH_DELAY_MS, Math.min(ttl * 0.8, ttl - SOURCE_REFRESH_MARGIN_MS)),
@@ -1367,9 +1380,10 @@ export class AckerDBClient {
     if (this.suspended) {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
-    // The address is the path and the response is the correlation, so the
-    // request carries the args object alone — no envelope, no client id.
-    const url = `${this.httpUrl}/api/${getRef(ref).replaceAll(".", "/")}`;
+    // The URL is the address, segment for segment — the group is already its
+    // first segment. The response is the correlation, so the request carries
+    // the args object alone — no envelope, no client id.
+    const url = `${this.httpUrl}${httpPathForAddress(getRef(ref))}`;
     let body: string;
     try {
       // The exposed surface speaks the plain JSON its OpenAPI document
@@ -1835,11 +1849,10 @@ export class AckerDBClient {
       const mutationRequestId = kind === "mutation" ? this.uuid.create(createdAtMs) : undefined;
       const frame = this.encodeClient(
         kind === "query"
-          ? { v: PROTOCOL_VERSION, t: "q", id, ref, args }
+          ? { t: "q", id, ref, args }
           : kind === "procedure"
-            ? { v: PROTOCOL_VERSION, t: "p", id, ref, args }
+            ? { t: "p", id, ref, args }
           : {
-              v: PROTOCOL_VERSION,
               t: "m",
               id,
               ref,
@@ -2035,12 +2048,17 @@ export class AckerDBClient {
     this.socketOpen = true;
     this.helloCredential = credential;
     try {
-      this.sendFrame({
-        v: PROTOCOL_VERSION,
+      // The one frame this client sends before it has a session, so it is
+      // validated against the handshake surface rather than the session one —
+      // the same split the receive side reads by.
+      const text = encode(parseClientHandshake({
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: this.clientSessionId,
         credential,
-      });
+      }));
+      this.frameBytes(text, "connection");
+      this.sendText(text);
     } catch (error) {
       this.failPermanently(error instanceof AckerDBClientError ? error : this.protocolError(error));
     }
@@ -2084,15 +2102,18 @@ export class AckerDBClient {
       this.failPermanently(localError("malformed", "server frame exceeds the client limit", "connection"));
       return;
     }
+    // Which parser runs is the whole of "nothing before the welcome": until
+    // this connection has one, the only frames that decode at all are the
+    // versioned handshake pair — a welcome, or the connection-level refusal
+    // that explains why there will not be one. The guard that used to restate
+    // that after parsing is gone with it.
     let frame: ServerMessage;
     try {
-      frame = parseServerMessage(decode(data));
+      frame = this.ready
+        ? parseServerMessage(decode(data))
+        : parseServerHandshake(decode(data));
     } catch (error) {
       this.failPermanently(this.protocolError(error));
-      return;
-    }
-    if (!this.ready && frame.t !== "welcome" && !(frame.t === "err" && frame.id === null)) {
-      this.failPermanently(localError("malformed", "server sent data before welcome", "connection"));
       return;
     }
     this.dispatch(frame);
@@ -2365,7 +2386,6 @@ export class AckerDBClient {
     if (!this.canSendOperations()) return;
     if (subscription.cursor) {
       this.sendFrame({
-        v: PROTOCOL_VERSION,
         t: "reset",
         id: subscription.id,
         cursor: subscription.cursor,
@@ -2432,7 +2452,7 @@ export class AckerDBClient {
     this.subscriptions.delete(id);
     this.releasePersistent(subscription.bytes);
     if (sendUnsubscribe && this.canSendOperations()) {
-      this.sendFrame({ v: PROTOCOL_VERSION, t: "unsub", id });
+      this.sendFrame({ t: "unsub", id });
     }
     for (const request of [...this.pending.values()]) {
       if (request.kind === "mutation" && request.receipt && request.obligations?.delete(id)) {
@@ -2499,7 +2519,7 @@ export class AckerDBClient {
       !this.canSendOperations()
     ) return;
     try {
-      this.sendFrame({ v: PROTOCOL_VERSION, t: "cancel", id: request.id });
+      this.sendFrame({ t: "cancel", id: request.id });
     } catch {
       // Cancellation is best effort; the local outcome remains indeterminate.
     }
@@ -2567,7 +2587,6 @@ export class AckerDBClient {
 
   private sendAuth(attempt: AuthAttempt): void {
     this.sendFrame({
-      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: attempt.id,
       credential: attempt.credential,
@@ -2676,7 +2695,7 @@ export class AckerDBClient {
     }, this.reconnect.stableOpenMs);
     this.pingHandle = this.clock.setInterval(() => {
       if (this.ready && this.connectionGeneration === generation) {
-        this.sendFrame({ v: PROTOCOL_VERSION, t: "ping" });
+        this.sendFrame({ t: "ping" });
       }
     }, 30_000);
   }
@@ -2697,7 +2716,7 @@ export class AckerDBClient {
     return this.socketOpen && this.ready && !this.authAttempt && this.socket !== null;
   }
 
-  private sendFrame(frame: ClientMessage): void {
+  private sendFrame(frame: ClientSessionMessage): void {
     const text = this.encodeClient(frame);
     this.frameBytes(text, "connection");
     this.sendText(text);
@@ -2716,7 +2735,7 @@ export class AckerDBClient {
     }
   }
 
-  private encodeClient(frame: ClientMessage): string {
+  private encodeClient(frame: ClientSessionMessage): string {
     try {
       return encode(parseClientMessage(frame));
     } catch (error) {
@@ -2727,7 +2746,7 @@ export class AckerDBClient {
     }
   }
 
-  private encodeChannelOrReject(frame: ClientMessage): string {
+  private encodeChannelOrReject(frame: ClientSessionMessage): string {
     try {
       return this.encodeClient(frame);
     } catch (error) {
@@ -2744,7 +2763,7 @@ export class AckerDBClient {
   // rejection rather than a raw wire error.
   private encodeSubscriptionOrReject(id: number, ref: string, args: unknown): string {
     try {
-      return this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref, args });
+      return this.encodeClient({ t: "sub", id, ref, args });
     } catch (error) {
       if (error instanceof WireError) {
         throw localError("validation", error.message, "subscription");
@@ -2758,7 +2777,6 @@ export class AckerDBClient {
     cursor: SubscriptionCursor | undefined,
   ): string {
     return this.encodeClient({
-      v: PROTOCOL_VERSION,
       t: "sub",
       id: subscription.id,
       ref: subscription.ref,
@@ -2881,7 +2899,7 @@ export class AckerDBClient {
     signal: AbortSignal,
   ): Promise<void> {
     const acknowledgment: SseAckRequest = {
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream,
       seq: frame.seq,
@@ -2901,7 +2919,7 @@ export class AckerDBClient {
           const cancellationError = localError("unavailable", "SSE acknowledgment was canceled", "sse");
           const response = await raceWithAbort(
             (async () =>
-              this.fetcher(`${this.httpUrl}/api/_sse/ack`, {
+              this.fetcher(`${this.httpUrl}/_sse/ack`, {
                 method: "POST",
                 headers: { "content-type": "text/plain;charset=UTF-8" },
                 body,
@@ -2949,14 +2967,15 @@ export class AckerDBClient {
             "sse",
           );
           if (attemptSignal.aborted) throw cancellationError;
-          let parsed: ServerMessage;
+          // An acknowledgment travels on its own request, so its failure
+          // answers on a connection with no handshake behind it: the parser
+          // that owns that surface both checks the version and refuses
+          // anything that is not a connection-level refusal.
+          let parsed: ErrorMessage;
           try {
-            parsed = parseServerMessage(decode(text));
+            parsed = parseConnectionError(decode(text));
           } catch (error) {
             throw this.protocolError(error, "sse");
-          }
-          if (parsed.t !== "err" || parsed.id !== null) {
-            throw localError("malformed", "SSE acknowledgment returned an invalid response", "sse");
           }
           const error = new AckerDBClientError(parsed.outcome);
           if ((response.status === 429 || response.status === 503) && error.retryable) {

@@ -3,15 +3,15 @@
  * field is optional; defaults give the layout from the design docs.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DurabilityPolicy } from "@ackerdb/core";
-import type {
-  OidcVerifierOptions,
-  S3FileStoreChecksum,
-  S3FileStoreEncryption,
+import {
+  normalizeAdminOptions,
+  type NormalizedAdminOptions,
+  type OidcVerifierOptions,
+  type S3FileStoreChecksum,
+  type S3FileStoreEncryption,
 } from "@ackerdb/server";
-
-export type TelemetryMode = "enabled" | "disabled";
 
 export type AuthenticationConfig =
   | {
@@ -63,13 +63,18 @@ export interface AppConfig {
   hostname: string;
   port: number;
   durability: DurabilityPolicy;
-  telemetry: TelemetryMode;
   /** The application's one configured authentication authority. Bearer credentials fail closed when omitted. */
   authentication?: AuthenticationConfig;
+  /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
+  scopeResolver?: string;
+  /** Serving-only module whose default export is a configured realtime runtime. */
+  realtime?: string;
   /** Workload-principal OAuth scope required by the operational status endpoint. */
   statusScope: string;
   /** One active immutable File byte backend. */
   files: FilesConfig;
+  /** Everything administrative, resolved once: the Admin API reads it. */
+  admin: NormalizedAdminOptions;
 }
 
 interface RawConfig {
@@ -84,8 +89,11 @@ interface RawConfig {
   port?: number;
   oidc?: Omit<OidcVerifierOptions, "fetch">;
   credentialVerifier?: string;
+  scopeResolver?: string;
+  realtime?: string;
   statusScope?: string;
   files?: unknown;
+  admin?: unknown;
 }
 
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
@@ -100,8 +108,11 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "port",
   "oidc",
   "credentialVerifier",
+  "scopeResolver",
+  "realtime",
   "statusScope",
   "files",
+  "admin",
 ]);
 const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 
@@ -146,10 +157,10 @@ function listenerHostname(value: unknown): string {
   return hostname;
 }
 
-function optionalModulePath(value: unknown): string | undefined {
+function optionalModulePath(value: unknown, name: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error("credentialVerifier must be a non-empty module path");
+    throw new Error(`${name} must be a non-empty module path`);
   }
   return value;
 }
@@ -202,6 +213,43 @@ function exactObject(value: unknown, allowed: readonly string[], path: string): 
   const unknown = Object.keys(value).filter((field) => !allowed.includes(field));
   if (unknown.length > 0) throw new Error(`unknown ${path} field: ${unknown.join(", ")}`);
   return value as Record<string, unknown>;
+}
+
+/**
+ * What the application package says about itself, which is the closest thing
+ * to a name this project has. The OpenAPI document's identity and the Admin
+ * API's answer are the same fact, so it is read once here and both take it
+ * from the resolved configuration.
+ */
+function applicationPackage(appDir: string): { name?: unknown; version?: unknown } {
+  const manifest = join(appDir, "package.json");
+  if (!existsSync(manifest)) return {};
+  return JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown };
+}
+
+/** A package manifest field is a default, so an unusable one is simply absent. */
+function packagedText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
+}
+
+/**
+ * Validate and resolve the `admin` block. Unknown fields are refused here,
+ * where a JSON file can carry one; the values themselves are interpreted by
+ * the server's own `normalizeAdminOptions`, so configuration and a programmatic
+ * host meet one validator rather than two that can disagree. What an operator
+ * wrote is held to that validator; what the package manifest supplies is a
+ * default, and a default that cannot be used is one that was not there.
+ */
+function resolveAdminConfig(value: unknown, appDir: string): NormalizedAdminOptions {
+  const raw = exactObject(value ?? {}, ["application"], "admin");
+  const declared = exactObject(raw.application ?? {}, ["name", "version"], "admin.application");
+  const packaged = applicationPackage(appDir);
+  return normalizeAdminOptions({
+    application: {
+      name: declared.name ?? packagedText(packaged.name, basename(appDir)),
+      version: declared.version ?? packagedText(packaged.version, "0.0.0"),
+    },
+  });
 }
 
 export interface FilesConfigContext {
@@ -339,12 +387,14 @@ export function loadConfig(
   const dbDir = abs(raw.db ?? "./.ackerdb");
   const hostname = listenerHostname(raw.hostname);
   const port = listenerPort(raw.port);
-  const credentialVerifier = optionalModulePath(raw.credentialVerifier);
+  const credentialVerifier = optionalModulePath(raw.credentialVerifier, "credentialVerifier");
   const authentication: AuthenticationConfig | undefined = raw.oidc !== undefined
     ? { kind: "oidc", options: raw.oidc }
     : credentialVerifier === undefined
       ? undefined
       : { kind: "credential-verifier-module", path: abs(credentialVerifier) };
+  const scopeResolver = optionalModulePath(raw.scopeResolver, "scopeResolver");
+  const realtime = optionalModulePath(raw.realtime, "realtime");
   return {
     appDir: dir,
     appPath: abs(raw.app ?? "./app.ts"),
@@ -357,8 +407,9 @@ export function loadConfig(
     hostname,
     port,
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
-    telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(authentication === undefined ? {} : { authentication }),
+    ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
+    ...(realtime === undefined ? {} : { realtime: abs(realtime) }),
     statusScope: statusScope(raw.statusScope),
     files: resolveFilesConfig(raw.files, {
       appDir: dir,
@@ -366,5 +417,6 @@ export function loadConfig(
       hostname,
       port,
     }),
+    admin: resolveAdminConfig(raw.admin, dir),
   };
 }

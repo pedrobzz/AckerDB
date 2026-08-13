@@ -3,7 +3,7 @@
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, durable jobs,
 live query subscriptions, application channels, and WebRTC media sessions
-through Protocol 5.
+over one versioned wire contract.
 
 The supported production topology is one Bun server process owning one local
 SQLite database file. AckerDB is not a horizontally scaled or replicated service,
@@ -19,8 +19,8 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@ackerdb/core` | Protocol 5 envelopes, wire encoding, outcomes, cursors, and typed function/channel/realtime references. |
-| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, and telemetry. |
+| `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, logging, and analytics strategies. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
@@ -56,14 +56,24 @@ your-app/
   `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
+  A declaration may also name its `apiPath`: the group it is published in and
+  the first segment of its address, deciding its generated binding and its HTTP
+  root together — `"internal"` addresses `internal.orders.list` and serves
+  `/internal/orders/list`, and `"api"` is the default. A file named `index.ts`
+  takes its directory's name. Namespacing and routing only; `access` alone
+  decides who may call (ADR-0023).
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs
   declared in `jobs/` execute as the local `system` principal with retries,
-  recurrence, dedup, and per-key concurrency (see docs/jobs.md).
+  recurrence, dedup, per-key concurrency, and durable steps — `ctx.step`
+  journals completed work so a resumed run re-runs only what the journal has
+  not recorded (see docs/jobs.md).
 - Direct server-side query/mutation composition preserves the caller's
   immutable principal and still validates arguments and the callee's policy.
-  Procedures and SSE procedures exist only at the transport boundary.
+  Procedures exist at the transport boundary and as job steps —
+  `ctx.step.run` is the journaled variant of the same nested invocation; SSE
+  procedures exist only at the transport boundary.
 - Generated client references carry compile-time inferred argument and return
   types without importing server runtime code into the client. Results are
   checked for wire representability and frame bounds, not against a declared
@@ -96,8 +106,9 @@ client.close();
   types, constraints, presence semantics, stored-data enforcement, and the
   deliberate pre-1.0 upgrade break.
 - [Database queries](docs/database-queries.md) documents typed SQL predicates,
-  deterministic ordering and keyset pagination, transparent indexes,
-  conservative reactive dependencies, and structural upsert.
+  serializable filter expressions, deterministic ordering and keyset pagination
+  with server-enforced row and byte bounds, transparent indexes, conservative
+  reactive dependencies, and structural upsert.
 - [Full-text search](docs/full-text-search.md) documents explicit FTS5 targets,
   literal implicit-AND queries, predicate composition, deterministic rank
   order, reactivity, lifecycle, and application-owned hybrid rank fusion.
@@ -120,12 +131,21 @@ client.close();
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
   sessions, HTTP procedures, and SSE.
+- [Scopes and identity credentials](docs/scopes.md) documents the application
+  scope vocabulary, wildcard grants and the reserved `_` framework space,
+  `{ anyOf | allOf }` requirements on any function, and the credential vault
+  that makes an agent a first-class Identity bounded by its issuer.
+- [The Admin API](docs/admin-api.md) documents the built-in administration
+  surface: the `admin` group every application publishes, the framework's
+  `_admin:<domain>:<verb>` vocabulary, what "inert without a grant" means
+  exactly, the reference tree shipped from `@ackerdb/core`, and the one `admin`
+  configuration object.
 - [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
   Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
   issuer string, configuration block, and client credential-source wiring.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
-  receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
+  receipts, receiver-confirmed SSE delivery, reconnect behavior, and
   the deliberately weaker live-event contract.
 - [Application channels](docs/channels.md) documents typed bidirectional
   events, opt-in rooms, shared memberships, handler deduplication, and
@@ -138,10 +158,6 @@ client.close();
   production defaults, typed outcomes, durability profiles, health endpoints,
   startup/readiness phases, evidence-preserving crash recovery, signal-driven
   draining, and verified backup/restore.
-- [Telemetry](docs/telemetry.md) documents the default-on privacy boundary,
-  tuning and disabling, bounded whole-operation tail retention and fail-open
-  export, schema version 1 records, correlated auth/operation/receiver-delivery
-  coverage, CLI backup/restore spans, and runtime/storage health metrics.
 - [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
   to `@ackerdb/client-react`: supported versions, provider lifetime, every hook,
   durable Identity, native recovery, and current platform limitations.
@@ -173,15 +189,19 @@ All `.ackerdb.config.json` fields are optional. The path defaults are
 `0.0.0.0` only when clients must connect through a trusted private development
 network. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
-never both. The protected status scope is configured there too. Durability and
-telemetry profiles are exact environment switches:
+never both. A `realtime` module path may default-export
+`createRealtimeRuntime(options)` for deployment-owned ICE, TURN, network, and
+resource configuration; it is loaded only when the application declares
+realtime handlers. The protected status scope is set in the same
+`.ackerdb.config.json` through `statusScope`.
+Durability is an exact environment switch:
 
 ```sh
-ACKERDB_DURABILITY=production ACKERDB_TELEMETRY=enabled acker start ./apps/server
+ACKERDB_DURABILITY=production acker start ./apps/server
 ```
 
-`production` and `enabled` are the defaults. See the linked contract documents
-before selecting `balanced` durability or disabling telemetry.
+`production` is the default. See the linked contract documents before selecting
+`balanced` durability.
 
 The CLI listener is plaintext HTTP/WebSocket and does not terminate TLS. Keep
 the default loopback listener or place a non-loopback listener behind a private
@@ -220,9 +240,8 @@ GitHub's required benchmark status first classifies the pull request. It returns
 an immediate successful no-op unless code exercised by the benchmark or the
 benchmark contract itself changed. For those performance-relevant changes, it
 compares the pull request's AckerDB with its base branch's AckerDB on the
-credential-free GitHub-hosted runner. Telemetry stays disabled unless telemetry source
-changed. The check records evidence without thresholds or an automated verdict;
-Pedro and an agent interpret the complete vector.
+credential-free GitHub-hosted runner. The check records evidence without static
+per-metric thresholds; Pedro and an agent interpret the complete vector.
 Do not run the protected benchmark locally. See [the benchmark
 contract](bench/README.md).
 

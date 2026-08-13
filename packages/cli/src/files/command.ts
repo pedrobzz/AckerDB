@@ -26,7 +26,6 @@ import {
 } from "../app/config.ts";
 import { importApp } from "../app/manifest.ts";
 import { createFileStore } from "../app/start.ts";
-import { observeStorageOperation } from "../commands/operations.ts";
 import {
   migrateFileStore,
   type FileStoreMigrationCompleteReport,
@@ -190,8 +189,7 @@ export async function migrateActiveFileStore(
   targetDescriptorPath: string,
   onProgress?: (event: FileStoreMigrationProgressEvent) => void | Promise<void>,
 ): Promise<FileStoreMigrationCompleteReport> {
-  return observeStorageOperation(config, "file_migration", async () => {
-    const snapshot = configSnapshot(config.appDir);
+  const snapshot = configSnapshot(config.appDir);
     const targetRaw = readTargetDescriptor(resolve(targetDescriptorPath));
     const targetDocument = {
       publicUrl: config.files.publicUrl,
@@ -242,8 +240,4 @@ export async function migrateActiveFileStore(
       resolveFileStoreBinding(engine, targetIdentity);
       return report;
     });
-  }, (report) => ({
-    sizeBytes: report.bytes.completed,
-    commitId: report.commitVersion,
-  }));
 }

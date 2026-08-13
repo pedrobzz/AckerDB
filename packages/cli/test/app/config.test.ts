@@ -1,17 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { loadConfig } from "../../src/app/config.ts";
 
 describe("production profile configuration", () => {
-  test("defaults to production durability with telemetry enabled", () => {
+  test("defaults to production durability", () => {
     expect(loadConfig(".", {})).toMatchObject({
       appPath: resolve("app.ts"),
       dbDir: resolve(".ackerdb"),
       hostname: "127.0.0.1",
       durability: "production",
-      telemetry: "enabled",
       statusScope: "ackerdb:status",
       files: {
         backend: "filesystem",
@@ -45,25 +44,15 @@ describe("production profile configuration", () => {
     }
   });
 
-  test("accepts only the named durability and telemetry profiles", () => {
+  test("accepts the named durability profiles", () => {
     expect(loadConfig(".", {
       ACKERDB_DURABILITY: "balanced",
-      ACKERDB_TELEMETRY: "disabled",
-    })).toMatchObject({
-      durability: "balanced",
-      telemetry: "disabled",
-    });
+    })).toMatchObject({ durability: "balanced" });
   });
 
   test("rejects an unknown durability profile without normalization", () => {
     expect(() => loadConfig(".", { ACKERDB_DURABILITY: "Production" })).toThrow(
       'ACKERDB_DURABILITY must be exactly production or balanced; received "Production"',
-    );
-  });
-
-  test("rejects an unknown telemetry profile without normalization", () => {
-    expect(() => loadConfig(".", { ACKERDB_TELEMETRY: "off" })).toThrow(
-      'ACKERDB_TELEMETRY must be exactly enabled or disabled; received "off"',
     );
   });
 
@@ -114,6 +103,28 @@ describe("production profile configuration", () => {
           path: resolve(dir, "auth/credential-verifier.ts"),
         },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves a realtime runtime module relative to the app directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        realtime: "./deployment/realtime.ts",
+      }));
+
+      expect(loadConfig(dir, {})).toMatchObject({
+        realtime: resolve(dir, "deployment/realtime.ts"),
+      });
+
+      for (const realtime of ["", 42, null]) {
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ realtime }));
+        expect(() => loadConfig(dir, {})).toThrow(
+          "realtime must be a non-empty module path",
+        );
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -246,6 +257,62 @@ describe("production profile configuration", () => {
         writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ files }));
         expect(() => loadConfig(dir, {})).toThrow();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the admin object", () => {
+  test("names the application from its own package, and the directory otherwise", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      // Nothing to read: the directory names itself, which is also what the
+      // OpenAPI document has always fallen back to.
+      expect(loadConfig(dir, {}).admin.application).toEqual({
+        name: basename(dir),
+        version: "0.0.0",
+      });
+
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({ name: "savoria", version: "2.1.0" }),
+      );
+      expect(loadConfig(dir, {}).admin.application).toEqual({
+        name: "savoria",
+        version: "2.1.0",
+      });
+
+      // An operator naming the deployment overrides the package.
+      writeFileSync(
+        join(dir, ".ackerdb.config.json"),
+        JSON.stringify({ admin: { application: { name: "savoria-eu" } } }),
+      );
+      expect(loadConfig(dir, {}).admin.application).toEqual({
+        name: "savoria-eu",
+        version: "2.1.0",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an unknown field and a malformed value", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      const write = (admin: unknown) =>
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ admin }));
+
+      write({ dashboard: {} });
+      expect(() => loadConfig(dir, {})).toThrow("unknown admin field: dashboard");
+      write({ application: { title: "savoria" } });
+      expect(() => loadConfig(dir, {})).toThrow("unknown admin.application field: title");
+      write({ application: { name: 7 } });
+      expect(() => loadConfig(dir, {})).toThrow(
+        "admin.application.name must be a trimmed non-empty string",
+      );
+      write("savoria");
+      expect(() => loadConfig(dir, {})).toThrow("admin must be a JSON object");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

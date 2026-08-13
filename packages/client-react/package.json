@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client-react",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "license": "FSL-1.1-ALv2",
   "repository": {
     "type": "git",
@@ -23,8 +23,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@ackerdb/client": "workspace:0.16.0",
-    "@ackerdb/core": "workspace:0.16.0"
+    "@ackerdb/client": "workspace:0.17.0",
+    "@ackerdb/core": "workspace:0.17.0"
   },
   "peerDependencies": {
     "ai": "^7.0.0",
@@ -49,9 +49,9 @@
   },
   "devDependencies": {
     "@ai-sdk/react": "4.0.32",
-    "@happy-dom/global-registrator": "^20.10.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "ackerdb-test-support": "workspace:*",
     "ai": "7.0.29",
     "expo": "~57.0.6",
     "expo-crypto": "~57.0.1",

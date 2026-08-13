@@ -3,12 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stableEncode } from "@ackerdb/core";
-import {
-  CommitCoordinator,
-  withFetchObserver,
-  type CommitTelemetryEvent,
-  type FetchObservation,
-} from "../../src/runtime/coordinator.ts";
+import { CommitCoordinator } from "../../src/runtime/coordinator.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
@@ -435,7 +430,6 @@ describe("CommitCoordinator", () => {
 
   test("fetch and nested transactions are rejected at the owning boundary", async () => {
     const { coordinator } = fixture();
-    const observations: FetchObservation[] = [];
     const nested = () => coordinator.execute({
       operation: "transaction",
       fairnessKey: "connection-1",
@@ -452,27 +446,15 @@ describe("CommitCoordinator", () => {
         publication: (version) => ({ version }),
       }),
     ).rejects.toMatchObject({ code: "validation" });
-    await expect(withFetchObserver(
-      (observation) => {
-        observations.push(observation);
-      },
-      () => coordinator.execute({
-        operation: "transaction",
-        fairnessKey: "connection-1",
-        requestBytes: 1,
-        work: () => fetch("data:text/plain,nope"),
-        publication: (version) => ({ version }),
-      }),
-    )).rejects.toBeInstanceOf(AckerDBError);
-    expect(observations).toEqual([expect.objectContaining({ outcome: "validation" })]);
-    expect(observations.every(Object.isFrozen)).toBe(true);
+    await expect(coordinator.execute({
+      operation: "transaction",
+      fairnessKey: "connection-1",
+      requestBytes: 1,
+      work: () => fetch("data:text/plain,nope"),
+      publication: (version) => ({ version }),
+    })).rejects.toBeInstanceOf(AckerDBError);
 
-    const response = await withFetchObserver(
-      () => {
-        throw new Error("telemetry failed");
-      },
-      () => fetch("data:text/plain,allowed"),
-    );
+    const response = await fetch("data:text/plain,allowed");
     expect(await response.text()).toBe("allowed");
   });
 
@@ -572,95 +554,5 @@ describe("CommitCoordinator", () => {
     expect(engine.commitVersion()).toBe(0n);
   });
 
-  test("observes writer queue, execution, storage, encoding, commit, replay, and post-commit publication", async () => {
-    const { coordinator } = fixture();
-    const events: CommitTelemetryEvent[] = [];
-    const request = {
-      operation: "mutation" as const,
-      fairnessKey: "session-1",
-      requestBytes: 10,
-      idempotency: identity,
-      telemetry: (event: CommitTelemetryEvent) => {
-        events.push(event);
-      },
-      work: (db: any) => db.notes.insert({ body: "hello" }),
-      publication: (version: bigint) => ({ version }),
-    };
 
-    await coordinator.execute(request);
-    expect(new Set(events.map((event) => event.stage))).toEqual(new Set([
-      "queue",
-      "execution",
-      "storage",
-      "encoding",
-      "commit",
-      "publication",
-    ]));
-    const commit = events.find((event) => event.stage === "commit");
-    expect(commit).toMatchObject({
-      outcome: "ok",
-      commitVersion: 1n,
-    });
-    expect(commit!.dependencyCount).toBeGreaterThan(0);
-    const execution = events.filter((event) => event.stage === "execution");
-    expect(execution).toEqual([
-      expect.objectContaining({
-        outcome: "ok",
-        dependencyCount: expect.any(Number),
-      }),
-    ]);
-    expect(execution[0]!.durationMs).toBeGreaterThanOrEqual(0);
-    expect(events.find((event) => event.stage === "publication" && event.postCommit)).toMatchObject({
-      outcome: "ok",
-      commitVersion: 1n,
-      postCommit: true,
-    });
-    expect(events.find((event) => event.stage === "storage" && event.replayed === false)).toBeDefined();
-
-    events.length = 0;
-    await coordinator.execute(request);
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: "storage",
-      outcome: "ok",
-      replayed: true,
-      commitVersion: 1n,
-    }));
-    expect(events.some((event) => event.stage === "commit")).toBe(false);
-    expect(events.some((event) => event.stage === "execution")).toBe(false);
-  });
-
-  test("observes rollback and telemetry observer failures never affect a transaction", async () => {
-    const { coordinator, engine } = fixture();
-    const events: CommitTelemetryEvent[] = [];
-    await expect(coordinator.execute({
-      operation: "transaction",
-      fairnessKey: "connection-1",
-      requestBytes: 1,
-      telemetry: (event) => {
-        events.push(event);
-      },
-      work: (db: any) => db.notes.insert({ body: "rolled back" }),
-      finalize: () => {
-        throw new Error("boom");
-      },
-      publication: (version) => ({ version }),
-    })).rejects.toThrow("boom");
-    expect(events).toContainEqual(expect.objectContaining({ stage: "rollback", outcome: "ok" }));
-    expect(events).toContainEqual(expect.objectContaining({ stage: "storage", outcome: "internal" }));
-    expect(events.filter((event) => event.stage === "execution")).toEqual([
-      expect.objectContaining({ stage: "execution", outcome: "internal" }),
-    ]);
-    expect(engine.commitVersion()).toBe(0n);
-
-    await expect(coordinator.execute({
-      operation: "transaction",
-      fairnessKey: "connection-1",
-      requestBytes: 1,
-      telemetry: async () => {
-        throw new Error("export failed");
-      },
-      work: (db: any) => db.notes.insert({ body: "committed" }),
-      publication: (version) => ({ version }),
-    })).resolves.toMatchObject({ commitVersion: 1n });
-  });
 });

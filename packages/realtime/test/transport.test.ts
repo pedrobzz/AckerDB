@@ -17,11 +17,9 @@ import {
   type AckerDBServer,
   type ProcedureBuilder,
   type RealtimeBuilder,
-  type TelemetryMetricRecord,
-  type TelemetryRecord,
 } from "@ackerdb/server";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   RealtimeDataPlane,
   decode,
   encode,
@@ -63,7 +61,6 @@ let peer: FakePeerConnection;
 let clientChannel: FakeDataChannel;
 let handlerRuns: number;
 let base: string;
-let telemetryRecords: TelemetryRecord[];
 let authorizationGate: Promise<never> | null;
 
 beforeEach(() => {
@@ -75,7 +72,6 @@ beforeEach(() => {
   peer.channel.peer = clientChannel;
   clientChannel.peer = peer.channel;
   handlerRuns = 0;
-  telemetryRecords = [];
   authorizationGate = null;
   const assistant = typedRealtime({
     args: {},
@@ -112,17 +108,6 @@ beforeEach(() => {
       procedures: { externalEcho },
     }),
     limits: PRODUCTION_LIMITS,
-    telemetry: {
-      localSink: false,
-      exporter: {
-        export: (records) => void telemetryRecords.push(...records),
-      },
-      limits: {
-        batchIntervalMs: 5,
-        sampleIntervalMs: 10,
-        slowOperationMs: 0,
-      },
-    },
     realtime: testRealtimeRuntime(
       testRealtimeEngine(
         () => peer as unknown as RTCPeerConnection,
@@ -147,12 +132,12 @@ afterEach(async () => {
 });
 
 async function prepare(recovery = false) {
-  const response = await fetch(`${base}/api/_realtime/prepare`, {
+  const response = await fetch(`${base}/_realtime/prepare`, {
     method: "POST",
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
-      ref: "assistant.live",
+      ref: "api.assistant.live",
       args: {},
       ...(recovery ? { recovery: true as const } : {}),
     }),
@@ -165,10 +150,10 @@ async function prepare(recovery = false) {
 }
 
 async function offer(ticket: string) {
-  const response = await fetch(`${base}/api/_realtime`, {
+  const response = await fetch(`${base}/_realtime`, {
     method: "POST",
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket,
       offer: { type: "offer", sdp: "v=0\r\noffer" },
@@ -189,12 +174,12 @@ async function establish(recovery = false) {
 describe("realtime HTTP signaling", () => {
   test("cancels timed-out authorization and releases runtime admission", async () => {
     authorizationGate = new Promise(() => {});
-    const response = await fetch(`${base}/api/_realtime/prepare`, {
+    const response = await fetch(`${base}/_realtime/prepare`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_prepare",
-        ref: "assistant.live",
+        ref: "api.assistant.live",
         args: {},
       }),
     });
@@ -216,76 +201,17 @@ describe("realtime HTTP signaling", () => {
     });
   });
 
-  test("exports bounded setup, recovery, path, media, and cleanup telemetry", async () => {
-    const answer = await establish(true);
-
-    peer.iceConnectionState = "connected";
-    peer.connectionState = "connected";
-    peer.dispatchEvent(new Event("iceconnectionstatechange"));
-    peer.dispatchEvent(new Event("connectionstatechange"));
-    await runtime.realtime!.sampleHealth(1);
-
-    expect(runtime.status().realtime).toMatchObject({
-      activeSessions: 1,
-      recoveryAttempts: 1,
-      recoveryAccepted: 1,
-      health: {
-        directPaths: 1,
-        relayPaths: 0,
-        udpPaths: 1,
-        roundTripTimeAverageMs: 20,
-        jitterMaxMs: 4,
-        packets: 5,
-        packetsLost: 1,
-        frames: 1,
-        framesDropped: 2,
-      },
-    });
-
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_direct_paths" && metric.value === 1
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_frames_dropped" && metric.value === 2
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_recovery_accepted" &&
-      metric.value === 1
-    );
-
-    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
-      method: "DELETE",
-    });
-    expect(closed.status).toBe(204);
-    expect(runtime.status().realtime?.health).toMatchObject({
-      sampledPeers: 0,
-      directPaths: 0,
-      relayPaths: 0,
-      udpPaths: 0,
-      tcpPaths: 0,
-      roundTripTimeAverageMs: 0,
-      packets: 0,
-      frames: 0,
-      dataChannelBufferedAmountMax: 0,
-    });
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_closed_client" && metric.value === 1
-    );
-    await expectMetric((metric) =>
-      metric.name === "runtime.realtime_sessions" && metric.value === 0
-    );
-  });
 
   test("prepares, creates, trickles, and closes one authenticated generation", async () => {
-    const legacy = await fetch(`${base}/api/_realtime/config`);
+    const legacy = await fetch(`${base}/_realtime/config`);
     expect(legacy.status).toBe(404);
 
-    const preparedResponse = await fetch(`${base}/api/_realtime/prepare`, {
+    const preparedResponse = await fetch(`${base}/_realtime/prepare`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_prepare",
-        ref: "assistant.live",
+        ref: "api.assistant.live",
         args: {},
       }),
     });
@@ -295,7 +221,7 @@ describe("realtime HTTP signaling", () => {
       decode(await preparedResponse.text()),
     );
     expect(prepared).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepared",
       configuration: {
         iceServers: [{ urls: "turn:relay.example.test" }],
@@ -315,10 +241,10 @@ describe("realtime HTTP signaling", () => {
     expect(handlerRuns).toBe(1);
     expect(runtime.status().realtime?.activeSessions).toBe(1);
 
-    const patched = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
+    const patched = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: true,
@@ -329,7 +255,7 @@ describe("realtime HTTP signaling", () => {
       t: "realtime_candidates",
     });
 
-    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
+    const closed = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "DELETE",
     });
     expect(closed.status).toBe(204);
@@ -340,10 +266,10 @@ describe("realtime HTTP signaling", () => {
   test("returns a typed terminal outcome before a forbidden HTTP trickle reaches native", async () => {
     const answer = await establish();
 
-    const patched = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
+    const patched = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [{
           candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ srflx",
@@ -365,10 +291,10 @@ describe("realtime HTTP signaling", () => {
   });
 
   test("reserves malformed session paths without exposing an application route", async () => {
-    const response = await fetch(`${base}/api/_realtime/not-a-session`, {
+    const response = await fetch(`${base}/_realtime/not-a-session`, {
       method: "PATCH",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "realtime_candidates",
         candidates: [],
         complete: true,
@@ -410,27 +336,9 @@ describe("realtime HTTP signaling", () => {
     ).toEqual([{ value: "from realtime" }]);
 
     client.close();
-    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
+    const closed = await fetch(`${base}/_realtime/${answer.sessionId}`, {
       method: "DELETE",
     });
     expect(closed.status).toBe(204);
   });
 });
-
-async function expectMetric(
-  predicate: (metric: TelemetryMetricRecord) => boolean,
-): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await runtime.telemetry.flush();
-    if (
-      telemetryRecords.some(
-        (record): record is TelemetryMetricRecord =>
-          record.kind === "metric" && predicate(record),
-      )
-    ) {
-      return;
-    }
-    await Bun.sleep(10);
-  }
-  throw new Error("Runtime did not export the expected realtime metric");
-}

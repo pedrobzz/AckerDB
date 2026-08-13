@@ -9,7 +9,7 @@ import {
   decodeSseEvent,
   encodeSseChunk,
   encodeSseControl,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type SseMessage,
 } from "../packages/core/src/index.ts";
 import { SseEventDecoder } from "../packages/client/src/sse/event-decoder.ts";
@@ -104,7 +104,7 @@ function input(): Uint8Array[] {
     }));
   }
   frames.push(encodeSseControl({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "sse_done",
     seq: EVENTS + 1,
     proof: "proof",

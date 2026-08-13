@@ -94,7 +94,7 @@ export function isService(value: unknown): value is AnyService {
   return hasBrand(value, SERVICE_IDENTITY);
 }
 
-/** One service and the exact name failures, telemetry, and readiness report. */
+/** One service and the exact name failures and readiness report. */
 export interface DeclaredService {
   readonly name: string;
   readonly service: AnyService;

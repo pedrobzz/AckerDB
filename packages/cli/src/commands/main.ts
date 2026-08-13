@@ -21,7 +21,7 @@ import { existsSync, rmSync, watch } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { resetDatabase, type Renames } from "@ackerdb/server";
+import { resetAdminCredentials, resetDatabase, type Renames } from "@ackerdb/server";
 import { loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
 import { exportOpenApi } from "../app/openapi.ts";
@@ -103,6 +103,7 @@ function usage(): never {
   acker generate [name] [app-dir]
   acker plugin reset <mount> [app-dir]
   acker plugin drop <mount> [app-dir]
+  acker credential reset [app-dir]
   acker reset [app-dir]
   acker status [app-dir]
   acker backup <artifact> [app-dir] [--metadata-only]
@@ -640,6 +641,19 @@ try {
         loadConfig(resolve(args[0]!)),
         parsePluginConsent(args[1]!),
       )));
+      break;
+    }
+    case "credential": {
+      requireArgumentCount(args, 1, 2);
+      if (args[0] !== "reset") usage();
+      // Break-glass, so it reads the configuration and nothing else: importing
+      // the application is the one thing that cannot be assumed to work when an
+      // operator has reached for this.
+      const config = loadConfig(resolve(args[1] ?? "."));
+      const { cleared } = resetAdminCredentials(join(config.dbDir, "data.db"));
+      console.log(cleared.length === 0
+        ? "[ackerdb] no Admin Credential to clear; the next start issues one"
+        : `[ackerdb] cleared ${cleared.length} credential(s); the next start issues a new Admin Credential`);
       break;
     }
     case "reset": {

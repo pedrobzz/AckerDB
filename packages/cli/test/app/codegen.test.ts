@@ -4,6 +4,7 @@ import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
 import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
+import { applicationAddresses } from "ackerdb-test-support/framework-functions";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -84,15 +85,17 @@ describe("codegen", () => {
     expect(server).toContain(
       'type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;',
     );
-    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs>");
-    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs>");
+    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>");
+    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>");
     expect(server).toContain(
-      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
+      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>",
     );
     expect(server).toContain(
       "unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>",
     );
-    expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>");
+    expect(server).toContain(
+      "SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>",
+    );
     expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins, QueryJobs>");
     expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins, MutationJobs>");
     expect(server).toContain(
@@ -194,22 +197,96 @@ export const tuya = service({
     const config = loadConfig(dir);
     await runCodegen(config);
     const modules = await importFunctionModules(config);
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
-      "admin.users.count",
-      "messages.enqueueNote",
-      "messages.list",
-      "messages.send",
-      "messages.tail",
+      // The framework's own group is registered in every application.
+      "admin.credentials.list",
+      "admin.credentials.rotate",
+      "admin.system.info",
+      "api.admin.users.count",
+      "api.messages.enqueueNote",
+      "api.messages.list",
+      "api.messages.send",
+      "api.messages.tail",
+      "internal.admin.users.compact",
     ]);
+    // the group is the address's first segment, and the URL is the address
+    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("api.messages.tail");
+    expect(registry.get("internal.admin.users.compact")?.apiPath).toBe("internal");
+    // `functions/admin/` is a module directory, not a group: a directory named
+    // after a declared group still publishes into the group each function
+    // declares.
+    expect(registry.get("api.admin.users.count")?.apiPath).toBe("api");
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
-    expect(api).toContain("messages: typeof m_messages;");
+    expect(api).toContain("messages: typeof _m_messages;");
     expect(api).toContain("admin: {");
-    expect(api).toContain("users: typeof m_admin_users;");
+    expect(api).toContain("users: typeof _m_admin_users;");
     expect(api).toContain(
-      'typingEvents: EventRef<import("./types.ts").TypingEventArgs, import("./types.ts").TypingEvent>;',
+      'typingEvents: _EventRef<import("./types.ts").TypingEventArgs, import("./types.ts").TypingEvent>;',
     );
+  });
+
+  test("emits one binding per API path the manifest declares", async () => {
+    const dir = fixture();
+    const config = loadConfig(dir);
+    await runCodegen(config);
+    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
+    expect(api).toContain(
+      "export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {",
+    );
+    expect(api).toContain(
+      'export const internal = _apiGroup("internal") as unknown as _ApiFromModules<_Modules, "internal">;',
+    );
+    // The framework's two groups earn a binding without the manifest naming
+    // them, and `admin` takes the framework's own tree rather than selecting
+    // from modules that could never hold it.
+    expect(api).toContain(
+      'export const admin = _adminApi as unknown as typeof _adminApi & _ApiFromModules<_Modules, "admin">;',
+    );
+    // An undeclared group earns none: the manifest is the only list, and code
+    // generation never imports the function modules that would hold one.
+    expect(api).not.toContain("export const reports =");
+    // Every name the module needs for itself carries the reserved `_`, which a
+    // group's name can never begin with — so `api`, `admin` and `events` are
+    // the whole of what a group must not be called, and the manifest refuses
+    // all three.
+    for (const line of api.split("\n")) {
+      const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
+      if (owned !== undefined) expect(["admin", "api", "events", "internal"]).toContain(owned);
+    }
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
+  test("an index module publishes its directory's name beside its siblings", async () => {
+    const dir = makeFixture({
+      "app.ts": FIXTURE_APP,
+      "functions/orders/index.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const list = query({ access: "public", args: {}, handler: () => [] });
+`,
+      "functions/orders/refunds.ts": `
+import { query } from "../../_generated/server.ts";
+
+export const pending = query({ access: "public", args: {}, handler: () => [] });
+`,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    await runCodegen(config);
+
+    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    expect(applicationAddresses(registry))
+      .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
+
+    // `orders` is a module and a namespace at once, so the generated tree is
+    // the intersection: dropping either half would leave a registered address
+    // with no binding to import.
+    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
+    expect(api).toContain("orders: typeof _m_orders & {");
+    expect(api).toContain("refunds: typeof _m_orders_refunds;");
+    expect(typecheckFixture(dir)).toBe("");
   });
 
   test("binds MCP declarations to the schema while keeping them server-only", async () => {
@@ -217,7 +294,7 @@ export const tuya = service({
       "app.ts": FIXTURE_APP,
       "functions/agent.ts": `
 import { v } from "@ackerdb/server";
-import { mcp, mcpAuth, query } from "../_generated/server.ts";
+import { mcp, query } from "../_generated/server.ts";
 
 export const echo = query({
   description: "Echo text.",
@@ -226,10 +303,8 @@ export const echo = query({
   returns: v.object({ text: v.string() }),
   handler: (_ctx, args) => ({ text: args.text }),
 });
-export const agentAuth = mcpAuth({ name: "agent" });
 export const agentMcp = mcp({
   name: "agent",
-  auth: agentAuth,
   tools: { echo_text: { fn: echo, access: "public" } },
 });
 `,
@@ -242,18 +317,14 @@ export const agentMcp = mcp({
     expect(generatedServer).toContain('import type app from "../app.ts";');
     expect(generatedServer).toContain("export type Schema = AppSchema<typeof app>;");
     expect(generatedServer).toContain("mcp as mcpGeneric");
-    expect(generatedServer).toContain("mcpAuth as mcpAuthGeneric");
-    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema>;");
-    expect(generatedServer).toContain("export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;");
+    expect(generatedServer).toContain("export type Scope = AppScope<typeof app>;");
+    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;");
 
-    const registry = new Registry(await importFunctionModules(config));
-    // The tool is an ordinary function and keeps its address; the endpoint and
-    // its auth provider are the only server-only exports.
-    expect([...registry.functions.keys()]).toEqual(["agent.echo"]);
-    expect([...registry.serverOnly.keys()]).toEqual([
-      "agent.agentMcp",
-      "agent.agentAuth",
-    ]);
+    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    // The tool is an ordinary function and keeps its address; the endpoint is
+    // the only server-only export.
+    expect(applicationAddresses(registry)).toEqual(["api.agent.echo"]);
+    expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
   });
 
   test("derives exact local Plugin capabilities without exposing them remotely or to MCP", async () => {

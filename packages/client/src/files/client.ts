@@ -89,7 +89,7 @@ function fileRouteUrl(
     url.password !== "" ||
     url.search !== "" ||
     url.hash !== "" ||
-    !url.pathname.startsWith(`/api/_files/${route}/`)
+    !url.pathname.startsWith(`/_files/${route}/`)
   ) {
     throw new TypeError(`File ${label} URL has an invalid AckerDB ${shape} shape`);
   }

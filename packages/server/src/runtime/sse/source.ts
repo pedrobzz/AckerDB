@@ -51,7 +51,7 @@ function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
  * to the JSON the document publishes; a failing chunk releases the source and
  * fails the stream with the exact validation error. `handlerContext` restores
  * the invocation-time async context, so generator bodies keep the handler's
- * trace/invocation ownership.
+ * invocation ownership.
  */
 export function validatedSseSource(
   codec: ExposedHttpCodec,

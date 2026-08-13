@@ -5,8 +5,8 @@ transactions without pretending to be a remote caller. The existing local
 procedure path is protocol-shaped: it requires an address, serialized
 arguments, request identity, principal, response encoding, and a separately
 registered outer function. Direct Engine access avoids transport but also
-bypasses application contexts, policy, admission, telemetry, publication, and
-drain ownership.
+bypasses application contexts, policy, admission, publication, and drain
+ownership.
 
 We therefore expose one explicit capability on the programmatically running
 application: `system.run(name, callback, { signal? })`. Possession of that
@@ -37,12 +37,9 @@ scheduled-wakeup paths.
 
 Each run has one bounded, stable operation name. Qualified name segments begin
 with a letter and obvious UUID or numeric identifier segments are refused so
-per-call identifiers do not become telemetry dimensions. Runs share a bounded
-system fairness identity, enter normal Runtime admission, and are never
-retried, replayed, or deduplicated by the framework. Telemetry records one
-system root plus nested application observations and distinguishes admission
-rejection, application error, unhandled failure, indeterminate cancellation,
-and success.
+per-call identifiers cannot turn an operation name into unbounded state. Runs
+share a bounded system fairness identity, enter normal Runtime admission, and
+are never retried, replayed, or deduplicated by the framework.
 
 Caller cancellation is combined with Runtime shutdown. Cancellation before
 entry is determinate; after application code begins, an external effect or

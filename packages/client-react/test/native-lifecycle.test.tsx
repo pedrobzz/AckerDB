@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
-// suite must do this first (see ./support/dom.ts).
-import { actEnvironment, mountPoint } from "./support/dom.ts";
+// suite must do this first (see ackerdb-test-support/dom).
+import { actEnvironment, mountPoint } from "ackerdb-test-support/dom";
 import {
   FakeAppState,
   appStateListenerCount,
@@ -11,7 +11,7 @@ import {
 import { createHarness } from "./support/harness.ts";
 import { FakeSocket } from "ackerdb-test-support/client-transport";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   type AuthenticationDescriptor,
   type Identity,
   type SubscriptionCursor,
@@ -77,8 +77,8 @@ class LoggingSocket extends FakeSocket {
 }
 
 type TodoArgs = { readonly list: bigint };
-const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
-const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
+const todos = { $ref: "api.todos.list" } as QueryRef<TodoArgs, string[]>;
+const uppercase = { $ref: "api.tools.uppercase" } as ProcedureRef<
   { readonly value: string },
   { readonly value: string }
 >;
@@ -88,7 +88,7 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
     generation: "generation-1",
     commitVersion,
     authEpoch: 0,
-    identity: "todos.list:{list:1}",
+    identity: "api.todos.list:{list:1}",
   };
 }
 
@@ -241,7 +241,6 @@ describe("native AppState lifecycle through the provider", () => {
     const subscription = first.framesOf("sub")[0]!;
     await act(async () => {
       first.receive({
-        v: PROTOCOL_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
@@ -278,7 +277,6 @@ describe("native AppState lifecycle through the provider", () => {
     expect(second.framesOf("sub")[0]!.cursor).toEqual(cursor(1n));
     await act(async () => {
       second.receive({
-        v: PROTOCOL_VERSION,
         t: "transition",
         id: subscription.id,
         transition: { kind: "resume", from: cursor(1n), to: cursor(1n) },
@@ -321,7 +319,6 @@ describe("native AppState lifecycle through the provider", () => {
     const initial = first.framesOf("p")[0]!;
     await act(async () => {
       first.receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: initial.id,
         kind: "procedure",
@@ -335,7 +332,7 @@ describe("native AppState lifecycle through the provider", () => {
     expect(interrupted).toBeDefined();
     await platform("background");
     expect(first.framesOf("cancel")).toEqual([
-      { v: PROTOCOL_VERSION, t: "cancel", id: interrupted.id },
+      { t: "cancel", id: interrupted.id },
     ]);
     expect(container.textContent).toBe("suspended/stale:ONE:indeterminate");
 
@@ -349,12 +346,11 @@ describe("native AppState lifecycle through the provider", () => {
     });
     const recovered = replacement.framesOf("p")[0]!;
     expect(recovered).toMatchObject({
-      ref: "tools.uppercase",
+      ref: "api.tools.uppercase",
       args: { value: "one" },
     });
     await act(async () => {
       replacement.receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: recovered.id,
         kind: "procedure",

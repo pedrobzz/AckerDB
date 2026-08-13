@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +56,7 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   const server = serve({ runtime, port: 0 });
   return {
     base: `http://127.0.0.1:${server.port}`,
@@ -69,7 +69,7 @@ function createApp(): App {
 }
 
 type Message = { readonly id: bigint; readonly body: string };
-const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
+const messagesList = { $ref: "api.messages.list" } as QueryRef<Record<never, never>, Message[]>;
 
 let observed: AckerDBQueryState<Message[]> | undefined;
 
@@ -129,7 +129,7 @@ describe("useQuery against a real ackerdb server", () => {
     await until(() => container.textContent === "fresh:", "the first authoritative delivery");
 
     // A live mutation from another client reaches the rendered query.
-    await writer.mutation("messages.add", { body: "hello" });
+    await writer.mutation("api.messages.add", { body: "hello" });
     await until(() => container.textContent === "fresh:hello", "the live update");
     const delivered = observed!;
 
@@ -146,7 +146,7 @@ describe("useQuery against a real ackerdb server", () => {
     // protocol confirms the rows fresh again without redelivery.
     await until(() => container.textContent === "fresh:hello", "the resumed fresh snapshot");
 
-    await writer.mutation("messages.add", { body: "again" });
+    await writer.mutation("api.messages.add", { body: "again" });
     await until(() => container.textContent === "fresh:hello,again", "the post-resume update");
 
     writer.close();

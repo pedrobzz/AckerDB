@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   parseSseMessage,
   type SseMessage,
   type Identity,
@@ -21,13 +21,10 @@ import {
 } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpAiToolSet,
   type McpBuilder,
-  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
-import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
+import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -36,7 +33,6 @@ import type {
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
@@ -48,8 +44,6 @@ const schema = defineSchema({
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedSse = sseProcedure as SseBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const agentAuth = typedMcpAuth({ name: "agent" });
 const choice = v.union("AiChoice", {
   text: v.string(),
   nothing: v.tag(),
@@ -144,7 +138,6 @@ const hidden = typedProcedure({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   path: "/agent/mcp",
   tools: {
     fail: { fn: fail, access: "public" },
@@ -272,22 +265,14 @@ const modules = {
 
 let directory: string;
 let engine: Engine;
-let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  telemetry = [];
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: {
-      enabled: true,
-      exporter: { export: (batch) => void telemetry.push(...batch) },
-      localSink: false,
-      limits: { ...PRODUCTION_LIMITS.telemetry, slowOperationMs: 0 },
-    },
   });
   nativeInput = undefined;
   roundTripCalls = 0;
@@ -307,7 +292,7 @@ afterEach(async () => {
 async function callAi(mode: string): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: 1,
-    address: "app.runAi",
+    address: "api.app.runAi",
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
     respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -327,7 +312,7 @@ async function collectSse(response: RuntimeSseResponse): Promise<SseMessage[]> {
     const message = parseSseMessage(JSON.parse(text.slice("data: ".length).trim()));
     messages.push(message);
     expect(runtime.ackSse({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: response.streamId,
       seq: message.seq,
@@ -335,10 +320,6 @@ async function collectSse(response: RuntimeSseResponse): Promise<SseMessage[]> {
     })).toBe(true);
   }
   return messages;
-}
-
-function spans(): TelemetrySpanRecord[] {
-  return telemetry.filter((record): record is TelemetrySpanRecord => record.kind === "span");
 }
 
 async function eventually(check: () => boolean): Promise<void> {
@@ -351,7 +332,7 @@ async function eventually(check: () => boolean): Promise<void> {
 describe("MCP zero-hop AI SDK tools", () => {
   test("passes the returned tools directly to AI SDK v7 with lossless structured values", async () => {
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[mcpTokenVaultOwner], "authenticate");
+    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
     try {
       const result = await callAi("structured");
 
@@ -377,19 +358,6 @@ describe("MCP zero-hop AI SDK tools", () => {
       expect(authenticate).not.toHaveBeenCalled();
       expect(engine.reader.query('SELECT label FROM "calls"').all()).toEqual([{ label: "anonymous" }]);
 
-      await runtime.telemetry.flush();
-      const admission = spans().find((span) =>
-        span.operation === "procedure" && span.stage === "admission" && span.requestId === "1"
-      );
-      // A tool executes as the function it names, so spans carry the function's
-      // address rather than "<endpoint>:<tool>". The local adapter dispatches
-      // straight to the tool, so no operation-level tool name is emitted here.
-      const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "tools.roundTrip" && span.requestId === "1"
-      );
-      expect(admission).toBeDefined();
-      expect(nested).toBeDefined();
-      expect(nested?.traceId).toBe(admission?.traceId);
     } finally {
       fetch.mockRestore();
       authenticate.mockRestore();
@@ -484,7 +452,7 @@ describe("MCP zero-hop AI SDK tools", () => {
   test("keeps SSE tools active after handler return and revokes every completed lifecycle", async () => {
     const response = await runtime.runSse({
       id: 2,
-      address: "app.runAiSse",
+      address: "api.app.runAiSse",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });

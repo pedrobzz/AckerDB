@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Err,
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   Status,
   decode,
   encode,
+  parseServerHandshake,
   parseServerMessage,
   parseSseMessage,
   type ServerMessage,
@@ -318,7 +319,29 @@ const functions = {
       },
     }),
   },
+  ops: {
+    /** Another group's root: an ordinary address, served off `/internal/`. */
+    // (declared in APP_API_PATHS below, exactly as an app.ts manifest would)
+    count: query({
+      apiPath: "internal",
+      access: "public",
+      http: true,
+      args: {},
+      handler: (ctx: Ctx) => ctx.db.notes.query().count(),
+    }),
+    /** The group grants nothing: `access` is the whole of the admission decision. */
+    purge: mutation({
+      apiPath: "internal",
+      access: "system",
+      http: true,
+      args: {},
+      handler: () => "purged",
+    }),
+  },
 };
+
+/** What `defineApp({ apiPaths })` would declare for the modules above. */
+const APP_API_PATHS = ["internal"];
 
 class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
@@ -376,8 +399,13 @@ function rawWebSocket(url: string): Promise<WsClient> {
   const waiters: Array<(frame: ServerMessage) => void> = [];
   let closeEvent: CloseEvent | null = null;
   const closeWaiters: Array<(event: CloseEvent) => void> = [];
+  // The reader mirrors the client's own two phases: nothing but the versioned
+  // handshake pair decodes until a welcome has landed.
+  let open = false;
   socket.onmessage = (event) => {
-    const frame = parseServerMessage(decode(String(event.data)));
+    const text = decode(String(event.data));
+    const frame = open ? parseServerMessage(text) : parseServerHandshake(text);
+    if (frame.t === "welcome") open = true;
     const waiter = waiters.shift();
     if (waiter === undefined) frames.push(frame);
     else waiter(frame);
@@ -413,14 +441,14 @@ async function connectWebSocket(
 ): Promise<WsClient> {
   const client = await rawWebSocket(url);
   client.send({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "hello",
     clientSessionId: `serve-test-${++sessionSequence}`,
     credential,
   });
   const welcome = await within(client.next());
   expect(welcome).toMatchObject({
-    v: PROTOCOL_VERSION,
+    v: ACKERDB_VERSION,
     t: "welcome",
     authEpoch: 0,
     principal: credential.kind === "anonymous" ? "anonymous" : "user",
@@ -430,10 +458,9 @@ async function connectWebSocket(
 
 function sendHeldMutation(client: WsClient, id: number): void {
   client.send({
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
-    ref: "notes.hold",
+    ref: "api.notes.hold",
     args: {},
     mutationRequestId: uuidV7(id),
     issuedAt: Date.now(),
@@ -461,10 +488,9 @@ beforeEach(() => {
   verifier = new TestVerifier();
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: new Registry(functions, APP_API_PATHS),
     verifier,
     limits,
-    telemetry: false,
   });
   server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
@@ -477,9 +503,9 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Address segments are path segments: "notes.echo" is served at "/api/notes/echo". */
-function apiPath(address: string): string {
-  return `/api/${address.replaceAll(".", "/")}`;
+/** The group is the root and address segments follow: "api.notes.echo" -> "/api/notes/echo". */
+function httpPath(address: string): string {
+  return `/${address.replaceAll(".", "/")}`;
 }
 
 /**
@@ -491,7 +517,7 @@ async function call(
   args: unknown,
   authorization?: string,
 ): Promise<{ readonly status: number; readonly body: unknown }> {
-  const response = await fetch(`${base}${apiPath(address)}`, {
+  const response = await fetch(`${base}${httpPath(address)}`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: JSON.stringify(args),
@@ -549,11 +575,11 @@ function acknowledgeSse(
   overrides: { readonly stream?: string; readonly seq?: number; readonly proof?: string } = {},
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${baseUrl}/api/_sse/ack`, {
+  return fetch(`${baseUrl}/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream: overrides.stream ?? stream,
       seq: overrides.seq ?? message.seq,
@@ -592,11 +618,11 @@ describe("health and protected status", () => {
         resource: "connection",
         message: "server is not ready",
       } as const;
-      for (const path of ["/status", "/ws"] as const) {
+      for (const path of ["/status", "/_ws"] as const) {
         const response = await fetch(`${earlyBase}${path}`);
         expect(response.status).toBe(503);
         expect(parseServerMessage(decode(await response.text()))).toEqual({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "err",
           id: null,
           outcome: unavailable,
@@ -614,7 +640,7 @@ describe("health and protected status", () => {
         expect(JSON.parse(await early503.text())).toEqual(unavailable);
       }
 
-      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/ws`);
+      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/_ws`);
       const wsResult = await within(new Promise<"opened" | "refused">((resolve) => {
         socket.onopen = () => resolve("opened");
         socket.onerror = () => resolve("refused");
@@ -646,10 +672,9 @@ describe("health and protected status", () => {
       reconcile(earlyEngine);
       earlyRuntime = new Runtime({
         engine: earlyEngine,
-        registry: new Registry(functions),
+        registry: new Registry(functions, APP_API_PATHS),
         verifier,
         limits,
-        telemetry: false,
       });
       early.activate(earlyRuntime);
 
@@ -716,7 +741,6 @@ describe("health and protected status", () => {
           lastCheckpointAtMs: expect.any(Number),
           lastCheckpoint: checkpoint,
         },
-        telemetryAggregates: { maxSeries: 0, overflowedRecords: 0, series: [] },
       },
     });
     expect(verifier.verified).toEqual(["user-token", "workload-alias-token", "workload-token"]);
@@ -758,7 +782,7 @@ describe("health and protected status", () => {
     const text = await response.text();
     expect(text).not.toContain("secret stack detail");
     expect(parseServerMessage(decode(text))).toEqual({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "internal", retryable: false, message: "internal server error" },
@@ -768,19 +792,19 @@ describe("health and protected status", () => {
 
 describe("exposed HTTP procedures", () => {
   test("serves the plain return value at its per-function path for every admitted principal", async () => {
-    expect(await call("notes.echo", { value: "hello" })).toEqual({
+    expect(await call("api.notes.echo", { value: "hello" })).toEqual({
       status: 200,
       body: "hello",
     });
     // The Identity is a bigint, and this procedure declares no `returns`: an
     // undeclared value crosses as the same decimal string a declared one would.
-    expect(await call("notes.identity", {}, "Bearer user-token")).toEqual({
+    expect(await call("api.notes.identity", {}, "Bearer user-token")).toEqual({
       status: 200,
       body: { kind: "user", subject: "user-token", identity: "1" },
     });
     expect(verifier.verified).toEqual(["user-token"]);
 
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "headers" }),
     });
@@ -790,11 +814,11 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("treats an absent or empty body as empty args", async () => {
-    const absent = await fetch(`${base}${apiPath("notes.conflict")}`, { method: "POST" });
+    const absent = await fetch(`${base}${httpPath("api.notes.conflict")}`, { method: "POST" });
     expect(absent.status).toBe(409);
     expect(JSON.parse(await absent.text())).toMatchObject({ code: "conflict" });
 
-    const empty = await fetch(`${base}${apiPath("notes.identity")}`, {
+    const empty = await fetch(`${base}${httpPath("api.notes.identity")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: "",
@@ -804,11 +828,11 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("hides unexposed functions behind the same 404 as a nonexistent path", async () => {
-    const unexposed = await fetch(`${base}${apiPath("notes.hidden")}`, {
+    const unexposed = await fetch(`${base}${httpPath("api.notes.hidden")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
-    const missing = await fetch(`${base}${apiPath("notes.missing")}`, {
+    const missing = await fetch(`${base}${httpPath("api.notes.missing")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -830,16 +854,90 @@ describe("exposed HTTP procedures", () => {
       expect(await response.text()).toBe(body);
     }
     // The unexposed procedure keeps working over the WebSocket session.
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
-    client.send({ v: PROTOCOL_VERSION, t: "p", id: 1, ref: "notes.hidden", args: { value: "ws" } });
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    client.send({ t: "p", id: 1, ref: "api.notes.hidden", args: { value: "ws" } });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1, value: "ws" });
+    client.socket.close();
+    await within(client.closed());
+  });
+
+  test("serves the framework's own group, inert without a grant covering its scope", async () => {
+    // Registered in every application, and answering nothing to a caller with
+    // no grant: `unauthenticated` for anonymous and `unauthorized` for a user
+    // holding no framework scope — never `not_found`, which would be a lie
+    // about a live route, and never data.
+    const anonymous = await fetch(`${base}${httpPath("admin.system.info")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(anonymous.status).toBe(401);
+    expect(JSON.parse(await anonymous.text())).toMatchObject({ code: "unauthenticated" });
+
+    const user = await fetch(`${base}${httpPath("admin.system.info")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+      body: JSON.stringify({}),
+    });
+    expect(user.status).toBe(403);
+    expect(JSON.parse(await user.text())).toMatchObject({ code: "unauthorized" });
+  });
+
+  test("serves another group off its own root, gated by access alone", async () => {
+    const counted = await fetch(`${base}${httpPath("internal.ops.count")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(counted.status).toBe(200);
+
+    // The same function is nowhere under `/api/`: a group is one root, not an
+    // alias for every root.
+    const wrongRoot = await fetch(`${base}${httpPath("api.ops.count")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(wrongRoot.status).toBe(404);
+
+    // Being in the `internal` group grants nothing. The system-only mutation
+    // answers exactly what its `access` says, to an anonymous caller and to an
+    // authenticated user alike.
+    const anonymous = await fetch(`${base}${httpPath("internal.ops.purge")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(anonymous.status).toBe(401);
+    const user = await fetch(`${base}${httpPath("internal.ops.purge")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+      body: JSON.stringify({}),
+    });
+    expect(user.status).toBe(403);
+
+    // Over the socket the address carries the group as its first segment, so
+    // the same one name reaches the function on both surfaces — and the same
+    // policy answers.
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    client.send({ t: "q", id: 1, ref: "internal.ops.count", args: {} });
+    expect(await within(client.next())).toMatchObject({ t: "ok", id: 1 });
+    client.send({
+      t: "m",
+      id: 2,
+      ref: "internal.ops.purge",
+      args: {},
+      mutationRequestId: uuidV7(2),
+      issuedAt: Date.now(),
+    });
+    expect(await within(client.next())).toMatchObject({
+      t: "err",
+      id: 2,
+      outcome: { code: "unauthenticated" },
+    });
     client.socket.close();
     await within(client.closed());
   });
 
   test("answers a wrong method on an exposed path with 405 and its Allow header", async () => {
     for (const method of ["GET", "PUT", "DELETE"]) {
-      const response = await fetch(`${base}${apiPath("notes.echo")}`, { method });
+      const response = await fetch(`${base}${httpPath("api.notes.echo")}`, { method });
       expect(response.status).toBe(405);
       expect(response.headers.get("allow")).toBe("POST");
       expect(response.headers.get("access-control-allow-origin")).toBe("*");
@@ -851,7 +949,7 @@ describe("exposed HTTP procedures", () => {
         message: "method not allowed; allow: POST",
       });
     }
-    const preflight = await fetch(`${base}${apiPath("notes.echo")}`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}${httpPath("api.notes.echo")}`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
   });
 
@@ -859,13 +957,13 @@ describe("exposed HTTP procedures", () => {
     // A GET query is the cacheable form an operator is invited to front with a
     // CDN rule; without this it would serve one caller's rows to another.
     const get = await fetch(
-      `${base}${apiPath("notes.identityQuery")}?args=${encodeURIComponent("{}")}`,
+      `${base}${httpPath("api.notes.identityQuery")}?args=${encodeURIComponent("{}")}`,
       { headers: { authorization: "Bearer user-token" } },
     );
     expect(get.status).toBe(200);
     expect(get.headers.get("vary")).toBe("authorization");
 
-    const posted = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const posted = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
@@ -873,21 +971,21 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("answers a declared application error with its declared Status and body", async () => {
-    expect(await call("notes.reject", {})).toEqual({
+    expect(await call("api.notes.reject", {})).toEqual({
       status: 410,
       body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
     });
   });
 
   test("resolves one durable Identity for the same user over HTTP and WebSocket", async () => {
-    const http = await call("notes.identity", {}, "Bearer user-token");
+    const http = await call("api.notes.identity", {}, "Bearer user-token");
     expect(http.status).toBe(200);
 
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`, {
       kind: "bearer",
       token: "user-token",
     });
-    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "notes.identityQuery", args: {} });
+    client.send({ t: "q", id: 1, ref: "api.notes.identityQuery", args: {} });
     const websocket = await within(client.next());
     expect(websocket).toMatchObject({ t: "ok", id: 1, kind: "query" });
     if (websocket.t !== "ok") throw new Error("expected WebSocket query success");
@@ -914,19 +1012,19 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("maps every outcome through its exact HTTP status as a plain outcome body", async () => {
-    const invalidArgs = await call("notes.echo", { value: 1 });
+    const invalidArgs = await call("api.notes.echo", { value: 1 });
     expect(invalidArgs.status).toBe(400);
     expect(invalidArgs.body).toMatchObject({ code: "validation" });
 
-    const unauthenticated = await call("notes.identity", {});
+    const unauthenticated = await call("api.notes.identity", {});
     expect(unauthenticated.status).toBe(401);
     expect(unauthenticated.body).toMatchObject({ code: "unauthenticated" });
 
-    const conflict = await call("notes.conflict", {});
+    const conflict = await call("api.notes.conflict", {});
     expect(conflict.status).toBe(409);
     expect(conflict.body).toMatchObject({ code: "conflict" });
 
-    const internal = await call("notes.explode", {});
+    const internal = await call("api.notes.explode", {});
     expect(internal.status).toBe(500);
     expect(internal.body).toEqual({
       code: "internal",
@@ -941,24 +1039,24 @@ describe("exposed HTTP procedures", () => {
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(limits.maxRequestBytes);
     expect(Buffer.byteLength(JSON.stringify(JSON.parse(body)))).toBeGreaterThan(limits.maxRequestBytes);
 
-    const response = await fetch(`${base}${apiPath("notes.numbers")}`, { method: "POST", body });
+    const response = await fetch(`${base}${httpPath("api.notes.numbers")}`, { method: "POST", body });
     expect(response.status).toBe(200);
     expect(JSON.parse(await response.text())).toBe(60);
   });
 
   test("rejects malformed args bodies and malformed Authorization", async () => {
-    const malformed = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const malformed = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: "{",
     });
     expect(malformed.status).toBe(400);
     expect(JSON.parse(await malformed.text())).toMatchObject({ code: "malformed" });
 
-    const unknownArgument = await call("notes.echo", { value: "x", extra: true });
+    const unknownArgument = await call("api.notes.echo", { value: "x", extra: true });
     expect(unknownArgument.status).toBe(400);
     expect(unknownArgument.body).toMatchObject({ code: "validation" });
 
-    const basic = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const basic = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       headers: { authorization: "Basic secret" },
       body: JSON.stringify({ value: "x" }),
@@ -968,7 +1066,7 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("rejects invalid credentials without reading a stalled request body", async () => {
-    const response = await fetch(`${base}${apiPath("notes.identity")}`, {
+    const response = await fetch(`${base}${httpPath("api.notes.identity")}`, {
       method: "POST",
       headers: { authorization: "Bearer invalid" },
       body: stalledBody(),
@@ -980,7 +1078,7 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("bounds declared and streaming HTTP bodies before parsing them", async () => {
-    const declared = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const declared = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: "x".repeat(limits.maxRequestBytes + 1),
     });
@@ -997,7 +1095,7 @@ describe("exposed HTTP procedures", () => {
         controller.close();
       },
     });
-    const chunked = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const chunked = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: chunkedBody,
     });
@@ -1019,7 +1117,7 @@ describe("exposed HTTP procedures", () => {
         controller.close();
       },
     });
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body,
     });
@@ -1031,7 +1129,7 @@ describe("exposed HTTP procedures", () => {
   test("globally bounds pre-body HTTP admission and rejects node saturation as 503", async () => {
     const controllers = [new AbortController(), new AbortController()];
     const stalled = controllers.map((controller) =>
-      fetch(`${base}${apiPath("notes.echo")}`, {
+      fetch(`${base}${httpPath("api.notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: controller.signal,
@@ -1041,7 +1139,7 @@ describe("exposed HTTP procedures", () => {
       ));
     await eventually(() => server.status().httpIngress === limits.maxOperations);
 
-    const excess = await call("notes.echo", { value: "x" });
+    const excess = await call("api.notes.echo", { value: "x" });
     expect(excess.status).toBe(503);
     expect(excess.body).toMatchObject({
       code: "overloaded",
@@ -1061,14 +1159,13 @@ describe("exposed HTTP procedures", () => {
     const fairVerifier = new TestVerifier();
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       verifier: fairVerifier,
       limits: defineServiceLimits({
         ...limits,
         maxOperationsPerCaller: 1,
         readQueue: { ...limits.readQueue, maxAgeMs: 500 },
       }),
-      telemetry: false,
     });
     const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
@@ -1079,14 +1176,14 @@ describe("exposed HTTP procedures", () => {
     let heldSseReader: SseResponseReader | undefined;
 
     try {
-      const stalled = fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const stalled = fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: sourceController.signal,
       }).catch(() => undefined);
       await eventually(() => fairServer.status().httpIngress === 1);
 
-      const spoofedSource = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const spoofedSource = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
         body: JSON.stringify({ value: "spoofed" }),
@@ -1109,14 +1206,14 @@ describe("exposed HTTP procedures", () => {
 
       blockedProcedureStarted = deferred<void>();
       blockedProcedureRelease = deferred<void>();
-      heldProcedure = fetch(`${fairBase}${apiPath("notes.block")}`, {
+      heldProcedure = fetch(`${fairBase}${httpPath("api.notes.block")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({}),
       });
       await blockedProcedureStarted.promise;
 
-      const hot = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const hot = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
         body: JSON.stringify({ value: "hot" }),
@@ -1128,7 +1225,7 @@ describe("exposed HTTP procedures", () => {
         resource: "operation",
       });
 
-      const cold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const cold = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
         body: JSON.stringify({ value: "cold" }),
@@ -1143,7 +1240,7 @@ describe("exposed HTTP procedures", () => {
       await eventually(() => fairServer.status().httpIngress === 0);
 
       longSseStarted = deferred<void>();
-      heldSse = await fetch(`${fairBase}${apiPath("notes.stayOpen")}`, {
+      heldSse = await fetch(`${fairBase}${httpPath("api.notes.stayOpen")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({}),
@@ -1169,7 +1266,7 @@ describe("exposed HTTP procedures", () => {
       expect(fairVerifier.verified).toEqual(verifiedBeforeAck);
       expect(fairServer.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
 
-      const whileStreaming = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const whileStreaming = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({ value: "streaming" }),
@@ -1188,7 +1285,7 @@ describe("exposed HTTP procedures", () => {
         fairServer.status().httpIngress === 0 &&
         fairRuntime.status().activeOperationCallers === 0
       );
-      const afterCancel = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const afterCancel = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
         body: JSON.stringify({ value: "released" }),
@@ -1210,7 +1307,7 @@ describe("exposed HTTP procedures", () => {
 
   test("cancels a slow request body at the finite ingress deadline", async () => {
     const startedAt = performance.now();
-    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const response = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: stalledBody(),
     });
@@ -1230,17 +1327,17 @@ describe("exposed HTTP procedures", () => {
 describe("exposed HTTP queries", () => {
   /** A GET query carries its whole args object in one url-encoded parameter. */
   function queryUrl(address: string, args?: string): string {
-    return `${base}${apiPath(address)}${args === undefined ? "" : `?args=${encodeURIComponent(args)}`}`;
+    return `${base}${httpPath(address)}${args === undefined ? "" : `?args=${encodeURIComponent(args)}`}`;
   }
 
   test("answers one query identically through GET args and a POST body", async () => {
-    expect((await call("notes.add", { body: "one", rank: "1" })).status).toBe(200);
+    expect((await call("api.notes.add", { body: "one", rank: "1" })).status).toBe(200);
     // A bigint crosses this surface as the decimal string the document
     // publishes, in both directions; a safe integer is accepted on the way in.
     const args = JSON.stringify({ rank: "1" });
 
-    const get = await fetch(queryUrl("notes.list", args));
-    const post = await fetch(`${base}${apiPath("notes.list")}`, {
+    const get = await fetch(queryUrl("api.notes.list", args));
+    const post = await fetch(`${base}${httpPath("api.notes.list")}`, {
       method: "POST",
       body: JSON.stringify({ rank: 1 }),
     });
@@ -1260,17 +1357,17 @@ describe("exposed HTTP queries", () => {
     const authorization = { authorization: "Bearer user-token" };
     const identity = { kind: "user", subject: "user-token", identity: "1" };
 
-    const omitted = await fetch(queryUrl("notes.identityQuery"), { headers: authorization });
+    const omitted = await fetch(queryUrl("api.notes.identityQuery"), { headers: authorization });
     expect(omitted.status).toBe(200);
     expect(JSON.parse(await omitted.text())).toEqual(identity);
 
-    const emptyParameter = await fetch(queryUrl("notes.identityQuery", ""), {
+    const emptyParameter = await fetch(queryUrl("api.notes.identityQuery", ""), {
       headers: authorization,
     });
     expect(emptyParameter.status).toBe(200);
     expect(JSON.parse(await emptyParameter.text())).toEqual(identity);
 
-    const emptyBody = await fetch(`${base}${apiPath("notes.identityQuery")}`, {
+    const emptyBody = await fetch(`${base}${httpPath("api.notes.identityQuery")}`, {
       method: "POST",
       headers: authorization,
       body: "",
@@ -1280,27 +1377,27 @@ describe("exposed HTTP queries", () => {
   });
 
   test("maps a GET caller error to its exact status and plain outcome body", async () => {
-    const malformed = await fetch(queryUrl("notes.list", "{"));
+    const malformed = await fetch(queryUrl("api.notes.list", "{"));
     expect(malformed.status).toBe(400);
     expect(JSON.parse(await malformed.text())).toMatchObject({ code: "malformed" });
 
-    const invalid = await fetch(queryUrl("notes.list", JSON.stringify({ rank: "one" })));
+    const invalid = await fetch(queryUrl("api.notes.list", JSON.stringify({ rank: "one" })));
     expect(invalid.status).toBe(400);
     expect(JSON.parse(await invalid.text())).toMatchObject({ code: "validation" });
 
     // Per-field parameters are not a supported spelling: nothing coerces them.
-    const perField = await fetch(`${base}${apiPath("notes.list")}?rank=1`);
+    const perField = await fetch(`${base}${httpPath("api.notes.list")}?rank=1`);
     expect(perField.status).toBe(400);
     expect(JSON.parse(await perField.text())).toMatchObject({ code: "validation" });
 
-    const oversized = await fetch(queryUrl("notes.list", "x".repeat(limits.maxRequestBytes + 1)));
+    const oversized = await fetch(queryUrl("api.notes.list", "x".repeat(limits.maxRequestBytes + 1)));
     expect(oversized.status).toBe(429);
     expect(JSON.parse(await oversized.text())).toMatchObject({
       code: "overloaded",
       resource: "operation",
     });
 
-    const unauthenticated = await fetch(queryUrl("notes.identityQuery"));
+    const unauthenticated = await fetch(queryUrl("api.notes.identityQuery"));
     expect(unauthenticated.status).toBe(401);
     expect(JSON.parse(await unauthenticated.text())).toMatchObject({ code: "unauthenticated" });
   });
@@ -1310,21 +1407,21 @@ describe("exposed HTTP queries", () => {
       status: 410,
       body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
     };
-    const get = await fetch(queryUrl("notes.rejectQuery"));
+    const get = await fetch(queryUrl("api.notes.rejectQuery"));
     expect({ status: get.status, body: JSON.parse(await get.text()) }).toEqual(expected);
-    expect(await call("notes.rejectQuery", {})).toEqual(expected);
+    expect(await call("api.notes.rejectQuery", {})).toEqual(expected);
   });
 
   test("offers GET on query paths alone and names the allowed methods", async () => {
-    const wrongMethod = await fetch(`${base}${apiPath("notes.list")}`, { method: "DELETE" });
+    const wrongMethod = await fetch(`${base}${httpPath("api.notes.list")}`, { method: "DELETE" });
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("GET, POST");
 
-    const procedureGet = await fetch(`${base}${apiPath("notes.echo")}`);
+    const procedureGet = await fetch(`${base}${httpPath("api.notes.echo")}`);
     expect(procedureGet.status).toBe(405);
     expect(procedureGet.headers.get("allow")).toBe("POST");
 
-    const mutationGet = await fetch(`${base}${apiPath("notes.add")}`);
+    const mutationGet = await fetch(`${base}${httpPath("api.notes.add")}`);
     expect(mutationGet.status).toBe(405);
     expect(mutationGet.headers.get("allow")).toBe("POST");
   });
@@ -1343,7 +1440,7 @@ describe("exposed HTTP mutations", () => {
     args: unknown,
     headers: Record<string, string> = {},
   ): Promise<MutationResponse> {
-    const response = await fetch(`${base}${apiPath(address)}`, {
+    const response = await fetch(`${base}${httpPath(address)}`, {
       method: "POST",
       headers,
       body: JSON.stringify(args),
@@ -1362,13 +1459,13 @@ describe("exposed HTTP mutations", () => {
   }
 
   function notes(rank: string): Promise<unknown> {
-    return fetch(`${base}${apiPath("notes.list")}?args=${encodeURIComponent(JSON.stringify({ rank }))}`)
+    return fetch(`${base}${httpPath("api.notes.list")}?args=${encodeURIComponent(JSON.stringify({ rank }))}`)
       .then((response) => response.text())
       .then((body) => JSON.parse(body));
   }
 
   test("executes a keyless mutation every time and answers its receipt on headers", async () => {
-    const first = await mutate("notes.add", { body: "one", rank: "1" });
+    const first = await mutate("api.notes.add", { body: "one", rank: "1" });
     expect(first.status).toBe(200);
     expect(first.body).toBe("1");
     expect(first.receipt.durability).toBe(engine.durability);
@@ -1379,7 +1476,7 @@ describe("exposed HTTP mutations", () => {
     expect(BigInt(first.receipt.commitVersion!)).toBeGreaterThan(0n);
 
     // Without a key there is no replay protection: the same request writes again.
-    const second = await mutate("notes.add", { body: "one", rank: "1" });
+    const second = await mutate("api.notes.add", { body: "one", rank: "1" });
     expect(second.body).toBe("2");
     expect(second.receipt.replay).toBe("false");
     expect(BigInt(second.receipt.commitVersion!))
@@ -1389,11 +1486,11 @@ describe("exposed HTTP mutations", () => {
 
   test("replays one key's stored result across separate HTTP requests", async () => {
     const key = { "idempotency-key": uuidV7(1) };
-    const executed = await mutate("notes.add", { body: "one", rank: "1" }, key);
+    const executed = await mutate("api.notes.add", { body: "one", rank: "1" }, key);
     expect(executed.status).toBe(200);
     expect(executed.receipt.replay).toBe("false");
 
-    const replayed = await mutate("notes.add", { body: "one", rank: "1" }, key);
+    const replayed = await mutate("api.notes.add", { body: "one", rank: "1" }, key);
     expect(replayed.status).toBe(200);
     expect(replayed.body).toBe(executed.body);
     expect(replayed.receipt.replay).toBe("true");
@@ -1405,10 +1502,10 @@ describe("exposed HTTP mutations", () => {
   test("scopes a key to the caller that presented it", async () => {
     const key = { "idempotency-key": uuidV7(2) };
     const args = { body: "one", rank: "1" };
-    const anonymous = await mutate("notes.add", args, key);
+    const anonymous = await mutate("api.notes.add", args, key);
     expect(anonymous.receipt.replay).toBe("false");
 
-    const authenticated = await mutate("notes.add", args, {
+    const authenticated = await mutate("api.notes.add", args, {
       ...key,
       authorization: "Bearer user-token",
     });
@@ -1420,7 +1517,7 @@ describe("exposed HTTP mutations", () => {
   test("replays for one identity even when its credential was reissued", async () => {
     const key = { "idempotency-key": uuidV7(5) };
     const args = { body: "one", rank: "1" };
-    const executed = await mutate("notes.add", args, {
+    const executed = await mutate("api.notes.add", args, {
       ...key,
       authorization: "Bearer user-token",
     });
@@ -1428,7 +1525,7 @@ describe("exposed HTTP mutations", () => {
 
     // Same Identity, freshly verified credential: the caller fingerprint is the
     // durable identity, so the retry replays rather than writing a second note.
-    const replayed = await mutate("notes.add", args, {
+    const replayed = await mutate("api.notes.add", args, {
       ...key,
       authorization: "Bearer user-rotated-token",
     });
@@ -1439,13 +1536,13 @@ describe("exposed HTTP mutations", () => {
 
   test("conflicts when one key is reused for different args or a different function", async () => {
     const key = { "idempotency-key": uuidV7(3) };
-    expect((await mutate("notes.add", { body: "one", rank: "1" }, key)).status).toBe(200);
+    expect((await mutate("api.notes.add", { body: "one", rank: "1" }, key)).status).toBe(200);
 
-    const otherArgs = await mutate("notes.add", { body: "two", rank: "1" }, key);
+    const otherArgs = await mutate("api.notes.add", { body: "two", rank: "1" }, key);
     expect(otherArgs.status).toBe(409);
     expect(otherArgs.body).toMatchObject({ code: "conflict", resource: "idempotency" });
 
-    const otherFunction = await mutate("notes.beep", { body: "one", rank: "1" }, key);
+    const otherFunction = await mutate("api.notes.beep", { body: "one", rank: "1" }, key);
     expect(otherFunction.status).toBe(409);
     expect(otherFunction.body).toMatchObject({ code: "conflict", resource: "idempotency" });
 
@@ -1454,7 +1551,7 @@ describe("exposed HTTP mutations", () => {
 
   test("rejects a key that is not a UUIDv7", async () => {
     for (const candidate of ["not-a-uuid", "00000000-0000-4000-8000-000000000000", ""]) {
-      const rejected = await mutate("notes.add", { body: "one", rank: "1" }, {
+      const rejected = await mutate("api.notes.add", { body: "one", rank: "1" }, {
         "idempotency-key": candidate,
       });
       expect(rejected.status).toBe(400);
@@ -1471,14 +1568,14 @@ describe("exposed HTTP mutations", () => {
       body: { reason: "purged" },
       status: 410,
     };
-    const rejected = await mutate("notes.rejectMutation", {}, key);
+    const rejected = await mutate("api.notes.rejectMutation", {}, key);
     expect(rejected.status).toBe(410);
     expect(rejected.body).toEqual(expected);
     expect(rejected.receipt.replay).toBe("false");
     expect(rejected.receipt.durability).toBe(engine.durability);
     expect(BigInt(rejected.receipt.commitVersion!)).toBeGreaterThanOrEqual(0n);
 
-    const replayed = await mutate("notes.rejectMutation", {}, key);
+    const replayed = await mutate("api.notes.rejectMutation", {}, key);
     expect(replayed.status).toBe(410);
     expect(replayed.body).toEqual(expected);
     expect(replayed.receipt.replay).toBe("true");
@@ -1492,25 +1589,25 @@ describe("exposed HTTP mutations", () => {
    * answered with would otherwise write a second time.
    */
   test("rolls the write back when its success body cannot be produced", async () => {
-    const oversized = await mutate("notes.addOversized", { body: "one", rank: "1" });
+    const oversized = await mutate("api.notes.addOversized", { body: "one", rank: "1" });
     expect(oversized.status).toBe(429);
     expect(oversized.body).toMatchObject({ code: "overloaded" });
     expect(oversized.receipt.commitVersion).toBeNull();
     expect(await notes("1")).toEqual([]);
 
-    const unencodable = await mutate("notes.addUnencodable", { body: "two", rank: "2" });
+    const unencodable = await mutate("api.notes.addUnencodable", { body: "two", rank: "2" });
     expect(unencodable.status).toBe(400);
     expect(unencodable.body).toMatchObject({ code: "validation" });
     expect(unencodable.receipt.commitVersion).toBeNull();
     expect(await notes("2")).toEqual([]);
 
     // The retry the caller is invited to make must not find a first write.
-    expect((await mutate("notes.addOversized", { body: "one", rank: "1" })).status).toBe(429);
+    expect((await mutate("api.notes.addOversized", { body: "one", rank: "1" })).status).toBe(429);
     expect(await notes("1")).toEqual([]);
   });
 
   test("commits nothing when the handler declares an application error", async () => {
-    const rejected = await mutate("notes.rejectAfterWrite", { body: "one", rank: "1" });
+    const rejected = await mutate("api.notes.rejectAfterWrite", { body: "one", rank: "1" });
     expect(rejected.status).toBe(410);
     expect(rejected.body).toEqual({
       kind: "application",
@@ -1522,7 +1619,7 @@ describe("exposed HTTP mutations", () => {
   });
 
   test("names the receipt headers a browser caller may read", async () => {
-    const preflight = await fetch(`${base}${apiPath("notes.add")}`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}${httpPath("api.notes.add")}`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     const exposed = preflight.headers.get("access-control-expose-headers");
     expect(exposed).toContain("x-ackerdb-commit-version");
@@ -1535,7 +1632,7 @@ describe("exposed HTTP mutations", () => {
 
 describe("SSE", () => {
   test("routes capability ACKs without oracles and keeps the registry through terminal credit", async () => {
-    const denied = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const denied = await fetch(`${base}${httpPath("api.notes.chat")}`, {
       method: "POST",
       body: JSON.stringify({ text: "no" }),
     });
@@ -1543,7 +1640,7 @@ describe("SSE", () => {
     expect(denied.headers.get("content-type")).toStartWith("application/json");
     expect(JSON.parse(await denied.text())).toMatchObject({ code: "unauthenticated" });
 
-    const success = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const success = await fetch(`${base}${httpPath("api.notes.chat")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: JSON.stringify({ text: "hello" }),
@@ -1599,10 +1696,10 @@ describe("SSE", () => {
     expect(await stale.text()).toBe("");
     expect(server.status()).toMatchObject({ sseAckIngress: 7, sseAckNoops: 4 });
 
-    const malformed = await fetch(`${base}/api/_sse/ack`, {
+    const malformed = await fetch(`${base}/_sse/ack`, {
       method: "POST",
       body: encode({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "sse_ack",
         stream: reader.streamId,
         seq: terminal!.seq,
@@ -1623,15 +1720,15 @@ describe("SSE", () => {
       sseAckNoops: 4,
     });
 
-    const preflight = await fetch(`${base}/api/_sse/ack`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}/_sse/ack`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-expose-headers")).toContain("x-ackerdb-sse-stream");
-    const wrongMethod = await fetch(`${base}/api/_sse/ack`);
+    const wrongMethod = await fetch(`${base}/_sse/ack`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
 
     // An absent body is empty args here exactly as it is for every other kind.
-    const late = await fetch(`${base}${apiPath("notes.failLate")}`, { method: "POST" });
+    const late = await fetch(`${base}${httpPath("api.notes.failLate")}`, { method: "POST" });
     expect(late.status).toBe(200);
     const lateReader = readSse(late);
     const lateStarted = await lateReader.next();
@@ -1655,12 +1752,12 @@ describe("SSE", () => {
     // The envelope route is gone; nothing owns `/api/sse` any more.
     const envelope = await fetch(`${base}/api/sse`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.chat", args: { text: "no" } }),
+      body: encode({ t: "call", id: 1, ref: "api.notes.chat", args: { text: "no" } }),
     });
     expect(envelope.status).toBe(404);
 
     // Unexposed is indistinguishable from nonexistent, and there is no GET.
-    const unexposed = await fetch(`${base}${apiPath("notes.hiddenChat")}`, { method: "POST" });
+    const unexposed = await fetch(`${base}${httpPath("api.notes.hiddenChat")}`, { method: "POST" });
     expect(unexposed.status).toBe(404);
 
     // An sseProcedure that was never given `http` is the mistake this feature
@@ -1668,14 +1765,14 @@ describe("SSE", () => {
     // reaching the client's frame parser as plain text.
     expect(JSON.parse(await unexposed.text())).toMatchObject({ code: "not_found" });
 
-    const wrongMethod = await fetch(`${base}${apiPath("notes.chat")}`);
+    const wrongMethod = await fetch(`${base}${httpPath("api.notes.chat")}`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
     expect(runtime.status().activeSse).toBe(0);
   });
 
   test("validates chunks against yields and rejects args the validator refuses", async () => {
-    const invalid = await fetch(`${base}${apiPath("notes.chat")}`, {
+    const invalid = await fetch(`${base}${httpPath("api.notes.chat")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: JSON.stringify({ text: 7 }),
@@ -1686,7 +1783,7 @@ describe("SSE", () => {
 
     // A chunk the yields validator refuses is still a terminal stream failure,
     // never an unvalidated value on the wire.
-    const invalidChunk = await fetch(`${base}${apiPath("notes.badChunk")}`, { method: "POST" });
+    const invalidChunk = await fetch(`${base}${httpPath("api.notes.badChunk")}`, { method: "POST" });
     expect(invalidChunk.status).toBe(200);
     const reader = readSse(invalidChunk);
     const first = await reader.next();
@@ -1702,7 +1799,7 @@ describe("SSE", () => {
 
 describe("the opt-in OpenAPI endpoint", () => {
   const info = { title: "notes-app", version: "4.2.0" } as const;
-  const OPENAPI = "/api/_openapi.json";
+  const OPENAPI = "/_openapi.json";
 
   let owned: {
     readonly dir: string;
@@ -1727,13 +1824,12 @@ describe("the opt-in OpenAPI endpoint", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, APP_API_PATHS);
     const documentedRuntime = new Runtime({
       engine,
       registry,
       verifier: new TestVerifier(),
       limits,
-      telemetry: false,
     });
     // Recorded before activation so a refused document is still torn down.
     owned = { dir, engine, runtime: documentedRuntime };
@@ -1761,16 +1857,16 @@ describe("the opt-in OpenAPI endpoint", () => {
     // The endpoint and `acker openapi` publish one encoding of one document.
     const served = new Uint8Array(await response.arrayBuffer());
     expect(served).toEqual(
-      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions), info))),
+      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions, APP_API_PATHS), info))),
     );
 
     const document = JSON.parse(new TextDecoder().decode(served)) as Ctx;
     expect(document.info).toEqual({ title: "notes-app", version: "4.2.0" });
-    expect(Object.keys(document.paths)).toContain(apiPath("notes.list"));
+    expect(Object.keys(document.paths)).toContain(httpPath("api.notes.list"));
     // The same per-function flags the surface serves: hidden stays callable but
     // undocumented, and unexposed appears nowhere.
-    expect(document.paths[apiPath("notes.numbers")]).toBeUndefined();
-    expect(document.paths[apiPath("notes.hidden")]).toBeUndefined();
+    expect(document.paths[httpPath("api.notes.numbers")]).toBeUndefined();
+    expect(document.paths[httpPath("api.notes.hidden")]).toBeUndefined();
 
     const wrongMethod = await fetch(`${documentedBase}${OPENAPI}`, {
       method: "POST",
@@ -1794,13 +1890,13 @@ describe("the opt-in OpenAPI endpoint", () => {
           handler: () => Number.NaN,
         }),
       },
-    })).toThrow(/function "notes\.latest" returns cannot be documented/);
+    })).toThrow(/function "api\.notes\.latest" returns cannot be documented/);
   });
 
   test("serves the bytes it cached, never a fresh walk of the registry", async () => {
     const { base: documentedBase, registry } = documented();
     const first = await (await fetch(`${documentedBase}${OPENAPI}`)).text();
-    expect((JSON.parse(first) as Ctx).paths[apiPath("notes.list")]).toBeDefined();
+    expect((JSON.parse(first) as Ctx).paths[httpPath("api.notes.list")]).toBeDefined();
 
     // The registry is immutable after load; emptying it is only a probe, and a
     // document assembled per request could not still describe what it lost.
@@ -1811,29 +1907,28 @@ describe("the opt-in OpenAPI endpoint", () => {
 
 describe("WebSocket Session transport", () => {
   test("handles hello, query, subscription, mutation, and filtered event contracts", async () => {
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`, {
       kind: "bearer",
       token: "user-token",
     });
     expect(verifier.verified).toEqual(["user-token"]);
 
-    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "notes.list", args: { rank: 1n } });
+    client.send({ t: "q", id: 1, ref: "api.notes.list", args: { rank: 1n } });
     expect(await within(client.next())).toEqual({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 1,
       kind: "query",
       value: [],
     });
 
-    client.send({ v: PROTOCOL_VERSION, t: "sub", id: 2, ref: "notes.list", args: { rank: 1n } });
+    client.send({ t: "sub", id: 2, ref: "api.notes.list", args: { rank: 1n } });
     expect(await within(client.next())).toMatchObject({
       t: "transition",
       id: 2,
       transition: { kind: "reset", value: [] },
     });
 
-    client.send({ v: PROTOCOL_VERSION, t: "sub", id: 3, ref: "events.beeps", args: {} });
+    client.send({ t: "sub", id: 3, ref: "api.events.beeps", args: {} });
     expect(await within(client.next())).toMatchObject({
       t: "event",
       id: 3,
@@ -1842,10 +1937,9 @@ describe("WebSocket Session transport", () => {
 
     const mutationRequestId = uuidV7(1);
     client.send({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 4,
-      ref: "notes.add",
+      ref: "api.notes.add",
       args: { body: "one", rank: 1n },
       mutationRequestId,
       issuedAt: Date.now(),
@@ -1880,9 +1974,9 @@ describe("WebSocket Session transport", () => {
   });
 
   test("accepts exact-limit noncanonical text and rejects the next received byte", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "raw-request-byte-limit",
       credential: { kind: "anonymous" },
@@ -1890,10 +1984,9 @@ describe("WebSocket Session transport", () => {
     expect(await within(client.next())).toMatchObject({ t: "welcome" });
 
     const canonical = encode({
-      v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
-      ref: "notes.list",
+      ref: "api.notes.list",
       args: { rank: 1n },
     });
     const canonicalBytes = Buffer.byteLength(canonical);
@@ -1903,7 +1996,6 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(exact);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 1,
       kind: "query",
@@ -1916,7 +2008,7 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(oneByteOver);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "overloaded", resource: "operation" },
@@ -1925,9 +2017,9 @@ describe("WebSocket Session transport", () => {
   });
 
   test("accepts valid binary UTF-8 at the exact request limit", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.send({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "binary-request-byte-limit",
       credential: { kind: "anonymous" },
@@ -1936,10 +2028,9 @@ describe("WebSocket Session transport", () => {
 
     const mutationRequestId = uuidV7(2);
     const canonical = encode({
-      v: PROTOCOL_VERSION,
       t: "m",
       id: 2,
-      ref: "notes.add",
+      ref: "api.notes.add",
       args: { body: "é", rank: 1n },
       mutationRequestId,
       issuedAt: Date.now(),
@@ -1950,7 +2041,6 @@ describe("WebSocket Session transport", () => {
 
     client.socket.send(binary);
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: 2,
       kind: "mutation",
@@ -1962,11 +2052,11 @@ describe("WebSocket Session transport", () => {
   });
 
   test("rejects invalid binary UTF-8 before Protocol-2 decoding", async () => {
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     client.socket.send(new Uint8Array([0xc3, 0x28]));
 
     expect(await within(client.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "malformed" },
@@ -1975,10 +2065,10 @@ describe("WebSocket Session transport", () => {
   });
 
   test("bounds malformed and one-byte-over frames, then lets Bun reject larger payloads", async () => {
-    const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     malformed.socket.send("{");
     expect(await within(malformed.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "malformed" },
@@ -1986,10 +2076,10 @@ describe("WebSocket Session transport", () => {
     expect((await within(malformed.closed())).code).toBe(1002);
     await eventually(() => server.status().connections === 0);
 
-    const oneByteOver = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const oneByteOver = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     oneByteOver.socket.send("x".repeat(limits.maxFrameBytes + 1));
     expect(await within(oneByteOver.next())).toMatchObject({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "overloaded", resource: "connection" },
@@ -1997,7 +2087,7 @@ describe("WebSocket Session transport", () => {
     expect((await within(oneByteOver.closed())).code).toBe(1013);
     await eventually(() => server.status().connections === 0);
 
-    const oversized = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const oversized = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     oversized.socket.send("x".repeat(limits.maxFrameBytes + 2));
     const result = await within(Promise.race([
       oversized.next().then((frame) => ({ kind: "frame" as const, frame })),
@@ -2007,11 +2097,49 @@ describe("WebSocket Session transport", () => {
     if (result.kind === "closed") expect(result.event.code).toBe(1006);
   });
 
+  test("refuses another build's hello as a mixed install, before anything is dispatched", async () => {
+    // The handshake parser is the whole pre-session surface, so a mismatched
+    // build is turned away on its greeting and never reaches a dispatch.
+    const mixed = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    mixed.socket.send(encode({
+      v: "0.0.1",
+      t: "hello",
+      clientSessionId: "mixed-install",
+      credential: { kind: "anonymous" },
+    }));
+    expect(await within(mixed.next())).toMatchObject({
+      v: ACKERDB_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "version_mismatch",
+        retryable: false,
+        message: `this application runs AckerDB ${ACKERDB_VERSION} and this client is 0.0.1` +
+          " — install matching versions",
+      },
+    });
+    expect((await within(mixed.closed())).code).toBe(1002);
+    await eventually(() => server.status().connections === 0);
+
+    // A connection that opens with anything else never reaches the version
+    // comparison, and should not pretend to: a session frame carries no
+    // version, so the honest refusal is that it did not greet.
+    const ungreeted = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
+    ungreeted.socket.send(encode({ t: "q", id: 1, ref: "api.notes.list", args: {} }));
+    expect(await within(ungreeted.next())).toMatchObject({
+      t: "err",
+      id: null,
+      outcome: { code: "malformed", message: "the first client frame must be a hello" },
+    });
+    expect((await within(ungreeted.closed())).code).toBe(1002);
+    await eventually(() => server.status().connections === 0);
+  });
+
   test("counts upgraded pre-hello sockets against connection admission", async () => {
-    const first = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const first = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     expect(server.status().connections).toBe(1);
 
-    const second = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const second = new WebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     const opened = await within(new Promise<boolean>((resolve) => {
       second.onopen = () => resolve(true);
       second.onerror = () => resolve(false);
@@ -2039,14 +2167,13 @@ describe("WebSocket Session transport", () => {
     });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       verifier: new TestVerifier(),
       limits: fairLimits,
-      telemetry: false,
     });
     const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
-    const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
+    const wsUrl = `ws://127.0.0.1:${fairServer.port}/_ws`;
     const clients: WsClient[] = [];
 
     try {
@@ -2066,14 +2193,14 @@ describe("WebSocket Session transport", () => {
         activeOperationCallers: 1,
       });
 
-      excess.send({ v: PROTOCOL_VERSION, t: "q", id: 103, ref: "notes.list", args: { rank: 1n } });
+      excess.send({ t: "q", id: 103, ref: "api.notes.list", args: { rank: 1n } });
       expect(await within(excess.next())).toMatchObject({
         t: "err",
         id: 103,
         outcome: { code: "overloaded", retryable: true, resource: "operation" },
       });
 
-      const samePrincipalHttp = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const samePrincipalHttp = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
         body: JSON.stringify({ value: "ok" }),
@@ -2085,7 +2212,7 @@ describe("WebSocket Session transport", () => {
         resource: "operation",
       });
 
-      cold.send({ v: PROTOCOL_VERSION, t: "q", id: 105, ref: "notes.list", args: { rank: 1n } });
+      cold.send({ t: "q", id: 105, ref: "api.notes.list", args: { rank: 1n } });
       expect(await within(cold.next())).toMatchObject({ t: "ok", id: 105, kind: "query", value: [] });
       expect(fairRuntime.status()).toMatchObject({
         activeOperations: 2,
@@ -2116,7 +2243,7 @@ describe("WebSocket Session transport", () => {
       await eventually(() => fairRuntime.status().activeOperations === 2);
       expect(fairRuntime.status().activeOperationCallers).toBe(1);
 
-      const spoofedAnonymous = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const spoofedAnonymous = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
         body: JSON.stringify({ value: "ok" }),
@@ -2128,7 +2255,7 @@ describe("WebSocket Session transport", () => {
         resource: "operation",
       });
 
-      const verifiedCold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
+      const verifiedCold = await fetch(`${fairBase}${httpPath("api.notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
         body: JSON.stringify({ value: "cold" }),
@@ -2159,17 +2286,16 @@ describe("WebSocket Session transport", () => {
     reconcile(overlapEngine);
     const overlapRuntime = new Runtime({
       engine: overlapEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
-      telemetry: false,
     });
     const overlapServer = serve({ runtime: overlapRuntime, port: 0 });
-    const url = `ws://127.0.0.1:${overlapServer.port}/ws`;
+    const url = `ws://127.0.0.1:${overlapServer.port}/_ws`;
     const sessionId = "overlapping-session";
     const open = async (): Promise<WsClient> => {
       const client = await rawWebSocket(url);
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: sessionId,
         credential: { kind: "anonymous" },
@@ -2213,9 +2339,9 @@ describe("WebSocket Session transport", () => {
 
 describe("lifecycle drain", () => {
   test("stops admission, terminates WS and SSE, drains Runtime, then stops", async () => {
-    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     longSseStarted = deferred<void>();
-    const response = await fetch(`${base}${apiPath("notes.stayOpen")}`, { method: "POST" });
+    const response = await fetch(`${base}${httpPath("api.notes.stayOpen")}`, { method: "POST" });
     await within(longSseStarted.promise);
     expect(response.status).toBe(200);
     const sse = readSse(response);
@@ -2268,16 +2394,15 @@ describe("lifecycle drain", () => {
     });
     const slowRuntime = new Runtime({
       engine: slowEngine,
-      registry: new Registry(functions),
+      registry: new Registry(functions, APP_API_PATHS),
       limits: slowLimits,
-      telemetry: false,
     });
     const slowServer = serve({ runtime: slowRuntime, port: 0 });
     const slowBase = `http://127.0.0.1:${slowServer.port}`;
     const stalledCreditController = new AbortController();
     try {
       longSseStarted = deferred<void>();
-      const response = await fetch(`${slowBase}${apiPath("notes.stayOpen")}`, { method: "POST" });
+      const response = await fetch(`${slowBase}${httpPath("api.notes.stayOpen")}`, { method: "POST" });
       await within(longSseStarted.promise);
       const sse = readSse(response);
       const started = await within(sse.next());
@@ -2287,7 +2412,7 @@ describe("lifecycle drain", () => {
       const drain = slowServer.drain();
       const terminal = await within(sse.next());
       expect(terminal).toMatchObject({ t: "sse_error", outcome: { code: "draining" } });
-      const stalledCredit = fetch(`${slowBase}/api/_sse/ack`, {
+      const stalledCredit = fetch(`${slowBase}/_sse/ack`, {
         method: "POST",
         body: stalledBody(),
         signal: stalledCreditController.signal,
@@ -2330,7 +2455,7 @@ describe("lifecycle drain", () => {
   test("force closes and preserves unclean storage when an admitted operation stalls", async () => {
     blockedProcedureStarted = deferred<void>();
     blockedProcedureRelease = deferred<void>();
-    const transport = fetch(`${base}${apiPath("notes.block")}`, {
+    const transport = fetch(`${base}${httpPath("api.notes.block")}`, {
       method: "POST",
       body: JSON.stringify({}),
     }).then(
@@ -2345,7 +2470,7 @@ describe("lifecycle drain", () => {
     const notReady = await fetch(`${base}/ready`);
     expect(notReady.status).toBe(503);
     expect(await notReady.json()).toEqual({ version: 1, ready: false, state: "draining" });
-    const refusedDuringDrain = await fetch(`${base}${apiPath("notes.echo")}`, {
+    const refusedDuringDrain = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
     });
@@ -2396,10 +2521,10 @@ describe("lifecycle drain", () => {
   test("keeps the connection deadline when only Session shutdown stalls", async () => {
     blockedCredentialStarted = deferred<void>();
     blockedCredentialRelease = deferred<void>();
-    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
     try {
       client.send({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "stalled-session",
         credential: { kind: "bearer", token: "blocked-token" },

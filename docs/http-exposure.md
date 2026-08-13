@@ -25,9 +25,12 @@ transport-free query boundary (`executeQuery`); an HTTP-native procedure path
 
 ## The surface
 
-An exposed function at address `messages.list` is served at
-`/api/messages/list`: address segments (module path + export name) map 1:1 to
-path segments. The wire format is plain JSON — no protocol envelope. `ref`
+An exposed function at address `api.messages.list` is served at
+`/api/messages/list`: the URL is the address, segment for segment, and the
+address begins with the function's group — so the same module and export
+published in the `internal` group is addressed `internal.messages.list` and
+served at `/internal/messages/list` — see
+[API paths](#api-paths). The wire format is plain JSON — no protocol envelope. `ref`
 lives in the path, correlation is the HTTP response itself, and the protocol
 version is the package version (no `/v1` segment; the surface versions with
 the lockstep release, breaks are explicit).
@@ -53,8 +56,8 @@ the lockstep release, breaks are explicit).
   sensitive args belong in a POST body — URLs leak into access logs.
 - Cancellation is the HTTP request abort; there is no cancel endpoint.
 - Callers send no request id. The listener numbers path-addressed calls from
-  its own monotonic sequence so telemetry keeps a meaningful request id and the
-  operation stays correlatable in logs; the id never reaches the response.
+  its own monotonic sequence so the operation stays correlatable in logs; the
+  id never reaches the response.
 - A value response emits no `Cache-Control`; caching policy belongs to the
   operator. An SSE response is not policy — it sets
   `Cache-Control: no-cache, no-transform` (and `X-Accel-Buffering: no`), because
@@ -111,7 +114,7 @@ registration:
 
 The SSE response carries the existing stream contract unchanged:
 `x-ackerdb-sse-stream` and `x-ackerdb-sse-max-stall-ms` response headers, and
-chunk acknowledgement at `POST /api/_sse/ack` with the existing
+chunk acknowledgement at `POST /_sse/ack` with the existing
 `sse_ack` frame. Only the call route moves; the ack machinery is
 stream-id-keyed and does not know which function produced the stream.
 Every event's `data` is therefore a whole frame — `sse_chunk`, `sse_done`, or
@@ -124,23 +127,117 @@ send an `Authorization` header, so it would serve only anonymous streams.
 
 ## Route namespace
 
-AckerDB-owned routes move under the `_` prefix so the app owns every other
-path under `/api/`. Adding a future built-in route can never collide with an
-application module.
+**The framework's own routes live at the root, behind the `_` marker.** `/api/`
+is one function group among however many an application names, so a protocol
+endpoint nested under it would be squatting in that group's namespace — there
+was never a principle separating `/ws` at the root from `/api/_realtime` below
+it, only history. At the root the rule is uniform: `_` belongs to AckerDB, and
+an `apiPath` may not begin with it, so a future built-in route can never
+collide with an application module.
 
 | Route | Fate |
 | --- | --- |
 | `/api/call` | deleted (replaced by per-function paths) |
 | `/api/sse` | deleted (replaced by per-function paths) |
-| `/api/sse/ack` | → `/api/_sse/ack` |
-| `/api/realtime` | → `/api/_realtime` |
-| `/api/realtime/prepare` | → `/api/_realtime/prepare` |
-| `/api/realtime/<session>` | → `/api/_realtime/<session>` |
-| — | new, opt-in: `GET /api/_openapi.json` |
-| `/live`, `/ready`, `/status`, `/ws` | unchanged (root-level, outside `/api/`) |
+| `/ws` | → `/_ws` |
+| `/api/sse/ack` | → `/_sse/ack` |
+| `/api/realtime` | → `/_realtime` |
+| `/api/realtime/prepare` | → `/_realtime/prepare` |
+| `/api/realtime/<session>` | → `/_realtime/<session>` |
+| `/api/_files/<route>/…` | → `/_files/<route>/…` |
+| — | new, opt-in: `GET /_openapi.json` |
+| `/live`, `/ready`, `/status` | unchanged, and unmarked |
+
+**The operational endpoints do not move and carry no marker.** `/live`,
+`/ready`, and `/status` are the contract with the outside world — Kubernetes
+probes, load-balancer health checks — and their names live in configuration
+that is not ours to rename. The reserved-name list in
+`packages/server/src/transport/http-surface.ts` is what stops an application
+route from hijacking them, and it is load-bearing for exactly that reason.
+
+`/_files/` is the one move visible in application code: a download link lands
+in an `<img src>`, and shortening it is a direct gain. `/ws` → `/_ws` is
+invisible to callers — the SDK builds it — but a WebSocket upgrade usually has
+its own reverse-proxy rule (an nginx `location`, an Ingress path, an ALB
+rule), so an existing deployment needs that one line updated.
 
 The `CallRequest`/`CallResponse` envelope types in `@ackerdb/core` die with
 the envelope routes, as does the client's `encodeCall`.
+
+## API paths
+
+`/api/` is one group, not the whole surface. A function's `apiPath` names the
+group it is published in, and **the group is the first segment of the
+function's address** — so it decides the generated binding a caller imports
+and the HTTP root the function answers on, because both are read off the one
+address.
+
+| `apiPath` | address | binding | URL |
+| --- | --- | --- | --- |
+| `"api"` (the default) | `api.users.list` | `api.*` | `/api/*` |
+| `"internal"` | `internal.users.list` | `internal.*` | `/internal/*` |
+| `"admin"` | `admin.users.list` | `admin.*` | `/admin/*` |
+
+The framework does not decide that `internal` is a meaningful category — an
+application names its own groups. A name must be one identifier-shaped path
+segment that `export const <name>` accepts, and may not begin with `_`, which
+is reserved to AckerDB.
+
+`"admin"` is the one group the framework declares functions in itself — the
+[Admin API](admin-api.md) — and it is shared: an application may publish its own
+functions there, and they require the application's own scopes, never the
+framework's.
+
+**A group decides where a function answers, not whether it answers.** Plain
+HTTP is still opt-in: a function without `http` has no URL in any group. Over
+the socket a call names the function by its dotted address, group segment
+included — one name on both transports.
+
+**A group is never an access rule.** Who may call a function is decided by its
+`access` policy alone, plus its orthogonal scope requirement. A function in the
+`internal` group answering at `/internal/...` is protected exactly as strongly
+as its `access` says — which is why nothing is exposed by accident: `access` is
+a required field on every declaration.
+
+An address is `<apiPath>.<...directory segments>.<export name>`, so a group is
+a namespace and not a label: `api.users.list` and `internal.users.list` are two
+functions, and one group can never squat on another's names. The group is
+declared on the function and never inferred from a directory — a
+`functions/admin/` folder publishes into whatever group each of its functions
+declares, the default one included.
+
+**A file named `index.ts` takes its directory's name.**
+`functions/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
+module of its own name beside its siblings. Two files may not claim one name:
+`functions/orders.ts` beside `functions/orders/index.ts` is a startup refusal
+naming both, and so is a `functions/index.ts` with no directory to be named
+after.
+
+Groups beyond the framework's `"api"` and `"admin"` are declared once in the
+manifest, because code generation reads the manifest and never the function
+modules — which import what it writes. Neither framework group is listed: every
+application publishes both, so naming one would offer a way to leave it out.
+
+```ts
+// app.ts
+export default defineApp({ schema, apiPaths: ["internal"] });
+```
+
+That earns `_generated/api.ts` an `internal` binding beside `api` and `admin`:
+
+```ts
+import { admin, api, internal } from "./_generated/api.ts";
+```
+
+The manifest and the declarations are two statements of one fact, so startup
+reconciles them: a function whose `apiPath` the manifest does not list is a
+registration error naming both. A misspelled group would otherwise serve a live
+route whose binding nobody can import.
+
+Each binding is a reference builder seeded with its own name, so `client.sse()`
+streams a group's procedure from that group's root without being told: the URL
+is the address, segment for segment. A hand-written address is the same one
+value and carries its group the same way.
 
 ## Per-function exposure
 
@@ -163,6 +260,11 @@ export const purge = mutation({
 });
 ```
 
+- `apiPath?: string` — the group this function is published in and the first
+  segment of its address, deciding its generated binding and its HTTP root
+  together (ADR-0023). Absent means `"api"`. It is namespacing and routing
+  only: who may call the function is `access` alone, so a group is never a
+  shortcut for a policy.
 - `http?: boolean | { openapi: boolean }` — absent or `false` means not
   reachable over HTTP and absent from OpenAPI. `true` is shorthand for
   `{ openapi: true }`. Because `openapi` only exists inside an exposed
@@ -248,8 +350,8 @@ mirroring `ApplicationErrorMessage.receipt`.
 Unchanged from the existing HTTP routes: `Authorization: Bearer` resolved
 through the credential verifier into an auth lease; anonymous principals
 where the function's policy allows; MCP credentials remain forbidden on
-application functions. Admission, fairness keys, body limits, and telemetry
-traces reuse the existing HTTP ingress machinery.
+application functions. Admission, fairness keys, and body limits reuse the
+existing HTTP ingress machinery.
 
 ## OpenAPI
 
@@ -260,7 +362,7 @@ operation per exposed function with `openapi` not disabled.
   (`acker openapi <document> [app-dir]`, in the existing `@ackerdb/cli`),
   which codegens, loads the function modules, and writes the document. It
   needs no database, port, or credential authority. The runtime endpoint
-  `GET /api/_openapi.json` exists only when the serve options carry
+  `GET /_openapi.json` exists only when the serve options carry
   `openapiEndpoint`, whose value is the document's `info` — the listener never
   sees an app directory, so it cannot derive the application's identity, and a
   bare `true` could not answer with the export's bytes. It serves a document
@@ -283,14 +385,16 @@ operation per exposed function with `openapi` not disabled.
   `sse_error` (whose `outcome` is the `Outcome` schema) — and states the
   acknowledgement the receiver owes, because a client that reads an event as a
   bare chunk misparses every one and stalls out after one event.
-  `operationId` is the address; the top-level module is the tag; bearer auth is
+  `operationId` is the address; the top-level module — the segment after the
+  group — is the tag; bearer auth is
   the security scheme, declared document-wide as optional because the function's
   own policy — not the transport — decides whether a caller may be anonymous.
 - A query has two operations for its two methods, and two operations cannot
   share an `operationId`: POST is the form every kind answers, so it owns the
   address, and the GET form is `<address>.get`. Two addresses can still collide
-  on one id — a query at `notes.list` and a function at `notes.list.get` own
-  different paths but the same `notes.list.get` — so the walk tracks emitted
+  on one id — a query at `api.notes.list` and a function at
+  `api.notes.list.get` own different paths but the same `api.notes.list.get` —
+  so the walk tracks emitted
   ids and refuses the document naming both addresses, the same way an
   undocumentable function fails activation and the CLI export.
 - The document's `info` is the *application's* identity, not AckerDB's: the
@@ -309,8 +413,9 @@ AckerDB publishes: `argsJsonSchema(args)` for an `ObjectShape` and
 output. The standard-JSON codec keeps only decode/encode. This is the only MCP
 change in this feature. Tool-from-function derivation — registering an app
 function directly as an MCP tool — has since shipped; see
-[MCP exposure](mcp-exposure.md) for the endpoint, its `mcpAuth` provider, and
-how a tool's scopes sit alongside the function's own access policy.
+[MCP exposure](mcp-exposure.md) for the endpoint and
+[Scopes](scopes.md) for how a tool's scopes sit alongside the function's own
+access policy.
 
 ## Registration-time validation
 
@@ -318,15 +423,33 @@ how a tool's scopes sit alongside the function's own access policy.
   not: the CLI manifest loader rejects a function-module path segment that is
   not a plain identifier, so an app loaded the normal way never reaches the
   registry at all. The registry's own check — an exposed function may not claim
-  a path under `/api/_` — is the narrower second net, for a `Registry`
+  a path under a `_`-marked namespace — is the narrower second net, for a `Registry`
   constructed directly from modules.
+- Two module files claiming one name are refused where the name is decided, in
+  the CLI manifest loader, naming both files: `functions/orders.ts` beside
+  `functions/orders/index.ts`, and a `functions/index.ts` with no directory to
+  be named after. The `index.ts` collapse is the only way two files reach one
+  name, so this is one check rather than a rule per shape.
 - An HTTP-exposed function whose contract cannot cross the standard-JSON
   boundary is a registration error (see *Wire format*).
-- MCP endpoint paths must not collide with built-in routes, the `/api/_`
-  prefix, or any exposed function path; exposed function paths must not
-  collide with a declared MCP path.
+- MCP endpoint paths must not collide with built-in routes, carry a `_`-marked
+  name in either of their first two segments, or collide with any exposed
+  function path; exposed function paths must not collide with a declared MCP
+  path. One predicate owns the marker rule for every claiming site, so it
+  cannot hold for functions while lapsing for the paths MCP picks by hand.
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
+- A malformed `apiPath` — anything that is not one identifier-shaped segment,
+  including one beginning with `_` or a word `export const <name>` rejects —
+  is a registration error, as is one the manifest does not list. The registry
+  re-interprets the field rather than trusting it, so a hand-built export
+  meets the same refusals the builder gives. At the type level a group must be
+  one string literal: a widened `string` would name no group a generated tree
+  can select.
+- A field no declaration consumes is a registration error naming it, exactly as
+  for `httpHandler`. An intersection parameter turns off TypeScript's
+  excess-property check, so a misspelled key would otherwise be dropped in
+  silence and read as an expectation nothing meets.
 - An exposed function's kind is narrowed to the four this surface serves at
   registration, and an exposure no method serves is a registration error like
   every other malformed one. The narrowed kind is what the listener and the
@@ -338,7 +461,7 @@ how a tool's scopes sit alongside the function's own access policy.
 `@ackerdb/client` keeps the WebSocket for queries, mutations, and procedures
 — this surface targets external callers, and moving client transport is a
 separate discussion. The client changes are the URL renames — `sse()` calls
-the per-function path with a raw args body, and acks go to `/api/_sse/ack` —
+the per-function path with a raw args body, and acks go to `/_sse/ack` —
 plus the wire format that path speaks: `sse()` encodes its args as standard
 JSON (`toStandardJson` in `@ackerdb/core`) and reads chunk values as standard
 JSON, never as wire escapes. The ack request itself stays a Protocol-2 frame.
@@ -380,8 +503,8 @@ boundary), `runProcedure`/`runSse` (HTTP-native; they need the envelope parse
 replaced with path+body, and `runProcedure` emits the plain value instead of a
 `ProcedureOkMessage` frame), the coordinator's optional
 `IdempotencyIdentity`, `outcomeHttpStatus`, the standard-schema JSON Schema
-emitters, and the HTTP ingress (auth lease, admission, `parseHttpBody`,
-CORS, telemetry) in `transport/server.ts`. New work: kind dispatch from the
+emitters, and the HTTP ingress (auth lease, admission, `parseHttpBody`, and
+CORS) in `transport/server.ts`. New work: kind dispatch from the
 path, `runQuery`/`runMutation` HTTP siblings of `runProcedure`, the `http`
 definition field and its registry plumbing, receipt headers, the shared
 schema module extraction, the OpenAPI walk, the CLI export, the `_` route

@@ -1,32 +1,48 @@
 /**
- * The job runner: owns the `_ackerdb_jobs` state machine end to end — arming,
+ * The job runner: owns the Job / Job run state machine end to end — arming,
  * claiming, executing, settling, recurrence, lease recovery, retention — on
  * top of the same commit machinery every mutation uses.
+ *
+ * A Job is the durable admission; a Job run is one actual handler execution.
+ * The claim is what creates a run, so a Job waiting for its due time has no
+ * invented run and a dedupe hit — which executes no handler — writes nothing
+ * at all. `runCount` is both how many runs exist and the latest run's number,
+ * so the Job needs no pointer that could reference a run of another Job.
  *
  * Execution envelopes, by declared kind:
  * - mutation-kind: claim, handler, and settle collapse into one writer
  *   transaction — exactly-once, no external I/O. A failed handler rolls the
- *   whole transaction back; the failed attempt is then recorded in a fresh
+ *   whole transaction back; the failed run is then recorded in a fresh
  *   transaction, so no partial handler write can survive.
- * - procedure-kind: a claim transaction stamps a lease, the handler runs as a
- *   system operation (external work allowed), and a settle transaction
- *   re-validates state + lease before recording the outcome — at-least-once
- *   under retries; a stale lease means the row moved on and the result is
- *   discarded, never double-settled.
+ * - procedure-kind: a claim transaction creates the run under a lease, the
+ *   handler runs as a system operation (external work allowed), and a settle
+ *   transaction re-validates the run and its lease before recording the
+ *   outcome — at-least-once under retries; a stale lease means the run moved on
+ *   and the result is discarded, never double-settled.
  *
- * Waiters resolve at the *current attempt's* settle — after its transaction
- * commits — and a failed attempt reports `nextRetryAt` so the caller decides
+ * Waiters resolve at the *current run's* settle — after its transaction
+ * commits — and a failed run reports `nextRetryAt` so the caller decides
  * whether to keep waiting.
  */
 import { decode, isApplicationError, isResult, stableEncode, type OutcomeCode } from "@ackerdb/core";
 import type { SystemCtx, SystemRunner } from "../../app/system.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import { ValidationError } from "../../validation/error.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
-import { DEFAULT_JOB_RETENTION_MS, type AnyJob, type DeclaredJob, type JobState } from "../../jobs/definition.ts";
+import type { Logger } from "../../signals/logger.ts";
+import {
+  DEFAULT_JOB_RETENTION_MS,
+  type AnyJob,
+  type DeclaredJob,
+  type JobRunTrigger,
+  type JobState,
+  type JobTrigger,
+  type JobWindow,
+} from "../../jobs/definition.ts";
 import { hashJobArgs } from "../../jobs/identity.ts";
 import type { JobsWriteSurface } from "../execution/functions.ts";
-import type { JobsStore } from "./store.ts";
+import type { Registry } from "../../app/registry.ts";
+import { JobSleepSignal, JobSteps, StepRefusalError } from "./steps.ts";
+import type { JobCursor, JobRow, JobRunRow, JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { Database } from "bun:sqlite";
 import { outcomeFromError } from "../outcome.ts";
@@ -38,47 +54,28 @@ export interface JobsExecutor {
     work: (surface: JobsWriteSurface) => T | Promise<T>,
   ): Promise<T>;
   readJobRow(connection: Database, id: bigint): JobRow | null;
-  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[]): number | null;
-  dueJobStats(connection: Database, now: number): { due: number; oldestDueAt: number | null };
+  readJobRunRow(connection: Database, jobId: bigint, number: number): JobRunRow | null;
+  nextDueJobAt(
+    connection: Database,
+    inProcessIds: readonly bigint[],
+    notBefore: number,
+  ): number | null;
 }
 
-const LEASE_EXPIRED = "job lease expired before the attempt settled";
+const LEASE_EXPIRED = "job lease expired before the run settled";
 const MAX_STORED_ERROR_LENGTH = 512;
 const REAP_INTERVAL_MS = 60_000;
+/** Runs deleted with their Job in one sweep; a Job's history is small by construction. */
+const CASCADE_BATCH = 512;
 
-export interface JobRow {
-  readonly id: bigint;
-  readonly name: string;
-  readonly argsJson: string;
-  readonly argsHash: string;
-  readonly key: string | null;
-  readonly state: JobState;
-  readonly runAt: number;
-  readonly attempt: number;
-  readonly attemptsJson: string;
-  readonly outputJson: string | null;
-  readonly leaseToken: string | null;
-  readonly leaseUntil: number | null;
-  readonly enqueuedAt: number;
-  readonly settledAt: number | null;
-}
-
-export interface JobAttemptRecord {
-  readonly startedAt: number;
-  readonly settledAt: number;
-  readonly outcome: "completed" | "failed" | "discarded" | "canceled";
-  readonly error: string | null;
-  readonly durationMs: number;
-}
-
-/** What one settled attempt reports to awaiting callers. */
-export type JobAttemptOutcome =
+/** What one settled run reports to awaiting callers. */
+export type JobRunOutcome =
   | { readonly ok: true; readonly value: unknown }
   | {
       readonly ok: false;
-      readonly state: "pending" | "discarded" | "canceled";
+      readonly state: "pending" | "retrying" | "failed" | "canceled";
       readonly error: unknown;
-      /** When the next attempt is due, or null when the job will not retry. */
+      /** When the next run is due, or null when the Job will not run again. */
       readonly nextRetryAt: number | null;
     };
 
@@ -89,7 +86,7 @@ export interface JobEnqueueOptions {
 
 export interface JobHandle {
   readonly id: bigint;
-  /** True when dedup resolved this call to an existing row. */
+  /** True when dedupe resolved this call to an existing Job. */
   readonly deduped: boolean;
 }
 
@@ -102,33 +99,53 @@ export interface RuntimeJobsLimits {
 export interface RuntimeJobsOptions {
   readonly declared: readonly DeclaredJob[];
   readonly executor: JobsExecutor;
+  readonly registry: Pick<Registry, "get">;
   readonly reads: RuntimeReadExecutor;
   readonly system: SystemRunner;
-  readonly telemetry: Telemetry;
+  readonly log: Logger;
   readonly limits: RuntimeJobsLimits;
   readonly now: () => number;
   readonly signal: () => AbortSignal;
   readonly isReady: () => boolean;
 }
 
-interface ClaimedRow {
-  readonly id: bigint;
+/** One claimed run, handed to the procedure-kind dispatcher. */
+interface ClaimedRun {
+  readonly jobId: bigint;
+  readonly runId: bigint;
   readonly name: string;
   readonly argsJson: string;
-  readonly attempt: number;
+  readonly stepsJson: string | null;
+  readonly runNumber: number;
   readonly leaseToken: string;
+  readonly startedAt: number;
 }
 
 interface Notification {
   readonly id: bigint;
-  readonly outcome: JobAttemptOutcome;
-  readonly event: "settled" | "retried" | "discarded" | "canceled";
+  readonly outcome: JobRunOutcome;
+  readonly event: "settled" | "retried" | "failed" | "canceled" | "slept";
   readonly errorCode?: OutcomeCode;
+}
+
+/** What a terminal settlement records on the Job and its current run. */
+type TerminalOutcome =
+  | { readonly state: "completed"; readonly outputJson: string }
+  | { readonly state: "failed"; readonly error: unknown }
+  | { readonly state: "canceled" };
+
+/** A run under the lease that just claimed it. */
+type LeasedRun = JobRunRow & { readonly leaseToken: string };
+
+/** A Job and the run its outcome is read from, if it has one. */
+interface JobOutcomeRows {
+  readonly job: JobRow;
+  readonly run: JobRunRow | null;
 }
 
 export class RuntimeJobs {
   private readonly definitions = new Map<string, AnyJob>();
-  private readonly waiters = new Map<bigint, Set<(outcome: JobAttemptOutcome) => void>>();
+  private readonly waiters = new Map<bigint, Set<(outcome: JobRunOutcome) => void>>();
   private readonly runControllers = new Map<bigint, AbortController>();
   private activeRuns = 0;
   private generation = 0;
@@ -137,7 +154,7 @@ export class RuntimeJobs {
   private leaseCounter = 0;
   private lastReapAt = 0;
   /**
-   * True after a batch that claimed nothing: every due row is gated,
+   * True after a batch that claimed nothing: every due Job is gated,
    * undeclared, or already running. Overdue-but-unclaimable work must not arm
    * a zero-delay timer — the commits that free it (settles, cancels, CRUD,
    * enqueues) and dispatch completions wake the runner instead.
@@ -182,27 +199,41 @@ export class RuntimeJobs {
         for (const [name, definition] of bootstrap) {
           const argsJson = stableEncode({});
           const argsHash = hashJobArgs(argsJson);
-          if (this.liveRow(surface.jobs, name, argsHash) !== null) continue;
+          if (surface.jobs.liveFor(name, argsHash) !== null) continue;
           const at = definition.repeat!(now, now);
           if (at === null) continue;
-          await this.insertRow(surface.jobs, { name, argsJson, argsHash, key: null, runAt: at, now });
+          await this.insertJob(surface.jobs, {
+            name,
+            argsJson,
+            argsHash,
+            key: null,
+            at,
+            now,
+            trigger: "repeat",
+            parentJobId: null,
+          });
         }
       }).catch((error) => {
         // Arming still proceeds and enqueues re-wake the runner, but the
         // failure leaves evidence.
-        this.event("failure", "error", outcomeFromError(error).code);
+        this.options.log.error("job bootstrap failed", {
+          outcome: outcomeFromError(error).code,
+        });
       });
     }
     this.arm();
   }
 
-  /** Commit-wake: called after any transaction that touched the jobs table. */
+  /** Commit-wake: called after any transaction that touched the jobs tables. */
   arm(reason: "wake" | "requeue" = "wake"): void {
     if (reason === "wake") this.stalled = false;
     const generation = ++this.generation;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.options.isReady() || this.definitions.size === 0) return;
+    // No short-circuit on an empty definition list: an application that
+    // removed a job definition still owns the rows it left behind, and their
+    // retention is still a promise.
+    if (!this.options.isReady()) return;
     void this.nextDueAt().then(
       (at) => {
         if (!this.options.isReady() || generation !== this.generation) return;
@@ -239,7 +270,7 @@ export class RuntimeJobs {
       controller.abort(new AckerDBError("unavailable", "runtime is shutting down"));
     }
     // Waiters must not hold admitted operations open until the drain
-    // deadline: deliver a typed draining outcome now. The rows themselves are
+    // deadline: deliver a typed draining outcome now. The Jobs themselves are
     // durable — pending and running work resumes after restart.
     const stranded = [...this.waiters.keys()];
     for (const id of stranded) {
@@ -266,14 +297,17 @@ export class RuntimeJobs {
   // -- Enqueue and awaiting --------------------------------------------------
 
   /**
-   * Insert one job row (or resolve to an existing one under dedup) inside an
+   * Admit one Job (or resolve to an existing one under dedupe) inside an
    * already-open transaction — the transactional-enqueue seam mutations use.
+   * A dedupe hit performs no write: no handler runs, so nothing about the
+   * existing Job changes.
    */
   async enqueueWith(
     store: JobsStore,
     name: string,
     args: unknown,
     options: JobEnqueueOptions = {},
+    trigger: JobTrigger = "enqueue",
   ): Promise<JobHandle> {
     const definition = this.definition(name);
     const validated = this.validateArgs(definition, name, args);
@@ -281,15 +315,24 @@ export class RuntimeJobs {
     const argsHash = hashJobArgs(argsJson);
     const now = this.options.now();
     if (definition.dedupe !== null) {
-      const existing = this.dedupeRow(store, definition, name, argsHash, now);
+      const existing = this.dedupeJob(store, definition, name, argsHash, now);
       if (existing !== null) return { id: existing.id, deduped: true };
     }
-    const runAt = options.at ?? (options.delayMs !== undefined ? now + options.delayMs : now);
-    if (typeof runAt !== "number" || !Number.isFinite(runAt)) {
+    const at = options.at ?? (options.delayMs !== undefined ? now + options.delayMs : now);
+    if (typeof at !== "number" || !Number.isFinite(at)) {
       throw new ValidationError(`jobs.${name}: enqueue at/delayMs must be finite milliseconds`);
     }
     const key = definition.key === null ? null : String(definition.key(validated as never));
-    const id = await this.insertRow(store, { name, argsJson, argsHash, key, runAt, now });
+    const id = await this.insertJob(store, {
+      name,
+      argsJson,
+      argsHash,
+      key,
+      at,
+      now,
+      trigger,
+      parentJobId: null,
+    });
     return { id, deduped: false };
   }
 
@@ -306,24 +349,24 @@ export class RuntimeJobs {
   }
 
   /**
-   * Resolve when the row's current attempt settles. A row already terminal —
-   * including a dedup hit inside a completed window — resolves immediately
-   * from its recorded outcome.
+   * Resolve when the Job's current run settles. An already terminal Job —
+   * including a dedupe hit inside a completed window — resolves immediately
+   * from its latest run's recorded outcome.
    */
-  async wait(id: bigint): Promise<JobAttemptOutcome> {
+  async wait(id: bigint): Promise<JobRunOutcome> {
     if (typeof id !== "bigint") {
       throw new ValidationError("jobs.wait: expected a bigint job id");
     }
-    let resolver: ((outcome: JobAttemptOutcome) => void) | null = null;
-    const pending = new Promise<JobAttemptOutcome>((resolve) => {
+    let resolver: ((outcome: JobRunOutcome) => void) | null = null;
+    const pending = new Promise<JobRunOutcome>((resolve) => {
       resolver = resolve;
       let set = this.waiters.get(id);
       if (set === undefined) this.waiters.set(id, (set = new Set()));
       set.add(resolve);
     });
     // Read after registering, so a settle between read and registration
-    // cannot be missed; a terminal row resolves from its recorded state.
-    const row = await this.readRow(id);
+    // cannot be missed; a terminal Job resolves from its recorded outcome.
+    const rows = await this.readOutcome(id);
     const unregister = () => {
       const set = this.waiters.get(id);
       if (set !== undefined && resolver !== null) {
@@ -331,11 +374,11 @@ export class RuntimeJobs {
         if (set.size === 0) this.waiters.delete(id);
       }
     };
-    if (row === null) {
+    if (rows === null) {
       unregister();
       throw new AckerDBError("not_found", `job ${id} does not exist`);
     }
-    const terminal = this.terminalOutcome(row);
+    const terminal = this.terminalOutcome(rows);
     if (terminal !== null) {
       unregister();
       return terminal;
@@ -345,24 +388,17 @@ export class RuntimeJobs {
 
   // -- Transitions -----------------------------------------------------------
 
-  /** Cancel: settles a pending or running row; a running handler is aborted. */
+  /**
+   * Cancel: settles a non-terminal Job. A run in flight — including one
+   * suspended by `step.sleep` — settles as canceled, and a running handler is
+   * aborted cooperatively.
+   */
   async cancel(id: bigint): Promise<JobState> {
-    if (typeof id !== "bigint") {
-      throw new ValidationError("jobs.cancel: expected a bigint job id");
-    }
     const state = await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
-      const row = surface.jobs.byId(id);
-      if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
-      if (row.state !== "pending" && row.state !== "running") return row.state;
-      await surface.jobs.patch(id, {
-        state: "canceled",
-        leaseToken: null,
-        leaseUntil: null,
-        settledAt: this.options.now(),
-        attemptsJson: row.state === "running"
-          ? this.appendAttempt(row, "canceled", null)
-          : row.attemptsJson,
-      });
+      const job = this.requireJob(surface, id, "cancel");
+      if (this.isTerminal(job.state)) return job.state;
+      const run = job.runCount === 0 ? null : surface.runs.byNumber(id, job.runCount);
+      await this.settleJobIn(surface, job, run, { state: "canceled" });
       return "canceled" as const;
     });
     if (state === "canceled") {
@@ -381,43 +417,121 @@ export class RuntimeJobs {
     return state;
   }
 
-  /** Re-run a terminal row now, keeping its identity and attempt history. */
-  async retryNow(id: bigint): Promise<void> {
-    if (typeof id !== "bigint") {
-      throw new ValidationError("jobs.retry: expected a bigint job id");
-    }
+  /** Manual retry: give a Failed Job another run, keeping identity and journal. */
+  async retry(id: bigint): Promise<void> {
     await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
-      const row = surface.jobs.byId(id);
-      if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
-      if (row.state === "pending" || row.state === "running") {
-        throw new AckerDBError("conflict", `job ${id} is ${row.state}; only settled jobs retry`);
+      const job = this.requireJob(surface, id, "retry");
+      if (job.state !== "failed") {
+        throw new AckerDBError("conflict", `job ${id} is ${job.state}; only failed jobs retry`);
       }
-      await surface.jobs.patch(id, {
+      await this.reopen(surface, job, { nextRunTrigger: "manual_retry", state: "retrying" });
+    });
+  }
+
+  /**
+   * Force run again: give a terminal Job another run under the same identity,
+   * so its new outcome is the one future dedupe hits receive. The step journal
+   * is cleared — replaying a completed journal would produce no work at all,
+   * which is the opposite of what forcing a run means.
+   */
+  async forceRunAgain(id: bigint): Promise<void> {
+    await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
+      const job = this.requireJob(surface, id, "forceRunAgain");
+      if (!this.isTerminal(job.state)) {
+        throw new AckerDBError(
+          "conflict",
+          `job ${id} is ${job.state}; only terminal jobs are forced to run again`,
+        );
+      }
+      await this.reopen(surface, job, {
+        nextRunTrigger: "force",
         state: "pending",
-        runAt: this.options.now(),
-        outputJson: null,
-        leaseToken: null,
-        leaseUntil: null,
-        settledAt: null,
+        stepsJson: "[]",
       });
     });
   }
 
-  /** Move a pending row's due time. */
-  async reschedule(id: bigint, at: number): Promise<void> {
-    if (typeof id !== "bigint") {
-      throw new ValidationError("jobs.reschedule: expected a bigint job id");
+  /**
+   * Give a terminal Job another run. Its previous latest run stops being the
+   * Job's outcome the moment the next one opens, so it is restamped down to
+   * the definition's plain retention: the dedupe-extended stamp it settled
+   * with — possibly forever — would keep history no dedupe hit can ever reach
+   * again.
+   */
+  private async reopen(
+    surface: JobsWriteSurface,
+    job: JobRow,
+    intent: {
+      readonly state: "pending" | "retrying";
+      readonly nextRunTrigger: JobRunTrigger;
+      readonly stepsJson?: string;
+    },
+  ): Promise<void> {
+    const now = this.options.now();
+    const previous = job.runCount === 0 ? null : surface.runs.byNumber(job.id, job.runCount);
+    if (previous !== null && previous.settledAt !== null) {
+      const definition = this.definitions.get(job.name);
+      await surface.runs.patch(previous.id, {
+        deleteAfter: this.window(
+          definition?.retention ?? DEFAULT_JOB_RETENTION_MS,
+          previous.settledAt,
+        ),
+      });
     }
+    await surface.jobs.patch(job.id, {
+      ...intent,
+      nextRunAt: now,
+      settledAt: null,
+      deleteAfter: null,
+    });
+  }
+
+  /**
+   * Run again: submit a terminal Job's arguments through its definition again.
+   * Ordinary dedupe applies, so this may resolve to an existing Job and its
+   * memoized outcome without executing anything.
+   */
+  async runAgain(id: bigint): Promise<JobHandle> {
+    return await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
+      const job = this.requireJob(surface, id, "runAgain");
+      if (!this.isTerminal(job.state)) {
+        throw new AckerDBError(
+          "conflict",
+          `job ${id} is ${job.state}; only terminal jobs are run again`,
+        );
+      }
+      return await this.enqueueWith(
+        surface.jobs,
+        job.name,
+        decode(job.argsJson),
+        {},
+        "run_again",
+      );
+    });
+  }
+
+  /** Delete a Job together with every run it owns; the destructive action. */
+  async delete(id: bigint): Promise<void> {
+    await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
+      const job = this.requireJob(surface, id, "delete");
+      await this.deleteWithRuns(surface, job.id);
+    });
+  }
+
+  /** Move a Job's next run time; only a Job that has one accepts it. */
+  async reschedule(id: bigint, at: number): Promise<void> {
     if (typeof at !== "number" || !Number.isFinite(at)) {
       throw new ValidationError("jobs.reschedule: expected finite milliseconds");
     }
     await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
-      const row = surface.jobs.byId(id);
-      if (row === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
-      if (row.state !== "pending") {
-        throw new AckerDBError("conflict", `job ${id} is ${row.state}; only pending jobs reschedule`);
+      const job = this.requireJob(surface, id, "reschedule");
+      if (job.state !== "pending" && job.state !== "retrying") {
+        throw new AckerDBError(
+          "conflict",
+          `job ${id} is ${job.state}; only jobs awaiting a run reschedule`,
+        );
       }
-      await surface.jobs.patch(id, { runAt: at });
+      await surface.jobs.patch(id, { nextRunAt: at });
     });
   }
 
@@ -430,7 +544,7 @@ export class RuntimeJobs {
     let claims = 0;
     try {
       await this.recoverExpiredLeases(signal);
-      let cursor: { runAt: number; id: bigint } | undefined;
+      let cursor: JobCursor | undefined;
       while (
         claims < claimBudget &&
         this.activeRuns < this.options.limits.maxRunning &&
@@ -442,27 +556,38 @@ export class RuntimeJobs {
         claims++;
         if (next.outcome !== "settled-inline") this.dispatch(next.outcome);
       }
-      this.stalled = claims === 0;
-      await this.reap(signal);
-      await this.recordGauges();
+      // Stalled means "nothing this runner can do", not "nothing claimable":
+      // a reap that filled its page still has work waiting behind it, and a
+      // page of runs alone wakes nothing on commit.
+      this.stalled = claims === 0 && !(await this.reap(signal));
     } catch (error) {
-      this.event("failure", "error", outcomeFromError(error).code);
+      this.options.log.error("job batch failed", {
+        outcome: outcomeFromError(error).code,
+      });
     }
   }
 
   /**
-   * Recover crashed attempts: a running row whose lease expired settles as a
-   * failed attempt through the ordinary retry policy. Rows with a live
-   * in-process run are skipped — their settle owns them.
+   * Recover crashed runs: a running run whose lease expired settles as a
+   * failed run through the ordinary retry policy. Runs with a live in-process
+   * handler are skipped — their settle owns them. A run suspended by
+   * `step.sleep` holds no lease, so it is never mistaken for a crash.
    */
   private async recoverExpiredLeases(signal: AbortSignal): Promise<void> {
     const now = this.options.now();
     const notifications = await this.options.executor.jobsWrite(signal, async (surface) => {
       const delivered: Notification[] = [];
-      for (const row of surface.jobs.expiredLeases(now, this.options.limits.claimBatchSize)) {
-        if (this.runControllers.has(row.id)) continue;
+      for (const run of surface.runs.expiredLeases(now, this.options.limits.claimBatchSize)) {
+        if (this.runControllers.has(run.jobId)) continue;
+        const job = surface.jobs.byId(run.jobId);
+        if (job === null) continue; // the Job was deleted; its runs go with it
         delivered.push(
-          await this.settleFailureIn(surface, row, new AckerDBError("unavailable", LEASE_EXPIRED)),
+          await this.settleFailureIn(
+            surface,
+            job,
+            run,
+            new AckerDBError("unavailable", LEASE_EXPIRED),
+          ),
         );
       }
       return delivered;
@@ -471,62 +596,55 @@ export class RuntimeJobs {
   }
 
   /**
-   * Claim the next eligible due row at or beyond `cursor`. Mutation-kind rows
-   * execute and settle in the same transaction; procedure-kind rows are
-   * leased for dispatch. Pages past gate-saturated and undeclared rows so a
-   * blocked prefix cannot starve eligible work behind it.
+   * Claim the next eligible due Job at or beyond `cursor`. Mutation-kind Jobs
+   * execute and settle in the same transaction; procedure-kind Jobs get a
+   * leased run for dispatch. Pages past gate-saturated and undeclared Jobs so
+   * a blocked prefix cannot starve eligible work behind it.
    */
   private async claimNext(
     signal: AbortSignal,
-    cursor?: { runAt: number; id: bigint },
+    cursor?: JobCursor,
   ): Promise<
-    | {
-        outcome: ClaimedRow | "settled-inline";
-        cursor: { runAt: number; id: bigint } | undefined;
-      }
+    | { outcome: ClaimedRun | "settled-inline"; cursor: JobCursor | undefined }
     | null
   > {
-    type Page = { runAt: number; id: bigint } | undefined;
+    type Page = JobCursor | undefined;
     type ClaimTxResult =
       | { readonly inline: Notification; readonly page: Page }
-      | { readonly claimed: ClaimedRow; readonly page: Page }
+      | { readonly claimed: ClaimedRun; readonly page: Page }
       | null;
     const result = await this.options.executor.jobsWrite<ClaimTxResult>(signal, async (surface) => {
       const now = this.options.now();
       const runningByGate = new Map<string, number>();
-      for (const row of surface.jobs.running()) {
-        const gate = `${row.name}\u0000${row.key ?? ""}`;
+      for (const job of surface.jobs.running()) {
+        const gate = `${job.name}\u0000${job.key ?? ""}`;
         runningByGate.set(gate, (runningByGate.get(gate) ?? 0) + 1);
       }
       let page = cursor;
       for (;;) {
         const due = surface.jobs.due(now, this.options.limits.claimBatchSize, page);
         if (due.length === 0) return null;
-        for (const row of due) {
-          page = { runAt: row.runAt, id: row.id };
-          const definition = this.definitions.get(row.name);
+        for (const job of due) {
+          page = { nextRunAt: job.nextRunAt, id: job.id };
+          const definition = this.definitions.get(job.name);
           if (definition === undefined) continue; // undeclared leftover; visible in the table
-          const gate = `${row.name}\u0000${row.key ?? ""}`;
+          const gate = `${job.name}\u0000${job.key ?? ""}`;
           if ((runningByGate.get(gate) ?? 0) >= definition.concurrency) continue;
-          const attempt = row.attempt + 1;
+          const run = await this.openRun(surface, job, now);
           if (definition.kind === "mutation") {
-            const inline = await this.runMutationJob(surface, row, definition, attempt);
+            const inline = await this.runMutationJob(surface, job, run, definition);
             return { inline, page };
           }
-          const leaseToken = `${now.toString(36)}-${(++this.leaseCounter).toString(36)}`;
-          await surface.jobs.patch(row.id, {
-            state: "running",
-            attempt,
-            leaseToken,
-            leaseUntil: now + this.options.limits.leaseMs,
-          });
           return {
             claimed: {
-              id: row.id,
-              name: row.name,
-              argsJson: row.argsJson,
-              attempt,
-              leaseToken,
+              jobId: job.id,
+              runId: run.id,
+              name: job.name,
+              argsJson: job.argsJson,
+              stepsJson: job.stepsJson,
+              runNumber: run.number,
+              leaseToken: run.leaseToken,
+              startedAt: run.startedAt,
             },
             page,
           };
@@ -537,77 +655,151 @@ export class RuntimeJobs {
     if (result === null) return null;
     if ("inline" in result) {
       this.deliver([result.inline]);
-      this.event("claimed", "info");
       return { outcome: "settled-inline", cursor: result.page };
     }
-    this.event("claimed", "info");
     return { outcome: result.claimed, cursor: result.page };
+  }
+
+  /**
+   * The claim itself: create the Job's next run, or re-lease the one a
+   * `step.sleep` suspended. A suspended run is exactly a pending Job with runs
+   * behind it and no administrator-requested trigger waiting — resuming it is
+   * what keeps sleeping out of the retry budget.
+   */
+  private async openRun(
+    surface: JobsWriteSurface,
+    job: JobRow,
+    now: number,
+  ): Promise<LeasedRun> {
+    const leaseToken = `${now.toString(36)}-${(++this.leaseCounter).toString(36)}`;
+    const leaseUntil = now + this.options.limits.leaseMs;
+    const resuming =
+      job.state === "pending" && job.runCount > 0 && job.nextRunTrigger === null;
+    const suspended = resuming ? surface.runs.byNumber(job.id, job.runCount) : null;
+    let run: LeasedRun;
+    if (suspended !== null && suspended.state === "running") {
+      await surface.runs.patch(suspended.id, { leaseToken, leaseUntil });
+      run = { ...suspended, leaseToken, leaseUntil };
+    } else {
+      const fresh = {
+        jobId: job.id,
+        number: job.runCount + 1,
+        trigger: job.nextRunTrigger ?? (job.runCount === 0 ? "initial" : "automatic_retry"),
+        scheduledAt: job.nextRunAt,
+        startedAt: now,
+        settledAt: null,
+        state: "running",
+        outputJson: null,
+        errorCode: null,
+        errorText: null,
+        leaseToken,
+        leaseUntil,
+        deleteAfter: null,
+      } satisfies Omit<JobRunRow, "id">;
+      run = { ...fresh, id: await surface.runs.insert(fresh) };
+    }
+    await surface.jobs.patch(job.id, {
+      state: "running",
+      runCount: run.number,
+      nextRunTrigger: null,
+    });
+    return run;
   }
 
   /**
    * Claim + handler + settle in one writer transaction: exactly-once. The
    * handler runs inside a savepoint, so its writes roll back on failure while
-   * the same transaction still records the failed attempt — no window in
-   * which a concurrent transition can observe the claim half-done.
+   * the same transaction still records the failed run — no window in which a
+   * concurrent transition can observe the claim half-done.
    */
   private async runMutationJob(
     surface: JobsWriteSurface,
-    row: JobRow,
+    job: JobRow,
+    run: JobRunRow,
     definition: AnyJob,
-    attempt: number,
   ): Promise<Notification> {
-    const startedAt = this.options.now();
-    const args = decode(row.argsJson);
-    const claimed: JobRow = { ...row, attempt };
     const savepoint = surface.savepoint();
     let failure: { error: unknown } | null = null;
     let value: unknown;
     let outputJson = "";
     try {
-      value = await surface.runMutationHandler(row.name, attempt, (ctx) =>
+      // Decoding belongs inside the caught boundary, with the savepoint already
+      // open. Stored arguments that no longer decode are a failed run like any
+      // other failure; decoding before the boundary would instead throw out of
+      // the claim transaction, roll the claim back, and leave the Job due — to
+      // be claimed and thrown out of again, forever, with nothing recorded. A
+      // job that cannot run must say so once, durably, not spin.
+      const args = decode(job.argsJson);
+      value = await surface.runMutationHandler(job.name, run.number, (ctx) =>
         definition.handler(ctx as never, args as never));
       if (isResult(value) && !value.ok) {
         failure = { error: value.error };
       } else {
         value = isResult(value) ? value.data : value;
-        outputJson = stableEncode(value); // an unencodable result fails the attempt whole
+        outputJson = stableEncode(value); // an unencodable result fails the run whole
       }
     } catch (error) {
       failure = { error };
     }
     if (failure !== null) {
       savepoint.rollback();
-      return await this.settleFailureIn(surface, claimed, failure.error, startedAt);
+      return await this.settleFailureIn(surface, job, run, failure.error);
     }
     savepoint.release();
-    return await this.settleSuccessIn(surface, claimed, value, startedAt, outputJson);
+    return await this.settleSuccessIn(surface, job, run, value, outputJson);
   }
 
   /** Procedure-kind dispatch: run as a system operation, then settle. */
-  private dispatch(claimed: ClaimedRow): void {
+  private dispatch(claimed: ClaimedRun): void {
     const definition = this.definitions.get(claimed.name)!;
     const controller = new AbortController();
-    this.runControllers.set(claimed.id, controller);
+    this.runControllers.set(claimed.jobId, controller);
     this.activeRuns++;
-    const startedAt = this.options.now();
     let args: unknown;
     try {
       args = decode(claimed.argsJson);
     } catch (error) {
-      // A row whose stored args no longer decode fails through the ordinary
+      // A Job whose stored args no longer decode fails through the ordinary
       // settle path; the slot and controller are released either way.
-      void this.settle(claimed, { ok: false, error }, startedAt).finally(() => {
-        this.activeRuns--;
-        this.runControllers.delete(claimed.id);
-        if (this.options.isReady()) this.arm();
+      void this.settle(claimed, { ok: false, error }).finally(() => {
+        this.releaseRun(claimed.jobId, controller);
       });
       return;
     }
+    const steps = new JobSteps({
+      jobId: claimed.jobId,
+      runId: claimed.runId,
+      jobName: claimed.name,
+      runNumber: claimed.runNumber,
+      leaseToken: claimed.leaseToken,
+      stepsJson: claimed.stepsJson,
+      executor: this.options.executor,
+      registry: this.options.registry,
+      signal: controller.signal,
+      now: this.options.now,
+      // The suspend itself committed inside step.sleep's own transaction;
+      // this is the post-commit notification to waiters.
+      onSlept: (wakeAt) =>
+        this.deliver([{
+          id: claimed.jobId,
+          event: "slept",
+          outcome: {
+            ok: false,
+            state: "pending",
+            error: new AckerDBError("unavailable", "job is sleeping; the run resumes at its wake time"),
+            nextRetryAt: wakeAt,
+          },
+        }]),
+    });
     void this.options.system
       .run(
         `jobs.${claimed.name}`,
         async (ctx: SystemCtx) => {
-          const context = Object.freeze({ ...ctx, attempt: claimed.attempt });
+          const context = Object.freeze({
+            ...ctx,
+            runNumber: claimed.runNumber,
+            step: steps.surface(ctx),
+          });
           return await definition.handler(context as never, args as never);
         },
         { signal: controller.signal },
@@ -615,201 +807,285 @@ export class RuntimeJobs {
       .then(
         (value) =>
           isResult(value) && !value.ok
-            ? this.settle(claimed, { ok: false, error: value.error }, startedAt)
-            : this.settle(
-                claimed,
-                { ok: true, value: isResult(value) ? value.data : value },
-                startedAt,
-              ),
-        (error) => this.settle(claimed, { ok: false, error }, startedAt),
+            ? this.settle(claimed, { ok: false, error: value.error })
+            : this.settle(claimed, { ok: true, value: isResult(value) ? value.data : value }),
+        (error) =>
+          // A sleep already settled atomically inside step.sleep; the signal
+          // only unwound the handler. Anything else settles as a failure.
+          error instanceof JobSleepSignal
+            ? undefined
+            : this.settle(claimed, { ok: false, error }),
       )
       .finally(() => {
-        this.activeRuns--;
-        this.runControllers.delete(claimed.id);
-        if (this.options.isReady()) this.arm();
+        this.releaseRun(claimed.jobId, controller);
       });
   }
 
-  /** The settle transaction: re-validate state and lease, then record. */
+  /**
+   * Release the slot one dispatch held. The controller is compared, not
+   * assumed: a canceled Job that is forced to run again can put a second run in
+   * flight while the first handler is still unwinding, and the newer run must
+   * keep the entry that cancel and the wake calculation reach for.
+   */
+  private releaseRun(jobId: bigint, controller: AbortController): void {
+    this.activeRuns--;
+    if (this.runControllers.get(jobId) === controller) this.runControllers.delete(jobId);
+    if (this.options.isReady()) this.arm();
+  }
+
+  /** The settle transaction: re-validate the run and its lease, then record. */
   private async settle(
-    claimed: ClaimedRow,
+    claimed: ClaimedRun,
     outcome: { ok: true; value: unknown } | { ok: false; error: unknown },
-    startedAt: number,
   ): Promise<void> {
     try {
       const notification = await this.options.executor.jobsWrite(
         this.options.signal(),
         async (surface) => {
-          const row = surface.jobs.byId(claimed.id);
-          if (row === null || row.state !== "running" || row.leaseToken !== claimed.leaseToken) {
-            return null; // canceled, reclaimed, or deleted while running: the row moved on
+          const run = surface.runs.byId(claimed.runId);
+          const job = surface.jobs.byId(claimed.jobId);
+          if (
+            run === null ||
+            job === null ||
+            run.state !== "running" ||
+            run.leaseToken !== claimed.leaseToken
+          ) {
+            return null; // canceled, resumed, or deleted while running: the run moved on
           }
           return outcome.ok
-            ? await this.settleSuccessIn(surface, row, outcome.value, startedAt)
-            : await this.settleFailureIn(surface, row, outcome.error, startedAt);
+            ? await this.settleSuccessIn(surface, job, run, outcome.value)
+            : await this.settleFailureIn(surface, job, run, outcome.error);
         },
       );
       this.deliver(notification === null ? [] : [notification]);
     } catch (error) {
       // Shutdown or a failed settle commit: the lease expires and recovery
-      // re-runs the attempt — at-least-once, as declared.
-      this.event("failure", "error", outcomeFromError(error).code);
+      // re-runs the run — at-least-once, as declared.
+      this.options.log.error("job settlement failed", {
+        outcome: outcomeFromError(error).code,
+      });
     }
+  }
+
+  /**
+   * The one way a Job reaches a terminal state: its current run records the
+   * outcome, the Job records the same instant and retention stamp, and the
+   * repeat policy mints the next occurrence. Cancel goes through it too — an
+   * operator ending one occurrence does not end the recurrence — and every
+   * caller therefore stamps retention the same way, in one transaction.
+   */
+  private async settleJobIn(
+    surface: JobsWriteSurface,
+    job: JobRow,
+    run: JobRunRow | null,
+    outcome: TerminalOutcome,
+  ): Promise<void> {
+    const now = this.options.now();
+    const deleteAfter = this.retentionStamp(this.definitions.get(job.name), outcome.state, now);
+    // A Job with no run, or whose latest run already settled, records only its
+    // own end: cancel before the claim invents no run.
+    if (run !== null && run.state === "running") {
+      await surface.runs.patch(run.id, {
+        state: outcome.state,
+        settledAt: now,
+        outputJson: outcome.state === "completed" ? outcome.outputJson : null,
+        errorCode: outcome.state === "failed" ? outcomeFromError(outcome.error).code : null,
+        errorText: outcome.state === "failed" ? this.describeError(outcome.error) : null,
+        leaseToken: null,
+        leaseUntil: null,
+        deleteAfter,
+      });
+    }
+    await surface.jobs.patch(job.id, {
+      state: outcome.state,
+      nextRunTrigger: null,
+      settledAt: now,
+      deleteAfter,
+    });
+    await this.mintRepeat(surface, job, now);
   }
 
   private async settleSuccessIn(
     surface: JobsWriteSurface,
-    row: JobRow,
+    job: JobRow,
+    run: JobRunRow,
     value: unknown,
-    startedAt = this.options.now(),
     encodedOutput?: string,
   ): Promise<Notification> {
-    const now = this.options.now();
     let outputJson: string;
     try {
       outputJson = encodedOutput ?? stableEncode(value);
     } catch (error) {
-      return await this.settleFailureIn(surface, row, error, startedAt);
+      return await this.settleFailureIn(surface, job, run, error);
     }
-    await surface.jobs.patch(row.id, {
-      state: "completed",
-      attempt: row.attempt,
-      outputJson,
-      leaseToken: null,
-      leaseUntil: null,
-      settledAt: now,
-      attemptsJson: this.appendAttempt(row, "completed", null, startedAt, now),
-    });
-    await this.mintRepeat(surface, row, now);
-    return { id: row.id, event: "settled", outcome: { ok: true, value } };
+    await this.settleJobIn(surface, job, run, { state: "completed", outputJson });
+    return { id: job.id, event: "settled", outcome: { ok: true, value } };
   }
 
   private async settleFailureIn(
     surface: JobsWriteSurface,
-    row: JobRow,
+    job: JobRow,
+    run: JobRunRow,
     error: unknown,
-    startedAt = this.options.now(),
   ): Promise<Notification> {
-    const definition = this.definitions.get(row.name);
+    const definition = this.definitions.get(job.name);
     const now = this.options.now();
     let delay: number | null = null;
-    if (definition !== undefined) {
+    // A step refusal — journal/code mismatch, corrupt journal, or exhausted
+    // journal bounds — fails without consulting the retry policy: retrying
+    // into unchanged code cannot fix code (ADR-0022).
+    if (definition !== undefined && !(error instanceof StepRefusalError)) {
       try {
-        delay = definition.retry(row.attempt, error);
+        delay = definition.retry(run.number, error);
       } catch {
-        delay = null; // a throwing retry policy discards, never wedges
+        delay = null; // a throwing retry policy fails the Job, never wedges it
       }
     }
     if (delay !== null && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0)) {
       delay = null;
     }
+    const code = outcomeFromError(error).code;
     if (delay !== null) {
       const nextRetryAt = now + delay;
-      await surface.jobs.patch(row.id, {
-        state: "pending",
-        runAt: nextRetryAt,
-        attempt: row.attempt,
+      await surface.runs.patch(run.id, {
+        state: "failed",
+        settledAt: now,
+        errorCode: code,
+        errorText: this.describeError(error),
         leaseToken: null,
         leaseUntil: null,
-        attemptsJson: this.appendAttempt(row, "failed", error, startedAt, now),
+        // A failed run of a Job that is still alive expires on the definition's
+        // plain retention, so a long retry chain cannot grow history forever.
+        deleteAfter: this.window(definition?.retention ?? DEFAULT_JOB_RETENTION_MS, now),
+      });
+      await surface.jobs.patch(job.id, {
+        state: "retrying",
+        nextRunAt: nextRetryAt,
+        nextRunTrigger: null,
       });
       return {
-        id: row.id,
+        id: job.id,
         event: "retried",
-        errorCode: outcomeFromError(error).code,
-        outcome: { ok: false, state: "pending", error, nextRetryAt },
+        errorCode: code,
+        outcome: { ok: false, state: "retrying", error, nextRetryAt },
       };
     }
-    await surface.jobs.patch(row.id, {
-      state: "discarded",
-      attempt: row.attempt,
-      leaseToken: null,
-      leaseUntil: null,
-      settledAt: now,
-      attemptsJson: this.appendAttempt(row, "discarded", error, startedAt, now),
-    });
-    await this.mintRepeat(surface, row, now);
+    await this.settleJobIn(surface, job, run, { state: "failed", error });
     return {
-      id: row.id,
-      event: "discarded",
-      errorCode: outcomeFromError(error).code,
-      outcome: { ok: false, state: "discarded", error, nextRetryAt: null },
+      id: job.id,
+      event: "failed",
+      errorCode: code,
+      outcome: { ok: false, state: "failed", error, nextRetryAt: null },
     };
   }
 
-  /** Recurrence is framework-owned: the next occurrence is a fresh row. */
-  private async mintRepeat(surface: JobsWriteSurface, row: JobRow, now: number): Promise<void> {
-    const definition = this.definitions.get(row.name);
+  /**
+   * Recurrence is framework-owned: the next occurrence is a fresh Job linked
+   * to the one that just settled. It is computed from the admitted occurrence,
+   * not from the last retry, so retries cannot drag a schedule forward.
+   */
+  private async mintRepeat(surface: JobsWriteSurface, job: JobRow, now: number): Promise<void> {
+    const definition = this.definitions.get(job.name);
     if (definition === undefined || definition.repeat === null) return;
     let at: number | null;
     try {
-      at = definition.repeat(row.runAt, now);
+      at = definition.repeat(job.scheduledAt, now);
     } catch {
       return; // a throwing repeat rule ends the recurrence
     }
     if (at === null) return;
     if (typeof at !== "number" || !Number.isFinite(at)) return;
-    if (this.liveRow(surface.jobs, row.name, row.argsHash) !== null) return;
-    await this.insertRow(surface.jobs, {
-      name: row.name,
-      argsJson: row.argsJson,
-      argsHash: row.argsHash,
-      key: row.key,
-      runAt: at,
+    if (surface.jobs.liveFor(job.name, job.argsHash) !== null) return;
+    await this.insertJob(surface.jobs, {
+      name: job.name,
+      argsJson: job.argsJson,
+      argsHash: job.argsHash,
+      key: job.key,
+      at,
       now,
+      trigger: "repeat",
+      parentJobId: job.id,
     });
+  }
+
+
+  /**
+   * Delete what retention has released: expired Jobs with the runs they own,
+   * then expired runs that are only history. A Job's latest run is never
+   * history — it is the run its outcome is read from — so it is skipped and
+   * leaves only with its Job. That keeps the two sweeps independent: neither
+   * ordering nor either sweep's limit can leave a Job pointing at a run that
+   * is gone.
+   */
+  private async reap(signal: AbortSignal): Promise<boolean> {
+    const now = this.options.now();
+    if (now - this.lastReapAt < REAP_INTERVAL_MS) return false;
+    this.lastReapAt = now;
+    const limit = this.options.limits.claimBatchSize;
+    return await this.options.executor.jobsWrite(signal, async (surface) => {
+      const jobs = surface.jobs.expired(now, limit);
+      for (const job of jobs) await this.deleteWithRuns(surface, job.id);
+      const runs = surface.runs.expired(now, limit);
+      for (const run of runs) {
+        const job = surface.jobs.byId(run.jobId);
+        if (job !== null && job.runCount === run.number) continue;
+        await surface.runs.delete(run.id);
+      }
+      // A full page means more is waiting: say so, so the runner comes back
+      // instead of parking on work it can see.
+      return jobs.length === limit || runs.length === limit;
+    });
+  }
+
+  private async deleteWithRuns(surface: JobsWriteSurface, id: bigint): Promise<void> {
+    for (;;) {
+      const runs = surface.runs.ofJob(id, CASCADE_BATCH);
+      for (const run of runs) await surface.runs.delete(run.id);
+      if (runs.length < CASCADE_BATCH) break;
+    }
+    await surface.jobs.delete(id);
   }
 
   /**
-   * Delete terminal rows past their definition's effective retention. Reads
-   * are targeted per definition and state, so forever-retained rows can never
-   * shadow finite-retention rows behind them.
+   * When a terminal Job and the run its outcome lives on may be deleted. It is
+   * the longer of the definition's retention and the dedupe window for that
+   * outcome, so a memoized result can never be reaped while dedupe would still
+   * return it.
    */
-  private async reap(signal: AbortSignal): Promise<void> {
-    const now = this.options.now();
-    if (now - this.lastReapAt < REAP_INTERVAL_MS) return;
-    this.lastReapAt = now;
-    const limit = this.options.limits.claimBatchSize;
-    await this.options.executor.jobsWrite(signal, async (surface) => {
-      for (const state of ["completed", "discarded", "canceled"] as const) {
-        for (const [name, definition] of this.definitions) {
-          const retention = this.effectiveRetention(definition, state);
-          if (retention === "forever") continue;
-          for (const row of surface.jobs.settledBefore(name, state, now - retention, limit)) {
-            await surface.jobs.delete(row.id);
-          }
-        }
-        // Rows of no-longer-declared jobs keep the default retention.
-        for (const row of surface.jobs.settledBeforeExcluding(
-          this.declaredNames,
-          state,
-          now - DEFAULT_JOB_RETENTION_MS,
-          limit,
-        )) {
-          await surface.jobs.delete(row.id);
-        }
-      }
-    });
+  private retentionStamp(
+    definition: AnyJob | undefined,
+    state: "completed" | "failed" | "canceled",
+    now: number,
+  ): number | null {
+    // A Job of a no-longer-declared definition keeps the default retention:
+    // deleting a definition must not silently erase its history.
+    if (definition === undefined) return now + DEFAULT_JOB_RETENTION_MS;
+    const windows: JobWindow[] = [definition.retention];
+    if (definition.dedupe !== null && state !== "canceled") {
+      windows.push(state === "completed" ? definition.dedupe.completed : definition.dedupe.failed);
+    }
+    if (windows.includes("forever")) return null;
+    return this.window(Math.max(...(windows as number[])), now);
   }
 
-  private effectiveRetention(
-    definition: AnyJob | undefined,
-    state: JobState,
-  ): number | "forever" {
-    // Rows of a no-longer-declared job keep the default retention: deleting a
-    // definition must not silently erase its history at the next sweep.
-    if (definition === undefined) return DEFAULT_JOB_RETENTION_MS;
-    const windows: (number | "forever")[] = [definition.retention];
-    if (definition.dedupe !== null) {
-      windows.push(
-        state === "completed" ? definition.dedupe.completed : definition.dedupe.discarded,
-      );
-    }
-    if (windows.includes("forever")) return "forever";
-    return Math.max(...(windows as number[]));
+  private window(value: JobWindow, now: number): number | null {
+    return value === "forever" ? null : now + value;
   }
 
   // -- Row helpers -----------------------------------------------------------
+
+  private isTerminal(state: JobState): boolean {
+    return state === "completed" || state === "failed" || state === "canceled";
+  }
+
+  private requireJob(surface: JobsWriteSurface, id: bigint, op: string): JobRow {
+    if (typeof id !== "bigint") {
+      throw new ValidationError(`jobs.${op}: expected a bigint job id`);
+    }
+    const job = surface.jobs.byId(id);
+    if (job === null) throw new AckerDBError("not_found", `job ${id} does not exist`);
+    return job;
+  }
 
   private validateArgs(
     definition: AnyJob,
@@ -834,83 +1110,70 @@ export class RuntimeJobs {
     return out;
   }
 
-  private insertRow(
+  private insertJob(
     store: JobsStore,
-    row: {
+    job: {
       readonly name: string;
       readonly argsJson: string;
       readonly argsHash: string;
       readonly key: string | null;
-      readonly runAt: number;
+      readonly at: number;
       readonly now: number;
+      readonly trigger: JobTrigger;
+      readonly parentJobId: bigint | null;
     },
   ): Promise<bigint> {
     return store.insert({
-      name: row.name,
-      argsJson: row.argsJson,
-      argsHash: row.argsHash,
-      key: row.key,
+      name: job.name,
+      argsJson: job.argsJson,
+      argsHash: job.argsHash,
+      key: job.key,
       state: "pending",
-      runAt: row.runAt,
-      attempt: 0,
-      attemptsJson: "[]",
-      outputJson: null,
-      leaseToken: null,
-      leaseUntil: null,
-      enqueuedAt: row.now,
+      trigger: job.trigger,
+      parentJobId: job.parentJobId,
+      scheduledAt: job.at,
+      nextRunAt: job.at,
+      runCount: 0,
+      nextRunTrigger: null,
+      stepsJson: "[]",
+      enqueuedAt: job.now,
       settledAt: null,
+      deleteAfter: null,
     });
   }
 
-  /** A live (pending or running) row for this identity, if any. */
-  private liveRow(store: JobsStore, name: string, argsHash: string): JobRow | null {
-    return store.liveRowFor(name, argsHash);
-  }
-
-  private dedupeRow(
+  /**
+   * The Job a dedupe hit resolves to: a live one for this identity, else the
+   * newest terminal one whose outcome is still inside its window. Read-only by
+   * construction — a hit executes no handler, so it writes nothing.
+   */
+  private dedupeJob(
     store: JobsStore,
     definition: AnyJob,
     name: string,
     argsHash: string,
     now: number,
   ): JobRow | null {
-    const live = store.liveRowFor(name, argsHash);
+    const live = store.liveFor(name, argsHash);
     if (live !== null) return live;
     const windows = definition.dedupe!;
     let best: JobRow | null = null;
-    for (const state of ["completed", "discarded"] as const) {
+    for (const state of ["completed", "failed"] as const) {
       const window = windows[state];
       if (window === 0) continue;
-      const row = store.newestSettledFor(name, argsHash, state);
-      if (row === null || row.settledAt === null) continue;
-      if (window !== "forever" && row.settledAt + window <= now) continue;
-      if (best === null || row.settledAt > best.settledAt!) best = row;
+      const job = store.newestSettledFor(name, argsHash, state);
+      if (job === null || job.settledAt === null) continue;
+      if (window !== "forever" && job.settledAt + window <= now) continue;
+      // The same total order the per-state read uses: settle time, then id.
+      if (
+        best === null ||
+        job.settledAt > best.settledAt! ||
+        (job.settledAt === best.settledAt && job.id > best.id)
+      ) {
+        best = job;
+      }
     }
     return best;
-  }
-
-  private appendAttempt(
-    row: JobRow,
-    outcome: JobAttemptRecord["outcome"],
-    error: unknown,
-    startedAt = this.options.now(),
-    settledAt = this.options.now(),
-  ): string {
-    let history: JobAttemptRecord[];
-    try {
-      history = JSON.parse(row.attemptsJson) as JobAttemptRecord[];
-      if (!Array.isArray(history)) history = [];
-    } catch {
-      history = [];
-    }
-    history.push({
-      startedAt,
-      settledAt,
-      outcome,
-      error: error === null ? null : this.describeError(error),
-      durationMs: Math.max(0, settledAt - startedAt),
-    });
-    return JSON.stringify(history);
   }
 
   private describeError(error: unknown): string {
@@ -925,18 +1188,19 @@ export class RuntimeJobs {
       : text;
   }
 
-  private terminalOutcome(row: JobRow): JobAttemptOutcome | null {
-    switch (row.state) {
+  private terminalOutcome(rows: JobOutcomeRows): JobRunOutcome | null {
+    const { job, run } = rows;
+    switch (job.state) {
       case "completed":
         return {
           ok: true,
-          value: row.outputJson === null ? undefined : decode(row.outputJson),
+          value: run === null || run.outputJson === null ? undefined : decode(run.outputJson),
         };
-      case "discarded":
+      case "failed":
         return {
           ok: false,
-          state: "discarded",
-          error: new AckerDBError("unavailable", this.lastError(row) ?? "job was discarded"),
+          state: "failed",
+          error: new AckerDBError("unavailable", run?.errorText ?? "job failed"),
           nextRetryAt: null,
         };
       case "canceled":
@@ -951,90 +1215,46 @@ export class RuntimeJobs {
     }
   }
 
-  private lastError(row: JobRow): string | null {
-    try {
-      const history = JSON.parse(row.attemptsJson) as JobAttemptRecord[];
-      for (let index = history.length - 1; index >= 0; index--) {
-        if (history[index]!.error !== null) return history[index]!.error;
-      }
-    } catch {
-      /* recorded history is best-effort */
-    }
-    return null;
-  }
-
-  private notifyDirect(id: bigint, outcome: JobAttemptOutcome): void {
+  private notifyDirect(id: bigint, outcome: JobRunOutcome): void {
     const set = this.waiters.get(id);
     if (set === undefined) return;
     this.waiters.delete(id);
     for (const resolve of set) resolve(outcome);
   }
 
-  /** Post-commit delivery: waiters and telemetry see only committed settles. */
+  /** Post-commit delivery: waiters see only committed settles. */
   private deliver(notifications: readonly Notification[]): void {
     for (const notification of notifications) {
-      this.event(
-        notification.event,
-        notification.event === "settled" ? "info" : notification.event === "retried" ? "warn" : "error",
-        notification.errorCode ?? "ok",
-      );
       this.notifyDirect(notification.id, notification.outcome);
     }
   }
 
-  private async readRow(id: bigint): Promise<JobRow | null> {
+  /** The Job and the run its outcome is read from, off the writer. */
+  private async readOutcome(id: bigint): Promise<JobOutcomeRows | null> {
     return await this.options.reads.submit(
-      (connection) => this.options.executor.readJobRow(connection, id),
-      { operation: "query", bytes: 1, fairnessKey: "system:jobs" },
-      false,
+      (connection) => {
+        const job = this.options.executor.readJobRow(connection, id);
+        if (job === null) return null;
+        const run = job.runCount === 0
+          ? null
+          : this.options.executor.readJobRunRow(connection, id, job.runCount);
+        return { job, run };
+      },
+      { bytes: 1, fairnessKey: "system:jobs" },
     );
   }
 
   private async nextDueAt(): Promise<number | null> {
     const inProcessIds = [...this.runControllers.keys()];
     return await this.options.reads.submit(
-      (connection) => this.options.executor.nextDueJobAt(connection, inProcessIds),
-      { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
-      false,
+      (connection) =>
+        this.options.executor.nextDueJobAt(
+          connection,
+          inProcessIds,
+          this.lastReapAt + REAP_INTERVAL_MS,
+        ),
+      { bytes: 1, fairnessKey: "system:jobs" },
     );
   }
 
-  private async recordGauges(): Promise<void> {
-    if (!this.options.telemetry.enabled) return;
-    this.options.telemetry.recordMetric({
-      name: "jobs.running",
-      value: this.activeRuns,
-      unit: "gauge",
-    });
-    const now = this.options.now();
-    const backlog = await this.options.reads.submit(
-      (connection) => this.options.executor.dueJobStats(connection, now),
-      { operation: "scheduled", bytes: 1, fairnessKey: "system:jobs" },
-      false,
-    );
-    this.options.telemetry.recordMetric({
-      name: "jobs.due_backlog",
-      value: backlog.due,
-      unit: "gauge",
-    });
-    this.options.telemetry.recordMetric({
-      name: "jobs.oldest_due_age_ms",
-      value: backlog.oldestDueAt === null ? 0 : Math.max(0, now - backlog.oldestDueAt),
-      unit: "gauge",
-    });
-  }
-
-  private event(
-    name: "claimed" | "settled" | "retried" | "discarded" | "canceled" | "failure",
-    level: "info" | "warn" | "error",
-    outcome: OutcomeCode | "ok" = "ok",
-  ): void {
-    if (!this.options.telemetry.enabled) return;
-    this.options.telemetry.recordEvent({
-      name: `job_${name}`,
-      level,
-      operation: "job",
-      outcome,
-    });
-  }
 }

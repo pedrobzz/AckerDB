@@ -1,48 +1,27 @@
-import type { Database } from "bun:sqlite";
 import { isResult, type Result } from "@ackerdb/core";
-import {
-  type ExternalAccount,
-  type McpPrincipal,
-  type Principal,
-} from "../../auth/credentials.ts";
+import type { Principal } from "../../auth/credentials.ts";
+import type { AuthInvalidationPublisher } from "../../auth/invalidation.ts";
 import { invokeFunction } from "../../app/invocation.ts";
 import type { ProcedureCtx } from "../../app/functions.ts";
 import type { Registry } from "../../app/registry.ts";
 import { runInInvocationRoot } from "../invocation-state.ts";
-import type { ReadRecorder, WriteCollector } from "../../database/access.ts";
-import type { Engine } from "../../database/engine.ts";
 import {
   finalizeMcpToolResult,
-  type AnyMcpAuthProvider,
   type AnyRegisteredMcpTool,
 } from "../../mcp/index.ts";
 import {
   bindMcpAiContext,
-  mcpLocalGrant,
-  withMcpLocalAuthority,
   type McpAiContext,
   type McpAiRuntimeCapability,
 } from "../../mcp/ai.ts";
 import type { McpCallToolResult } from "../../mcp/content.ts";
-import { parseMcpToken, type ParsedMcpToken } from "../../mcp/credential.ts";
-import { isMcpToolAuthorized } from "../../mcp/scopes.ts";
-import { withMcpTokenContext } from "../../mcp/token-context.ts";
-import {
-  McpTokenInvalidationBoundary,
-  takeMcpTokenInvalidations,
-} from "../../mcp/token-invalidation.ts";
-import { mcpTokenVaultOwner } from "../../mcp/token-vault.ts";
+import { isMcpToolAuthorized } from "../../mcp/tool-access.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
-import { claimHttpTrace } from "../../telemetry/external-trace.ts";
 import {
   callerFairnessKey,
   transportSource,
 } from "../caller.ts";
-import type {
-  McpCredentialLease,
-  RuntimeMcpToolRequest,
-} from "../contracts/requests.ts";
-import type { ServiceLimits } from "../limits.ts";
+import type { RuntimeMcpToolRequest } from "../contracts/requests.ts";
 import { claimHttpRequestProvenance } from "../request-provenance.ts";
 import {
   canceledHandlerOutcome,
@@ -68,108 +47,45 @@ import {
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 
 export interface RuntimeMcpOptions {
-  readonly engine: Engine;
   readonly registry: Registry;
-  readonly limits: ServiceLimits;
+  /** The known scope vocabulary; a local delegation must draw from it. */
+  readonly vocabulary: readonly string[];
   readonly reads: RuntimeReadExecutor;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly operations: RuntimeOperationRunner<RuntimeSession>;
   readonly now: () => number;
-  readonly assertReady: () => void;
   readonly operationSignal: (signal?: AbortSignal) => AbortSignal;
   readonly admittedRequestBytes: (request: unknown, receivedBytes?: number) => number;
-  readonly publishAccountInvalidation: (account: ExternalAccount) => void;
+  /** The origin-less publisher a tool call arriving without transport ownership uses. */
+  readonly immediateInvalidations: AuthInvalidationPublisher;
 }
 
 /**
- * Owns MCP identity, token leases, authorization, delegation capabilities,
- * and dispatch into ordinary AckerDB function execution.
+ * Owns MCP tool authorization, delegation capabilities, and dispatch into
+ * ordinary AckerDB function execution. Endpoint authentication is not here:
+ * an MCP caller holds an ordinary identity credential, verified by the
+ * Runtime's one credential authority like every other bearer.
  */
 export class RuntimeMcp {
-  private readonly tokenInvalidation = new McpTokenInvalidationBoundary();
-
   constructor(private readonly options: RuntimeMcpOptions) {}
 
-  async authenticateToken(
-    mcp: string,
-    rawToken: string,
-    fairnessKey: string,
-    signal?: AbortSignal,
-  ): Promise<McpPrincipal> {
-    const parsed = parseMcpToken(rawToken);
-    if (parsed === null) {
-      throw new AckerDBError("unauthenticated", "invalid MCP credential");
-    }
-    return this.verifyToken(
-      mcp,
-      parsed,
-      fairnessKey,
-      this.options.operationSignal(signal),
-    );
-  }
-
-  async acquireTokenLease(
-    mcp: string,
-    parsed: ParsedMcpToken,
-    fairnessKey: string,
-    signal?: AbortSignal,
-  ): Promise<McpCredentialLease> {
-    this.options.assertReady();
-    const controller = new AbortController();
-    const unsubscribe = this.tokenInvalidation.subscribe(mcp, parsed.id, () => {
-      if (!controller.signal.aborted) {
-        controller.abort(new AckerDBError("unauthenticated", "credential revoked"));
-      }
-    });
-    const leaseSignal = signal === undefined
-      ? controller.signal
-      : AbortSignal.any([signal, controller.signal]);
-    const verificationSignal = this.options.operationSignal(leaseSignal);
-    try {
-      const principal = await this.verifyToken(
-        mcp,
-        parsed,
-        fairnessKey,
-        verificationSignal,
-      );
-      throwIfAborted(verificationSignal);
-      let active = true;
-      return Object.freeze({
-        principal,
-        signal: leaseSignal,
-        release: () => {
-          if (!active) return;
-          active = false;
-          unsubscribe();
-        },
-      });
-    } catch (error) {
-      unsubscribe();
-      throw error;
-    }
-  }
-
+  /**
+   * Resolve one callable tool without trusting discovery or revealing an
+   * inaccessible name. `localGrant` is an explicit same-process delegation
+   * from `aiTools`; a remote caller authorizes on its own Identity grant.
+   */
   authorizeTool(
     mcp: string,
     name: string,
     principal: Principal,
+    localGrant?: readonly string[],
   ): RuntimeMcpToolAuthorization {
-    const endpoint = this.options.registry.mcps.get(mcp);
-    // A token belongs to its auth provider. Every endpoint sharing that exact
-    // provider accepts the same credential; endpoint scopes decide the tool.
-    const providerMatches = principal.kind !== "mcp" ||
-      (endpoint !== undefined && principal.mcp === endpoint.auth.name);
-    const tool = providerMatches
-      ? this.options.registry.mcpTool(mcp, name)
-      : undefined;
-    const grant = tool === undefined
-      ? undefined
-      : mcpLocalGrant(principal, tool.mcp);
-    const local = grant !== undefined && grant.length > 0;
+    const tool = this.options.registry.mcpTool(mcp, name);
+    const local = localGrant !== undefined && localGrant.length > 0;
     if (
       tool !== undefined &&
       !(tool.private && !local) &&
-      isMcpToolAuthorized(tool.accessPolicy, principal, grant)
+      isMcpToolAuthorized(tool.accessPolicy, principal, localGrant)
     ) {
       return mcpToolAuthorization(tool);
     }
@@ -183,7 +99,7 @@ export class RuntimeMcp {
         new AckerDBError("not_found", "MCP tool not found"),
       );
     }
-    if (!providerMatches || tool !== undefined) {
+    if (tool !== undefined) {
       return mcpToolAuthorizationFailure(
         new AckerDBError("unauthorized", "access denied"),
       );
@@ -202,21 +118,12 @@ export class RuntimeMcp {
       method: "tools/call",
       params: { name: tool.name, arguments: request.args },
     }, provenance?.bytes);
-    const functionName = `${tool.mcp.name}:${tool.name}`;
-    const claimedTrace = claimHttpTrace(
-      provenance?.trace,
-      "procedure",
-      functionName,
-      String(request.id),
-    );
     const fairnessKey = request.fairnessKey ?? callerFairnessKey(
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
     return this.options.operations.run(
       null,
-      "procedure",
-      functionName,
       requestBytes,
       () => {
         const signal = this.options.operationSignal(request.signal);
@@ -232,33 +139,18 @@ export class RuntimeMcp {
           ),
           fairnessKey,
           requestBytes,
+          // The endpoint's credential lease is a direct subscriber to the same
+          // boundary, so a tool that revokes the caller's own credential would
+          // abort the very signal its own answer is being produced under. The
+          // listener owns the release, because the JSON-RPC response is
+          // assembled after this call returns.
+          provenance?.invalidations ?? this.options.immediateInvalidations,
         );
       },
       {
-        identifiers: { requestId: String(request.id) },
-        claimedTrace,
         fairnessKey,
       },
     );
-  }
-
-  bindTokenContext<T extends object, R>(
-    context: T,
-    principal: Principal,
-    connection: Database,
-    reads: ReadRecorder | null,
-    writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>> {
-    return withMcpTokenContext(context, {
-      engine: this.options.engine,
-      connection,
-      principal,
-      reads,
-      writes,
-      limits: this.options.limits.mcp,
-      now: this.options.now,
-    }, work);
   }
 
   bindAiContext(
@@ -272,89 +164,41 @@ export class RuntimeMcp {
     );
   }
 
-  publishCommittedInvalidations(writes: WriteCollector): void {
-    for (const invalidation of takeMcpTokenInvalidations(writes)) {
-      this.tokenInvalidation.publish(invalidation);
-    }
-  }
-
-  private async verifyToken(
-    mcp: string,
-    parsed: ParsedMcpToken,
-    fairnessKey: string,
-    signal: AbortSignal,
-  ): Promise<McpPrincipal> {
-    this.options.assertReady();
-    const provider = this.provider(mcp);
-    const credential = await this.options.reads.submit(
-      (connection) => this.options.engine[mcpTokenVaultOwner].authenticate(
-        connection,
-        mcp,
-        parsed,
-        provider.scopes,
-      ),
-      {
-        operation: "procedure",
-        bytes: parsed.bytes,
-        fairnessKey,
-        signal,
-      },
-      false,
-    );
-    throwIfAborted(signal);
-    return Object.freeze({
-      kind: "mcp",
-      identity: credential.identity,
-      mcp,
-      tokenId: credential.tokenId,
-      scopes: credential.scopes,
-    });
-  }
-
-  private provider(name: string): AnyMcpAuthProvider {
-    for (const endpoint of this.options.registry.mcps.values()) {
-      if (endpoint.auth.name === name) return endpoint.auth;
-    }
-    throw new AckerDBError(
-      "not_found",
-      `unknown MCP auth provider "${name}"`,
-    );
-  }
-
   private aiCapability(
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): McpAiRuntimeCapability {
     return Object.freeze({
+      vocabulary: this.options.vocabulary,
       toolsFor: (mcp) => this.options.registry.mcps.get(mcp.name) === mcp
         ? this.options.registry.registeredToolsFor(mcp)
         : undefined,
-      execute: (mcp, tool, args, scopes, signal) => withMcpLocalAuthority(
-        context.auth,
-        mcp,
-        scopes,
-        () => {
-          const authorization = this.authorizeTool(
-            mcp.name,
-            tool.name,
+      execute: (mcp, tool, args, scopes, signal) => {
+        const authorization = this.authorizeTool(
+          mcp.name,
+          tool.name,
+          context.auth,
+          scopes,
+        );
+        return this.dispatchTool(
+          authorizedMcpTool(authorization),
+          args,
+          this.options.functions.createMcpTransactionContext(
             context.auth,
-          );
-          return this.dispatchTool(
-            authorizedMcpTool(authorization),
-            args,
-            this.options.functions.createMcpTransactionContext(
-              context.auth,
-              fairnessKey,
-              signal,
-              requestBytes,
-              context.timestamp,
-            ),
             fairnessKey,
+            signal,
             requestBytes,
-          );
-        },
-      ),
+            context.timestamp,
+          ),
+          fairnessKey,
+          requestBytes,
+          // A locally delegated tool call has no response of its own: it runs
+          // inside a procedure that owns one, and that procedure's own origin
+          // already governs whatever it publishes.
+          this.options.immediateInvalidations,
+        );
+      },
     } satisfies McpAiRuntimeCapability);
   }
 
@@ -364,6 +208,7 @@ export class RuntimeMcp {
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
+    invalidations: AuthInvalidationPublisher,
   ): Promise<McpCallToolResult> {
     const toolContext = Object.freeze({
       auth: context.auth,
@@ -381,6 +226,7 @@ export class RuntimeMcp {
           toolContext,
           fairnessKey,
           requestBytes,
+          invalidations,
         ),
       );
       const finalized = finalizeMcpToolResult(tool, result);
@@ -403,13 +249,13 @@ export class RuntimeMcp {
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
+    invalidations: AuthInvalidationPublisher,
   ): Promise<Result<unknown, unknown>> {
     const fn = tool.fn;
     const signal = this.options.operationSignal(context.abortSignal);
     throwIfAborted(signal);
     if (fn.kind === "query") {
       const value = await this.options.reads.execute(
-        "query",
         fairnessKey,
         signal,
         requestBytes,
@@ -431,6 +277,7 @@ export class RuntimeMcp {
         fn,
         principal: context.auth,
         args,
+        publishAuthInvalidation: invalidations.publish,
       });
       return restoreMutationResult(committed.value);
     }
@@ -440,7 +287,7 @@ export class RuntimeMcp {
       signal,
       requestBytes,
       context.timestamp,
-      this.options.publishAccountInvalidation,
+      invalidations.publish,
     );
     try {
       const value = await invokeSideEffectingHandler(

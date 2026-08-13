@@ -1,5 +1,7 @@
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
+  parseClientHandshake,
+  parseClientMessage,
   type AuthenticationDescriptor,
   type AuthenticatedMessage,
   type ChannelJoinMessage,
@@ -8,6 +10,7 @@ import {
   type ClientAuthMessage,
   type ClientMessage,
   type Credential,
+  type HelloMessage,
   type MutationMessage,
   type ProcedureCancelMessage,
   type ProcedureMessage,
@@ -28,6 +31,7 @@ import {
   validateCredentialVerifierRevocation,
 } from "../../auth/lease.ts";
 import {
+  invalidationReaches,
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "../../auth/invalidation.ts";
@@ -59,7 +63,6 @@ import {
   type DecodedClientFrame,
   type SessionWireFrame,
 } from "./frame.ts";
-import { PendingAuthObservations } from "./observation.ts";
 
 function authenticationDescriptor(
   principal: ClientPrincipal,
@@ -67,7 +70,14 @@ function authenticationDescriptor(
 ): AuthenticationDescriptor {
   if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
   const provenance = Object.freeze({ issuer: principal.issuer, subject: principal.subject });
-  const credentialTtlMs = Math.max(0, Math.floor(principal.expiresAt - nowMs));
+  // An identity credential never expires — it is revoked instead — and the
+  // relative duration of "never" is not a number. Disclosing `null` is what
+  // lets one authenticate over this transport at all: any finite stand-in
+  // would be a lie the client schedules a pointless refresh against, and the
+  // honest arithmetic produces an Infinity the wire contract refuses.
+  const credentialTtlMs = Number.isFinite(principal.expiresAt)
+    ? Math.max(0, Math.floor(principal.expiresAt - nowMs))
+    : null;
   return principal.kind === "user"
     ? Object.freeze({ principal: "user", identity: principal.identity, provenance, credentialTtlMs })
     : Object.freeze({ principal: "workload", provenance, credentialTtlMs });
@@ -114,7 +124,6 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly authObservations: PendingAuthObservations;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
@@ -141,7 +150,6 @@ export class Session {
     validateCredentialVerifierRevocation(options.runtime.credentialVerifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
-    this.authObservations = new PendingAuthObservations(options);
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
@@ -173,9 +181,20 @@ export class Session {
 
   /** Owns exact byte admission and Protocol-2 decoding for one raw WebSocket message. */
   handle(raw: SessionWireFrame): Promise<void> {
-    let frame: DecodedClientFrame;
+    // The phase picks the vocabulary. Before the hello is accepted this
+    // connection has no verified peer, so the only frame that decodes at all is
+    // the versioned handshake; afterwards the peer's build is settled and the
+    // session frames carry no version to re-check.
+    let frame: DecodedClientFrame<ClientMessage>;
     try {
-      frame = decodeClientFrame(raw, this.maxFrameBytes, this.maxRequestBytes);
+      frame = decodeClientFrame(
+        raw,
+        this.maxFrameBytes,
+        this.maxRequestBytes,
+        this.phase === "awaiting_hello"
+          ? (value: unknown): ClientMessage => parseClientHandshake(value)
+          : (value: unknown): ClientMessage => parseClientMessage(value),
+      );
     } catch (error) {
       return this.rejectFrame(error as AckerDBError);
     }
@@ -208,21 +227,16 @@ export class Session {
   private dispatchFrame(message: ClientMessage, bytes: number): void | Promise<void> {
     if (this.phase === "closed") return;
 
+    // "hello must be the first frame" and "hello only once" are the handshake
+    // and session parsers' own vocabularies now, so nothing restates them here.
     if (this.phase === "awaiting_hello") {
-      if (message.t !== "hello") {
-        void this.terminate(new AckerDBError("malformed", "hello must be the first frame"));
-        return;
-      }
+      const hello = message as HelloMessage;
       this.phase = "opening";
-      this.opening = this.open(message.clientSessionId, message.credential);
+      this.opening = this.open(hello.clientSessionId, hello.credential);
       return this.opening;
     }
     if (this.phase === "opening") {
       void this.terminate(new AckerDBError("malformed", "welcome must precede further client frames"));
-      return;
-    }
-    if (message.t === "hello") {
-      void this.terminate(new AckerDBError("malformed", "hello has already been received"));
       return;
     }
 
@@ -230,7 +244,7 @@ export class Session {
       case "auth":
         return this.acceptAuth(message);
       case "ping":
-        return this.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+        return this.sendControl({ t: "pong" });
       case "cancel":
         return this.cancelProcedure(message);
       case "sub":
@@ -299,24 +313,16 @@ export class Session {
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
     const authController = new AbortController();
     this.pendingAuthController = authController;
-    const observationOwner = this.authObservations.enabled ? authController : undefined;
-    if (observationOwner !== undefined) {
-      this.authObservations.begin(observationOwner, { kind: "hello", clientSessionId });
-    }
     let principal: ClientPrincipal;
     try {
       principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
       const failure = verifierError(error);
       if (this.pendingAuthController === authController) this.pendingAuthController = null;
-      if (observationOwner !== undefined) {
-        this.authObservations.finish(observationOwner, failure);
-      }
       void this.terminate(failure);
       return;
     }
     if (this.pendingAuthController === authController) this.pendingAuthController = null;
-    if (observationOwner !== undefined) this.authObservations.finish(observationOwner);
     if (this.isClosed()) return;
     try {
       this.clientSessionId = clientSessionId;
@@ -331,7 +337,7 @@ export class Session {
       await this.runtime.openSession(context);
       if (this.isClosed()) return;
       await this.sendControl({
-        v: PROTOCOL_VERSION,
+        v: ACKERDB_VERSION,
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
@@ -361,29 +367,15 @@ export class Session {
     aborted(this.epochController, stale);
     this.abortActiveProcedures(stale);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, stale);
-    this.authObservations.finish(undefined, stale);
     const transitionController = new AbortController();
     this.pendingAuthController = transitionController;
-    const clientSessionId = this.clientSessionId;
-    this.authObservations.begin(
-      transitionController,
-      clientSessionId === null
-        ? undefined
-        : {
-            kind: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
-            clientSessionId,
-            attemptId: message.attemptId,
-          },
-    );
 
     void this.verifyCredential(message.credential, transitionController.signal).then(
       (principal) => {
-        this.authObservations.finish(transitionController);
         this.queueAuthCompletion(message, transitionController, principal);
       },
       (error) => {
         const failure = verifierError(error);
-        this.authObservations.finish(transitionController, failure);
         this.queueAuthCompletion(message, transitionController, failure);
       },
     );
@@ -473,7 +465,6 @@ export class Session {
           if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
         }
         const ack: AuthenticatedMessage = {
-          v: PROTOCOL_VERSION,
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
@@ -595,7 +586,7 @@ export class Session {
 
   private sendControlError(id: number, error: AckerDBError): Promise<void> {
     return this.sendControl({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id,
       outcome: outcomeFromError(error),
@@ -620,6 +611,7 @@ export class Session {
       this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
       () => this.readNow(),
+      this.runtime.resolveScopes,
     );
     if (signal?.aborted) throw signal.reason;
     return principal;
@@ -644,7 +636,8 @@ export class Session {
     if (
       principal.kind === "anonymous" ||
       principal.kind === "system" ||
-      principal.kind === "mcp"
+      // Vault credentials never expire; invalidation revokes them instead.
+      !Number.isFinite(principal.expiresAt)
     ) return;
     const schedule = () => {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
@@ -676,9 +669,7 @@ export class Session {
       this.phase === "closed" ||
       principal === null ||
       (principal.kind !== "user" && principal.kind !== "workload") ||
-      principal.issuer !== invalidation.issuer ||
-      (invalidation.subject !== undefined && principal.subject !== invalidation.subject) ||
-      (invalidation.tokenId !== undefined && principal.tokenId !== invalidation.tokenId)
+      !invalidationReaches(principal, invalidation)
     ) {
       return;
     }
@@ -704,7 +695,6 @@ export class Session {
     aborted(this.epochController, error);
     this.abortActiveProcedures(error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
-    this.authObservations.finish(undefined, error);
     const authPublications = this.authPublications;
     this.authPublications = null;
     authPublications?.release();
@@ -725,7 +715,7 @@ export class Session {
     const closeSink = (async () => {
       try {
         await this.sink.sendControl({
-          v: PROTOCOL_VERSION,
+          v: ACKERDB_VERSION,
           t: "err",
           id: null,
           outcome,

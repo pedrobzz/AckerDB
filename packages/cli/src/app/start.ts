@@ -2,8 +2,7 @@
  * Loading a ackerdb app: the application manifest, the function modules, and the
  * assembled server (engine + reconcile + runtime + transport).
  */
-import { existsSync, mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -21,9 +20,11 @@ import {
   assertCredentialVerifier,
   assemblePlugins,
   createOidcVerifier,
+  ensureAdminCredential,
   desiredPluginMounts,
   type CredentialVerifier,
   type EngineCloseDisposition,
+  type ScopeResolver,
   type RealtimeRuntimeModule,
   type SystemRunner,
   MigrationError,
@@ -41,10 +42,12 @@ import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import type { AppConfig } from "./config.ts";
 import {
   importApp,
+  importConfiguredDefault,
   importFunctionModules,
   importJobModules,
   importServiceModules,
 } from "./manifest.ts";
+import { resolveAppPackage } from "./optional-package.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
@@ -81,6 +84,8 @@ export interface StartAppOptions<A extends App = App> {
   prepare?: StartupPreparation;
   /** Programmatic auth authority. Cannot be combined with a configured verifier or OIDC. */
   credentialVerifier?: CredentialVerifier;
+  /** Programmatic scope resolution. Cannot be combined with a configured scopeResolver module. */
+  resolveScopes?: ScopeResolver;
   /**
    * Exit instead of applying pending migrations — the interactive dev
    * supervisor's gate, which asks for consent and restarts without the hold.
@@ -89,24 +94,35 @@ export interface StartAppOptions<A extends App = App> {
   holdPendingMigrations?: boolean;
   /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
   realtime?: RealtimeRuntimeModule;
-  /** Optional local-journal bounds for application logs and analytics. */
-  telemetryJournal?: RuntimeOptions["telemetryJournal"];
-  /** Provider adapters consuming the local telemetry journal independently. */
-  telemetryExporters?: RuntimeOptions["telemetryExporters"];
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
 
-async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeModule> {
-  const require = createRequire(join(appDir, "package.json"));
-  let entry: string;
-  try {
-    entry = require.resolve("@ackerdb/realtime");
-  } catch (error) {
-    throw new Error(
-      "this app declares realtime routes but @ackerdb/realtime is not installed",
-      { cause: error },
+async function importConfiguredRealtimeRuntime(path: string): Promise<RealtimeRuntimeModule> {
+  const owner = `.ackerdb.config.json "realtime" module`;
+  const runtime = await importConfiguredDefault(path, owner);
+  if (
+    typeof runtime !== "object" ||
+    runtime === null ||
+    typeof (runtime as { create?: unknown }).create !== "function"
+  ) {
+    throw new TypeError(
+      `${owner} at ${path} must default-export the result of createRealtimeRuntime(...)`,
     );
+  }
+  return runtime as RealtimeRuntimeModule;
+}
+
+async function importRealtimeRuntime(
+  appDir: string,
+  configuredPath?: string,
+): Promise<RealtimeRuntimeModule> {
+  if (configuredPath !== undefined) {
+    return importConfiguredRealtimeRuntime(configuredPath);
+  }
+  const entry = resolveAppPackage(appDir, "@ackerdb/realtime");
+  if (entry === null) {
+    throw new Error("this app declares realtime handlers but @ackerdb/realtime is not installed");
   }
   const module = await import(pathToFileURL(entry).href) as {
     createRealtimeRuntime?: unknown;
@@ -120,20 +136,40 @@ async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeMod
 }
 
 async function importCredentialVerifier(path: string): Promise<CredentialVerifier> {
-  if (!existsSync(path)) throw new Error(`credential verifier not found at ${path}`);
-  let module: { default?: unknown };
-  try {
-    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new Error(`failed to import credential verifier at ${path}${detail}`, { cause: error });
-  }
+  const exported = await importConfiguredDefault(path, "credential verifier");
   assertCredentialVerifier(
-    module.default,
+    exported,
     PRODUCTION_LIMITS.auth.revocationDeadlineMs,
     `credential verifier default export from ${path}`,
   );
-  return module.default;
+  return exported;
+}
+
+async function importScopeResolver(path: string): Promise<ScopeResolver> {
+  const exported = await importConfiguredDefault(path, "scope resolver");
+  if (typeof exported !== "function") {
+    throw new TypeError(`scope resolver default export from ${path} must be a function`);
+  }
+  return exported as ScopeResolver;
+}
+
+function scopeResolverLoader(
+  config: AppConfig,
+  injected: ScopeResolver | undefined,
+): () => Promise<ScopeResolver | undefined> {
+  if (injected !== undefined && config.scopeResolver !== undefined) {
+    throw new Error("startApp resolveScopes cannot be combined with a configured scopeResolver");
+  }
+  if (injected !== undefined) {
+    if (typeof injected !== "function") {
+      throw new TypeError("startApp resolveScopes must be a function");
+    }
+    return async () => injected;
+  }
+  const path = config.scopeResolver;
+  return path === undefined
+    ? async () => undefined
+    : async () => importScopeResolver(path);
 }
 
 function credentialVerifierLoader(
@@ -200,6 +236,7 @@ export async function startApp<const A extends App = App>(
   options: StartAppOptions<A> = {},
 ): Promise<RunningApp<A>> {
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
+  const loadScopeResolver = scopeResolverLoader(config, options.resolveScopes);
   const startupSignal = options.signal ?? AbortSignal.any([]);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
@@ -353,8 +390,9 @@ export async function startApp<const A extends App = App>(
     // not schema migration. Load them only after durable schema work commits so
     // unrelated runtime configuration cannot block a pending migration.
     server.advanceStartup("loading-runtime");
-    const [verifier, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
+    const [verifier, resolveScopes, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
+      loadScopeResolver(),
       importFunctionModules(config),
       importServiceModules(config),
       importJobModules(config),
@@ -373,10 +411,15 @@ export async function startApp<const A extends App = App>(
     });
     await awaitStartup(pluginRuntime.start());
     requireStartupOwnership();
-    const registry = new Registry(modules);
+    const registry = new Registry(modules, app.apiPaths, config.admin);
+    // The App manifest and the Registry meet here: every declared scope
+    // requirement must draw from the known vocabulary.
+    registry.checkScopeRequirements(app.scopes);
     const realtime = registry.realtime.size === 0
       ? undefined
-      : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));
+      : options.realtime ?? await awaitStartup(
+        importRealtimeRuntime(config.appDir, config.realtime),
+      );
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
@@ -388,15 +431,41 @@ export async function startApp<const A extends App = App>(
         maxBytes: config.files.maxBytes,
       },
       ...(verifier === undefined ? {} : { verifier }),
+      ...(resolveScopes === undefined ? {} : { resolveScopes }),
+      ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
       ...(realtime === undefined ? {} : { realtime }),
-      telemetry: config.telemetry === "disabled" ? false : undefined,
-      ...(options.telemetryJournal === undefined
-        ? {}
-        : { telemetryJournal: options.telemetryJournal }),
-      ...(options.telemetryExporters === undefined
-        ? {}
-        : { telemetryExporters: options.telemetryExporters }),
     });
+
+    // Administration must exist before anything can be administered, so the
+    // master credential is settled before services run and long before the
+    // listener admits a request. A failure here is fatal by design: a server
+    // nobody can administer, that printed nothing to say so, is discovered at
+    // the moment administration is most needed.
+    //
+    // It is awaited rather than raced against shutdown, exactly as `reconcile`
+    // above is. Racing exists for work JavaScript cannot cancel — an import, a
+    // caller's preparation — and it abandons the promise rather than the work.
+    // Abandoning this one loses the plaintext of a credential that committed,
+    // which no later boot can print and only break-glass can undo. A bounded
+    // local transaction is the wrong thing to walk away from.
+    server.advanceStartup("issuing-credential");
+    const adminCredential = await ensureAdminCredential(ownedEngine, runtime.system)
+      .catch((cause: unknown) => {
+        throw new Error(
+          `the Admin Credential could not be issued: ${cause instanceof Error ? cause.message : String(cause)}`
+            + "\n\nrecover with the server stopped:\n\n    acker credential reset",
+          { cause },
+        );
+      });
+    if (adminCredential.token !== undefined) {
+      // Printed once, and nowhere else: only the digest is stored, so no later
+      // command can show this again. It is printed before the shutdown check,
+      // because a committed credential the operator never saw is worse than a
+      // line printed by a process that is about to stop.
+      console.log(`[ackerdb] Admin Credential ${adminCredential.id} issued — copy it now, it is shown once:`);
+      console.log(`[ackerdb] ${adminCredential.token}`);
+    }
+    requireStartupOwnership();
 
     // Services own trusted background work, so they start only once the Runtime
     // can serve `system.run`, and finish before the server admits its first
@@ -416,10 +485,7 @@ export async function startApp<const A extends App = App>(
     server.activate(runtime);
     activated = true;
 
-    console.log(`@@ackerdb-startup ${JSON.stringify({
-      telemetry: config.telemetry,
-      durability: config.durability,
-    })}`);
+    console.log(`@@ackerdb-startup ${JSON.stringify({ durability: config.durability })}`);
     const displayHostname = server.hostname.includes(":")
       ? `[${server.hostname}]`
       : server.hostname;

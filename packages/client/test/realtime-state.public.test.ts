@@ -1,3 +1,4 @@
+import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -228,7 +229,10 @@ class BeforeWriteController {
 
   readonly factory: AckerDBWebSocketFactory = (url) => {
     const socket = new WebSocket(url) as unknown as AckerDBWebSocket;
-    return new InterceptingSocket(socket, (text) => this.send(text));
+    // Each dial is its own stream, so the handshake index belongs to the
+    // socket rather than to the controller that outlives every reconnect.
+    let sent = 0;
+    return new InterceptingSocket(socket, (text) => this.send(text, sent++));
   };
 
   cutNext(predicate: (message: ClientMessage) => boolean): Promise<InterceptedWrite> {
@@ -242,8 +246,8 @@ class BeforeWriteController {
     if (this.failure !== undefined) throw this.failure;
   }
 
-  private send(text: string): boolean {
-    const message = parseClientMessage(decode(text));
+  private send(text: string, index: number): boolean {
+    const message = parseSentFrame(text, index);
     const cut = this.cut;
     if (cut === undefined || !cut.predicate(message)) return false;
     this.cut = undefined;
@@ -380,7 +384,6 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
     registry,
     verifier: new TestVerifier(),
     limits,
-    telemetry: false,
     hooks,
   });
   const server = serve({ runtime, port: 0 });
@@ -486,7 +489,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
 function mountMessages(app: PublicApp): ObservationLog<readonly MessageRow[]> {
   const log = new ObservationLog<readonly MessageRow[]>();
   app.client.subscribe<{ channelId: bigint }, readonly MessageRow[]>(
-    "messages.list",
+    "api.messages.list",
     { channelId: 1n },
     (value) => log.push(value),
     (error) => log.pushError(error.code),
@@ -497,7 +500,7 @@ function mountMessages(app: PublicApp): ObservationLog<readonly MessageRow[]> {
 function mountNonempty(app: PublicApp): ObservationLog<boolean> {
   const log = new ObservationLog<boolean>();
   app.client.subscribe<{ channelId: bigint }, boolean>(
-    "messages.nonempty",
+    "api.messages.nonempty",
     { channelId: 1n },
     (value) => log.push(value),
     (error) => log.pushError(error.code),
@@ -508,7 +511,7 @@ function mountNonempty(app: PublicApp): ObservationLog<boolean> {
 function mountIdentity(app: PublicApp): ObservationLog<{ readonly subject: string }> {
   const log = new ObservationLog<{ readonly subject: string }>();
   app.client.subscribe<Record<string, never>, { readonly subject: string }>(
-    "messages.identity",
+    "api.messages.identity",
     {},
     (value) => log.push(value),
     (error) => log.pushError(error.code),
@@ -610,7 +613,7 @@ interface TrackedMutation {
 function beginMutation(app: PublicApp, body: string): TrackedMutation {
   let settlements = 0;
   const promise = app.client.mutation<{ channelId: bigint; body: string }, bigint>(
-    "messages.send",
+    "api.messages.send",
     { channelId: 1n, body },
   ).then(
     (value) => {
@@ -665,7 +668,7 @@ async function assertMutation(
   expect(mutationEvidence.settlements()).toBe(1);
 
   const rowsResult = await app.observer.query<{ channelId: bigint }, readonly MessageRow[]>(
-    "messages.list",
+    "api.messages.list",
     { channelId: 1n },
   );
   if (!rowsResult.ok) throw rowsResult.error;
@@ -815,8 +818,8 @@ async function runSemanticCut(cut: number): Promise<void> {
       const first = app.proxy.connectionsOpened;
       await app.proxy.dropConnections();
       await prepareReconnect(app, first, firstBaseline - 1);
-      await app.observer.mutation("messages.send", { channelId: 1n, body: "history-one" });
-      await app.observer.mutation("messages.send", { channelId: 1n, body: "history-two" });
+      await app.observer.mutation("api.messages.send", { channelId: 1n, body: "history-one" });
+      await app.observer.mutation("api.messages.send", { channelId: 1n, body: "history-two" });
       const remaining = await statusConnections(app);
       const fault = app.proxy.cutNextServerFrame(transitionFrame("reset"));
       await advanceReconnect(app);
@@ -874,7 +877,7 @@ async function runTransitionCase(entry: TransitionCase): Promise<void> {
   let messageLog: ObservationLog<readonly MessageRow[]> | undefined;
   try {
     if (entry.kind === "checkpoint") {
-      await app.observer.mutation("messages.send", { channelId: 1n, body: "seed" });
+      await app.observer.mutation("api.messages.send", { channelId: 1n, body: "seed" });
       const log = mountNonempty(app);
       await log.waitFor((value) => value, "checkpoint initial state");
       stringifyUpdates = () => log.values.map(String);
@@ -909,8 +912,8 @@ async function runTransitionCase(entry: TransitionCase): Promise<void> {
       await app.proxy.dropConnections();
       await prepareReconnect(app, first, baseline - 1);
       if (entry.kind === "reset") {
-        await app.observer.mutation("messages.send", { channelId: 1n, body: "one" });
-        await app.observer.mutation("messages.send", { channelId: 1n, body: "two" });
+        await app.observer.mutation("api.messages.send", { channelId: 1n, body: "one" });
+        await app.observer.mutation("api.messages.send", { channelId: 1n, body: "two" });
       }
     }
 

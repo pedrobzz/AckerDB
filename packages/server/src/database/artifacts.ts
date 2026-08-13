@@ -42,12 +42,3 @@ export function databasePublicationArtifactPaths(path: string): string[] {
 export function canonicalDatabasePaths(path: string): readonly string[] {
   return Object.freeze([path, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${path}${suffix}`)]);
 }
-
-/** Framework-owned application-signal storage, intentionally outside backups. */
-export function telemetryJournalPath(path: string): string {
-  return `${path}.telemetry`;
-}
-
-export function telemetryJournalPaths(path: string): readonly string[] {
-  return canonicalDatabasePaths(telemetryJournalPath(path));
-}

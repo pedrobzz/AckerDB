@@ -31,9 +31,13 @@ describe("affected package selection", () => {
     expect(() => affectedPackages("")).toThrow("TEST_PACKAGES is required");
   });
 
-  test("resolves the same suite paths the workflow used to inline", () => {
+  test("resolves each suite absolutely, never relative to the caller's cwd", () => {
+    // A bare relative path makes `bun test` crawl the whole tree as a filter
+    // and starve child spawns; an absolute one resolves the same suite from
+    // anywhere, so CI and a local run mean the same thing.
     for (const pkg of PUBLIC_PACKAGES) {
-      expect(testPath(pkg)).toBe(`./packages/${pkg}/test`);
+      expect(testPath(pkg)).toStartWith("/");
+      expect(testPath(pkg)).toEndWith(`/packages/${pkg}/test`);
     }
   });
 });

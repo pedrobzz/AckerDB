@@ -26,6 +26,7 @@ import {
   type UnionValidator,
   type Validator,
 } from "@ackerdb/server";
+import { ADMIN_API_PATH, EVENTS_NAMESPACE } from "@ackerdb/core";
 import { importApp, listFunctionModules, listJobModules, type ModuleFile } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
@@ -42,37 +43,27 @@ function writeIfChanged(path: string, content: string): boolean {
   return true;
 }
 
-interface JobsTypeTree {
-  children: Map<string, JobsTypeTree>;
+interface ModuleTreeNode {
+  children: Map<string, ModuleTreeNode>;
   alias?: string;
 }
 
-function renderJobsTree(node: JobsTypeTree, surface: string, indent: string): string {
-  const lines: string[] = [];
-  for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    if (child.alias !== undefined) {
-      lines.push(`${indent}readonly ${name}: ${surface}<typeof ${child.alias}>;`);
-    } else {
-      lines.push(
-        `${indent}readonly ${name}: {`,
-        renderJobsTree(child, surface, `${indent}  `),
-        `${indent}};`,
-      );
-    }
-  }
-  return lines.join("\n");
-}
-
-function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
-  const appImport = relImport(config.generatedDir, config.appPath);
-  const jobImports: string[] = [];
-  const jobsRoot: JobsTypeTree = { children: new Map() };
-  for (const module of jobModules) {
-    const alias = `jm_${module.segments.join("_")}`;
-    jobImports.push(
-      `import type * as ${alias} from "${relImport(config.generatedDir, module.file)}";`,
-    );
-    let node = jobsRoot;
+/**
+ * The nested type tree for one module list, plus the type-only import each
+ * module needs. Both generated trees are built this way, so a module file is
+ * imported once and named once wherever it appears.
+ */
+function moduleTree(
+  modules: readonly ModuleFile[],
+  generatedDir: string,
+  aliasPrefix: string,
+): { imports: string[]; root: ModuleTreeNode } {
+  const imports: string[] = [];
+  const root: ModuleTreeNode = { children: new Map() };
+  for (const module of modules) {
+    const alias = `${aliasPrefix}${module.segments.join("_")}`;
+    imports.push(`import type * as ${alias} from "${relImport(generatedDir, module.file)}";`);
+    let node = root;
     for (const segment of module.segments) {
       let child = node.children.get(segment);
       if (child === undefined) node.children.set(segment, (child = { children: new Map() }));
@@ -80,10 +71,47 @@ function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
     }
     node.alias = alias;
   }
+  return { imports, root };
+}
+
+/**
+ * Render one module tree as an object type. A node carries an alias when a
+ * module file sits at its name, children when modules sit beneath it, and
+ * *both* when a directory holds an `index.ts` next to its siblings — the
+ * layout the collapse makes ordinary. The two are intersected rather than one
+ * winning, because dropping either would leave a registered address with no
+ * binding anybody can import.
+ */
+function renderModuleTree(
+  node: ModuleTreeNode,
+  leafType: (alias: string) => string,
+  modifier: string,
+  indent: string,
+): string {
+  const lines: string[] = [];
+  for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const nested = child.children.size === 0
+      ? undefined
+      : `{\n${renderModuleTree(child, leafType, modifier, `${indent}  `)}\n${indent}}`;
+    const leaf = child.alias === undefined ? undefined : leafType(child.alias);
+    const type = leaf === undefined
+      ? nested!
+      : nested === undefined ? leaf : `${leaf} & ${nested}`;
+    lines.push(`${indent}${modifier}${name}: ${type};`);
+  }
+  return lines.join("\n");
+}
+
+function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
+  const appImport = relImport(config.generatedDir, config.appPath);
+  const { imports: jobImports, root: jobsRoot } =
+    moduleTree(jobModules, config.generatedDir, "jm_");
   const jobsType = (name: string, surface: string): string =>
     jobsRoot.children.size === 0
       ? `type ${name} = Readonly<Record<never, never>>;`
-      : `type ${name} = {\n${renderJobsTree(jobsRoot, surface, "  ")}\n};`;
+      : `type ${name} = {\n${
+        renderModuleTree(jobsRoot, (alias) => `${surface}<typeof ${alias}>`, "readonly ", "  ")
+      }\n};`;
   return `${HEADER}
 import {
   mcp as mcpGeneric,
@@ -91,7 +119,6 @@ import {
   httpHandler as httpHandlerGeneric,
   job as jobGeneric,
   realtime as realtimeGeneric,
-  mcpAuth as mcpAuthGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -101,6 +128,7 @@ import {
 import type {
   AppPluginCapabilities,
   AppSchema,
+  AppScope,
   ChannelBuilder,
   DbReader,
   DbWriter,
@@ -109,7 +137,6 @@ import type {
   JobBuilder,
   JobCtx as GenericJobCtx,
   JobTxCtx as GenericJobTxCtx,
-  McpAuthBuilder,
   McpBuilder,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
@@ -130,6 +157,8 @@ import type {
 import type app from "${appImport}";
 ${jobImports.join("\n")}${jobImports.length > 0 ? "\n" : ""}
 export type Schema = AppSchema<typeof app>;
+/** The declared scope vocabulary; \`never\` when the application declares none. */
+export type Scope = AppScope<typeof app>;
 type QueryPlugins = AppPluginCapabilities<typeof app, "query">;
 type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;
 type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;
@@ -137,17 +166,16 @@ ${jobsType("QueryJobs", "QueryJobsOf")}
 ${jobsType("MutationJobs", "MutationJobsOf")}
 ${jobsType("ProcedureJobs", "ProcedureJobsOf")}
 
-export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins, QueryJobs>;
+export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
 export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins, MutationJobs>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
 export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
 export const job = jobGeneric as JobBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export const mcp = mcpGeneric as McpBuilder<Schema>;
-export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
+export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;
 
 export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins, QueryJobs>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins, MutationJobs>;
@@ -163,60 +191,65 @@ export type DatabaseWriter = DbWriter<Schema>;
 `;
 }
 
-interface ModuleTreeNode {
-  children: Map<string, ModuleTreeNode>;
-  alias?: string;
-}
-
-function apiTs(config: AppConfig, schema: Schema, modules: ModuleFile[]): string {
-  const imports: string[] = [];
-  const root: ModuleTreeNode = { children: new Map() };
-  for (const module of modules) {
-    const alias = `m_${module.segments.join("_")}`;
-    imports.push(
-      `import type * as ${alias} from "${relImport(config.generatedDir, module.file)}";`,
-    );
-    let node = root;
-    for (const segment of module.segments) {
-      let child = node.children.get(segment);
-      if (child === undefined) node.children.set(segment, (child = { children: new Map() }));
-      node = child;
-    }
-    node.alias = alias;
-  }
-  const renderTree = (node: ModuleTreeNode, indent: string): string => {
-    const lines: string[] = [];
-    for (const [name, child] of [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      if (child.alias !== undefined) {
-        lines.push(`${indent}${name}: typeof ${child.alias};`);
-      } else {
-        lines.push(`${indent}${name}: {`, renderTree(child, `${indent}  `), `${indent}};`);
-      }
-    }
-    return lines.join("\n");
-  };
+/**
+ * Every name `api.ts` needs for itself carries the reserved `_`, which an API
+ * path may never begin with. A group's name is written straight into
+ * `export const <name>`, so reserving the prefix makes collision with a
+ * generated import, the module type, or a module alias unrepresentable rather
+ * than a list to keep in step. The two names left unprefixed — `api` and
+ * `events` — are the surface, and the manifest refuses both.
+ */
+function apiTs(
+  config: AppConfig,
+  apiPaths: readonly string[],
+  schema: Schema,
+  modules: ModuleFile[],
+): string {
+  const { imports, root } = moduleTree(modules, config.generatedDir, "_m_");
 
   const eventTables = Object.keys(schema.tables)
     .filter((t) => schema.tables[t]!.kind === "event")
     .sort();
   const eventLines = eventTables.map(
     (t) =>
-      `    ${t}: EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
+      `    ${t}: _EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
+  );
+
+  // One binding per group the manifest declares, each a reference builder
+  // seeded with its own name. The module tree every binding types is the same
+  // one — the file list knows nothing about groups — but each is rooted at its
+  // group, so the addresses it produces begin there and two groups can hold
+  // one trailing name without naming one function.
+  const groups = apiPaths.map(
+    (path) =>
+      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, addressed and served under \`${path}\`. */\n` +
+      `export const ${path} = _apiGroup(${JSON.stringify(path)}) as unknown as _ApiFromModules<_Modules, ${JSON.stringify(path)}>;\n`,
   );
 
   return `${HEADER}
-import { anyApi } from "@ackerdb/core";
-import type { ApiFromModules, EventRef } from "@ackerdb/core";
+import { adminApi as _adminApi, anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
+import type { ApiFromModules as _ApiFromModules, EventRef as _EventRef } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
-export const api = anyApi as unknown as ApiFromModules<{
-${renderTree(root, "  ")}
-}> & {
-  events: {
+type _Modules = {
+${renderModuleTree(root, (alias) => `typeof ${alias}`, "", "  ")}
+};
+
+export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {
+  ${EVENTS_NAMESPACE}: {
 ${eventLines.join("\n")}${eventLines.length > 0 ? "\n" : ""}  };
 };
 
-export const events = api.events;
-`;
+export const ${EVENTS_NAMESPACE} = api.${EVENTS_NAMESPACE};
+
+/**
+ * The administration group: the framework's own functions, plus any this
+ * application published beside them. The framework's half is typed from the
+ * tree \`@ackerdb/core\` ships, not from this project's modules — it is
+ * declared inside AckerDB, so no walk of a functions directory could ever find
+ * it, and a package with no code generation of its own imports that same tree.
+ */
+export const ${ADMIN_API_PATH} = _adminApi as unknown as typeof _adminApi & _ApiFromModules<_Modules, ${JSON.stringify(ADMIN_API_PATH)}>;
+${groups.join("")}`;
 }
 
 function typesTs(config: AppConfig, schema: Schema): string {
@@ -295,9 +328,9 @@ export async function runCodegen(config: AppConfig): Promise<CodegenResult> {
   // makes fresh projects codegen in one pass.
   emit("server.ts", serverTs(config, listJobModules(config)));
 
-  const schema = (await importApp(config)).schema;
+  const app = await importApp(config);
   const modules = listFunctionModules(config);
-  emit("api.ts", apiTs(config, schema, modules));
-  emit("types.ts", typesTs(config, schema));
+  emit("api.ts", apiTs(config, app.apiPaths, app.schema, modules));
+  emit("types.ts", typesTs(config, app.schema));
   return { written };
 }

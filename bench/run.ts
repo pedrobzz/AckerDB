@@ -1,75 +1,52 @@
-/** AckerDB-only benchmark sampler; invoked by the protected PR workflow. */
-import { randomUUID } from "node:crypto";
+/**
+ * One side of the paired benchmark: an AckerDB server, the load generator that
+ * drives it, and the resource monitors around both. The pair driver starts one
+ * of these per commit and then alternates units between them, so this process
+ * holds its server open for the whole comparison and answers one unit at a time
+ * instead of running a workload end to end and handing back a single verdict.
+ *
+ * Everything a human reads goes to stderr. Stdout is the protocol the pair
+ * driver parses, and a stray log line on it would be read as a measurement.
+ */
 import { readFileSync, rmSync } from "node:fs";
-import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
+import { arch, cpus, platform, release, totalmem } from "node:os";
 import { join } from "node:path";
 import { runCodegen } from "../packages/cli/src/app/codegen.ts";
 import { loadConfig } from "../packages/cli/src/app/config.ts";
-import {
-  benchmarkConfigFromEnv,
-  OPERATION_NAMES,
-  subscriptionCapacitySlots,
-  type DriverResult,
-} from "./benchmark.ts";
+import { benchmarkConfigFromEnv, type DriverResult } from "./benchmark.ts";
 import {
   assertAckerDBStartup,
-  benchmarkExecutionOrder,
   expectedAckerDBStartupMode,
-  type BenchmarkExecutionLeg,
-  type AckerDBBenchmarkProfile,
   type AckerDBStartupMode,
 } from "./ackerdb-profile.ts";
-import {
-  assertAckerDBTelemetryWorkload,
-  AckerDBOutputCollector,
-  parseAckerDBTelemetryReport,
-  type AckerDBTelemetryReport,
-} from "./ackerdb-telemetry.ts";
 import {
   ProcessTreeMonitor,
   readProcessTable,
   type ProcessTreeSnapshot,
   type ProcessTreeWindowSummary,
 } from "./process-tree.ts";
+import type { Subprocess } from "bun";
 import { withTimeout } from "./load-engine.ts";
 import {
-  activePhaseIds,
-  BENCHMARK_START_SIGNAL,
-  benchmarkFailure,
   BoundedTextTail,
+  parentCommands,
   stopSubprocess,
-  type BenchmarkFailurePart,
 } from "./process-lifecycle.ts";
-import {
-  collectBenchmarkObservations,
-  formatBenchmarkObservations,
-  type BenchmarkObservations,
-} from "./result-observations.ts";
+import { collectBenchmarkObservations, type BenchmarkObservations } from "./result-observations.ts";
+import type { BenchUnit, UnitMetric } from "./units.ts";
+import type { WorkloadUnitResult } from "./workload.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
-const ACKERDB_PORT = 3311;
 const RESOURCE_SAMPLE_MS = Number(process.env.BENCH_RESOURCE_SAMPLE_MS ?? 250);
-const COOLDOWN_MS = Number(process.env.BENCH_COOLDOWN_MS ?? 2_000);
 const ACKERDB_SHUTDOWN_SLACK_MS = 2_000;
-const ALL_SYSTEMS = ["ackerdb"] as const;
 
-interface ResourceCollection {
-  snapshots: Record<string, ProcessTreeSnapshot>;
-  phases: Record<string, ProcessTreeWindowSummary>;
+function log(message: string): void {
+  process.stderr.write(`${message}\n`);
 }
 
-interface MeasuredDriverResult {
-  workload: DriverResult;
-  startupIdle: { snapshot: ProcessTreeSnapshot; window: ProcessTreeWindowSummary };
-  resources: { server: ResourceCollection; loadGenerator: ResourceCollection };
-  implementationVersion?: string;
-}
-
-interface AckerDBMeasuredDriverResult extends MeasuredDriverResult {
-  startupMode: AckerDBStartupMode;
-  telemetryReport: AckerDBTelemetryReport;
-  observations: readonly string[];
+function emit(message: Record<string, unknown>): void {
+  process.stdout.write(`@@side ${JSON.stringify(message)}\n`);
 }
 
 interface MachineRecord {
@@ -82,27 +59,30 @@ interface MachineRecord {
   fileDescriptorLimit: number;
 }
 
-interface BenchmarkSample {
-  schemaVersion: 1;
-  source: {
-    readonly label: "base" | "head";
-    readonly commit: string;
-    readonly version: string;
+interface UnitRecord {
+  readonly unitId: string;
+  readonly repetition: number;
+  readonly metrics: readonly UnitMetric[];
+  readonly resources: {
+    readonly server: Record<string, ProcessTreeWindowSummary>;
+    readonly loadGenerator: Record<string, ProcessTreeWindowSummary>;
   };
+  readonly result: WorkloadUnitResult;
+}
+
+interface SideSample {
+  schemaVersion: 2;
+  source: { readonly side: "base" | "head"; readonly commit: string; readonly version: string };
   harnessCommit: string;
   timestamp: string;
   machine: MachineRecord;
-  methodology: {
-    serverResources: string;
-    loadGeneratorResources: string;
-    sampleIntervalMs: number;
-    durability: string;
-    telemetry: string;
-    subscriptionCapacity: string;
-  };
-  executionOrder: BenchmarkExecutionLeg[];
-  profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>>;
+  executionHost: string;
+  startupMode: AckerDBStartupMode;
+  startupIdle: { snapshot: ProcessTreeSnapshot; window: ProcessTreeWindowSummary };
+  seededIdle: { snapshot?: ProcessTreeSnapshot; window?: ProcessTreeWindowSummary };
+  units: UnitRecord[];
   observations: BenchmarkObservations;
+  harnessObservations: string[];
 }
 
 function assertPortFree(port: number): void {
@@ -110,383 +90,6 @@ function assertPortFree(port: number): void {
   if (result.exitCode === 0 && result.stdout.toString().trim() !== "") {
     throw new Error(`port ${port} is already in use:\n${result.stdout.toString().trim()}`);
   }
-}
-
-function assertPortsFree(ports: number[]): void {
-  for (const port of ports) assertPortFree(port);
-}
-
-async function measureStartupIdle(rootPid: number): Promise<MeasuredDriverResult["startupIdle"]> {
-  const monitor = new ProcessTreeMonitor(rootPid, RESOURCE_SAMPLE_MS);
-  monitor.start();
-  const startedAt = performance.timeOrigin + performance.now();
-  await Bun.sleep(benchmarkConfigFromEnv().resources.idleMs);
-  const endedAt = performance.timeOrigin + performance.now();
-  const snapshot = monitor.sampleNow();
-  monitor.stop();
-  return { snapshot, window: monitor.summarize(startedAt, endedAt) };
-}
-
-function tail(
-  child: { stdout: ReadableStream<Uint8Array> },
-  echo = false,
-): { output: () => string; done: Promise<void> } {
-  const output = new BoundedTextTail();
-  const done = (async () => {
-    try {
-      for await (const chunk of child.stdout) {
-        output.write(chunk);
-        if (echo) process.stderr.write(chunk);
-      }
-    } finally {
-      output.finish();
-    }
-  })();
-  return { output: () => output.output(), done };
-}
-
-async function waitFor(output: () => string, needle: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (output().includes(needle)) return;
-    await Bun.sleep(50);
-  }
-  throw new Error(`timed out waiting for ${JSON.stringify(needle)}:\n${output()}`);
-}
-
-function parseClientLine(
-  line: string,
-  sampleResources: () => { server: ProcessTreeSnapshot; load: ProcessTreeSnapshot },
-  phaseStarts: Map<string, number>,
-  phaseBounds: Map<string, { startMs: number; endMs: number }>,
-  serverSnapshots: Record<string, ProcessTreeSnapshot>,
-  loadSnapshots: Record<string, ProcessTreeSnapshot>,
-  setResult: (result: DriverResult) => void,
-): void {
-  if (line.startsWith("@@bench ")) {
-    const event = JSON.parse(line.slice("@@bench ".length)) as { type: string; id: string; timestampMs: number };
-    const timestampMs = event.timestampMs;
-    if (event.type === "phase-start") phaseStarts.set(event.id, timestampMs);
-    if (event.type === "phase-end") {
-      const startMs = phaseStarts.get(event.id);
-      if (startMs === undefined) throw new Error(`phase ${event.id} ended without starting`);
-      phaseBounds.set(event.id, { startMs, endMs: timestampMs });
-    }
-    const { server: serverSample, load: loadSample } = sampleResources();
-    if (event.type === "snapshot") {
-      serverSnapshots[event.id] = serverSample;
-      loadSnapshots[event.id] = loadSample;
-    }
-    return;
-  }
-  if (line.startsWith("@@result ")) {
-    setResult(JSON.parse(line.slice("@@result ".length)) as DriverResult);
-    return;
-  }
-  if (line.trim() !== "") console.log(`  client: ${line}`);
-}
-
-async function runMeasuredClient(
-  command: string[],
-  env: Record<string, string>,
-  serverPid: number,
-): Promise<Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion">> {
-  const child = Bun.spawn(command, {
-    cwd: REPO,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, ...env },
-  });
-  const stderr = tail({ stdout: child.stderr }, true);
-  const stdoutTail = new BoundedTextTail();
-  const stdoutDecoder = new TextDecoder();
-  const serverMonitor = new ProcessTreeMonitor(serverPid, RESOURCE_SAMPLE_MS);
-  const loadMonitor = new ProcessTreeMonitor(child.pid, RESOURCE_SAMPLE_MS);
-  const phaseStarts = new Map<string, number>();
-  const phaseBounds = new Map<string, { startMs: number; endMs: number }>();
-  const serverSnapshots: Record<string, ProcessTreeSnapshot> = {};
-  const loadSnapshots: Record<string, ProcessTreeSnapshot> = {};
-  let resourceFailure: Error | undefined;
-  const sampleResources = () => {
-    if (resourceFailure) throw resourceFailure;
-    try {
-      const table = readProcessTable();
-      return { server: serverMonitor.sampleNow(table), load: loadMonitor.sampleNow(table) };
-    } catch (error) {
-      resourceFailure = error instanceof Error ? error : new Error(String(error));
-      throw resourceFailure;
-    }
-  };
-  let workload: DriverResult | undefined;
-  let buffer = "";
-  let resourceTimer: ReturnType<typeof setInterval> | undefined;
-  const failures: BenchmarkFailurePart[] = [];
-  let childExited = false;
-  try {
-    sampleResources();
-    resourceTimer = setInterval(() => {
-      try {
-        sampleResources();
-      } catch {
-        if (resourceTimer !== undefined) clearInterval(resourceTimer);
-      }
-    }, RESOURCE_SAMPLE_MS);
-    child.stdin.write(BENCHMARK_START_SIGNAL);
-    child.stdin.end();
-    clientOutput: for await (const chunk of child.stdout) {
-      stdoutTail.write(chunk);
-      buffer += stdoutDecoder.decode(chunk, { stream: true });
-      for (;;) {
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) break;
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        parseClientLine(
-          line,
-          sampleResources,
-          phaseStarts,
-          phaseBounds,
-          serverSnapshots,
-          loadSnapshots,
-          (result) => {
-            workload = result;
-          },
-        );
-        if (workload?.failures.some((failure) => failure.terminal)) break clientOutput;
-      }
-    }
-    if (workload?.failures.some((failure) => failure.terminal)) {
-      await stopSubprocess(child, 1_000);
-      childExited = true;
-    } else {
-      buffer += stdoutDecoder.decode();
-      if (buffer.trim() !== "") {
-        parseClientLine(
-          buffer,
-          sampleResources,
-          phaseStarts,
-          phaseBounds,
-          serverSnapshots,
-          loadSnapshots,
-          (result) => {
-            workload = result;
-          },
-        );
-      }
-      const exitCode = await child.exited;
-      childExited = true;
-      if (exitCode !== 0) throw new Error(`benchmark client failed with exit code ${exitCode}`);
-    }
-    if (!workload) throw new Error(`benchmark client produced no result`);
-    if (resourceFailure) throw resourceFailure;
-  } catch (error) {
-    failures.push({ stage: "client", error });
-  } finally {
-    try {
-      sampleResources();
-    } catch {
-      // The stored sampler failure is rethrown below.
-    }
-    if (resourceTimer !== undefined) clearInterval(resourceTimer);
-    if (!childExited) {
-      try {
-        await stopSubprocess(child, 1_000);
-        childExited = true;
-      } catch (error) {
-        failures.push({ stage: "client cleanup", error });
-      }
-    }
-    try {
-      await withTimeout(stderr.done, 1_000, "benchmark client stderr drain");
-    } catch (error) {
-      failures.push({ stage: "client stderr", error });
-    }
-    stdoutTail.finish();
-  }
-
-  if (resourceFailure && !failures.some(({ error }) => error === resourceFailure)) {
-    failures.push({ stage: "resource sampling", error: resourceFailure });
-  }
-  const clientFailure = () => {
-    const active = activePhaseIds(phaseStarts, phaseBounds);
-    const lastCompleted = [...phaseBounds.keys()].at(-1) ?? "none";
-    return benchmarkFailure("benchmark client", failures, {
-      summary: [
-        `active phases: ${active.length === 0 ? "none" : active.join(", ")}`,
-        `last completed phase: ${lastCompleted}`,
-      ],
-      tail: `client stdout tail:\n${stdoutTail.output().slice(-32_000)}\n` +
-        `client stderr tail:\n${stderr.output().slice(-32_000)}`,
-    });
-  };
-  if (failures.length > 0) throw clientFailure();
-  if (!workload) throw new Error("benchmark client completed without workload state");
-
-  const serverPhases: Record<string, ProcessTreeWindowSummary> = {};
-  const loadPhases: Record<string, ProcessTreeWindowSummary> = {};
-  let resourcePhase = "unknown";
-  try {
-    for (const [id, bounds] of phaseBounds) {
-      if (bounds.endMs - bounds.startMs < RESOURCE_SAMPLE_MS) continue;
-      resourcePhase = id;
-      serverPhases[id] = serverMonitor.summarize(bounds.startMs, bounds.endMs);
-      loadPhases[id] = loadMonitor.summarize(bounds.startMs, bounds.endMs);
-    }
-  } catch (error) {
-    failures.push({ stage: `resource window ${resourcePhase}`, error });
-    throw clientFailure();
-  }
-  return {
-    workload,
-    resources: {
-      server: { snapshots: serverSnapshots, phases: serverPhases },
-      loadGenerator: { snapshots: loadSnapshots, phases: loadPhases },
-    },
-  };
-}
-
-async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMeasuredDriverResult> {
-  const expectedMode = expectedAckerDBStartupMode(profile, "balanced");
-  const telemetry = profile === "disabled" ? "disabled" : "enabled";
-  const reportPath = join(tmpdir(), `ackerdb-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
-  assertPortsFree([ACKERDB_PORT]);
-  console.log(
-    `→ ackerdb: fresh server (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile}, durability=balanced)`,
-  );
-  rmSync(join(BENCH, "ackerdb-app", ".ackerdb"), { recursive: true, force: true });
-  const server = Bun.spawn(
-    [process.execPath, join(BENCH, "ackerdb-server.ts"), join(BENCH, "ackerdb-app")],
-    {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: {
-        ...process.env,
-        ACKERDB_TELEMETRY: telemetry,
-        ACKERDB_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
-        ACKERDB_DURABILITY: "balanced",
-        ACKERDB_BENCH_TELEMETRY_REPORT: reportPath,
-      },
-    },
-  );
-  const output = new AckerDBOutputCollector();
-  const outputDone = Promise.allSettled([
-    (async () => {
-      for await (const chunk of server.stdout) output.writeStdout(chunk);
-    })(),
-    (async () => {
-      for await (const chunk of server.stderr) output.writeStderr(chunk);
-    })(),
-  ]).then((readers) => {
-    output.finish();
-    const errors = readers.flatMap((reader) => reader.status === "rejected" ? [reader.reason] : []);
-    if (errors.length > 0) throw new AggregateError(errors, "ackerdb output readers failed");
-  });
-  let startupMode: AckerDBStartupMode | undefined;
-  let startupIdle: MeasuredDriverResult["startupIdle"] | undefined;
-  let measured: Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion"> | undefined;
-  const failures: BenchmarkFailurePart[] = [];
-  const observations: string[] = [];
-  try {
-    await waitFor(() => output.output(), "ready on", 15_000);
-    try {
-      startupMode = assertAckerDBStartup(output.output(), expectedMode);
-    } catch (error) {
-      startupMode = expectedMode;
-      observations.push(error instanceof Error ? error.message : String(error));
-    }
-    startupIdle = await measureStartupIdle(server.pid);
-    measured = await runMeasuredClient(
-      [process.execPath, join(BENCH, "ackerdb-client.ts")],
-      { ACKERDB_URL: `http://127.0.0.1:${ACKERDB_PORT}` },
-      server.pid,
-    );
-  } catch (error) {
-    failures.push({ stage: "workload", error });
-  }
-
-  let serverStopped = false;
-  let stopped: { exitCode: number; timedOut: boolean } | undefined;
-  try {
-    stopped = await stopSubprocess(
-      server,
-      expectedMode.gracefulShutdownMs + ACKERDB_SHUTDOWN_SLACK_MS,
-    );
-    serverStopped = true;
-  } catch (error) {
-    failures.push({ stage: "shutdown", error });
-  }
-  if (!serverStopped) {
-    try {
-      await stopSubprocess(server, 1_000);
-    } catch (error) {
-      failures.push({ stage: "forced cleanup", error });
-    }
-  }
-  if (stopped?.timedOut) {
-    failures.push({
-      stage: "shutdown",
-      error: new Error(
-        `ackerdb benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
-      ),
-    });
-  } else if (stopped !== undefined && stopped.exitCode !== 0) {
-    failures.push({
-      stage: "server exit",
-      error: new Error(`ackerdb benchmark server failed with exit code ${stopped.exitCode}`),
-    });
-  }
-  try {
-    await withTimeout(outputDone, 2_000, "ackerdb output drain");
-  } catch (error) {
-    failures.push({ stage: "server output", error });
-  }
-
-  let result: AckerDBMeasuredDriverResult | undefined;
-  if (failures.length === 0) {
-    try {
-      if (startupMode === undefined || startupIdle === undefined || measured === undefined) {
-        throw new Error("ackerdb benchmark server did not complete its measured workload");
-      }
-      const telemetryReport = parseAckerDBTelemetryReport(
-        readFileSync(reportPath, "utf8"),
-        startupMode,
-        output.snapshot(),
-      );
-      try {
-        assertAckerDBTelemetryWorkload(telemetryReport, measured.workload);
-      } catch (error) {
-        observations.push(error instanceof Error ? error.message : String(error));
-      }
-      result = {
-        ...measured,
-        startupIdle,
-        implementationVersion: "workspace",
-        startupMode,
-        telemetryReport,
-        observations,
-      };
-    } catch (error) {
-      failures.push({ stage: "observation collection", error });
-    }
-  }
-  try {
-    rmSync(reportPath, { force: true });
-  } catch (error) {
-    failures.push({ stage: "report cleanup", error });
-  }
-  try {
-    assertPortFree(ACKERDB_PORT);
-  } catch (error) {
-    failures.push({ stage: "port cleanup", error });
-  }
-  if (failures.length > 0) {
-    throw benchmarkFailure("ackerdb benchmark", failures, {
-      tail: `server output tail:\n${output.output()}`,
-    });
-  }
-  if (result === undefined) throw new Error("ackerdb benchmark completed without a result");
-  return result;
 }
 
 function packageVersion(path: string): string {
@@ -502,195 +105,6 @@ function fileDescriptorLimit(): number {
   return Number(result.stdout.toString().trim());
 }
 
-function aggregateCell(cell: { readonly count: number; readonly durationMs: number }): string {
-  return `${cell.count}/${fmt(cell.count === 0 ? 0 : cell.durationMs / cell.count)}`;
-}
-
-function printAckerDBTelemetryStatus(results: readonly AckerDBMeasuredDriverResult[]): void {
-  console.log("\nACKERDB telemetry accounting and bounded retention observations");
-  console.log(
-    "| profile | local records | serialized MB | retained before drain | exported during drain | drain drops | overflow drops | query queue count/mean ms | mutation queue count/mean ms | procedure admission | subscription queue count/mean ms | trace promoted/discarded | exporter records |",
-  );
-  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-  for (const result of results) {
-    const report = result.telemetryReport;
-    const operations = report.aggregates.operations;
-    const trace = report.runtime.afterDrain.traceRetention;
-    const queryQueue = operations.query.stages.queue;
-    const mutationQueue = operations.mutation.stages.queue;
-    const subscriptionQueue = operations.subscription.stages.queue;
-    console.log(
-      `| ${report.startupMode.telemetryProfile} | ${report.localOutput.records} | ${fmt(report.localOutput.bytes / 1024 ** 2)} | ${report.drainAccounting.retainedBeforeDrain} | ${report.drainAccounting.exportedDuringDrain} | ${report.drainAccounting.drainDropDelta} | ${report.runtime.afterDrain.dropped.overflow} | ${aggregateCell(queryQueue)} | ${aggregateCell(mutationQueue)} | ${operations.procedure.stages.admission.count} | ${aggregateCell(subscriptionQueue)} | ${trace.promotedTraces}/${trace.discardedTraces} | ${report.runtime.afterDrain.exporter.exportedRecords} |`,
-    );
-  }
-}
-
-function fmt(value: number, digits = 2): string {
-  return value.toFixed(digits);
-}
-
-function medianNumber(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
-}
-
-function resourceWindow(
-  system: MeasuredDriverResult,
-  phaseId: string,
-  owner: "server" | "loadGenerator" = "server",
-): ProcessTreeWindowSummary {
-  const window = system.resources[owner].phases[phaseId];
-  if (!window) throw new Error(`missing ${owner} resource window ${phaseId}`);
-  return window;
-}
-
-function printResults(systems: Partial<Record<"ackerdb", MeasuredDriverResult>>): void {
-  const names = ALL_SYSTEMS.filter((name) => systems[name]);
-  const first = systems[names[0]!]!.workload;
-  console.log("\nOperation throughput and latency (median of steady-state trials)");
-  console.log(`| operation/profile | ${names.flatMap((name) => [`${name} TPS`, `${name} p95 ms`]).join(" | ")} |`);
-  console.log(`|---|${names.flatMap(() => ["---:", "---:"]).join("|")}|`);
-  for (const operation of OPERATION_NAMES) {
-    for (const profile of first.config.operation.profiles) {
-      const cells: string[] = [];
-      for (const name of names) {
-        const workload = systems[name]!.workload;
-        const result = workload.operations.find(
-          (item) => item.operation === operation && item.profile.name === profile.name,
-        );
-        const failed = workload.failures.some(
-          (failure) =>
-            failure.kind === "operation" &&
-            failure.operation === operation &&
-            failure.profile.name === profile.name,
-        );
-        cells.push(
-          failed ? "FAIL" : result === undefined ? "—" : fmt(result.medianThroughputPerSec, 0),
-          failed || result === undefined ? "—" : fmt(result.medianLatencyP95Ms),
-        );
-      }
-      console.log(`| ${operation}/${profile.name} | ${cells.join(" | ")} |`);
-    }
-  }
-  console.log("\nServer resources at idle (timed windows with no requests)");
-  console.log("| system | state | RSS p50 MB | RSS peak MB | CPU cores | processes peak |");
-  console.log("|---|---|---:|---:|---:|---:|");
-  for (const name of names) {
-    const system = systems[name]!;
-    const seeded = resourceWindow(system, system.workload.snapshots.seededIdlePhaseId);
-    console.log(
-      `| ${name} | empty/no clients | ${fmt(system.startupIdle.window.rssMb.p50, 1)} | ${fmt(system.startupIdle.window.rssMb.peak, 1)} | ${fmt(system.startupIdle.window.cpuCores)} | ${system.startupIdle.window.processCountPeak} |`,
-    );
-    console.log(
-      `| ${name} | seeded/no clients | ${fmt(seeded.rssMb.p50, 1)} | ${fmt(seeded.rssMb.peak, 1)} | ${fmt(seeded.cpuCores)} | ${seeded.processCountPeak} |`,
-    );
-  }
-
-  console.log("\nServer resources under operation load (highest default concurrency)");
-  console.log("| system | operation/profile | server RSS p50 MB | server RSS peak MB | server CPU cores | loadgen CPU cores |");
-  console.log("|---|---|---:|---:|---:|---:|");
-  for (const name of names) {
-    const system = systems[name]!;
-    const profile = system.workload.config.profile === "quick" ? "concurrent" : "saturation";
-    for (const result of system.workload.operations.filter((item) => item.profile.name === profile)) {
-      const windows = result.trials.map((trial) => resourceWindow(system, trial.phaseId));
-      const loadWindows = result.trials.map((trial) => resourceWindow(system, trial.phaseId, "loadGenerator"));
-      console.log(
-        `| ${name} | ${result.operation}/${profile} | ${fmt(medianNumber(windows.map((window) => window.rssMb.p50)), 1)} | ${fmt(Math.max(...windows.map((window) => window.rssMb.peak)), 1)} | ${fmt(medianNumber(windows.map((window) => window.cpuCores)))} | ${fmt(medianNumber(loadWindows.map((window) => window.cpuCores)))} |`,
-      );
-    }
-  }
-
-  console.log("\nConnection scale (ready = socket/client plus one validated indexed probe)");
-  console.log("| system | target | connected | ready/s | ready p95 ms | query TPS | query p95 ms |");
-  console.log("|---|---:|---:|---:|---:|---:|---:|");
-  const levels = [...new Set(names.flatMap((name) => systems[name]!.workload.connections.map((level) => level.targetConnections)))];
-  for (const level of levels) {
-    for (const name of names) {
-      const result = systems[name]!.workload.connections.find((item) => item.targetConnections === level);
-      const failed = systems[name]!.workload.failures.some(
-        (failure) => failure.kind === "connection" && failure.targetConnections === level,
-      );
-      if (result === undefined) {
-        console.log(`| ${name} | ${level} | ${failed ? "FAIL" : "—"} | — | — | — | — |`);
-      } else {
-        console.log(
-          `| ${name} | ${level} | ${result.connected} | ${fmt(result.readyConnectionsPerSec, 0)} | ${fmt(result.readyLatency.p95Ms)} | ${fmt(result.work.throughputPerSec, 0)} | ${fmt(result.work.latency.p95Ms)} |`,
-        );
-      }
-    }
-  }
-  console.log("\nServer resources across connection plateaus");
-  console.log("| system | connections | baseline RSS MB | connected RSS MB | RSS delta MB | idle CPU cores | work RSS peak MB | work CPU cores | loadgen CPU cores |");
-  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
-  for (const name of names) {
-    const system = systems[name]!;
-    const hasMeasuredConnections = system.workload.connections.length > 0;
-    const baseline = hasMeasuredConnections
-      ? resourceWindow(system, system.workload.snapshots.connectionBaselineIdlePhaseId)
-      : undefined;
-    for (const result of system.workload.connections) {
-      const idle = resourceWindow(system, result.connectedIdlePhaseId);
-      const work = resourceWindow(system, result.work.phaseId);
-      const load = resourceWindow(system, result.work.phaseId, "loadGenerator");
-      console.log(
-        `| ${name} | ${result.connected} | ${fmt(baseline!.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50 - baseline!.rssMb.p50, 1)} | ${fmt(idle.cpuCores)} | ${fmt(work.rssMb.peak, 1)} | ${fmt(work.cpuCores)} | ${fmt(load.cpuCores)} |`,
-      );
-    }
-  }
-
-  console.log("\nFixed-rate subscription load");
-  console.log(`| pattern | system | logical queries | setup s | updates/s | deliveries/s | delivery p95 ms | missing | base RSS MB | subscribed RSS MB | RSS delta MB | idle CPU cores | work peak RSS MB | work CPU cores | loadgen CPU cores |`);
-  console.log("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-  for (const name of names) {
-    const system = systems[name]!;
-    for (const pattern of system.workload.config.subscriptions.patterns) {
-      const result = system.workload.subscriptions.find((subscription) => subscription.pattern === pattern);
-      const failed = system.workload.failures.some(
-        (failure) => failure.kind === "subscription" && failure.pattern === pattern,
-      );
-      if (result === undefined) {
-        console.log(`| ${pattern} | ${name} | ${failed ? "FAIL" : "—"} | — | — | — | — | — | — | — | — | — | — | — | — |`);
-        continue;
-      }
-      const resources = system.resources.server.phases[result.phaseId];
-      const baseline = system.resources.server.phases[result.baselineIdlePhaseId];
-      const idle = system.resources.server.phases[result.subscribedIdlePhaseId];
-      const load = system.resources.loadGenerator.phases[result.phaseId];
-      console.log(
-        `| ${result.pattern} | ${name} | ${result.logicalSubscriptions} | ${fmt(result.setupMs / 1_000)} | ${fmt(result.updateThroughputPerSec)} | ${fmt(result.deliveryThroughputPerSec, 0)} | ${fmt(result.deliveryLatency.p95Ms)} | ${result.missingDeliveries} | ${baseline ? fmt(baseline.rssMb.p50, 1) : "—"} | ${idle ? fmt(idle.rssMb.p50, 1) : "—"} | ${baseline && idle ? fmt(idle.rssMb.p50 - baseline.rssMb.p50, 1) : "—"} | ${idle ? fmt(idle.cpuCores) : "—"} | ${resources ? fmt(resources.rssMb.peak, 1) : "—"} | ${resources ? fmt(resources.cpuCores) : "—"} | ${load ? fmt(load.cpuCores) : "—"} |`,
-      );
-    }
-  }
-
-  console.log("\nSubscription end-to-end saturation (an update completes only after every intended delivery)");
-  console.log("| pattern | system | writer slots | updates/s | deliveries/s | ack p95 ms | delivery p95 ms | all p95 ms | server RSS peak MB | server CPU cores | loadgen CPU cores |");
-  console.log("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-  for (const name of names) {
-    const system = systems[name]!;
-    for (const pattern of system.workload.config.subscriptions.patterns) {
-      const subscription = system.workload.subscriptions.find((result) => result.pattern === pattern);
-      for (const slots of subscriptionCapacitySlots(system.workload.config.subscriptions, pattern)) {
-        const capacity = subscription?.capacity.find((result) => result.slots === slots);
-        const failed = system.workload.failures.some((failure) =>
-          (failure.kind === "subscription" && failure.pattern === pattern) ||
-          (failure.kind === "subscription-capacity" && failure.pattern === pattern && failure.slots === slots)
-        );
-        if (capacity === undefined) {
-          console.log(`| ${pattern} | ${name} | ${slots} | ${failed ? "FAIL" : "—"} | — | — | — | — | — | — | — |`);
-          continue;
-        }
-        const resources = resourceWindow(system, capacity.phaseId);
-        const load = resourceWindow(system, capacity.phaseId, "loadGenerator");
-        console.log(
-          `| ${pattern} | ${name} | ${capacity.slots} | ${fmt(capacity.throughputPerSec, 1)} | ${fmt(capacity.deliveryThroughputPerSec, 0)} | ${fmt(capacity.updateAckLatency.p95Ms)} | ${fmt(capacity.deliveryLatency.p95Ms)} | ${fmt(capacity.latency.p95Ms)} | ${fmt(resources.rssMb.peak, 1)} | ${fmt(resources.cpuCores)} | ${fmt(load.cpuCores)} |`,
-        );
-      }
-    }
-  }
-}
-
 function machineRecord(): MachineRecord {
   return {
     platform: platform(),
@@ -703,79 +117,390 @@ function machineRecord(): MachineRecord {
   };
 }
 
+async function waitFor(output: () => string, needle: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (output().includes(needle)) return;
+    await Bun.sleep(50);
+  }
+  throw new Error(`timed out waiting for ${JSON.stringify(needle)}:\n${output()}`);
+}
+
+/**
+ * The load generator, held open. Phase events arrive continuously on its stdout
+ * and drive resource sampling; unit answers arrive on the same stream and are
+ * handed to whoever asked for them. Windows are summarized per unit, so the
+ * resource record stays attached to the work that produced it.
+ */
+class LoadGenerator {
+  private readonly child: Subprocess<"pipe", "pipe", "pipe">;
+  private readonly stdoutTail = new BoundedTextTail();
+  private readonly stderrTail = new BoundedTextTail();
+  private readonly serverMonitor: ProcessTreeMonitor;
+  private readonly loadMonitor: ProcessTreeMonitor;
+  private readonly phaseStarts = new Map<string, number>();
+  private readonly phaseBounds = new Map<string, { startMs: number; endMs: number }>();
+  private readonly summarized = new Set<string>();
+  private readonly snapshots: Record<string, { server: ProcessTreeSnapshot; load: ProcessTreeSnapshot }> = {};
+  private readonly pending: Array<(line: { tag: string; body: string }) => void> = [];
+  private readonly buffered: Array<{ tag: string; body: string }> = [];
+  private resourceFailure: Error | undefined;
+  private resourceTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly reader: Promise<void>;
+  private readonly stderrReader: Promise<void>;
+
+  constructor(command: string[], env: Record<string, string>, serverPid: number) {
+    const child = Bun.spawn(command, {
+      cwd: REPO,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, ...env },
+    });
+    this.child = child;
+    this.serverMonitor = new ProcessTreeMonitor(serverPid, RESOURCE_SAMPLE_MS);
+    this.loadMonitor = new ProcessTreeMonitor(child.pid, RESOURCE_SAMPLE_MS);
+    this.sampleResources();
+    this.resourceTimer = setInterval(() => {
+      try {
+        this.sampleResources();
+      } catch {
+        if (this.resourceTimer !== undefined) clearInterval(this.resourceTimer);
+      }
+    }, RESOURCE_SAMPLE_MS);
+    this.reader = this.readStdout();
+    this.stderrReader = (async () => {
+      for await (const chunk of child.stderr) {
+        this.stderrTail.write(chunk);
+        process.stderr.write(chunk);
+      }
+      this.stderrTail.finish();
+    })();
+  }
+
+  private sampleResources(): { server: ProcessTreeSnapshot; load: ProcessTreeSnapshot } {
+    if (this.resourceFailure) throw this.resourceFailure;
+    try {
+      const table = readProcessTable();
+      return { server: this.serverMonitor.sampleNow(table), load: this.loadMonitor.sampleNow(table) };
+    } catch (error) {
+      this.resourceFailure = error instanceof Error ? error : new Error(String(error));
+      throw this.resourceFailure;
+    }
+  }
+
+  private async readStdout(): Promise<void> {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of this.child.stdout) {
+      this.stdoutTail.write(chunk);
+      buffer += decoder.decode(chunk, { stream: true });
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) break;
+        this.consume(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim() !== "") this.consume(buffer);
+    this.stdoutTail.finish();
+    // A closed stream must wake anyone still waiting, or a crashed load
+    // generator would hang the pair driver instead of failing it.
+    for (const resolve of this.pending.splice(0)) resolve({ tag: "@@closed", body: "{}" });
+  }
+
+  private consume(line: string): void {
+    if (line.startsWith("@@bench ")) {
+      const event = JSON.parse(line.slice("@@bench ".length)) as {
+        type: string;
+        id: string;
+        timestampMs: number;
+      };
+      if (event.type === "phase-start") this.phaseStarts.set(event.id, event.timestampMs);
+      if (event.type === "phase-end") {
+        const startMs = this.phaseStarts.get(event.id);
+        if (startMs === undefined) throw new Error(`phase ${event.id} ended without starting`);
+        this.phaseBounds.set(event.id, { startMs, endMs: event.timestampMs });
+      }
+      const sample = this.sampleResources();
+      if (event.type === "snapshot") this.snapshots[event.id] = sample;
+      return;
+    }
+    for (const tag of ["@@session ", "@@unit "]) {
+      if (!line.startsWith(tag)) continue;
+      const message = { tag: tag.trim(), body: line.slice(tag.length) };
+      const resolve = this.pending.shift();
+      if (resolve) resolve(message);
+      else this.buffered.push(message);
+      return;
+    }
+    if (line.trim() !== "") log(`  client: ${line}`);
+  }
+
+  private nextMessage(): Promise<{ tag: string; body: string }> {
+    const buffered = this.buffered.shift();
+    if (buffered) return Promise.resolve(buffered);
+    return new Promise((resolve) => this.pending.push(resolve));
+  }
+
+  private send(command: Record<string, unknown>): void {
+    this.child.stdin.write(`${JSON.stringify(command)}\n`);
+    this.child.stdin.flush();
+  }
+
+  private async expect(tag: string): Promise<string> {
+    const message = await this.nextMessage();
+    if (message.tag !== tag) {
+      throw new Error(
+        `benchmark client answered ${message.tag} where ${tag} was expected\n` +
+          `client stdout tail:\n${this.stdoutTail.output().slice(-16_000)}\n` +
+          `client stderr tail:\n${this.stderrTail.output().slice(-16_000)}`,
+      );
+    }
+    return message.body;
+  }
+
+  /** Windows that closed since the previous unit, summarized and handed over once. */
+  private harvestWindows(): UnitRecord["resources"] {
+    const server: Record<string, ProcessTreeWindowSummary> = {};
+    const loadGenerator: Record<string, ProcessTreeWindowSummary> = {};
+    for (const [id, bounds] of this.phaseBounds) {
+      if (this.summarized.has(id)) continue;
+      this.summarized.add(id);
+      if (bounds.endMs - bounds.startMs < RESOURCE_SAMPLE_MS) continue;
+      server[id] = this.serverMonitor.summarize(bounds.startMs, bounds.endMs);
+      loadGenerator[id] = this.loadMonitor.summarize(bounds.startMs, bounds.endMs);
+    }
+    return { server, loadGenerator };
+  }
+
+  async open(): Promise<{ seededIdle: { snapshotId: string; phaseId: string } }> {
+    this.send({ type: "open" });
+    const body = await this.expect("@@session");
+    return JSON.parse(body) as { seededIdle: { snapshotId: string; phaseId: string } };
+  }
+
+  async runUnit(unit: BenchUnit, repetition: number, measureIdle: boolean): Promise<UnitRecord> {
+    this.send({ type: "unit", unit, measureIdle });
+    const body = await this.expect("@@unit");
+    const result = JSON.parse(body) as WorkloadUnitResult & { unitId: string };
+    if (this.resourceFailure) throw this.resourceFailure;
+    return {
+      unitId: result.unitId,
+      repetition,
+      metrics: result.metrics,
+      resources: this.harvestWindows(),
+      result,
+    };
+  }
+
+  windowFor(phaseId: string): ProcessTreeWindowSummary | undefined {
+    const bounds = this.phaseBounds.get(phaseId);
+    if (bounds === undefined) return undefined;
+    this.summarized.add(phaseId);
+    return this.serverMonitor.summarize(bounds.startMs, bounds.endMs);
+  }
+
+  snapshotFor(id: string): ProcessTreeSnapshot | undefined {
+    return this.snapshots[id]?.server;
+  }
+
+  async close(): Promise<void> {
+    if (this.resourceTimer !== undefined) clearInterval(this.resourceTimer);
+    try {
+      this.send({ type: "close" });
+      this.child.stdin.end();
+    } catch {
+      // A client that already exited cannot be told to; the exit code below is
+      // the authority on whether that was orderly.
+    }
+    const exitCode = await withTimeout(this.child.exited, 10_000, "benchmark client exit");
+    await withTimeout(Promise.allSettled([this.reader, this.stderrReader]), 2_000, "benchmark client drain");
+    if (exitCode !== 0) {
+      throw new Error(
+        `benchmark client failed with exit code ${exitCode}\n` +
+          `client stdout tail:\n${this.stdoutTail.output().slice(-16_000)}\n` +
+          `client stderr tail:\n${this.stderrTail.output().slice(-16_000)}`,
+      );
+    }
+  }
+
+  async kill(): Promise<void> {
+    if (this.resourceTimer !== undefined) clearInterval(this.resourceTimer);
+    await stopSubprocess(this.child, 1_000).catch(() => undefined);
+  }
+}
+
+const side = process.env.BENCH_SIDE;
+const sourceCommit = process.env.BENCH_SOURCE_COMMIT;
+const harnessCommit = process.env.BENCH_HARNESS_COMMIT;
+const outputPath = process.env.BENCH_OUTPUT;
+const port = Number(process.env.BENCH_PORT);
+const executionHost = process.env.BENCH_EXECUTION_HOST;
+if (
+  (side !== "base" && side !== "head") ||
+  !sourceCommit ||
+  !harnessCommit ||
+  !outputPath ||
+  !Number.isInteger(port) ||
+  port <= 0 ||
+  !executionHost
+) {
+  throw new Error(
+    "BENCH_SIDE=base|head, BENCH_SOURCE_COMMIT, BENCH_HARNESS_COMMIT, BENCH_OUTPUT, BENCH_PORT, " +
+      "and BENCH_EXECUTION_HOST are required",
+  );
+}
 const benchmarkConfig = benchmarkConfigFromEnv();
 if (benchmarkConfig.profile !== "default") {
   throw new Error("protected-branch benchmarks use the default workload only");
 }
-const outputPath = process.env.BENCH_OUTPUT;
-const sourceLabel = process.env.BENCH_SOURCE_LABEL;
-const sourceCommit = process.env.BENCH_SOURCE_COMMIT;
-const harnessCommit = process.env.BENCH_HARNESS_COMMIT;
-if (
-  !outputPath ||
-  (sourceLabel !== "base" && sourceLabel !== "head") ||
-  !sourceCommit ||
-  !harnessCommit
-) {
-  throw new Error(
-    "BENCH_OUTPUT, BENCH_SOURCE_LABEL=base|head, BENCH_SOURCE_COMMIT, and BENCH_HARNESS_COMMIT are required",
-  );
-}
-const requestedProfiles = (process.env.BENCH_TELEMETRY_PROFILES ?? "disabled")
-  .split(",") as AckerDBBenchmarkProfile[];
-if (
-  requestedProfiles.length === 0 ||
-  requestedProfiles.some((profile) => !["enabled", "exporter", "disabled"].includes(profile)) ||
-  new Set(requestedProfiles).size !== requestedProfiles.length
-) {
-  throw new Error("BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles");
-}
 
+const expectedMode = expectedAckerDBStartupMode("balanced");
 await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
   ACKERDB_DURABILITY: "balanced",
-  ACKERDB_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
-    ? "disabled"
-    : "enabled",
 }));
-const executionOrder = benchmarkExecutionOrder(requestedProfiles, 0);
-const profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>> = {};
-for (let index = 0; index < executionOrder.length; index++) {
-  const leg = executionOrder[index]!;
-  const profile = leg.replace("ackerdb-telemetry-", "") as AckerDBBenchmarkProfile;
-  profiles[profile] = await benchAckerDB(profile);
-  if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
-}
-const observations = collectBenchmarkObservations(requestedProfiles.map((profile) => ({
-  label: `ackerdb/${profile}`,
-  system: "ackerdb" as const,
-  workload: profiles[profile]!.workload,
-})));
-const version = packageVersion(join(REPO, "packages", "core", "package.json"));
-if (!/^\d+\.\d+\.\d+$/.test(version)) {
-  throw new Error(`benchmark source version ${version} is not x.y.z`);
-}
-const record: BenchmarkSample = {
-  schemaVersion: 1,
-  source: { label: sourceLabel, commit: sourceCommit, version },
-  harnessCommit,
-  timestamp: new Date().toISOString(),
-  machine: machineRecord(),
-  methodology: {
-    serverResources: `${RESOURCE_SAMPLE_MS}ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time`,
-    loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
-    sampleIntervalMs: RESOURCE_SAMPLE_MS,
-    durability: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
-    telemetry: requestedProfiles.length === 1 && requestedProfiles[0] === "disabled"
-      ? "telemetry disabled; no telemetry work changed in this pull request"
-      : "paired enabled, exporter, and disabled profiles because telemetry work changed",
-    subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
+assertPortFree(port);
+rmSync(join(BENCH, "ackerdb-app", ".ackerdb"), { recursive: true, force: true });
+log(`→ ${side}: fresh server on ${port}`);
+
+const server = Bun.spawn(
+  [process.execPath, join(BENCH, "ackerdb-server.ts"), join(BENCH, "ackerdb-app")],
+  {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      ACKERDB_BENCH_PORT: String(port),
+      ACKERDB_DURABILITY: "balanced",
+    },
   },
-  executionOrder,
-  profiles,
-  observations,
-};
-await Bun.write(outputPath, `${JSON.stringify(record, null, 2)}\n`);
-if (profiles.disabled) printResults({ ackerdb: profiles.disabled });
-console.log(`\n${formatBenchmarkObservations(observations)}`);
-printAckerDBTelemetryStatus(requestedProfiles.map((profile) => profiles[profile]!));
-console.log(`\nsaved ${sourceLabel} AckerDB sample to ${outputPath} for human interpretation`);
+);
+const serverOutput = new BoundedTextTail();
+const serverDrained = Promise.allSettled([
+  (async () => {
+    for await (const chunk of server.stdout) serverOutput.write(chunk);
+  })(),
+  (async () => {
+    for await (const chunk of server.stderr) serverOutput.write(chunk);
+  })(),
+]).then(() => serverOutput.finish());
+
+const harnessObservations: string[] = [];
+const units: UnitRecord[] = [];
+let client: LoadGenerator | undefined;
+let startupMode: AckerDBStartupMode = expectedMode;
+try {
+  await waitFor(() => serverOutput.output(), "ready on", 15_000);
+  try {
+    startupMode = assertAckerDBStartup(serverOutput.output(), expectedMode);
+  } catch (error) {
+    harnessObservations.push(error instanceof Error ? error.message : String(error));
+  }
+
+  const startupMonitor = new ProcessTreeMonitor(server.pid, RESOURCE_SAMPLE_MS);
+  startupMonitor.start();
+  const startupStartedAt = performance.timeOrigin + performance.now();
+  await Bun.sleep(benchmarkConfig.resources.idleMs);
+  const startupEndedAt = performance.timeOrigin + performance.now();
+  const startupSnapshot = startupMonitor.sampleNow();
+  startupMonitor.stop();
+  const startupIdle = {
+    snapshot: startupSnapshot,
+    window: startupMonitor.summarize(startupStartedAt, startupEndedAt),
+  };
+
+  client = new LoadGenerator(
+    [process.execPath, join(BENCH, "ackerdb-client.ts")],
+    { ACKERDB_URL: `http://127.0.0.1:${port}` },
+    server.pid,
+  );
+  const opened = await client.open();
+  emit({ type: "ready", startupIdle, startupMode, machine: machineRecord() });
+
+  for await (const line of parentCommands()) {
+    const command = JSON.parse(line) as
+      | { type: "unit"; unit: BenchUnit; repetition: number; measureIdle: boolean }
+      | { type: "stop" };
+    if (command.type === "stop") break;
+    const record = await client.runUnit(command.unit, command.repetition, command.measureIdle);
+    units.push(record);
+    emit({
+      type: "unit",
+      unitId: record.unitId,
+      repetition: record.repetition,
+      metrics: record.metrics,
+      failures: record.result.failures,
+    });
+  }
+
+  const seededIdle = {
+    snapshot: client.snapshotFor(opened.seededIdle.snapshotId),
+    window: client.windowFor(opened.seededIdle.phaseId),
+  };
+  await client.close();
+  client = undefined;
+
+  const stopped = await stopSubprocess(server, expectedMode.gracefulShutdownMs + ACKERDB_SHUTDOWN_SLACK_MS);
+  if (stopped.timedOut) {
+    throw new Error(
+      `ackerdb benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
+    );
+  }
+  if (stopped.exitCode !== 0) {
+    throw new Error(`ackerdb benchmark server failed with exit code ${stopped.exitCode}`);
+  }
+  await withTimeout(serverDrained, 2_000, "ackerdb output drain");
+
+  // A repetition is one complete pass over every unit, so it reconstructs
+  // exactly the record the old whole-workload driver produced — which is what
+  // lets the structural and accounting checks stay unchanged.
+  const repetitions = [...new Set(units.map((unit) => unit.repetition))].sort((a, b) => a - b);
+  const drivers: DriverResult[] = repetitions.map((repetition) => {
+    const slice = units.filter((unit) => unit.repetition === repetition);
+    return {
+      system: "ackerdb",
+      config: benchmarkConfig,
+      operations: slice.flatMap((unit) => [...unit.result.operations]),
+      connections: slice.flatMap((unit) => [...unit.result.connections]),
+      subscriptions: slice.flatMap((unit) => [...unit.result.subscriptions]),
+      failures: slice.flatMap((unit) => [...unit.result.failures]),
+    };
+  });
+  const sample: SideSample = {
+    schemaVersion: 2,
+    source: {
+      side,
+      commit: sourceCommit,
+      version: packageVersion(join(REPO, "packages", "core", "package.json")),
+    },
+    harnessCommit,
+    timestamp: new Date().toISOString(),
+    machine: machineRecord(),
+    executionHost,
+    startupMode,
+    startupIdle,
+    seededIdle,
+    units,
+    observations: collectBenchmarkObservations(drivers.map((workload, index) => ({
+      label: `ackerdb/repetition-${repetitions[index]}`,
+      system: "ackerdb" as const,
+      workload,
+    }))),
+    harnessObservations,
+  };
+  if (!/^\d+\.\d+\.\d+$/.test(sample.source.version)) {
+    throw new Error(`benchmark source version ${sample.source.version} is not x.y.z`);
+  }
+  await Bun.write(outputPath, `${JSON.stringify(sample, null, 2)}\n`);
+  emit({ type: "done", units: units.length, output: outputPath });
+} catch (error) {
+  emit({ type: "failed", message: error instanceof Error ? error.message : String(error) });
+  log(`${side} side failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  log(`server output tail:\n${serverOutput.output().slice(-16_000)}`);
+  process.exitCode = 1;
+} finally {
+  await client?.kill();
+  await stopSubprocess(server, 1_000).catch(() => undefined);
+}

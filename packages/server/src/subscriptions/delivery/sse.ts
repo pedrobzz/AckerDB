@@ -1,39 +1,23 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
+  OUTCOME_CODES,
   RESOURCE_CLASSES,
   encodeSseChunk,
   encodeSseControl,
-  type Outcome,
 } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
 import { PUBLIC_ERROR_FALLBACK, fitOutcome, outcomeFromError } from "../../runtime/outcome.ts";
 import type { OutboundBudget, OutboundReservation } from "./budget.ts";
+import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
-import {
-  SYSTEM_CLOCK,
-  captureDeliveryObserver,
-  deliveryInstrumentation,
-  deliveryTiming,
-  observationNow,
-  observeEncoding,
-  observeTiming,
-  safeDeliveryOutcome,
-  type DeliveryClock,
-  type DeliveryInstrumentation,
-  type DeliveryObserver,
-  type DeliveryOutcome,
-  type DeliverySource,
-  type DeliveryTiming,
-} from "./observation.ts";
 
 export interface BoundedSseProducerOptions {
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
   readonly signal?: AbortSignal;
   readonly clock?: DeliveryClock;
-  readonly observer?: DeliveryObserver;
 }
 
 export interface SseDeliverySnapshot {
@@ -47,24 +31,18 @@ interface StreamReservation {
   readonly seq: number;
   readonly proof: string;
   readonly reservation: OutboundReservation;
-  readonly timing?: DeliveryTiming;
 }
 
-interface ObservedSseFrame {
+interface SseFrame {
   readonly seq: number;
   readonly proof: string;
   readonly bytes: Uint8Array;
-  readonly timing: DeliveryTiming | undefined;
 }
 
 interface PreparedSseChunk {
-  readonly source: Extract<DeliverySource, "write" | "merge">;
   readonly seq: number;
   readonly proof: string;
   readonly bytes: Uint8Array;
-  readonly observer: DeliveryObserver | undefined;
-  readonly encodingStartedAt: number | undefined;
-  readonly encodingFinishedAt: number | undefined;
 }
 
 interface Waiter {
@@ -96,14 +74,14 @@ function sameProof(left: string, right: string): boolean {
 }
 
 function sseDoneBytes(seq: number, proof: string): Uint8Array {
-  return encodeSseControl({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
+  return encodeSseControl({ v: ACKERDB_VERSION, t: "sse_done", seq, proof });
 }
 
 function sseErrorBytes(error: AckerDBError, maxBytes: number, seq: number, proof: string): Uint8Array {
   const outcome = outcomeFromError(error);
   const fitted = fitOutcome(outcome, maxBytes, (candidate) => {
     const value = encodeSseControl({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_error",
       seq,
       proof,
@@ -124,8 +102,18 @@ const MINIMUM_SSE_CHUNK_FIXED_BYTES =
 const MAXIMUM_SSE_RESOURCE = RESOURCE_CLASSES.reduce(
   (longest, resource) => resource.length > longest.length ? resource : longest,
 );
+// The reserve has to hold the largest terminal frame this producer can emit,
+// and which outcome that is must be read off the vocabulary rather than named:
+// a code that is renamed or added would otherwise leave the reserve sized for a
+// frame that no longer exists, and `fitOutcome` would have nowhere to put even
+// the fallback message. `convergence_unavailable` is excluded here because it
+// cannot be retryable and so cannot carry `retryAfterMs`; its own optional set
+// is measured as the second shape below.
+const MAXIMUM_RETRYABLE_SSE_CODE = OUTCOME_CODES
+  .filter((code) => code !== "convergence_unavailable")
+  .reduce((longest, code) => (code.length > longest.length ? code : longest));
 const MINIMUM_SSE_CONTROL_BYTES = Math.max(
-  sseErrorBytes(new AckerDBError("unsupported_protocol", PUBLIC_ERROR_FALLBACK, {
+  sseErrorBytes(new AckerDBError(MAXIMUM_RETRYABLE_SSE_CODE, PUBLIC_ERROR_FALLBACK, {
     retryable: true,
     retryAfterMs: 30_000,
     resource: MAXIMUM_SSE_RESOURCE,
@@ -163,7 +151,6 @@ export class BoundedSseProducer {
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
   private readonly clock: DeliveryClock;
-  private readonly delivery: DeliveryInstrumentation | undefined;
   private readonly controller: ReadableStreamDefaultController<Uint8Array>;
   private readonly abortController = new AbortController();
   private readonly reservations = new Map<number, StreamReservation>();
@@ -198,8 +185,7 @@ export class BoundedSseProducer {
     }
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_CLOCK;
-    this.delivery = deliveryInstrumentation(options.observer, this.clock, "sse");
+    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
     this.externalSignal = options.signal;
     this.signal = this.abortController.signal;
 
@@ -238,7 +224,7 @@ export class BoundedSseProducer {
     } catch (error) {
       this.failWrite(error);
     }
-    const prepared = this.prepareApplicationFrame("write", chunk);
+    const prepared = this.prepareApplicationFrame(chunk);
     try {
       this.preflightApplication();
       const frame = this.materializeApplicationFrame(prepared);
@@ -321,7 +307,7 @@ export class BoundedSseProducer {
         if (this.unackedBytes !== 0) {
           throw slowConsumer("sse", "SSE merge credit was consumed while awaiting its source");
         }
-        const prepared = this.prepareApplicationFrame("merge", part.value);
+        const prepared = this.prepareApplicationFrame(part.value);
         this.preflightApplication();
         if (this.unackedBytes !== 0) {
           throw slowConsumer("sse", "SSE merge credit was consumed while encoding its source");
@@ -342,37 +328,10 @@ export class BoundedSseProducer {
     }
   }
 
-  private prepareApplicationFrame(
-    source: Extract<DeliverySource, "write" | "merge">,
-    value: unknown,
-  ): PreparedSseChunk {
-    const observer = captureDeliveryObserver(this.delivery, "application");
-    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
-    try {
-      const seq = this.nextSequence;
-      const proof = sseProof();
-      const bytes = encodeSseChunk(seq, proof, value);
-      return {
-        source,
-        seq,
-        proof,
-        bytes,
-        observer,
-        encodingStartedAt,
-        encodingFinishedAt: observer === undefined ? undefined : observationNow(this.delivery),
-      };
-    } catch (error) {
-      observeEncoding(
-        this.delivery,
-        observer,
-        "application",
-        source,
-        encodingStartedAt,
-        0,
-        safeDeliveryOutcome(error),
-      );
-      throw error;
-    }
+  private prepareApplicationFrame(value: unknown): PreparedSseChunk {
+    const seq = this.nextSequence;
+    const proof = sseProof();
+    return { seq, proof, bytes: encodeSseChunk(seq, proof, value) };
   }
 
   private candidateApplicationBytes(frame: PreparedSseChunk): number {
@@ -385,81 +344,26 @@ export class BoundedSseProducer {
     return frame.bytes.byteLength;
   }
 
-  private materializeApplicationFrame(frame: PreparedSseChunk): ObservedSseFrame {
+  private materializeApplicationFrame(frame: PreparedSseChunk): SseFrame {
     const expectedBytes = this.candidateApplicationBytes(frame);
     const { seq, proof, bytes } = frame;
     if (bytes.byteLength !== expectedBytes) throw new Error("SSE frame byte accounting mismatch");
-    observeEncoding(
-      this.delivery,
-      frame.observer,
-      "application",
-      frame.source,
-      frame.encodingStartedAt,
-      bytes.byteLength,
-      "ok",
-      undefined,
-      frame.encodingFinishedAt,
-    );
-    const timing = frame.observer === undefined || frame.encodingFinishedAt === undefined
-      ? undefined
-      : {
-          observer: frame.observer,
-          source: frame.source,
-          bytes: bytes.byteLength,
-          queueStartedAt: frame.encodingFinishedAt,
-        };
-    return { seq, proof, bytes, timing };
+    return { seq, proof, bytes };
   }
 
   private encodeTerminalFrame(
     encodeFrame: (seq: number, proof: string) => Uint8Array,
-    terminalOutcome?: Outcome["code"],
-  ): ObservedSseFrame {
+  ): SseFrame {
     if (this.nextSequence > MAXIMUM_SSE_SEQUENCE) {
       throw overloaded("sse", "SSE sequence space exhausted");
     }
     const seq = this.nextSequence;
     const proof = sseProof();
-    const observer = captureDeliveryObserver(this.delivery, "control");
-    const startedAt = observer === undefined ? undefined : observationNow(this.delivery);
-    let bytes: Uint8Array;
-    try {
-      bytes = encodeFrame(seq, proof);
-    } catch (error) {
-      observeEncoding(
-        this.delivery,
-        observer,
-        "control",
-        "terminal",
-        startedAt,
-        0,
-        safeDeliveryOutcome(error),
-        terminalOutcome,
-      );
-      throw error;
-    }
-    observeEncoding(
-      this.delivery,
-      observer,
-      "control",
-      "terminal",
-      startedAt,
-      bytes.byteLength,
-      "ok",
-      terminalOutcome,
-    );
-    const timing = deliveryTiming(
-      this.delivery,
-      observer,
-      "terminal",
-      bytes.byteLength,
-      terminalOutcome,
-    );
-    return { seq, proof, bytes, timing };
+    return { seq, proof, bytes: encodeFrame(seq, proof) };
   }
 
-  private enqueueApplication(frame: ObservedSseFrame): void {
-    const { bytes, timing } = frame;
+  private enqueueApplication(frame: SseFrame): void {
+    const { bytes } = frame;
     let reservation: OutboundReservation;
     try {
       if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
@@ -473,13 +377,6 @@ export class BoundedSseProducer {
       }
       reservation = admitted;
     } catch (error) {
-      observeTiming(
-        this.delivery,
-        "application",
-        timing,
-        "queue",
-        safeDeliveryOutcome(error),
-      );
       throw error;
     }
     this.enqueue(frame, reservation);
@@ -492,18 +389,15 @@ export class BoundedSseProducer {
   }
 
   private enqueue(
-    frame: ObservedSseFrame,
+    frame: SseFrame,
     reservation: OutboundReservation,
   ): void {
-    const { seq, proof, bytes, timing } = frame;
+    const { seq, proof, bytes } = frame;
     if (seq !== this.nextSequence) {
       reservation.release();
       throw new Error("SSE frames must enqueue in sequence order");
     }
-    const owned = timing === undefined
-      ? { seq, proof, reservation }
-      : { seq, proof, reservation, timing };
-    this.reservations.set(seq, owned);
+    this.reservations.set(seq, { seq, proof, reservation });
     this.unackedBytes += bytes.byteLength;
     try {
       this.controller.enqueue(bytes);
@@ -512,18 +406,7 @@ export class BoundedSseProducer {
       this.reservations.delete(seq);
       this.unackedBytes -= bytes.byteLength;
       reservation.release();
-      observeTiming(
-        this.delivery,
-        reservation.lane,
-        timing,
-        "queue",
-        safeDeliveryOutcome(error),
-      );
       throw error;
-    }
-    if (timing !== undefined) {
-      observeTiming(this.delivery, reservation.lane, timing, "queue", "ok");
-      timing.deliveryStartedAt = observationNow(this.delivery);
     }
     this.armStall();
   }
@@ -566,23 +449,17 @@ export class BoundedSseProducer {
       const bytes = item.reservation.remainingBytes;
       item.reservation.release();
       this.unackedBytes -= bytes;
-      if (item.timing !== undefined) {
-        observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", "ok");
-      }
       if (current === seq) break;
       current++;
     }
     if (this.unackedBytes < 0) throw new Error("SSE byte accounting underflow");
   }
 
-  private releaseAll(outcome: DeliveryOutcome = "unavailable"): void {
+  private releaseAll(): void {
     this.terminalReservation?.release();
     this.terminalReservation = null;
     for (const item of this.reservations.values()) {
       item.reservation.release();
-      if (item.timing !== undefined) {
-        observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", outcome);
-      }
     }
     this.reservations.clear();
     this.unackedBytes = 0;
@@ -639,13 +516,6 @@ export class BoundedSseProducer {
     try {
       reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
     } catch (error) {
-      observeTiming(
-        this.delivery,
-        "control",
-        frame.timing,
-        "queue",
-        safeDeliveryOutcome(error),
-      );
       throw error;
     }
     this.state = "ending";
@@ -655,7 +525,7 @@ export class BoundedSseProducer {
       const terminal = isAckerDBError(error)
         ? error
         : new AckerDBError("internal", "SSE producer failed", { cause: error });
-      this.forceClose(terminal, "internal");
+      this.forceClose(terminal);
       throw terminal;
     }
     await this.waitForClosed();
@@ -672,35 +542,26 @@ export class BoundedSseProducer {
     this.emptyWaiter = null;
     this.clearStall();
 
-    const terminalOutcome = outcomeFromError(error).code;
-    let frame: ObservedSseFrame;
+    let frame: SseFrame;
     try {
       frame = this.encodeTerminalFrame(
         (seq, proof) => sseErrorBytes(error, this.controlReserveBytes, seq, proof),
-        terminalOutcome,
       );
     } catch {
-      this.forceClose(error, "internal");
+      this.forceClose(error);
       return;
     }
     let reservation: OutboundReservation;
     try {
       reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
-    } catch (cause) {
-      observeTiming(
-        this.delivery,
-        "control",
-        frame.timing,
-        "queue",
-        safeDeliveryOutcome(cause),
-      );
-      this.forceClose(error, "internal");
+    } catch {
+      this.forceClose(error);
       return;
     }
     try {
       this.enqueue(frame, reservation);
     } catch {
-      this.forceClose(error, "internal");
+      this.forceClose(error);
     }
   }
 
@@ -731,7 +592,7 @@ export class BoundedSseProducer {
       if (canceledRequest || !isAckerDBError(reason)) this.controller.close();
       else this.controller.error(reason);
     }
-    this.releaseAll("unavailable");
+    this.releaseAll();
     this.finishClosedState();
   }
 
@@ -746,7 +607,7 @@ export class BoundedSseProducer {
     }
   }
 
-  private forceClose(error: AckerDBError, outcome: DeliveryOutcome): void {
+  private forceClose(error: AckerDBError): void {
     if (this.state === "closed") return;
     this.failure ??= error;
     this.closureError = error;
@@ -760,7 +621,7 @@ export class BoundedSseProducer {
     this.closedWaiter?.reject(error);
     this.emptyWaiter = null;
     this.closedWaiter = null;
-    this.releaseAll(outcome);
+    this.releaseAll();
     this.finishClosedState();
   }
 
@@ -807,6 +668,6 @@ export class BoundedSseProducer {
     }
     const error = this.failure ?? slowConsumer("sse", "SSE consumer stalled");
     if (this.state === "open") this.terminate(error);
-    else this.forceClose(error, outcomeFromError(error).code);
+    else this.forceClose(error);
   }
 }

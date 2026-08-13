@@ -16,7 +16,7 @@ const SYSTEM_OPERATION_NAME = /^[A-Za-z][A-Za-z0-9_-]*(?:[.:][A-Za-z][A-Za-z0-9_
 const UUID_SEGMENT =
   /(?:^|[.:])[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:$|[.:])/i;
 
-/** Keep telemetry names bounded and reject obvious per-call identifier segments. */
+/** Keep operation names bounded and reject obvious per-call identifier segments. */
 export function isSystemOperationName(value: unknown): value is string {
   return (
     typeof value === "string" &&

@@ -4,7 +4,67 @@ export {
   type App,
   type AppPluginCapabilities,
   type AppSchema,
+  type AppScope,
 } from "./app/definition.ts";
+export {
+  frameworkFunctionModules,
+  type FrameworkFunctionModules,
+} from "./admin/index.ts";
+export {
+  MAX_ADMIN_APPLICATION_BYTES,
+  normalizeAdminOptions,
+  type AdminApplicationOptions,
+  type AdminOptions,
+  type NormalizedAdminApplication,
+  type NormalizedAdminOptions,
+} from "./admin/options.ts";
+export {
+  ADMIN_CREDENTIAL_NAME,
+  ensureAdminCredential,
+  type AdminCredentialBoot,
+} from "./admin/credentials.ts";
+export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
+export {
+  ADMINISTRATIVE_GRANT,
+  expandScopeGrant,
+  FRAMEWORK_SCOPES,
+  isAdministrativeGrant,
+  isScopeGrant,
+  isScopePattern,
+  knownScopeVocabulary,
+  principalScopes,
+  SCOPE_WILDCARD,
+  validateScopeVocabulary,
+  type NormalizedScopeRequirement,
+  type ScopeRequirement,
+  type ScopeValues,
+} from "./auth/scopes.ts";
+export {
+  effectiveChildScopes,
+  issueChildScopes,
+} from "./auth/child-credentials.ts";
+export {
+  credentials,
+  systemCredentials,
+  type CreatedCredential,
+  type CredentialCreateInput,
+  type CredentialDescriptor,
+  type CredentialOperations,
+  type CredentialUpdateInput,
+  type SystemCredentialOperations,
+} from "./auth/credential-context.ts";
+export {
+  resetAdminCredentials,
+  type AdminCredentialResetResult,
+} from "./auth/credential-reset.ts";
+export {
+  CREDENTIAL_ISSUER,
+  CREDENTIAL_TOKEN_PREFIX,
+  hasCredentialTokenPrefix,
+  parseCredentialToken,
+  type ParsedCredentialToken,
+} from "./auth/credential-token.ts";
+export type { CredentialLimits } from "./auth/credential-vault.ts";
 export {
   definePluginContract,
   pluginMutation,
@@ -55,12 +115,6 @@ export {
   type StoreFileOptions,
 } from "./files/api.ts";
 export { type RuntimeFilesOptions } from "./files/namespace.ts";
-export {
-  type FileObservabilitySnapshot,
-  type FileTransferOutcome,
-  type FileTransferSnapshot,
-  type FileUsageSnapshot,
-} from "./files/observability.ts";
 export {
   FileStoreError,
   type FileStore,
@@ -169,12 +223,18 @@ export {
   type Job,
   type JobBuilder,
   type JobCtx,
+  type JobStep,
+  type JobStepOptions,
+  type JobStepQueryCtx,
   type JobDedupe,
   type JobRepeat,
   type JobRepeatConfig,
   type JobRetry,
   type JobRetryConfig,
+  type JobRunState,
+  type JobRunTrigger,
   type JobState,
+  type JobTrigger,
   type JobTxCtx,
   type JobWindow,
 } from "./jobs/definition.ts";
@@ -188,14 +248,13 @@ export {
   type QueryJobsOf,
   type TypedJobOutcome,
 } from "./jobs/api.ts";
-export { JOBS_TABLE } from "./jobs/table.ts";
+export { JOB_RUNS_TABLE, JOBS_TABLE } from "./jobs/table.ts";
 export {
-  type JobAttemptOutcome,
-  type JobAttemptRecord,
+  type JobRunOutcome,
   type JobEnqueueOptions,
   type JobHandle,
-  type JobRow,
 } from "./runtime/jobs/runtime.ts";
+export { type JobRow, type JobRunRow } from "./runtime/jobs/store.ts";
 export {
   ServiceError,
   ServiceRuntime,
@@ -215,10 +274,6 @@ export {
   type WriteCollector,
   type EventEmit,
 } from "./database/access.ts";
-export type {
-  DbStatementObservation,
-  DbStatementObserver,
-} from "./database/statement-observation.ts";
 export {
   emitFullTextWriteKeys,
   emitWriteKeys,
@@ -237,7 +292,6 @@ export type {
   PredicateExpression,
   OrderExpression,
   QueryRow,
-  QueryPage,
   QueryMaterializers,
   TableQuery,
   OrderedTableQuery,
@@ -247,6 +301,25 @@ export type {
   FullTextQuery,
   WriteResult,
 } from "./database/query/types.ts";
+export {
+  filterableFields,
+  MAX_FILTER_DEPTH,
+  MAX_FILTER_NODES,
+  MAX_FILTER_VALUES,
+  type FilterableFields,
+  type FilterInvalid,
+  type TableFilter,
+} from "./database/query/filter.ts";
+// The read contract itself belongs to core, where the client shares it.
+export {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_BYTES,
+  MAX_PAGE_SIZE,
+  type FilterExpression,
+  type FilterIssue,
+  type FilterValue,
+  type QueryPage,
+} from "@ackerdb/core";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
 export {
   probeOptimisticChanges,
@@ -273,6 +346,11 @@ export {
   type RowTransform,
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
+export {
+  planFrameworkMigrations,
+  type FrameworkMigration,
+  type FrameworkMigrationPlan,
+} from "./schema/migrations/framework.ts";
 export {
   applyRenames,
   renameRoutes,
@@ -313,7 +391,6 @@ export {
   type ExternalAccount,
   type IdentityResolver,
   type JwtAlgorithm,
-  type McpPrincipal,
   resolveOidcProvider,
   type OidcProviderConfig,
   type OidcProviderEntry,
@@ -322,6 +399,7 @@ export {
   type Principal,
   type PrincipalInvalidation,
   type RevocationBound,
+  type ScopeResolver,
   type SystemPrincipal,
   type UserPrincipal,
   type VerifiedCredential,
@@ -342,75 +420,20 @@ export {
   type CapacityLimits,
   type QueueLimits,
   type ServiceLimits,
-  type TelemetryLimits,
 } from "./runtime/limits.ts";
 export {
-  captureTelemetryLink,
-  Telemetry,
-  TELEMETRY_EVENT_NAMES,
-  TELEMETRY_OPERATIONS,
-  TELEMETRY_OUTCOMES,
-  TELEMETRY_RESOURCES,
-  TELEMETRY_SCHEMA_VERSION,
-  TELEMETRY_STAGES,
-  type TelemetryAggregateSeries,
-  type TelemetryAggregateSnapshot,
-  type TelemetryDropSnapshot,
-  type TelemetryEventInput,
-  type TelemetryEventName,
-  type TelemetryEventRecord,
-  type TelemetryExporter,
-  type TelemetryExportSnapshot,
-  type TelemetryLevel,
-  type TelemetryLifecycleState,
-  type TelemetryLink,
-  type TelemetryLocalSinkDropSnapshot,
-  type TelemetryLocalSinkSnapshot,
-  type TelemetryMetricInput,
-  type TelemetryMetricLabels,
-  type TelemetryMetricRecord,
-  type TelemetryMetricUnit,
-  type TelemetryOperation,
-  type TelemetryOptions,
-  type TelemetryOutcome,
-  type TelemetryRecord,
-  type TelemetryResource,
-  type TelemetryScheduler,
-  type TelemetrySnapshot,
-  type TelemetrySpanInput,
-  type TelemetrySpanRecord,
-  type TelemetryStage,
-  type TelemetryTraceContext,
-} from "./telemetry/telemetry.ts";
+  Logger,
+  consoleLoggerStrategy,
+  type LoggerStrategy,
+  type LogLevel,
+  type LogMetadata,
+} from "./signals/logger.ts";
 export {
-  TelemetryJournal,
-  type TelemetryJournalLimits,
-  type TelemetryJournalOptions,
-  type TelemetryJournalSnapshot,
-} from "./telemetry/application-signals/journal.ts";
-export {
-  TelemetryJournalExporters,
-  type TelemetryExporterSnapshot,
-  type TelemetryExportersSnapshot,
-  type TelemetryJournalExporterLimits,
-  type TelemetryJournalExportersOptions,
-  type TelemetrySignalExportContext,
-  type TelemetrySignalExporter,
-  type TelemetrySignalKind,
-} from "./telemetry/application-signals/exporters.ts";
-export type {
-  ApplicationLogger,
-  AnalyticsTracker,
-  AnalyticsEventRecord,
-  ApplicationLogLevel,
-  ApplicationLogRecord,
-  TelemetryJournalEntry,
-  TelemetryJournalRecord,
-} from "./telemetry/application-signals/types.ts";
-export type {
-  TelemetryMetadata,
-  TelemetryValue,
-} from "./telemetry/application-signals/value.ts";
+  Analytics,
+  consoleAnalyticsStrategy,
+  type AnalyticsProperties,
+  type AnalyticsStrategy,
+} from "./signals/analytics.ts";
 export { invokeFunction } from "./app/invocation.ts";
 export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {
@@ -495,7 +518,7 @@ export type {
   RealtimeCloseReason,
   RealtimeGlobalResourceLimits,
   RealtimeGlobalResourceSnapshot,
-  RealtimeHealthSnapshot,
+  RealtimePressureSnapshot,
   RealtimeMediaFlowDiagnostic,
   RealtimeNetworkAdapterType,
   RealtimeNetworkDiagnostic,
@@ -532,18 +555,13 @@ export type {
 export {
   mcp,
   isMcpDeclaration,
-  isMcpAuthProvider,
   isRegisteredMcpTool,
-  mcpAuth,
   mcpContent,
   type AnyMcpDeclaration,
-  type AnyMcpAuthProvider,
   type AnyMcpToolEntryRecord,
   type AnyRegisteredMcpTool,
-  type CreatedMcpToken,
   type CustomMcpConfig,
   type DefaultMcpConfig,
-  type McpAuthBuilder,
   type McpBuilder,
   type McpAudioContent,
   type McpAiContext,
@@ -567,27 +585,18 @@ export {
   type McpInputSchema,
   type McpJsonValue,
   type McpMetadata,
-  type McpTokenCreateInput,
-  type McpTokenDescriptor,
-  type McpTokenOperations,
-  type McpTokenUpdateInput,
-  type SystemMcpTokenOperations,
   type McpOutputSchema,
   type McpResourceLinkContent,
-  type McpScopeDescriptor,
-  type McpScopeValues,
   type McpTextContent,
   type McpTextResourceContents,
   type McpToolAnnotations,
   type McpToolAccessPolicy,
-  type McpAuthProvider,
   type McpToolEntryRecord,
   type McpToolEntry,
   type McpToolResult,
   type RegisteredMcpTool,
   type RegisteredMcpTools,
   type PrivateMcpConfig,
-  type McpAuthConfig,
   type McpContentValidator,
 } from "./mcp/index.ts";
 export {
@@ -608,16 +617,7 @@ export {
   type OutboundLane,
   type OutboundReservation,
 } from "./subscriptions/delivery/budget.ts";
-export {
-  type DeliveryClock,
-  type DeliveryObservation,
-  type DeliveryObserver,
-  type DeliveryObserverCapture,
-  type DeliveryOutcome,
-  type DeliverySource,
-  type DeliveryStage,
-  type DeliveryTransport,
-} from "./subscriptions/delivery/observation.ts";
+export { type DeliveryClock } from "./subscriptions/delivery/clock.ts";
 export {
   WebSocketSessionSink,
   type WebSocketDeliverySnapshot,
@@ -641,10 +641,6 @@ export {
   type QuerySubscriptionOptions,
   type ReactiveCommitResult,
   type ReactiveEvent,
-  type ReactiveObservation,
-  type ReactiveObservationOutcome,
-  type ReactiveObservationPhase,
-  type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
 } from "./subscriptions/reactive/contract.ts";

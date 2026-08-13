@@ -18,7 +18,7 @@ There is no direct/provider mode, provider adapter, media WebSocket, automatic
 capture, or AckerDB media-player API.
 
 The client and React hooks remain in `@ackerdb/client` and
-`@ackerdb/client-react`. Only applications that declare realtime routes install
+`@ackerdb/client-react`. Only applications that declare realtime handlers install
 `@ackerdb/realtime`; the ordinary server package contains no native WebRTC
 binary or media runtime.
 
@@ -133,7 +133,7 @@ handler(ctx) {
 
 The nested procedure revalidates its arguments and access policy and keeps the
 same authenticated principal, abort signal, Plugin capabilities, result
-contract, telemetry, and transaction-poisoning rules. Generated realtime
+contract and transaction-poisoning rules. Generated realtime
 contexts include the application's procedure capabilities and their
 transaction counterparts, so procedures using mounted Plugins remain callable
 without casts.
@@ -169,7 +169,7 @@ provider.onToolCall((call) => {
 
 `ctx.run(work)` is intentionally fire-and-own, not a promise-returning task
 API. The work runs under this session's authenticated invocation context,
-abort lifecycle, concurrency limit, telemetry, and fatal-error boundary.
+abort lifecycle, concurrency limit, and fatal-error boundary.
 Provider media pumps that do not touch procedure capabilities can stay on
 their bounded native/application queue and report terminal failures through
 `ctx.run(() => { throw error; })`.
@@ -223,59 +223,64 @@ accepts exactly one block per call.
 
 `@ackerdb/realtime` bundles the optional server WebRTC engine. Reachability and
 capacity options belong to the runtime deployment, never to a realtime route
-or React hook:
+or React hook. Applications using `acker dev` or `acker start` name one
+serving-only module in `.ackerdb.config.json`:
+
+```json
+{
+  "realtime": "./realtime.ts"
+}
+```
+
+That module directly default-exports the configured runtime:
 
 ```ts
 import { createRealtimeRuntime } from "@ackerdb/realtime";
 
-const runtime = new Runtime({
-  engine: database,
-  registry,
-  realtime: createRealtimeRuntime({
-    network: {
-      interfaces: { include: ["en0"] },
-      udpPortRange: { min: 50_000, max: 51_000 },
-      advertisedAddressMappings: [{
-        privateAddress: "10.0.0.4",
-        publicAddress: "203.0.113.4",
-      }],
-      ignoreAdapterTypes: ["loopback", "vpn"],
-      ice: {
-        unwritableTimeoutMs: 5_000,
-        inactiveTimeoutMs: 15_000,
-      },
+export default createRealtimeRuntime({
+  network: {
+    interfaces: { include: ["en0"] },
+    udpPortRange: { min: 50_000, max: 51_000 },
+    advertisedAddressMappings: [{
+      privateAddress: "10.0.0.4",
+      publicAddress: "203.0.113.4",
+    }],
+    ignoreAdapterTypes: ["loopback", "vpn"],
+    ice: {
+      unwritableTimeoutMs: 5_000,
+      inactiveTimeoutMs: 15_000,
     },
-    configuration: async (principal) => ({
-      iceServers: await turnCredentials.for(principal),
-    }),
-    maxSessions: 1_024,
-    maxSessionsPerPrincipal: 16,
-    maxHandshakesPerWindow: 32,
-    handshakeWindowMs: 10_000,
-    sessionLimits: {
-      maxQueuedBytes: 32 * 1024 * 1024,
-      maxAuxiliaryPeers: 4,
-      maxDecodedStreams: 8,
-      maxMediaSources: 8,
-      maxDataChannelsPerPeer: 16,
-      maxSendersPerPeer: 32,
-      maxTransceiversPerPeer: 32,
-    },
-    resourceLimits: {
-      maxAuxiliaryPeers: 2_048,
-      maxDecodedStreams: 32_768,
-      maxMediaSources: 32_768,
-      maxTracks: 131_072,
-    },
-    authorizationTimeoutMs: 10_000,
-    configurationTimeoutMs: 10_000,
-    handlerTimeoutMs: 10_000,
-    signalingTimeoutMs: 10_000,
-    iceTimeoutMs: 10_000,
-    dtlsTimeoutMs: 10_000,
-    dataChannelTimeoutMs: 20_000,
-    diagnosticTimeoutMs: 5_000,
+  },
+  configuration: async (principal) => ({
+    iceServers: await turnCredentials.for(principal),
   }),
+  maxSessions: 1_024,
+  maxSessionsPerPrincipal: 16,
+  maxHandshakesPerWindow: 32,
+  handshakeWindowMs: 10_000,
+  sessionLimits: {
+    maxQueuedBytes: 32 * 1024 * 1024,
+    maxAuxiliaryPeers: 4,
+    maxDecodedStreams: 8,
+    maxMediaSources: 8,
+    maxDataChannelsPerPeer: 16,
+    maxSendersPerPeer: 32,
+    maxTransceiversPerPeer: 32,
+  },
+  resourceLimits: {
+    maxAuxiliaryPeers: 2_048,
+    maxDecodedStreams: 32_768,
+    maxMediaSources: 32_768,
+    maxTracks: 131_072,
+  },
+  authorizationTimeoutMs: 10_000,
+  configurationTimeoutMs: 10_000,
+  handlerTimeoutMs: 10_000,
+  signalingTimeoutMs: 10_000,
+  iceTimeoutMs: 10_000,
+  dtlsTimeoutMs: 10_000,
+  dataChannelTimeoutMs: 20_000,
+  diagnosticTimeoutMs: 5_000,
 });
 ```
 
@@ -323,19 +328,15 @@ credentials directly:
 ```ts
 import { createRealtimeRuntime } from "@ackerdb/realtime";
 
-const runtime = new Runtime({
-  engine: database,
-  registry,
-  realtime: createRealtimeRuntime({
-    turn: {
-      urls: [
-        "turn:relay.example.com:3478?transport=udp",
-        "turns:relay.example.com:443?transport=tcp",
-      ],
-      secret: process.env.TURN_SECRET!,
-      ttlSeconds: 3_600,
-    },
-  }),
+export default createRealtimeRuntime({
+  turn: {
+    urls: [
+      "turn:relay.example.com:3478?transport=udp",
+      "turns:relay.example.com:443?transport=tcp",
+    ],
+    secret: process.env.TURN_SECRET!,
+    ttlSeconds: 3_600,
+  },
 });
 ```
 
@@ -347,9 +348,11 @@ mutually exclusive.
 
 Omit the options when host candidates are enough:
 `createRealtimeRuntime()`. The CLI does this automatically when it finds
-realtime routes and resolves the package from the application. Apps without
-realtime routes never resolve or load the optional package. ICE and TURN
-configuration belongs at deployment scope, not on every route or React hook.
+realtime handlers and no `realtime` module is configured. Apps without realtime
+handlers never import the configured module or resolve the optional package. A
+runtime passed directly to `startApp(config, { realtime })` overrides the
+configured module without importing it. ICE and TURN configuration belongs at
+deployment scope, not on every route or React hook.
 The same bundled factory creates client-facing and auxiliary peers, so tracks
 can move between them without a second engine or provider adapter.
 
@@ -427,12 +430,10 @@ tracks, senders, transceivers, configuration, and data channels instead.
 
 `runtime.status().realtime` is a bounded aggregate snapshot. It includes active
 and reserved generations, principal/handshake admission, setup and recovery
-durations/outcomes, fixed close-reason counters, resource ownership and
-saturation, selected path classes, first media, sampled RTT/jitter/loss/bitrate,
-buffer pressure, and native event-queue drops. Sampling rotates through at
-most eight active peers per telemetry interval. There is no realtime polling
-loop when telemetry is disabled, no per-session timer after close, and no
-principal, session, track, candidate-address, SDP, or payload metric label.
+durations/outcomes, fixed close-reason counters, resource ownership,
+saturation, buffer pressure, and native event-queue drops. It performs no
+periodic peer sampling and contains no principal, session, track,
+candidate-address, SDP, or payload label.
 
 For one authorized connection, `runtime.realtimeDiagnostic(sessionId,
 principal)` reads a bounded standard stats report and returns a redacted path

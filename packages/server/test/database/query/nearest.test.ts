@@ -188,17 +188,10 @@ describe("exact nearest search", () => {
       return originalRowFromSql(...args);
     }) as Engine["rowFromSql"];
     const readSet = new Set<string>();
-    let nearestObservation: {
-      readonly candidateRowCount?: number;
-      readonly retainedRowCount?: number;
-    } | undefined;
     const reader: any = makeDbReader(
       engine,
       engine.reader,
       { add: (key) => readSet.add(key) },
-      (observation) => {
-        if (observation.statement === "nearest") nearestObservation = observation;
-      },
     );
 
     const matches = await reader.documents
@@ -208,10 +201,6 @@ describe("exact nearest search", () => {
 
     expect(matches).toHaveLength(3);
     expect(decodedRows).toBe(3);
-    expect(nearestObservation).toMatchObject({
-      candidateRowCount: 400,
-      retainedRowCount: 3,
-    });
     expect(readSet).toEqual(new Set([
       ixKey("documents", engine.plan("documents").indexes[0]!.name, [1n]),
     ]));

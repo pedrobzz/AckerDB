@@ -7,8 +7,13 @@
  * `http: true` is served through its contract.
  */
 import type { Schema } from "../schema/definition.ts";
-import type { FunctionResult, TxCtx } from "./functions.ts";
-import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
+import {
+  apiPath,
+  refuseUnknownFields,
+  type FunctionResult,
+  type TxCtx,
+} from "./functions.ts";
+import type { Logger } from "../signals/logger.ts";
 import type { FileProcedureCapability } from "../files/api.ts";
 
 export const HTTP_HANDLER_METHODS = Object.freeze([
@@ -37,7 +42,7 @@ export type HttpHandlerCtx<
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
 > = Capabilities & {
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
   readonly timestamp: number;
   /** Fires when the caller disconnects or the Runtime shuts down. */
   readonly abortSignal: AbortSignal;
@@ -59,6 +64,8 @@ export interface RegisteredHttpHandler<S extends Schema = Schema> {
   /** Generated client APIs erase this export; it has no callable reference. */
   readonly isAckerDBServerOnly: true;
   readonly kind: "http";
+  /** The group whose HTTP root this route hangs under; `"api"` when unnamed. */
+  readonly apiPath: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: (
     ctx: HttpHandlerCtx<S>,
@@ -70,17 +77,38 @@ export interface RegisteredHttpHandler<S extends Schema = Schema> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyRegisteredHttpHandler = RegisteredHttpHandler<any>;
 
-export type HttpHandlerBuilder<
-  S extends Schema,
+/**
+ * A raw handler's declaration, stated once. Every signature below and the
+ * field-refusal list are derived from it, so the shape cannot drift between
+ * what the builder accepts and what registration allows.
+ */
+export interface HttpHandlerDef<
+  S extends Schema = Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
-> = (def: {
+> {
+  /**
+   * The group this route is published in; `"api"` by default. Unlike the four
+   * function kinds it need not be a string literal: a raw handler appears in
+   * no generated tree, so its group moves only its route and there is no
+   * binding for a widened `string` to fail to select. An undeclared group is
+   * still a startup refusal, as it is everywhere else.
+   */
+  readonly apiPath?: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: (
     ctx: HttpHandlerCtx<S, Capabilities, TransactionCapabilities>,
     request: Request,
   ) => Response | Promise<Response>;
-}) => RegisteredHttpHandler<S>;
+}
+
+export type HttpHandlerBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+> = (
+  def: HttpHandlerDef<S, Capabilities, TransactionCapabilities>,
+) => RegisteredHttpHandler<S>;
 
 function validateMethods(value: unknown, where: string): readonly HttpHandlerMethod[] {
   if (!Array.isArray(value) || value.length === 0) {
@@ -101,46 +129,55 @@ function validateMethods(value: unknown, where: string): readonly HttpHandlerMet
   return Object.freeze([...value]) as readonly HttpHandlerMethod[];
 }
 
-const DEFINITION_KEYS = Object.freeze(["methods", "handler"] as const);
+/** The declaration's own fields; `satisfies` keeps the list and the type equal. */
+const DEFINITION_FIELDS = {
+  apiPath: true,
+  methods: true,
+  handler: true,
+} satisfies Record<keyof HttpHandlerDef, true>;
+
+const DEFINITION_KEYS = Object.freeze(Object.keys(DEFINITION_FIELDS));
 const REGISTERED_KEYS = Object.freeze(
-  [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"] as const,
+  [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"],
 );
 
-/**
- * Every own key, enumerable or not, string or symbol: a field hidden behind
- * `enumerable: false` is still a field the author expected something to
- * consume, and nothing here consumes any of them.
- */
-function refuseUnknownKeys(
-  value: object,
-  allowed: readonly string[],
-  where: string,
-): void {
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key === "symbol" || !allowed.includes(key)) {
-      throw new TypeError(
-        `${where} must not declare "${String(key)}" — an httpHandler carries exactly methods and handler`,
-      );
-    }
-  }
+/** A raw handler's surface, read once from the declaration it was written on. */
+interface HttpHandlerSurface {
+  readonly apiPath: string;
+  readonly methods: readonly HttpHandlerMethod[];
+  readonly handler: AnyRegisteredHttpHandler["handler"];
 }
 
 /**
- * The one interpreter of a raw handler's definition. Exactly `methods` and
- * `handler`: nothing else exists to consume — no validators, no OpenAPI
- * operation, no policy — so any other field is a registration error, never a
- * silently ignored expectation.
+ * The one interpreter of a raw handler's definition. Exactly `apiPath`,
+ * `methods`, and `handler`: nothing else exists to consume — no validators, no
+ * OpenAPI operation, no policy — so any other field is a registration error,
+ * never a silently ignored expectation.
  */
 export function validateHttpHandlerShape(
-  value: { readonly methods?: unknown; readonly handler?: unknown },
+  value: {
+    readonly apiPath?: unknown;
+    readonly methods?: unknown;
+    readonly handler?: unknown;
+  },
   where = "httpHandler",
-): readonly HttpHandlerMethod[] {
-  refuseUnknownKeys(value, DEFINITION_KEYS, where);
+  allowed: readonly string[] = DEFINITION_KEYS,
+): HttpHandlerSurface {
+  refuseUnknownFields(value, allowed, where);
+  const apiPathValue = apiPath(value.apiPath, `${where} apiPath`);
   const methods = validateMethods(value.methods, where);
-  if (typeof value.handler !== "function") {
+  // Read once, here, and returned: an accessor that answered a function to
+  // this check and something else at dispatch would put a non-function into a
+  // live route, which is the divergence the snapshot exists to close.
+  const handler = value.handler;
+  if (typeof handler !== "function") {
     throw new TypeError(`${where} handler must be a function`);
   }
-  return methods;
+  return {
+    apiPath: apiPathValue,
+    methods,
+    handler: handler as AnyRegisteredHttpHandler["handler"],
+  };
 }
 
 /**
@@ -158,44 +195,37 @@ export function validateRegisteredHttpHandler(
   value: object,
   where: string,
 ): AnyRegisteredHttpHandler {
-  refuseUnknownKeys(value, REGISTERED_KEYS, where);
   const snapshot = value as {
     isAckerDBServerOnly?: unknown;
+    apiPath?: unknown;
     methods?: unknown;
     handler?: unknown;
   };
+  // The same interpreter, widened to the markers the builder stamps: one
+  // owner for every field, so the registered form cannot read a field
+  // differently from the declaration it came from.
+  const surface = validateHttpHandlerShape(snapshot, where, REGISTERED_KEYS);
   if (snapshot.isAckerDBServerOnly !== true) {
     throw new TypeError(
       `${where} must carry isAckerDBServerOnly: true — generated client APIs erase the export by that marker`,
     );
   }
-  const methods = validateMethods(snapshot.methods, where);
-  const handler = snapshot.handler;
-  if (typeof handler !== "function") {
-    throw new TypeError(`${where} handler must be a function`);
-  }
   return Object.freeze({
     isAckerDB: true as const,
     isAckerDBServerOnly: true as const,
     kind: "http" as const,
-    methods,
-    handler: handler as AnyRegisteredHttpHandler["handler"],
+    ...surface,
   });
 }
 
-export function httpHandler<S extends Schema>(def: {
-  readonly methods: readonly HttpHandlerMethod[];
-  readonly handler: (
-    ctx: HttpHandlerCtx<S>,
-    request: Request,
-  ) => Response | Promise<Response>;
-}): RegisteredHttpHandler<S> {
+export function httpHandler<S extends Schema>(
+  def: HttpHandlerDef<S>,
+): RegisteredHttpHandler<S> {
   return Object.freeze({
     isAckerDB: true as const,
     isAckerDBServerOnly: true as const,
     kind: "http" as const,
-    methods: validateHttpHandlerShape(def),
-    handler: def.handler,
+    ...validateHttpHandlerShape(def),
   });
 }
 

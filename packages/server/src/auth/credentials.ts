@@ -9,8 +9,11 @@ import {
 import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
-import { hasMcpTokenPrefix } from "../mcp/credential.ts";
-import { isMcpScopeGrant } from "../mcp/scopes.ts";
+import { isScopeGrant } from "./scopes.ts";
+import {
+  hasCredentialTokenPrefix,
+  VAULT_CREDENTIAL_AUTHORITY,
+} from "./credential-token.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -45,15 +48,23 @@ export interface WorkloadPrincipal extends ExternalPrincipal {
 export interface UserPrincipal extends ExternalPrincipal {
   readonly kind: "user";
   readonly identity: Identity;
-}
-
-/** Non-expiring delegated MCP authority bound directly to one durable Identity and endpoint. */
-export interface McpPrincipal {
-  readonly kind: "mcp";
-  readonly identity: Identity;
-  readonly mcp: string;
-  readonly tokenId: string;
+  /**
+   * The Identity's grant, already expanded against the known vocabulary: a
+   * pattern set is resolved once, when the principal is built, so the
+   * authorization funnel does a plain membership test per call.
+   */
   readonly scopes: readonly string[];
+  /**
+   * The external accounts this principal's authority is bounded by, beyond its
+   * own. A delegated credential is live under `ackerdb:credentials` with its
+   * own subject, but its grant is intersected with the account its lineage
+   * roots in, so an invalidation for that account must reach it too.
+   *
+   * The lineage is walked once, at authentication, and the roots recorded
+   * here. That is what keeps the invalidation channel synchronous: matching an
+   * ancestor costs a comparison, where resolving one would cost an Engine read.
+   */
+  readonly derivedFrom?: readonly ExternalAccount[];
 }
 
 export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
@@ -62,13 +73,36 @@ export type ClientPrincipal = AnonymousPrincipal | AuthenticatedPrincipal;
 export type Principal =
   | AnonymousPrincipal
   | UserPrincipal
-  | McpPrincipal
   | WorkloadPrincipal
   | SystemPrincipal;
 export type IdentityResolver = (
   account: ExternalAccount,
   signal?: AbortSignal,
 ) => Promise<Identity>;
+/**
+ * A resolved grant. An application answers with the scopes alone, which is the
+ * whole answer for an identity it owns outright. The framework's own resolution
+ * answers with the second half too: the accounts a delegated credential's grant
+ * is bounded by, so an invalidation upstream can reach it. Both shapes exist
+ * because only one side of this contract has a lineage to report.
+ */
+export type ResolvedGrant =
+  | readonly string[]
+  | {
+      readonly scopes: readonly string[];
+      readonly derivedFrom: readonly ExternalAccount[];
+    };
+
+/**
+ * Resolves the grant patterns an Identity holds. `account` is the verified
+ * external account at credential verification, and null when the framework
+ * re-derives an issuer's grant for the child-credential intersection. An
+ * absent resolver means every external principal carries the empty grant.
+ */
+export type ScopeResolver = (
+  identity: Identity,
+  account: ExternalAccount | null,
+) => ResolvedGrant | Promise<ResolvedGrant>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
 export const SYSTEM_PRINCIPAL: SystemPrincipal = Object.freeze({ kind: "system" });
@@ -83,7 +117,10 @@ function isExternalPrincipal(value: unknown): value is ExternalPrincipal & { kin
     typeof principal.subject === "string" &&
     principal.subject.length > 0 &&
     typeof principal.expiresAt === "number" &&
-    Number.isFinite(principal.expiresAt) &&
+    // Vault-issued credentials never expire: POSITIVE_INFINITY is the one
+    // sanctioned non-finite expiry, revoked by invalidation instead of time.
+    (Number.isFinite(principal.expiresAt) ||
+      principal.expiresAt === Number.POSITIVE_INFINITY) &&
     typeof principal.claims === "object" &&
     principal.claims !== null &&
     (principal.tokenId === null || typeof principal.tokenId === "string")
@@ -94,26 +131,58 @@ export function isPrincipal(value: unknown): value is Principal {
   if (typeof value !== "object" || value === null || !("kind" in value)) return false;
   const principal = value as Partial<Principal>;
   if (principal.kind === "anonymous" || principal.kind === "system") return !("identity" in value);
-  if (principal.kind === "mcp") {
-    return (
-      typeof principal.identity === "bigint" &&
-      principal.identity > 0n &&
-      typeof principal.mcp === "string" &&
-      principal.mcp.length > 0 &&
-      typeof principal.tokenId === "string" &&
-      principal.tokenId.length > 0 &&
-      isMcpScopeGrant(principal.scopes)
-    );
-  }
   if (!isExternalPrincipal(value)) return false;
   const identity = (value as { readonly identity?: unknown }).identity;
   return principal.kind === "workload"
     ? !("identity" in value)
-    : typeof identity === "bigint" && identity > 0n;
+    : typeof identity === "bigint" &&
+      identity > 0n &&
+      isScopeGrant((value as { readonly scopes?: unknown }).scopes);
 }
 
 export function isVerifiedCredential(value: unknown): value is VerifiedCredential {
   return isExternalPrincipal(value) && !("identity" in value);
+}
+
+/**
+ * The value a shared reactive entry is keyed by: this principal, encodable.
+ *
+ * Subscribers to one address and one argument set share a single evaluation
+ * when their principals digest alike, and the evaluation runs with the whole
+ * `Principal` handed to the handler as `ctx.auth`. **So the key has to be a
+ * function of exactly what the handler can see, field for field.** Anything it
+ * omits is a fact a handler may branch on while two principals still share one
+ * answer — one of them then reads a result computed from the other's
+ * credential. Anything it adds costs sharing and nothing else, which is why the
+ * safe direction here is "everything".
+ *
+ * That leaves one field needing a representation rather than a decision.
+ * A vault-issued identity credential never expires, and the sanctioned way to
+ * say never is `POSITIVE_INFINITY` — the one value {@link stableEncode}
+ * refuses, because a non-finite number has no wire form. Digesting a principal
+ * directly therefore *threw* for every credential of that kind, and the failure
+ * surfaced as an opaque `internal` on subscribe: no client holding an identity
+ * credential could open any subscription at all. Naming that expiry with a
+ * string is what makes the encoding total. A string can never collide with a
+ * finite expiry, because the encoding distinguishes the two types.
+ *
+ * The remaining partiality is `claims`, which is whatever a credential verifier
+ * put there. Claims come from JSON, which has no non-finite number, so the
+ * framework cannot produce one — a verifier that synthesised one would break
+ * its own subscriptions, exactly as this did.
+ */
+export function policyScope(principal: Principal): unknown {
+  if (principal.kind === "anonymous" || principal.kind === "system") {
+    return { kind: principal.kind };
+  }
+  return { ...principal, expiresAt: encodableExpiry(principal.expiresAt) };
+}
+
+/** The one expiry with no number to stand for it. */
+const NEVER_EXPIRES = "never";
+
+function encodableExpiry(expiresAt: number): number | string {
+  return Number.isFinite(expiresAt) ? expiresAt : NEVER_EXPIRES;
 }
 
 export interface PrincipalInvalidation {
@@ -477,9 +546,15 @@ export async function verifyBearerCredential(
   verifier: CredentialVerifier | undefined,
   now: () => number = Date.now,
 ): Promise<VerifiedCredential> {
-  // MCP credentials have a separate Engine-backed authority path and can never
-  // fall through to a custom OIDC/external credential verifier.
-  if (hasMcpTokenPrefix(rawBearerToken)) throw unauthenticated();
+  // Vault credentials are Engine-backed authority: only the Runtime's composed
+  // verifier may answer them, never a custom application verifier.
+  if (
+    hasCredentialTokenPrefix(rawBearerToken) &&
+    (verifier as { [VAULT_CREDENTIAL_AUTHORITY]?: boolean } | undefined)
+      ?.[VAULT_CREDENTIAL_AUTHORITY] !== true
+  ) {
+    throw unauthenticated();
+  }
   let credential: Credential;
   try {
     credential = parseCredential({ kind: "bearer", token: rawBearerToken });
@@ -524,12 +599,34 @@ export async function verifyUserBearerCredential(
   return verified;
 }
 
-/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
+const EMPTY_SCOPE_GRANT: readonly string[] = Object.freeze([]);
+const EMPTY_DERIVED_FROM: readonly ExternalAccount[] = Object.freeze([]);
+
+/**
+ * Both answer shapes as the one pair every consumer wants. An application
+ * answering with scopes alone reports no lineage, which is the truth: an
+ * identity it owns outright is bounded by nothing upstream.
+ */
+export function resolvedGrant(value: ResolvedGrant): {
+  readonly scopes: readonly string[];
+  readonly derivedFrom: readonly ExternalAccount[];
+} {
+  return "derivedFrom" in value ? value : { scopes: value, derivedFrom: EMPTY_DERIVED_FROM };
+}
+
+/**
+ * One fail-closed credential path shared by WebSocket, HTTP, and SSE.
+ *
+ * `resolveScopes` is the Runtime's own resolver, which composes the
+ * application's with the vault and expands the result against the vocabulary,
+ * so what lands on the principal is always concrete scopes.
+ */
 export async function verifyClientCredential(
   credential: Credential,
   verifier: CredentialVerifier | undefined,
   resolveIdentity: IdentityResolver,
   now: () => number = Date.now,
+  resolveScopes?: ScopeResolver,
 ): Promise<ClientPrincipal> {
   if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
   const verified = await verifyBearerCredential(credential.token, verifier, now);
@@ -543,18 +640,40 @@ export async function verifyClientCredential(
       tokenId: verified.tokenId,
     });
   }
+  const account = Object.freeze({
+    issuer: verified.issuer,
+    subject: verified.subject,
+  });
   let identity: Identity;
   try {
-    identity = await resolveIdentity(Object.freeze({
-      issuer: verified.issuer,
-      subject: verified.subject,
-    }));
+    identity = await resolveIdentity(account);
   } catch (error) {
     if (isAckerDBError(error)) throw error;
     throw authUnavailable(error);
   }
   if (typeof identity !== "bigint" || identity <= 0n) {
     throw authUnavailable(new Error("identity resolver returned an invalid Identity"));
+  }
+  let scopes: readonly string[] = EMPTY_SCOPE_GRANT;
+  let derivedFrom: readonly ExternalAccount[] = EMPTY_DERIVED_FROM;
+  if (resolveScopes !== undefined) {
+    let resolved: ResolvedGrant;
+    try {
+      resolved = await resolveScopes(identity, account);
+    } catch (error) {
+      if (isAckerDBError(error)) throw error;
+      throw authUnavailable(error);
+    }
+    const grant = resolvedGrant(resolved);
+    if (!isScopeGrant(grant.scopes)) {
+      throw authUnavailable(new Error("scope resolver returned an invalid scope grant"));
+    }
+    scopes = Object.freeze([...grant.scopes]);
+    // Only the framework's own resolution reports a lineage, and it reports the
+    // same one this credential would get through any other door. Every
+    // authenticated principal must carry it, or an invalidation would reach a
+    // delegated credential over one transport and miss it over another.
+    derivedFrom = grant.derivedFrom;
   }
   const resolvedAt = now();
   if (!Number.isFinite(resolvedAt)) {
@@ -564,11 +683,13 @@ export async function verifyClientCredential(
   return Object.freeze({
     kind: "user",
     identity,
+    scopes,
     issuer: verified.issuer,
     subject: verified.subject,
     claims: verified.claims,
     expiresAt: verified.expiresAt,
     tokenId: verified.tokenId,
+    ...(derivedFrom.length === 0 ? {} : { derivedFrom }),
   });
 }
 

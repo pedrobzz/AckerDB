@@ -1,8 +1,5 @@
 import type { MutationReceipt } from "@ackerdb/core";
-import type {
-  McpPrincipal,
-  Principal,
-} from "../../auth/credentials.ts";
+import type { Principal } from "../../auth/credentials.ts";
 import type { RuntimeMcpToolAuthorization } from "../mcp/authorization.ts";
 
 export interface RuntimeExternalRequest {
@@ -21,12 +18,6 @@ export interface RuntimeMcpToolRequest {
   readonly principal: Principal;
   readonly signal?: AbortSignal;
   readonly fairnessKey?: string;
-}
-
-export interface McpCredentialLease {
-  readonly principal: McpPrincipal;
-  readonly signal: AbortSignal;
-  release(): void;
 }
 
 /**
@@ -66,7 +57,7 @@ export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
 export interface RuntimeHttpHandlerRequest {
   readonly address: string;
   readonly request: Request;
-  /** The listener's own sequence; telemetry correlation only. */
+  /** The listener's own sequence. */
   readonly id?: number;
   /** The buffered body size the listener admitted; 1 when bodiless. */
   readonly requestBytes?: number;

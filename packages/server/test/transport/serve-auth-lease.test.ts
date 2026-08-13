@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseSseMessage,
@@ -56,11 +56,11 @@ function acknowledgeSse(
   message: SseMessage,
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${base}/api/_sse/ack`, {
+  return fetch(`${base}/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "sse_ack",
       stream,
       seq: message.seq,
@@ -178,7 +178,6 @@ describe("HTTP and SSE credential leases", () => {
       engine,
       registry: new Registry(functions),
       verifier,
-      telemetry: false,
     });
     server = serve({ runtime, port: 0 });
     base = `http://127.0.0.1:${server.port}`;
@@ -212,7 +211,6 @@ describe("HTTP and SSE credential leases", () => {
       engine,
       registry: new Registry(functions),
       verifier: invalid,
-      telemetry: false,
     })).toThrow(
       "verifier invalidation deadlineMs cannot exceed revocationDeadlineMs",
     );

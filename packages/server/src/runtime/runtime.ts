@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import {
-  stableEncode,
+  EVENTS_ADDRESS_PREFIX,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
   type ChannelSendMessage,
@@ -18,28 +17,32 @@ import {
   SYSTEM_PRINCIPAL,
   type CredentialVerifier,
   type ExternalAccount,
-  type McpPrincipal,
   type Principal,
+  type ScopeResolver,
 } from "../auth/credentials.ts";
+import {
+  CREDENTIAL_ISSUER,
+  parseCredentialToken,
+  type ParsedCredentialToken,
+} from "../auth/credential-token.ts";
+import { knownScopeVocabulary } from "../auth/scopes.ts";
+import {
+  RuntimeCredentials,
+  type CredentialLease,
+} from "./credentials/runtime.ts";
 import {
   AuthInvalidationBoundary,
   type AuthInvalidationPublisher,
 } from "../auth/invalidation.ts";
 import { assertCredentialVerifier } from "../auth/lease.ts";
 import { externalAccountFairnessKey } from "./caller.ts";
-import {
-  OutboundBudget,
-  type OutboundLane,
-} from "../subscriptions/delivery/budget.ts";
-import type { DeliveryObserver } from "../subscriptions/delivery/observation.ts";
+import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { telemetryJournalPath } from "../database/artifacts.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
 import type { McpCallToolResult } from "../mcp/content.ts";
-import type { ParsedMcpToken } from "../mcp/credential.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import {
   PluginRuntime,
@@ -51,16 +54,8 @@ import {
 } from "../channels/hub.ts";
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
-import { Telemetry } from "../telemetry/telemetry.ts";
-import { ApplicationSignals } from "../telemetry/application-signals/application-signals.ts";
-import {
-  TelemetryJournal,
-} from "../telemetry/application-signals/journal.ts";
-import type { ApplicationLogger } from "../telemetry/application-signals/types.ts";
-import {
-  TelemetryJournalExporters,
-  validateTelemetryJournalExportersOptions,
-} from "../telemetry/application-signals/exporters.ts";
+import { Analytics } from "../signals/analytics.ts";
+import { Logger } from "../signals/logger.ts";
 import {
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -72,7 +67,6 @@ import {
 import type { RuntimeLifecycleState } from "./contracts/lifecycle.ts";
 import type { RuntimeOptions } from "./contracts/options.ts";
 import type {
-  McpCredentialLease,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
   RuntimeMcpToolRequest,
@@ -81,7 +75,6 @@ import type {
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
 import type { RuntimeStatus } from "./contracts/status.ts";
-import { RuntimeTraceBridge } from "./telemetry/trace-bridge.ts";
 import { RuntimeOperationRunner } from "./execution/operation-runner.ts";
 import { RuntimeReadExecutor } from "./execution/read.ts";
 import {
@@ -98,9 +91,6 @@ import {
   type RuntimeSession,
 } from "./sessions/store.ts";
 import { RuntimeSessionApplication } from "./sessions/application.ts";
-import { RuntimeSampler } from "./telemetry/sampler.ts";
-import { FileObservability } from "../files/observability.ts";
-import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 import { RuntimeJobs } from "./jobs/runtime.ts";
 import { RuntimeControl } from "./lifecycle/control.ts";
 import { RuntimeQueries } from "./queries/runtime.ts";
@@ -112,13 +102,6 @@ import {
 } from "../files/http.ts";
 import { FileCleanupRuntime } from "../files/cleanup.ts";
 
-/** Package-private transport hook; intentionally absent from the public index. */
-export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
-}
-
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
  * Engine lifetime remains with the caller so storage closes exactly once.
@@ -128,15 +111,12 @@ export class Runtime implements RuntimePort {
   readonly registry: Registry;
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
-  readonly telemetry: Telemetry;
-  readonly telemetryJournal: TelemetryJournal;
-  readonly telemetryExporters: TelemetryJournalExporters | undefined;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
+  readonly analytics: Analytics;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
-  readonly deliveryObserver: DeliveryObserver;
 
   private readonly now: () => number;
   private readonly files: RuntimeFiles;
@@ -144,7 +124,15 @@ export class Runtime implements RuntimePort {
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
   private readonly pluginRuntime: PluginRuntime | undefined;
-  private readonly authInvalidation: AuthInvalidationBoundary;
+  private readonly credentials: RuntimeCredentials;
+  /** Application scopes plus the framework's: what every grant expands against. */
+  private readonly vocabulary: readonly string[];
+  /**
+   * Package-internal: the transport builds one origin-aware publisher per
+   * request from it, because the transport is what owns the response handoff a
+   * self-invalidation must wait for. It is absent from the public index.
+   */
+  readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: AuthInvalidationPublisher;
   private readonly reads: RuntimeReadExecutor;
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
@@ -155,25 +143,16 @@ export class Runtime implements RuntimePort {
   private readonly sessionApplication: RuntimeSessionApplication;
   private readonly authCaptureBudget: OutboundBudget;
   private readonly http: RuntimeHttp;
-  private readonly tracing: RuntimeTraceBridge;
-  private readonly deliveryTelemetry: RuntimeDeliveryTelemetry;
   private readonly operations: RuntimeOperationRunner<RuntimeSession>;
-  private readonly sampler: RuntimeSampler;
   private readonly control: RuntimeControl;
-  private readonly applicationSignals: ApplicationSignals;
 
   constructor(options: RuntimeOptions) {
-    if (options.telemetryExporters !== undefined) {
-      // Fail before opening the journal; the exporter owns the same validation at direct construction.
-      validateTelemetryJournalExportersOptions(options.telemetryExporters);
-    }
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
-    this.files = new RuntimeFiles(
-      options.files,
-      new FileObservability(this.engine, this.now),
-    );
+    this.log = new Logger(options.loggerStrategy);
+    this.analytics = new Analytics(options.analyticsStrategy);
+    this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
       throw new TypeError("Runtime requires a ready Plugin runtime");
@@ -186,12 +165,6 @@ export class Runtime implements RuntimePort {
       maxMembers: this.limits.maxSubscriptions,
       maxMembersPerSession: this.limits.maxSubscriptionsPerConnection,
       disconnectTimeoutMs: Math.min(5_000, this.limits.gracefulShutdownMs),
-      observeDisconnectTimeout: () =>
-        this.telemetry.recordMetric({
-          name: "runtime.channel_disconnect_timeouts",
-          value: 1,
-          unit: "count",
-        }),
     });
     if (this.registry.realtime.size > 0) {
       if (options.realtime === undefined) {
@@ -218,72 +191,43 @@ export class Runtime implements RuntimePort {
     if (options.verifier !== undefined) {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
-    this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    if (options.resolveScopes !== undefined && typeof options.resolveScopes !== "function") {
+      throw new TypeError("Runtime resolveScopes must be a function");
+    }
+    this.vocabulary = knownScopeVocabulary(options.scopes);
+    // The Runtime's one credential authority: vault credentials compose with
+    // the application verifier, and both invalidate through one boundary.
+    this.credentials = new RuntimeCredentials({
+      engine: this.engine,
+      reads: () => this.reads,
+      now: this.now,
+      assertReady: () => this.control.assertReady(),
+      operationSignal: (signal) => this.control.operationSignal(signal),
+      ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
+      ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
+      vocabulary: this.vocabulary,
+      subscribeInvalidation: (listener) =>
+        this.authInvalidation.subscribeDirect(listener),
+      revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
+    });
+    this.authInvalidation = new AuthInvalidationBoundary(this.credentials.verifier);
     this.immediateProcedureInvalidations = this.authInvalidation.publisher(SYSTEM_PRINCIPAL);
     this.credentialVerifier = this.authInvalidation.verifier;
-    const ownsTelemetry = !(options.telemetry instanceof Telemetry);
-    this.telemetry = options.telemetry instanceof Telemetry
-      ? options.telemetry
-      : new Telemetry(options.telemetry === false
-        ? { enabled: false }
-        : {
-            ...options.telemetry,
-            limits: {
-              ...this.limits.telemetry,
-              ...options.telemetry?.limits,
-            },
-          });
-    this.tracing = new RuntimeTraceBridge(this.telemetry, this.registry);
-    this.deliveryTelemetry = new RuntimeDeliveryTelemetry(
-      this.telemetry,
-      this.tracing,
-      (clientSessionId) => digest(clientSessionId),
-    );
-    this.deliveryObserver = this.deliveryTelemetry.observer;
     this.operations = new RuntimeOperationRunner({
-      telemetry: this.telemetry,
-      tracing: this.tracing,
       assertRequestBytes: (bytes) => this.control.assertRequestBytes(bytes),
       admit: (session, fairnessKey, sessionOrder) =>
         this.control.admit(session, fairnessKey, sessionOrder),
     });
-    const ownsTelemetryJournal = !(options.telemetryJournal instanceof TelemetryJournal);
-    this.telemetryJournal = options.telemetryJournal instanceof TelemetryJournal
-      ? options.telemetryJournal
-      : new TelemetryJournal({
-          path: this.engine.path === ":memory:"
-            ? ":memory:"
-            : telemetryJournalPath(this.engine.path),
-          ...options.telemetryJournal,
-        });
-    if (this.telemetryJournal.snapshot().state !== "ready") {
-      throw new TypeError("Runtime requires a ready telemetry journal");
-    }
-    this.applicationSignals = new ApplicationSignals(
-      this.telemetryJournal,
-      this.now,
-      () => this.tracing.applicationLogContext(),
-    );
-    this.log = this.applicationSignals.log;
-    this.telemetryExporters = options.telemetryExporters === undefined
-      ? undefined
-      : new TelemetryJournalExporters({
-          journal: this.telemetryJournal,
-          ...options.telemetryExporters,
-        });
     this.reads = new RuntimeReadExecutor({
       engine: this.engine,
       limits: this.limits,
       now: this.now,
-      telemetryEnabled: this.telemetry.enabled,
-      tracing: this.tracing,
     });
     this.reactive = new OrderedReactive<RuntimeReactiveContext>({
       limits: this.limits,
       initialVersion: this.engine.commitVersion(),
       now: this.now,
       evaluate: (input) => this.queries.evaluate(input),
-      ...(this.telemetry.enabled ? { observer: this.tracing.observeReactive } : {}),
     });
     this.functions = new RuntimeFunctionExecutor({
       engine: this.engine,
@@ -291,34 +235,23 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       reads: this.reads,
       reactive: this.reactive,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      applicationSignals: this.applicationSignals,
       log: this.log,
+      analytics: this.analytics,
       pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
+      vocabulary: this.vocabulary,
+      publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
+      files: this.files,
       ...(hasMcpCapabilities
         ? {
             mcp: {
-              bindTokenContext: (context, principal, connection, reads, writes, work) =>
-                this.mcp.bindTokenContext(
-                  context,
-                  principal,
-                  connection,
-                  reads,
-                  writes,
-                  work,
-                ),
               bindAiContext: (context, fairnessKey, requestBytes) =>
                 this.mcp.bindAiContext(context, fairnessKey, requestBytes),
-              publishCommittedInvalidations: (writes) =>
-                this.mcp.publishCommittedInvalidations(writes),
             },
           }
         : {}),
       armJobs: () => this.jobs.arm(),
       jobs: () => this.jobs,
-      files: this.files,
       fileLifecycleSignal: () => this.control.shutdownSignal,
       hooks: options.hooks,
       now: this.now,
@@ -328,8 +261,6 @@ export class Runtime implements RuntimePort {
       reads: this.reads,
       functions: this.functions,
       shutdownSignal: () => this.control.shutdownSignal,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
     });
     this.fileHttp = new FileHttpRuntime({
       files: this.files,
@@ -352,29 +283,24 @@ export class Runtime implements RuntimePort {
       operations: this.operations,
       functions: this.functions,
       queries: this.queries,
-      authInvalidation: this.authInvalidation,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
+      immediateInvalidations: this.immediateProcedureInvalidations,
       admittedRequestBytes: (request, receivedBytes) =>
         this.control.admittedRequestBytes(request, receivedBytes),
       operationSignal: (signal) => this.control.operationSignal(signal),
       admit: (fairnessKey) => this.control.admit(null, fairnessKey),
-      captureDeliveryObserver: () => this.deliveryTelemetry.capture(),
       now: this.now,
     });
     this.mcp = new RuntimeMcp({
-      engine: this.engine,
       registry: this.registry,
-      limits: this.limits,
+      vocabulary: this.vocabulary,
       reads: this.reads,
       functions: this.functions,
       operations: this.operations,
       now: this.now,
-      assertReady: () => this.control.assertReady(),
       operationSignal: (signal) => this.control.operationSignal(signal),
       admittedRequestBytes: (request, receivedBytes) =>
         this.control.admittedRequestBytes(request, receivedBytes),
-      publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
+      immediateInvalidations: this.immediateProcedureInvalidations,
     });
     const authCaptureControlReserve = Math.min(
       this.limits.maxFrameBytes,
@@ -392,25 +318,12 @@ export class Runtime implements RuntimePort {
       reactive: this.reactive,
       operations: this.operations,
       authCaptureBudget: this.authCaptureBudget,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
-      ...(this.telemetry.enabled
-        ? { telemetryConnectionId: (clientSessionId) => digest(clientSessionId) }
-        : {}),
       createChannelContext: (state, signal, requestBytes) =>
         this.channelProcedureContext(state, signal, requestBytes),
-      observeConnectionCount: (connections) =>
-        this.telemetry.recordMetric({
-          name: "runtime.connections",
-          value: connections,
-          unit: "gauge",
-        }),
     });
     this.system = new RuntimeSystem({
       functions: this.functions,
       operations: this.operations,
-      telemetry: this.telemetry,
-      tracing: this.tracing,
       invalidations: this.immediateProcedureInvalidations,
       signal: (signal) => this.control.systemSignal(signal),
       now: this.now,
@@ -418,9 +331,10 @@ export class Runtime implements RuntimePort {
     this.jobs = new RuntimeJobs({
       declared: options.jobs ?? [],
       executor: this.functions,
+      registry: this.registry,
       reads: this.reads,
       system: this.system,
-      telemetry: this.telemetry,
+      log: this.log,
       limits: this.limits.jobs,
       now: this.now,
       signal: () => this.control.shutdownSignal,
@@ -429,13 +343,6 @@ export class Runtime implements RuntimePort {
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
-      telemetry: this.telemetry,
-      telemetryJournal: this.telemetryJournal,
-      ...(this.telemetryExporters === undefined
-        ? {}
-        : { telemetryExporters: this.telemetryExporters }),
-      ownsTelemetry,
-      ownsTelemetryJournal,
       ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
       ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
       reads: this.reads,
@@ -444,12 +351,9 @@ export class Runtime implements RuntimePort {
       sessions: this.sessionStore,
       jobs: this.jobs,
       fileCleanup: this.fileCleanup,
-      files: this.files,
       authCaptureBudget: this.authCaptureBudget,
       sseBudget: this.http.sseBudget,
       sseProducers: this.http.sseProducers,
-      stopSampler: () => this.sampler.stop(),
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
     });
     this.sessionApplication = new RuntimeSessionApplication({
       engine: this.engine,
@@ -462,31 +366,6 @@ export class Runtime implements RuntimePort {
       operationSignal: (signal) => this.control.operationSignal(signal),
       now: this.now,
     });
-    this.sampler = new RuntimeSampler({
-      telemetry: this.telemetry,
-      isReady: () => this.control.isReady,
-      state: () => ({
-        connections: this.sessionStore.size,
-        activeOperations: this.control.activeOperationCount,
-        activeOperationCallers: this.control.activeCallerCount,
-        activeSse: this.http.sseProducers.size,
-        realtime: this.realtime?.snapshot() ?? null,
-        reader: this.reads.snapshot(),
-        writer: this.functions.snapshot(),
-        reactive: this.reactive.metricsSnapshot(),
-        publication: this.reactive.publication.snapshot(),
-        authCaptureBudget: this.authCaptureBudget.snapshot(),
-        sseBudget: this.http.sseBudget.snapshot(),
-        telemetry: this.telemetry.snapshot(),
-        files: this.files.observability.snapshot(),
-        storage: this.engine.status(),
-      }),
-      sampleRealtime: () => {
-        void this.realtime?.sampleHealth(8);
-      },
-      flushDeliveryFailures: () => this.deliveryTelemetry.flush(),
-    });
-    this.sampler.start();
     this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
     void this.jobs.activate();
   }
@@ -500,7 +379,7 @@ export class Runtime implements RuntimePort {
   }
 
   kindOf(address: string): string | null {
-    if (address.startsWith("events.")) return "event";
+    if (address.startsWith(EVENTS_ADDRESS_PREFIX)) return "event";
     return this.registry.kindOf(address) ?? null;
   }
 
@@ -508,13 +387,16 @@ export class Runtime implements RuntimePort {
     account: ExternalAccount,
     signal?: AbortSignal,
   ): Promise<Identity> {
+    // A vault credential is already an Identity; it is resolved from the
+    // vault, never provisioned as an external account.
+    if (account.issuer === CREDENTIAL_ISSUER) {
+      return this.credentials.identityFor(account, signal);
+    }
     const requestBytes = this.control.admittedRequestBytes(account);
     const operationSignal = this.control.operationSignal(signal);
     const fairnessKey = externalAccountFairnessKey(account);
     return this.operations.run(
       null,
-      "transaction",
-      undefined,
       requestBytes,
       () => this.functions.resolveIdentity(
         account,
@@ -522,28 +404,34 @@ export class Runtime implements RuntimePort {
         operationSignal,
         requestBytes,
       ),
-      { synthesizeHandler: false, fairnessKey },
+      { fairnessKey },
     );
   }
 
-  /** Resolve one endpoint-bound MCP bearer without consulting external identity providers. */
-  async authenticateMcpToken(
-    mcp: string,
+  /** Scope grants ride the same re-verification: an auth-epoch change re-reads them. */
+  readonly resolveScopes: ScopeResolver = (identity, account) =>
+    this.credentials.resolveScopes(identity, account);
+
+  /** Authenticate one raw vault credential into its full first-class principal. */
+  async authenticateCredential(
     rawToken: string,
     fairnessKey: string,
     signal?: AbortSignal,
-  ): Promise<McpPrincipal> {
-    return this.mcp.authenticateToken(mcp, rawToken, fairnessKey, signal);
+  ): Promise<Principal> {
+    const parsed = parseCredentialToken(rawToken);
+    if (parsed === null) {
+      throw new AckerDBError("unauthenticated", "invalid credential");
+    }
+    return this.credentials.authenticate(parsed, fairnessKey, signal);
   }
 
-  /** Own one exact non-expiring MCP credential from verification through HTTP completion. */
-  async acquireMcpTokenLease(
-    mcp: string,
-    parsed: ParsedMcpToken,
+  /** Own one exact non-expiring identity credential from verification through HTTP completion. */
+  async acquireCredentialLease(
+    parsed: ParsedCredentialToken,
     fairnessKey: string,
     signal?: AbortSignal,
-  ): Promise<McpCredentialLease> {
-    return this.mcp.acquireTokenLease(mcp, parsed, fairnessKey, signal);
+  ): Promise<CredentialLease> {
+    return this.credentials.acquireLease(parsed, fairnessKey, signal);
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
@@ -728,13 +616,10 @@ export class Runtime implements RuntimePort {
         work,
       ) => this.operations.run(
         null,
-        "realtime",
-        address,
         requestBytes,
         work,
         {
           fairnessKey,
-          synthesizeHandler: false,
           abortSignal: signal,
         },
       ),
@@ -772,12 +657,6 @@ export class Runtime implements RuntimePort {
       },
     });
   }
-
-  readonly [CAPTURE_DELIVERY_OBSERVER] = (
-    lane: OutboundLane = "application",
-    clientSessionId?: string,
-  ): DeliveryObserver | undefined =>
-    this.deliveryTelemetry.capture(lane, clientSessionId);
 
   private readNow(): number {
     const now = this.now();

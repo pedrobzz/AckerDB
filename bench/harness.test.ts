@@ -11,7 +11,7 @@ import {
 } from "./benchmark.ts";
 import { latencyStats, median, runClosedLoop } from "./load-engine.ts";
 import { ProcessTreeMonitor, parseProcessTable, parsePsDuration, readProcessTable } from "./process-tree.ts";
-import { READINESS_SAMPLES, runConnectionScale } from "./workload.ts";
+import { runConnectionLevel } from "./workload.ts";
 
 describe("latency statistics", () => {
   test("uses exact nearest-rank percentiles without mutating input", () => {
@@ -203,14 +203,13 @@ describe("subscription saturation profiles", () => {
   });
 });
 
-describe("connection readiness sampling", () => {
-  test("single-add levels sample connect→ready→close repeatedly; batched levels are unchanged", async () => {
-    const idleMs = 25;
+describe("connection levels", () => {
+  test("each level opens, measures and releases its own cohort", async () => {
     const config: BenchmarkConfig = {
       profile: "quick",
       seed: 1,
       operation: { warmupMs: 10, steadyMs: 10, trials: 1, drainTimeoutMs: 1_000, profiles: [] },
-      connections: { levels: [1, 3], batchSize: 100, workMs: 10, timeoutMs: 1_000 },
+      connections: { levels: [1, 3], batchSize: 2, workMs: 10, timeoutMs: 1_000 },
       subscriptions: {
         users: 1,
         queriesPerUser: 1,
@@ -223,7 +222,7 @@ describe("connection readiness sampling", () => {
         drainTimeoutMs: 1_000,
         patterns: ["shared"],
       },
-      resources: { idleMs },
+      resources: { idleMs: 25 },
       seedBatchSize: 256,
     };
     const searchRows = (partition: number): SearchRow[] =>
@@ -261,40 +260,32 @@ describe("connection readiness sampling", () => {
     };
     let nonce = 0;
 
-    const { measurements: results, failures } = await runConnectionScale(adapter, config, () => nonce++);
+    const single = await runConnectionLevel(adapter, config, 1, () => nonce++, { measureIdle: false });
+    const batched = await runConnectionLevel(adapter, config, 3, () => nonce++, { measureIdle: true });
 
-    const [single, batched] = results;
-    expect(results).toHaveLength(2);
-    if (single === undefined || batched === undefined) {
-      throw new Error("connection readiness fixture unexpectedly failed");
+    expect(single.failures).toEqual([]);
+    expect(batched.failures).toEqual([]);
+    if (single.measurement === undefined || batched.measurement === undefined) {
+      throw new Error("connection level fixture unexpectedly failed");
     }
-    expect(failures).toEqual([]);
-    // Level 1 is a distribution of READINESS_SAMPLES sequential post-idle draws.
-    expect(single.targetConnections).toBe(1);
-    expect(single.connected).toBe(1);
-    expect(single.addedConnections).toBe(1);
-    expect(single.errors).toEqual([]);
-    expect(single.readyLatency.count).toBe(READINESS_SAMPLES);
-    // Setup time aggregates the measured connects only; the ramp wall time here is
-    // dominated by (READINESS_SAMPLES - 1) idle gaps, which must be excluded.
-    expect(single.setupMs).toBeGreaterThan(0);
-    expect(single.setupMs).toBeLessThan((READINESS_SAMPLES - 1) * idleMs);
-    expect(single.readyConnectionsPerSec).toBeCloseTo(READINESS_SAMPLES / (single.setupMs / 1_000), 6);
-    expect(single.work.failed).toBe(0);
-    // Every sample but the last closes before the next post-idle draw; the last joins the cohort.
-    for (let sample = 0; sample < READINESS_SAMPLES - 1; sample++) {
-      expect(events[sample * 2]).toBe(`connect:${sample}`);
-      expect(events[sample * 2 + 1]).toBe(`close:${sample}`);
-    }
-    expect(events[(READINESS_SAMPLES - 1) * 2]).toBe(`connect:${READINESS_SAMPLES - 1}`);
-    // Levels that add several connections keep the batched ramp and per-connection latencies.
-    expect(batched.targetConnections).toBe(3);
-    expect(batched.connected).toBe(3);
-    expect(batched.addedConnections).toBe(2);
-    expect(batched.readyLatency.count).toBe(2);
-    expect(batched.errors).toEqual([]);
-    // The whole ladder is closed at the end: every opened connection has a matching close.
-    expect(connects).toBe(READINESS_SAMPLES + 2);
+    // A level is independent: it opens exactly its own target, not the difference
+    // from whatever the previous level happened to leave behind.
+    expect(single.measurement.connected).toBe(1);
+    expect(single.measurement.readyLatency.count).toBe(1);
+    expect(batched.measurement.connected).toBe(3);
+    expect(batched.measurement.readyLatency.count).toBe(3);
+    expect(connects).toBe(4);
+
+    // Readiness is aggregate ramp time now that no idle gap is baked into it.
+    expect(single.measurement.setupMs).toBeGreaterThan(0);
+    expect(single.measurement.readyConnectionsPerSec)
+      .toBeCloseTo(1 / (single.measurement.setupMs / 1_000), 6);
+
+    // Only the repetition that asked for it pays for an idle plateau.
+    expect(single.measurement.connectedIdlePhaseId).toBeUndefined();
+    expect(batched.measurement.connectedIdlePhaseId).toBe("connections:3:idle");
+
+    // Every connection a level opened is closed before the next level starts.
     expect(events.filter((event) => event.startsWith("close:"))).toHaveLength(connects);
   });
 });

@@ -235,7 +235,6 @@ describe("File HTTP flow", () => {
       engine,
       registry: new Registry(functions),
       verifier: new TestVerifier(),
-      telemetry: false,
       files: {
         publicUrl: "https://files.example.test/",
         store: fileStore,
@@ -434,7 +433,6 @@ describe("File HTTP flow", () => {
       resource: "idempotency",
     });
 
-    const providerErrors = runtime.status().files.providerErrors.total;
     const short = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
         method: "PUT",
@@ -450,8 +448,6 @@ describe("File HTTP flow", () => {
       retryable: false,
       resource: "idempotency",
     });
-    expect(runtime.status().files.providerErrors.total).toBe(providerErrors);
-
     const retried = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
         method: "PUT",
@@ -466,7 +462,7 @@ describe("File HTTP flow", () => {
   test("invalid bearer upload URLs never enter the database writer", async () => {
     const before = engine.commitVersion();
     const response = await fetch(
-      `${base}/api/_files/uploads/9223372036854775807.${"x".repeat(43)}`,
+      `${base}/_files/uploads/9223372036854775807.${"x".repeat(43)}`,
       { method: "PUT", body: "untrusted" },
     );
 
@@ -753,7 +749,7 @@ describe("File HTTP flow", () => {
     })).status).toBe(404);
     await Bun.sleep(2);
     expect((await fetch(path(created.data.expiring.url))).status).toBe(404);
-    expect((await fetch(`${base}/api/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
+    expect((await fetch(`${base}/_files/grants/999.${"x".repeat(43)}`)).status).toBe(404);
   });
 
   test("reports authenticated transfer saturation as retryable overload", async () => {

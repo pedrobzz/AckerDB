@@ -10,6 +10,10 @@
 Describe the useful work, the invariant it changes, and any ownership or
 resource cost added or removed.
 
+Name the responsibilities the change adds or moves as commodity or policy. For
+any hand-built commodity, state the evidence that adopting, composing, or
+forking a proven implementation was inadequate.
+
 ## Verification
 
 List the affected boundary tests and relevant failure-path checks.

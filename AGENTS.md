@@ -1,3 +1,5 @@
+Before designing, implementing, changing, or refactoring any code, always read the `policy-and-commodity` skill and follow it. AckerDB adds to that doctrine in *Prefer less code and proven work* below; nothing here relaxes it.
+
 Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not AckerDB decisions or domain modeling.
 
 ## Performance, correctness, and code quality
@@ -47,7 +49,7 @@ across every dimension of the performance vector:
 | --- | --- |
 | Useful latency and throughput | Fast p50/p95/p99 and high completed useful work for the actual operation, not a synthetic partial path. |
 | Idle cost | Near-zero CPU when there is no work; no background churn, polling, or retained state without a purpose. |
-| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, history, and telemetry must earn their bytes. |
+| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, and history must earn their bytes. |
 | Scale shape | Minimal proportional cost. No global scans, duplicated recomputation, or allocation cliffs. Larger loads may use larger machines. |
 | Tail behavior | A slow consumer, a hot key, a full queue, or a dependency failure gets a bounded typed outcome instead of poisoning unrelated work. |
 | Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
@@ -103,10 +105,13 @@ Correctness is broader than “the happy-path test passed.” Correct AckerDB co
 ### When a design wall appears
 
 A mismatch with a specification, failed assumption, test, or integration is a
-design signal. Do not patch around it to make the old statement appear true.
-Re-derive the model from first principles until the conflicting case has one
-honest home. If that result diverges from the requested specification, explain
-the divergence before implementing it.
+design signal—and so is a chosen dependency that cannot support the contract.
+Do not patch around it to make the old statement appear true. Classify the wall
+as commodity, policy, or the boundary between them, and follow the wall
+protocol in the `policy-and-commodity` skill. Re-derive the model from first
+principles until the conflicting case has one honest home. If that result
+diverges from the requested specification, explain the divergence before
+implementing it.
 
 Never turn an invalid design into a “working” deliverable using an accidental
 patch. The patch merely hides the failure and becomes future machinery.
@@ -127,15 +132,37 @@ Do not add backwards compatibility unless it was explicitly requested.
 
 The most performant code is code that never runs. The least buggy code is code
 that does not exist. Delete redundant operations and state before optimizing
-them. Do not hand-build commodity machinery just to avoid a dependency; use a
-small, well-understood solution when it fits the actual contract.
+them.
 
-Do not keep a dependency merely because it currently works. If its design adds
-material cost, incorrectness, or unused machinery, first study it in OpenSRC
-and its primary sources, then refresh deliberately when the studied version
-changes. Vendor it only when a focused adaptation has a proven net gain; build
-a replacement only after a prototype demonstrates a material performance or
-correctness gain that justifies permanent maintenance.
+What follows adds to the `policy-and-commodity` skill and does not restate it.
+
+AckerDB is infrastructure, and infrastructure has been studied for decades. Its
+generic substrate—storage, transport, signaling, scheduling, retries, auth
+protocols, serialization—is commodity, so adopting a proven implementation is
+the default here rather than the fallback.
+
+AckerDB's policy merges into one definition what is normally several systems: a
+procedure is observed reactively, served over exposed HTTP, offered as an MCP
+tool, and memoized as a durable step, under one authorization vocabulary, one
+result contract, and one version contract. That convergence is policy and is
+where AckerDB may invent. It says nothing about whether an ICE stack, a
+full-text index, or a JWKS client should be written here.
+
+Because that policy is unusual, a mature implementation often covers nearly
+everything a converged surface needs while the missing part makes it unusable:
+a capability that exists internally but is not exported, or a contract that
+assumes the surfaces stay separate. A supervised fork or vendored copy is the
+expected answer there, between composing proven solutions and building new
+commodity. The realtime native packages already carry a pinned libwebrtc fork
+on a recorded LiveKit revision — that one is a real fork, and it is owned as one
+(`packages/realtime-native/*/PROVENANCE.md`).
+
+A fork is ownership, not a shortcut: pin an immutable revision, record the
+upstream revision it came from, verify inputs by digest, publish its provenance
+where the artifact ships, and refresh deliberately when the studied version
+changes. Do not keep a dependency merely because it currently works—if its
+design adds material cost, incorrectness, or unused machinery, study it in
+OpenSRC and its primary sources first.
 
 ### Evidence and verification
 
@@ -176,22 +203,99 @@ A `canary` pull request may keep the current source version — every merge
 still publishes a distinct `X.Y.Z-canary.N` — and declares exactly one major,
 minor, or patch step with `bun run release:prepare <level>` only when it
 releases a new source version. A `hotfix/*` pull request into `main` always
-declares exactly one step. All seven public packages and five host-specific
+declares exactly one step. All eight public packages and five host-specific
 native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.
 
-The `Fast CI` benchmark runs a same-job GitHub-hosted comparison only when the
-pull request changes code exercised by the benchmark, its executable harness,
-the pull-request workflow, or its path classifier. Every other pull request skips
-it immediately; version bumps, docs, tests, and unrelated packages must not
-spend benchmark time. A real run compares the pull request's AckerDB
-with the base branch's AckerDB. It never runs another vendor and never runs on
-the developer machine. Telemetry is disabled unless telemetry-related source
-changed; only then are enabled, exporter, and disabled profiles measured. The
-check has no thresholds, score, or automated performance acceptance. Pedro and
-an agent interpret the complete vector and anomalies by reasoning before merge.
-Historical files in `bench/results/` are not current release evidence.
+**The AckerDB version is the compatibility contract, and there is no separate
+number on the wire.** Packages ship lockstep with `workspace:X.Y.Z` precisely
+because version X is contracted to speak to version X, so a connection's
+handshake declares the build that opened it and the decoder accepts exactly its
+own — `ACKERDB_VERSION` in `@ackerdb/core`, read from that package's manifest so
+one fact answers on a server and inside a bundled browser client alike. Running
+mixed versions is the user's error to make and the framework's job to name; the
+refusal says which two versions met and that matching ones must be installed,
+never which mixes might be legal.
+
+Changing the wire therefore costs nothing and needs no permission. Do not add a
+field to avoid reshaping one, do not preserve an old frame shape, and do not
+reintroduce a protocol number to describe a compatibility this contract does
+not offer.
+
+**A frame carries the version exactly when it can be decoded on a connection
+that has not completed a handshake.** That is `hello`, `welcome`, `err`, and
+every frame of the transports that have no handshake at all — SSE and realtime
+signaling are HTTP, where the first frame is the greeting. Everything after a
+handshake carries none: the peer's build was established once and no connection
+changes builds under itself, so repeating it spends the hottest field in the
+system for a fact already known.
+
+`err` is a member of that set and not an exception to it. A client admits a
+connection-level `err` before its `welcome` on purpose, because that is how a
+server delivers a refusal it will not open a session for — and a
+version-refusing server's refusal *is* an `err`. Leaving it unversioned would
+make the one frame that explains a mixed install the one frame nobody could
+check.
+
+The rule is enforced by the parse surfaces, not by this document. Each
+direction has a handshake parser that accepts only what is admissible before a
+session and reads the version on every one of them, and a session parser for
+everything after; a frame's base interface decides whether it even has a `v` to
+set. Admitting a new frame before the handshake therefore means adding a case
+to a parser that checks the version, and forgetting means the frame is refused
+rather than silently trusted.
+
+The exposed HTTP surface is the deliberate exception and not a gap: its request
+and response bodies are the application's own arguments and results, published
+in its OpenAPI document for callers who are not AckerDB builds at all, so it has
+no framework envelope to version and must not grow one. Its compatibility
+contract belongs to the application.
+
+The `Benchmark` check gates every pull request that touches a measured input,
+on the way into `canary` and again on the `canary` → `main` promotion, where it
+is required alongside `Release policy` and `Fast CI`. A regression is then
+attributable to one pull request first and to the release second. It ran on the
+promotion alone until a branch costing eighty-six percent of query throughput
+reached a clean review behind a two-second green tick; the release delta is a
+real measurement, but it arrives when attributing it costs the whole cycle.
+Version bumps, docs, tests, and unrelated packages still must not spend
+benchmark time, and it never runs another vendor.
+
+Both commits are measured live and interleaved, one unit of work at a time, so
+drift lands on both sides instead of on whichever ran second. That is published
+prior art — duet benchmarking, Bulej et al., ICPE '20 — not a house rule, and the
+decision rule around it is `criterion.rs`'s shape. Each metric is judged over
+sixteen repetitions on the median of its paired ratios against a
+distribution-free interval built from the repetitions themselves — a noise band
+measured from the run, not a threshold carried in. A gated metric fails the check
+only when that interval keeps the whole median on the worse side of neutral
+**and** the median clears a twelve-percent floor; anything else reports no
+signal, which is an answer. Correctness, accounting, and incomplete-measurement
+failures fail outright. `p99` and connect-readiness `p95` are reported and never
+gated.
+
+Every run's paired deltas are appended to the `bench-ledger` data branch — ratios
+only, never absolute numbers, because a paired interleaved ratio is
+machine-independent and an ephemeral runner's throughput is not. Nothing reads
+it. It exists so the next question about this gate's own noise is a query over
+runs that already happened instead of a null campaign, which is how rustc-perf,
+Perfherder, and Bencher all work. Do not make it a threshold, and do not adjust a
+per-metric threshold to make something pass: MongoDB's static-threshold system
+produced false positives up to 99% depending on how you count, and per-test
+adjustment is what they call fixes and band-aids. A metric that is genuinely
+unfit is reported and never gated, on evidence, which is the category `p99`
+already sits in.
+
+This is detection, not acceptance. Measured against its own runner noise the gate
+catches roughly ninety-eight percent of twenty-percent regressions, ninety-three
+percent of fifteen-percent ones, and about one in five below ten, so a green
+check is not a performance verdict: Pedro and an agent still interpret the
+complete vector and anomalies by reasoning before merge.
+A run declares the host it executed on rather than refusing to execute off the
+runner; a paired interleaved comparison is meaningful wherever it runs, but a
+number without a machine beside it is not. Historical files in `bench/results/`
+are not current release evidence.
 
 Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
 Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is
@@ -212,6 +316,12 @@ only when actual WebRTC native inputs changed. A `canary` → `main` promotion r
 that work; it runs branch policy before merge and npm delivery after merge.
 
 ## Agent skills
+
+### Policy and commodity
+
+The `policy-and-commodity` skill, read before every implementation without
+exception. AckerDB's additions to it are in *Prefer less code and proven work*
+above; the vocabulary is in `CONTEXT.md`.
 
 ### Issue tracker
 

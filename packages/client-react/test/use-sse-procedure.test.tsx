@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@ackerdb/core";
+import { apiGroup, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
   Engine,
@@ -41,6 +41,17 @@ let unmountHoldReleased = deferred<void>();
 function registry(): Registry {
   return new Registry({
     stream: {
+      /** Published in another group, so its root is `/internal/` not `/api/`. */
+      grouped: sseProcedure({
+        apiPath: "internal",
+        access: "public",
+        http: true,
+        args: {},
+        yields: v.object({ tick: v.int() }),
+        handler: async function* () {
+          yield { tick: 0 };
+        },
+      }),
       ticks: sseProcedure({
         access: "public",
         http: true,
@@ -106,7 +117,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  }, ["internal"]);
 }
 
 interface App {
@@ -124,7 +135,6 @@ function createApp(): App {
     engine,
     registry: registry(),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
   });
   const server = serve({ runtime, port: 0 });
   return {
@@ -140,11 +150,11 @@ function createApp(): App {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
 // Records the exact order of SSE request and acknowledgement traffic; the
 // stream body itself is untouched. Resolves `fetch` at call time: after
-// support/dom.ts registers happy-dom it restores Bun's native fetch.
+// ackerdb-test-support/dom registers happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     const { pathname } = new URL(url);
@@ -167,7 +177,11 @@ interface Mounted {
   unmount(): void;
 }
 
-async function mountSse(base: string, address: string, log: string[] = []): Promise<Mounted> {
+async function mountSse(
+  base: string,
+  address: SseRef<Record<string, unknown>, Record<string, unknown>> | string,
+  log: string[] = [],
+): Promise<Mounted> {
   const calls: AnyCall[] = [];
   let phase = "";
   let bump: () => void = () => {};
@@ -225,16 +239,40 @@ afterEach(() => {
   while (roots.length > 0) roots.pop()!.unmount();
 });
 
-async function mount(address: string, log: string[] = []): Promise<Mounted> {
+async function mount(
+  address: SseRef<Record<string, unknown>, Record<string, unknown>> | string,
+  log: string[] = [],
+): Promise<Mounted> {
   const mounted = await mountSse(app.base, address, log);
   roots.push(mounted);
   return mounted;
 }
 
 describe("useSseProcedure against a real ackerdb server", () => {
+  test("streams from the root of the group its reference names", async () => {
+    // The hook takes a reference apart to key its callable, so the group has
+    // to travel with the address: a real server only answers `api.stream.grouped`
+    // under `/internal/`, and reading a chunk is the proof it was asked there.
+    const ref = apiGroup("internal").stream.grouped as SseRef<
+      Record<string, unknown>,
+      { tick: number }
+    >;
+    const mounted = await mount(ref as never);
+    const reader = mounted.call({}).getReader();
+    expect(await reader.read()).toEqual({ done: false, value: { tick: 0 } });
+    await reader.cancel();
+
+    // The callable's identity survives a rerender, exactly as it does for a
+    // plain address: the group is one more string in its dependency list.
+    const before = mounted.call;
+    mounted.rerender();
+    await until(() => mounted.calls.length > 0, "a committed render");
+    expect(mounted.call).toBe(before);
+  });
+
   test("pull-driven chunks with exact acknowledgement order and no read-ahead", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.ticks", log);
+    const mounted = await mount("api.stream.ticks", log);
     const stream = mounted.call({ count: 3 });
     expect(stream).toBeInstanceOf(ReadableStream);
 
@@ -266,7 +304,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel before the first pull never contacts the server", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.ticks", log);
+    const mounted = await mount("api.stream.ticks", log);
     const stream = mounted.call({ count: 3 });
     await stream.cancel("never started");
     await Bun.sleep(20);
@@ -278,7 +316,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel before the first chunk aborts the request and releases the server iterator", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.hold", log);
+    const mounted = await mount("api.stream.hold", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     const pending = reader.read();
@@ -295,7 +333,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("cancel between chunks releases the server iterator promptly", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.holdAfterFirst", log);
+    const mounted = await mount("api.stream.holdAfterFirst", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
@@ -308,7 +346,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   });
 
   test("an invalid chunk fails the stream with the exact validation error", async () => {
-    const mounted = await mount("stream.invalid");
+    const mounted = await mount("api.stream.invalid");
     const reader = mounted.call({}).getReader();
     expect(await reader.read()).toEqual({ done: false, value: { value: "first" } });
 
@@ -328,7 +366,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   test("server disconnect fails the stream once with the typed outcome and never restarts", async () => {
     const local = createApp();
     const log: string[] = [];
-    const mounted = await mountSse(local.base, "stream.hold", log);
+    const mounted = await mountSse(local.base, "api.stream.hold", log);
     try {
       const stream = mounted.call({});
       const reader = stream.getReader();
@@ -360,7 +398,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
 
   test("provider shutdown settles an open stream with a typed error and no restart", async () => {
     const log: string[] = [];
-    const mounted = await mount("stream.unmountHold", log);
+    const mounted = await mount("api.stream.unmountHold", log);
     const stream = mounted.call({});
     const reader = stream.getReader();
     expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
@@ -379,7 +417,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   });
 
   test("the callable is stable across rerenders and errors before the client exists", async () => {
-    const mounted = await mount("stream.ticks");
+    const mounted = await mount("api.stream.ticks");
     const ready = mounted.call;
     mounted.rerender();
     await Bun.sleep(20);

@@ -40,6 +40,11 @@ import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { McpAiContext } from "../../mcp/ai.ts";
 import {
+  takeCredentialInvalidations,
+  withCredentialContext,
+} from "../../auth/credential-context.ts";
+import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
+import {
   PluginRuntime,
   type PluginInvocationCapabilities,
   type PluginReadExecution,
@@ -50,12 +55,8 @@ import {
   type Subscriber,
 } from "../../subscriptions/reactive/contract.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
-import type { ApplicationSignals } from "../../telemetry/application-signals/application-signals.ts";
-import type {
-  AnalyticsEventRecord,
-  ApplicationLogger,
-} from "../../telemetry/application-signals/types.ts";
-import type { Telemetry } from "../../telemetry/telemetry.ts";
+import type { Analytics } from "../../signals/analytics.ts";
+import type { Logger } from "../../signals/logger.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   CommitCoordinator,
@@ -67,13 +68,17 @@ import {
   assertWriterAvailable,
   runInInvocationRoot,
   withMutationAccess,
-  withTransactionAnalytics,
 } from "../invocation-state.ts";
 import { createMutationInvocationScope } from "../mutation-scope.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "../contracts/lifecycle.ts";
-import type { RuntimeTraceBridge } from "../telemetry/trace-bridge.ts";
-import { JobsStore, dueJobStats, nextDueJobAt, readJobRow } from "../jobs/store.ts";
+import {
+  JobRunsStore,
+  JobsStore,
+  nextDueJobAt,
+  readJobRow,
+  readJobRunRow,
+} from "../jobs/store.ts";
 import {
   mutationJobsNamespace,
   procedureJobsNamespace,
@@ -91,22 +96,23 @@ const releaseNothing = (): void => {};
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
   readonly jobs: JobsStore;
+  readonly runs: JobRunsStore;
   /**
    * A savepoint over the open transaction plus its write collector: the
    * mutation-kind envelope runs the handler inside one, so a failed handler
    * rolls back its writes while the same transaction still records the
-   * failed attempt.
+   * failed run.
    */
   savepoint(): { rollback(): void; release(): void };
   /**
    * Run a mutation-kind job handler under a system-principal mutation context
-   * with the same bindings (MCP token vault, analytics attribution) a
+   * with the same bindings (credential vault, analytics attribution) a
    * registered mutation would have.
    */
   runMutationHandler<T>(
     jobAddress: string,
-    attempt: number,
-    run: (ctx: MutationCtx & { readonly attempt: number }) => T | Promise<T>,
+    runNumber: number,
+    run: (ctx: MutationCtx & { readonly runNumber: number }) => T | Promise<T>,
   ): Promise<T>;
 }
 
@@ -133,23 +139,15 @@ export interface RuntimeMutationCommitRequest {
   readonly principal: Principal;
   readonly args: unknown;
   readonly validate?: CommitRequest<unknown, ReactiveCommit>["validate"];
+  readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
 export interface RuntimeFunctionMcpCapabilities {
-  bindTokenContext<T extends object, R>(
-    context: T,
-    principal: Principal,
-    connection: Database,
-    reads: ReadRecorder | null,
-    writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>>;
   bindAiContext(
     context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): () => void;
-  publishCommittedInvalidations(writes: WriteCollector): void;
 }
 
 interface RuntimeCommitRequest<T> {
@@ -162,6 +160,13 @@ interface RuntimeCommitRequest<T> {
   readonly subscriber?: Subscriber;
   readonly work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>;
   readonly validate?: CommitRequest<T, ReactiveCommit>["validate"];
+  /**
+   * The originating caller's own auth-invalidation channel, when the caller
+   * owns a response this commit's revocations could destroy. Absent means the
+   * Runtime's immediate fan-out, which is right for every commit whose origin
+   * is the framework itself.
+   */
+  readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
 export interface RuntimeFunctionExecutorOptions<C> {
@@ -170,12 +175,17 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly limits: ServiceLimits;
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
-  readonly telemetry: Telemetry;
-  readonly tracing: RuntimeTraceBridge;
-  readonly applicationSignals: ApplicationSignals;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
+  readonly analytics: Analytics;
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
+  /** Application scopes plus the framework's: what a credential grant expands against. */
+  readonly vocabulary: readonly string[];
+  /**
+   * Committed revocations and grant changes, onto the generic auth-invalidation
+   * path, for a commit whose origin holds no response of its own.
+   */
+  readonly publishAuthInvalidation: (account: ExternalAccount) => void;
   readonly mcp?: RuntimeFunctionMcpCapabilities;
   /** Commit-wake: fired when a transaction touched the jobs table. */
   readonly armJobs: () => void;
@@ -195,7 +205,13 @@ export interface RuntimeFunctionExecutorOptions<C> {
 export class RuntimeFunctionExecutor<C> {
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly fileProcedures: FileProcedureRuntime;
-  private readonly analyticsByWrites = new WeakMap<WriteCollector, AnalyticsEventRecord[]>();
+  /**
+   * Where one commit's committed authority changes are published. The commit
+   * request knows its origin and the post-commit handoff only sees the write
+   * set, so the two meet on the collector the turn already owns.
+   */
+  private readonly authInvalidationByWrites =
+    new WeakMap<WriteCollector, (account: ExternalAccount) => void>();
   private fileRecoveryBarrier: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: RuntimeFunctionExecutorOptions<C>) {
@@ -203,14 +219,13 @@ export class RuntimeFunctionExecutor<C> {
       engine: options.engine,
       limits: options.limits,
       reservePublication: (bytes) => options.reactive.publication.reserve(bytes),
-      afterCommit: (writes, commitVersion) => {
-        options.files.observability.committed(writes.fileObservability);
+      afterCommit: (writes) => {
         if (writes.fileCleanupAt !== null) options.files.scheduleCleanupAt(writes.fileCleanupAt);
-        options.mcp?.publishCommittedInvalidations(writes);
-        const analytics = this.analyticsByWrites.get(writes);
-        if (analytics !== undefined) {
-          this.analyticsByWrites.delete(writes);
-          options.applicationSignals.commitAnalytics(analytics, commitVersion);
+        const credentialInvalidations = takeCredentialInvalidations(writes);
+        if (credentialInvalidations.length > 0) {
+          const publish = this.authInvalidationByWrites.get(writes)
+            ?? options.publishAuthInvalidation;
+          for (const account of credentialInvalidations) publish(account);
         }
       },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
@@ -227,6 +242,27 @@ export class RuntimeFunctionExecutor<C> {
 
   snapshot() {
     return this.coordinator.snapshot();
+  }
+
+  /** Expose `credentials` operations to exactly one active invocation context. */
+  private bindCredentialContext<T extends object, R>(
+    context: T,
+    principal: Principal,
+    connection: Database,
+    reads: ReadRecorder | null,
+    writes: WriteCollector | null,
+    work: (ctx: T) => R | Promise<R>,
+  ): Promise<Awaited<R>> {
+    return withCredentialContext(context, {
+      engine: this.options.engine,
+      connection,
+      principal,
+      reads,
+      writes,
+      limits: this.options.limits.credentials,
+      vocabulary: this.options.vocabulary,
+      now: this.options.now,
+    }, work);
   }
 
   close(): void {
@@ -247,7 +283,6 @@ export class RuntimeFunctionExecutor<C> {
     work: (db: unknown) => T | Promise<T>,
   ): Promise<T> {
     return this.options.reads.execute(
-      "query",
       "system:files",
       signal,
       1,
@@ -256,7 +291,6 @@ export class RuntimeFunctionExecutor<C> {
         this.options.engine,
         execution.connection,
         null,
-        execution.statementObserver,
       )),
     );
   }
@@ -294,12 +328,10 @@ export class RuntimeFunctionExecutor<C> {
         account.subject,
       ),
       {
-        operation: "transaction",
         bytes: requestBytes,
         fairnessKey,
         signal,
       },
-      false,
     );
     if (existing !== null) return existing;
     return this.coordinator.transactFramework({
@@ -321,20 +353,17 @@ export class RuntimeFunctionExecutor<C> {
       this.options.engine,
       execution.connection,
       execution.reads,
-      execution.statementObserver,
     );
     const timestamp = this.readNow();
     const context = this.hostQueryContext(db, principal, timestamp, execution);
-    return this.options.mcp !== undefined
-      ? this.options.mcp.bindTokenContext(
-          context,
-          principal,
-          execution.connection,
-          execution.reads,
-          null,
-          (ctx) => invokeFunction(fn, ctx, args),
-        )
-      : invokeFunction(fn, context, args);
+    return this.bindCredentialContext(
+      context,
+      principal,
+      execution.connection,
+      execution.reads,
+      null,
+      (ctx) => invokeFunction(fn, ctx, args),
+    );
   }
 
   commitMutation(
@@ -349,6 +378,9 @@ export class RuntimeFunctionExecutor<C> {
       idempotency: request.idempotency,
       subscriber: request.subscriber,
       validate: request.validate,
+      ...(request.publishAuthInvalidation === undefined
+        ? {}
+        : { publishAuthInvalidation: request.publishAuthInvalidation }),
       work: this.mutationWork(request.fn, request.principal, request.args),
     });
   }
@@ -365,7 +397,7 @@ export class RuntimeFunctionExecutor<C> {
       abortSignal: signal,
       timestamp,
       tx: async <R>(work: (ctx: TxCtx) => R): Promise<Awaited<R>> =>
-        await this.inTransactionTrace(() => this.executeWrite(
+        await this.executeWrite(
           "transaction",
           fairnessKey,
           signal,
@@ -374,26 +406,24 @@ export class RuntimeFunctionExecutor<C> {
             const context = Object.freeze({
               db,
               auth: principal,
-              analytics: this.options.applicationSignals.analyticsFor(principal),
+              analytics: this.options.analytics,
               log: this.options.log,
               timestamp,
             }) as TxCtx;
             try {
-              return await (this.options.mcp !== undefined
-                ? this.options.mcp.bindTokenContext(
-                    context,
-                    principal,
-                    this.options.engine.writer,
-                    null,
-                    writes,
-                    work,
-                  )
-                : work(context));
+              return await this.bindCredentialContext(
+                context,
+                principal,
+                this.options.engine.writer,
+                null,
+                writes,
+                work,
+              );
             } catch (error) {
               return poisonCurrentInvocation(error);
             }
           },
-        )) as Awaited<R>,
+        ) as Awaited<R>,
     });
   }
 
@@ -430,7 +460,7 @@ export class RuntimeFunctionExecutor<C> {
       : () => timestamp;
     const initialTimestamp = currentTimestamp();
     const plugins = this.options.pluginRuntime?.bindProcedure({
-      invocation: this.pluginInvocationCapabilities(principal, initialTimestamp),
+      invocation: this.pluginInvocationCapabilities(initialTimestamp),
       abortSignal: signal,
       runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
       runMutation: (work) => this.executePluginWrite(
@@ -459,7 +489,7 @@ export class RuntimeFunctionExecutor<C> {
       files: this.fileProcedures.capability(principal, signal),
       ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
-        this.inTransactionTrace(() => this.executeWrite(
+        this.executeWrite(
           "transaction",
           fairnessKey,
           signal,
@@ -475,23 +505,21 @@ export class RuntimeFunctionExecutor<C> {
             return scope.runRoot((mutationAccess) =>
               withMutationAccess(mutationAccess, async () => {
                 try {
-                  const value = await (this.options.mcp !== undefined
-                    ? this.options.mcp.bindTokenContext(
-                        context,
-                        principal,
-                        this.options.engine.writer,
-                        null,
-                        writes,
-                        work,
-                      )
-                    : work(context));
+                  const value = await this.bindCredentialContext(
+                    context,
+                    principal,
+                    this.options.engine.writer,
+                    null,
+                    writes,
+                    work,
+                  );
                   return isResult(value) ? value : Ok(value);
                 } catch (error) {
                   return poisonCurrentInvocation(error);
                 }
               }));
           },
-        )),
+        ),
       ...(surface === "http" ? {} : {
         linkAccount: (rawBearerToken: string) => this.linkAccount(
           principal,
@@ -526,7 +554,7 @@ export class RuntimeFunctionExecutor<C> {
   ): QueryCtx {
     const plugins = this.options.pluginRuntime?.bindQuery({
       ...execution,
-      invocation: this.pluginInvocationCapabilities(principal, timestamp),
+      invocation: this.pluginInvocationCapabilities(timestamp),
     }) ?? {};
     return Object.freeze({
       db: applicationDatabase(db),
@@ -544,32 +572,23 @@ export class RuntimeFunctionExecutor<C> {
     principal: Principal,
     timestamp: number,
     writes: WriteCollector,
-    attribution?: { functionAddress: string; functionKind: string },
     extras?: Record<string, unknown>,
   ): MutationCtx {
-    const analytics = this.options.applicationSignals.analyticsFor(principal, attribution);
     const plugins = this.options.pluginRuntime?.bindMutation({
       writes,
-      invocation: this.pluginInvocationCapabilities(principal, timestamp),
-      ...(this.options.telemetry.enabled
-        ? { statementObserver: this.options.tracing.observeStatement }
-        : {}),
+      invocation: this.pluginInvocationCapabilities(timestamp),
     }) ?? {};
     return Object.freeze({
       ...extras,
       db: applicationDatabase(db),
       auth: principal,
-      analytics,
+      analytics: this.options.analytics,
       log: this.options.log,
       timestamp,
       jobs: mutationJobsNamespace(
         this.options.jobs(),
         db,
-        new JobsStore(
-          this.options.engine,
-          writes,
-          this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
-        ),
+        new JobsStore(this.options.engine, writes),
       ),
       files: this.options.files.mutation(db, principal, timestamp, (at) => {
         writes.fileCleanupAt = writes.fileCleanupAt === null
@@ -589,16 +608,14 @@ export class RuntimeFunctionExecutor<C> {
       const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
-        this.options.mcp !== undefined
-          ? this.options.mcp.bindTokenContext(
-              invocation,
-              principal,
-              this.options.engine.writer,
-              null,
-              writes,
-              (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
-            )
-          : invokeFunction(fn, invocation, args, { mutationAccess }));
+        this.bindCredentialContext(
+          invocation,
+          principal,
+          this.options.engine.writer,
+          null,
+          writes,
+          (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
+        ));
     };
   }
 
@@ -618,17 +635,13 @@ export class RuntimeFunctionExecutor<C> {
       transactionSignal: request.transactionSignal,
       idempotency: request.idempotency,
       validate: request.validate,
-      ...(this.options.telemetry.enabled
-        ? {
-            telemetry: this.options.tracing.observeCommit,
-            statementTelemetry: this.options.tracing.observeStatement,
-          }
-        : {}),
       run: AsyncLocalStorage.snapshot(),
-      work: (db, writes) => this.withStagedAnalytics(
-        writes,
-        () => request.work(db, writes),
-      ),
+      work: (db, writes) => {
+        if (request.publishAuthInvalidation !== undefined) {
+          this.authInvalidationByWrites.set(writes, request.publishAuthInvalidation);
+        }
+        return request.work(db, writes);
+      },
       rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
         scheduledTables = new Set(writes.scheduledTables);
@@ -637,24 +650,6 @@ export class RuntimeFunctionExecutor<C> {
     });
     if (scheduledTables.size > 0) this.options.armJobs();
     return result;
-  }
-
-  private withStagedAnalytics<T>(
-    writes: WriteCollector,
-    work: () => T | Promise<T>,
-  ): Promise<T> {
-    const analytics: AnalyticsEventRecord[] = [];
-    this.analyticsByWrites.set(writes, analytics);
-    return withTransactionAnalytics(analytics, async () => {
-      try {
-        const value = await work();
-        if (isResult(value) && !value.ok) analytics.length = 0;
-        return value;
-      } catch (error) {
-        analytics.length = 0;
-        throw error;
-      }
-    });
   }
 
   private async executeWrite<T>(
@@ -696,11 +691,8 @@ export class RuntimeFunctionExecutor<C> {
       1,
       (db, writes) => {
         const surface: JobsWriteSurface = {
-          jobs: new JobsStore(
-            this.options.engine,
-            writes,
-            this.options.telemetry.enabled ? this.options.tracing.observeStatement : undefined,
-          ),
+          jobs: new JobsStore(this.options.engine, writes),
+          runs: new JobRunsStore(this.options.engine, writes),
           savepoint: () => {
             const checkpoint = checkpointWriteCollector(writes);
             this.options.engine.writer.exec("SAVEPOINT ackerdb_job_handler");
@@ -720,8 +712,8 @@ export class RuntimeFunctionExecutor<C> {
               },
             };
           },
-          runMutationHandler: async (jobAddress, attempt, run) => {
-            // The attempt is part of the context object itself: capability
+          runMutationHandler: async (jobAddress, runNumber, run) => {
+            // The run number is part of the context object itself: capability
             // bindings key off the exact frozen identity, so no caller may
             // spread a bound context into a copy.
             const context = this.hostMutationContext(
@@ -729,19 +721,16 @@ export class RuntimeFunctionExecutor<C> {
               SYSTEM_PRINCIPAL,
               this.readNow(),
               writes,
-              { functionAddress: jobAddress, functionKind: "job" },
-              { attempt },
-            ) as MutationCtx & { readonly attempt: number };
-            return this.options.mcp !== undefined
-              ? await this.options.mcp.bindTokenContext(
-                  context,
-                  SYSTEM_PRINCIPAL,
-                  this.options.engine.writer,
-                  null,
-                  writes,
-                  run,
-                )
-              : await run(context);
+              { runNumber },
+            ) as MutationCtx & { readonly runNumber: number };
+            return await this.bindCredentialContext(
+              context,
+              SYSTEM_PRINCIPAL,
+              this.options.engine.writer,
+              null,
+              writes,
+              run,
+            );
           },
         };
         const scope = createMutationInvocationScope(this.options.engine.writer, writes);
@@ -758,19 +747,12 @@ export class RuntimeFunctionExecutor<C> {
     return readJobRow(this.options.engine, connection, id);
   }
 
-  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = []) {
-    return nextDueJobAt(this.options.engine, connection, inProcessIds);
+  readJobRunRow(connection: Database, jobId: bigint, number: number) {
+    return readJobRunRow(this.options.engine, connection, jobId, number);
   }
 
-  dueJobStats(connection: Database, now: number) {
-    return dueJobStats(this.options.engine, connection, now);
-  }
-
-  private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {
-    const scope = this.options.tracing.currentScope();
-    return scope === undefined
-      ? work()
-      : this.options.tracing.runScope({ ...scope, operation: "transaction" }, work);
+  nextDueJobAt(connection: Database, inProcessIds: readonly bigint[] = [], notBefore = 0) {
+    return nextDueJobAt(this.options.engine, connection, inProcessIds, notBefore);
   }
 
   private executePluginQuery<T>(
@@ -779,7 +761,7 @@ export class RuntimeFunctionExecutor<C> {
     requestBytes: number,
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T> {
-    return this.options.reads.execute("query", fairnessKey, signal, requestBytes, null, work);
+    return this.options.reads.execute(fairnessKey, signal, requestBytes, null, work);
   }
 
   private executePluginWrite<T>(
@@ -794,14 +776,9 @@ export class RuntimeFunctionExecutor<C> {
       fairnessKey,
       signal,
       requestBytes,
-      (_db, writes) => work(Object.freeze({
-        writes,
-        ...(this.options.telemetry.enabled
-          ? { statementObserver: this.options.tracing.observeStatement }
-          : {}),
-      })),
+      (_db, writes) => work(Object.freeze({ writes })),
     );
-    return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
+    return execute();
   }
 
   private async linkAccount(
@@ -820,6 +797,14 @@ export class RuntimeFunctionExecutor<C> {
       this.options.credentialVerifier,
       this.options.now,
     );
+    if (account.issuer === CREDENTIAL_ISSUER) {
+      // A vault credential is already a first-class Identity; aliasing it onto
+      // another Identity would give one credential two authorities.
+      throw new AckerDBError(
+        "validation",
+        "credential tokens cannot be linked as external accounts",
+      );
+    }
     throwIfAborted(signal);
     await this.coordinator.transactFramework({
       fairnessKey,
@@ -886,19 +871,11 @@ export class RuntimeFunctionExecutor<C> {
     }
   }
 
-  private pluginInvocationCapabilities(
-    principal: Principal,
-    timestamp: number,
-  ): Readonly<PluginInvocationCapabilities> {
+  private pluginInvocationCapabilities(timestamp: number): Readonly<PluginInvocationCapabilities> {
     return Object.freeze({
       timestamp,
-      log: (functionAddress, functionKind) =>
-        this.options.applicationSignals.forFunction(functionAddress, functionKind),
-      analytics: (functionAddress, functionKind) =>
-        this.options.applicationSignals.analyticsFor(principal, {
-          functionAddress,
-          functionKind,
-        }),
+      log: () => this.options.log,
+      analytics: () => this.options.analytics,
     } satisfies PluginInvocationCapabilities);
   }
 

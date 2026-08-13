@@ -9,9 +9,7 @@ import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpBuilder,
-  type McpAuthBuilder,
   type McpAiContext,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -29,8 +27,6 @@ const schema = defineSchema({
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const agentAuth = typedMcpAuth({ name: "agent" });
 
 type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 
@@ -176,7 +172,6 @@ const encodingCancellation = typedProcedure({
 
 const agentMcp = typedMcp({
   name: "agent",
-  auth: agentAuth,
   path: "/mcp",
   tools: {
     active_transaction: { fn: activeTransaction, access: "public" },
@@ -282,7 +277,6 @@ beforeEach(() => {
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: false,
     hooks: {
       wait: async () => {
         if (!pauseAfterCommit) return;
@@ -322,7 +316,7 @@ afterEach(async () => {
 async function callProcedure(mode: string, signal?: AbortSignal): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: ++requestId,
-    address: "app.runLocal",
+    address: "api.app.runLocal",
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
     ...(signal === undefined ? {} : { signal }),

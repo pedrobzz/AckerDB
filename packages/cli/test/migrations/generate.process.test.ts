@@ -124,7 +124,7 @@ function spawnServer(dir: string): { child: CliProcess; waitReady(): Promise<voi
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -180,8 +180,8 @@ async function seedV1(dir: string, port: number): Promise<void> {
   const server = spawnServer(dir);
   await server.waitReady();
   const seeder = makeClient(port, "gen-seed");
-  expect(await withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }), "seed alpha")).toBe(1n);
-  expect(await withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "beta", count: 42 }), "seed beta")).toBe(2n);
+  expect(await withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "alpha", count: 5 }), "seed alpha")).toBe(1n);
+  expect(await withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label: "beta", count: 42 }), "seed beta")).toBe(2n);
   seeder.close();
   clients.splice(clients.indexOf(seeder), 1);
   await stopServer(server);
@@ -235,7 +235,7 @@ describe("acker generate", () => {
     const applied = spawnServer(dir);
     await applied.waitReady();
     const reader = makeClient(port, "gen-read");
-    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("items.list", {}), "list after apply");
+    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("api.items.list", {}), "list after apply");
     expect(rows.map((r) => [r.label, r.count])).toEqual([
       ["alpha", "5"],
       ["beta", "42"],
@@ -260,7 +260,7 @@ describe("acker generate", () => {
     await server.waitReady();
     const seeder = makeClient(port, "dup-seed");
     const add = (label: string, count: number, label2: string) =>
-      withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label, count }), label2);
+      withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("api.items.add", { label, count }), label2);
     expect(await add("dup", 5, "seed dup1")).toBe(1n);
     expect(await add("dup", 42, "seed dup2")).toBe(2n);
     expect(await add("solo", 7, "seed solo")).toBe(3n);
@@ -304,7 +304,7 @@ describe("acker generate", () => {
     const applied = spawnServer(dir);
     await applied.waitReady();
     const reader = makeClient(port, "dup-read");
-    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("items.list", {}), "list after dedupe");
+    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("api.items.list", {}), "list after dedupe");
     // The later duplicate (id 2) is gone; the lowest-id survivor and the distinct row remain.
     expect(rows.map((r) => [r.id, r.label])).toEqual([
       [1n, "dup"],

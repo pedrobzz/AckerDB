@@ -308,7 +308,6 @@ try {
     await Bun.write(path, `${JSON.stringify({ ...manifest, version, loader }, null, 2)}\n`);
   }
   assertWebRtcDistribution();
-
   const tarballs = new Map<string, string>();
   for (const pkg of PACKAGES) {
     tarballs.set(pkg, await packPackage(pkg, temporary));

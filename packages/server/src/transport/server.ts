@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   isRealtimeSessionId,
@@ -23,6 +23,7 @@ import {
   acquireAuthLease,
   type AuthLease,
 } from "../auth/lease.ts";
+import type { AuthInvalidationPublisher } from "../auth/invalidation.ts";
 import {
   callerFairnessKey,
   transportSource,
@@ -31,14 +32,6 @@ import {
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import { WebSocketSessionSink } from "../subscriptions/delivery/websocket.ts";
 import { AckerDBError } from "../shared/errors.ts";
-import {
-  beginHttpTrace,
-  beginSessionAuthTrace,
-  finishHttpTrace,
-  identifyHttpTrace,
-  observeHttpAuth,
-  recordHttpTraceFailure,
-} from "../telemetry/external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
 import {
   ACKERDB_HTTP_ROUTES,
@@ -53,7 +46,7 @@ import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
-import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
+import { credentialTokenFromAuthorization } from "../auth/credential-token.ts";
 import {
   McpHttpBoundary,
   type McpHttpOptions,
@@ -67,17 +60,13 @@ import {
 } from "../mcp/wire.ts";
 import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
-import {
-  CAPTURE_DELIVERY_OBSERVER,
-  type Runtime,
-} from "../runtime/runtime.ts";
+import type { Runtime } from "../runtime/runtime.ts";
+import type { CredentialLease } from "../runtime/credentials/runtime.ts";
 import type {
   HttpMutationReceipt,
-  McpCredentialLease,
   RuntimeHttpResponder,
 } from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
-import { withSessionAuthObserver } from "../subscriptions/session/observation.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
@@ -91,6 +80,7 @@ export type AckerDBStartupPhase =
   | "migrating"
   | "reconciling"
   | "loading-runtime"
+  | "issuing-credential"
   | "starting-services";
 
 export interface AckerDBServerOptions {
@@ -105,7 +95,7 @@ export interface AckerDBServerOptions {
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
   /**
-   * Serve the OpenAPI document at `GET /api/_openapi.json`, published under this
+   * Serve the OpenAPI document at `GET /_openapi.json`, published under this
    * identity — the application's own name and version, which a listener that
    * never sees an app directory cannot derive. Absent (the default) leaves the
    * path a 404 like any other unclaimed route: the CLI export is the default way
@@ -123,7 +113,7 @@ export interface ServeOptions {
   readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
-  /** Identity of the document served at GET /api/_openapi.json; absent, that path is a 404. */
+  /** Identity of the document served at GET /_openapi.json; absent, that path is a 404. */
   readonly openapiEndpoint?: OpenApiInfo;
 }
 
@@ -206,7 +196,8 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   migrating: 4,
   reconciling: 5,
   "loading-runtime": 6,
-  "starting-services": 7,
+  "issuing-credential": 7,
+  "starting-services": 8,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -223,7 +214,7 @@ function json(value: unknown, status = 200): Response {
  */
 function protocolError(error: unknown): Response {
   const outcome = outcomeFromError(error);
-  const frame: ErrorMessage = { v: PROTOCOL_VERSION, t: "err", id: null, outcome };
+  const frame: ErrorMessage = { v: ACKERDB_VERSION, t: "err", id: null, outcome };
   return json(frame, outcomeHttpStatus(outcome));
 }
 
@@ -748,11 +739,10 @@ export class AckerDBServer {
   private startup: AckerDBStartupPhase | null = "listening";
   private startupService: string | null = null;
   private connectionRejections = 0;
-  /** Server-owned request ids for path-addressed calls; telemetry correlation only. */
+  /** Server-owned request ids for path-addressed calls. */
   private httpRequests = 0;
   private sseAckIngress = 0;
   private sseAckNoops = 0;
-  private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
   constructor(options: AckerDBServerOptions) {
@@ -929,7 +919,6 @@ export class AckerDBServer {
     this.startup = null;
     this.startupService = null;
     this.lifecycle = "ready";
-    this.startTransportSampler();
   }
 
   /**
@@ -943,7 +932,6 @@ export class AckerDBServer {
     if (this.lifecycle !== "starting" && this.lifecycle !== "ready") return;
     // Readiness and every admission path observe this before the first await.
     this.lifecycle = "draining";
-    this.stopTransportSampler();
   }
 
   drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
@@ -1003,13 +991,13 @@ export class AckerDBServer {
         boundary.cors,
       );
     }
-    // The application owns every `/api/` path AckerDB has not reserved, and it
-    // answers the bare unavailable outcome before the registry that would
-    // resolve it exists — even for a preflight, because a raw route's OPTIONS
+    // The application owns every path AckerDB has not reserved — `apiPath`
+    // makes `/api/` one group among however many the application names — and
+    // it answers the bare unavailable outcome before the registry that would
+    // resolve it exists, even for a preflight, because a raw route's OPTIONS
     // belongs to its handler and no handler exists yet.
     if (
       (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
-      url.pathname.startsWith("/api/") &&
       !isAckerDBHttpRoute(url.pathname)
     ) {
       return outcomeError(unavailableWhile(this.lifecycle));
@@ -1023,7 +1011,7 @@ export class AckerDBServer {
       }
       return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
     }
-    if (url.pathname.startsWith("/api/_files/")) {
+    if (url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.files}/`)) {
       if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
       if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
         return outcomeError(unavailableWhile(this.lifecycle));
@@ -1138,6 +1126,7 @@ export class AckerDBServer {
       credential,
       verifier: runtime.credentialVerifier,
       resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
+      resolveScopes: runtime.resolveScopes,
       ...(signal === undefined ? {} : { signal }),
       revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
@@ -1162,9 +1151,12 @@ export class AckerDBServer {
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
-    const externalTrace = beginHttpTrace(runtime.telemetry, exposed.kind);
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
+    // The listener owns the response handoff, so it owns the release of any
+    // self-invalidation this request commits: publishing one from inside the
+    // commit would abort the lease the answer is still travelling on.
+    let invalidations: AuthInvalidationPublisher | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
@@ -1173,10 +1165,7 @@ export class AckerDBServer {
       // names the function, so even a malformed body reports what it targeted.
       const id = ++this.httpRequests;
       const address = exposed.address;
-      identifyHttpTrace(externalTrace, address, String(id));
-      lease = externalTrace === undefined
-        ? await this.authenticate(request)
-        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      lease = await this.authenticate(request);
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
@@ -1187,6 +1176,10 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
+      invalidations = runtime.authInvalidation.publisher(
+        lease.principal,
+        lease.invalidationScope,
+      );
       const input = carryHttpRequestProvenance({
         id,
         address,
@@ -1194,7 +1187,7 @@ export class AckerDBServer {
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, bytes, externalTrace, lease.invalidationScope);
+      }, bytes, invalidations);
       if (exposed.kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
@@ -1226,10 +1219,9 @@ export class AckerDBServer {
         ? runtime.runQuery(httpRequest)
         : runtime.runProcedure(httpRequest));
     } catch (error) {
-      recordHttpTraceFailure(externalTrace, error);
       return outcomeError(error);
     } finally {
-      finishHttpTrace(externalTrace);
+      invalidations?.finish();
       lease?.release();
       admission?.release();
     }
@@ -1359,8 +1351,12 @@ export class AckerDBServer {
   ): Promise<Response> {
     const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
-    let credentialLease: McpCredentialLease | undefined;
+    let credentialLease: CredentialLease | undefined;
     let principal: Principal = ANONYMOUS_PRINCIPAL;
+    // The MCP door's credential lease is a subscriber like any other, and the
+    // JSON-RPC body is assembled after the tool call returns, so releasing the
+    // origin's own delivery belongs here rather than inside the Runtime.
+    let invalidations: AuthInvalidationPublisher | undefined;
     try {
       if (this.lifecycle !== "ready" || runtime.state !== "ready") {
         throw unavailableWhile(this.lifecycle);
@@ -1371,10 +1367,9 @@ export class AckerDBServer {
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
       );
-      const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
+      const credential = credentialTokenFromAuthorization(request.headers.get("authorization"));
       if (credential !== null) {
-        credentialLease = await runtime.acquireMcpTokenLease(
-          mcp.auth.name,
+        credentialLease = await runtime.acquireCredentialLease(
           credential,
           callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
           request.signal,
@@ -1383,6 +1378,10 @@ export class AckerDBServer {
       }
       const fairnessKey = callerFairnessKey(principal, source);
       admission.transfer(fairnessKey);
+      invalidations = runtime.authInvalidation.publisher(
+        principal,
+        credentialLease?.invalidationScope,
+      );
       const { handleMcpPost } = await import("../mcp/http.ts");
       return withMcpCors(await handleMcpPost({
         request,
@@ -1393,6 +1392,7 @@ export class AckerDBServer {
         principal,
         signal: credentialLease?.signal ?? request.signal,
         fairnessKey,
+        invalidations,
       }), cors);
     } catch (error) {
       return mcpErrorResponse(error, cors, {
@@ -1400,6 +1400,7 @@ export class AckerDBServer {
         credentialPresented: request.headers.has("authorization"),
       });
     } finally {
+      invalidations?.finish();
       credentialLease?.release();
       admission?.release();
     }
@@ -1466,24 +1467,14 @@ export class AckerDBServer {
         socket,
         budget: this.outbound,
         limits: runtime.limits,
-        ...(runtime.telemetry.enabled
-          ? {
-              captureObserver: (lane) => runtime[CAPTURE_DELIVERY_OBSERVER](
-                lane,
-                data.session?.currentClientSessionId ?? undefined,
-              ),
-            }
-          : {}),
       });
-      data.session = new Session(withSessionAuthObserver({
+      data.session = new Session({
         runtime,
         sink: data.sink,
         source: data.source,
         revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
         limits: runtime.limits,
-      }, runtime.telemetry.enabled
-        ? (input) => beginSessionAuthTrace(runtime.telemetry, input)
-        : undefined));
+      });
       if (this.lifecycle !== "ready") void data.session.close(unavailableWhile(this.lifecycle));
     } catch (error) {
       this.connections.delete(data);
@@ -1513,53 +1504,6 @@ export class AckerDBServer {
 
   private preHelloConnections(): number {
     return Math.max(0, this.connections.size - (this.activeRuntime?.connectionCount ?? 0));
-  }
-
-  private startTransportSampler(): void {
-    const runtime = this.requireRuntime();
-    if (!runtime.telemetry.enabled) return;
-    this.sampleTransport();
-    this.transportSampleTimer = setInterval(
-      () => this.sampleTransport(),
-      runtime.telemetry.sampleIntervalMs,
-    );
-    this.transportSampleTimer.unref?.();
-  }
-
-  private stopTransportSampler(): void {
-    if (this.transportSampleTimer === null) return;
-    clearInterval(this.transportSampleTimer);
-    this.transportSampleTimer = null;
-  }
-
-  private sampleTransport(): void {
-    const runtime = this.activeRuntime;
-    if (runtime === null || !runtime.telemetry.enabled || this.lifecycle !== "ready") return;
-    if (runtime.state !== "ready") {
-      this.stopTransportSampler();
-      return;
-    }
-    const http = this.httpAdmission.snapshot();
-    const files = this.fileAdmission.snapshot();
-    const metrics = [
-      ["runtime.transport_websocket_connections", this.connections.size, "gauge"],
-      ["runtime.transport_websocket_pre_hello", this.preHelloConnections(), "gauge"],
-      ["runtime.transport_websocket_rejections", this.connectionRejections, "count"],
-      ["runtime.transport_websocket_outbound_bytes", this.outbound.snapshot().bytes, "bytes"],
-      ["runtime.transport_http_ingress", http.active, "gauge"],
-      ["runtime.transport_http_fairness_keys", http.fairnessKeys, "gauge"],
-      ["runtime.transport_http_global_rejections", http.globalRejections, "count"],
-      ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
-      ["runtime.files_transfers", files.active, "gauge"],
-      ["runtime.files_transfer_fairness_keys", files.fairnessKeys, "gauge"],
-      ["runtime.files_transfer_global_rejections", files.globalRejections, "count"],
-      ["runtime.files_transfer_fair_share_rejections", files.fairShareRejections, "count"],
-      ["runtime.transport_sse_ack_ingress", this.sseAckIngress, "count"],
-      ["runtime.transport_sse_ack_noops", this.sseAckNoops, "count"],
-    ] as const;
-    for (const [name, value, unit] of metrics) {
-      runtime.telemetry.recordMetric({ name, value, unit });
-    }
   }
 
   private requireRuntime(): Runtime {

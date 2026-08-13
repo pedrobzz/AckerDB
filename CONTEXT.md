@@ -50,6 +50,25 @@ purpose.
 that still enforces the required invariant. AckerDB does not add machinery merely
 to imitate another system or erase an acceptable backend difference.
 
+**Commodity** — Generic, reusable substrate that systems of AckerDB's class
+commonly need and that carries no unique product value: storage, transport,
+signaling, scheduling, retries, auth protocols, serialization.
+
+**Policy** — Product-specific behavior that makes AckerDB distinct: its rules,
+invariants, supported features, public API, and interaction model.
+
+**Converged surface** — One AckerDB definition serving what is normally several
+systems, such as a single procedure observed reactively, exposed over HTTP,
+offered as an MCP tool, and memoized as a durable step.
+
+**Supervised fork** — A vendored or forked third-party implementation under
+AckerDB ownership, pinned to an immutable revision and recording the upstream
+revision it came from.
+
+**Policy–commodity seam** — The narrow interface through which policy uses only
+the capability commodity exposes, and behind which the commodity can be
+replaced without policy surgery.
+
 ## Function outcomes
 
 **Function result** — The typed outcome of a registered query, mutation, or
@@ -112,6 +131,51 @@ and schema tooling never open a service's external connection.
 services start to the moment their cleanups finish. Every declared service
 starts exactly once per generation, and a development reload fully ends one
 generation before beginning the next.
+
+**Job definition** — A declared kind of durable application work, combining
+its handler with the policies governing its execution.
+_Avoid_: Job, job handler
+
+**Job** — One durable admission of a Job definition with canonical arguments,
+scheduling intent, and dedupe identity. A Job may own multiple Job runs before
+it reaches a terminal state.
+_Avoid_: Job record, job row, Job run
+
+**Job run** — One actual handler execution owned by a Job, from claim through
+settlement. A dedupe hit creates no Job run because no handler executes.
+_Avoid_: Job attempt, enqueue, dedupe hit
+
+**Retrying Job** — A non-terminal Job whose latest Job run failed and whose
+next Job run is durably scheduled by its retry policy.
+_Avoid_: Failed Job, pending Job
+
+**Failed Job** — A terminal Job whose latest Job run failed and whose retry
+policy admitted no further run.
+_Avoid_: Discarded Job, exhausted Job
+
+**Manual retry** — An administrator's instruction to give a Failed Job another
+Job run while preserving the Job's identity and run history.
+_Avoid_: Run again, replay
+
+**Run again** — An administrator's instruction to submit a terminal Job's
+arguments through its Job definition again. The definition's ordinary dedupe
+policy may resolve it to an existing Job and memoized outcome without creating
+a Job run.
+_Avoid_: Force run again, Manual retry
+
+**Force run again** — An administrator's instruction to give a terminal Job
+another Job run under the same identity and history, replacing any memoized
+outcome with the new run's outcome.
+_Avoid_: Duplicate Job, bypassed dedupe identity
+
+**Repeat policy** — The rule on a Job definition that decides whether and when
+another Job follows a terminal Job. It is not a separately owned schedule.
+_Avoid_: Schedule, cron job
+
+**Upcoming Job** — A future Job that already durably exists and is waiting for
+its execution time. A projected calendar occurrence is not an Upcoming Job, and
+its first Job run does not exist until the handler is claimed.
+_Avoid_: Upcoming run, forecast Job, projected occurrence
 
 **Plugin instance** — One configured occurrence of a plugin in an
 application. Each instance has its own identity and isolated state, even when
@@ -181,36 +245,21 @@ top-level function begins execution. Nested application functions, plugin
 functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
-**Application log record** — A developer-authored diagnostic message with
-structured metadata, registered at its call site independently of the function
-result and any application transaction. Its occurrence time and order describe
-application execution, not later persistence.
-_Avoid_: Transactional log, telemetry event
+**Application log** — A developer-authored diagnostic message with optional
+structured metadata, sent immediately to the configured `LoggerStrategy`.
+The default strategy writes to `console.log`; AckerDB does not retain it.
+_Avoid_: Durable log record, framework event
 
-**Application log order** — The total call-site registration order of
-application log records within one process generation. Persistence batching
-preserves this order across concurrent function executions.
-_Avoid_: Persistence order, timestamp order
-
-**Analytics event** — A named occurrence of product behavior with structured
-properties and the caller's durable Identity when one exists. It describes what
-a user or application did rather than the diagnostic severity of application
-execution.
+**Analytics event** — A named occurrence of product behavior with optional
+structured properties, sent immediately to the configured
+`AnalyticsStrategy`. The default strategy writes to `console.log`; AckerDB does
+not retain, enrich, batch, or export it.
 _Avoid_: Application log record, log event
 
-**Telemetry value** — A portable value shared by application-log metadata and
-analytics-event properties: null, text, numbers, booleans, big integers, bytes,
-arrays, and objects composed recursively from the same values.
-_Avoid_: Arbitrary JavaScript value, provider-native value
-
-**Telemetry journal** — The bounded local durable record of application logs
-and committed analytics events. It is independent of application state and is
-the common source consumed by telemetry exporters.
-_Avoid_: Application table, exporter queue
-
-**Telemetry exporter** — An isolated adapter that delivers the signal kinds a
-provider represents without changing application execution or other exporters.
-_Avoid_: Telemetry provider, application integration
+**Signal strategy** — The replaceable destination behind `Logger` or
+`Analytics`. Application contexts depend only on these two narrow interfaces,
+so a future integration can be supplied without changing execution ownership.
+_Avoid_: Provider SDK in application contexts, global signal singleton
 
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
@@ -335,6 +384,23 @@ invocation timestamp: malformed and namespace-invalid live entries return
 connection failure reported as `CacheStoreError` with its original cause. It is
 never converted into a miss or conditional result; callers choose explicitly
 whether to catch it and fail open.
+
+## Durable jobs
+
+**Step** — One named, journaled unit of work inside a procedure-kind job
+handler. A completed step's recorded result stands in for re-execution when
+the handler replays, so a Job run executes only work the journal has not
+recorded. The name carries the author's promise that the same name means the
+same meaning.
+_Avoid_: Sub-job, child job, workflow task
+
+**Step journal** — The durable record, owned by a Job, of each completed
+step's identity and result. Replay reads the handler against it: a recorded
+entry answers instead of executing, and a mismatch between journal and code
+refuses with a typed outcome rather than guessing. It outlives one Job run —
+a Manual retry resumes it and only a Force run again clears it — and it lives
+and dies with its Job.
+_Avoid_: Event log, workflow state, checkpoint
 
 ## File storage
 
@@ -589,13 +655,6 @@ media limits. Admission claims capacity before retaining the native resource;
 explicit close, stop, or generation cleanup releases it exactly once.
 _Avoid_: Best-effort native cleanup, unbounded track registry, preallocated capacity
 
-**Realtime health sample** — A bounded rotating observation of a small number
-of active peer generations, collected by the existing Runtime telemetry tick.
-It reports aggregate selected-path, loss, jitter, RTT, bitrate, buffering,
-pressure, media-flow, and native queue information without retaining SDP,
-candidates, addresses, credentials, or a per-peer background polling loop.
-_Avoid_: Realtime packet log, peer inventory, independent stats timer
-
 **Realtime native packages** — `@ackerdb/realtime` owns the generated NAPI-RS
 loader and declarations but no native binary. Five optional, host-filtered
 packages each own one verified Darwin arm64/x64, Linux GNU arm64/x64, or
@@ -841,6 +900,39 @@ descending. Enum and union tags are stable storage identities rather than
 logical sort positions, so enum and union columns are not query-order fields.
 _Avoid_: Index order
 
+**Serializable filter expression** — A caller-supplied database predicate in
+closed wire form: comparison and membership clauses over declared filterable
+fields, composed by nested `all` and `any` groups. The server validates it and
+compiles it into ordinary predicate expression nodes, so it selects rows
+through the same path a `.where` callback does and never names an index.
+Validation failures are application errors carrying one issue per offending
+node, located by path from the expression root.
+_Avoid_: Query DSL, filter language, client-side filtering
+
+**Filterable field** — A column a table declares as accepting serializable
+filter clauses. The declaration is a boundary, not a convenience: an undeclared
+column is unknown to filtering even when queries return it, because a filter
+reveals whether rows exist without returning them.
+_Avoid_: Implicit column exposure, filter allowlist bypass
+
+**Query page** — One slice of a table query's declared order, bounded by both a
+requested row count and the framework's page byte budget, plus the opaque
+cursor that resumes after its last row. The byte budget removes rows, never
+fields, and always admits the first row, so a page may be shorter than
+requested and only its cursor states whether more rows exist.
+_Avoid_: Offset page, truncated row
+
+**Live page window** — The client's flattened view of consecutive query pages,
+each held as its own live subscription so a write inside the window re-delivers
+the page it touched. When a delivery moves a page's cursor, every page behind it
+is released and the window shortens to its proven prefix rather than showing an
+overlap, then grows back to the depth its consumer asked for as each new
+boundary proves. Each page is individually consistent and the
+window is consistent across pages only eventually: one commit changing two
+pages sends two deliveries, and a row crossing a boundary between them can
+briefly repeat or disappear until the predecessor's own delivery lands.
+_Avoid_: Infinite scroll cache, accumulated snapshot, atomic window
+
 **Transparent index** — An exact-result storage optimization selected by the
 database planner. Public schema declarations identify indexes by their ordered
 columns and configuration rather than a user-chosen name; AckerDB derives the
@@ -1077,6 +1169,128 @@ migration question: the server stays down, nothing is written or persisted,
 and the state releases when the ledger changes — a rescued schema starts the
 server silently, a different ledger asks again, and generation stays available
 on demand.
+
+## Administration
+
+**Admin API** — The built-in administration surface every application carries:
+framework-declared functions that observe the application and administer it.
+It is the server side of administration, named for what it does rather than for
+any client that consumes it.
+_Avoid_: Client-specific surface, system UDFs, dashboard API
+
+**Framework-declared function** — A function AckerDB declares on every
+application's behalf, contributed to the registry beside the application's own
+rather than injected into them. It is an ordinary registered function in every
+other respect: one address, one route, one access policy, one scope
+requirement, dispatched through the one funnel. Only a framework-declared
+function may require an admin scope.
+_Avoid_: Built-in function, system UDF, internal endpoint
+
+**Admin configuration** — The one object holding everything administrative,
+because an operator reasons about administration as one thing rather than as a
+setting beside each subsystem it touches. It is where the surface is
+configured, never where authority is decided — that is the grant a credential
+holds.
+_Avoid_: Client config, dashboard settings
+
+**Reserved marker** — The leading `_` that marks a name as the framework's own,
+across every namespace an application shares with it: API paths, HTTP roots, and
+scopes. An application may never declare a name carrying it, so the two
+vocabularies cannot collide. Framework *tables* are the one exception: they
+carry the older `_ackerdb_` prefix (`_ackerdb_jobs`, `_ackerdb_credentials`,
+`_ackerdb_meta`, …), which is in released 0.16.0 data and cannot be unified
+without rewriting every existing database.
+_Avoid_: Private prefix, system namespace, underscore convention
+
+**Scope** — One named unit of authority in the single authorization vocabulary,
+opaque to the framework. A scope is the currency of both halves of that
+vocabulary: an application's own names, and the framework's `_`-marked ones.
+_Avoid_: Permission, role, claim
+
+**Scope vocabulary** — The complete set of scopes that exist: the application's,
+declared once in the manifest, plus the framework's, which AckerDB pre-declares.
+Nothing outside it can be granted or required, so every check is a membership
+test against a known set rather than string comparison against a guess.
+_Avoid_: Permission list, ACL
+
+**Scope grant** — What an Identity holds, written as patterns and resolved by
+expansion against the vocabulary known at the moment of the check. A grant may
+therefore cover a scope that did not exist when it was issued, and one covering
+nothing that exists grants nothing.
+_Avoid_: Permission set, role assignment
+
+**Scope requirement** — What a function or tool entry demands of its caller,
+always concrete: `anyOf` passes on one held scope, `allOf` on every one. A
+requirement never carries a wildcard — it names exactly what it needs, so it can
+be read and audited without knowing the vocabulary.
+_Avoid_: Guard, permission check
+
+**Identity credential** — An opaque bearer credential that *is* an Identity:
+issuing one mints an Identity, so its holder is a first-class user at every
+choke point rather than a second kind of caller. Its secret is shown once, at
+issuance, and only its digest is stored.
+_Avoid_: API token, service account, machine user
+
+**Child credential** — An identity credential issued by another Identity, whose
+authority is bounded by its issuer's at both ends: a scope the issuer does not
+hold cannot be delegated, and the child's live authority is intersected with its
+issuer's current grant on every use. A parent losing a scope narrows every
+descendant immediately, with no revocation sweep.
+_Avoid_: Sub-token, delegated key
+
+**API path** — The named group a function is published in, and the first
+segment of its function address. It decides the generated binding and the HTTP
+root together, because both are read off that one address. It is a namespacing
+choice and never an access rule: who may call a function is decided by its
+access policy alone. No group's name may carry the reserved marker: the
+framework's protocol endpoints live at the reserved root, outside every group,
+and its administration functions live in the shared `admin` group, whose members
+are distinguished by the scopes they require rather than by any marking on the
+path. `api` and `admin` are the two groups every application publishes, so a
+manifest lists neither.
+_Avoid_: Internal flag, private function, route prefix
+
+**Function address** — The one dotted name every registered function answers
+to, in process and over every transport: its API path, then the directory
+segments of the module declaring it, then the export name. The HTTP route is
+that address segment for segment. A file named `index.ts` contributes its
+directory's name rather than its own, so a directory may hold a module of its
+own name beside its siblings.
+_Avoid_: Function name, ref string, route
+
+**Admin scope** — A scope in the framework's own reserved vocabulary, naming one
+verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB
+defines the whole vocabulary and an application never declares one.
+_Avoid_: Client scope, system permission
+
+**Scope wildcard** — A pattern in a grant that stands for every scope it
+matches, resolved against the vocabulary known at the moment of the check. The
+pattern `*` deliberately excludes everything carrying the reserved marker, so
+the two vocabularies are only ever granted on purpose — an administrative
+identity holds both `*` and `_*`.
+_Avoid_: Role, superuser flag, permission group
+
+**Admin Credential** — The opaque credential that authenticates an
+administrative identity, distinct from any application user and from the system
+principal. Its authority is nothing more than the grant it holds: the patterns
+covering both the application vocabulary and the framework's reserved one. It is
+a root credential — one with no parent — because nothing may narrow
+administrative authority at use; a child holding the same patterns is a delegate,
+not a master. An application manages a single master Admin Credential by default,
+though the model admits more.
+_Avoid_: admin token, API key, master key
+
+**Credential rotation** — Replacing an Admin Credential with a newly issued one
+and revoking what it replaced, as a single change. The credential's Identity
+changes with it, because a credential is an Identity: rotation issues, it does
+not re-key.
+_Avoid_: key rotation, re-issue, refresh
+
+**Agent Credential** — A credential issued for one external agent host, holding
+a chosen subset of an Admin Credential's authority. It is an ordinary child
+credential: an agent is a first-class identity, and its grant never exceeds its
+parent's, at issuance or afterwards.
+_Avoid_: MCP token, API key, service account
 
 ## Demo app (Savoria restaurant)
 

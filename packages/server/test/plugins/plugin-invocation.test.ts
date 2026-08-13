@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   type MutationMessage,
   type QueryMessage,
@@ -63,6 +63,8 @@ interface Harness {
   readonly session: SessionRuntimeContext;
   readonly controller: AbortController;
   readonly storeScope: StorageScope;
+  readonly logMessages: string[];
+  readonly analyticsEvents: string[];
   nextId: number;
 }
 
@@ -86,7 +88,6 @@ async function callMutation(
   const id = harness.nextId++;
   const issuedAt = Date.now();
   const message: MutationMessage = {
-    v: PROTOCOL_VERSION,
     t: "m",
     id,
     ref,
@@ -103,7 +104,6 @@ async function callQuery(
   args: unknown,
 ): Promise<unknown> {
   const message: QueryMessage = {
-    v: PROTOCOL_VERSION,
     t: "q",
     id: harness.nextId++,
     ref,
@@ -466,11 +466,18 @@ async function makeHarness(
     },
   };
   let clock = Date.now();
+  const logMessages: string[] = [];
+  const analyticsEvents: string[] = [];
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     pluginRuntime,
-    telemetry: false,
+    loggerStrategy: {
+      write: (_level, message) => logMessages.push(message),
+    },
+    analyticsStrategy: {
+      track: (event) => analyticsEvents.push(event),
+    },
     now: () => ++clock,
   });
   const controller = new AbortController();
@@ -490,6 +497,8 @@ async function makeHarness(
     session,
     controller,
     storeScope: scopes.get("store")!,
+    logMessages,
+    analyticsEvents,
     nextId: 1,
   };
   harnesses.push(harness);
@@ -497,52 +506,42 @@ async function makeHarness(
 }
 
 describe("Plugin invocation boundaries", () => {
-  test("logs from query, mutation, procedure, and nested Plugin contexts", async () => {
+  test("routes query, mutation, procedure, and nested Plugin logs through the configured strategy", async () => {
     const harness = await makeHarness();
 
-    await callQuery(harness, "plugins.inspect", { key: "logged" });
-    await callMutation(harness, "plugins.sameTransaction", {
+    await callQuery(harness, "api.plugins.inspect", { key: "logged" });
+    await callMutation(harness, "api.plugins.sameTransaction", {
       key: "logged",
       value: "value",
     });
-    await callProcedure(harness, "plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
-      .filter((record) => record.kind === "log");
-    expect(records.map((record) => [record.message, record.functionAddress])).toEqual([
-      ["facade read", "facade.read"],
-      ["plugin read", "store.read"],
-      ["facade put", "facade.put"],
-      ["plugin set", "store.set"],
-      ["plugin read", "store.read"],
-      ["facade flow", "facade.flow"],
-      ["plugin set", "store.set"],
-      ["plugin set", "store.set"],
-      ["plugin procedure", "store.external"],
+    await callProcedure(harness, "api.plugins.pluginFlow", {});
+    expect(harness.logMessages).toEqual([
+      "facade read",
+      "plugin read",
+      "facade put",
+      "plugin set",
+      "plugin read",
+      "facade flow",
+      "plugin set",
+      "plugin set",
+      "plugin procedure",
     ]);
   });
 
-  test("publishes Plugin mutation and transaction analytics only after commit", async () => {
+  test("routes Plugin mutation and transaction analytics through the configured strategy", async () => {
     const harness = await makeHarness();
 
-    await callMutation(harness, "plugins.sameTransaction", {
+    await callMutation(harness, "api.plugins.sameTransaction", {
       key: "tracked",
       value: "value",
     });
-    await callProcedure(harness, "plugins.pluginFlow", {});
-    await harness.runtime.telemetryJournal.flush();
-
-    const records = (await harness.runtime.telemetryJournal.readBatch(0n, 64))
-      .filter((record) => record.kind === "analytics");
-    expect(records.map((record) => [record.event, record.functionAddress])).toEqual([
-      ["plugin set tracked", "store.set"],
-      ["plugin set tracked", "store.set"],
-      ["plugin transaction tracked", "facade.flow"],
-      ["plugin set tracked", "store.set"],
+    await callProcedure(harness, "api.plugins.pluginFlow", {});
+    expect(harness.analyticsEvents).toEqual([
+      "plugin set tracked",
+      "plugin set tracked",
+      "plugin transaction tracked",
+      "plugin set tracked",
     ]);
-    expect(records.every((record) => record.identity === undefined)).toBe(true);
-    expect(records.every((record) => record.commitId !== undefined)).toBe(true);
   });
 
   test("binds procedure and transaction capabilities to a system execution root", async () => {
@@ -599,7 +598,7 @@ describe("Plugin invocation boundaries", () => {
 
     const mutationResult = await callMutation(
       harness,
-      "plugins.sameTransaction",
+      "api.plugins.sameTransaction",
       { key: "same", value: "same" },
     ) as AnyContext;
 
@@ -620,7 +619,7 @@ describe("Plugin invocation boundaries", () => {
     expect(rootLogs(harness)).toEqual(["same:same"]);
     expect(storedValues(harness)).toEqual(["same"]);
 
-    const queryResult = await callQuery(harness, "plugins.inspect", { key: "same" }) as AnyContext;
+    const queryResult = await callQuery(harness, "api.plugins.inspect", { key: "same" }) as AnyContext;
     expect(queryResult).toMatchObject({
       value: "same",
       hostMounts: ["facade", "store"],
@@ -638,11 +637,11 @@ describe("Plugin invocation boundaries", () => {
   test("keeps caught errors caught and rolls back an uncaught Plugin error normally", async () => {
     const harness = await makeHarness();
 
-    expect(await callMutation(harness, "plugins.caughtFailure", {})).toBe(true);
+    expect(await callMutation(harness, "api.plugins.caughtFailure", {})).toBe(true);
     expect(storedValues(harness)).toEqual(["caught"]);
     expect(rootLogs(harness)).toEqual(["caught"]);
 
-    await expect(callMutation(harness, "plugins.uncaughtFailure", {}))
+    await expect(callMutation(harness, "api.plugins.uncaughtFailure", {}))
       .rejects.toThrow("store failure:uncaught");
     expect(storedValues(harness)).toEqual(["caught"]);
     expect(rootLogs(harness)).toEqual(["caught"]);
@@ -651,17 +650,17 @@ describe("Plugin invocation boundaries", () => {
   test("runs direct procedure reads/writes independently and explicit tx work atomically", async () => {
     const harness = await makeHarness();
 
-    const failed = await callProcedure(harness, "plugins.independentFailure", {});
+    const failed = await callProcedure(harness, "api.plugins.independentFailure", {});
     expect(failed).toMatchObject({ code: "internal" });
     expect(storedValues(harness)).toEqual(["independent"]);
     const independentRead = await callProcedure(
       harness,
-      "plugins.independentRead",
+      "api.plugins.independentRead",
       { key: "independent" },
     );
     expect(independentRead).toMatchObject({ value: "independent", providerMount: "store" });
 
-    const hostValue = await callProcedure(harness, "plugins.hostTransaction", {}) as AnyContext;
+    const hostValue = await callProcedure(harness, "api.plugins.hostTransaction", {}) as AnyContext;
     expect(new Set([
       hostValue.hostTimestamp,
       hostValue.txTimestamp,
@@ -673,7 +672,7 @@ describe("Plugin invocation boundaries", () => {
       dependencyOperations: ["read", "set"],
     });
 
-    const flowValue = await callProcedure(harness, "plugins.pluginFlow", {}) as AnyContext;
+    const flowValue = await callProcedure(harness, "api.plugins.pluginFlow", {}) as AnyContext;
     expect(new Set([
       flowValue.hostTimestamp,
       flowValue.procedureTimestamp,
@@ -685,7 +684,7 @@ describe("Plugin invocation boundaries", () => {
       procedureDependencyOperations: ["external", "read", "set"],
       transactionDependencyOperations: ["read", "set"],
     });
-    const vocabulary = await callProcedure(harness, "plugins.procedureVocabulary", {});
+    const vocabulary = await callProcedure(harness, "api.plugins.procedureVocabulary", {});
     expect(vocabulary).toMatchObject({
       storeOperations: ["external", "fail", "read", "set"],
       facadeOperations: ["flow", "put", "read"],
@@ -743,7 +742,6 @@ describe("Plugin invocation boundaries", () => {
     expect((failure as AggregateError).errors).toEqual([coreError, cleanupError]);
     expect(cleanups).toBe(1);
     expect(harness.plugins.state).toBe("failed");
-    expect(harness.runtime.telemetryJournal.snapshot().state).toBe("stopped");
     expect(await harness.runtime.drain().catch((error: unknown) => error)).toBe(failure);
     expect(cleanups).toBe(1);
   });

@@ -8,31 +8,27 @@ import { MockLanguageModelV4 } from "ai/test";
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
-  type McpPrincipal,
   type Principal,
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../../src/auth/credentials.ts";
+import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
   mcp as mcpDeclaration,
-  mcpAuth,
   type McpAiToolSet,
   type McpBuilder,
   type McpAiContext,
-  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { handleMcpPost } from "../../src/mcp/http.ts";
-import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
+import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
@@ -43,13 +39,7 @@ const schema = defineSchema({
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
-const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
-const delegatedAuth = typedMcpAuth({
-  name: "delegated",
-  scopes: ["orders.get", "reports.all", "orders.admin"] as const,
-});
-const otherAuth = typedMcpAuth({ name: "other", scopes: ["other.read"] as const });
-const scopeFreeAuth = typedMcpAuth({ name: "scope_free" });
+const VOCABULARY = ["orders.get", "reports.all", "orders.admin", "other.read"] as const;
 
 interface ToolObservation {
   readonly name: string;
@@ -73,9 +63,7 @@ function principalResult(name: string, principal: Principal) {
   return {
     tool: name,
     kind: principal.kind,
-    identity: principal.kind === "user" || principal.kind === "mcp"
-      ? principal.identity
-      : null,
+    identity: principal.kind === "user" ? principal.identity : null,
   };
 }
 
@@ -307,9 +295,6 @@ const runLocal = typedProcedure({
             scopes: ["orders.get"],
             identity: 9_999n as Identity,
           } as never)),
-          scopeFreeGrant: errorMessage(() => scopeFreeMcp.aiTools(ctx, {
-            scopes: [],
-          } as never)),
         };
       default:
         throw new Error(`unknown local delegation mode ${args.mode}`);
@@ -385,7 +370,6 @@ const delegate = typedProcedure({
 
 const scopedMcp = typedMcp({
   name: "delegated",
-  auth: delegatedAuth,
   path: "/delegated/mcp",
   tools: {
     admin_orders: { fn: adminOrders, access: { anyOf: ["orders.admin"] } },
@@ -398,7 +382,6 @@ const scopedMcp = typedMcp({
 });
 const aliasMcp = typedMcp({
   name: "delegated-alias",
-  auth: delegatedAuth,
   path: "/delegated-alias/mcp",
   tools: {
     alias_status: { fn: publicStatus, access: "public" },
@@ -406,7 +389,6 @@ const aliasMcp = typedMcp({
 });
 const otherMcp = typedMcp({
   name: "other",
-  auth: otherAuth,
   path: "/other/mcp",
   tools: {
     other_protected: { fn: otherProtected, access: { anyOf: ["other.read"] } },
@@ -415,7 +397,6 @@ const otherMcp = typedMcp({
 });
 const scopeFreeMcp = typedMcp({
   name: "scope_free",
-  auth: scopeFreeAuth,
   path: "/scope-free/mcp",
   tools: {
     free_authenticated: { fn: freeAuthenticated, access: "authenticated" },
@@ -442,22 +423,15 @@ const modules = {
 
 let directory: string;
 let engine: Engine;
-let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-delegation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  telemetry = [];
   runtime = new Runtime({
     engine,
     registry: new Registry(modules),
-    telemetry: {
-      enabled: true,
-      exporter: { export: (batch) => void telemetry.push(...batch) },
-      localSink: false,
-      limits: { ...PRODUCTION_LIMITS.telemetry, slowOperationMs: 0 },
-    },
+    scopes: VOCABULARY,
   });
   observations = [];
   retainedTools = undefined;
@@ -475,6 +449,7 @@ afterEach(async () => {
 function user(identity = 41n as Identity): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity,
     issuer: "https://issuer.test/",
     subject: `user-${identity}`,
@@ -495,23 +470,25 @@ function workload(): WorkloadPrincipal {
   });
 }
 
-function mcpPrincipal(
-  mcp = scopedMcp.name,
+function credentialPrincipal(
   scopes: readonly string[] = ["orders.get"],
-): McpPrincipal {
+): UserPrincipal {
   return Object.freeze({
-    kind: "mcp",
+    kind: "user",
     identity: 73n as Identity,
-    mcp,
-    tokenId: "manual-test-token",
     scopes: Object.freeze([...scopes]),
+    issuer: CREDENTIAL_ISSUER,
+    subject: "manual-test-token",
+    claims: Object.freeze({}),
+    expiresAt: Number.POSITIVE_INFINITY,
+    tokenId: "manual-test-token",
   });
 }
 
 async function callProcedure(principal: Principal, mode: string): Promise<unknown> {
   const response = await runtime.runProcedure({
     id: 1,
-    address: "app.runLocal",
+    address: "api.app.runLocal",
     args: { mode },
     principal,
     respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
@@ -522,10 +499,6 @@ async function callProcedure(principal: Principal, mode: string): Promise<unknow
     throw new Error(failure.message ?? failure.code);
   }
   return body;
-}
-
-function spans(): TelemetrySpanRecord[] {
-  return telemetry.filter((record): record is TelemetrySpanRecord => record.kind === "span");
 }
 
 async function httpToolCall(
@@ -555,6 +528,7 @@ async function httpToolCall(
     principal,
     signal: new AbortController().signal,
     fairnessKey: "test:mcp-ai-delegation",
+    invalidations: runtime.authInvalidation.publisher(principal),
   });
 }
 
@@ -562,7 +536,7 @@ describe("MCP identity-preserving local delegation", () => {
   test("retains the exact external user and grants only the requested declared scopes", async () => {
     const principal = user();
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[mcpTokenVaultOwner], "authenticate");
+    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
     try {
       const result = await callProcedure(principal, "scoped") as {
         readonly names: readonly string[];
@@ -605,12 +579,6 @@ describe("MCP identity-preserving local delegation", () => {
       expect(fetch).not.toHaveBeenCalled();
       expect(authenticate).not.toHaveBeenCalled();
 
-      await runtime.telemetry.flush();
-      expect(spans()).toContainEqual(expect.objectContaining({
-        function: "tools.readOrders",
-        stage: "policy",
-        outcome: "ok",
-      }));
       await expect(retainedTools!.read_orders!.execute({})).rejects.toThrow(
         "no longer active",
       );
@@ -684,19 +652,18 @@ describe("MCP identity-preserving local delegation", () => {
     });
   });
 
-  test("rejects undeclared, duplicate, scope-free, and synthetic-Identity options", async () => {
+  test("rejects undeclared, duplicate, and synthetic-Identity options", async () => {
     expect(await callProcedure(user(), "validation")).toEqual({
       undeclared: expect.stringContaining("undeclared scope"),
-      duplicate: expect.stringContaining("must not contain duplicate"),
+      duplicate: expect.stringContaining("unique scope strings"),
       syntheticIdentity: expect.stringContaining("unknown MCP AI tools option \"identity\""),
-      scopeFreeGrant: expect.stringContaining("declares no scopes"),
     });
   });
 
-  test("intersects an MCP parent's request with its immutable token grant", async () => {
-    const principal = mcpPrincipal();
+  test("intersects a credential parent's request with its effective grant", async () => {
+    const principal = credentialPrincipal();
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[mcpTokenVaultOwner], "authenticate");
+    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
     try {
       const intersection = await runtime.runMcpTool({
         id: "mcp-local-intersection",
@@ -713,7 +680,7 @@ describe("MCP identity-preserving local delegation", () => {
         events: [{
           type: "tool-result",
           name: "read_orders",
-          output: { tool: "read_orders", kind: "mcp", identity: "73" },
+          output: { tool: "read_orders", kind: "user", identity: "73" },
         }],
       });
       expect(observations).toHaveLength(1);
@@ -750,7 +717,7 @@ describe("MCP identity-preserving local delegation", () => {
       expect(httpSuccess.status).toBe(200);
       expect(await httpSuccess.json()).toMatchObject({
         result: {
-          structuredContent: { tool: "read_orders", kind: "mcp", identity: "73" },
+          structuredContent: { tool: "read_orders", kind: "user", identity: "73" },
         },
       });
       await expect(httpToolCall(principal, scopedMcp.tools.read_reports.name)).rejects.toMatchObject({
@@ -768,8 +735,8 @@ describe("MCP identity-preserving local delegation", () => {
     }
   });
 
-  test("uses the shared auth provider when an MCP endpoint has a different name", async () => {
-    const principal = mcpPrincipal(delegatedAuth.name);
+  test("serves the same credential on every endpoint that publishes a tool", async () => {
+    const principal = credentialPrincipal();
     const result = await runtime.runMcpTool({
       id: "mcp-shared-provider",
       authorization: runtime.authorizeMcpTool(
@@ -786,13 +753,15 @@ describe("MCP identity-preserving local delegation", () => {
       events: [{
         type: "tool-result",
         name: "alias_status",
-        output: { tool: "public_status", kind: "mcp", identity: "73" },
+        output: { tool: "public_status", kind: "user", identity: "73" },
       }],
     });
   });
 
-  test("binds local authority to the exact endpoint and denies cross-endpoint execution", async () => {
-    const principal = mcpPrincipal();
+  test("narrows cross-endpoint delegation to the credential's own grant", async () => {
+    const principal = credentialPrincipal();
+    // The requested "other.read" is not in this credential's grant, so the
+    // scoped tool stays hidden; the public tool serves any principal.
     const hidden = await runtime.runMcpTool({
       id: "mcp-cross-default",
       authorization: runtime.authorizeMcpTool(
@@ -803,7 +772,7 @@ describe("MCP identity-preserving local delegation", () => {
       args: { mode: "cross_default" },
       principal,
     });
-    expect(hidden.structuredContent).toEqual({ names: [], events: [] });
+    expect(hidden.structuredContent).toEqual({ names: ["other_public"], events: [] });
 
     const shown = await runtime.runMcpTool({
       id: "mcp-cross-include",
@@ -818,12 +787,12 @@ describe("MCP identity-preserving local delegation", () => {
     expect(shown.structuredContent).toMatchObject({
       names: ["other_protected", "other_public"],
       events: [{
-        type: "tool-error",
+        type: "tool-result",
         name: "other_public",
-        error: expect.stringContaining("access denied"),
+        output: { tool: "other_public", kind: "user", identity: "73" },
       }],
     });
-    expect(observations).toEqual([]);
+    expect(observations.map(({ name }) => name)).toEqual(["other_public"]);
   });
 
   test("isolates parallel grants and removes authority after the parent lifecycle", async () => {

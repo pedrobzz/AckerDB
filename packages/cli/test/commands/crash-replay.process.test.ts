@@ -1,3 +1,4 @@
+import { parseReceivedFrame, parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -95,7 +96,6 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
 const runtime = new Runtime({
   engine,
   registry: new Registry({ messages }),
-  telemetry: false,
   ...(hooks === undefined ? {} : { hooks }),
 });
 const server = serve({ runtime, port });
@@ -182,7 +182,6 @@ function spawnProcess(
     env: {
       ...process.env,
       ACKERDB_DURABILITY: "production",
-      ACKERDB_TELEMETRY: "disabled",
       ...env,
     },
   }) as CliProcess;
@@ -239,7 +238,7 @@ class ObservingWebSocket implements AckerDBWebSocket {
     this.socket.onerror = () => this.onerror?.();
     this.socket.onmessage = (event) => {
       if (typeof event.data === "string") {
-        const message = parseServerMessage(decode(event.data));
+        const message = parseReceivedFrame(event.data, this.receivedCount++);
         if (message.t === "ok" && message.kind === "mutation") {
           this.observed.receipts.push(message.receipt);
         }
@@ -248,8 +247,11 @@ class ObservingWebSocket implements AckerDBWebSocket {
     };
   }
 
+  private sentCount = 0;
+  private receivedCount = 0;
+
   send(data: string): void {
-    const message = parseClientMessage(decode(data));
+    const message = parseSentFrame(data, this.sentCount++);
     if (message.t === "m") this.observed.mutationRequestIds.push(message.mutationRequestId);
     this.socket.send(data);
   }
@@ -346,7 +348,7 @@ describe("process crash replay", () => {
 
     let mutationSettled = false;
     const mutation = client.mutation<{ channelId: bigint; body: string }, bigint>(
-      "crash.crashBeforeCommit",
+      "api.crash.crashBeforeCommit",
       { channelId: 9n, body: "precommit-sigkill" },
     );
     void mutation.then(
@@ -385,8 +387,10 @@ describe("process crash replay", () => {
       client.clientSessionId,
       requestId,
     )).toBe(0);
+    // Version 1 is the first boot's Admin Credential mint; the killed mutation
+    // contributed nothing, which is the point of the assertion.
     expect(storageState(database)).toEqual({
-      commitVersion: 0,
+      commitVersion: 1,
       mutationRecords: 0,
       mutationResultBytes: 0,
     });
@@ -426,12 +430,14 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
+      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 2 AND durability = 'production'",
       client.clientSessionId,
       requestId,
     )).toBe(1);
+    // Version 1 was the Admin Credential mint on the first boot, so the retried
+    // mutation is the second commit this database has ever taken.
     const committedState = storageState(database);
-    expect(committedState).toMatchObject({ commitVersion: 1, mutationRecords: 1 });
+    expect(committedState).toMatchObject({ commitVersion: 2, mutationRecords: 1 });
     expect(committedState.mutationResultBytes).toBeGreaterThan(0);
 
     client.close();
@@ -474,7 +480,7 @@ describe("process crash replay", () => {
     client.subscribe<
       { channelId: bigint },
       Array<{ id: bigint; body: string }>
-    >("messages.list", { channelId: 7n }, (rows) => {
+    >("api.messages.list", { channelId: 7n }, (rows) => {
       if (rows.length === 0) {
         initialSnapshot();
         return;
@@ -490,7 +496,7 @@ describe("process crash replay", () => {
     let mutationSettled = false;
     let mutationResolvedAfterSubscription = false;
     const mutation = client.mutation<{ channelId: bigint; body: string }, bigint>(
-      "messages.send",
+      "api.messages.send",
       { channelId: 7n, body: "post-commit-sigkill" },
     );
     void mutation.then(
@@ -605,7 +611,7 @@ describe("process crash replay", () => {
         { channelId: bigint; body: string },
         bigint
       >(
-        "messages.send",
+        "api.messages.send",
         { channelId: 11n, body: "acknowledged-before-sigkill" },
       ), "acknowledged mutation");
       first.child.kill("SIGKILL");
@@ -644,7 +650,7 @@ describe("process crash replay", () => {
       const rows = await withTimeout(client.query<
         { channelId: bigint },
         Array<{ id: bigint; body: string }>
-      >("messages.list", { channelId: 11n }), "query after acknowledged crash");
+      >("api.messages.list", { channelId: 11n }), "query after acknowledged crash");
       expect(rows).toEqual([
         expect.objectContaining({ id: 1n, body: "acknowledged-before-sigkill" }),
       ]);
@@ -652,7 +658,7 @@ describe("process crash replay", () => {
       expect(await withTimeout(client.mutation<
         { channelId: bigint; body: string },
         bigint
-      >("messages.send", { channelId: 11n, body: "after-restart" }), "mutation after restart")).toBe(2n);
+      >("api.messages.send", { channelId: 11n, body: "after-restart" }), "mutation after restart")).toBe(2n);
       expect(observed.receipts.at(-1)).toMatchObject({
         commitVersion: 2n,
         durability,

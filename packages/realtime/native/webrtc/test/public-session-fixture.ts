@@ -152,7 +152,6 @@ export async function verifyPublicRealtimeSession(
       assistant: { live: assistant },
       procedures: { echo },
     }),
-    telemetry: false,
     // Same-host peers can advertise RFC1918 host candidates. This is an
     // explicit isolated-LAN test topology; production keeps the default deny
     // policy and continues to reject loopback and sensitive addresses.

@@ -24,6 +24,7 @@ const AUDIENCE = "ackerdb-test";
 function userPrincipal(subject = "user-1"): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    scopes: Object.freeze([]),
     identity: 1n as UserPrincipal["identity"],
     issuer: ISSUER,
     subject,

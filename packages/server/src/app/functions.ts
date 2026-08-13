@@ -8,8 +8,12 @@
  */
 import type { ExternalAccount, Principal } from "../auth/credentials.ts";
 import {
+  DEFAULT_API_PATH,
+  EVENTS_NAMESPACE,
   Status,
   type ApplicationError,
+  type DefaultApiPath,
+  type RegisteredApiPath,
   type ErrorHttpStatus,
   type ErrResult,
   type OkResult,
@@ -35,12 +39,15 @@ import {
   type AccessPolicy,
   type InvocationContext,
 } from "./access.ts";
+import {
+  normalizeScopeRequirement,
+  type NormalizedScopeRequirement,
+  type ScopeRequirement,
+} from "../auth/scopes.ts";
 import type { Schema } from "../schema/definition.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
-import type {
-  AnalyticsTracker,
-  ApplicationLogger,
-} from "../telemetry/application-signals/types.ts";
+import type { Analytics } from "../signals/analytics.ts";
+import type { Logger } from "../signals/logger.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
 import type {
   FileMutationCapability,
@@ -59,7 +66,7 @@ export type QueryCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
   readonly timestamp: number;
   /** Declared jobs, read-only: the reactive builder scoped per definition. */
   readonly jobs: Jobs;
@@ -74,8 +81,8 @@ export type MutationCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
-  readonly analytics: AnalyticsTracker;
-  readonly log: ApplicationLogger;
+  readonly analytics: Analytics;
+  readonly log: Logger;
   readonly timestamp: number;
   /** Declared jobs: transactional enqueue — the job exists iff this commits. */
   readonly jobs: Jobs;
@@ -98,7 +105,7 @@ export type ProcedureCtx<
   TxJobs extends object = AnyJobsNamespace,
 > = InvocationContext & Capabilities & {
   readonly auth: AuthCtx;
-  readonly log: ApplicationLogger;
+  readonly log: Logger;
   readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;
@@ -265,7 +272,49 @@ type ErrorDeclarationConstraint<
         };
       };
 
+/**
+ * The shape a declaration cannot satisfy, so the error names the rule. It is
+ * an object, not a string: intersected with a union of literals a string
+ * marker reduces to `never`, and TypeScript then reports every property of the
+ * declaration instead of the one at fault. This is the shape
+ * {@link ErrorDeclarationConstraint} already uses for the same reason.
+ */
+interface ImpreciseApiPath {
+  readonly apiPath: {
+    readonly "AckerDB: apiPath must be exactly one string literal": never;
+  };
+}
+
+/** True when `T` stands for more than one type — a union rather than one literal. */
+type IsUnion<T, Members = T> = T extends unknown
+  ? [Members] extends [T]
+    ? false
+    : true
+  : never;
+
+/**
+ * A declared group must be exactly one string literal. A generated tree
+ * selects functions whose group matches one exact name, so anything less
+ * precise — a widened `string`, a union of literals, a literal that may be
+ * `undefined` — names no group any tree can select, and the function would
+ * answer on a live route while appearing in no binding at all. This is the
+ * same silent widening the literal-only rule on the retired `internal` field
+ * existed to prevent.
+ */
+type ApiPathConstraint<Definition> = Definition extends {
+  readonly apiPath: infer Path;
+}
+  ? [Path] extends [string]
+    ? string extends Path
+      ? ImpreciseApiPath
+      : IsUnion<Path> extends true
+        ? ImpreciseApiPath
+        : unknown
+    : ImpreciseApiPath
+  : unknown;
+
 type DefinitionConstraint<Definition extends { readonly handler: Function }> =
+  ApiPathConstraint<Definition> &
   ReturnDeclarationConstraint<
     DefinitionReturn<Definition>,
     DefinitionReturns<Definition>
@@ -283,23 +332,113 @@ type FunctionHandler<
   args: Expand<InferShape<A>>,
 ) => unknown;
 
+/**
+ * An API path is one address segment, one URL segment, and one generated
+ * binding name, so it obeys the rule module segments already obey. The leading
+ * `_` is the framework's reserved marker, which the identifier rule excludes
+ * at the first character.
+ */
+const API_PATH = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+/**
+ * Names the identifier rule admits but `export const <name>` does not: the
+ * reserved words, plus `eval` and `arguments`, which strict mode forbids as
+ * bindings. Code generation writes a group's name straight into a binding, so
+ * a name that cannot be one fails here rather than inside a generated file.
+ */
+const UNBINDABLE_NAMES: ReadonlySet<string> = new Set([
+  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
+  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
+  "extends", "false", "finally", "for", "function", "if", "implements",
+  "import", "in", "instanceof", "interface", "let", "new", "null", "package",
+  "private", "protected", "public", "return", "static", "super", "switch",
+  "this", "throw", "true", "try", "typeof", "var", "void", "while", "with",
+  "yield",
+]);
+
+/**
+ * The one interpreter of `apiPath`: the group a function is published in, and
+ * so the first segment of its address — which decides its generated binding
+ * and its HTTP root together. Absent means {@link DEFAULT_API_PATH}. It is
+ * namespacing and routing only — who may call is `access` alone — so no value
+ * here widens or narrows admission.
+ */
+export function apiPath(value: unknown, where = "apiPath"): string {
+  if (value === undefined) return DEFAULT_API_PATH;
+  if (typeof value !== "string" || !API_PATH.test(value)) {
+    throw new TypeError(
+      `${where} must be a name starting with a letter, followed by letters, digits, or "_" — "_" is reserved to AckerDB`,
+    );
+  }
+  if (UNBINDABLE_NAMES.has(value)) {
+    throw new TypeError(`${where} must not be "${value}" — a group's name becomes a binding, and that one cannot be`);
+  }
+  if (value === EVENTS_NAMESPACE) {
+    throw new TypeError(
+      `${where} must not be "${EVENTS_NAMESPACE}" — the generated api module already binds that name to event-table references`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Startup refusal for kinds addressed over the socket, which have no HTTP root
+ * to group. Their addresses therefore always begin with the default group.
+ */
+export function refuseApiPathDeclaration(def: object, what: string): void {
+  if ((def as { readonly apiPath?: unknown }).apiPath !== undefined) {
+    throw new TypeError(
+      `${what} cannot declare apiPath — it is addressed over the socket and has no HTTP root to group`,
+    );
+  }
+}
+
 /** Surface metadata every kind shares: HTTP exposure and its documentation. */
 interface ExposureDef {
   readonly http?: HttpExposure;
   readonly description?: string;
   readonly title?: string;
+  /**
+   * The group this function is published in, and the first segment of its
+   * address: `"api"` by default, giving `api.messages.list` and the route
+   * `/api/messages/list`; `"internal"` gives `internal.messages.list` and
+   * `/internal/messages/list`. Namespacing and routing only — `access` alone
+   * decides who may call it. Names beginning with `_` are reserved.
+   */
+  readonly apiPath?: string;
 }
 
 type FunctionDef<
   A extends ObjectShape,
   Ctx extends InvocationContext,
+  Scope extends string = string,
 > = ExposureDef & {
   readonly args: A;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  /**
+   * The scope requirement drawn from the application vocabulary, enforced at
+   * the one authorization funnel after `access`. It combines with
+   * `"authenticated"` or a policy callback; `"public"` contradicts it and
+   * `"system"` bypasses it, so both are registration errors. Generated server
+   * modules bind `Scope` to the declared vocabulary, which makes an undeclared
+   * scope a compile error.
+   */
+  readonly scopes?: ScopeRequirement<Scope>;
   readonly handler: FunctionHandler<A, Ctx>;
 };
+
+/**
+ * Carries a declaration's group onto the registered type using core's own
+ * selector, so the tree that reads it and the builder that writes it cannot
+ * disagree about the field.
+ */
+type ApiPathOf<Definition> = Definition extends {
+  readonly apiPath: infer Path extends string;
+}
+  ? RegisteredApiPath<Path>
+  : RegisteredApiPath<DefaultApiPath>;
 
 type DefinitionReturn<Definition extends { readonly handler: Function }> =
   Definition["handler"] extends (...args: never[]) => infer HandlerReturn
@@ -367,6 +506,7 @@ export interface Invocable<
   readonly kind: K;
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly scopes?: NormalizedScopeRequirement;
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
@@ -388,6 +528,8 @@ export interface Registered<
   H = R,
 > extends Invocable<K, A, Ctx, R, H>, ExposureDef {
   readonly isAckerDB: true;
+  /** Always present: the declaration's group, or `"api"` when it named none. */
+  readonly apiPath: string;
 }
 
 export type RegisteredQuery<
@@ -464,19 +606,58 @@ function validateOutputDeclarations(def: Pick<
 }
 
 /** Validated surface metadata, spread onto the registered function as declared. */
-function exposureFields(def: ExposureDef): ExposureDef {
-  httpExposure(def.http);
+function exposureFields(
+  def: ExposureDef,
+  kind: string,
+): ExposureDef & { readonly apiPath: string } {
+  httpExposure(def.http, `${kind} http`);
   for (const field of ["description", "title"] as const) {
     const value = def[field];
     if (value !== undefined && typeof value !== "string") {
-      throw new TypeError(`${field} must be a string`);
+      throw new TypeError(`${kind} ${field} must be a string`);
     }
   }
   return {
+    // Resolved, never conditional: every registered function has a group, so
+    // the registry reads one field instead of restating the default.
+    apiPath: apiPath(def.apiPath, `${kind} apiPath`),
     ...(def.http === undefined ? {} : { http: def.http }),
     ...(def.description === undefined ? {} : { description: def.description }),
     ...(def.title === undefined ? {} : { title: def.title }),
   };
+}
+
+/**
+ * Validate a declared scope requirement once, at registration. Requiring
+ * scopes on a `"public"` function contradicts the declaration — an anonymous
+ * caller can never hold one — and on a `"system"` function it is dead
+ * configuration, because system authority bypasses scopes at the funnel. Both
+ * are registration errors rather than a rule that silently never fires.
+ */
+/**
+ * Normalize the declared requirement once, here, and keep the canonical value.
+ *
+ * What is registered must be what is enforced and what is validated. Keeping
+ * the caller's own object instead would leave three parties reading a mutable
+ * declaration at three different moments: registration validating one shape,
+ * dispatch compiling a private snapshot of another, and the load-time
+ * vocabulary check approving a third. `normalizeScopeRequirement` already
+ * clones and freezes, so storing its result is what makes the authorization
+ * rule single-valued rather than merely written down three times.
+ */
+function scopeFields(
+  def: { readonly access: unknown; readonly scopes?: ScopeRequirement<string> },
+  kind: string,
+): { readonly scopes?: NormalizedScopeRequirement } {
+  if (def.scopes === undefined) return {};
+  const scopes = normalizeScopeRequirement(def.scopes, `${kind} scopes`);
+  if (def.access === "public" || def.access === "system") {
+    throw new TypeError(
+      `${kind} scopes cannot combine with access "${String(def.access)}"` +
+        ` — use "authenticated" or a policy callback`,
+    );
+  }
+  return { scopes };
 }
 
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
@@ -485,6 +666,67 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
   }
   if (yields.kind === "pk" || yields.kind === "scheduleAt" || yields.kind === "tag") {
     throw new Error(`yields: v.${yields.kind}() is not a valid chunk validator`);
+  }
+}
+
+/**
+ * The declaration's own fields, listed once for the refusal below. `satisfies`
+ * makes the type the source of truth in both directions: adding a field to the
+ * definition without listing it here, or listing one the definition dropped,
+ * fails this build rather than a caller's declaration.
+ */
+const FUNCTION_FIELDS = {
+  apiPath: true,
+  http: true,
+  description: true,
+  title: true,
+  args: true,
+  returns: true,
+  errors: true,
+  access: true,
+  scopes: true,
+  handler: true,
+} satisfies Record<keyof FunctionDef<ObjectShape, InvocationContext>, true>;
+
+const SSE_FIELDS = {
+  apiPath: true,
+  http: true,
+  description: true,
+  title: true,
+  args: true,
+  yields: true,
+  access: true,
+  scopes: true,
+  handler: true,
+} satisfies Record<
+  keyof SseDef<ObjectShape, Validator<unknown, string>, InvocationContext>,
+  true
+>;
+
+const FUNCTION_KEYS = Object.freeze(Object.keys(FUNCTION_FIELDS));
+const SSE_KEYS = Object.freeze(Object.keys(SSE_FIELDS));
+
+/**
+ * Every field a declaration may carry, refused by name otherwise. An
+ * intersection parameter turns off TypeScript's excess-property check, so a
+ * misspelled or retired key — `internal`, once — would otherwise be dropped in
+ * silence and read as an expectation nothing meets.
+ *
+ * Every own key, enumerable or not, string or symbol: a field hidden behind
+ * `enumerable: false` is still a field the author expected something to
+ * consume, and nothing here consumes any of them.
+ */
+export function refuseUnknownFields(
+  def: object,
+  allowed: readonly string[],
+  where: string,
+): void {
+  for (const key of Reflect.ownKeys(def)) {
+    if (typeof key === "symbol" || !allowed.includes(key)) {
+      throw new TypeError(
+        `${where} must not declare "${String(key)}" — it carries exactly ${allowed.join(", ")}`,
+      );
+    }
   }
 }
 
@@ -503,13 +745,15 @@ function register<K extends string>(kind: K) {
     Ctx,
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
-  > => {
+  > & ApiPathOf<Definition> => {
+    refuseUnknownFields(def, FUNCTION_KEYS, kind);
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
     validateArgsShape(def.args);
     validateOutputDeclarations(def as never);
-    const exposure = exposureFields(def);
+    const exposure = exposureFields(def, kind);
+    const scoped = scopeFields(def, kind);
 
     const callable =
       kind === "query" || kind === "mutation" || kind === "procedure"
@@ -524,6 +768,7 @@ function register<K extends string>(kind: K) {
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
       ...exposure,
+      ...scoped,
       access: def.access,
       handler: def.handler,
     }) as unknown as Registered<
@@ -532,7 +777,13 @@ function register<K extends string>(kind: K) {
       Ctx,
       ResultOfDefinition<Definition>,
       DefinitionReturn<Definition>
-    >;
+    > & ApiPathOf<Definition>;
+    // Frozen before it is compiled, so what is registered is what is enforced.
+    // Dispatch compiles `args`, `access` and `scopes` into a private snapshot
+    // here, once; a writable declaration would let a later assignment show the
+    // registry — and every load-time rule reading it — a policy the funnel is
+    // not enforcing.
+    Object.freeze(registered);
     compileInvocation(registered);
     return registered;
   };
@@ -555,6 +806,7 @@ function registerCallable<K extends string>(kind: K) {
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
   > &
+    ApiPathOf<Definition> &
     ((
       ctx: Ctx,
       args: Expand<ArgsInput<A>>,
@@ -569,10 +821,12 @@ interface SseDef<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
+  Scope extends string = string,
 > extends ExposureDef {
   readonly args: A;
   readonly yields: Y;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly scopes?: ScopeRequirement<Scope>;
   readonly handler: (
     ctx: Ctx,
     args: Expand<InferShape<A>>,
@@ -588,13 +842,18 @@ export function sseProcedure<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
->(def: SseDef<A, Y, Ctx>): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> {
+  const Definition extends SseDef<A, Y, Ctx>,
+>(
+  def: SseDef<A, Y, Ctx> & Definition & ApiPathConstraint<NoInfer<Definition>>,
+): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> & ApiPathOf<Definition> {
+  refuseUnknownFields(def, SSE_KEYS, "sse");
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
   validateArgsShape(def.args);
   validateYields(def.yields);
-  const exposure = exposureFields(def);
+  const exposure = exposureFields(def, "sse");
+  const scoped = scopeFields(def, "sse");
 
   const callable = () => {
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
@@ -605,20 +864,30 @@ export function sseProcedure<
     args: def.args,
     yields: def.yields,
     ...exposure,
+    ...scoped,
     access: def.access,
     handler: def.handler,
-  }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema>;
+  }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema> &
+    ApiPathOf<Definition>;
+  Object.freeze(registered);
   compileInvocation(registered);
   return registered;
 }
 
+/**
+ * Code generation binds `Scope` to the application's declared vocabulary, so
+ * `scopes: { anyOf: ["notes:read"] }` type-checks against `defineApp` and an
+ * undeclared scope is a compile error. The schema-agnostic constructors keep
+ * the `string` default.
+ */
 export type QueryBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>>,
+  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -629,6 +898,7 @@ export type QueryBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  ApiPathOf<Definition> &
   ((
     ctx: QueryCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -638,9 +908,10 @@ export type MutationBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>>,
+  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -651,6 +922,7 @@ export type MutationBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  ApiPathOf<Definition> &
   ((
     ctx: MutationCtx<S, Capabilities, Jobs>,
     args: Expand<ArgsInput<A>>,
@@ -662,11 +934,13 @@ export type ProcedureBuilder<
   TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
+  Scope extends string = string,
 > = <
   A extends ObjectShape,
   const Definition extends FunctionDef<
     A,
-    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>
+    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    Scope
   >,
 >(
   def: { readonly args: A } &
@@ -678,6 +952,7 @@ export type ProcedureBuilder<
   S,
   DefinitionReturn<Definition>
 > &
+  ApiPathOf<Definition> &
   ((
     ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
     args: Expand<ArgsInput<A>>,
@@ -689,18 +964,24 @@ export type SseBuilder<
   TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
-> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: ExposureDef & {
-  readonly args: A;
-  readonly yields: Y;
-  readonly access: AccessPolicy<
+  Scope extends string = string,
+> = <
+  A extends ObjectShape,
+  Y extends Validator<unknown, string>,
+  const Definition extends SseDef<
+    A,
+    Y,
     SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
-    Expand<InferShape<A>>
-  >;
-  readonly handler: (
-    ctx: SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
-    args: Expand<InferShape<A>>,
-  ) => SseSource<InferValidator<Y>> | Promise<SseSource<InferValidator<Y>>>;
-}) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;
+    Scope
+  >,
+>(
+  def: SseDef<
+    A,
+    Y,
+    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    Scope
+  > & Definition & ApiPathConstraint<NoInfer<Definition>>,
+) => RegisteredSse<A, Expand<InferValidator<Y>>, S> & ApiPathOf<Definition>;
 
 // Runtime registries deliberately erase each function's concrete context.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

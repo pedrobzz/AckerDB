@@ -25,7 +25,6 @@ describe("built-in Files capability", () => {
     runtime = new Runtime({
       engine,
       registry: new Registry({}),
-      telemetry: false,
       now: () => NOW,
       files: { publicUrl: "https://files.example.test/root/" },
     });
@@ -50,12 +49,12 @@ describe("built-in Files capability", () => {
     expect(result.data).toEqual({
       session: {
         url: expect.stringMatching(
-          /^https:\/\/files\.example\.test\/api\/_files\/uploads\/\d+\.[A-Za-z0-9_-]+$/,
+          /^https:\/\/files\.example\.test\/_files\/uploads\/\d+\.[A-Za-z0-9_-]+$/,
         ),
         expiresAt: NOW + 60 * 60 * 1_000,
         maxBytes: 42,
       },
-      applicationTables: ["documents", "_ackerdb_jobs"],
+      applicationTables: ["documents", "_ackerdb_jobs", "_ackerdb_job_runs"],
     });
   });
 });

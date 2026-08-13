@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
+  EVENTS_ADDRESS_PREFIX,
   decode,
   stableEncode,
   type LiveEvent,
@@ -24,8 +25,6 @@ import type {
   ReactiveCommit,
   ReactiveCommitResult,
   ReactiveEvent,
-  ReactiveObservation,
-  ReactiveObserver,
   ReactiveSnapshot,
   Subscriber,
 } from "./contract.ts";
@@ -43,7 +42,6 @@ import {
   authOutcome,
   errorOutcome,
   isAuthFailure,
-  observationOutcome,
   overloadOutcome,
   overloaded,
   unavailable,
@@ -68,12 +66,10 @@ export class OrderedReactive<C = unknown> {
   // Invariant: application code run on a subscriber's behalf (query
   // re-evaluation, event-listener matching) executes under this pristine async
   // context captured at construction, never a committing caller's context left
-  // ambient when a commit lands. Scoped to the app-code calls so the observer
-  // bookkeeping around them keeps its ambient trace correlation.
+  // ambient when a commit lands.
   private readonly root = AsyncLocalStorage.snapshot();
   private readonly now: () => number;
   private readonly nextGeneration: () => string;
-  private readonly observer?: ReactiveObserver;
   private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
   private readonly dependencies = new DependencyIndex<C>();
@@ -92,7 +88,6 @@ export class OrderedReactive<C = unknown> {
     this.history = new TransitionHistory(this.limits.resume);
     this.now = options.now ?? Date.now;
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
-    this.observer = options.observer;
     this.revalidation = new BoundedExecutor({
       concurrency: this.limits.revalidationConcurrency,
       discipline: "round-robin",
@@ -278,7 +273,9 @@ export class OrderedReactive<C = unknown> {
     this.assertNewAuthEpoch(bindings, nextAuthEpoch);
     const subscriptions = bindings.map((binding) => Object.freeze({
       id: binding.id,
-      address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
+      address: binding.kind === "query"
+        ? binding.entry.address
+        : `${EVENTS_ADDRESS_PREFIX}${binding.state.table}`,
       args: binding.kind === "query" ? binding.entry.args.decoded : binding.args,
     })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];
@@ -350,11 +347,6 @@ export class OrderedReactive<C = unknown> {
 
   snapshot(): ReactiveSnapshot {
     this.prune();
-    return this.metricsSnapshot();
-  }
-
-  /** Constant-cost projection for periodic telemetry; expiry remains demand-driven. */
-  metricsSnapshot(): ReactiveSnapshot {
     return Object.freeze({
       sharedEntries: this.entries.size,
       queryListeners: this.queryListeners,
@@ -422,46 +414,13 @@ export class OrderedReactive<C = unknown> {
     const wasInitialized = entry.initialized;
     const fairnessKey = entry.ownerFairnessKey;
     const context = entry.context;
-    const queuedAt = this.observer ? this.observationNow() : undefined;
-    let started = false;
     const execution = this.revalidation.submit(
-      () => {
-        started = true;
-        if (this.observer) {
-          this.observe(queuedAt, {
-            kind: "query",
-            phase: "revalidation_queue",
-            outcome: "ok",
-            address: entry.address,
-            commitVersion: targetVersion,
-            dependencyCount: entry.readSet.size,
-            byteCount: entry.revalidationBytes,
-          });
-        }
-        return this.evaluateOnce(entry, fairnessKey, context);
-      },
+      () => this.evaluateOnce(entry, fairnessKey, context),
       {
-        operation: "subscription",
         bytes: entry.revalidationBytes,
         fairnessKey,
       },
     ).catch(async (error): Promise<DeliveryFailure[]> => {
-      if (!started && this.observer) {
-        const outcome = observationOutcome(error);
-        const metadata = {
-          kind: "query" as const,
-          address: entry.address,
-          commitVersion: targetVersion,
-          dependencyCount: entry.readSet.size,
-          byteCount: entry.revalidationBytes,
-        };
-        this.observe(queuedAt, {
-          ...metadata,
-          phase: "revalidation_queue",
-          outcome,
-        });
-        this.observe(queuedAt, { ...metadata, phase: "failure", outcome });
-      }
       if (!wasInitialized) {
         this.removeEntry(entry);
         throw error;
@@ -510,8 +469,6 @@ export class OrderedReactive<C = unknown> {
     const failures: DeliveryFailure[] = [];
     if (!entry.removed && (!entry.initialized || entry.commitVersion < entry.dirtyVersion)) {
       const evaluationGeneration = ++entry.evaluationGeneration;
-      const initial = !entry.initialized;
-      const evaluatedAt = this.observer ? this.observationNow() : undefined;
       let evaluated: QueryEvaluation;
       try {
         evaluated = await this.root(() => this.evaluateQuery({
@@ -528,36 +485,9 @@ export class OrderedReactive<C = unknown> {
           throw new AckerDBError("internal", "Query observed a future commit");
         }
       } catch (error) {
-        if (this.observer) {
-          const outcome = observationOutcome(error);
-          const metadata = {
-            kind: "query" as const,
-            address: entry.address,
-            commitVersion: entry.dirtyVersion,
-            dependencyCount: entry.readSet.size,
-          };
-          this.observe(evaluatedAt, {
-            ...metadata,
-            phase: initial ? "initial_evaluation" : "evaluation",
-            outcome,
-          });
-          this.observe(evaluatedAt, { ...metadata, phase: "failure", outcome });
-        }
         throw error;
       }
-      if (this.observer) {
-        this.observe(evaluatedAt, {
-          kind: "query",
-          phase: initial ? "initial_evaluation" : "evaluation",
-          outcome: "ok",
-          address: entry.address,
-          commitVersion: evaluated.commitVersion,
-          dependencyCount: evaluated.readSet.size,
-          byteCount: byteLength(evaluated.encoded),
-        });
-      }
       let installed: InstalledEvaluation<C> | undefined;
-      const installedAt = this.observer ? this.observationNow() : undefined;
       let current: boolean;
       try {
         current = this.publication.compareAndInstall(evaluated.commitVersion, () => {
@@ -565,17 +495,6 @@ export class OrderedReactive<C = unknown> {
           installed = this.installEvaluation(entry, evaluated);
         });
       } catch (error) {
-        if (this.observer) {
-          this.observe(installedAt, {
-            kind: "query",
-            phase: "failure",
-            outcome: observationOutcome(error),
-            address: entry.address,
-            commitVersion: evaluated.commitVersion,
-            dependencyCount: evaluated.readSet.size,
-            byteCount: byteLength(evaluated.encoded),
-          });
-        }
         throw error;
       }
       if (!current || !installed) {
@@ -588,18 +507,6 @@ export class OrderedReactive<C = unknown> {
         const message = installed.overloadMessage ?? "Shared query result capacity is full";
         const outcome = overloadOutcome(message);
         const convergenceError = overloaded(message);
-        if (this.observer) {
-          this.observe(installedAt, {
-            kind: "query",
-            phase: "failure",
-            outcome: "overloaded",
-            address: entry.address,
-            commitVersion: evaluated.commitVersion,
-            dependencyCount: evaluated.readSet.size,
-            resultCount: installed.overflowedListeners.length,
-            byteCount: byteLength(evaluated.encoded),
-          });
-        }
         for (const listener of installed.overflowedListeners) {
           failures.push(failure(listener, convergenceError, "convergence"));
           try {
@@ -609,18 +516,6 @@ export class OrderedReactive<C = unknown> {
           }
         }
         return failures;
-      }
-      if (this.observer) {
-        this.observe(installedAt, {
-          kind: "query",
-          phase: installed.changed ? "changed" : "unchanged",
-          outcome: installed.changed ? "changed" : "unchanged",
-          address: entry.address,
-          commitVersion: entry.commitVersion,
-          dependencyCount: entry.readSet.size,
-          resultCount: 1,
-          byteCount: entry.resultBytes,
-        });
       }
       failures.push(...await this.deliverInstalled(installed));
       const newest = this.publication.snapshot().highWater;
@@ -686,7 +581,6 @@ export class OrderedReactive<C = unknown> {
   private async deliverInstalled(installed: InstalledEvaluation<C>): Promise<DeliveryFailure[]> {
     if (installed.previousVersion === undefined) return [];
     const listeners = [...installed.entry.listeners];
-    const startedAt = this.observer ? this.observationNow() : undefined;
     const deliveries = listeners.map(async (listener) => {
       try {
         await this.deliverQuery(listener, false, installed.forceReset);
@@ -697,18 +591,6 @@ export class OrderedReactive<C = unknown> {
     });
     const failures = (await Promise.all(deliveries))
       .filter((result): result is DeliveryFailure => result !== undefined);
-    if (this.observer) {
-      this.observe(startedAt, {
-        kind: "query",
-        phase: "fanout",
-        outcome: failures.length === 0 ? "ok" : "unavailable",
-        address: installed.entry.address,
-        commitVersion: installed.entry.commitVersion,
-        dependencyCount: installed.entry.readSet.size,
-        resultCount: listeners.length,
-        byteCount: installed.entry.resultBytes,
-      });
-    }
     return failures;
   }
 
@@ -763,25 +645,13 @@ export class OrderedReactive<C = unknown> {
     await this.queue(
       listener,
       () => listener.subscriber.sendTransition(listener.id, transition),
-      transition.to.commitVersion,
     );
     listener.cursor = transition.to;
   }
 
   private processPublication(publication: Publication<ReactiveCommit>): PublicationHandoff {
     const commit = publication.value;
-    const matchedAt = this.observer ? this.observationNow() : undefined;
     const affected = this.dependencies.affected(commit.writeKeys);
-    if (this.observer && commit.writeKeys.size > 0 && this.entries.size > 0) {
-      this.observe(matchedAt, {
-        kind: "query",
-        phase: "invalidation_match",
-        outcome: affected.size === 0 ? "unmatched" : "matched",
-        commitVersion: publication.version,
-        dependencyCount: commit.writeKeys.size,
-        resultCount: affected.size,
-      });
-    }
     const required: Promise<DeliveryFailure[]>[] = [];
     for (const entry of affected) {
       if (entry.removed || entry.commitVersion >= publication.version) continue;
@@ -812,34 +682,10 @@ export class OrderedReactive<C = unknown> {
     if (!state) return Promise.resolve([]);
     const deliveries: Promise<DeliveryFailure | undefined>[] = [];
     for (const listener of [...state.listeners]) {
-      const matchedAt = this.observer ? this.observationNow() : undefined;
       try {
         const matched = this.root(() => listener.matches(event.row, listener.args)) === true;
-        if (this.observer) {
-          this.observe(matchedAt, {
-            kind: "event",
-            phase: "event_match",
-            outcome: matched ? "matched" : "unmatched",
-            address: event.table,
-            subscriptionId: listener.id,
-            commitVersion,
-            resultCount: matched ? 1 : 0,
-          });
-        }
         if (!matched) continue;
       } catch (error) {
-        if (this.observer) {
-          const outcome = observationOutcome(error);
-          const metadata = {
-            kind: "event" as const,
-            address: event.table,
-            subscriptionId: listener.id,
-            commitVersion,
-            resultCount: 0,
-          };
-          this.observe(matchedAt, { ...metadata, phase: "event_match", outcome });
-          this.observe(matchedAt, { ...metadata, phase: "failure", outcome });
-        }
         deliveries.push(this.sequence(listener, () => {
           listener.gapped = true;
         }).then(() => failure(listener, error)));
@@ -997,62 +843,8 @@ export class OrderedReactive<C = unknown> {
   private queue(
     binding: Binding<C>,
     send: () => Promise<void>,
-    commitVersion?: bigint,
   ): Promise<void> {
-    let deliver = send;
-    if (this.observer) {
-      const queuedAt = this.observationNow();
-      const address = binding.kind === "query" ? binding.entry.address : binding.state.table;
-      const version = commitVersion ?? (binding.kind === "query"
-        ? binding.entry.commitVersion
-        : binding.cursor.commitVersion);
-      const dependencyCount = binding.kind === "query" ? binding.entry.readSet.size : undefined;
-      const byteCount = binding.kind === "query" ? binding.entry.resultBytes : undefined;
-      deliver = async () => {
-        this.observe(queuedAt, {
-          kind: binding.kind,
-          phase: "listener_queue",
-          outcome: "ok",
-          address,
-          subscriptionId: binding.id,
-          commitVersion: version,
-          dependencyCount,
-          resultCount: 1,
-          byteCount,
-        });
-        const deliveredAt = this.observationNow();
-        try {
-          await send();
-          this.observe(deliveredAt, {
-            kind: binding.kind,
-            phase: "delivery",
-            outcome: "ok",
-            address,
-            subscriptionId: binding.id,
-            commitVersion: version,
-            dependencyCount,
-            resultCount: 1,
-            byteCount,
-          });
-        } catch (error) {
-          const outcome = observationOutcome(error);
-          const metadata = {
-            kind: binding.kind,
-            address,
-            subscriptionId: binding.id,
-            commitVersion: version,
-            dependencyCount,
-            resultCount: 0,
-            byteCount,
-          };
-          this.observe(deliveredAt, { ...metadata, phase: "delivery", outcome });
-          this.observe(deliveredAt, { ...metadata, phase: "failure", outcome });
-          throw error;
-        }
-      };
-    }
-
-    return this.sequence(binding, deliver);
+    return this.sequence(binding, send);
   }
 
   private sequence(binding: Binding<C>, work: () => void | Promise<void>): Promise<void> {
@@ -1099,14 +891,13 @@ export class OrderedReactive<C = unknown> {
       }
       listener.cursor = cursor;
       listener.gapped = false;
-    }, commitVersion);
+    });
   }
 
   private async sendEvent(listener: EventListener<C>, event: LiveEvent): Promise<void> {
     await this.queue(
       listener,
       () => listener.subscriber.sendEvent(listener.id, event),
-      event.cursor.commitVersion,
     );
     listener.cursor = event.cursor;
   }
@@ -1146,41 +937,6 @@ export class OrderedReactive<C = unknown> {
       throw new TypeError("generation must return a non-empty bounded string");
     }
     return generation;
-  }
-
-  private observationNow(): number | undefined {
-    try {
-      const now = this.now();
-      return Number.isFinite(now) ? now : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private observe(
-    startedAt: number | undefined,
-    observation: Omit<ReactiveObservation, "durationMs">,
-  ): void {
-    const observer = this.observer;
-    if (!observer) return;
-    const finishedAt = this.observationNow();
-    const elapsed = startedAt === undefined || finishedAt === undefined
-      ? 0
-      : finishedAt - startedAt;
-    const durationMs = Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0;
-    const safe = Object.freeze({ ...observation, durationMs });
-    try {
-      const completion = observer(safe);
-      if (
-        completion !== null &&
-        (typeof completion === "object" || typeof completion === "function") &&
-        typeof (completion as PromiseLike<unknown>).then === "function"
-      ) {
-        void Promise.resolve(completion).catch(() => {});
-      }
-    } catch {
-      // Observability must never affect publication, convergence, or delivery.
-    }
   }
 
   private readNow(): number {

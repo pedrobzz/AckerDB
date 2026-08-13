@@ -14,7 +14,7 @@ import {
   type AckerDBServer,
 } from "@ackerdb/server";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
   decode,
   encode,
   parseRealtimeOfferResponse,
@@ -82,7 +82,6 @@ function fixture(trustedProxy?: string | readonly string[]): Fixture {
     engine,
     registry: new Registry({ assistant: { live: assistant } }),
     limits: PRODUCTION_LIMITS,
-    telemetry: false,
     realtime: realtimeRuntime,
   });
   const server = serve({
@@ -105,13 +104,13 @@ async function prepare(
   value: Fixture,
   forwarded: string,
 ): Promise<{ readonly owner: string; readonly ticket: string }> {
-  const response = await fetch(`${value.base}/api/_realtime/prepare`, {
+  const response = await fetch(`${value.base}/_realtime/prepare`, {
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_prepare",
-      ref: "assistant.live",
+      ref: "api.assistant.live",
       args: {},
     }),
   });
@@ -129,11 +128,11 @@ async function prepare(
 
 async function offer(value: Fixture, forwarded: string): Promise<string> {
   const prepared = await prepare(value, forwarded);
-  const response = await fetch(`${value.base}/api/_realtime`, {
+  const response = await fetch(`${value.base}/_realtime`, {
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "realtime_offer",
       ticket: prepared.ticket,
       offer: { type: "offer", sdp: "v=0\r\noffer" },
@@ -151,13 +150,13 @@ function sessionRequest(
   method: "PATCH" | "DELETE",
   forwarded: string,
 ): Promise<Response> {
-  return fetch(`${value.base}/api/_realtime/${sessionId}`, {
+  return fetch(`${value.base}/_realtime/${sessionId}`, {
     method,
     headers: { "x-forwarded-for": forwarded },
     ...(method === "PATCH"
       ? {
           body: encode({
-            v: PROTOCOL_VERSION,
+            v: ACKERDB_VERSION,
             t: "realtime_candidates",
             candidates: [],
             complete: true,

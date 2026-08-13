@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
+  ACKERDB_VERSION,
+  apiGroup,
   decode,
   encode,
   parseClientMessage,
@@ -12,6 +13,7 @@ import {
   type Identity,
   type ServerMessage,
   type SseAckRequest,
+  type SseRef,
   type SubscriptionCursor,
 } from "@ackerdb/core";
 import {
@@ -66,7 +68,6 @@ async function completeProcedure<Value>(
 ): Promise<Value> {
   const dispatched = dispatchProcedure<Record<never, never>, Value>(client, sockets, ref, {});
   dispatched.socket.receive({
-    v: PROTOCOL_VERSION,
     t: "ok",
     id: dispatched.request.id,
     kind: "procedure",
@@ -109,11 +110,11 @@ function sseEvent(frame: unknown): string {
 }
 
 /** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
-const SSE_ACK_PATH = "/api/_sse/ack";
+const SSE_ACK_PATH = "/_sse/ack";
 
-/** Address segments are path segments: "stream.ordered" streams from "/api/stream/ordered". */
-function ssePath(ref: string): string {
-  return `/api/${ref.replaceAll(".", "/")}`;
+/** The group is the root: "api.stream.ordered" streams from "/api/stream/ordered". */
+function ssePath(address: string): string {
+  return `/${address.replaceAll(".", "/")}`;
 }
 
 function isSseCall(url: string): boolean {
@@ -174,19 +175,19 @@ describe("AckerDBClient protocol 2 ownership", () => {
       credential: { kind: "bearer", token: "token-a" },
       clientSessionId: "stable-session",
     });
-    const firstResult = client.query("todos.list", { list: 1n }).then(mustErr);
+    const firstResult = client.query("api.todos.list", { list: 1n }).then(mustErr);
     const first = sockets[0]!;
     first.open();
     expect(first.frames()).toEqual([
       {
-        v: 5,
+        v: ACKERDB_VERSION,
         t: "hello",
         clientSessionId: "stable-session",
         credential: { kind: "bearer", token: "token-a" },
       },
     ]);
     first.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
@@ -200,10 +201,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
       return authentication;
     });
     const auth = first.lastFrame("auth");
-    const secondResult = client.query("todos.list", { list: 2n }).then(mustErr);
+    const secondResult = client.query("api.todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
-      v: 5,
       t: "auth",
       attemptId: auth.attemptId + 10,
       authEpoch: 5,
@@ -216,7 +216,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       );
 
     first.receive({
-      v: 5,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 5,
@@ -235,7 +234,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const second = sockets[1]!;
     second.open();
     expect(second.lastFrame("hello")).toEqual({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "hello",
       clientSessionId: "stable-session",
       credential: { kind: "anonymous" },
@@ -250,14 +249,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, sockets } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    const query = client.query("todos.list", {}).then(mustErr);
+    const query = client.query("api.todos.list", {}).then(mustErr);
     const socket = sockets[0]!;
     socket.open();
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
 
     socket.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -267,7 +266,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
-      v: 5,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
@@ -283,7 +281,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("applies only a matching cursor predecessor, ignores duplicates, and resumes from applied state", () => {
     const { client, clock, sockets } = createHarness();
     const updates: unknown[] = [];
-    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
@@ -292,7 +290,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const c3 = cursor(3n);
 
     const initial: ServerMessage = {
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -302,14 +299,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c1, to: c2, value: ["two-too-late"] },
@@ -317,7 +312,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -335,21 +329,20 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("holds mutation results for convergence, discharges unsubscribe, and replays one UUIDv7", async () => {
     const clock = new ManualClock(1_700_000_000_000);
     const { client, sockets } = createHarness({ clock });
-    const unsubscribe = client.subscribe("todos.list", { list: 1n }, () => {});
+    const unsubscribe = client.subscribe("api.todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
     first.welcome(client.clientSessionId);
     const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: [] },
     });
 
     let resolved = false;
-    const mutation = client.mutation("todos.add", { text: "milk" }).then((value) => {
+    const mutation = client.mutation("api.todos.add", { text: "milk" }).then((value) => {
       resolved = true;
       return value;
     });
@@ -359,7 +352,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     first.receive({
-      v: 5,
       t: "ok",
       id: firstMutation.id,
       kind: "mutation",
@@ -375,17 +367,15 @@ describe("AckerDBClient protocol 2 ownership", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
     });
     expect(mustOk(await mutation)).toBe(41n);
 
-    const discharged = client.mutation("todos.add", { text: "bread" });
+    const discharged = client.mutation("api.todos.add", { text: "bread" });
     const secondMutation = first.lastFrame("m");
     first.receive({
-      v: 5,
       t: "ok",
       id: secondMutation.id,
       kind: "mutation",
@@ -401,7 +391,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     unsubscribe();
     expect(mustOk(await discharged)).toBe(42n);
 
-    const replayed = client.mutation("todos.add", { text: "lost-ack" });
+    const replayed = client.mutation("api.todos.add", { text: "lost-ack" });
     const lostFrame = first.lastFrame("m");
     first.close();
     clock.advance(100);
@@ -411,7 +401,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
-      v: 5,
       t: "ok",
       id: resent.id,
       kind: "mutation",
@@ -430,12 +419,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
   test("surfaces exact outcomes and terminates on a malformed server frame", async () => {
     const { client, sockets } = createHarness();
-    const rejected = client.query("todos.private", {});
+    const rejected = client.query("api.todos.private", {});
     const socket = sockets[0]!;
     socket.welcome(client.clientSessionId);
     const query = socket.lastFrame("q");
     socket.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "err",
       id: query.id,
       outcome: {
@@ -456,11 +445,10 @@ describe("AckerDBClient protocol 2 ownership", () => {
     if (!(exact instanceof AckerDBClientError)) throw new Error("expected AckerDBClientError");
     expect(Object.isFrozen(exact.outcome)).toBe(true);
 
-    const malformed = client.query("todos.list", {});
+    const malformed = client.query("api.todos.list", {});
     const malformedFrame = socket.lastFrame("q");
     socket.receiveRaw(
       encode({
-        v: 5,
         t: "ok",
         id: malformedFrame.id,
         kind: "query",
@@ -470,9 +458,39 @@ describe("AckerDBClient protocol 2 ownership", () => {
     );
     expect(mustErr(await malformed)).toMatchObject({ code: "malformed" });
     expect(socket.closes.at(-1)?.code).toBe(4002);
-    expect(mustErr(await client.query("todos.list", {}))).toMatchObject({
+    expect(mustErr(await client.query("api.todos.list", {}))).toMatchObject({
       code: "unavailable",
     });
+    client.close();
+  });
+
+  test("stops permanently on a frame from another build, naming the mixed install", async () => {
+    // The case in production is a browser tab that outlived a deploy: its
+    // bundle is the old build and the server it reconnects to is the new one.
+    // Reconnecting cannot fix that, so the client stops rather than retrying an
+    // install mismatch forever, and it stops with a code a consumer can turn
+    // into "the application was updated — reload" instead of a generic failure.
+    const { client, sockets } = createHarness();
+    const pending = client.query("api.todos.list", {});
+    const socket = sockets[0]!;
+    socket.receiveRaw(encode({
+      v: "0.0.1",
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      principal: "anonymous",
+    }));
+    expect(mustErr(await pending)).toMatchObject({
+      code: "version_mismatch",
+      retryable: false,
+      message: `this application runs AckerDB 0.0.1 and this client is ${ACKERDB_VERSION}` +
+        " — install matching versions",
+    });
+    const state = client.currentConnectionState;
+    if (state.phase !== "terminal-error") throw new Error(`unexpected ${state.phase}`);
+    expect(state.error.code).toBe("version_mismatch");
+    expect(socket.closes.at(-1)?.code).toBe(4002);
+    expect(sockets).toHaveLength(1);
     client.close();
   });
 
@@ -484,14 +502,13 @@ describe("AckerDBClient protocol 2 ownership", () => {
     >;
     const { client, sockets } = createHarness();
     const queryResult = client.query<Record<never, never>, { id: bigint }, Missing>(
-      "todos.find",
+      "api.todos.find",
       {},
     );
     const socket = sockets[0]!;
     socket.welcome(client.clientSessionId);
     const query = socket.lastFrame("q");
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "app_err",
       id: query.id,
       kind: "query",
@@ -512,12 +529,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
 
     const mutationResult = client.mutation<Record<never, never>, bigint, Missing>(
-      "todos.remove",
+      "api.todos.remove",
       {},
     );
     const mutation = socket.lastFrame("m");
     socket.receive({
-      v: PROTOCOL_VERSION,
       t: "app_err",
       id: mutation.id,
       kind: "mutation",
@@ -548,8 +564,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, clock } = createHarness({
       limits: { maxPendingItems: 1, maxQueryAgeMs: 10 },
     });
-    const aging = client.query("todos.list", {}).then(mustErr);
-    expect(mustErr(await client.query("todos.list", {}))).toMatchObject({
+    const aging = client.query("api.todos.list", {}).then(mustErr);
+    expect(mustErr(await client.query("api.todos.list", {}))).toMatchObject({
       code: "overloaded",
       retryable: true,
     });
@@ -558,18 +574,18 @@ describe("AckerDBClient protocol 2 ownership", () => {
     client.close();
 
     const sentMutation = createHarness({ limits: { maxMutationAgeMs: 10 } });
-    const unknown = sentMutation.client.mutation("todos.add", {}).then(mustErr);
+    const unknown = sentMutation.client.mutation("api.todos.add", {}).then(mustErr);
     sentMutation.sockets[0]!.welcome(sentMutation.client.clientSessionId);
     sentMutation.clock.advance(10);
     expect(await unknown).toMatchObject({ code: "indeterminate", resource: "idempotency" });
     sentMutation.client.close();
 
     const byteBound = createHarness({ limits: { maxPendingBytes: 1 } }).client;
-    expect(() => byteBound.subscribe("todos.list", {}, () => {})).toThrow(AckerDBClientError);
+    expect(() => byteBound.subscribe("api.todos.list", {}, () => {})).toThrow(AckerDBClientError);
     byteBound.close();
 
     const inbound = createHarness({ limits: { maxFrameBytes: 256 } });
-    const inboundResult = inbound.client.query("todos.list", {}).then(mustErr);
+    const inboundResult = inbound.client.query("api.todos.list", {}).then(mustErr);
     inbound.sockets[0]!.welcome(inbound.client.clientSessionId);
     inbound.sockets[0]!.receiveRaw("x".repeat(257));
     expect(await inboundResult).toMatchObject({ code: "malformed" });
@@ -579,7 +595,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("uses deterministic exponential jitter, retry floors, stable reset, and cancels timers", async () => {
     const randomValues = [0.5, 0.25, 0];
     const { client, clock, sockets } = createHarness({ random: () => randomValues.shift() ?? 0 });
-    const result = client.query("todos.list", {}).then(mustErr);
+    const result = client.query("api.todos.list", {}).then(mustErr);
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.close();
     expect(clock.nextDueIn()).toBe(150);
@@ -590,7 +606,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
 
     sockets[1]!.welcome(client.clientSessionId);
     sockets[1]!.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: {
@@ -621,18 +637,17 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("owns retryable subscription demand, cursor, backoff, and cancellation", () => {
     const { client, clock, sockets } = createHarness();
     const values: unknown[] = [];
-    const stop = client.subscribe("todos.list", {}, (value) => values.push(value));
+    const stop = client.subscribe("api.todos.list", {}, (value) => values.push(value));
     sockets[0]!.welcome(client.clientSessionId);
     const subscription = sockets[0]!.lastFrame("sub");
     const held = cursor(4n);
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: held, value: ["held"] },
     });
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: subscription.id,
       outcome: { code: "overloaded", retryable: true, retryAfterMs: 50, message: "retry" },
@@ -653,11 +668,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
   test("an onError release cannot leave a retry timer behind", () => {
     const { client, clock, sockets } = createHarness();
     let stop = (): void => {};
-    stop = client.subscribe("todos.list", {}, () => {}, () => stop());
+    stop = client.subscribe("api.todos.list", {}, () => {}, () => stop());
     sockets[0]!.welcome(client.clientSessionId);
     const id = sockets[0]!.lastFrame("sub").id;
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id,
       outcome: { code: "overloaded", retryable: true, message: "retry" },
@@ -672,7 +687,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, clock, sockets } = createHarness();
     const events: AckerDBLiveEvent<{ x: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { x: number }>(
-      "events.cursor",
+      "api.events.cursor",
       {},
       (event) => events.push(event),
     );
@@ -682,19 +697,16 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
     sockets[0]!.receive({
-      v: 5,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 5,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 5,
       t: "event",
       id: subscription.id,
       event: {
@@ -704,7 +716,6 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
     });
     sockets[0]!.receive({
-      v: 5,
       t: "event",
       id: subscription.id,
       event: {
@@ -725,7 +736,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, sockets } = createHarness();
     const events: AckerDBLiveEvent<{ x: number }>[] = [];
     const unsubscribe = client.subscribeEvent<Record<never, never>, { x: number }>(
-      "events.cursor",
+      "api.events.cursor",
       {},
       (event) => events.push(event),
     );
@@ -735,9 +746,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
     unsubscribe();
     expect(
       sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
-    ).toEqual([{ v: 5, t: "unsub", id }]);
+    ).toEqual([{ t: "unsub", id }]);
     sockets[0]!.receive({
-      v: 5,
       t: "event",
       id,
       event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
@@ -747,7 +757,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     // close() releases surviving subscriptions itself; a hook cleanup running
     // afterwards must find nothing left to release and send nothing.
     const second = createHarness();
-    const release = second.client.subscribeEvent("events.cursor", {}, () => {});
+    const release = second.client.subscribeEvent("api.events.cursor", {}, () => {});
     second.sockets[0]!.welcome(second.client.clientSessionId);
     second.client.close();
     expect(() => release()).not.toThrow();
@@ -766,13 +776,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
     });
 
-    const stats = dispatchProcedure<{}, { count: number }>(client, sockets, "todos.stats", {});
+    const stats = dispatchProcedure<{}, { count: number }>(client, sockets, "api.todos.stats", {});
     expect(stats.socket.lastFrame("hello").credential).toEqual({
       kind: "bearer",
       token: "session-token",
     });
     stats.socket.receive({
-      v: PROTOCOL_VERSION,
       t: "ok",
       id: stats.request.id,
       kind: "procedure",
@@ -780,9 +789,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
     expect(mustOk(await stats.completion)).toEqual({ count: 2 });
 
-    const denied = dispatchProcedure(client, sockets, "todos.denied", {});
+    const denied = dispatchProcedure(client, sockets, "api.todos.denied", {});
     denied.socket.receive({
-      v: PROTOCOL_VERSION,
+      v: ACKERDB_VERSION,
       t: "err",
       id: denied.request.id,
       outcome: { code: "unauthorized", retryable: false, message: "denied" },
@@ -796,11 +805,10 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const missing = dispatchProcedure<Record<never, never>, never>(
       client,
       sockets,
-      "todos.missing",
+      "api.todos.missing",
       {},
     );
     missing.socket.receive({
-      v: PROTOCOL_VERSION,
       t: "app_err",
       id: missing.request.id,
       kind: "procedure",
@@ -833,7 +841,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const dispatched = dispatchProcedure(
         client,
         sockets,
-        "procedure.in-flight",
+        "api.procedure.in-flight",
         {},
         { signal: abort.signal },
       );
@@ -844,20 +852,18 @@ describe("AckerDBClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${mode} procedure response interruption`);
       expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
       expect(dispatched.socket.lastFrame("cancel")).toEqual({
-        v: PROTOCOL_VERSION,
         t: "cancel",
         id: dispatched.request.id,
       });
 
       dispatched.socket.receive({
-        v: PROTOCOL_VERSION,
         t: "ok",
         id: dispatched.request.id,
         kind: "procedure",
         value: "late",
       });
       expect(
-        await completeProcedure(client, sockets, "procedure.after-interruption", "available"),
+        await completeProcedure(client, sockets, "api.procedure.after-interruption", "available"),
       ).toBe("available");
       client.close();
     }
@@ -867,7 +873,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const abort = new AbortController();
     const { client, clock, sockets } = createHarness();
     const completion = client.procedure(
-      "procedure.before-welcome",
+      "api.procedure.before-welcome",
       {},
       { signal: abort.signal },
     ).then(mustErr);
@@ -903,8 +909,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
         streamUrl = url;
         streamBody = decode(String(init?.body));
         return sseResponse([
-          { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
-          { v: 5, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
+          { v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
+          { v: ACKERDB_VERSION, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
         ]);
       }
       expect(url.endsWith(SSE_ACK_PATH)).toBe(true);
@@ -918,13 +924,13 @@ describe("AckerDBClient protocol 2 ownership", () => {
       credential: { kind: "bearer", token: "receiver-token" },
       fetch: fetcher,
     });
-    const iterator = client.sse<{ topic: string }, { delta: string }>("stream.ordered", {
+    const iterator = client.sse<{ topic: string }, { delta: string }>("api.stream.ordered", {
       topic: "weather",
     })[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: { delta: "a" }, done: false });
     // The address is the path and the body is the args object alone.
-    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("stream.ordered")}`);
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.stream.ordered")}`);
     expect(streamBody).toEqual({ topic: "weather" });
     expect(acknowledgments).toEqual([]);
     let secondSettled = false;
@@ -941,7 +947,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     await eventually(() => acknowledgments.length === 1, "the first chunk acknowledgment");
     expect(secondSettled).toBe(false);
     expect(acknowledgments).toEqual([
-      { v: 5, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: ACKERDB_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
     expect(streamAuthorization as string | null).toBe("Bearer receiver-token");
     expect(acknowledgmentAuthorizations).toEqual([null]);
@@ -966,8 +972,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
       if (isSseCall(url)) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
-          { v: 5, t: "sse_done", seq: 2, proof: "proof-2" },
+          { v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
+          { v: ACKERDB_VERSION, t: "sse_done", seq: 2, proof: "proof-2" },
         ]);
       }
       const acknowledgment = parseSseAckRequest(decode(String(init?.body)));
@@ -981,7 +987,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         if (firstSequenceAttempts === 2) {
           return new Response(
             encode({
-              v: 5,
+              v: ACKERDB_VERSION,
               t: "err",
               id: null,
               outcome: {
@@ -1004,7 +1010,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       random: () => randomValues.shift() ?? 0,
       limits: { maxSseAckAgeMs: 5_000 },
     });
-    const iterator = client.sse<{}, string>("stream.retry", {})[Symbol.asyncIterator]();
+    const iterator = client.sse<{}, string>("api.stream.retry", {})[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     const completion = iterator.next();
@@ -1049,12 +1055,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const cases = [
       {
         name: "done",
-        frame: { v: 5, t: "sse_done", seq: 1, proof: "done-proof" },
+        frame: { v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "done-proof" },
       },
       {
         name: "error",
         frame: {
-          v: 5,
+          v: ACKERDB_VERSION,
           t: "sse_error",
           seq: 1,
           proof: "error-proof",
@@ -1078,7 +1084,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           return acknowledgmentGate.promise;
         },
       });
-      const iterator = client.sse(`stream.${terminal.name}`, {})[Symbol.asyncIterator]();
+      const iterator = client.sse(`api.stream.${terminal.name}`, {})[Symbol.asyncIterator]();
       let settled = false;
       const result = iterator.next();
       void result.then(
@@ -1118,7 +1124,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "missing stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: null,
             close: false,
             onCancel,
@@ -1127,7 +1133,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "oversized stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: "x".repeat(129),
             close: false,
             onCancel,
@@ -1136,7 +1142,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "missing stall header",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             stallMs: null,
             close: false,
             onCancel,
@@ -1154,7 +1160,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "sequence does not begin at one",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 2, proof: "proof-2" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 2, proof: "proof-2" }], {
             close: false,
             onCancel,
           }),
@@ -1162,7 +1168,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "empty proof",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "" }], {
             close: false,
             onCancel,
           }),
@@ -1170,7 +1176,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       {
         name: "unexpected successful status",
         response: (onCancel) =>
-          sseResponse([{ v: 5, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: ACKERDB_VERSION, t: "sse_done", seq: 1, proof: "proof" }], {
             status: 201,
             close: false,
             onCancel,
@@ -1183,7 +1189,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const { client, sockets } = createHarness({
         fetch: async () => malformedCase.response(() => cancellations++),
       });
-      const iterator = client.sse(`stream.${malformedCase.name}`, {})[Symbol.asyncIterator]();
+      const iterator = client.sse(`api.stream.${malformedCase.name}`, {})[Symbol.asyncIterator]();
       expect(await iterator.next().catch((error) => error)).toMatchObject({
         code: "malformed",
         resource: "sse",
@@ -1204,7 +1210,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async () => new Response(encode(outcome), { status: 401 }),
     });
     expect(
-      await refused.client.sse("stream.refused", {})[Symbol.asyncIterator]()
+      await refused.client.sse("api.stream.refused", {})[Symbol.asyncIterator]()
         .next().catch((error) => error),
     ).toMatchObject(outcome);
     refused.client.close();
@@ -1217,10 +1223,30 @@ describe("AckerDBClient protocol 2 ownership", () => {
       ),
     });
     expect(
-      await framed.client.sse("stream.framed", {})[Symbol.asyncIterator]()
+      await framed.client.sse("api.stream.framed", {})[Symbol.asyncIterator]()
         .next().catch((error) => error),
     ).toMatchObject({ code: "malformed", resource: "sse" });
     framed.client.close();
+  });
+
+  test("streams from the root of the group its reference was taken from", async () => {
+    let streamUrl = "";
+    const { client } = createHarness({
+      fetch: async (url) => {
+        streamUrl = url;
+        return sseResponse([{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
+      },
+    });
+    // A generated binding seeds the address with its group, so the URL is the
+    // address and the client needs nothing beside it.
+    const ref = apiGroup("internal").ops.tail as SseRef<Record<string, never>, string>;
+    await client.sse(ref, {})[Symbol.asyncIterator]().next();
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("internal.ops.tail")}`);
+
+    // A hand-written address is the same one value, group segment included.
+    await client.sse("api.ops.tail", {})[Symbol.asyncIterator]().next();
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.ops.tail")}`);
+    client.close();
   });
 
   test("requires an exact 204 acknowledgment response", async () => {
@@ -1229,12 +1255,12 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url) =>
         isSseCall(url)
           ? sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => cancellations++ },
             )
           : new Response("", { status: 200 }),
     });
-    const iterator = client.sse<{}, string>("stream.bad-ack", {})[Symbol.asyncIterator]();
+    const iterator = client.sse<{}, string>("api.stream.bad-ack", {})[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     expect(await iterator.next().catch((error) => error)).toMatchObject({
@@ -1267,15 +1293,15 @@ describe("AckerDBClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (isSseCall(url)) {
             return sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/_sse/ack")) return fake204;
+          if (url.endsWith("/_sse/ack")) return fake204;
           throw new Error(`unexpected HTTP route ${url}`);
         },
       });
-      const iterator = client.sse<{}, string>(`stream.body-204.${behavior}`, {})[
+      const iterator = client.sse<{}, string>(`api.stream.body-204.${behavior}`, {})[
         Symbol.asyncIterator
       ]();
 
@@ -1285,7 +1311,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       expect(await completion).toMatchObject({ code: "malformed", resource: "sse" });
       expect(acknowledgmentCancellations).toBe(1);
       expect(streamCancellations).toBe(1);
-      expect(await completeProcedure(client, sockets, "procedure.after-body-204", "available")).toBe("available");
+      expect(await completeProcedure(client, sockets, "api.procedure.after-body-204", "available")).toBe("available");
       client.close();
     }
   });
@@ -1300,7 +1326,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       limits: { maxSseBufferBytes: 256 },
     });
 
-    const error = await client.sse("stream.large", {})[Symbol.asyncIterator]().next().catch((caught) => caught);
+    const error = await client.sse("api.stream.large", {})[Symbol.asyncIterator]().next().catch((caught) => caught);
     expect(error).toMatchObject({ code: "overloaded", resource: "sse" });
     expect(cancellations).toBe(1);
     client.close();
@@ -1338,7 +1364,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async () => response,
     });
 
-    expect(await client.sse("stream.bytewise", {})[Symbol.asyncIterator]().next().catch((error) => error))
+    expect(await client.sse("api.stream.bytewise", {})[Symbol.asyncIterator]().next().catch((error) => error))
       .toMatchObject({ code: "overloaded", resource: "sse" });
     expect(pulls).toBe(prefix.byteLength + maxBufferBytes + 1);
     expect(cancellations).toBe(1);
@@ -1349,7 +1375,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     for (const behavior of ["pending", "reject"] as const) {
       const abort = new AbortController();
       const bytes = sseUtf8.encode(sseEvent({
-        v: 5,
+        v: ACKERDB_VERSION,
         t: "sse_chunk",
         seq: 1,
         proof: "proof-1",
@@ -1388,7 +1414,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           return new Response(null, { status: 204 });
         },
       });
-      const completion = client.sse("stream.sync-abort", {}, { signal: abort.signal })[
+      const completion = client.sse("api.stream.sync-abort", {}, { signal: abort.signal })[
         Symbol.asyncIterator
       ]().next().catch((error) => error);
 
@@ -1430,7 +1456,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           throw new Error(`unexpected HTTP route ${url}`);
         },
       });
-      const completion = client.sse("stream.open-error", {}, { signal: abort.signal })[
+      const completion = client.sse("api.stream.open-error", {}, { signal: abort.signal })[
         Symbol.asyncIterator
       ]().next().catch((error) => error);
       await eventually(() => pulls === 1, `${behavior} open error response read`);
@@ -1439,7 +1465,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${behavior} open error response abort`);
       expect(await completion).toMatchObject({ code: "unavailable", resource: "sse" });
       expect(cancellations).toBe(1);
-      expect(await completeProcedure(client, sockets, "procedure.after-open-error", "available")).toBe("available");
+      expect(await completeProcedure(client, sockets, "api.procedure.after-open-error", "available")).toBe("available");
       client.close();
     }
   });
@@ -1459,7 +1485,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
     });
     const occupied = client.query("query.occupies-capacity", {}).then(mustErr);
-    const completion = client.sse("stream.pre-aborted", {}, { signal: abort.signal })[
+    const completion = client.sse("api.stream.pre-aborted", {}, { signal: abort.signal })[
       Symbol.asyncIterator
     ]().next().catch((error) => error);
 
@@ -1468,7 +1494,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(streamFetches).toBe(0);
     clock.advance(1);
     expect(await occupied).toMatchObject({ code: "deadline_exceeded" });
-    expect(await completeProcedure(client, sockets, "procedure.after-pre-abort", "available")).toBe("available");
+    expect(await completeProcedure(client, sockets, "api.procedure.after-pre-abort", "available")).toBe("available");
     client.close();
   });
 
@@ -1488,7 +1514,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         throw new Error(`unexpected HTTP route ${url}`);
       },
     });
-    const completion = client.sse("stream.hanging-abort", {}, { signal: abort.signal })[
+    const completion = client.sse("api.stream.hanging-abort", {}, { signal: abort.signal })[
       Symbol.asyncIterator
     ]().next().catch((error) => error);
     await eventually(() => streamFetches === 1, "the hanging SSE fetch");
@@ -1496,7 +1522,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     abort.abort();
     await settlesPromptly(completion, "aborted hanging SSE fetch");
     expect(await completion).toMatchObject({ code: "unavailable", resource: "sse" });
-    expect(await completeProcedure(client, sockets, "procedure.after-hanging-abort", "available")).toBe("available");
+    expect(await completeProcedure(client, sockets, "api.procedure.after-hanging-abort", "available")).toBe("available");
 
     hanging.resolve(sseResponse([], {
       close: false,
@@ -1529,7 +1555,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     });
     process.on("unhandledRejection", onUnhandled);
     try {
-      const completion = client.sse("stream.hanging-close", {})[
+      const completion = client.sse("api.stream.hanging-close", {})[
         Symbol.asyncIterator
       ]().next().catch((error) => error);
       await eventually(() => streamFetches === 1, "the close-owned SSE fetch");
@@ -1557,7 +1583,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
+                [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
                 {
                   close: false,
                   onCancel: () => {
@@ -1567,14 +1593,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgments++;
               return new Response(null, { status: 204 });
             }
             throw new Error(`unexpected HTTP route ${url}`);
           },
         });
-        const iterator = client.sse<{}, string>(`stream.${behavior}.${mode}`, {}, {
+        const iterator = client.sse<{}, string>(`api.stream.${behavior}.${mode}`, {}, {
           signal: abort.signal,
         })[Symbol.asyncIterator]();
         expect(await iterator.next()).toEqual({ value: mode, done: false });
@@ -1587,7 +1613,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         expect(cancellations).toBe(1);
         expect(acknowledgments).toBe(0);
         if (mode !== "close") {
-          expect(await completeProcedure(client, sockets, "procedure.after-sse", "available")).toBe("available");
+          expect(await completeProcedure(client, sockets, "api.procedure.after-sse", "available")).toBe("available");
         }
         client.close();
       }
@@ -1603,25 +1629,25 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false, onCancel: () => cancellations++ },
           );
         }
-        if (url.endsWith("/api/_sse/ack")) {
+        if (url.endsWith("/_sse/ack")) {
           acknowledgments++;
           return new Response(null, { status: 204 });
         }
         throw new Error(`unexpected HTTP route ${url}`);
       },
     });
-    const iterator = client.sse<{}, string>("stream.abort-owner", {}, {
+    const iterator = client.sse<{}, string>("api.stream.abort-owner", {}, {
       signal: abort.signal,
     })[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     abort.abort();
     await eventually(() => cancellations === 1, "suspended SSE cleanup");
-    expect(await completeProcedure(client, sockets, "procedure.after-abort", "available")).toBe("available");
+    expect(await completeProcedure(client, sockets, "api.procedure.after-abort", "available")).toBe("available");
     expect(cancellations).toBe(1);
     expect(acknowledgments).toBe(0);
     client.close();
@@ -1632,13 +1658,13 @@ describe("AckerDBClient protocol 2 ownership", () => {
       limits: { maxFrameBytes: 256, maxPendingItems: 1 },
     });
     const oversized = client
-      .procedure("procedure.oversized", { value: "x".repeat(257) })
+      .procedure("api.procedure.oversized", { value: "x".repeat(257) })
       .then(mustErr);
 
     await settlesPromptly(oversized, "oversized procedure rejection");
     expect(await oversized).toMatchObject({ code: "overloaded", resource: "operation" });
     expect(sockets).toHaveLength(1);
-    expect(await completeProcedure(client, sockets, "procedure.after-oversized", "available")).toBe("available");
+    expect(await completeProcedure(client, sockets, "api.procedure.after-oversized", "available")).toBe("available");
     client.close();
   });
 
@@ -1651,11 +1677,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (isSseCall(url)) {
             return sseResponse(
-              [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/_sse/ack")) {
+          if (url.endsWith("/_sse/ack")) {
             return openResponse("x".repeat(257), () => {
               acknowledgmentCancellations++;
               return adversarialCancellation(behavior);
@@ -1664,7 +1690,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           throw new Error(`unexpected HTTP route ${url}`);
         },
       });
-      const iterator = client.sse<{}, string>(`stream.oversized-ack.${behavior}`, {})[
+      const iterator = client.sse<{}, string>(`api.stream.oversized-ack.${behavior}`, {})[
         Symbol.asyncIterator
       ]();
 
@@ -1674,7 +1700,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       expect(await completion).toMatchObject({ code: "overloaded", resource: "sse" });
       expect(acknowledgmentCancellations).toBe(1);
       expect(streamCancellations).toBe(1);
-      expect(await completeProcedure(client, sockets, "procedure.after-ack", "available")).toBe("available");
+      expect(await completeProcedure(client, sockets, "api.procedure.after-ack", "available")).toBe("available");
       client.close();
     }
   });
@@ -1709,7 +1735,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 {
                   stallMs: "100",
                   close: false,
@@ -1717,14 +1743,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgmentAttempts++;
               return open503;
             }
             throw new Error(`unexpected HTTP route ${url}`);
           },
         });
-        const iterator = client.sse<{}, string>(`stream.open-ack.${behavior}.${mode}`, {}, {
+        const iterator = client.sse<{}, string>(`api.stream.open-ack.${behavior}.${mode}`, {}, {
           signal: abort.signal,
         })[Symbol.asyncIterator]();
 
@@ -1741,7 +1767,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         expect(acknowledgmentAttempts).toBe(1);
         expect(bodyCancellations).toBe(1);
         expect(streamCancellations).toBe(1);
-        expect(await completeProcedure(client, sockets, "procedure.after-open-ack", "available")).toBe("available");
+        expect(await completeProcedure(client, sockets, "api.procedure.after-open-ack", "available")).toBe("available");
         client.close();
       }
     }
@@ -1759,18 +1785,18 @@ describe("AckerDBClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (isSseCall(url)) {
               return sseResponse(
-                [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 { stallMs: "100", close: false },
               );
             }
-            if (url.endsWith("/api/_sse/ack")) {
+            if (url.endsWith("/_sse/ack")) {
               acknowledgmentAttempts++;
               return late.promise;
             }
             throw new Error(`unexpected HTTP route ${url}`);
           },
         });
-        const iterator = client.sse<{}, string>(`stream.late-ack.${behavior}.${mode}`, {}, {
+        const iterator = client.sse<{}, string>(`api.stream.late-ack.${behavior}.${mode}`, {}, {
           signal: abort.signal,
         })[Symbol.asyncIterator]();
 
@@ -1784,11 +1810,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
           code: mode === "deadline" ? "deadline_exceeded" : "unavailable",
           resource: "sse",
         });
-        expect(await completeProcedure(client, sockets, "procedure.after-late-ack", "available")).toBe("available");
+        expect(await completeProcedure(client, sockets, "api.procedure.after-late-ack", "available")).toBe("available");
 
         late.resolve(openResponse(
           encode({
-            v: 5,
+            v: ACKERDB_VERSION,
             t: "err",
             id: null,
             outcome: {
@@ -1821,7 +1847,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { stallMs: "100", close: false },
           );
         }
@@ -1831,7 +1857,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       },
       limits: { maxSseAckAgeMs: 50 },
     });
-    const iterator = client.sse<{}, string>("stream.deadline", {})[Symbol.asyncIterator]();
+    const iterator = client.sse<{}, string>("api.stream.deadline", {})[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     let settled = false;
@@ -1864,7 +1890,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       fetch: async (url) => {
         if (isSseCall(url)) {
           return sseResponse(
-            [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false },
           );
         }
@@ -1872,7 +1898,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         throw new TypeError("network unavailable");
       },
     });
-    const iterator = client.sse<{}, string>("stream.retry-limit", {})[Symbol.asyncIterator]();
+    const iterator = client.sse<{}, string>("api.stream.retry-limit", {})[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     expect(await iterator.next().catch((error) => error)).toMatchObject({
@@ -1888,13 +1914,13 @@ describe("AckerDBClient protocol 2 ownership", () => {
     abort.abort();
     const { client, sockets } = createHarness();
     const completion = client
-      .procedure("procedure.pre-aborted", {}, { signal: abort.signal })
+      .procedure("api.procedure.pre-aborted", {}, { signal: abort.signal })
       .then(mustErr);
 
     await settlesPromptly(completion, "pre-aborted procedure completion");
     expect(await completion).toMatchObject({ code: "unavailable", resource: "operation" });
     expect(sockets).toHaveLength(1);
-    expect(await completeProcedure(client, sockets, "procedure.after-pre-abort", "available")).toBe("available");
+    expect(await completeProcedure(client, sockets, "api.procedure.after-pre-abort", "available")).toBe("available");
     client.close();
   });
 
@@ -1905,7 +1931,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const dispatched = dispatchProcedure(
         client,
         sockets,
-        "procedure.unanswered",
+        "api.procedure.unanswered",
         {},
         { signal: abort.signal },
       );
@@ -2000,7 +2026,7 @@ describe("AckerDBClient connection state", () => {
       message: "credential expired",
     });
     sockets[0]!.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2017,7 +2043,7 @@ describe("AckerDBClient connection state", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2067,7 +2093,7 @@ describe("AckerDBClient connection state", () => {
     const { client, clock, sockets } = createHarness();
     sockets[0]!.welcome(client.clientSessionId);
     sockets[0]!.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2116,7 +2142,7 @@ describe("subscription cursor confirmations", () => {
     const updates: unknown[] = [];
     let confirmations = 0;
     client.subscribe(
-      "todos.list",
+      "api.todos.list",
       { list: 1n },
       (value) => updates.push(value),
       undefined,
@@ -2130,7 +2156,6 @@ describe("subscription cursor confirmations", () => {
 
     // Value deliveries keep flowing through onUpdate alone.
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2140,7 +2165,6 @@ describe("subscription cursor confirmations", () => {
 
     // A checkpoint silently advances the cursor and confirms the held value.
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -2156,7 +2180,6 @@ describe("subscription cursor confirmations", () => {
     second.welcome(client.clientSessionId);
     expect(second.lastFrame("sub").cursor).toEqual(c2);
     second.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "resume", from: c2, to: c2 },
@@ -2171,7 +2194,7 @@ describe("subscription cursor confirmations", () => {
     const updates: unknown[] = [];
     let confirmations = 0;
     client.subscribe(
-      "todos.list",
+      "api.todos.list",
       { list: 1n },
       (value) => updates.push(value),
       undefined,
@@ -2186,7 +2209,6 @@ describe("subscription cursor confirmations", () => {
     const c3 = cursor(3n);
 
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2195,14 +2217,12 @@ describe("subscription cursor confirmations", () => {
     // A mismatched predecessor makes the client demand a reset; deliveries
     // landing on the held cursor are no longer trusted as confirmations.
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(first.lastFrame("reset")).toEqual({ v: 5, t: "reset", id: subscription.id, cursor: c1 });
+    expect(first.lastFrame("reset")).toEqual({ t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
@@ -2212,7 +2232,6 @@ describe("subscription cursor confirmations", () => {
     // The authoritative reset delivers through onUpdate; a duplicate of it
     // landing on the now-held cursor confirms again.
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2220,7 +2239,6 @@ describe("subscription cursor confirmations", () => {
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
     expect(confirmations).toBe(0);
     first.receive({
-      v: 5,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2235,7 +2253,7 @@ describe("subscription argument encoding", () => {
   test("rejects unencodable arguments with the exact validation error", () => {
     const { client } = createHarness();
     try {
-      client.subscribe("todos.byScore", { score: Number.NaN }, () => {});
+      client.subscribe("api.todos.byScore", { score: Number.NaN }, () => {});
       throw new Error("subscribe must reject NaN arguments");
     } catch (error) {
       expect(error).toBeInstanceOf(AckerDBClientError);
@@ -2253,14 +2271,14 @@ describe("subscription argument encoding", () => {
 describe("AckerDBClient close-time mutation settlement", () => {
   test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
     const { client, sockets } = createHarness();
-    const sent = client.mutation("todos.add", { text: "sent" }).then(mustErr);
+    const sent = client.mutation("api.todos.add", { text: "sent" }).then(mustErr);
     sockets[0]!.welcome(client.clientSessionId);
     expect(sockets[0]!.lastFrame("m").args).toEqual({ text: "sent" });
 
     // Written to a connection that dropped: the server may have committed.
     sockets[0]!.close();
     // Created while disconnected: provably never reached the server.
-    const unsent = client.mutation("todos.add", { text: "unsent" }).then(mustErr);
+    const unsent = client.mutation("api.todos.add", { text: "unsent" }).then(mustErr);
 
     client.close();
     expect(await sent).toMatchObject({
@@ -2324,7 +2342,7 @@ describe("AckerDBClient authentication state", () => {
     });
     sockets[0]!.open();
     sockets[0]!.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 4,
@@ -2346,7 +2364,6 @@ describe("AckerDBClient authentication state", () => {
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-refreshed" });
     const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2387,7 +2404,6 @@ describe("AckerDBClient authentication state", () => {
     const signOutFrame = sockets[0]!.lastFrame("auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
-      v: 5,
       t: "auth",
       attemptId: signOutFrame.attemptId,
       authEpoch: 1,
@@ -2411,7 +2427,6 @@ describe("AckerDBClient authentication state", () => {
     const refreshFrame = sockets[0]!.lastFrame("auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
-      v: 5,
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
@@ -2441,7 +2456,6 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
     const attempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: 5,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2457,7 +2471,6 @@ describe("AckerDBClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
     const signOutAttempt = sockets[0]!.lastFrame("auth");
     sockets[0]!.receive({
-      v: 5,
       t: "auth",
       attemptId: signOutAttempt.attemptId,
       authEpoch: 2,
@@ -2475,7 +2488,7 @@ describe("AckerDBClient authentication state", () => {
     // welcome verifies that value once for both.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 2,
@@ -2493,7 +2506,7 @@ describe("AckerDBClient authentication state", () => {
     const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2526,7 +2539,7 @@ describe("AckerDBClient authentication state", () => {
     expect(clock.taskCount).toBe(timers);
     expect(client.currentAuthenticationState).toBe(confirmed);
     expect(client.currentConnectionState.phase).toBe("ready");
-    const query = client.query("todos.list", {}).catch(() => {});
+    const query = client.query("api.todos.list", {}).catch(() => {});
     expect(sockets[0]!.frames().some((frame) => frame.t === "q")).toBe(true);
     void query;
     client.close();
@@ -2547,7 +2560,7 @@ describe("AckerDBClient authentication state", () => {
     second.open();
     expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 3,
@@ -2568,7 +2581,7 @@ describe("AckerDBClient authentication state", () => {
     const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
     sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     sockets[0]!.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2593,7 +2606,7 @@ describe("AckerDBClient authentication state", () => {
     // The reconnect hello presents the refreshed credential, so its welcome
     // is the verification: one round-trip, no separate auth frame.
     second.receive({
-      v: 5,
+      v: ACKERDB_VERSION,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,
