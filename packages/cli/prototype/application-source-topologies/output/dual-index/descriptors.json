@@ -1,0 +1,144 @@
+{
+  "staticTypeProjection": "exact",
+  "completeDescriptorBoundary": "available only after link/evaluate",
+  "linked": [
+    {
+      "identity": "application:jobs/orders.ts#refresh:job",
+      "descriptor": {
+        "name": "orders.refresh",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "refreshed": {
+              "kind": "string"
+            }
+          }
+        },
+        "retry": {
+          "attempts": 3
+        }
+      }
+    },
+    {
+      "identity": "application:orders.ts#read:function",
+      "descriptor": {
+        "route": "/v1/orders",
+        "access": "protected",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "identity": "application:orders.ts#submit:function",
+      "descriptor": {
+        "route": "/v1/orders/submit",
+        "access": "protected",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "accepted": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "identity": "application:surfaces.ts#calls:realtime",
+      "descriptor": {
+        "clientEvents": {
+          "kind": "object",
+          "shape": {
+            "speak": {
+              "kind": "string"
+            }
+          }
+        },
+        "serverEvents": {
+          "kind": "object",
+          "shape": {
+            "transcript": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "identity": "application:surfaces.ts#tools:mcp",
+      "descriptor": {
+        "name": "orders",
+        "route": "/mcp/orders"
+      }
+    },
+    {
+      "identity": "application:surfaces.ts#updates:channel",
+      "descriptor": {
+        "clientEvents": {
+          "kind": "object",
+          "shape": {
+            "subscribe": {
+              "kind": "string"
+            }
+          }
+        },
+        "serverEvents": {
+          "kind": "object",
+          "shape": {
+            "changed": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "identity": "application:surfaces.ts#webhook:http",
+      "descriptor": {
+        "method": "POST",
+        "route": "/webhooks/orders"
+      }
+    },
+    {
+      "identity": "application:worker.ts#queues:lifecycle",
+      "descriptor": {
+        "owner": "queues",
+        "resource": "bullmq:orders",
+        "direction": "inbound+outbound"
+      }
+    }
+  ]
+}

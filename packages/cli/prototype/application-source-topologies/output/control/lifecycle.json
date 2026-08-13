@@ -1,0 +1,72 @@
+[
+  {
+    "phase": "index/check/compile",
+    "owner": "Application compiler",
+    "event": "read one canonical source index at 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598; no module evaluation",
+    "systemAvailable": false,
+    "resources": 0
+  },
+  {
+    "phase": "link/evaluate",
+    "owner": "Application generation",
+    "event": "evaluate 6 canonical modules once",
+    "systemAvailable": false,
+    "resources": 0
+  },
+  {
+    "phase": "reconcile",
+    "owner": "Application generation",
+    "event": "reconcile root/framework and mount-private state",
+    "systemAvailable": false,
+    "resources": 0
+  },
+  {
+    "phase": "construct",
+    "owner": "Application generation",
+    "event": "construct dormant Runtime and System execution root",
+    "systemAvailable": true,
+    "resources": 0
+  },
+  {
+    "phase": "activate",
+    "owner": "mount:queues",
+    "event": "open bullmq:orders",
+    "systemAvailable": true,
+    "resources": 1
+  },
+  {
+    "phase": "ready",
+    "owner": "Application generation",
+    "event": "publish readiness after all owners activate",
+    "systemAvailable": true,
+    "resources": 1
+  },
+  {
+    "phase": "quiesce",
+    "owner": "mount:queues",
+    "event": "quiesce bullmq:orders inbound",
+    "systemAvailable": true,
+    "resources": 1
+  },
+  {
+    "phase": "drain",
+    "owner": "Application generation",
+    "event": "drain accepted Application work under one deadline",
+    "systemAvailable": true,
+    "resources": 1
+  },
+  {
+    "phase": "deactivate",
+    "owner": "mount:queues",
+    "event": "close bullmq:orders",
+    "systemAvailable": true,
+    "resources": 0
+  },
+  {
+    "phase": "close",
+    "owner": "Application generation",
+    "event": "close System execution root and Engine last",
+    "systemAvailable": false,
+    "resources": 0
+  }
+]

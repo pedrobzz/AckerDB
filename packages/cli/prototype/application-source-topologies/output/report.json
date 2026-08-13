@@ -1,0 +1,2455 @@
+{
+  "generatedAt": "2026-08-13T21:46:39.745Z",
+  "question": "Which Application source/codegen topology yields one renameable mixed root, exact types, complete descriptors, inert planning, canonical lifecycle ownership, and net machinery deletion?",
+  "fixture": {
+    "configuredSourceRoot": "./backend (already not named functions)",
+    "app": "defineApp + computed Schema + static Extension mount",
+    "dynamicConfig": "config.ts fills the predeclared queue configuration slot",
+    "mixedKinds": [
+      "job",
+      "function",
+      "realtime",
+      "mcp",
+      "channel",
+      "http",
+      "lifecycle"
+    ],
+    "ordinaryHelpers": [
+      "formatOrderId",
+      "calculateRetryDelay",
+      "surfaceHelper",
+      "ordinaryServerHelper"
+    ],
+    "circularReferences": "Function → Job and Job → Function through non-any bootstrap refs",
+    "computedMetadata": "template-literal routes and nested validator/Schema descriptors",
+    "hostileExports": [
+      "anyLeak",
+      "unresolved/unknown export",
+      "forged branded assertion"
+    ],
+    "effectTripwire": "worker.ts top-level effect distinct from lifecycle activate"
+  },
+  "atomicFailures": {
+    "artifactsPublished": false,
+    "diagnostics": [
+      {
+        "phase": "classify",
+        "source": "unsafe.ts",
+        "export": "anyLeak",
+        "owner": "application",
+        "message": "Export type is any; no client or plan artifact may be produced."
+      },
+      {
+        "phase": "provenance",
+        "source": "unsafe.ts",
+        "export": "forged",
+        "kind": "function",
+        "owner": "application",
+        "message": "Declaration type is branded but its initializer has no recognized builder provenance; asserted brands are rejected before artifacts."
+      },
+      {
+        "phase": "classify",
+        "source": "unsafe.ts",
+        "export": "unresolved",
+        "owner": "application",
+        "message": "Export type is unresolved/unknown."
+      }
+    ],
+    "observation": "The adversarial fixture produces no client or plan artifact. any, unresolved/unknown, and forged provenance fail before projection."
+  },
+  "candidates": [
+    {
+      "id": "control",
+      "name": "Folder-only consolidation",
+      "question": "Does one directory alone create one Application model?",
+      "verdict": "fail",
+      "score": 3,
+      "interface": [
+        "scanSourceRoot()",
+        "declareFunctions()",
+        "declareJobs()",
+        "declareLifecycles()",
+        "startIndependentRuntimes()"
+      ],
+      "inputs": [
+        {
+          "source": ".ackerdb.config.json",
+          "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+          "role": "static-config"
+        },
+        {
+          "source": "app.ts",
+          "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+          "role": "manifest"
+        },
+        {
+          "source": "backend/jobs/orders.ts",
+          "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+          "role": "source"
+        },
+        {
+          "source": "backend/orders.ts",
+          "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+          "role": "source"
+        },
+        {
+          "source": "backend/surfaces.ts",
+          "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+          "role": "source"
+        },
+        {
+          "source": "backend/unsafe.ts",
+          "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+          "role": "source"
+        },
+        {
+          "source": "backend/worker.ts",
+          "digest": "9e546b353817d735db2c653e9ce15549bed3bbda91787bce92ebb8a8105ce3f0",
+          "role": "source"
+        },
+        {
+          "source": "typescript",
+          "digest": "5.9.3",
+          "role": "compiler"
+        }
+      ],
+      "membership": {
+        "root": {
+          "digest": "ecbf164e51309a916fef0d559135d8819d6d6fef01e54dad872d92fe39ebd6f2",
+          "sourceRoot": "backend",
+          "inputs": [
+            {
+              "source": ".ackerdb.config.json",
+              "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+              "role": "static-config"
+            },
+            {
+              "source": "app.ts",
+              "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+              "role": "manifest"
+            },
+            {
+              "source": "backend/jobs/orders.ts",
+              "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+              "role": "source"
+            },
+            {
+              "source": "backend/orders.ts",
+              "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+              "role": "source"
+            },
+            {
+              "source": "backend/surfaces.ts",
+              "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+              "role": "source"
+            },
+            {
+              "source": "backend/unsafe.ts",
+              "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+              "role": "source"
+            },
+            {
+              "source": "backend/worker.ts",
+              "digest": "9e546b353817d735db2c653e9ce15549bed3bbda91787bce92ebb8a8105ce3f0",
+              "role": "source"
+            },
+            {
+              "source": "typescript",
+              "digest": "5.9.3",
+              "role": "compiler"
+            }
+          ],
+          "sources": [
+            "jobs/orders.ts",
+            "orders.ts",
+            "surfaces.ts",
+            "unsafe.ts",
+            "worker.ts"
+          ],
+          "contributions": [
+            {
+              "identity": "application:jobs/orders.ts#refresh:job",
+              "owner": "application",
+              "source": "jobs/orders.ts",
+              "export": "refresh",
+              "kind": "job",
+              "address": "jobs.orders.refresh"
+            },
+            {
+              "identity": "application:orders.ts#read:function",
+              "owner": "application",
+              "source": "orders.ts",
+              "export": "read",
+              "kind": "function",
+              "address": "api.orders.read"
+            },
+            {
+              "identity": "application:orders.ts#submit:function",
+              "owner": "application",
+              "source": "orders.ts",
+              "export": "submit",
+              "kind": "function",
+              "address": "api.orders.submit"
+            },
+            {
+              "identity": "application:surfaces.ts#calls:realtime",
+              "owner": "application",
+              "source": "surfaces.ts",
+              "export": "calls",
+              "kind": "realtime"
+            },
+            {
+              "identity": "application:surfaces.ts#tools:mcp",
+              "owner": "application",
+              "source": "surfaces.ts",
+              "export": "tools",
+              "kind": "mcp"
+            },
+            {
+              "identity": "application:surfaces.ts#updates:channel",
+              "owner": "application",
+              "source": "surfaces.ts",
+              "export": "updates",
+              "kind": "channel"
+            },
+            {
+              "identity": "application:surfaces.ts#webhook:http",
+              "owner": "application",
+              "source": "surfaces.ts",
+              "export": "webhook",
+              "kind": "http"
+            },
+            {
+              "identity": "application:worker.ts#queues:lifecycle",
+              "owner": "application",
+              "source": "worker.ts",
+              "export": "queues",
+              "kind": "lifecycle"
+            }
+          ]
+        },
+        "independentClassifiers": {
+          "functions": [
+            "application:orders.ts#read:function",
+            "application:orders.ts#submit:function"
+          ],
+          "jobs": [
+            "application:jobs/orders.ts#refresh:job"
+          ],
+          "lifecycles": [
+            "application:worker.ts#queues:lifecycle"
+          ]
+        }
+      },
+      "types": "// Application input digest: 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598\nimport type * as module0 from \"../backend/jobs/orders.ts\";\nimport type * as module1 from \"../backend/orders.ts\";\nimport type * as module2 from \"../backend/surfaces.ts\";\nimport type * as module3 from \"../backend/unsafe.ts\";\nimport type * as module4 from \"../backend/worker.ts\";\n\ntype Kind = \"function\" | \"job\" | \"lifecycle\" | \"http\" | \"channel\" | \"realtime\" | \"mcp\";\ntype Declaration<K extends Kind> = { readonly __ackerKind: K };\ntype ExportsOfKind<M, K extends Kind> = {\n  [P in keyof M as M[P] extends Declaration<K> ? P : never]: M[P]\n};\nexport interface SourceModules {\n  \"jobs/orders.ts\": typeof module0;\n  \"orders.ts\": typeof module1;\n  \"surfaces.ts\": typeof module2;\n  \"unsafe.ts\": typeof module3;\n  \"worker.ts\": typeof module4;\n}\nexport type ClientFunctions = { [M in keyof SourceModules]: ExportsOfKind<SourceModules[M], \"function\"> };\nexport type ServerJobs = { [M in keyof SourceModules]: ExportsOfKind<SourceModules[M], \"job\"> };\nexport interface ServerContext { readonly jobs: ServerJobs }\n",
+      "descriptors": {
+        "source": "evaluated values reconstructed by each subsystem",
+        "snapshot": {
+          "application": {
+            "extensions": {
+              "queues": {
+                "configuration": "queueConnection",
+                "definition": "@ackerdb/bullmq"
+              }
+            },
+            "schema": {
+              "kind": "object",
+              "shape": {
+                "orders": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "scopes": [
+              "orders:read",
+              "orders:write"
+            ]
+          },
+          "schema": {
+            "kind": "object",
+            "shape": {
+              "orders": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  },
+                  "status": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          "functions": [
+            {
+              "identity": "application:orders.ts#read:function",
+              "address": "api.orders.read",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders"
+              }
+            },
+            {
+              "identity": "application:orders.ts#submit:function",
+              "address": "api.orders.submit",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "accepted": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders/submit"
+              }
+            }
+          ],
+          "routes": [
+            {
+              "identity": "application:orders.ts#read:function",
+              "address": "api.orders.read",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders"
+              }
+            },
+            {
+              "identity": "application:orders.ts#submit:function",
+              "address": "api.orders.submit",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "accepted": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders/submit"
+              }
+            },
+            {
+              "identity": "application:surfaces.ts#tools:mcp",
+              "descriptor": {
+                "name": "orders",
+                "route": "/mcp/orders"
+              }
+            },
+            {
+              "identity": "application:surfaces.ts#webhook:http",
+              "descriptor": {
+                "method": "POST",
+                "route": "/webhooks/orders"
+              }
+            }
+          ],
+          "jobs": [
+            {
+              "identity": "application:jobs/orders.ts#refresh:job",
+              "address": "jobs.orders.refresh",
+              "descriptor": {
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "name": "orders.refresh",
+                "retry": {
+                  "attempts": 3
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "refreshed": {
+                      "kind": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "lifecycle": [
+            {
+              "identity": "application:worker.ts#queues:lifecycle",
+              "descriptor": {
+                "direction": "inbound+outbound",
+                "owner": "queues",
+                "resource": "bullmq:orders"
+              }
+            }
+          ],
+          "openapi": [
+            {
+              "operationId": "api.orders.read",
+              "route": "/v1/orders"
+            },
+            {
+              "operationId": "api.orders.submit",
+              "route": "/v1/orders/submit"
+            }
+          ]
+        }
+      },
+      "lifecycle": [
+        {
+          "phase": "index/check/compile",
+          "owner": "Application compiler",
+          "event": "read one canonical source index at 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598; no module evaluation",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "link/evaluate",
+          "owner": "Application generation",
+          "event": "evaluate 6 canonical modules once",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "reconcile",
+          "owner": "Application generation",
+          "event": "reconcile root/framework and mount-private state",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "construct",
+          "owner": "Application generation",
+          "event": "construct dormant Runtime and System execution root",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "activate",
+          "owner": "mount:queues",
+          "event": "open bullmq:orders",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "ready",
+          "owner": "Application generation",
+          "event": "publish readiness after all owners activate",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "quiesce",
+          "owner": "mount:queues",
+          "event": "quiesce bullmq:orders inbound",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "drain",
+          "owner": "Application generation",
+          "event": "drain accepted Application work under one deadline",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "deactivate",
+          "owner": "mount:queues",
+          "event": "close bullmq:orders",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "close",
+          "owner": "Application generation",
+          "event": "close System execution root and Engine last",
+          "systemAvailable": false,
+          "resources": 0
+        }
+      ],
+      "diagnostics": [],
+      "effects": [
+        "UNOWNED top-level timer/BullMQ tripwire"
+      ],
+      "importCalls": {
+        "sdk.ts": 1,
+        "backend/jobs/orders.ts": 2,
+        "backend/orders.ts": 2,
+        "backend/surfaces.ts": 2,
+        "backend/unsafe.ts": 2,
+        "backend/worker.ts": 2
+      },
+      "good": [
+        "One renameable root is mechanically easy.",
+        "Mixed exports can be classified by declaration identity."
+      ],
+      "bad": [
+        "Independent Function, Job, and lifecycle classifiers remain.",
+        "Plugin/Service-style activation owners remain behind one folder."
+      ],
+      "ugly": [
+        "The top-level tripwire runs during descriptor reconstruction.",
+        "It changes paths without deleting a model, public noun, or lifecycle owner."
+      ],
+      "productionDelta": {
+        "counts": {
+          "sourceRoots": 1,
+          "independentClassificationSources": 3,
+          "contributionLifecycleSupervisors": 2,
+          "generatedOrAnalysisMechanisms": 3,
+          "planningEvaluationPhases": 1
+        },
+        "removes": [
+          "servicesDir",
+          "jobsDir"
+        ],
+        "adds": [
+          "mixed root dispatcher"
+        ],
+        "netJudgment": "Fails: two folders disappear, but ten processing passes and two supervisors survive."
+      }
+    },
+    {
+      "id": "dual-index",
+      "name": "Dual index / inference-first",
+      "question": "Can type-only membership plus lazy canonical imports provide exact types and complete inert planning?",
+      "verdict": "fail",
+      "score": 5,
+      "interface": [
+        "compileApplication(project): ApplicationCompilation",
+        "linkApplication(compilation): ApplicationPlan",
+        "activateApplication(plan): RunningApplication"
+      ],
+      "inputs": [
+        {
+          "source": ".ackerdb.config.json",
+          "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+          "role": "static-config"
+        },
+        {
+          "source": "app.ts",
+          "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+          "role": "manifest"
+        },
+        {
+          "source": "backend/jobs/orders.ts",
+          "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+          "role": "source"
+        },
+        {
+          "source": "backend/orders.ts",
+          "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+          "role": "source"
+        },
+        {
+          "source": "backend/surfaces.ts",
+          "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+          "role": "source"
+        },
+        {
+          "source": "backend/unsafe.ts",
+          "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+          "role": "source"
+        },
+        {
+          "source": "backend/worker.ts",
+          "digest": "9e546b353817d735db2c653e9ce15549bed3bbda91787bce92ebb8a8105ce3f0",
+          "role": "source"
+        },
+        {
+          "source": "typescript",
+          "digest": "5.9.3",
+          "role": "compiler"
+        }
+      ],
+      "membership": {
+        "digest": "ecbf164e51309a916fef0d559135d8819d6d6fef01e54dad872d92fe39ebd6f2",
+        "sourceRoot": "backend",
+        "inputs": [
+          {
+            "source": ".ackerdb.config.json",
+            "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+            "role": "static-config"
+          },
+          {
+            "source": "app.ts",
+            "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+            "role": "manifest"
+          },
+          {
+            "source": "backend/jobs/orders.ts",
+            "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+            "role": "source"
+          },
+          {
+            "source": "backend/orders.ts",
+            "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+            "role": "source"
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+            "role": "source"
+          },
+          {
+            "source": "backend/unsafe.ts",
+            "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+            "role": "source"
+          },
+          {
+            "source": "backend/worker.ts",
+            "digest": "9e546b353817d735db2c653e9ce15549bed3bbda91787bce92ebb8a8105ce3f0",
+            "role": "source"
+          },
+          {
+            "source": "typescript",
+            "digest": "5.9.3",
+            "role": "compiler"
+          }
+        ],
+        "sources": [
+          "jobs/orders.ts",
+          "orders.ts",
+          "surfaces.ts",
+          "unsafe.ts",
+          "worker.ts"
+        ],
+        "contributions": [
+          {
+            "identity": "application:jobs/orders.ts#refresh:job",
+            "owner": "application",
+            "source": "jobs/orders.ts",
+            "export": "refresh",
+            "kind": "job",
+            "address": "jobs.orders.refresh"
+          },
+          {
+            "identity": "application:orders.ts#read:function",
+            "owner": "application",
+            "source": "orders.ts",
+            "export": "read",
+            "kind": "function",
+            "address": "api.orders.read"
+          },
+          {
+            "identity": "application:orders.ts#submit:function",
+            "owner": "application",
+            "source": "orders.ts",
+            "export": "submit",
+            "kind": "function",
+            "address": "api.orders.submit"
+          },
+          {
+            "identity": "application:surfaces.ts#calls:realtime",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "calls",
+            "kind": "realtime"
+          },
+          {
+            "identity": "application:surfaces.ts#tools:mcp",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "tools",
+            "kind": "mcp"
+          },
+          {
+            "identity": "application:surfaces.ts#updates:channel",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "updates",
+            "kind": "channel"
+          },
+          {
+            "identity": "application:surfaces.ts#webhook:http",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "webhook",
+            "kind": "http"
+          },
+          {
+            "identity": "application:worker.ts#queues:lifecycle",
+            "owner": "application",
+            "source": "worker.ts",
+            "export": "queues",
+            "kind": "lifecycle"
+          }
+        ]
+      },
+      "types": "// Application input digest: 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598\nimport type * as module0 from \"../backend/jobs/orders.ts\";\nimport type * as module1 from \"../backend/orders.ts\";\nimport type * as module2 from \"../backend/surfaces.ts\";\nimport type * as module3 from \"../backend/unsafe.ts\";\nimport type * as module4 from \"../backend/worker.ts\";\n\ntype Kind = \"function\" | \"job\" | \"lifecycle\" | \"http\" | \"channel\" | \"realtime\" | \"mcp\";\ntype Declaration<K extends Kind> = { readonly __ackerKind: K };\ntype ExportsOfKind<M, K extends Kind> = {\n  [P in keyof M as M[P] extends Declaration<K> ? P : never]: M[P]\n};\nexport interface SourceModules {\n  \"jobs/orders.ts\": typeof module0;\n  \"orders.ts\": typeof module1;\n  \"surfaces.ts\": typeof module2;\n  \"unsafe.ts\": typeof module3;\n  \"worker.ts\": typeof module4;\n}\nexport type ClientFunctions = { [M in keyof SourceModules]: ExportsOfKind<SourceModules[M], \"function\"> };\nexport type ServerJobs = { [M in keyof SourceModules]: ExportsOfKind<SourceModules[M], \"job\"> };\nexport interface ServerContext { readonly jobs: ServerJobs }\n",
+      "descriptors": {
+        "staticTypeProjection": "exact",
+        "completeDescriptorBoundary": "available only after link/evaluate",
+        "linked": [
+          {
+            "identity": "application:jobs/orders.ts#refresh:job",
+            "descriptor": {
+              "name": "orders.refresh",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "refreshed": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "retry": {
+                "attempts": 3
+              }
+            }
+          },
+          {
+            "identity": "application:orders.ts#read:function",
+            "descriptor": {
+              "route": "/v1/orders",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  },
+                  "status": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "identity": "application:orders.ts#submit:function",
+            "descriptor": {
+              "route": "/v1/orders/submit",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "accepted": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "identity": "application:surfaces.ts#calls:realtime",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "speak": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "transcript": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "identity": "application:surfaces.ts#tools:mcp",
+            "descriptor": {
+              "name": "orders",
+              "route": "/mcp/orders"
+            }
+          },
+          {
+            "identity": "application:surfaces.ts#updates:channel",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "subscribe": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "changed": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "identity": "application:surfaces.ts#webhook:http",
+            "descriptor": {
+              "method": "POST",
+              "route": "/webhooks/orders"
+            }
+          },
+          {
+            "identity": "application:worker.ts#queues:lifecycle",
+            "descriptor": {
+              "owner": "queues",
+              "resource": "bullmq:orders",
+              "direction": "inbound+outbound"
+            }
+          }
+        ]
+      },
+      "lifecycle": [
+        {
+          "phase": "index/check/compile",
+          "owner": "Application compiler",
+          "event": "read one canonical source index at 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598; no module evaluation",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "link/evaluate",
+          "owner": "Application generation",
+          "event": "evaluate 6 canonical modules once",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "reconcile",
+          "owner": "Application generation",
+          "event": "reconcile root/framework and mount-private state",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "construct",
+          "owner": "Application generation",
+          "event": "construct dormant Runtime and System execution root",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "activate",
+          "owner": "mount:queues",
+          "event": "open bullmq:orders",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "ready",
+          "owner": "Application generation",
+          "event": "publish readiness after all owners activate",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "quiesce",
+          "owner": "mount:queues",
+          "event": "quiesce bullmq:orders inbound",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "drain",
+          "owner": "Application generation",
+          "event": "drain accepted Application work under one deadline",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "deactivate",
+          "owner": "mount:queues",
+          "event": "close bullmq:orders",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "close",
+          "owner": "Application generation",
+          "event": "close System execution root and Engine last",
+          "systemAvailable": false,
+          "resources": 0
+        }
+      ],
+      "diagnostics": [
+        {
+          "phase": "link/evaluate",
+          "source": "worker.ts",
+          "export": "queues",
+          "kind": "lifecycle",
+          "owner": "application",
+          "message": "Semantic linking evaluated arbitrary top-level code before activation; phase-safe planning is not architectural in this family."
+        }
+      ],
+      "effects": [
+        "UNOWNED top-level timer/BullMQ tripwire"
+      ],
+      "importCalls": {
+        "sdk.ts": 1,
+        "backend/jobs/orders.ts": 2,
+        "backend/orders.ts": 2,
+        "backend/surfaces.ts": 2,
+        "backend/unsafe.ts": 2,
+        "backend/worker.ts": 2
+      },
+      "good": [
+        "Small compiler and excellent exact type/address projection.",
+        "One canonical lazy loader preserves import-once identity.",
+        "Dynamic config.ts remains fully executable without controlling membership."
+      ],
+      "bad": [
+        "The checker sees the full typeof module graph.",
+        "Recursive generated references still require explicit result contracts.",
+        "Environment-selected membership must be rejected."
+      ],
+      "ugly": [
+        "Exact validators/schema/routes/OpenAPI require evaluating source values.",
+        "The tripwire proves link is an unowned effects phase, not activation.",
+        "Fixing that wall turns this candidate into the materialized or captured family."
+      ],
+      "productionDelta": {
+        "counts": {
+          "sourceRoots": 1,
+          "independentClassificationSources": 1,
+          "contributionLifecycleSupervisors": 1,
+          "generatedOrAnalysisMechanisms": 3,
+          "planningEvaluationPhases": 1
+        },
+        "removes": [
+          "three directory scanners",
+          "separate Function/Job type indexes",
+          "duplicate loader maps"
+        ],
+        "adds": [
+          "type index",
+          "runtime loader index",
+          "evaluated link phase"
+        ],
+        "netJudgment": "Mixed: simplifies discovery, but cannot replace safe schema/OpenAPI planning without another mechanism."
+      }
+    },
+    {
+      "id": "materialized",
+      "name": "Compiler-materialized manifest",
+      "question": "Can one inert compiler pipeline materialize exact types and complete descriptors without source evaluation?",
+      "verdict": "pass",
+      "score": 8,
+      "interface": [
+        "compileApplication(project): CompiledApplication",
+        "startApplication(compiled, config): RunningApplication"
+      ],
+      "inputs": [
+        {
+          "source": ".ackerdb.config.json",
+          "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+          "role": "static-config"
+        },
+        {
+          "source": "app.ts",
+          "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+          "role": "manifest"
+        },
+        {
+          "source": "backend/jobs/orders.ts",
+          "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+          "role": "source"
+        },
+        {
+          "source": "backend/orders.ts",
+          "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+          "role": "source"
+        },
+        {
+          "source": "backend/surfaces.ts",
+          "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+          "role": "source"
+        },
+        {
+          "source": "backend/unsafe.ts",
+          "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+          "role": "source"
+        },
+        {
+          "source": "backend/worker.ts",
+          "digest": "68e2f165299239608460c1679008a68269be5912def61dab6e21601935cf92e4",
+          "role": "source"
+        },
+        {
+          "source": "typescript",
+          "digest": "5.9.3",
+          "role": "compiler"
+        }
+      ],
+      "membership": {
+        "digest": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+        "sourceRoot": "backend",
+        "inputs": [
+          {
+            "source": ".ackerdb.config.json",
+            "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+            "role": "static-config"
+          },
+          {
+            "source": "app.ts",
+            "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+            "role": "manifest"
+          },
+          {
+            "source": "backend/jobs/orders.ts",
+            "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+            "role": "source"
+          },
+          {
+            "source": "backend/orders.ts",
+            "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+            "role": "source"
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+            "role": "source"
+          },
+          {
+            "source": "backend/unsafe.ts",
+            "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+            "role": "source"
+          },
+          {
+            "source": "backend/worker.ts",
+            "digest": "68e2f165299239608460c1679008a68269be5912def61dab6e21601935cf92e4",
+            "role": "source"
+          },
+          {
+            "source": "typescript",
+            "digest": "5.9.3",
+            "role": "compiler"
+          }
+        ],
+        "sources": [
+          "jobs/orders.ts",
+          "orders.ts",
+          "surfaces.ts",
+          "unsafe.ts",
+          "worker.ts"
+        ],
+        "contributions": [
+          {
+            "identity": "application:jobs/orders.ts#refresh:job",
+            "owner": "application",
+            "source": "jobs/orders.ts",
+            "export": "refresh",
+            "kind": "job",
+            "address": "jobs.orders.refresh"
+          },
+          {
+            "identity": "application:orders.ts#read:function",
+            "owner": "application",
+            "source": "orders.ts",
+            "export": "read",
+            "kind": "function",
+            "address": "api.orders.read"
+          },
+          {
+            "identity": "application:orders.ts#submit:function",
+            "owner": "application",
+            "source": "orders.ts",
+            "export": "submit",
+            "kind": "function",
+            "address": "api.orders.submit"
+          },
+          {
+            "identity": "application:surfaces.ts#calls:realtime",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "calls",
+            "kind": "realtime"
+          },
+          {
+            "identity": "application:surfaces.ts#tools:mcp",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "tools",
+            "kind": "mcp"
+          },
+          {
+            "identity": "application:surfaces.ts#updates:channel",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "updates",
+            "kind": "channel"
+          },
+          {
+            "identity": "application:surfaces.ts#webhook:http",
+            "owner": "application",
+            "source": "surfaces.ts",
+            "export": "webhook",
+            "kind": "http"
+          },
+          {
+            "identity": "application:worker.ts#queues:lifecycle",
+            "owner": "application",
+            "source": "worker.ts",
+            "export": "queues",
+            "kind": "lifecycle"
+          }
+        ]
+      },
+      "types": "// Application input digest: 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598\nimport type * as module0 from \"../backend/jobs/orders.ts\";\nimport type * as module1 from \"../backend/orders.ts\";\nimport type * as module2 from \"../backend/surfaces.ts\";\nimport type * as module3 from \"../backend/unsafe.ts\";\nimport type * as module4 from \"../backend/worker.ts\";\n\nexport interface ClientFunctions {\n  \"api.orders.read\": typeof module1[\"read\"];\n  \"api.orders.submit\": typeof module1[\"submit\"];\n}\n\nexport interface ServerJobs {\n  \"jobs.orders.refresh\": typeof module0[\"refresh\"];\n}\n\nexport interface ServerContext { readonly jobs: ServerJobs }\n",
+      "descriptors": {
+        "inputDigest": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+        "compiled": {
+          "application": {
+            "extensions": {
+              "queues": {
+                "configuration": "queueConnection",
+                "definition": "@ackerdb/bullmq"
+              }
+            },
+            "schema": {
+              "kind": "object",
+              "shape": {
+                "orders": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "scopes": [
+              "orders:read",
+              "orders:write"
+            ]
+          },
+          "schema": {
+            "kind": "object",
+            "shape": {
+              "orders": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  },
+                  "status": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          "functions": [
+            {
+              "identity": "application:orders.ts#read:function",
+              "address": "api.orders.read",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders"
+              }
+            },
+            {
+              "identity": "application:orders.ts#submit:function",
+              "address": "api.orders.submit",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "accepted": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders/submit"
+              }
+            }
+          ],
+          "routes": [
+            {
+              "identity": "application:orders.ts#read:function",
+              "address": "api.orders.read",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    },
+                    "status": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders"
+              }
+            },
+            {
+              "identity": "application:orders.ts#submit:function",
+              "address": "api.orders.submit",
+              "descriptor": {
+                "access": "protected",
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "accepted": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "route": "/v1/orders/submit"
+              }
+            },
+            {
+              "identity": "application:surfaces.ts#tools:mcp",
+              "descriptor": {
+                "name": "orders",
+                "route": "/mcp/orders"
+              }
+            },
+            {
+              "identity": "application:surfaces.ts#webhook:http",
+              "descriptor": {
+                "method": "POST",
+                "route": "/webhooks/orders"
+              }
+            }
+          ],
+          "jobs": [
+            {
+              "identity": "application:jobs/orders.ts#refresh:job",
+              "address": "jobs.orders.refresh",
+              "descriptor": {
+                "args": {
+                  "kind": "object",
+                  "shape": {
+                    "id": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                "name": "orders.refresh",
+                "retry": {
+                  "attempts": 3
+                },
+                "returns": {
+                  "kind": "object",
+                  "shape": {
+                    "refreshed": {
+                      "kind": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "lifecycle": [
+            {
+              "identity": "application:worker.ts#queues:lifecycle",
+              "descriptor": {
+                "direction": "inbound+outbound",
+                "owner": "queues",
+                "resource": "bullmq:orders"
+              }
+            }
+          ],
+          "openapi": [
+            {
+              "operationId": "api.orders.read",
+              "route": "/v1/orders"
+            },
+            {
+              "operationId": "api.orders.submit",
+              "route": "/v1/orders/submit"
+            }
+          ]
+        },
+        "runtimeVerification": {
+          "authenticBuilders": true,
+          "descriptorParity": true,
+          "canonicalPromiseReusedAcrossConsumers": true,
+          "modulesEvaluated": [
+            "sdk.ts",
+            "backend/jobs/orders.ts",
+            "backend/orders.ts",
+            "backend/surfaces.ts",
+            "backend/unsafe.ts",
+            "backend/worker.ts"
+          ],
+          "importRequests": {
+            "sdk.ts": 1,
+            "backend/jobs/orders.ts": 2,
+            "backend/orders.ts": 2,
+            "backend/surfaces.ts": 2,
+            "backend/unsafe.ts": 2,
+            "backend/worker.ts": 2
+          }
+        }
+      },
+      "lifecycle": [
+        {
+          "phase": "index/check/compile",
+          "owner": "Application compiler",
+          "event": "read one canonical source index at 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598; no module evaluation",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "link/evaluate",
+          "owner": "Application generation",
+          "event": "evaluate 6 canonical modules once",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "reconcile",
+          "owner": "Application generation",
+          "event": "reconcile root/framework and mount-private state",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "construct",
+          "owner": "Application generation",
+          "event": "construct dormant Runtime and System execution root",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "activate",
+          "owner": "mount:queues",
+          "event": "open bullmq:orders",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "ready",
+          "owner": "Application generation",
+          "event": "publish readiness after all owners activate",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "quiesce",
+          "owner": "mount:queues",
+          "event": "quiesce bullmq:orders inbound",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "drain",
+          "owner": "Application generation",
+          "event": "drain accepted Application work under one deadline",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "deactivate",
+          "owner": "mount:queues",
+          "event": "close bullmq:orders",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "close",
+          "owner": "Application generation",
+          "event": "close System execution root and Engine last",
+          "systemAvailable": false,
+          "resources": 0
+        }
+      ],
+      "diagnostics": [
+        {
+          "phase": "authoring contract",
+          "source": "<all declarations>",
+          "owner": "application",
+          "message": "Only exact values in the closed serializable descriptor calculus compile; opaque arbitrary computation is rejected."
+        },
+        {
+          "phase": "link/evaluate tripwire",
+          "source": "worker.ts",
+          "export": "queues",
+          "kind": "lifecycle",
+          "owner": "application",
+          "message": "The effectful fixture compiles inertly, but serving detects the top-level tripwire as unowned link work. The safe fixture activates the lifecycle factory exactly once."
+        }
+      ],
+      "effects": [],
+      "importCalls": {
+        "sdk.ts": 1,
+        "backend/jobs/orders.ts": 2,
+        "backend/orders.ts": 2,
+        "backend/surfaces.ts": 2,
+        "backend/unsafe.ts": 2,
+        "backend/worker.ts": 2
+      },
+      "good": [
+        "One inert compiler pipeline yields membership, exact flat types, schema, validators, routes, Jobs, and OpenAPI.",
+        "No user module evaluation occurs during codegen or planning.",
+        "Helpers disappear and any/forged declarations fail before artifacts.",
+        "Flat materialized types avoid client-side recursive pruning."
+      ],
+      "bad": [
+        "AckerDB owns a pinned TypeScript Compiler API integration.",
+        "Descriptor expressions must remain exact and serializable in their types.",
+        "Opaque wrappers and environment-dependent membership are rejected."
+      ],
+      "ugly": [
+        "Arbitrary TypeScript computation and zero evaluation cannot coexist.",
+        "Runtime must authenticate and compare the loaded value to the compiled descriptor.",
+        "Some erased type shapes may require explicit validators instead of magical recovery."
+      ],
+      "productionDelta": {
+        "counts": {
+          "sourceRoots": 1,
+          "independentClassificationSources": 1,
+          "contributionLifecycleSupervisors": 1,
+          "generatedOrAnalysisMechanisms": 2,
+          "planningEvaluationPhases": 0
+        },
+        "removes": [
+          "Plugin and Service public taxonomies",
+          "three source scanners and ten independent processing passes",
+          "PluginRuntime and ServiceRuntime supervisors",
+          "Plugin/Service/Job-specific Runtime/startup wiring"
+        ],
+        "adds": [
+          "one Application Compiler Module",
+          "closed descriptor calculus",
+          "one compiled plan/runtime verifier",
+          "one Application activation owner"
+        ],
+        "netJudgment": "Passes conditionally on production deletion: the compiler must directly replace old paths, never feed them."
+      }
+    },
+    {
+      "id": "captured",
+      "name": "Captured pure evaluation / stub-refine",
+      "question": "Is richer ordinary TypeScript worth a restricted evaluator, two checks, and deploy-time input parity?",
+      "verdict": "conditional",
+      "score": 5,
+      "interface": [
+        "compileApplication(project): CompiledApplication",
+        "activateApplication(compiled, config): RunningApplication"
+      ],
+      "inputs": {
+        "static": [
+          {
+            "source": ".ackerdb.config.json",
+            "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+            "role": "static-config"
+          },
+          {
+            "source": "app.ts",
+            "digest": "c2b17794bcfa420b340a6803cb6795468bb28a2ca04f92d4abdba1cb0f3ab406",
+            "role": "manifest"
+          },
+          {
+            "source": "backend/jobs/orders.ts",
+            "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+            "role": "source"
+          },
+          {
+            "source": "backend/orders.ts",
+            "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+            "role": "source"
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+            "role": "source"
+          },
+          {
+            "source": "backend/unsafe.ts",
+            "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+            "role": "source"
+          },
+          {
+            "source": "backend/worker.ts",
+            "digest": "68e2f165299239608460c1679008a68269be5912def61dab6e21601935cf92e4",
+            "role": "source"
+          },
+          {
+            "source": "typescript",
+            "digest": "5.9.3",
+            "role": "compiler"
+          }
+        ],
+        "captured": [
+          {
+            "name": "QUEUE_DRIVER",
+            "allowed": [
+              "none",
+              "bullmq"
+            ],
+            "selected": "bullmq"
+          }
+        ],
+        "digest": "f9d122be46885ea2b178ad7440cb82aab83c24142c4aa51f07f509c804772eab"
+      },
+      "membership": {
+        "application": {
+          "schema": {
+            "kind": "object",
+            "shape": {
+              "orders": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          "extensions": {
+            "queues": {
+              "definition": "@ackerdb/bullmq"
+            }
+          }
+        },
+        "sources": [
+          "jobs/orders.ts",
+          "orders.ts",
+          "surfaces.ts",
+          "unsafe.ts",
+          "worker.ts"
+        ],
+        "contributions": [
+          {
+            "source": "backend/jobs/orders.ts",
+            "export": "refresh",
+            "kind": "job",
+            "descriptor": {
+              "name": "orders.refresh",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "refreshed": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "retry": {
+                "attempts": 3
+              }
+            }
+          },
+          {
+            "source": "backend/orders.ts",
+            "export": "read",
+            "kind": "function",
+            "descriptor": {
+              "route": "/v1/orders",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  },
+                  "status": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/orders.ts",
+            "export": "submit",
+            "kind": "function",
+            "descriptor": {
+              "route": "/v1/orders/submit",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "accepted": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "calls",
+            "kind": "realtime",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "speak": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "transcript": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "tools",
+            "kind": "mcp",
+            "descriptor": {
+              "name": "orders",
+              "route": "/mcp/orders"
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "updates",
+            "kind": "channel",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "subscribe": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "changed": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "webhook",
+            "kind": "http",
+            "descriptor": {
+              "method": "POST",
+              "route": "/webhooks/orders"
+            }
+          },
+          {
+            "source": "backend/worker.ts",
+            "export": "queues",
+            "kind": "lifecycle",
+            "descriptor": {
+              "owner": "queues",
+              "resource": "bullmq:orders",
+              "direction": "inbound+outbound"
+            }
+          }
+        ],
+        "evaluatedModules": [
+          "app.ts",
+          "sdk.ts",
+          "backend/jobs/orders.ts",
+          "_generated/server.ts",
+          "backend/orders.ts",
+          "backend/surfaces.ts",
+          "backend/unsafe.ts",
+          "backend/worker.ts"
+        ]
+      },
+      "types": "// Application input digest: 2a1f2be9a6681fc482cc6bab65d32ee4a4505347cacb4f275f6d4502f836ef0d\nimport type * as module0 from \"../backend/jobs/orders.ts\";\nimport type * as module1 from \"../backend/orders.ts\";\nimport type * as module2 from \"../backend/surfaces.ts\";\nimport type * as module3 from \"../backend/unsafe.ts\";\nimport type * as module4 from \"../backend/worker.ts\";\n\nexport interface ClientFunctions {\n  \"api.orders.read\": typeof module1[\"read\"];\n  \"api.orders.submit\": typeof module1[\"submit\"];\n}\n\nexport interface ServerJobs {\n  \"jobs.orders.refresh\": typeof module0[\"refresh\"];\n}\n\nexport interface ServerContext { readonly jobs: ServerJobs }\n",
+      "descriptors": {
+        "application": {
+          "schema": {
+            "kind": "object",
+            "shape": {
+              "orders": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          "extensions": {
+            "queues": {
+              "definition": "@ackerdb/bullmq"
+            }
+          }
+        },
+        "captured": [
+          {
+            "source": "backend/jobs/orders.ts",
+            "export": "refresh",
+            "kind": "job",
+            "descriptor": {
+              "name": "orders.refresh",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "refreshed": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "retry": {
+                "attempts": 3
+              }
+            }
+          },
+          {
+            "source": "backend/orders.ts",
+            "export": "read",
+            "kind": "function",
+            "descriptor": {
+              "route": "/v1/orders",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  },
+                  "status": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/orders.ts",
+            "export": "submit",
+            "kind": "function",
+            "descriptor": {
+              "route": "/v1/orders/submit",
+              "access": "protected",
+              "args": {
+                "kind": "object",
+                "shape": {
+                  "id": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "returns": {
+                "kind": "object",
+                "shape": {
+                  "accepted": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "calls",
+            "kind": "realtime",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "speak": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "transcript": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "tools",
+            "kind": "mcp",
+            "descriptor": {
+              "name": "orders",
+              "route": "/mcp/orders"
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "updates",
+            "kind": "channel",
+            "descriptor": {
+              "clientEvents": {
+                "kind": "object",
+                "shape": {
+                  "subscribe": {
+                    "kind": "string"
+                  }
+                }
+              },
+              "serverEvents": {
+                "kind": "object",
+                "shape": {
+                  "changed": {
+                    "kind": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "source": "backend/surfaces.ts",
+            "export": "webhook",
+            "kind": "http",
+            "descriptor": {
+              "method": "POST",
+              "route": "/webhooks/orders"
+            }
+          },
+          {
+            "source": "backend/worker.ts",
+            "export": "queues",
+            "kind": "lifecycle",
+            "descriptor": {
+              "owner": "queues",
+              "resource": "bullmq:orders",
+              "direction": "inbound+outbound"
+            }
+          }
+        ],
+        "resourcesOpenedDuringAnalysis": 0
+      },
+      "lifecycle": [
+        {
+          "phase": "index/check/compile",
+          "owner": "Application compiler",
+          "event": "read one canonical source index at 353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598; no module evaluation",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "link/evaluate",
+          "owner": "Application generation",
+          "event": "evaluate 6 canonical modules once",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "reconcile",
+          "owner": "Application generation",
+          "event": "reconcile root/framework and mount-private state",
+          "systemAvailable": false,
+          "resources": 0
+        },
+        {
+          "phase": "construct",
+          "owner": "Application generation",
+          "event": "construct dormant Runtime and System execution root",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "activate",
+          "owner": "mount:queues",
+          "event": "open bullmq:orders",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "ready",
+          "owner": "Application generation",
+          "event": "publish readiness after all owners activate",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "quiesce",
+          "owner": "mount:queues",
+          "event": "quiesce bullmq:orders inbound",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "drain",
+          "owner": "Application generation",
+          "event": "drain accepted Application work under one deadline",
+          "systemAvailable": true,
+          "resources": 1
+        },
+        {
+          "phase": "deactivate",
+          "owner": "mount:queues",
+          "event": "close bullmq:orders",
+          "systemAvailable": true,
+          "resources": 0
+        },
+        {
+          "phase": "close",
+          "owner": "Application generation",
+          "event": "close System execution root and Engine last",
+          "systemAvailable": false,
+          "resources": 0
+        }
+      ],
+      "diagnostics": [
+        {
+          "phase": "restricted analysis",
+          "source": "worker.ts",
+          "export": "queues",
+          "kind": "lifecycle",
+          "owner": "application",
+          "message": "Error: analysis denied effect: UNOWNED top-level timer/BullMQ tripwire"
+        }
+      ],
+      "effects": [],
+      "importCalls": {
+        "sdk.ts": 1,
+        "backend/jobs/orders.ts": 2,
+        "backend/orders.ts": 2,
+        "backend/surfaces.ts": 2,
+        "backend/unsafe.ts": 2,
+        "backend/worker.ts": 2
+      },
+      "good": [
+        "Richest authoring: computed descriptors and explicit captured membership inputs work.",
+        "Runtime builder authentication rejects asserted objects.",
+        "Lifecycle factories remain inert during restricted evaluation."
+      ],
+      "bad": [
+        "Bootstrap, evaluation, refinement, and final typecheck are permanent phases.",
+        "Exactness is for one captured input transcript and source digest.",
+        "Deployment must reject source/input drift instead of recompiling implicitly."
+      ],
+      "ugly": [
+        "A real sandbox must constrain the entire transitive TypeScript/npm graph; node:vm is only mechanical evidence.",
+        "Two compiler passes and an evaluator likely consume the deletion budget.",
+        "Arbitrary dependencies and strong phase safety remain a design wall."
+      ],
+      "productionDelta": {
+        "counts": {
+          "sourceRoots": 1,
+          "independentClassificationSources": 1,
+          "contributionLifecycleSupervisors": 1,
+          "generatedOrAnalysisMechanisms": 4,
+          "planningEvaluationPhases": 1
+        },
+        "removes": [
+          "Plugin and Service public taxonomies",
+          "separate scanners/classifiers/supervisors"
+        ],
+        "adds": [
+          "bootstrap/refinement protocol",
+          "restricted evaluator and module loader",
+          "captured-input transcript",
+          "deployment parity verifier",
+          "two TypeScript checks"
+        ],
+        "netJudgment": "Fails the simplification objective as the default; retain captured-input vocabulary only if later evidence requires it."
+      }
+    }
+  ],
+  "mutations": [
+    {
+      "scenario": "repeat with no changes",
+      "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "changed": false,
+      "observation": "Byte-stable inputs/projections and compare-before-write preserve the bootstrap mtime."
+    },
+    {
+      "scenario": "randomized directory enumeration",
+      "before": "9247b246bafdb6e6f12155c85bb4052bb344573a005199494c083c18e358fe7d",
+      "after": "9247b246bafdb6e6f12155c85bb4052bb344573a005199494c083c18e358fe7d",
+      "changed": false,
+      "observation": "Canonical sorting produces the same membership order from reversed and interleaved enumeration."
+    },
+    {
+      "scenario": "add source",
+      "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "after": "56702e5406be65c160060223d5fe77511e88f186f91de175d6ff79b892449b2d",
+      "changed": true,
+      "watchEvent": {
+        "event": "rename",
+        "source": "added.ts"
+      },
+      "observation": "Canonical membership and digest add backend/added.ts exactly once."
+    },
+    {
+      "scenario": "edit semantic descriptor",
+      "before": "56702e5406be65c160060223d5fe77511e88f186f91de175d6ff79b892449b2d",
+      "after": "7e783a29192d35ea5cffc9debb0712cf29b49175480880f6a5e3504aed4965d6",
+      "changed": true,
+      "watchEvent": {
+        "event": "rename",
+        "source": "added.ts"
+      },
+      "observation": "A route edit changes both the input digest and descriptor snapshot."
+    },
+    {
+      "scenario": "rename source",
+      "before": "7e783a29192d35ea5cffc9debb0712cf29b49175480880f6a5e3504aed4965d6",
+      "after": "2bd3450be55cd4423583d5701d7a024fe6a840b64a97fb0402530ad5d0353a83",
+      "changed": true,
+      "watchEvent": {
+        "event": "rename",
+        "source": "added.ts"
+      },
+      "observation": "Rename changes canonical owner/address instead of preserving a stale alias."
+    },
+    {
+      "scenario": "delete source",
+      "before": "2bd3450be55cd4423583d5701d7a024fe6a840b64a97fb0402530ad5d0353a83",
+      "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "changed": true,
+      "watchEvent": {
+        "event": "rename",
+        "source": "renamed.ts"
+      },
+      "observation": "Deleted contribution disappears; no generated file is inside the watched source root."
+    },
+    {
+      "scenario": "rename configured source root",
+      "after": "b63f4ff1b8e094db7dc72a0de38883b17c33e5e2e2097584f7e05e8aa8d098b9",
+      "changed": true,
+      "diagnostics": [],
+      "observation": "The same 8 declarations compile from ./logic; the directory name is not a kind."
+    },
+    {
+      "scenario": "ambient environment changes Extension membership",
+      "diagnostics": [
+        {
+          "phase": "membership",
+          "source": "app.ts",
+          "export": "default",
+          "owner": "application",
+          "message": "Application membership depends on process.env; static compilation permits dynamic values only in config.ts, not contribution or Extension membership."
+        }
+      ],
+      "observation": "Static candidates reject process.env membership before artifacts; executable config.ts may only fill a statically declared slot."
+    },
+    {
+      "scenario": "change executable config.ts",
+      "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+      "changed": false,
+      "observation": "Dynamic host configuration changes activation values but cannot change compiled membership."
+    },
+    {
+      "scenario": "change an explicitly captured membership input",
+      "before": "c78328a6221b4467d068773adaec1cb07789200fbb4930392e0c363fd82c26f6",
+      "after": "f9d122be46885ea2b178ad7440cb82aab83c24142c4aa51f07f509c804772eab",
+      "changed": true,
+      "observation": "Captured evaluation records the allowed values and selected value; changing it deterministically invalidates the concrete Application descriptor."
+    },
+    {
+      "scenario": "deterministic Function address collision",
+      "diagnostics": [
+        {
+          "phase": "collision",
+          "source": "orders/index.ts",
+          "export": "read",
+          "kind": "function",
+          "owner": "application",
+          "message": "Address api.orders.read collides with application:orders.ts#read:function."
+        }
+      ],
+      "observation": "Diagnostic names the canonical path, export, contribution kind, owner, address, and previous owner."
+    }
+  ],
+  "scale": [
+    {
+      "modules": 10,
+      "topology": "control",
+      "memoryKiB": 62526,
+      "types": 369,
+      "instantiations": 1271,
+      "checkSeconds": 0.02,
+      "totalSeconds": 0.16,
+      "passes": 1
+    },
+    {
+      "modules": 10,
+      "topology": "dual-index",
+      "memoryKiB": 62181,
+      "types": 318,
+      "instantiations": 856,
+      "checkSeconds": 0.02,
+      "totalSeconds": 0.15,
+      "passes": 1
+    },
+    {
+      "modules": 10,
+      "topology": "materialized",
+      "memoryKiB": 60650,
+      "types": 362,
+      "instantiations": 0,
+      "checkSeconds": 0.02,
+      "totalSeconds": 0.28,
+      "passes": 2
+    },
+    {
+      "modules": 10,
+      "topology": "captured-evaluation",
+      "memoryKiB": 60637,
+      "types": 362,
+      "instantiations": 0,
+      "checkSeconds": 0.03,
+      "totalSeconds": 0.3,
+      "passes": 2
+    },
+    {
+      "modules": 100,
+      "topology": "control",
+      "memoryKiB": 67165,
+      "types": 2349,
+      "instantiations": 12521,
+      "checkSeconds": 0.05,
+      "totalSeconds": 0.2,
+      "passes": 1
+    },
+    {
+      "modules": 100,
+      "topology": "dual-index",
+      "memoryKiB": 63225,
+      "types": 1938,
+      "instantiations": 8434,
+      "checkSeconds": 0.04,
+      "totalSeconds": 0.19,
+      "passes": 1
+    },
+    {
+      "modules": 100,
+      "topology": "materialized",
+      "memoryKiB": 60744,
+      "types": 1802,
+      "instantiations": 0,
+      "checkSeconds": 0.04,
+      "totalSeconds": 0.33999999999999997,
+      "passes": 2
+    },
+    {
+      "modules": 100,
+      "topology": "captured-evaluation",
+      "memoryKiB": 60726,
+      "types": 1802,
+      "instantiations": 0,
+      "checkSeconds": 0.04,
+      "totalSeconds": 0.33999999999999997,
+      "passes": 2
+    },
+    {
+      "modules": 1000,
+      "topology": "control",
+      "memoryKiB": 97115,
+      "types": 22149,
+      "instantiations": 125021,
+      "checkSeconds": 0.16,
+      "totalSeconds": 0.36,
+      "passes": 1
+    },
+    {
+      "modules": 1000,
+      "topology": "dual-index",
+      "memoryKiB": 100523,
+      "types": 18138,
+      "instantiations": 84214,
+      "checkSeconds": 0.16,
+      "totalSeconds": 0.39,
+      "passes": 1
+    },
+    {
+      "modules": 1000,
+      "topology": "materialized",
+      "memoryKiB": 84008,
+      "types": 16202,
+      "instantiations": 0,
+      "checkSeconds": 0.13,
+      "totalSeconds": 0.5700000000000001,
+      "passes": 2
+    },
+    {
+      "modules": 1000,
+      "topology": "captured-evaluation",
+      "memoryKiB": 83876,
+      "types": 16202,
+      "instantiations": 0,
+      "checkSeconds": 0.12,
+      "totalSeconds": 0.53,
+      "passes": 2
+    }
+  ],
+  "proofMatrix": [
+    {
+      "proof": "Fresh checkout without generated files",
+      "result": "pass",
+      "evidence": "Every fixture copy starts without _generated; a non-any bootstrap is created compare-before-write before classification."
+    },
+    {
+      "proof": "One renamed mixed source root",
+      "result": "pass",
+      "evidence": "./backend and renamed ./logic both compile eight contributions spanning Function, HTTP, channel, realtime, MCP, Job, and lifecycle kinds; helpers project nowhere."
+    },
+    {
+      "proof": "Exact remote and server projections",
+      "result": "pass",
+      "evidence": "Materialized types contain only api.orders.read/api.orders.submit and jobs.orders.refresh; no empty helper/lifecycle namespaces are emitted."
+    },
+    {
+      "proof": "Complete semantic snapshot without evaluation",
+      "result": "pass",
+      "evidence": "Compiler materializes the computed /v1/orders route, nested Schema/validators, Job retry policy, lifecycle descriptor, routes, and OpenAPI while the effect log remains empty."
+    },
+    {
+      "proof": "Reject any, unresolved, and forged declarations atomically",
+      "result": "pass",
+      "evidence": "Adversarial compilation publishes no artifacts and reports unsafe.ts#anyLeak, #unresolved, and #forged with phase/owner/kind evidence."
+    },
+    {
+      "proof": "Evaluation is distinct from activation",
+      "result": "pass",
+      "evidence": "Dual-index link triggers the unowned top-level tripwire; materialized planning does not. The inert lifecycle opens only at activate and closes after quiesce/drain."
+    },
+    {
+      "proof": "Canonical runtime identity",
+      "result": "pass",
+      "evidence": "Every source receives two consumer requests but one memoized promise/evaluation; runtime builder provenance and descriptor parity both verify true."
+    },
+    {
+      "proof": "Deterministic invalidation and watching",
+      "result": "pass",
+      "evidence": "No-change preserves digest/mtime; reversed/interleaved enumeration is canonical; add/edit/rename/delete emit watcher events and deterministic digest changes."
+    },
+    {
+      "proof": "Configuration has one owner",
+      "result": "pass",
+      "evidence": "Ambient membership is rejected, config.ts changes do not change membership, and explicitly captured membership changes alter the captured digest."
+    },
+    {
+      "proof": "TypeScript scale at 10/100/1,000 modules",
+      "result": "pass",
+      "evidence": "Pinned TypeScript 5.9.3 extended diagnostics record types, forced instantiations, memory, check time, total time, and pass count for all candidates."
+    },
+    {
+      "proof": "Net production-code deletion",
+      "result": "conditional",
+      "evidence": "Mechanism counts favor the materialized compiler, but this disposable source prototype cannot prove production LOC deletion. The BullMQ/converged-model prototype must delete rather than feed current Plugin/Service machinery."
+    }
+  ],
+  "comparison": {
+    "deletionBaseline": {
+      "autoDiscoveredDeclarationRoots": 3,
+      "visibleExportProcessingPasses": 10,
+      "dedicatedContributionLifecycleSupervisors": 2,
+      "pluginAndServicePublicExports": 41,
+      "grossPluginAndServiceProductionLocIncludingCliStorage": 2917
+    },
+    "accountingBoundary": "This source-topology prototype proves mechanism counts, not production LOC deletion. The BullMQ/converged-model prototype must report old production files/LOC removed and new production files/LOC added before the architecture can claim net code deletion.",
+    "control": "One folder without one compiled model is cosmetic consolidation.",
+    "dualIndex": "Best small exact type projection, but semantic linking evaluates arbitrary top levels and fails inert planning.",
+    "materialized": "Best net design if AckerDB accepts a closed exact descriptor calculus and rejects opaque membership/metadata computation.",
+    "captured": "Best author ergonomics, worst deletion economics; evaluator/sandbox and two-pass parity are permanent machinery."
+  },
+  "recommendation": {
+    "select": "compiler-materialized manifest",
+    "authoringOwnership": {
+      "defineApp": "Application policy: root Schema, scopes, API paths, explicit Extension mounts and grants",
+      ".ackerdb.config.json": "Static serializable project/host facts needed before TypeScript evaluation; source defaults to ./functions and may be renamed",
+      "config.ts": "Executable dynamic host configuration and secrets for already-declared slots; never contribution membership",
+      "functions/": "Default renameable mixed Application source root; exports contribute by authenticated declaration identity, not folder or filename kind"
+    },
+    "retainFromDualIndex": [
+      "one deterministic source index",
+      "one canonical runtime import promise per source identity"
+    ],
+    "retainFromCaptured": [
+      "explicit captured-input transcript only if a future proven requirement needs compile-input-dependent membership"
+    ],
+    "reject": [
+      "folder-only consolidation",
+      "evaluated semantic linking during planning",
+      "captured evaluation as the default"
+    ],
+    "requiredFollowUpProof": "BullMQ Extension prototype must consume the compiled contribution plan directly and prove the old Plugin/Service machinery can be deleted rather than fed by the compiler.",
+    "unresolved": [
+      "Whether migration history physically shares the source root",
+      "Which computed validator/schema forms fit the exact descriptor calculus",
+      "The final public Extension authoring interface"
+    ]
+  }
+}

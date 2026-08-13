@@ -1,0 +1,71 @@
+{
+  "verdict": "pass",
+  "score": 8,
+  "interface": [
+    "compileApplication(project): CompiledApplication",
+    "startApplication(compiled, config): RunningApplication"
+  ],
+  "diagnostics": [
+    {
+      "phase": "authoring contract",
+      "source": "<all declarations>",
+      "owner": "application",
+      "message": "Only exact values in the closed serializable descriptor calculus compile; opaque arbitrary computation is rejected."
+    },
+    {
+      "phase": "link/evaluate tripwire",
+      "source": "worker.ts",
+      "export": "queues",
+      "kind": "lifecycle",
+      "owner": "application",
+      "message": "The effectful fixture compiles inertly, but serving detects the top-level tripwire as unowned link work. The safe fixture activates the lifecycle factory exactly once."
+    }
+  ],
+  "effects": [],
+  "importCalls": {
+    "sdk.ts": 1,
+    "backend/jobs/orders.ts": 2,
+    "backend/orders.ts": 2,
+    "backend/surfaces.ts": 2,
+    "backend/unsafe.ts": 2,
+    "backend/worker.ts": 2
+  },
+  "good": [
+    "One inert compiler pipeline yields membership, exact flat types, schema, validators, routes, Jobs, and OpenAPI.",
+    "No user module evaluation occurs during codegen or planning.",
+    "Helpers disappear and any/forged declarations fail before artifacts.",
+    "Flat materialized types avoid client-side recursive pruning."
+  ],
+  "bad": [
+    "AckerDB owns a pinned TypeScript Compiler API integration.",
+    "Descriptor expressions must remain exact and serializable in their types.",
+    "Opaque wrappers and environment-dependent membership are rejected."
+  ],
+  "ugly": [
+    "Arbitrary TypeScript computation and zero evaluation cannot coexist.",
+    "Runtime must authenticate and compare the loaded value to the compiled descriptor.",
+    "Some erased type shapes may require explicit validators instead of magical recovery."
+  ],
+  "productionDelta": {
+    "counts": {
+      "sourceRoots": 1,
+      "independentClassificationSources": 1,
+      "contributionLifecycleSupervisors": 1,
+      "generatedOrAnalysisMechanisms": 2,
+      "planningEvaluationPhases": 0
+    },
+    "removes": [
+      "Plugin and Service public taxonomies",
+      "three source scanners and ten independent processing passes",
+      "PluginRuntime and ServiceRuntime supervisors",
+      "Plugin/Service/Job-specific Runtime/startup wiring"
+    ],
+    "adds": [
+      "one Application Compiler Module",
+      "closed descriptor calculus",
+      "one compiled plan/runtime verifier",
+      "one Application activation owner"
+    ],
+    "netJudgment": "Passes conditionally on production deletion: the compiler must directly replace old paths, never feed them."
+  }
+}

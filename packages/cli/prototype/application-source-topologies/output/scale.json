@@ -1,0 +1,122 @@
+[
+  {
+    "modules": 10,
+    "topology": "control",
+    "memoryKiB": 62526,
+    "types": 369,
+    "instantiations": 1271,
+    "checkSeconds": 0.02,
+    "totalSeconds": 0.16,
+    "passes": 1
+  },
+  {
+    "modules": 10,
+    "topology": "dual-index",
+    "memoryKiB": 62181,
+    "types": 318,
+    "instantiations": 856,
+    "checkSeconds": 0.02,
+    "totalSeconds": 0.15,
+    "passes": 1
+  },
+  {
+    "modules": 10,
+    "topology": "materialized",
+    "memoryKiB": 60650,
+    "types": 362,
+    "instantiations": 0,
+    "checkSeconds": 0.02,
+    "totalSeconds": 0.28,
+    "passes": 2
+  },
+  {
+    "modules": 10,
+    "topology": "captured-evaluation",
+    "memoryKiB": 60637,
+    "types": 362,
+    "instantiations": 0,
+    "checkSeconds": 0.03,
+    "totalSeconds": 0.3,
+    "passes": 2
+  },
+  {
+    "modules": 100,
+    "topology": "control",
+    "memoryKiB": 67165,
+    "types": 2349,
+    "instantiations": 12521,
+    "checkSeconds": 0.05,
+    "totalSeconds": 0.2,
+    "passes": 1
+  },
+  {
+    "modules": 100,
+    "topology": "dual-index",
+    "memoryKiB": 63225,
+    "types": 1938,
+    "instantiations": 8434,
+    "checkSeconds": 0.04,
+    "totalSeconds": 0.19,
+    "passes": 1
+  },
+  {
+    "modules": 100,
+    "topology": "materialized",
+    "memoryKiB": 60744,
+    "types": 1802,
+    "instantiations": 0,
+    "checkSeconds": 0.04,
+    "totalSeconds": 0.33999999999999997,
+    "passes": 2
+  },
+  {
+    "modules": 100,
+    "topology": "captured-evaluation",
+    "memoryKiB": 60726,
+    "types": 1802,
+    "instantiations": 0,
+    "checkSeconds": 0.04,
+    "totalSeconds": 0.33999999999999997,
+    "passes": 2
+  },
+  {
+    "modules": 1000,
+    "topology": "control",
+    "memoryKiB": 97115,
+    "types": 22149,
+    "instantiations": 125021,
+    "checkSeconds": 0.16,
+    "totalSeconds": 0.36,
+    "passes": 1
+  },
+  {
+    "modules": 1000,
+    "topology": "dual-index",
+    "memoryKiB": 100523,
+    "types": 18138,
+    "instantiations": 84214,
+    "checkSeconds": 0.16,
+    "totalSeconds": 0.39,
+    "passes": 1
+  },
+  {
+    "modules": 1000,
+    "topology": "materialized",
+    "memoryKiB": 84008,
+    "types": 16202,
+    "instantiations": 0,
+    "checkSeconds": 0.13,
+    "totalSeconds": 0.5700000000000001,
+    "passes": 2
+  },
+  {
+    "modules": 1000,
+    "topology": "captured-evaluation",
+    "memoryKiB": 83876,
+    "types": 16202,
+    "instantiations": 0,
+    "checkSeconds": 0.12,
+    "totalSeconds": 0.53,
+    "passes": 2
+  }
+]

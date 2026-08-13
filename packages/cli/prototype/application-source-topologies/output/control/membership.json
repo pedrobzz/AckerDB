@@ -1,0 +1,128 @@
+{
+  "root": {
+    "digest": "ecbf164e51309a916fef0d559135d8819d6d6fef01e54dad872d92fe39ebd6f2",
+    "sourceRoot": "backend",
+    "inputs": [
+      {
+        "source": ".ackerdb.config.json",
+        "digest": "e42e81c141c8e28d53fd06dc24f357ac8a08d17ce6bffdb63eca5640b35db5f3",
+        "role": "static-config"
+      },
+      {
+        "source": "app.ts",
+        "digest": "ff7efacfcbabd95925e7a12ca2e7bda8cf0d6d17e9997c2f840226eddbba00e3",
+        "role": "manifest"
+      },
+      {
+        "source": "backend/jobs/orders.ts",
+        "digest": "63c302c461d79f084bf1929013debcf4944ebfdcbdd94f81ccf2f33258684ee7",
+        "role": "source"
+      },
+      {
+        "source": "backend/orders.ts",
+        "digest": "6ca3a7b31440a6398fa36cc9f2f46b88c005507c22df3b04c3960cc8a2518610",
+        "role": "source"
+      },
+      {
+        "source": "backend/surfaces.ts",
+        "digest": "709f4511e5e7514fff376a793f94f75baa9d94e0e157f3598ca5c75ac5a2770e",
+        "role": "source"
+      },
+      {
+        "source": "backend/unsafe.ts",
+        "digest": "d7ea43fc2c933e3eb1c829b8351f73bb70633eb565956cb9107882f85becb60f",
+        "role": "source"
+      },
+      {
+        "source": "backend/worker.ts",
+        "digest": "9e546b353817d735db2c653e9ce15549bed3bbda91787bce92ebb8a8105ce3f0",
+        "role": "source"
+      },
+      {
+        "source": "typescript",
+        "digest": "5.9.3",
+        "role": "compiler"
+      }
+    ],
+    "sources": [
+      "jobs/orders.ts",
+      "orders.ts",
+      "surfaces.ts",
+      "unsafe.ts",
+      "worker.ts"
+    ],
+    "contributions": [
+      {
+        "identity": "application:jobs/orders.ts#refresh:job",
+        "owner": "application",
+        "source": "jobs/orders.ts",
+        "export": "refresh",
+        "kind": "job",
+        "address": "jobs.orders.refresh"
+      },
+      {
+        "identity": "application:orders.ts#read:function",
+        "owner": "application",
+        "source": "orders.ts",
+        "export": "read",
+        "kind": "function",
+        "address": "api.orders.read"
+      },
+      {
+        "identity": "application:orders.ts#submit:function",
+        "owner": "application",
+        "source": "orders.ts",
+        "export": "submit",
+        "kind": "function",
+        "address": "api.orders.submit"
+      },
+      {
+        "identity": "application:surfaces.ts#calls:realtime",
+        "owner": "application",
+        "source": "surfaces.ts",
+        "export": "calls",
+        "kind": "realtime"
+      },
+      {
+        "identity": "application:surfaces.ts#tools:mcp",
+        "owner": "application",
+        "source": "surfaces.ts",
+        "export": "tools",
+        "kind": "mcp"
+      },
+      {
+        "identity": "application:surfaces.ts#updates:channel",
+        "owner": "application",
+        "source": "surfaces.ts",
+        "export": "updates",
+        "kind": "channel"
+      },
+      {
+        "identity": "application:surfaces.ts#webhook:http",
+        "owner": "application",
+        "source": "surfaces.ts",
+        "export": "webhook",
+        "kind": "http"
+      },
+      {
+        "identity": "application:worker.ts#queues:lifecycle",
+        "owner": "application",
+        "source": "worker.ts",
+        "export": "queues",
+        "kind": "lifecycle"
+      }
+    ]
+  },
+  "independentClassifiers": {
+    "functions": [
+      "application:orders.ts#read:function",
+      "application:orders.ts#submit:function"
+    ],
+    "jobs": [
+      "application:jobs/orders.ts#refresh:job"
+    ],
+    "lifecycles": [
+      "application:worker.ts#queues:lifecycle"
+    ]
+  }
+}

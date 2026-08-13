@@ -1,0 +1,6 @@
+{
+  "app": "./app.ts",
+  "source": "./backend",
+  "generated": "./_generated",
+  "config": "./config.ts"
+}

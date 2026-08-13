@@ -1,0 +1,52 @@
+{
+  "verdict": "fail",
+  "score": 3,
+  "interface": [
+    "scanSourceRoot()",
+    "declareFunctions()",
+    "declareJobs()",
+    "declareLifecycles()",
+    "startIndependentRuntimes()"
+  ],
+  "diagnostics": [],
+  "effects": [
+    "UNOWNED top-level timer/BullMQ tripwire"
+  ],
+  "importCalls": {
+    "sdk.ts": 1,
+    "backend/jobs/orders.ts": 2,
+    "backend/orders.ts": 2,
+    "backend/surfaces.ts": 2,
+    "backend/unsafe.ts": 2,
+    "backend/worker.ts": 2
+  },
+  "good": [
+    "One renameable root is mechanically easy.",
+    "Mixed exports can be classified by declaration identity."
+  ],
+  "bad": [
+    "Independent Function, Job, and lifecycle classifiers remain.",
+    "Plugin/Service-style activation owners remain behind one folder."
+  ],
+  "ugly": [
+    "The top-level tripwire runs during descriptor reconstruction.",
+    "It changes paths without deleting a model, public noun, or lifecycle owner."
+  ],
+  "productionDelta": {
+    "counts": {
+      "sourceRoots": 1,
+      "independentClassificationSources": 3,
+      "contributionLifecycleSupervisors": 2,
+      "generatedOrAnalysisMechanisms": 3,
+      "planningEvaluationPhases": 1
+    },
+    "removes": [
+      "servicesDir",
+      "jobsDir"
+    ],
+    "adds": [
+      "mixed root dispatcher"
+    ],
+    "netJudgment": "Fails: two folders disappear, but ten processing passes and two supervisors survive."
+  }
+}

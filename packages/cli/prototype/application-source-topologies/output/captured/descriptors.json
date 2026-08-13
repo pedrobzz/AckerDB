@@ -1,0 +1,179 @@
+{
+  "application": {
+    "schema": {
+      "kind": "object",
+      "shape": {
+        "orders": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    "extensions": {
+      "queues": {
+        "definition": "@ackerdb/bullmq"
+      }
+    }
+  },
+  "captured": [
+    {
+      "source": "backend/jobs/orders.ts",
+      "export": "refresh",
+      "kind": "job",
+      "descriptor": {
+        "name": "orders.refresh",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "refreshed": {
+              "kind": "string"
+            }
+          }
+        },
+        "retry": {
+          "attempts": 3
+        }
+      }
+    },
+    {
+      "source": "backend/orders.ts",
+      "export": "read",
+      "kind": "function",
+      "descriptor": {
+        "route": "/v1/orders",
+        "access": "protected",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "backend/orders.ts",
+      "export": "submit",
+      "kind": "function",
+      "descriptor": {
+        "route": "/v1/orders/submit",
+        "access": "protected",
+        "args": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            }
+          }
+        },
+        "returns": {
+          "kind": "object",
+          "shape": {
+            "accepted": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "backend/surfaces.ts",
+      "export": "calls",
+      "kind": "realtime",
+      "descriptor": {
+        "clientEvents": {
+          "kind": "object",
+          "shape": {
+            "speak": {
+              "kind": "string"
+            }
+          }
+        },
+        "serverEvents": {
+          "kind": "object",
+          "shape": {
+            "transcript": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "backend/surfaces.ts",
+      "export": "tools",
+      "kind": "mcp",
+      "descriptor": {
+        "name": "orders",
+        "route": "/mcp/orders"
+      }
+    },
+    {
+      "source": "backend/surfaces.ts",
+      "export": "updates",
+      "kind": "channel",
+      "descriptor": {
+        "clientEvents": {
+          "kind": "object",
+          "shape": {
+            "subscribe": {
+              "kind": "string"
+            }
+          }
+        },
+        "serverEvents": {
+          "kind": "object",
+          "shape": {
+            "changed": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "backend/surfaces.ts",
+      "export": "webhook",
+      "kind": "http",
+      "descriptor": {
+        "method": "POST",
+        "route": "/webhooks/orders"
+      }
+    },
+    {
+      "source": "backend/worker.ts",
+      "export": "queues",
+      "kind": "lifecycle",
+      "descriptor": {
+        "owner": "queues",
+        "resource": "bullmq:orders",
+        "direction": "inbound+outbound"
+      }
+    }
+  ],
+  "resourcesOpenedDuringAnalysis": 0
+}

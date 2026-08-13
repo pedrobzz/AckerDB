@@ -1,0 +1,108 @@
+[
+  {
+    "scenario": "repeat with no changes",
+    "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "changed": false,
+    "observation": "Byte-stable inputs/projections and compare-before-write preserve the bootstrap mtime."
+  },
+  {
+    "scenario": "randomized directory enumeration",
+    "before": "9247b246bafdb6e6f12155c85bb4052bb344573a005199494c083c18e358fe7d",
+    "after": "9247b246bafdb6e6f12155c85bb4052bb344573a005199494c083c18e358fe7d",
+    "changed": false,
+    "observation": "Canonical sorting produces the same membership order from reversed and interleaved enumeration."
+  },
+  {
+    "scenario": "add source",
+    "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "after": "56702e5406be65c160060223d5fe77511e88f186f91de175d6ff79b892449b2d",
+    "changed": true,
+    "watchEvent": {
+      "event": "rename",
+      "source": "added.ts"
+    },
+    "observation": "Canonical membership and digest add backend/added.ts exactly once."
+  },
+  {
+    "scenario": "edit semantic descriptor",
+    "before": "56702e5406be65c160060223d5fe77511e88f186f91de175d6ff79b892449b2d",
+    "after": "7e783a29192d35ea5cffc9debb0712cf29b49175480880f6a5e3504aed4965d6",
+    "changed": true,
+    "watchEvent": {
+      "event": "rename",
+      "source": "added.ts"
+    },
+    "observation": "A route edit changes both the input digest and descriptor snapshot."
+  },
+  {
+    "scenario": "rename source",
+    "before": "7e783a29192d35ea5cffc9debb0712cf29b49175480880f6a5e3504aed4965d6",
+    "after": "2bd3450be55cd4423583d5701d7a024fe6a840b64a97fb0402530ad5d0353a83",
+    "changed": true,
+    "watchEvent": {
+      "event": "rename",
+      "source": "added.ts"
+    },
+    "observation": "Rename changes canonical owner/address instead of preserving a stale alias."
+  },
+  {
+    "scenario": "delete source",
+    "before": "2bd3450be55cd4423583d5701d7a024fe6a840b64a97fb0402530ad5d0353a83",
+    "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "changed": true,
+    "watchEvent": {
+      "event": "rename",
+      "source": "renamed.ts"
+    },
+    "observation": "Deleted contribution disappears; no generated file is inside the watched source root."
+  },
+  {
+    "scenario": "rename configured source root",
+    "after": "b63f4ff1b8e094db7dc72a0de38883b17c33e5e2e2097584f7e05e8aa8d098b9",
+    "changed": true,
+    "diagnostics": [],
+    "observation": "The same 8 declarations compile from ./logic; the directory name is not a kind."
+  },
+  {
+    "scenario": "ambient environment changes Extension membership",
+    "diagnostics": [
+      {
+        "phase": "membership",
+        "source": "app.ts",
+        "export": "default",
+        "owner": "application",
+        "message": "Application membership depends on process.env; static compilation permits dynamic values only in config.ts, not contribution or Extension membership."
+      }
+    ],
+    "observation": "Static candidates reject process.env membership before artifacts; executable config.ts may only fill a statically declared slot."
+  },
+  {
+    "scenario": "change executable config.ts",
+    "before": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "after": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+    "changed": false,
+    "observation": "Dynamic host configuration changes activation values but cannot change compiled membership."
+  },
+  {
+    "scenario": "change an explicitly captured membership input",
+    "before": "c78328a6221b4467d068773adaec1cb07789200fbb4930392e0c363fd82c26f6",
+    "after": "f9d122be46885ea2b178ad7440cb82aab83c24142c4aa51f07f509c804772eab",
+    "changed": true,
+    "observation": "Captured evaluation records the allowed values and selected value; changing it deterministically invalidates the concrete Application descriptor."
+  },
+  {
+    "scenario": "deterministic Function address collision",
+    "diagnostics": [
+      {
+        "phase": "collision",
+        "source": "orders/index.ts",
+        "export": "read",
+        "kind": "function",
+        "owner": "application",
+        "message": "Address api.orders.read collides with application:orders.ts#read:function."
+      }
+    ],
+    "observation": "Diagnostic names the canonical path, export, contribution kind, owner, address, and previous owner."
+  }
+]

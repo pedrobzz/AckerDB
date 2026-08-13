@@ -1,0 +1,65 @@
+{
+  "verdict": "fail",
+  "score": 5,
+  "interface": [
+    "compileApplication(project): ApplicationCompilation",
+    "linkApplication(compilation): ApplicationPlan",
+    "activateApplication(plan): RunningApplication"
+  ],
+  "diagnostics": [
+    {
+      "phase": "link/evaluate",
+      "source": "worker.ts",
+      "export": "queues",
+      "kind": "lifecycle",
+      "owner": "application",
+      "message": "Semantic linking evaluated arbitrary top-level code before activation; phase-safe planning is not architectural in this family."
+    }
+  ],
+  "effects": [
+    "UNOWNED top-level timer/BullMQ tripwire"
+  ],
+  "importCalls": {
+    "sdk.ts": 1,
+    "backend/jobs/orders.ts": 2,
+    "backend/orders.ts": 2,
+    "backend/surfaces.ts": 2,
+    "backend/unsafe.ts": 2,
+    "backend/worker.ts": 2
+  },
+  "good": [
+    "Small compiler and excellent exact type/address projection.",
+    "One canonical lazy loader preserves import-once identity.",
+    "Dynamic config.ts remains fully executable without controlling membership."
+  ],
+  "bad": [
+    "The checker sees the full typeof module graph.",
+    "Recursive generated references still require explicit result contracts.",
+    "Environment-selected membership must be rejected."
+  ],
+  "ugly": [
+    "Exact validators/schema/routes/OpenAPI require evaluating source values.",
+    "The tripwire proves link is an unowned effects phase, not activation.",
+    "Fixing that wall turns this candidate into the materialized or captured family."
+  ],
+  "productionDelta": {
+    "counts": {
+      "sourceRoots": 1,
+      "independentClassificationSources": 1,
+      "contributionLifecycleSupervisors": 1,
+      "generatedOrAnalysisMechanisms": 3,
+      "planningEvaluationPhases": 1
+    },
+    "removes": [
+      "three directory scanners",
+      "separate Function/Job type indexes",
+      "duplicate loader maps"
+    ],
+    "adds": [
+      "type index",
+      "runtime loader index",
+      "evaluated link phase"
+    ],
+    "netJudgment": "Mixed: simplifies discovery, but cannot replace safe schema/OpenAPI planning without another mechanism."
+  }
+}

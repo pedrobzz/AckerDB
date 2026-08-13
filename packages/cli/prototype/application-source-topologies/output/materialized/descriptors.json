@@ -1,0 +1,238 @@
+{
+  "inputDigest": "353cdd2cc48db21572bf0e65c54fb6534fb4e070faeceea01c7446e0ccf96598",
+  "compiled": {
+    "application": {
+      "extensions": {
+        "queues": {
+          "configuration": "queueConnection",
+          "definition": "@ackerdb/bullmq"
+        }
+      },
+      "schema": {
+        "kind": "object",
+        "shape": {
+          "orders": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              },
+              "status": {
+                "kind": "string"
+              }
+            }
+          }
+        }
+      },
+      "scopes": [
+        "orders:read",
+        "orders:write"
+      ]
+    },
+    "schema": {
+      "kind": "object",
+      "shape": {
+        "orders": {
+          "kind": "object",
+          "shape": {
+            "id": {
+              "kind": "string"
+            },
+            "status": {
+              "kind": "string"
+            }
+          }
+        }
+      }
+    },
+    "functions": [
+      {
+        "identity": "application:orders.ts#read:function",
+        "address": "api.orders.read",
+        "descriptor": {
+          "access": "protected",
+          "args": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              }
+            }
+          },
+          "returns": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              },
+              "status": {
+                "kind": "string"
+              }
+            }
+          },
+          "route": "/v1/orders"
+        }
+      },
+      {
+        "identity": "application:orders.ts#submit:function",
+        "address": "api.orders.submit",
+        "descriptor": {
+          "access": "protected",
+          "args": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              }
+            }
+          },
+          "returns": {
+            "kind": "object",
+            "shape": {
+              "accepted": {
+                "kind": "string"
+              }
+            }
+          },
+          "route": "/v1/orders/submit"
+        }
+      }
+    ],
+    "routes": [
+      {
+        "identity": "application:orders.ts#read:function",
+        "address": "api.orders.read",
+        "descriptor": {
+          "access": "protected",
+          "args": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              }
+            }
+          },
+          "returns": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              },
+              "status": {
+                "kind": "string"
+              }
+            }
+          },
+          "route": "/v1/orders"
+        }
+      },
+      {
+        "identity": "application:orders.ts#submit:function",
+        "address": "api.orders.submit",
+        "descriptor": {
+          "access": "protected",
+          "args": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              }
+            }
+          },
+          "returns": {
+            "kind": "object",
+            "shape": {
+              "accepted": {
+                "kind": "string"
+              }
+            }
+          },
+          "route": "/v1/orders/submit"
+        }
+      },
+      {
+        "identity": "application:surfaces.ts#tools:mcp",
+        "descriptor": {
+          "name": "orders",
+          "route": "/mcp/orders"
+        }
+      },
+      {
+        "identity": "application:surfaces.ts#webhook:http",
+        "descriptor": {
+          "method": "POST",
+          "route": "/webhooks/orders"
+        }
+      }
+    ],
+    "jobs": [
+      {
+        "identity": "application:jobs/orders.ts#refresh:job",
+        "address": "jobs.orders.refresh",
+        "descriptor": {
+          "args": {
+            "kind": "object",
+            "shape": {
+              "id": {
+                "kind": "string"
+              }
+            }
+          },
+          "name": "orders.refresh",
+          "retry": {
+            "attempts": 3
+          },
+          "returns": {
+            "kind": "object",
+            "shape": {
+              "refreshed": {
+                "kind": "string"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "lifecycle": [
+      {
+        "identity": "application:worker.ts#queues:lifecycle",
+        "descriptor": {
+          "direction": "inbound+outbound",
+          "owner": "queues",
+          "resource": "bullmq:orders"
+        }
+      }
+    ],
+    "openapi": [
+      {
+        "operationId": "api.orders.read",
+        "route": "/v1/orders"
+      },
+      {
+        "operationId": "api.orders.submit",
+        "route": "/v1/orders/submit"
+      }
+    ]
+  },
+  "runtimeVerification": {
+    "authenticBuilders": true,
+    "descriptorParity": true,
+    "canonicalPromiseReusedAcrossConsumers": true,
+    "modulesEvaluated": [
+      "sdk.ts",
+      "backend/jobs/orders.ts",
+      "backend/orders.ts",
+      "backend/surfaces.ts",
+      "backend/unsafe.ts",
+      "backend/worker.ts"
+    ],
+    "importRequests": {
+      "sdk.ts": 1,
+      "backend/jobs/orders.ts": 2,
+      "backend/orders.ts": 2,
+      "backend/surfaces.ts": 2,
+      "backend/unsafe.ts": 2,
+      "backend/worker.ts": 2
+    }
+  }
+}

@@ -1,0 +1,57 @@
+[
+  {
+    "proof": "Fresh checkout without generated files",
+    "result": "pass",
+    "evidence": "Every fixture copy starts without _generated; a non-any bootstrap is created compare-before-write before classification."
+  },
+  {
+    "proof": "One renamed mixed source root",
+    "result": "pass",
+    "evidence": "./backend and renamed ./logic both compile eight contributions spanning Function, HTTP, channel, realtime, MCP, Job, and lifecycle kinds; helpers project nowhere."
+  },
+  {
+    "proof": "Exact remote and server projections",
+    "result": "pass",
+    "evidence": "Materialized types contain only api.orders.read/api.orders.submit and jobs.orders.refresh; no empty helper/lifecycle namespaces are emitted."
+  },
+  {
+    "proof": "Complete semantic snapshot without evaluation",
+    "result": "pass",
+    "evidence": "Compiler materializes the computed /v1/orders route, nested Schema/validators, Job retry policy, lifecycle descriptor, routes, and OpenAPI while the effect log remains empty."
+  },
+  {
+    "proof": "Reject any, unresolved, and forged declarations atomically",
+    "result": "pass",
+    "evidence": "Adversarial compilation publishes no artifacts and reports unsafe.ts#anyLeak, #unresolved, and #forged with phase/owner/kind evidence."
+  },
+  {
+    "proof": "Evaluation is distinct from activation",
+    "result": "pass",
+    "evidence": "Dual-index link triggers the unowned top-level tripwire; materialized planning does not. The inert lifecycle opens only at activate and closes after quiesce/drain."
+  },
+  {
+    "proof": "Canonical runtime identity",
+    "result": "pass",
+    "evidence": "Every source receives two consumer requests but one memoized promise/evaluation; runtime builder provenance and descriptor parity both verify true."
+  },
+  {
+    "proof": "Deterministic invalidation and watching",
+    "result": "pass",
+    "evidence": "No-change preserves digest/mtime; reversed/interleaved enumeration is canonical; add/edit/rename/delete emit watcher events and deterministic digest changes."
+  },
+  {
+    "proof": "Configuration has one owner",
+    "result": "pass",
+    "evidence": "Ambient membership is rejected, config.ts changes do not change membership, and explicitly captured membership changes alter the captured digest."
+  },
+  {
+    "proof": "TypeScript scale at 10/100/1,000 modules",
+    "result": "pass",
+    "evidence": "Pinned TypeScript 5.9.3 extended diagnostics record types, forced instantiations, memory, check time, total time, and pass count for all candidates."
+  },
+  {
+    "proof": "Net production-code deletion",
+    "result": "conditional",
+    "evidence": "Mechanism counts favor the materialized compiler, but this disposable source prototype cannot prove production LOC deletion. The BullMQ/converged-model prototype must delete rather than feed current Plugin/Service machinery."
+  }
+]

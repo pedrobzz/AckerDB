@@ -1,0 +1,63 @@
+{
+  "verdict": "conditional",
+  "score": 5,
+  "interface": [
+    "compileApplication(project): CompiledApplication",
+    "activateApplication(compiled, config): RunningApplication"
+  ],
+  "diagnostics": [
+    {
+      "phase": "restricted analysis",
+      "source": "worker.ts",
+      "export": "queues",
+      "kind": "lifecycle",
+      "owner": "application",
+      "message": "Error: analysis denied effect: UNOWNED top-level timer/BullMQ tripwire"
+    }
+  ],
+  "effects": [],
+  "importCalls": {
+    "sdk.ts": 1,
+    "backend/jobs/orders.ts": 2,
+    "backend/orders.ts": 2,
+    "backend/surfaces.ts": 2,
+    "backend/unsafe.ts": 2,
+    "backend/worker.ts": 2
+  },
+  "good": [
+    "Richest authoring: computed descriptors and explicit captured membership inputs work.",
+    "Runtime builder authentication rejects asserted objects.",
+    "Lifecycle factories remain inert during restricted evaluation."
+  ],
+  "bad": [
+    "Bootstrap, evaluation, refinement, and final typecheck are permanent phases.",
+    "Exactness is for one captured input transcript and source digest.",
+    "Deployment must reject source/input drift instead of recompiling implicitly."
+  ],
+  "ugly": [
+    "A real sandbox must constrain the entire transitive TypeScript/npm graph; node:vm is only mechanical evidence.",
+    "Two compiler passes and an evaluator likely consume the deletion budget.",
+    "Arbitrary dependencies and strong phase safety remain a design wall."
+  ],
+  "productionDelta": {
+    "counts": {
+      "sourceRoots": 1,
+      "independentClassificationSources": 1,
+      "contributionLifecycleSupervisors": 1,
+      "generatedOrAnalysisMechanisms": 4,
+      "planningEvaluationPhases": 1
+    },
+    "removes": [
+      "Plugin and Service public taxonomies",
+      "separate scanners/classifiers/supervisors"
+    ],
+    "adds": [
+      "bootstrap/refinement protocol",
+      "restricted evaluator and module loader",
+      "captured-input transcript",
+      "deployment parity verifier",
+      "two TypeScript checks"
+    ],
+    "netJudgment": "Fails the simplification objective as the default; retain captured-input vocabulary only if later evidence requires it."
+  }
+}
