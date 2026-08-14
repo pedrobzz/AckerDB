@@ -1,0 +1,67 @@
+---
+title: "Plugin Storage"
+description: "Review, apply, reset, and drop Plugin-owned storage."
+---
+
+Each mounted Plugin owns a private storage scope. AckerDB reconciles safe
+additive changes automatically, but it refuses changes that could erase,
+reinterpret, or silently hide Plugin-owned data.
+
+## Normal startup behavior
+
+On startup, AckerDB compares the mounted Plugin's private schema with its
+stored requirement.
+
+| Change | Result |
+| --- | --- |
+| Safe additive change | Reconciled automatically. |
+| Incompatible definition or unsafe schema/data change | Startup stops and names the mount that needs an explicit reset. |
+| Plugin mount removed from the app | The stale scope remains until explicitly dropped. |
+
+This applies only to Plugin private tables. Root application schema migration
+remains a separate concern.
+
+## Reset a mounted Plugin
+
+When a Plugin's private storage can be recreated, stop the server and reset
+the selected mount:
+
+~~~sh
+acker plugin reset cache
+~~~
+
+For an application outside the current directory:
+
+~~~sh
+acker plugin reset cache ./apps/api
+~~~
+
+reset clears only that mount's private data and creates storage matching the
+currently mounted Plugin definition. It does not run root migrations or reset
+other Plugins. Export or otherwise preserve any data that the Plugin cannot
+rebuild before running it.
+
+## Drop a removed Plugin mount
+
+After removing a Plugin from app.ts, its private scope is intentionally left
+behind until you confirm its removal:
+
+~~~sh
+acker plugin drop legacySearch
+~~~
+
+drop removes only the selected stale mount. It is not a general database
+cleanup command and does not affect an active mount.
+
+## Safe change process
+
+1. Review whether the Plugin owns data that must survive the change.
+2. Make compatible, additive schema changes when possible.
+3. Stop application traffic before an explicit reset or drop.
+4. Run the narrow command for the named mount.
+5. Restart and verify the Plugin can initialize.
+
+Do not edit Plugin-managed tables directly or reuse a mount name for an
+unrelated Plugin. A mount name, Plugin identity, and private schema together
+define one ownership boundary. For mounting and dependencies, see
+[Installing Plugins](/docs/installing-plugins).

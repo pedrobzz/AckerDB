@@ -1,0 +1,81 @@
+---
+title: "Mutations"
+description: "Declare atomic writes with typed outcomes."
+---
+
+A Mutation is the durable state-transition boundary. Its handler runs with the
+application's read/write database context in one coordinated SQLite writer
+transaction. The transition either commits as a whole or has no durable effect.
+
+## Declare one state transition
+
+Use the schema-aware mutation builder. Read the current row, decide whether the
+transition is valid, and write the next state in the same handler.
+
+~~~ts title="apps/server/functions/notes.ts"
+import { Err, Status } from "@ackerdb/core";
+import { v } from "@ackerdb/server";
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const publish = mutation({
+  access: "authenticated",
+  args: { id: v.bigint() },
+  errors: {
+    "note.not_found": {
+      status: Status.NotFound,
+      body: v.object({ id: v.bigint() }),
+    },
+    "note.not_publishable": {
+      status: Status.Conflict,
+      body: v.object({ reason: v.string() }),
+    },
+  },
+  handler: async (ctx, args) => {
+    const note = await ctx.db.notes.get(args.id);
+
+    if (note === null) {
+      return Err("note.not_found", { id: args.id }, Status.NotFound);
+    }
+    if (note.status !== "draft") {
+      return Err(
+        "note.not_publishable",
+        { reason: "only drafts can be published" },
+        Status.Conflict,
+      );
+    }
+
+    await ctx.db.notes.patch(note.id, {
+      status: "published",
+      publishedAt: ctx.timestamp,
+      updatedAt: ctx.timestamp,
+    });
+
+    return { id: note.id, publishedAt: ctx.timestamp };
+  },
+});
+~~~
+
+Declared Err branches become application outcomes and roll back the transition
+just as an unhandled exception does. [Arguments and
+Results](/docs/arguments-and-results) owns that Result contract.
+
+## Keep the transition small
+
+A Mutation is for durable state, not remote coordination. The runtime refuses
+network work while the writer transaction is open. Do remote, human, or
+unbounded work in a [Procedure](/docs/procedures), then keep the eventual
+database commit short and explicit.
+
+[Writing Data](/docs/writing-data) owns insert, patch, replace, delete, and
+upsert semantics. [Transactions](/docs/transactions) owns nesting, rollback,
+and the boundary between a commit and a live update.
+
+## Let callers consume the committed result
+
+Call a generated Mutation reference and handle its Result deliberately. A
+successful result means the durable transition committed; a disconnected client
+can still receive an indeterminate outcome when completion cannot be proved.
+
+[Calling Functions](/docs/calling-functions) owns client invocation, retry
+decisions, and exhaustive Result handling. [Live Queries](/docs/live-queries)
+explains how subscriptions converge after the commit.

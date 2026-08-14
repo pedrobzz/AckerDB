@@ -1,0 +1,130 @@
+---
+title: "CLI Reference"
+description: "Reference every supported acker command and argument."
+---
+
+`acker` is the Bun CLI for one AckerDB application directory. Its optional
+`[app-dir]` argument defaults to the current directory; all configuration
+and relative paths are then resolved from that application directory.
+
+~~~bash title="General form"
+bunx acker <command> [app-dir]
+~~~
+
+Use the local workspace binary in a monorepo whenever it is available. It
+keeps CLI, server, client, and generated-code versions in lockstep.
+
+## Develop and serve
+
+| Command | Description |
+| --- | --- |
+| `acker dev [app-dir]` | Watches backend TypeScript and JSON, regenerates bindings, and restarts a supervised development server. |
+| `acker start [app-dir]` | Generates once, starts without watching, and drains on termination. Use this for a production process. |
+| `acker codegen [app-dir]` | Generates `api.ts`, `server.ts`, and `types.ts` once. |
+
+~~~bash title="Daily development"
+bunx acker dev apps/server
+~~~
+
+`dev` does not make database migrations disappear. If a schema change needs
+an explicit transformation, an interactive terminal shows the migration
+ledger and asks for consent. A non-interactive run reports the refusal rather
+than guessing how to change data.
+
+~~~bash title="Production process"
+bunx acker start apps/server
+~~~
+
+Read [Development Workflow](/docs/development-workflow) and
+[Production Server](/docs/production-server) for the intended lifecycle.
+
+## Generate and inspect API output
+
+| Command | Description |
+| --- | --- |
+| `acker codegen [app-dir]` | Rebuilds generated TypeScript bindings. |
+| `acker openapi <document> [app-dir]` | Writes the HTTP surface’s OpenAPI 3.1 document to `<document>`. |
+
+~~~bash title="Export OpenAPI"
+bunx acker openapi ./openapi.json apps/server
+~~~
+
+The document path is required. The application directory is optional and
+follows it. Generated API bindings are deterministic; do not edit their files
+to make a client typecheck pass.
+
+## Schema migrations
+
+| Command | Description |
+| --- | --- |
+| `acker generate [name] [app-dir]` | Inspects an initialized database and schema, then writes the next explicit migration when one is required. |
+| `acker reset [app-dir]` | Deletes the local database artifacts while retaining coordination state. |
+
+~~~bash title="Name a migration"
+bunx acker generate add_todo_priority apps/server
+~~~
+
+The name is optional; when omitted, AckerDB derives it from the refused
+schema changes. In a terminal, the command lets you identify renames before
+writing the migration. Outside a terminal, it treats ambiguous changes as
+delete-and-add and reports that decision. Review and complete every generated
+migration before restarting the server.
+
+`reset` is a local development escape hatch. It is destructive: it removes
+the database in the configured `db` directory. Do not use it as a production
+schema migration strategy.
+
+## Plugins
+
+| Command | Description |
+| --- | --- |
+| `acker plugin reset <mount> [app-dir]` | Clears one consent-gated Plugin storage mount while retaining the mount itself. |
+| `acker plugin drop <mount> [app-dir]` | Drops one consent-gated Plugin storage mount. |
+
+~~~bash title="Reset one Plugin’s storage"
+bunx acker plugin reset cache apps/server
+~~~
+
+The mount name is required. These operations are intentionally narrow:
+they target one declared Plugin boundary instead of resetting all application
+state. Read [Plugin Storage](/docs/plugin-storage) first.
+
+## Operations
+
+| Command | Description |
+| --- | --- |
+| `acker status [app-dir]` | Inspects the configured database and writes a JSON status report to standard output. |
+| `acker backup <artifact> [app-dir] [--metadata-only]` | Creates and verifies a backup artifact. |
+| `acker restore <artifact> [app-dir]` | Verifies an artifact and restores it into a fresh target. |
+| `acker files migrate <target.json> [app-dir]` | Migrates File objects to the FileStore configuration in `<target.json>`, then switches the active store. |
+
+~~~bash title="Create a verified backup"
+bunx acker backup ./backups/ackerdb-2026-08-08 apps/server
+~~~
+
+~~~bash title="Inspect local state"
+bunx acker status apps/server
+~~~
+
+`backup` requires an artifact path. `--metadata-only` creates and verifies
+only the database and metadata portion. `restore` refuses to overwrite a
+live target: restore into an explicitly fresh target and verify it before
+cutover.
+
+The FileStore migration target is a JSON configuration object for the
+destination backend. Its progress reports go to standard error; the final
+machine-readable report goes to standard output.
+
+## Arguments and exit behavior
+
+Commands reject unknown flags and invalid argument counts. A successful
+operational command prints its report to standard output. Errors print a
+human-readable reason to standard error and exit non-zero.
+
+The CLI does not hide data-changing work behind aliases. When a command can
+delete, migrate, restore, or switch storage, read its focused documentation
+and make the target explicit:
+
+- [Schema Migrations](/docs/schema-migrations)
+- [Backups & Restore](/docs/backups-and-restore)
+- [Migrating File Storage](/docs/migrating-file-storage)

@@ -1,0 +1,115 @@
+---
+title: "Live Queries"
+description: "Render exhaustive Query state and receive precise reactive updates."
+---
+
+"useQuery" turns a generated Query reference into a live React external-store
+snapshot. It starts demand only after React commits a listener, shares equal
+demand within one provider client, and exposes when held data is stale rather
+than pretending every previously successful value is current.
+
+## Subscribe with a generated Query
+
+~~~tsx
+import { skip, useQuery } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+export function ProjectTodos({
+  projectId,
+}: {
+  projectId: bigint | null;
+}) {
+  const todos = useQuery(
+    api.todos.forProject,
+    projectId === null ? skip : { projectId },
+  );
+
+  switch (todos.status) {
+    case "disabled":
+      return <p>Choose a project.</p>;
+    case "pending":
+      return <p>Loading…</p>;
+    case "success":
+      return <TodoRows todos={todos.data} />;
+    case "application-error":
+      return <p role="alert">{todos.error.code}</p>;
+    case "rejected":
+      return <p role="alert">{todos.error.message}</p>;
+    case "unavailable":
+      return (
+        <>
+          {todos.data && <TodoRows todos={todos.data} />}
+          <p role="status">
+            {todos.stale ? "Reconnecting; displayed data may be stale." : todos.error.message}
+          </p>
+        </>
+      );
+  }
+}
+~~~
+
+"skip" is a typed sentinel, not an empty argument object. It produces
+"disabled" and opens no subscription. Replacing it with valid arguments
+starts a new demand lifetime.
+
+## Handle the complete state union
+
+| Status | Data | Meaning |
+| --- | --- | --- |
+| "disabled" | none | The caller passed "skip". |
+| "pending" | none | Demand is committed but the client has not received an authoritative value. |
+| "success" | current data | A reset, update, resume, or checkpoint confirmed the value on the active connection. |
+| "application-error" | none | The Query returned one of its declared application errors. |
+| "rejected" | none | A non-retryable framework failure, such as authorization or validation, rejected the demand. |
+| "unavailable" | optional previous data | A transport or unhandled failure prevents freshness. "stale" is true only when prior successful data is retained. |
+
+Do not hide the "unavailable" state merely because it includes data. The
+client deliberately marks that data stale after the connection leaves ready;
+freshness returns only when that Query's own subscription confirms a cursor or
+delivers authoritative data.
+
+## Sharing and argument identity
+
+Within one provider lifetime, components that use the same Query reference and
+canonically equal argument values share one client subscription and one
+snapshot. Object key order does not split demand:
+
+~~~tsx
+const first = useQuery(api.todos.search, { projectId, completed: false });
+const second = useQuery(api.todos.search, { completed: false, projectId });
+~~~
+
+Both hooks observe one underlying subscription. Different arguments,
+references, or provider clients do not share. Callback-only rerenders do not
+restart live demand, and discarded React renders never start a subscription.
+When the last committed listener leaves, the subscription is released after a
+microtask so same-commit handoffs and React Strict Mode can retain it.
+
+Arguments must be wire-encodable. An unencodable value becomes this hook's
+typed validation rejection; it cannot accidentally share a subscription with
+another component.
+
+## Reactivity, reconnects, and access changes
+
+AckerDB reevaluates a live Query when a relevant committed change affects it.
+The hook receives an authoritative reset or update; it does not patch an
+application-managed cache. After a reconnect, the client asks to resume from
+its cursor. If that cannot safely converge, the server sends a reset with the
+current value instead.
+
+An authentication rotation also creates a new authorization boundary. A
+Query that loses access becomes rejected. If a later server-confirmed
+principal differs, the React binding re-presents the retained demand under
+that principal; it does not retry a denied subscription on a timer.
+
+See [Subscriptions](/docs/subscriptions) for the transport-level demand model
+and [Resume and Reset](/docs/resume-and-reset) for cursor convergence.
+
+## One-off and repeatable reads
+
+Use "client.query" for one request/response read outside React. Use
+"useQueryProcedure" only for a Procedure that is intentionally modeled as
+repeatable query-shaped demand; it shares its execution and optional refresh
+schedule per provider, reference, arguments, and refresh interval. It is not
+a replacement for a reactive Query when the server can express the read as a
+Query.

@@ -1,0 +1,16 @@
+{
+  "title": "Database",
+  "icon": "Database",
+  "description": "Model, read, write, and evolve durable application data.",
+  "pages": [
+    "---Model data---",
+    "tables",
+    "validators-and-indexes",
+    "---Read and write---",
+    "reading-data",
+    "writing-data",
+    "transactions",
+    "---Evolve data---",
+    "schema-migrations"
+  ]
+}

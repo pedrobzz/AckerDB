@@ -1,0 +1,81 @@
+---
+title: "React API"
+description: "Reference the public exports from @ackerdb/client-react."
+---
+
+@ackerdb/client-react is the React binding for one provider-owned AckerDBClient.
+[React Client](/docs/react-client) owns provider placement and lifetime;
+[Client API](/docs/client-api) owns the framework-neutral client underneath it.
+
+## Provider
+
+AckerDBProvider accepts the same client configuration as AckerDBClient.
+[React Client](/docs/react-client) owns provider placement and lifetime.
+
+~~~tsx
+<AckerDBProvider config={{ url, credential: { kind: "anonymous" } }}>
+  <App />
+</AckerDBProvider>
+~~~
+
+Use credentialSource when another identity SDK owns refresh. The exact
+credential contract is documented in [Credentials](/docs/credentials).
+
+## Queries
+
+| Export | Return |
+| --- | --- |
+| useQuery(ref, args or skip) | LiveQueryState of the Query result |
+| usePaginatedQuery(ref, args, options?) | PaginatedQueryState with loadMore and reset |
+| skip | Sentinel that disables Query demand |
+
+useQuery and usePaginatedQuery require generated Query references. Equal
+provider, reference, and canonical arguments share demand where the client
+contract permits it. [Live Queries](/docs/live-queries) owns the complete state
+union, freshness, errors, and subscription lifecycle; [Reading
+Data](/docs/reading-data) owns the server pagination declaration.
+
+## Function calls
+
+| Hook | Return |
+| --- | --- |
+| useMutation(ref) | Stable function returning a ClientResult promise |
+| useProcedure(ref) | Stable function accepting optional abort options |
+| useSseProcedure(ref) | Stable function returning ReadableStream of chunks |
+| useQueryProcedure(ref, args, options?) | Query-shaped repeatable Procedure state |
+
+[Calling Functions](/docs/calling-functions) owns Result handling.
+[Mutations](/docs/mutations), [Procedures](/docs/procedures), and [SSE
+Procedures](/docs/sse-procedures) own the server operation contracts.
+
+## Authentication and connection
+
+| Hook | Return |
+| --- | --- |
+| useConnectionState() | Current AckerDBConnectionState |
+| useAuthentication() | Authentication state plus refresh and signOut |
+
+[Client Lifecycle](/docs/client-lifecycle) owns the state machines.
+[Credentials](/docs/credentials) owns refresh and sign-out behavior.
+
+## Events, Files, Channels, and Realtime
+
+| Hook | Return |
+| --- | --- |
+| useEvent(event, args, onEvent, onError?) | Event Table subscription |
+| useFileUpload() | Typed File upload callable |
+| useChannel(ref, args, options?) | Channel state and send |
+| useRealtime(ref, args, options?) | Realtime state and peer controls |
+
+Read [Event Tables](/docs/event-tables), [Channels](/docs/channels), [Realtime
+Sessions](/docs/realtime-sessions), and [Uploads and
+Downloads](/docs/uploads-and-downloads) for their delivery contracts.
+
+## Optional AI SDK adapter
+
+The separate @ackerdb/client-react/ai entrypoint exports useChatTransport for
+an SSE Procedure that yields AI SDK UI-message chunks. It is not loaded by
+applications that do not use the AI SDK.
+
+[Implementing AI Agents with Streaming](/docs/streaming-ai-agent) shows the
+full composition.

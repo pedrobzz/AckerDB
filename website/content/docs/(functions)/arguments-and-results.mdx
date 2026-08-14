@@ -1,0 +1,176 @@
+---
+title: "Arguments and Results"
+description: "Validate Function inputs, return values, and application errors."
+---
+
+Every AckerDB Function declares an argument object. The declaration becomes the
+runtime validation boundary and the TypeScript contract carried by generated
+server builders and client references.
+
+## Define arguments with validators
+
+Each argument is a named validator. The caller supplies one object; required
+properties must be present, while `optional()` and `nullish()` model their
+respective omissions.
+
+~~~ts title="apps/server/functions/notes.ts"
+import { Err, Status } from "@ackerdb/core";
+import { v } from "@ackerdb/server";
+import { mutation } from "@workspace/ackerdb-generated/server";
+
+export const rename = mutation({
+  access: "authenticated",
+  args: {
+    id: v.bigint(),
+    title: v.string().min(1).max(200),
+    expectedRevision: v.int().optional(),
+  },
+  errors: {
+    "note.not_found": {
+      status: Status.NotFound,
+      body: v.object({ id: v.bigint() }),
+    },
+  },
+  handler: async (ctx, args) => {
+    // args.id is bigint, args.title is a bounded string, and
+    // args.expectedRevision is number | undefined.
+    const note = await ctx.db.notes.get(args.id);
+    if (note === null) {
+      return Err(
+        "note.not_found",
+        { id: args.id },
+        Status.NotFound,
+      );
+    }
+
+    await ctx.db.notes.patch(note.id, {
+      title: args.title,
+      revision: note.revision + 1,
+      updatedAt: ctx.timestamp,
+    });
+
+    return { id: note.id, revision: note.revision + 1 };
+  },
+});
+~~~
+
+Arguments are validated before AckerDB runs the access policy or handler. The
+runtime freezes the validated input, so a policy and handler observe the same
+value instead of a mutable caller-owned object.
+
+Use the same validator declaration wherever the domain rule is actually the
+same. See [Validators and Indexes](/docs/validators-and-indexes) for scalar,
+object, union, and nullability rules.
+
+## Declare successful output when it is public
+
+A handler may return ordinary data, which AckerDB wraps as a successful Result.
+Add `returns` to validate that data at the Function boundary and to make the
+declared public result explicit.
+
+~~~ts
+export const summary = query({
+  access: "authenticated",
+  args: { id: v.bigint() },
+  returns: v.object({
+    id: v.bigint(),
+    title: v.string(),
+    openTasks: v.int().min(0),
+  }).nullable(),
+  handler: async (ctx, args) => {
+    const note = await ctx.db.notes.get(args.id);
+    if (note === null) return null;
+
+    return {
+      id: note.id,
+      title: note.title,
+      openTasks: await ctx.db.tasks
+        .query()
+        .where((task) => task.noteId.eq(note.id))
+        .count(),
+    };
+  },
+});
+~~~
+
+Return validation runs before a successful response is exposed. It protects the
+contract from an accidental helper return, database shape change, or partial
+object—not only from untyped callers.
+
+## Model expected business failures with Err
+
+Use `Err(code, body, status)` for outcomes a caller is expected to handle.
+Declare every such code in `errors` with the exact HTTP status and a validator
+for its body.
+
+~~~ts
+export const archive = mutation({
+  access: "authenticated",
+  args: { id: v.bigint() },
+  errors: {
+    "note.not_found": {
+      status: Status.NotFound,
+      body: v.object({ id: v.bigint() }),
+    },
+    "note.already_archived": {
+      status: Status.Conflict,
+      body: v.object({ archivedAt: v.int() }),
+    },
+  },
+  handler: async (ctx, args) => {
+    const note = await ctx.db.notes.get(args.id);
+
+    if (note === null) {
+      return Err("note.not_found", { id: args.id }, Status.NotFound);
+    }
+    if (note.status === "archived") {
+      return Err(
+        "note.already_archived",
+        { archivedAt: note.updatedAt },
+        Status.Conflict,
+      );
+    }
+
+    await ctx.db.notes.patch(note.id, {
+      status: "archived",
+      updatedAt: ctx.timestamp,
+    });
+    return { archived: true };
+  },
+});
+~~~
+
+The generated client result is a discriminated `Result`. Its successful branch
+has `ok: true` and `data`; its application-error branch has `ok: false`
+and the declared code, body, and status.
+
+~~~ts
+const result = await client.mutation(api.notes.archive, { id });
+
+if (result.ok) {
+  showArchived();
+} else if (result.error.kind === "application") {
+  switch (result.error.code) {
+    case "note.not_found":
+      showMissing(result.error.body.id);
+      break;
+    case "note.already_archived":
+      showAlreadyArchived(result.error.body.archivedAt);
+      break;
+  }
+}
+~~~
+
+## Keep framework failures separate
+
+Invalid arguments, authentication or scope rejection, an unhandled exception,
+cancellation, overload, and transport failure are not application `Err`
+values. Client APIs return them as framework outcomes with their own codes and
+retry semantics.
+
+Do not translate unexpected internal errors into a fake business error just to
+make one branch easy to render. Declare errors that the product owns; log and
+repair failures that indicate a broken dependency or implementation. See
+[Calling Functions](/docs/calling-functions) for client-side Result handling
+and [Function Access](/docs/function-access) for the policy step that follows
+argument validation.

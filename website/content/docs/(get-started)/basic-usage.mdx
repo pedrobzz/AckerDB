@@ -1,0 +1,260 @@
+---
+title: Basic Usage
+description: Add a typed Todos backend and reactive React UI to an existing Bun workspace monorepo.
+---
+
+This guide starts with an existing Bun workspace monorepo and an existing
+React frontend. It adds AckerDB at the application boundary without choosing a
+frontend framework or bundler for you.
+
+## Use one ownership layout
+
+The server application owns backend declarations, the web application owns
+React, and a dedicated workspace package owns generated bindings:
+
+```text
+apps/
+  server/
+    .ackerdb.config.json
+    app.ts
+    functions/
+      todos.ts
+  web/
+    src/
+      ackerdb.tsx
+      todos.tsx
+packages/
+  ackerdb-generated/
+    package.json
+    src/
+```
+
+Give the generated package one stable workspace name and expose the three
+files AckerDB writes:
+
+```json title="packages/ackerdb-generated/package.json"
+{
+  "name": "@workspace/ackerdb-generated",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./server": "./src/server.ts",
+    "./types": "./src/types.ts"
+  },
+  "peerDependencies": {
+    "@ackerdb/core": "%ACKERDB_PACKAGE_VERSION%",
+    "@ackerdb/server": "%ACKERDB_PACKAGE_VERSION%"
+  }
+}
+```
+
+Use that workspace package from both `apps/server` and `apps/web`. It is the
+direct typed contract between them; neither application reaches into the
+other with relative imports.
+
+## Select the generated output
+
+Create the server’s AckerDB configuration with one setting:
+
+```json title="apps/server/.ackerdb.config.json"
+{
+  "generated": "../../packages/ackerdb-generated/src"
+}
+```
+
+The `generated` path is resolved from `apps/server`. It tells `acker codegen`
+to own `api.ts`, `server.ts`, and `types.ts` inside the dedicated package.
+Those files are generated output: import them, but do not edit them.
+
+No other AckerDB configuration is needed here. The application manifest,
+Functions directory, database location, listener, durability, and other
+settings keep their defaults.
+
+## Declare the Todos schema
+
+Create the Bun server application:
+
+```ts title="apps/server/app.ts"
+import {
+  defineApp,
+  defineSchema,
+  defineTable,
+  v,
+} from "@ackerdb/server";
+
+const schema = defineSchema({
+  todos: defineTable({
+    id: v.primaryKey(),
+    text: v.string(),
+    completed: v.boolean(),
+    createdAt: v.int(),
+  }),
+});
+
+export default defineApp({ schema }); // [!code highlight]
+```
+
+`defineApp` is the server application AckerDB runs. Its schema is also the
+source used to generate row types and typed Function builders.
+
+## Add one Query and one Mutation
+
+Function modules import their schema-aware builders from the generated
+package:
+
+```ts title="apps/server/functions/todos.ts"
+import { v } from "@ackerdb/server";
+import {
+  mutation,
+  query,
+} from "@workspace/ackerdb-generated/server";
+
+export const list = query({
+  access: "public",
+  args: {},
+  handler: (ctx) =>
+    ctx.db.todos
+      .query()
+      .orderBy((todo) => todo.createdAt.desc())
+      .collect(),
+});
+
+export const create = mutation({
+  access: "public",
+  args: {
+    text: v.string().min(1).max(160),
+  },
+  handler: (ctx, args) =>
+    ctx.db.todos.insert({
+      text: args.text,
+      completed: false,
+      createdAt: Date.now(),
+    }),
+});
+```
+
+Generate the bindings from the workspace root:
+
+```bash title="Terminal"
+bunx acker codegen apps/server
+```
+
+The generated `api.todos.list` and `api.todos.create` references now carry
+their exact arguments and results to the frontend.
+
+## Connect React
+
+Wrap your existing React application with one provider. Accept the server URL
+as an ordinary prop so the example does not depend on a particular framework
+or environment-variable convention:
+
+```tsx title="apps/web/src/ackerdb.tsx"
+import { AckerDBProvider } from "@ackerdb/client-react";
+import type { ReactNode } from "react";
+
+export function AckerDBConnection({
+  serverUrl,
+  children,
+}: {
+  serverUrl: string;
+  children: ReactNode;
+}) {
+  return (
+    <AckerDBProvider
+      config={{
+        url: serverUrl,
+        credential: { kind: "anonymous" },
+      }}
+    >
+      {children}
+    </AckerDBProvider>
+  );
+}
+```
+
+Pass `http://127.0.0.1:3211` during local development and provide the deployed
+server URL through the configuration mechanism your frontend already uses.
+The explicit anonymous credential is enough for the two public Functions in
+this guide.
+
+## Render the live list
+
+Use the generated Query and Mutation references directly:
+
+```tsx title="apps/web/src/todos.tsx"
+import {
+  useMutation,
+  useQuery,
+} from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+import { useState, type FormEvent } from "react";
+
+export function Todos() {
+  const todos = useQuery(api.todos.list, {});
+  const createTodo = useMutation(api.todos.create);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function addTodo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next = text.trim();
+    if (!next) return;
+
+    setError(null);
+    const result = await createTodo({ text: next });
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+
+    setText("");
+  }
+
+  return (
+    <section>
+      <h1>Todos</h1>
+
+      <form onSubmit={addTodo}>
+        <input
+          aria-label="New todo"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button type="submit" disabled={!text.trim()}>
+          Add Todo
+        </button>
+      </form>
+
+      {error && <p role="alert">{error}</p>}
+      {todos.loading && <p>Loading…</p>}
+      {todos.error && <p role="alert">{todos.error.message}</p>}
+
+      <ul>
+        {(todos.data ?? []).map((todo) => (
+          <li key={todo.id.toString()}>{todo.text}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+Place `Todos` anywhere below `AckerDBConnection`, then run the Bun server:
+
+```bash title="Terminal"
+bunx acker dev apps/server
+```
+
+Open the existing web application and add a Todo. The Mutation writes the row,
+AckerDB identifies that the live `list` Query is affected, and React receives
+the new result. The component does not append to a local cache and does not
+request a refetch.
+
+## Go deeper
+
+The quick path intentionally keeps every setting except generated output at
+its default. Continue with [Live Queries](/docs/live-queries),
+[Access Policies](/docs/access-policies), [Schema Migrations](/docs/schema-migrations),
+and [Production Server](/docs/production-server) when the application needs
+those boundaries.

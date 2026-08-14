@@ -1,0 +1,152 @@
+---
+title: "TypeScript Client"
+description: "Call generated AckerDB references from TypeScript applications."
+---
+
+Use "@ackerdb/client" when the caller is not a React component: a browser
+integration, worker, command-line process, or another TypeScript runtime with
+a WebSocket and fetch implementation. One "AckerDBClient" owns one logical
+client session, its connection, outstanding work, and retained subscriptions.
+
+Install it at the same exact version as the server and generated contract:
+
+~~~bash title="Terminal"
+bun add --exact @ackerdb/client@%ACKERDB_PACKAGE_VERSION%
+~~~
+
+## Create one client for one application lifetime
+
+Pass the server's HTTP(S) base URL and exactly one credential strategy. The
+client converts the URL to its WebSocket endpoint itself and begins connecting
+when it is constructed.
+
+~~~ts title="src/ackerdb.ts"
+import { AckerDBClient } from "@ackerdb/client";
+
+export const ackerdb = new AckerDBClient({
+  url: "https://api.example.com",
+  credential: { kind: "anonymous" },
+});
+~~~
+
+The explicit anonymous credential is valid for public Functions. A bearer
+credential is the other fixed option:
+
+~~~ts
+const ackerdb = new AckerDBClient({
+  url: "https://api.example.com",
+  credential: {
+    kind: "bearer",
+    token: session.accessToken,
+  },
+});
+~~~
+
+For browser or native applications whose identity SDK rotates tokens, prefer
+"credentialSource" instead of replacing the client. The client pulls this
+callback before its first connection, before an accepted credential expires,
+after a principal rejection, and when the application asks for an explicit
+refresh.
+
+~~~ts
+const ackerdb = new AckerDBClient({
+  url: "https://api.example.com",
+  credentialSource: async () => {
+    const token = await session.getAccessToken();
+    return token === null
+      ? { kind: "anonymous" }
+      : { kind: "bearer", token };
+  },
+});
+~~~
+
+Do not provide both "credential" and "credentialSource", and do not provide
+neither. The constructor rejects either ambiguous configuration.
+
+## Call generated references
+
+Import Function references from the generated API package rather than spelling
+addresses as strings. A reference carries its argument, success, and declared
+application-error types through the call.
+
+~~~ts title="src/todos.ts"
+import { ackerdb } from "./ackerdb.ts";
+import { api } from "@workspace/ackerdb-generated/api";
+
+const result = await ackerdb.query(api.todos.list, {
+  listId: 42n,
+});
+
+if (result.ok) {
+  console.log(result.data);
+} else if (result.error.kind === "application") {
+  console.error(result.error.code, result.error.body);
+} else {
+  console.error(result.error.code, result.error.message);
+}
+~~~
+
+"query", "mutation", and "procedure" each resolve to a "ClientResult": an
+object with either "ok: true" and "data", or "ok: false" and an error. Transport
+and framework failures are "AckerDBClientError" values; declared application
+errors retain their application code, body, and HTTP status. See
+[Calling Functions](/docs/calling-functions) for the differences between the
+three call kinds.
+
+The base client also exposes "sse" for pull-driven SSE Procedures,
+"subscribe" for live Queries, "subscribeEvent" for Event Tables, "channel" for
+Channels, and "realtime" for WebRTC sessions. Generated references preserve
+the types for all of these surfaces.
+
+## Keep subscriptions deliberately
+
+A live subscription stays active until its returned cleanup function runs.
+The client remembers the subscription across a reconnect and uses its
+server-issued cursor to converge it.
+
+~~~ts
+const stop = ackerdb.subscribe(
+  api.todos.list,
+  { listId: 42n },
+  (todos) => renderTodos(todos),
+  (error) => showConnectionError(error),
+  {
+    onApplicationError: (error) => showDomainError(error),
+    onCursorConfirmed: () => markTodosFresh(),
+  },
+);
+
+// Later, when this caller no longer needs the data:
+stop();
+~~~
+
+Use [Live Queries](/docs/live-queries) in React rather than manually managing
+this lifetime. Use [Event Tables](/docs/event-tables) for transient event
+streams; their callback receives "row", "gap", and "reset" events rather than
+a query value.
+
+## Observe, then close
+
+Read "currentConnectionState" for the current immutable snapshot, and use
+"subscribeConnectionState" to observe future state transitions:
+
+~~~ts
+const stop = ackerdb.subscribeConnectionState((state) => {
+  if (state.phase === "authentication-blocked") {
+    promptForSignIn(state.error);
+  }
+});
+
+// Shut down the owner of the client:
+stop();
+ackerdb.close();
+~~~
+
+"close()" is final. It releases subscriptions, closes Channel and realtime
+handles, aborts active HTTP work, stops reconnecting, and makes later calls
+fail with a typed unavailable outcome. It is the responsibility of the
+application lifetime that constructed the client; do not create a new client
+per request, render, or button click.
+
+Continue with [Client Lifecycle](/docs/client-lifecycle) for reconnect,
+authentication, and suspension states.

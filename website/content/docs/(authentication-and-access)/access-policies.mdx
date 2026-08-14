@@ -1,0 +1,121 @@
+---
+title: "Access Policies"
+description: "Authorize each operation from its typed context and arguments."
+---
+
+Every AckerDB Function declares one "access" policy. The runtime validates the
+arguments, binds the verified immutable principal to "ctx.auth", then enforces
+the policy before the handler runs. A policy is therefore an admission check,
+not a UI hint or an after-the-fact filter.
+
+## Select a built-in policy
+
+Use the narrowest built-in rule that expresses the operation:
+
+~~~ts
+import { query } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const publicStatus = query({
+  access: "public",
+  args: {},
+  handler: () => ({ ok: true }),
+});
+
+export const mine = query({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    // ctx.auth is never anonymous here.
+    return { principal: ctx.auth.kind };
+  },
+});
+~~~
+
+| Policy | Allowed principal |
+| --- | --- |
+| "public" | Anonymous and authenticated callers. |
+| "authenticated" | Any non-anonymous principal. |
+| "system" | AckerDB's in-process system authority only. It is not a client authentication mode. |
+
+Do not use an API group or URL as an access boundary. The "apiPath" namespace
+only affects naming and routing; "access" decides who can invoke the
+operation.
+
+## Authorize from verified context and arguments
+
+Use a callback when the allowed caller depends on validated arguments or
+application state. It must return exactly "true"; false, an omitted return,
+and a thrown error all fail closed.
+
+~~~ts title="functions/projects.ts"
+import { query } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const details = query({
+  access: async (ctx, args) => {
+    if (ctx.auth.kind !== "user") return false;
+
+    const membership = await ctx.db.projectMembers
+      .query()
+      .where((member) =>
+        member.projectId.eq(args.projectId)
+          .and(member.userId.eq(ctx.auth.identity)),
+      )
+      .first();
+
+    return membership !== null;
+  },
+  args: {
+    projectId: v.bigint(),
+  },
+  handler: (ctx, args) =>
+    ctx.db.projects.get(args.projectId),
+});
+~~~
+
+The callback receives the same typed arguments as the handler and an
+operation-appropriate context. Its "auth" principal is one of:
+
+| Principal | Policy-visible fields |
+| --- | --- |
+| anonymous | "kind: "anonymous"" |
+| user | "identity", issuer, subject, selected claims, expiry, token ID, and resolved scopes |
+| workload | issuer, subject, selected claims, expiry, and token ID; no user Identity |
+| system | "kind: "system"" for in-process framework work |
+
+Use the user Identity as the durable application ownership key. Use issuer,
+subject, or selected claims only when the policy truly depends on credential
+provenance or current identity-provider data.
+
+## Understand failure outcomes
+
+An anonymous caller denied by a built-in or callback policy receives
+"unauthenticated". A non-anonymous caller denied by the same policy receives
+"unauthorized". A callback exception is also treated as unauthorized; do not
+let an infrastructure exception grant access by default.
+
+For a Query subscription, authorization is part of opening and restoring
+demand. A denial prevents that subscription from producing values. If a
+credential changes, the runtime creates a new authorization boundary rather
+than reusing data computed under the former principal.
+
+## Use policy and data filtering together
+
+The policy decides whether this caller may invoke the operation. The handler
+still owns the exact data it returns. A collection-style Query should query
+only rows the caller may see, even after an admission policy establishes that
+the caller belongs to a tenant.
+
+Keep policies direct and bounded. An access check may run when a live
+subscription is opened or re-authorized, so avoid unbounded scans and hidden
+network calls. Use a narrow indexed lookup or a stable ownership relationship
+when membership is part of the policy.
+
+Channels and realtime sessions also have an "access" declaration for their
+authorization boundary. Their optional "authorize" callback can return typed
+application rejection or state used by event handlers; see
+[Channels](/docs/channels) and [Realtime Sessions](/docs/realtime-sessions).
+
+Use [Scopes](/docs/scopes) when a Function needs a reusable capability
+requirement in addition to its access policy.

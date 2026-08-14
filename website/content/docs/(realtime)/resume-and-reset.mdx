@@ -1,0 +1,93 @@
+---
+title: "Resume and Reset"
+description: "Converge subscriptions after disconnects without hiding gaps."
+---
+
+Live Query subscriptions are cursor-based. A cursor says exactly which
+ordered Query transition the client has applied. On a temporary disconnect,
+AckerDB tries to continue from that cursor; when it cannot prove continuity, it
+sends a fresh authoritative value instead.
+
+This is the recovery path:
+
+1. The connection disappears, but the client retains its desired Query
+   subscriptions and their most recently applied cursors.
+2. After reconnecting and authenticating, it asks the server to continue from
+   each cursor.
+3. If the server still has a contiguous retained chain, it confirms the cursor
+   and delivers the missing updates in order.
+4. If that chain has expired, is too large, belongs to an earlier authorization
+   context, or does not join the requested predecessor, the server sends a
+   **reset** with the current Query value.
+
+A reset is an honest synchronization boundary, not an error disguised as a
+successful resume. Replace local data with its value and discard assumptions
+about intermediate transitions.
+
+## Why resets exist
+
+Keeping every historical Query result forever would make each slow or
+disconnected client consume unbounded memory. AckerDB instead bounds retained
+history by age, byte budget, and transition count. Once the proof needed for
+resume is gone, the only correct response is a reset.
+
+The client also requests a reset when it observes a predecessor mismatch. It
+never silently applies an update after a hole in the sequence.
+
+~~~ts
+import { api } from "@workspace/ackerdb-generated/api";
+
+client.subscribe(
+  api.documents.byProject,
+  { projectId },
+  (documents) => {
+    // This is always the next ordered value, or a complete reset value.
+    replaceDocuments(documents);
+  },
+  reportError,
+  {
+    onCursorConfirmed() {
+      setFresh(true);
+    },
+  },
+);
+~~~
+
+An open transport is therefore not a freshness signal. In React, **useQuery**
+reports data as stale while it reconnects and clears that state only after a
+value or cursor confirmation arrives.
+
+## Authorization changes are new boundaries
+
+The data a Query can see is determined by the credential and access policy in
+effect for that subscription. Credential refresh, sign-out, revocation, and
+policy changes must not resume a cursor from a prior principal context. The
+client re-authenticates, and the server either establishes a new subscription
+or returns its typed application rejection. Expect a fresh boundary rather than
+continuity across that change.
+
+## Event tables do not resume
+
+[Event Tables](/docs/event-tables) are intentionally non-durable. Their guide
+owns the row, gap, and reset delivery union; treat a reset as a fresh boundary
+rather than synthesized history.
+
+Pair an event stream with a Query whenever the interface needs recoverable
+current state. For example, query the current document and use typing events
+only as best-effort indicators. See [Event Tables](/docs/event-tables).
+
+## Designing the UI
+
+Use the protocol boundaries in the interface:
+
+- Render the most recent Query value during reconnect, but label or treat it as
+  stale when correctness requires it.
+- Make reset handling idempotent: it is safe to replace local Query state with
+  the delivered value repeatedly.
+- Do not construct a client-side event history to compensate for a gap. Fetch
+  current state through a Query.
+- Keep mutation completion tied to live-Query convergence, rather than assuming
+  that reconnecting has made all views current.
+
+This gives a finite recovery model: either the client proves continuity, or it
+receives a complete new value.

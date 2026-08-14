@@ -1,0 +1,77 @@
+---
+title: "Procedures"
+description: "Run non-reactive application operations through the unified Function model."
+---
+
+A Procedure is the Function for bounded work that does not fit inside one
+ambient database transaction: calling a remote service, coordinating a
+workflow, reading file bytes, or waiting for another application capability.
+It has no database writer until it explicitly opens one.
+
+## Separate external work from the durable commit
+
+Use the generated procedure builder and place remote work outside the short
+transaction callback.
+
+~~~ts title="apps/server/functions/catalog.ts"
+import { v } from "@ackerdb/server";
+import { procedure } from "@workspace/ackerdb-generated/server";
+
+type CatalogItem = { id: string; title: string };
+
+export const importOne = procedure({
+  access: "system",
+  args: { sourceUrl: v.string() },
+  handler: async (ctx, args) => {
+    const response = await fetch(args.sourceUrl, {
+      signal: ctx.abortSignal,
+    });
+    if (!response.ok) {
+      throw new Error("catalog source request failed");
+    }
+
+    const item = await response.json() as CatalogItem;
+
+    return ctx.tx((tx) =>
+      tx.db.catalogItems.upsert(
+        { externalId: item.id },
+        {
+          title: item.title,
+          importedAt: tx.timestamp,
+        },
+      ),
+    );
+  },
+});
+~~~
+
+The remote request can fail or be cancelled without a database lock held. When
+it succeeds, the small transaction makes the durable transition atomic.
+[Transactions](/docs/transactions) owns the exact transaction and nesting
+guarantees, while [Writing Data](/docs/writing-data) owns the table operations.
+
+## Use the Procedure boundary deliberately
+
+A Procedure receives the authenticated principal, cancellation signal,
+structured logger, timestamp, declared Jobs, immutable file operations, and an
+explicit transaction function. It is the right boundary when application code
+needs those capabilities without granting an ambient writer for its whole
+lifetime.
+
+Use a [Mutation](/docs/mutations) when the operation is only a short durable
+state transition. Use an [SSE Procedure](/docs/sse-procedures) when it must
+deliver progressive typed output.
+
+## Model uncertain completion in durable state
+
+Cancellation is best effort: a remote operation can finish after the caller
+disconnects, and the caller may not know whether the durable commit happened.
+AckerDB does not replay the Procedure automatically.
+
+When the product needs a safe retry, store an operation identity or state
+machine inside the explicit transaction and reconcile that durable record on
+the next request. A unique key makes the durable submission idempotent without
+pretending the remote operation was part of the database transaction.
+
+[Calling Functions](/docs/calling-functions) owns client cancellation and
+Result handling.

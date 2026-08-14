@@ -1,0 +1,14 @@
+{
+  "title": "Authentication & Access",
+  "icon": "Fingerprint",
+  "description": "Authenticate principals and enforce application authorization.",
+  "pages": [
+    "---Authentication---",
+    "credentials",
+    "oidc",
+    "custom-credential-verifiers",
+    "---Authorization---",
+    "access-policies",
+    "scopes"
+  ]
+}

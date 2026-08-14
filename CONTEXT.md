@@ -69,6 +69,36 @@ revision it came from.
 the capability commodity exposes, and behind which the commodity can be
 replaced without policy surgery.
 
+## Documentation
+
+**Product documentation** — Version-aligned AckerDB guidance authored for
+application developers in the public website and structured for both human and
+agent readers.
+_Avoid_: Root docs, engineering docs
+
+**Engineering documentation** — Repository-local material for maintainers and
+agents, including architecture decisions, research, handoffs, release procedures,
+and historical records. It is never published as Product documentation.
+_Avoid_: Product documentation, public docs
+
+**Recipe** — A task-focused Product documentation page that explicitly teaches
+how multiple AckerDB features or external systems compose to solve a complex
+application need. It links to their generic documentation and is neither a
+single-feature explanation nor a standalone runnable example.
+_Avoid_: Generic guide, feature reference, example application
+
+**Documentation version** — One view of Product documentation aligned with the
+lockstep AckerDB release, never with an individual package version. Stable
+versions are preserved; Canary names only the latest canary view.
+_Avoid_: Package documentation version, Canary history
+
+**Product introduction** — The opening Product documentation page that sells
+AckerDB to developers through its concrete technical contract: which problems it
+solves, how developers use it, and why its operating model produces advantages.
+It presents honest constraints as engineering consequences, not apologies or
+internal design rationale.
+_Avoid_: Marketing landing page, architecture decision, limitation inventory
+
 ## Function outcomes
 
 **Function result** — The typed outcome of a registered query, mutation, or

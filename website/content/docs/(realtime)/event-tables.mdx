@@ -1,0 +1,125 @@
+---
+title: "Event Tables"
+description: "Publish transient typed events with explicit subscriber access."
+---
+
+An event table publishes typed, append-only signals to current subscribers. It
+is for information that is useful *now* but should not become durable
+application state: typing indicators, presence hints, progress pulses, or
+best-effort notifications.
+
+Unlike a normal table, event rows are never persisted. There is nothing to
+query later, index, update, delete, or replay after a reconnect.
+
+## Define the event and its subscription boundary
+
+An event table declares both its row shape and the arguments that select a
+subscriber's portion of the stream.
+
+~~~ts
+import { defineEventTable, defineSchema, v } from "@ackerdb/server";
+
+export const schema = defineSchema({
+  typingEvents: defineEventTable(
+    {
+      id: v.primaryKey(),
+      documentId: v.bigint(),
+      active: v.boolean(),
+    },
+    {
+      args: { documentId: v.bigint() },
+      access: "authenticated",
+      matches(row, args) {
+        return row.documentId === args.documentId;
+      },
+    },
+  ),
+});
+~~~
+
+The database assigns the primary key. **args** and **matches** decide which
+active subscriptions receive a row; they do not grant access. **access** is
+the authorization policy for opening the subscription. Use an access callback
+when the document itself needs a membership check.
+
+Emit from an application function just as you would insert a normal row:
+
+~~~ts
+import { mutation } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const setTyping = mutation({
+  args: {
+    documentId: v.bigint(),
+    active: v.boolean(),
+  },
+  access: "authenticated",
+  handler: (ctx, args) =>
+    ctx.db.typingEvents.insert({
+      documentId: args.documentId,
+      active: args.active,
+    }),
+});
+~~~
+
+The event becomes visible only after the mutation commits. If the mutation
+fails, it publishes nothing.
+
+## Consume events in React
+
+Code generation exposes an event-table reference under **api.events**. Handle
+the event union exhaustively.
+
+~~~tsx
+import { useEvent } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+function TypingIndicator({ documentId }: { documentId: bigint }) {
+  useEvent(api.events.typingEvents, { documentId }, (event) => {
+    switch (event.kind) {
+      case "row":
+        updateTyping(event.row);
+        return;
+      case "gap":
+        markTypingUnknown();
+        return;
+      case "reset":
+        clearTyping();
+        return;
+    }
+  });
+
+  return null;
+}
+~~~
+
+The low-level equivalent is **client.subscribeEvent**. The callback identity
+can change during React renders without replacing an otherwise equal
+subscription; changing the canonical argument value does replace it.
+
+## The honest delivery contract
+
+| Event | Meaning |
+| --- | --- |
+| **row** | One matching event row was delivered. |
+| **gap** | At least one matching event was lost while the subscription remained live. Do not pretend the stream is complete. |
+| **reset** | A new boundary was opened on initial attach, reconnect, or credential rotation. No earlier rows are implied. |
+
+A gap can be emitted when the server cannot match or deliver an event, or when
+the client detects a discontinuity in incoming event cursors. The cursor that
+carries the gap is consumed: there is no safe row to synthesize at that point.
+
+Event tables intentionally do not use the Query resume history. Pair a
+transient event stream with a [Query](/docs/queries) for durable current state.
+For example, use a Query to render who is currently editing and use typing
+events only to make that rendering feel immediate. On **gap** or **reset**,
+refresh or fall back to that Query rather than attempting to reconstruct
+missed activity.
+
+## When not to use one
+
+Use a normal table and a Query when the user must be able to recover data after
+disconnecting, reopening a tab, or missing a notification. Use a Channel when
+clients need an interactive room with typed messages in both directions. An
+event table is deliberately one-way publication from committed application
+writes to live subscribers.

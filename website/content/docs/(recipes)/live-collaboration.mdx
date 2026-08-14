@@ -1,0 +1,112 @@
+---
+title: "Build Live Collaboration"
+description: "Combine reactive data, Channels, and presence-style session state."
+---
+
+Live collaboration has two different kinds of state. Durable document content
+belongs in ordinary tables and live Queries. Ephemeral cursor, presence, and
+typing signals belong in Channels. Keeping those boundaries separate makes a
+reload, reconnect, or browser close an ordinary event instead of data loss.
+
+## Make the document durable
+
+Store the collaborative artifact in a normal table and read it through a live
+Query:
+
+```ts title="apps/server/functions/documents.ts"
+import { v } from "@ackerdb/server";
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const get = query({
+  access: "authenticated",
+  args: { documentId: v.bigint() },
+  handler: (ctx, args) => ctx.db.documents.get(args.documentId),
+});
+```
+
+Edits are Mutations. A successful write commits the new document state and
+revalidates only the live Queries that observed its rows. The client does not
+need a separate cache-invalidation path.
+
+## Use a Channel for the live room
+
+Declare one Channel for transient signals. It has typed client events, typed
+server events, an optional room value, and one authorization decision when a
+client joins:
+
+```ts title="apps/server/functions/collaboration.ts"
+import { v } from "@ackerdb/server";
+import { channel } from "@workspace/ackerdb-generated/server";
+
+export const room = channel({
+  access: "authenticated",
+  args: { documentId: v.bigint() },
+  room: v.string(),
+  clientEvents: {
+    cursor: v.object({ line: v.int(), column: v.int() }),
+  },
+  serverEvents: {
+    cursor: v.object({ identity: v.identity(), line: v.int(), column: v.int() }),
+  },
+  authorize: async (ctx, args) => {
+    const document = await ctx.db.documents.get(args.documentId);
+    return document !== null && ctx.auth.kind === "user";
+  },
+  on: {
+    cursor: (ctx, cursor) => {
+      if (ctx.auth.kind !== "user") return;
+      return ctx.publish("cursor", { identity: ctx.auth.identity, ...cursor });
+    },
+  },
+});
+```
+
+The room value partitions audiences. A cursor sent to `document:42` never
+reaches subscribers in `document:43`. Channel events are not persisted; a
+client joining late reads the current durable document through the Query and
+then receives future ephemeral events.
+
+## Connect the room from React
+
+Use the generated Channel reference and provide the room plus handlers:
+
+```tsx title="apps/web/src/document-room.tsx"
+import { useChannel } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+const room = useChannel(api.collaboration.room, { documentId }, {
+  room: `document:${documentId}`,
+  on: {
+    cursor: (cursor) => updateRemoteCursor(cursor),
+  },
+});
+
+function sendCursor(line: number, column: number) {
+  room.send("cursor", { line, column });
+}
+```
+
+The hook keeps the server membership stable across ordinary rerenders. It
+leaves the room on unmount, lifecycle interruption, authentication change, or
+server shutdown.
+
+## Design for reconnects
+
+Presence is best-effort: users can disconnect without a final message, and
+browser lifecycle events can interrupt a Channel. Treat a disconnect as the
+end of an ephemeral membership, not as a durable document mutation.
+
+On reconnect, React restores the live Query first and then rejoins the Channel.
+That ordering makes a cursor or typing event a refinement of current document
+state, never the source of truth.
+
+## Add persisted events only when history matters
+
+If the application needs an audit trail, notifications, or a feed that can be
+replayed after reconnect, insert a row into an
+[Event Table](/docs/event-tables) inside the Mutation that changes the
+document. Do not try to turn Channel traffic into a history log after the
+fact.
+
+Continue with [Channels](/docs/channels) for the detailed event and lifecycle
+contract, and [Live Queries](/docs/live-queries) for durable reactive state.

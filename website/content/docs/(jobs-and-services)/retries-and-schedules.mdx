@@ -1,0 +1,155 @@
+---
+title: "Retries and Schedules"
+description: "Control retry, repeat, deduplication, and scheduling behavior."
+---
+
+Job policy is declared beside the handler. The runtime persists attempts,
+scheduled time, deduplication state, and retained results, so retry behavior
+does not depend on a process-local timer.
+
+## Retries
+
+The first run counts as attempt one. With no retry configuration, a thrown
+error immediately fails the job.
+
+~~~ts title="jobs/export.ts"
+export const generate = job({
+  args: { reportId: v.bigint() },
+  retry: {
+    attempts: 5,
+    backoff: "exponential",
+    delayMs: 1_000,
+  },
+  handler: async (ctx, args) => {
+    // Perform the work and throw when it should be retried.
+  },
+});
+~~~
+
+The object form is convenience: exponential starts at delayMs and doubles after
+each failed run; fixed keeps the same delay. When retry decisions depend on the
+attempt or error, provide the policy directly:
+
+~~~ts
+retry: (runNumber, error) => {
+  if (isPermanentExportFailure(error)) return null;
+  return runNumber < 4 ? Math.min(60_000, runNumber ** 2 * 1_000) : null;
+},
+~~~
+
+runNumber is the 1-based run that just failed. Return a non-negative,
+finite millisecond delay before the next run, or null to make the failure
+terminal. isPermanentExportFailure is ordinary application code; the runtime
+persists the selected next time instead of relying on a process-local timer.
+
+## Delay, repeat, and cron
+
+An enqueue call may choose one initial schedule:
+
+~~~ts
+await ctx.jobs.export.generate.enqueue(
+  { reportId },
+  { at: Date.now() + 60_000 },
+);
+~~~
+
+Recurring jobs create the next occurrence only when the current occurrence
+settles. Retries do not shift the normal schedule.
+
+~~~ts title="jobs/maintenance.ts"
+export const sweep = job({
+  args: {},
+  repeat: { everyMs: 60 * 60 * 1_000 },
+  handler: async () => {
+    // Remove expired application records.
+  },
+});
+
+export const nightly = job({
+  args: {},
+  repeat: {
+    cron: "30 2 * * *",
+    tz: "America/Sao_Paulo",
+  },
+  handler: async () => {
+    // Run at 02:30 in the chosen IANA time zone.
+  },
+});
+~~~
+
+Built-in cron expressions have five fields: minute, hour, day of month, month,
+and day of week. Missed interval or cron occurrences coalesce to one future run
+rather than producing a catch-up storm. Time-zone changes such as daylight-saving
+transitions are calculated from the declared IANA time zone.
+
+## Custom recurrence
+
+everyMs and cron are convenience forms. repeat can instead be a function that
+calculates the next timestamp, which is the natural place to use an RRule or
+another calendar library:
+
+~~~ts title="jobs/billing.ts"
+function nextInvoiceRun(lastScheduledAt: number, now: number): number | null {
+  const after = Math.max(lastScheduledAt, now);
+
+  // Application code: this helper can wrap an RRule/calendar library.
+  return nextInvoiceOccurrenceFromRule(after);
+}
+
+export const invoice = job({
+  args: {},
+  repeat: nextInvoiceRun,
+  handler: async () => {
+    // Create this period's invoices.
+  },
+});
+~~~
+
+The function receives the occurrence that just settled and the current time.
+Return the next finite timestamp, or null to end the recurrence. The
+Math.max call preserves the built-in coalescing behavior; returning an earlier
+timestamp deliberately creates an immediately due occurrence instead. AckerDB
+persists each emitted occurrence, while your application owns the calendar rule.
+
+## Deduplication and concurrency
+
+dedupe controls whether equivalent canonical arguments can create another job.
+
+~~~ts
+export const syncAccount = job({
+  args: { accountId: v.bigint() },
+  key: (args) => args.accountId,
+  concurrency: 2,
+  dedupe: {
+    completed: 10 * 60 * 1_000,
+    failed: 60 * 1_000,
+  },
+  handler: async (ctx, args) => {
+    // At most two runs for this account; other accounts use their own limit.
+  },
+});
+~~~
+
+dedupe: "inflight" prevents duplicate live jobs but allows another enqueue
+after either terminal outcome. A completed or failed window can instead keep
+returning a deduplicated handle whose recorded outcome remains available for a
+bounded time or forever.
+
+Concurrency defaults to one. Without key it applies to the whole job; with key
+it applies independently to each job-and-key pair. Pick a key that reflects
+the resource that cannot safely be processed in parallel.
+
+## Retention
+
+Terminal jobs, including their runs, are retained for seven days by default.
+Set retention to a non-negative millisecond duration or forever when
+operational inspection needs a different horizon. Retention is not a retry
+window: a job's retry and dedupe policies remain separate.
+
+
+## Related boundaries
+
+[Background Jobs](/docs/background-jobs) owns Job declaration and enqueueing.
+[Durable Workflows](/docs/durable-workflows) owns persisted step composition.
+Use [Procedures](/docs/procedures) for request-bound external work before a Job
+exists.

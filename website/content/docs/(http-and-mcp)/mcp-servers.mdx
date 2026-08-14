@@ -1,0 +1,101 @@
+---
+title: "MCP Servers"
+description: "Publish AckerDB operations through a Model Context Protocol server."
+---
+
+An MCP declaration publishes selected AckerDB Functions as a Model Context
+Protocol server. The endpoint is a curation boundary: it owns the server name,
+metadata, instructions, route, tool names, tool access, and visibility. The
+underlying Functions remain ordinary typed application code.
+
+## Declare an endpoint
+
+Export the endpoint from a Function module alongside the Functions it exposes.
+Use the generated mcp builder so its tools are checked against the app schema
+and scope vocabulary.
+
+~~~ts title="functions/catalog.ts"
+import { v } from "@ackerdb/server";
+import { mcp, query } from "@workspace/ackerdb-generated/server";
+
+export const find = query({
+  access: "public",
+  title: "Find catalog items",
+  description: "Find catalog items by an exact name.",
+  args: { name: v.string() },
+  returns: v.array(v.object({
+    sku: v.bigint(),
+    name: v.string(),
+  })),
+  handler: async (ctx, args) =>
+    (await ctx.db.catalog
+      .query()
+      .where((item) => item.name.eq(args.name))
+      .collect())
+      .map((item) => ({ sku: item.sku, name: item.name })),
+});
+
+export const catalogMcp = mcp({
+  name: "catalog",
+  path: "/mcp/catalog",
+  metadata: {
+    title: "Catalog tools",
+    description: "Search the product catalog.",
+    websiteUrl: "https://example.com",
+  },
+  instructions: "Use find_catalog_item before making product claims.",
+  tools: {
+    find_catalog_item: {
+      fn: find,
+      access: "public",
+      annotations: { readOnlyHint: true },
+    },
+  },
+});
+~~~
+
+An endpoint without path uses /mcp. Give each additional endpoint a unique
+absolute static path. The endpoint export is server-only; it does not become a
+client Function reference.
+
+## Transport and identity
+
+The endpoint speaks stateless Streamable HTTP MCP. Native MCP clients POST
+JSON-RPC messages to the route. Authorization uses the application's normal
+identity credentials; there is no separate MCP token system.
+
+Tool discovery is filtered by the caller's authorized tools. Each tool call
+still runs its Function's validators and Function access policy. Application
+errors are returned as an MCP tool error result rather than becoming an
+unstructured transport crash.
+
+## Private endpoints and local tools
+
+Set private: true to create an endpoint with no HTTP path. It is available
+only to same-process AI integration through its aiTools capability, never to a
+remote MCP client. [MCP Tools](/docs/mcp-tools) owns individual-tool visibility,
+access, and output design.
+
+## Publishing beyond loopback
+
+MCP endpoints are safest on loopback by default. A non-loopback listener with
+an MCP endpoint must explicitly declare that a trusted HTTPS proxy protects it
+and must allow the exact public Host authority:
+
+~~~ts
+serve({
+  runtime,
+  port: 3000,
+  hostname: "0.0.0.0",
+  mcpHttp: {
+    transport: "trusted-https-proxy",
+    allowedHosts: ["api.example.com"],
+    allowedOrigins: ["https://console.example.com"],
+  },
+});
+~~~
+
+allowedOrigins is for browser MCP clients; native clients may omit Origin.
+The proxy must terminate HTTPS and forward an allowed Host value. The CLI
+configuration does not expose mcpHttp, so use an embedding host when publishing
+MCP on a non-loopback listener.

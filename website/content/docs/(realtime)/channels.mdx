@@ -1,0 +1,146 @@
+---
+title: "Channels"
+description: "Exchange typed client and server events in a shared room."
+---
+
+Channels are typed, stateful application rooms over the base AckerDB client
+connection. Use one when clients need to send short interactive events to the
+server and receive targeted or room-wide events back: collaborative cursors,
+chat, a lobby, or a live control surface.
+
+Define the address arguments, optional room key, both event maps, and access
+policy in one declaration.
+
+~~~ts
+import { channel } from "@workspace/ackerdb-generated/server";
+import { v } from "@ackerdb/server";
+
+export const room = channel({
+  args: { threadId: v.bigint() },
+  room: v.string(),
+  clientEvents: {
+    direct: v.string(),
+    broadcast: v.string(),
+  },
+  serverEvents: {
+    message: v.string(),
+  },
+  access: "authenticated",
+  on: {
+    direct: (ctx, text) => ctx.send("message", text),
+    broadcast: (ctx, text) => ctx.publish("message", text),
+  },
+});
+~~~
+
+Each **on** handler is serialized for its individual membership, so one client
+cannot make its own channel handler race itself. This is not a global ordering
+guarantee across every member or room; put shared durable ordering in a
+Mutation and Query when the application needs it.
+
+## Direct messages, audiences, and rooms
+
+**ctx.send** sends a server event only to the member that invoked the handler
+and resolves to whether it was accepted. **ctx.publish** sends to the current
+audience and resolves to the number of accepted recipients. An audience is the
+channel address, canonical arguments, and room value, so two rooms with the
+same arguments do not receive each other's events.
+
+For a server-side publication to a different declared channel, use
+**ctx.channels.publish** with its generated reference, arguments, and (for a
+roomed channel) room.
+
+~~~ts
+import { api } from "@workspace/ackerdb-generated/api";
+
+await ctx.channels.publish(api.chat.room, { threadId: ctx.args.threadId }, {
+  room: "support",
+  event: "message",
+  payload: "An agent joined the thread.",
+});
+~~~
+
+Handlers also receive **ctx.args**, **ctx.room** for roomed channels, and
+authorization state from **authorize**. Use **onConnect** and
+**onDisconnect** for lifecycle work; the disconnect reason is one of
+**leave**, **disconnect**, **authentication-change**, or **server-shutdown**.
+
+## Authorize the join
+
+The access policy runs before the join is accepted. Use **authorize** for a
+typed, application-level rejection or to compute immutable membership state
+for every handler.
+
+~~~ts
+import { Err, Ok, Status } from "@ackerdb/core";
+
+authorize: (ctx) =>
+  ctx.room === "closed"
+    ? Err("room.closed", { room: ctx.room }, Status.Forbidden)
+    : Ok({ joinedAt: Date.now() }),
+~~~
+
+A rejected join does not retain membership. Keep access checks and authorization
+state focused on the join contract; do not use a Channel as a substitute for
+the durable authorization of a write.
+
+## Use a channel from React
+
+The generated reference carries the exact send and receive payload types.
+
+~~~tsx
+import { useChannel } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+function ThreadRoom({ threadId }: { threadId: bigint }) {
+  const { state, send } = useChannel(
+    api.chat.room,
+    { threadId },
+    {
+      room: "support",
+      on: {
+        message(text) {
+          appendMessage(text);
+        },
+      },
+    },
+  );
+
+  const post = () => {
+    if (!send("broadcast", "Hello, everyone.")) {
+      showConnectionNotice();
+    }
+  };
+
+  return <button disabled={state.phase !== "connected"} onClick={post}>Post</button>;
+}
+~~~
+
+**send** returns false until the channel is connected, rather than queueing an
+unbounded local event stream. The channel state distinguishes connecting,
+connected, reconnecting, application rejection, and client failure. Surface a
+rejection to the user; it is different from a retryable transport break.
+
+Equal client, reference, canonical arguments, and room values share one
+underlying membership. Each hook still owns its own current callback bundle.
+Set **handlerKey** only when multiple observers intentionally want to coalesce
+their entire handler bundle; it does not change server membership.
+
+Unmounting the last observer closes the local handle and leaves the room.
+Reconnects rejoin it, and a credential change causes the server to authorize a
+new membership boundary.
+
+## Keep channel payloads ephemeral
+
+Channel traffic has finite server membership and delivery limits. Keep events
+small and discardable. For state that must survive missed messages, persist it
+through a Mutation and observe it with a Query; send a channel event only to
+improve immediacy.
+
+
+## Related boundaries
+
+[Access Policies](/docs/access-policies) owns the admission contract a Channel
+uses. [Event Tables](/docs/event-tables) are the transient server-published
+alternative, and [Realtime Sessions](/docs/realtime-sessions) are for
+peer-to-peer media and streams rather than room events.

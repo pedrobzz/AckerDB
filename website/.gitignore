@@ -1,0 +1,8 @@
+.output/
+.playwright-cli/
+.source/
+.tanstack/
+node_modules/
+output/
+playwright-report/
+test-results/

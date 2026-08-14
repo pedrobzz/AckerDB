@@ -1,0 +1,130 @@
+---
+title: "OIDC"
+description: "Verify bearer identities through an OpenID Connect authority."
+---
+
+Configure OIDC in the server application's ".ackerdb.config.json". The CLI
+builds AckerDB's credential verifier at startup, so bearer tokens are
+verified consistently for WebSocket sessions, HTTP calls, SSE, Channels, and
+realtime setup.
+
+## Configure an exact provider
+
+An OIDC configuration names one or more exact issuer entries:
+
+~~~json title=".ackerdb.config.json"
+{
+  "oidc": {
+    "providers": [
+      {
+        "issuer": "https://identity.example.com/",
+        "jwksUri": "https://identity.example.com/.well-known/jwks.json",
+        "audiences": ["https://api.example.com"],
+        "algorithms": ["RS256"],
+        "tokenType": "JWT",
+        "principalKind": "user",
+        "claimNames": ["email", "org_id"],
+        "requiredClaims": ["email"],
+        "maxTokenAgeSeconds": 3600
+      }
+    ]
+  }
+}
+~~~
+
+"issuer" is matched byte-for-byte against the token's "iss" claim. Use the
+exact value the identity provider mints, including its trailing slash when it
+has one. The verifier selects a configured issuer before verification; it
+does not discover arbitrary issuers from untrusted tokens.
+
+Each provider entry requires:
+
+| Field | Meaning |
+| --- | --- |
+| "issuer" | Exact token issuer. |
+| "jwksUri" | HTTPS JWKS endpoint, or loopback HTTP for local development. Private-network HTTP requires explicit opt-in. |
+| "audiences" | A non-empty accepted audience list, or the explicit "unchecked" opt-out. |
+| "algorithms" | Allowed JWT signature algorithms: RS256, PS256, ES256, or EdDSA. |
+| "tokenType" | Required JOSE "typ", or the explicit "unchecked" opt-out. |
+| "principalKind" | "user" for a durable AckerDB Identity or "workload" for a non-user principal. |
+| "claimNames" | A non-empty projection of verified claims, or the explicit "none" projection. |
+
+"requiredClaims" and "maxTokenAgeSeconds" are optional additional checks. The
+verifier also applies normal signed-JWT time validation and rejects oversized
+tokens or key sets instead of accepting an unbounded response.
+
+## Use a provider preset when it fits
+
+The same "providers" array accepts a preset. A preset fills only known
+provider defaults; it does not weaken verification.
+
+~~~json
+{
+  "oidc": {
+    "providers": [
+      {
+        "preset": "clerk",
+        "issuer": "https://example.clerk.accounts.dev"
+      }
+    ]
+  }
+}
+~~~
+
+Supported preset names are "clerk", "auth0", "workos", and "betterauth".
+Some need additional provider-specific fields: Auth0 requires an audience,
+and WorkOS requires "clientId". Set "claimNames", "principalKind",
+"tokenType", or "audiences" explicitly when the preset defaults are not the
+contract your application intends.
+
+## Read the verified principal on the server
+
+The configured "principalKind" determines the principal visible to Functions:
+
+~~~ts
+import { query } from "@workspace/ackerdb-generated/server";
+
+export const currentAccount = query({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    if (ctx.auth.kind === "user") {
+      return {
+        identity: ctx.auth.identity,
+        account: {
+          issuer: ctx.auth.issuer,
+          subject: ctx.auth.subject,
+        },
+        organization: ctx.auth.claims.org_id,
+      };
+    }
+
+    if (ctx.auth.kind === "workload") {
+      return { workload: ctx.auth.subject };
+    }
+
+    throw new Error("unreachable");
+  },
+});
+~~~
+
+A user principal maps the verified issuer and subject to a durable AckerDB
+Identity. A workload principal is authenticated but has no user Identity and
+does not carry a user scope grant. Only the claims named in "claimNames" are
+copied into "ctx.auth.claims"; choose that projection intentionally.
+
+## Failure behavior
+
+Invalid signature, issuer, audience, token type, time claims, required claims,
+or provider selection produce an unauthenticated outcome. A JWKS fetch,
+timeout, malformed provider response, or other temporary verifier failure
+produces an auth-unavailable outcome, which callers can handle distinctly.
+
+The client never receives the raw token or all verified claims in its
+authentication descriptor. It receives only a secret-free principal summary,
+then [Access Policies](/docs/access-policies) and [Scopes](/docs/scopes)
+decide what that principal may do.
+
+OIDC and "credentialVerifier" are mutually exclusive configuration sources.
+Use [Custom Credential Verifiers](/docs/custom-credential-verifiers) only
+when your credential format or verification authority is application-owned.

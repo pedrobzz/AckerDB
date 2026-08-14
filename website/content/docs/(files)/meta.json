@@ -1,0 +1,14 @@
+{
+  "title": "Files",
+  "icon": "FileStack",
+  "description": "Store, authorize, deliver, and migrate application files.",
+  "pages": [
+    "---Application use---",
+    "uploads-and-downloads",
+    "file-grants",
+    "---Storage---",
+    "local-file-storage",
+    "s3-file-storage",
+    "migrating-file-storage"
+  ]
+}

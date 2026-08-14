@@ -1,0 +1,88 @@
+---
+title: "Backups and Restore"
+description: "Create verified backups and restore into a fresh target."
+---
+
+Backups are an application operation, not a file-copy convention. AckerDB
+creates a consistent SQLite snapshot, includes File bytes by default, restores
+the candidate in a separate process, verifies it, and only then publishes the
+backup manifest.
+
+## Create a verified backup
+
+Stop application writes or choose an operational window appropriate for a
+point-in-time snapshot, then run:
+
+```bash title="Terminal"
+bunx acker backup /var/backups/my-app/2026-08-08.db apps/server
+```
+
+The command refuses to overwrite an existing artifact, manifest, or File
+backup. It reports JSON containing the artifact path, the manifest path, the
+schema fingerprint, commit version, durability profile, and byte counts.
+
+The default backup includes both the database and configured File bytes. For a
+database-only operational snapshot, record that decision explicitly:
+
+```bash title="Terminal"
+bunx acker backup /var/backups/my-app/2026-08-08.db apps/server --metadata-only
+```
+
+`--metadata-only` does not contain File bytes. It is only restorable when the
+same File objects are available through the configured File store.
+
+## Verify before retaining
+
+`acker backup` does not treat a successfully written file as success. It
+restores the candidate into a temporary database, verifies the SQLite and File
+content, exercises the next commit, then writes the manifest. If verification
+fails, it removes the candidate artifacts rather than leaving a backup that
+looks usable but is not.
+
+Keep the database artifact, its manifest, and included File backup together.
+Copy or upload the completed set to independent durable storage after the
+command succeeds.
+
+## Restore into a fresh target
+
+Restoration verifies the artifact before it changes the configured database:
+
+```bash title="Terminal"
+bunx acker restore /var/backups/my-app/2026-08-08.db apps/server
+```
+
+Point `apps/server` at an empty database location before running restore. The
+command is deliberately not an in-place overwrite tool: it requires a fresh
+target, verifies the backup in a separate process, restores File bytes when the
+artifact includes them, and binds the restored database to the configured File
+store.
+
+For a recovery rehearsal, copy the application configuration and restore into
+a separate database directory first. Start it with `acker start` only after the
+restore reports success and the application checks pass.
+
+## Inspect a stopped database
+
+Use `status` to inspect the on-disk database without starting the HTTP server:
+
+```bash title="Terminal"
+bunx acker status apps/server
+```
+
+It validates the configured schema against the database, performs a full
+integrity check, and returns JSON with the schema fingerprint and storage
+status. It is an inspection tool, not a backup substitute.
+
+## Practice recovery
+
+A backup is valuable only if it restores under the conditions you expect.
+Schedule a recurring rehearsal that:
+
+1. Restores the newest artifact into an isolated fresh target.
+2. Starts the application against that target.
+3. Runs a read and a write through the real client or HTTP surface.
+4. Verifies critical File objects when File bytes are included.
+5. Records the elapsed recovery time and any manual operator steps.
+
+Keep [Durability Profiles](/docs/durability-profiles), storage retention, and
+recovery drills aligned with the data-loss contract you actually promise.

@@ -1,0 +1,71 @@
+---
+title: "React Client"
+description: "Provide one AckerDB client lifetime to a React tree."
+---
+
+@ackerdb/client-react creates one AckerDBClient for a committed provider
+lifetime and exposes typed hooks beneath it. It does not construct a client
+during server rendering, so put the provider at the framework's client boundary.
+
+## Provide one application connection
+
+Install the React package at AckerDB's exact shared version, then wrap the
+portion of the tree that uses AckerDB:
+
+~~~tsx title="src/ackerdb-provider.tsx"
+import { AckerDBProvider } from "@ackerdb/client-react";
+import type { ReactNode } from "react";
+
+export function AppAckerDB({ children }: { children: ReactNode }) {
+  return (
+    <AckerDBProvider
+      config={{
+        url: "https://api.example.com",
+        credential: { kind: "anonymous" },
+      }}
+    >
+      {children}
+    </AckerDBProvider>
+  );
+}
+~~~
+
+Every AckerDB hook needs this ancestor. The provider creates its client after
+React commits and closes it when that effective configuration lifetime ends.
+
+## Make identity part of the provider lifetime
+
+A fixed anonymous or bearer credential belongs in the provider configuration.
+When a token SDK owns refresh or account switching, pass a credential source
+instead of reconstructing the provider whenever that SDK changes state.
+
+[Credentials](/docs/credentials) owns credential kinds, refresh, sign-out, and
+the server authentication boundary. [Client Lifecycle](/docs/client-lifecycle)
+owns the connection and authentication snapshots a UI should render.
+
+## Use generated references below the provider
+
+Components pass generated references to the hooks:
+
+~~~tsx
+import { useMutation, useQuery } from "@ackerdb/client-react";
+import { api } from "@workspace/ackerdb-generated/api";
+
+const todos = useQuery(api.todos.list, { listId });
+const createTodo = useMutation(api.todos.create);
+~~~
+
+[Live Queries](/docs/live-queries) owns reactive Query state, argument sharing,
+and reconnect behavior. [Calling Functions](/docs/calling-functions) owns
+request/response invocation and Result handling. [React API](/docs/react-api)
+is the complete hook reference.
+
+## Keep ownership at the tree boundary
+
+Do not construct an AckerDBClient during component render and do not wrap each
+route in an unrelated provider unless those routes intentionally need isolated
+connection lifetimes. One provider lets query demand, reconnects,
+authentication, and realtime handles be shared at the same application scope.
+
+For Event Tables, Channels, Files, and Realtime, use the focused guides before
+reaching for their React hooks.

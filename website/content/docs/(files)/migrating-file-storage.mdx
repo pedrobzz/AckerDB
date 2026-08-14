@@ -1,0 +1,83 @@
+---
+title: "Migrating File Storage"
+description: "Verify, migrate, and switch the active file backend."
+---
+
+<Warning title="Experimental">
+  Files are experimental. Their API and capabilities will probably change before
+  the feature is stable. Use them only where you can update alongside AckerDB.
+</Warning>
+
+The migration command copies an active file store to a new backend, verifies
+every copied object, then atomically switches the application configuration.
+It is the supported path for moving between filesystem and S3 storage or to a
+new store of the same kind.
+
+## Prepare a target descriptor
+
+Create a small JSON file describing only the target backend. The migration
+keeps the current deployment's publicUrl and maxBytes, so those fields do not
+need to be duplicated.
+
+~~~json title="s3-files.json"
+{
+  "backend": "s3",
+  "region": "us-east-1",
+  "bucket": "example-ackerdb-files",
+  "checksum": "sha256",
+  "encryption": { "type": "AES256" }
+}
+~~~
+
+For a filesystem target:
+
+~~~json title="filesystem-files.json"
+{
+  "backend": "filesystem",
+  "path": "./var/files"
+}
+~~~
+
+Use a new bucket or a genuinely different filesystem root. The command rejects
+the same physical store and overlapping filesystem paths.
+
+## Run the migration
+
+Stop the application first. The command opens the database in a
+maintenance-owned mode, so it must not compete with a running server.
+
+~~~sh
+acker files migrate ./s3-files.json
+~~~
+
+Pass the application directory as the second argument when running from
+elsewhere:
+
+~~~sh
+acker files migrate ./s3-files.json ./apps/api
+~~~
+
+The target descriptor must be a regular JSON file no larger than 64 KiB.
+Credentials remain process configuration; they do not belong in the descriptor.
+
+## What the command guarantees
+
+Migration first probes both stores. It then copies immutable live file objects
+under their existing internal identities, validates size and SHA-256 integrity,
+and performs a final manifest verification before changing the active files
+configuration. Progress goes to stderr; structured output on stdout can be
+captured by automation.
+
+A resume journal in the database directory lets a stopped migration continue
+without redoing verified work. The source bytes are not deleted during the
+transfer, and database file metadata is not rewritten merely to copy objects.
+Only after verification does the command atomically activate the target store.
+
+Keep the source store available until the command succeeds and the application
+has restarted cleanly. If it fails, inspect the reported mismatch or target
+capability problem, correct the infrastructure, and rerun the same command.
+Do not manually edit the file-store binding or point the database at a partial
+copy.
+
+See [Local File Storage](/docs/local-file-storage) and
+[S3 File Storage](/docs/s3-file-storage) for target configuration.

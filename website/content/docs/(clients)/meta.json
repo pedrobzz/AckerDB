@@ -1,0 +1,15 @@
+{
+  "title": "Clients",
+  "icon": "Cable",
+  "description": "Connect typed application clients and manage their lifecycle.",
+  "pages": [
+    "---Connect---",
+    "typescript-client",
+    "react-client",
+    "---React data---",
+    "live-queries",
+    "calling-functions",
+    "---Lifecycle---",
+    "client-lifecycle"
+  ]
+}

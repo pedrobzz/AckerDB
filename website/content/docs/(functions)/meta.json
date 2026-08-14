@@ -1,0 +1,15 @@
+{
+  "title": "Functions",
+  "icon": "Braces",
+  "description": "Declare the typed operations that form an AckerDB application API.",
+  "pages": [
+    "---Declarations---",
+    "queries",
+    "mutations",
+    "procedures",
+    "sse-procedures",
+    "---Contracts---",
+    "arguments-and-results",
+    "function-access"
+  ]
+}

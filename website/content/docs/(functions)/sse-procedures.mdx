@@ -1,0 +1,78 @@
+---
+title: "SSE Procedures"
+description: "Stream typed chunks from a Function over server-sent events."
+---
+
+An SSE Procedure is a Procedure whose output is a sequence of validated chunks.
+Use it for progressive, one-way work such as import progress or generated
+text—not for a durable live database view.
+
+## Declare the streamed chunk
+
+An SSE Procedure declares its input, admission rules, yielded chunk shape, and
+HTTP exposure.
+
+~~~ts title="apps/server/functions/imports.ts"
+import { v } from "@ackerdb/server";
+import { sseProcedure } from "@workspace/ackerdb-generated/server";
+
+export const progress = sseProcedure({
+  access: "authenticated",
+  http: true,
+  args: {
+    importId: v.bigint(),
+  },
+  yields: v.object({
+    phase: v.enum("ImportPhase", ["started", "reading", "complete"]),
+    percent: v.int().min(0).max(100),
+  }),
+  handler: async function* (ctx, args) {
+    yield { phase: "started", percent: 0 };
+
+    for await (const update of readImport(args.importId, ctx.abortSignal)) {
+      if (ctx.abortSignal.aborted) return;
+
+      yield {
+        phase: update.complete ? "complete" : "reading",
+        percent: update.percent,
+      };
+    }
+  },
+});
+~~~
+
+AckerDB validates every yielded chunk before delivery. A malformed chunk ends
+the stream as a terminal error; it is never delivered as unchecked data.
+[Arguments and Results](/docs/arguments-and-results) owns validator design, and
+[Function HTTP API](/docs/function-http-api) owns HTTP exposure and its route
+contract.
+
+## Consume with pull-based backpressure
+
+The TypeScript client exposes an async generator. The stream begins at the
+first pull, and each subsequent pull acknowledges the previous chunk before the
+server advances the source.
+
+~~~ts
+const stream = client.sse(api.imports.progress, { importId });
+
+for await (const update of stream) {
+  renderProgress(update.phase, update.percent);
+}
+~~~
+
+This keeps a slow receiver from creating an unbounded application buffer.
+Stopping iteration or aborting the call cancels the source through the
+Procedure's abort signal. [React API](/docs/react-api) owns the React hook
+surface.
+
+## Treat a disconnect as a stream boundary
+
+SSE output is non-resumable. On cancellation, disconnect, or terminal error the
+source stops and the caller receives a typed stream outcome; AckerDB does not
+replay prior chunks or resume in the middle.
+
+Use a [Query](/docs/queries) for an inspectable table-derived view, a
+[Mutation](/docs/mutations) for a compact state transition, or a
+[Procedure](/docs/procedures) with durable operation state when a later caller
+must reconcile progress.

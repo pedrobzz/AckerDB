@@ -5,7 +5,36 @@ import {
   nativeTestInputsChanged,
   performanceInputsChanged,
   verifyPackagesInputsChanged,
+  websiteInputsChanged,
 } from "./changes.ts";
+
+describe("website CI selection", () => {
+  test("selects the independent website for every file it owns", () => {
+    expect(websiteInputsChanged([
+      "website/src/router.tsx",
+      "website/content/docs/get-started.mdx",
+      "website/bun.lock",
+    ])).toBe(true);
+    expect(websiteInputsChanged(["packages/core/package.json"])).toBe(true);
+    expect(websiteInputsChanged([".bun-version"])).toBe(true);
+    expect(websiteInputsChanged([
+      "docs/releases.md",
+      "packages/core/src/protocol.ts",
+    ])).toBe(false);
+  });
+
+  test("does not route website code through repository package checks", () => {
+    expect(codeInputsChanged([
+      "website/src/router.tsx",
+      "website/vite.config.ts",
+    ])).toBe(false);
+  });
+
+  test("keeps the private website manifest outside package publication verification", () => {
+    expect(verifyPackagesInputsChanged(["website/package.json"])).toBe(false);
+    expect(verifyPackagesInputsChanged(["packages/server/package.json"])).toBe(true);
+  });
+});
 
 describe("native CI selection", () => {
   test("does not compile Rust for routine release or realtime TypeScript work", () => {

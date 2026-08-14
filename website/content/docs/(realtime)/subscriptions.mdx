@@ -1,0 +1,89 @@
+---
+title: "Subscriptions"
+description: "Understand live Query demand and bounded delivery."
+---
+
+A Query becomes live when a client subscribes to it. AckerDB keeps that demand
+alive across ordinary reconnects; it does not turn the Query into a polling
+loop or an unbounded client cache. Use **useQuery** for application UI. The
+lower-level subscription API is useful when React is not in the picture or
+when a process owns its own lifecycle.
+
+~~~ts
+import { api } from "@workspace/ackerdb-generated/api";
+
+const stop = client.subscribe(
+  api.projects.forWorkspace,
+  { workspaceId },
+  (projects) => render(projects),
+  (error) => reportSubscriptionFailure(error),
+  {
+    onApplicationError(error) {
+      showPolicyMessage(error);
+    },
+    onCursorConfirmed() {
+      markWorkspaceFresh();
+    },
+  },
+);
+
+// Release demand when this consumer no longer needs it.
+stop();
+~~~
+
+The reference and argument values are typed from generated API code. The
+callback receives a complete Query result, not a manually assembled patch.
+
+## What the server maintains
+
+For each live Query, the server evaluates the declared Query and records the
+data dependencies it read. A write only invalidates subscriptions whose
+dependencies were affected. Equivalent demand can share work, but access policy
+is part of the identity: a result that is visible to one principal is never
+reused for a principal with a different policy-visible context.
+
+The server retains only a bounded transition history. That history lets a
+temporary disconnect catch up when it is still contiguous and available; it is
+not an event log and is deliberately allowed to expire. See
+[Resume and Reset](/docs/resume-and-reset) for the recovery contract.
+
+## Delivery outcomes
+
+Subscription traffic has an ordered cursor. The protocol can send:
+
+| Outcome | Meaning for a consumer |
+| --- | --- |
+| Initial or reset value | Treat the delivered value as the current authoritative Query result. |
+| Update | Replace the current result with the next ordered value. |
+| Checkpoint or resume confirmation | The client has proved it is still at a known cursor; use **onCursorConfirmed** if freshness needs an explicit signal. |
+| Application error | The Query ran, but its declared application contract rejected this principal or input. Handle it in **onApplicationError**. |
+| Revocation or client error | The subscription cannot continue. The ordinary error callback receives an **AckerDBClientError**. |
+
+Do not infer freshness merely from an open socket. The client only reports a
+fresh result after it receives a value or confirms the retained cursor. React
+models this distinction through the **stale** flag from **useQuery**.
+
+## Demand, ownership, and limits
+
+The subscription exists while at least one local consumer owns it. In React,
+the hook starts after a committed render and releases automatically on unmount.
+Outside React, keep and call the stop function yourself. Recreating callbacks
+does not require replacing otherwise equivalent demand.
+
+Both sides enforce finite pending and delivery limits. A slow or disconnected
+consumer gets a typed failure, a retry, or a reset boundary rather than forcing
+unbounded queues on the server. A retryable transport failure keeps the desired
+subscription registered; a permanent rejection ends that subscription until
+the application asks again.
+
+## Mutations converge with live Queries
+
+A successful Mutation can carry Query convergence obligations. Its Promise is
+not resolved merely because the write was accepted: the client waits for the
+affected live Query cursors to catch up. That keeps an optimistic UI from
+claiming a server write has settled while it still displays an older Query
+result.
+
+For the React state model and argument sharing rules, read
+[Live Queries](/docs/live-queries). For one-off reads, use a normal Query call
+instead of retaining a subscription.

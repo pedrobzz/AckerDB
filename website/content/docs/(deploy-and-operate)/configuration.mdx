@@ -1,0 +1,71 @@
+---
+title: "Configuration"
+description: "Change AckerDB configuration only when the application has a concrete boundary to express."
+---
+
+Configuration lives in .ackerdb.config.json beside app.ts. AckerDB starts with a
+useful local application layout, so an omitted field is intentional—not an
+incomplete setup.
+
+[Configuration Reference](/docs/configuration-reference) owns every field,
+default, accepted value, and complete JSON shape. This guide is about deciding
+when a setting belongs in the application.
+
+## Start with the generated contract boundary
+
+In the canonical workspace, generated bindings are usually the only path that
+moves:
+
+~~~json title="apps/server/.ackerdb.config.json"
+{
+  "generated": "../../packages/ackerdb-generated/src"
+}
+~~~
+
+The path is relative to the server application directory. Code generation owns
+the resulting files; both the server and clients import that workspace package
+instead of reaching into one another's source trees. [Project
+Structure](/docs/project-structure) explains that ownership boundary.
+
+## Change a path only when ownership moved
+
+The default app, functions, jobs, services, migrations, generated, and database
+paths describe one server application. Keep their defaults when the folders
+live in the normal place. Change the relevant path when a real owner lives
+elsewhere; never use the generated or database directory as handwritten source.
+
+[Configuration Reference](/docs/configuration-reference#application-paths)
+lists the paths and defaults. [Generated Files](/docs/generated-files) owns
+the generated-file contract.
+
+## Configure runtime boundaries deliberately
+
+These settings have operational consequences, so choose them at the boundary
+they represent:
+
+- Listener host, port, and status access define the public process surface.
+  [Production Server](/docs/production-server) and [Status and
+  Health](/docs/status-and-health) own that operation.
+- OIDC, a custom verifier, and a scope resolver establish identity and
+  authorization. Read [OIDC](/docs/oidc), [Custom Credential
+  Verifiers](/docs/custom-credential-verifiers), and
+  [Scopes](/docs/scopes).
+- The Realtime module enables a server runtime only when the application uses
+  realtime sessions. Read [Realtime Sessions](/docs/realtime-sessions).
+- File storage selects one active immutable backend. Read [Local File
+  Storage](/docs/local-file-storage), [S3 File Storage](/docs/s3-file-storage),
+  or [Migrating File Storage](/docs/migrating-file-storage) instead of changing
+  a live backend casually.
+
+Durability is an environment profile choice, not JSON configuration.
+[Durability Profiles](/docs/durability-profiles) owns that tradeoff.
+
+## Keep the file strict and small
+
+Use the [Configuration Reference](/docs/configuration-reference) to verify
+strict parsing, relative-path resolution, and the exact setting before a
+configuration change reaches deployment.
+
+A small configuration file tells the truth about the application. Add a field
+when it names a real deployment, ownership, or capability decision, then use
+the reference page to verify its exact shape.

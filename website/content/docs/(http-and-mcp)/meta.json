@@ -1,0 +1,14 @@
+{
+  "title": "HTTP & MCP",
+  "icon": "TerminalSquare",
+  "description": "Expose the application model through HTTP and Model Context Protocol.",
+  "pages": [
+    "---HTTP---",
+    "function-http-api",
+    "http-handlers",
+    "openapi",
+    "---MCP---",
+    "mcp-servers",
+    "mcp-tools"
+  ]
+}

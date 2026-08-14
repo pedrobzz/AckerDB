@@ -1,0 +1,14 @@
+{
+  "title": "Jobs & Services",
+  "icon": "ServerCog",
+  "description": "Run durable background work and application-owned long-lived capabilities.",
+  "pages": [
+    "---Jobs---",
+    "background-jobs",
+    "durable-workflows",
+    "retries-and-schedules",
+    "---Services---",
+    "services",
+    "service-lifecycle"
+  ]
+}

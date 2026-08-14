@@ -1,0 +1,15 @@
+{
+  "title": "Realtime",
+  "icon": "Radio",
+  "description": "Deliver live state, events, and interactive sessions.",
+  "pages": [
+    "---Live data---",
+    "subscriptions",
+    "resume-and-reset",
+    "---Events---",
+    "event-tables",
+    "---Interactive sessions---",
+    "channels",
+    "realtime-sessions"
+  ]
+}

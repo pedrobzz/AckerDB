@@ -1,0 +1,83 @@
+---
+title: "AckerDB Philosophy"
+description: "The principles behind a complete, local-first reactive backend."
+---
+
+AckerDB is designed for applications that should remain understandable as they
+grow. The goal is not the most abstraction, nor the fewest features. It is a
+backend where the normal path is fast, durable, and complete—and where
+unusual requirements still have an honest place to live.
+
+## Performance
+
+Useful work should stay close to the data it needs. AckerDB runs application
+code, SQLite, and its reactive runtime in one Bun server process, so ordinary
+Queries and Mutations do not pay an application-to-database network round trip
+before they can begin.
+
+That proximity is not a benchmark trick. It reduces the steady cost of every
+read and write, keeps tail latency out of routine work, and leaves more of the
+machine for the application rather than coordination. Precise reactive
+dependencies also mean that a committed change re-evaluates only the live
+Queries it can affect.
+
+Read [Queries](/docs/queries), [Transactions](/docs/transactions), and
+[Reactivity](/docs/reactivity) for the concrete execution model.
+
+## Reliability
+
+The durable boundary must be visible. AckerDB commits table changes
+atomically, and only a successful commit can make the resulting change visible
+to reactive clients. A failed transaction publishes nothing halfway.
+
+Work that cannot finish inside that boundary has an explicit home. Procedures
+coordinate external work; Jobs persist retries, schedules, outcomes, and
+workflow steps. Failures are results to observe and handle, not background
+activity to hope succeeded.
+
+Read [Durability](/docs/durability), [Procedures](/docs/procedures), and
+[Background Jobs](/docs/background-jobs) for those boundaries.
+
+## Batteries Included
+
+An application should not need a different product for its schema, typed API,
+reactive client, authentication, background work, files, HTTP surface, and MCP
+tools. AckerDB provides those paths as one application framework because their
+contracts meet: an operation's arguments, access policy, result type, and
+durability rules should not be translated repeatedly between unrelated systems.
+
+Built-in does not mean hidden. Each capability has a direct declaration, clear
+ownership, and documentation for the point where it belongs. The framework
+removes integration work without pretending that an application has no
+boundaries.
+
+## Single Mental Model
+
+Learn a Function once, then use it where it makes sense. A Query, Mutation, or
+Procedure has typed arguments, access, and a handler; generated bindings carry
+that contract to clients. Supported transports expose the same application
+definition instead of asking you to recreate the business operation as a
+separate HTTP or tool-specific handler.
+
+The same principle applies across the backend: schemas define durable data,
+Functions define application operations, and the runtime connects committed
+changes to reactive clients. There are fewer concepts to synchronize, so there
+are fewer places for an application to drift.
+
+Read [The Application Model](/docs/application-model),
+[Execution Model](/docs/execution-model), [HTTP Function APIs](/docs/function-http-api),
+and [MCP Tools](/docs/mcp-tools) for the individual contracts.
+
+## Extensibility
+
+No framework should trap an application inside its feature list. AckerDB is an
+ordinary Bun server, so a Function can use normal Bun and TypeScript libraries.
+When a capability needs a long-lived connection or host lifecycle, a
+[Service](/docs/services) can own it. When it should be reusable across
+applications, a [Plugin](/docs/building-plugins) gives it a deliberate
+installation and configuration boundary.
+
+The extension point is part of the model, not an escape from it. Bring the
+library or service that fits the problem, keep its authority and lifecycle
+explicit, and let AckerDB continue to own the database, Function, and
+durability contracts it is built to handle.

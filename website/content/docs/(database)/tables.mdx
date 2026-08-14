@@ -1,0 +1,90 @@
+---
+title: "Tables"
+description: "Define durable SQLite-backed tables and generated row types."
+---
+
+A table is durable SQLite-backed application data. Define it in the schema passed
+to defineApp; AckerDB validates the definition at startup, reconciles its
+storage, and generates the row types used by server and client code.
+
+## Define one primary key
+
+Every durable table has exactly one top-level v.primaryKey() column. SQLite
+assigns that bigint when a row is inserted, so application inserts omit it.
+
+~~~ts title="apps/server/app.ts"
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
+
+const noteStatus = v.enum("NoteStatus", ["draft", "published", "archived"]);
+
+const schema = defineSchema({
+  notes: defineTable({
+    id: v.primaryKey(),
+    ownerId: v.identity(),
+    title: v.string().min(1).max(200),
+    body: v.string().nullable(),
+    status: noteStatus,
+    revision: v.int(),
+    updatedAt: v.int(),
+  })
+    .index(["ownerId", "updatedAt"])
+    .index(["ownerId", "title"], { unique: true }),
+});
+
+export default defineApp({ schema });
+~~~
+
+A row returned from ctx.db.notes always includes id. An insert input cannot
+supply it. Nullable columns are optional when inserting and become null when
+omitted.
+
+## Table names become public type names
+
+The table key is a durable schema name and participates in generated types.
+For example, notes produces a generated Notes row type in types.ts. Named
+enums and unions used by columns are generated once and shared by all tables
+that use the same declaration.
+
+Use stable, identifier-like table and column names. AckerDB validates them at
+definition time, including generated type-name collisions, rather than letting
+a later code-generation or SQL error decide the shape.
+
+## Use durable tables for durable state
+
+A durable table is available as a typed accessor:
+
+~~~ts
+const note = await ctx.db.notes.get(id);
+
+const recent = await ctx.db.notes
+  .query()
+  .where((note) => note.ownerId.eq(ownerId))
+  .orderBy((note) => note.updatedAt.desc())
+  .collect();
+~~~
+
+Queries receive read-only table access. Mutations and procedure transactions
+receive the write methods as well. See [Reading Data](/docs/reading-data) and
+[Writing Data](/docs/writing-data).
+
+## Model relationships explicitly
+
+AckerDB does not infer a relationship from a bigint column. Store the ID that
+belongs to your domain, then enforce the ownership or existence rule in the
+Function that writes it.
+
+For example, ownerId above is an identity value. A Query can constrain reads to
+that owner, and a Mutation can verify the caller and the referenced row before
+writing. An index beginning with ownerId makes that query shape efficient and
+makes reactive invalidation more precise.
+
+## Event tables are different
+
+Use defineEventTable for transient, publish-only events. Event tables do not
+persist rows, cannot be queried, and cannot have indexes. They are a separate
+realtime primitive, not a substitute for a durable audit table.
+
+Read [Event Tables](/docs/event-tables) for transient events,
+[Validators and Indexes](/docs/validators-and-indexes) for field and index
+rules, and [Schema Migrations](/docs/schema-migrations) before changing
+durable tables that already contain data.

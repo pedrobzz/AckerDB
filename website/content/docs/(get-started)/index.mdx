@@ -1,0 +1,71 @@
+---
+title: Introduction
+description: Build a complete reactive backend in one Bun process, with SQLite in-process and one typed application model.
+---
+
+AckerDB is the backend that stays in your application. Its database, server
+code, realtime updates, background work, and integrations behave like one
+system. You write TypeScript, run one Bun process, and keep the application’s
+SQLite database in that process.
+
+Queries read directly from the in-process SQLite database. Mutations commit
+data and invalidate exactly the live Queries affected by their writes. A single
+Bun process keeps request handling, database work, and reactivity close
+together.
+
+## One server. One application model.
+
+Schema, Functions, authentication, Files, Jobs, Plugins, HTTP, and MCP share a
+single application definition. You do not have to translate one business
+operation into a database call, a separate transport action, and another
+realtime invalidation path.
+
+A Query declares its arguments, access policy, and handler once. AckerDB can
+publish that declaration through supported transports, generate typed client
+references for it, and track the data it reads. Mutations use the same model
+for validated writes and typed outcomes. Generated bindings carry those
+argument and result types into React.
+
+The result is a shorter path from backend intent to frontend behavior:
+
+1. Declare the schema and Functions in the server application.
+2. Generate the application-specific API bindings.
+3. Subscribe from React with the generated Query reference.
+4. Write through a generated Mutation reference and watch the Query update.
+
+There is no client cache schema to maintain beside the server schema and no
+manual refetch in the normal reactive path.
+
+## Fast work stays close
+
+SQLite runs in-process with the Bun server, making sub-millisecond database
+work practical and removing a network boundary from every read and write.
+AckerDB adds transactions, precise dependency tracking, generated types, and
+bounded realtime delivery around that foundation.
+
+The deployment unit remains ordinary: one Bun application with files and a
+database that you can place on a suitable machine, container, or virtual
+machine. Scale the host with the useful work it owns instead of paying a fixed
+distributed-systems cost before the application needs it.
+
+## Background work without a second backend
+
+Jobs cover both background execution and durable workflows. Steps, retries,
+schedules, and persisted outcomes stay connected to the same schema and
+Functions as request-driven work. You do not need a separate workflow model
+and management service just to make a multistep operation reliable.
+
+Functions can also use ordinary Bun libraries. When an integration needs a
+long-lived connection or a capability that does not fit a Function, a Service
+owns that lifecycle inside the application. Plugins package reusable
+capabilities without hiding their storage or access contracts.
+
+This gives AckerDB a deliberate escape hatch: use the built-in model where it
+fits, bring your own tools where they are stronger, and keep one operational
+home for the application.
+
+## Start with the complete path
+
+[Install the three AckerDB packages](/docs/installation), then follow
+[Basic Usage](/docs/basic-usage) to declare a Todos table, one Query, one
+Mutation, and a React list that updates live.

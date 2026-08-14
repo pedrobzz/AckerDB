@@ -1,0 +1,52 @@
+---
+title: "Generated Types"
+description: "Follow the generated contract from server declarations to application clients."
+---
+
+Code generation turns the application manifest and Function module layout into
+one shared TypeScript contract. It is the bridge between server declarations
+and clients—not a second place to define API types.
+
+## Generate the application contract
+
+Run code generation against the application directory:
+
+~~~bash title="Terminal"
+acker codegen apps/server
+~~~
+
+The generated directory is configured in .ackerdb.config.json. The recommended
+workspace layout writes it to a dedicated package, so server modules and client
+applications import the same contract by package name rather than by reaching
+into one another.
+
+[Generated Files](/docs/generated-files) owns the exact generated outputs,
+their exports, and ownership rules. [Project Structure](/docs/project-structure)
+owns the recommended monorepo layout.
+
+## Import the side appropriate to the boundary
+
+A server Function imports schema-aware builders from the generated server
+entrypoint. A client imports callable references from the generated API
+entrypoint. Both see the exact table, argument, result, Plugin, Job, and scope
+types declared by this application.
+
+~~~ts
+import { query } from "@workspace/ackerdb-generated/server";
+import { api } from "@workspace/ackerdb-generated/api";
+~~~
+
+The generated reference is the client contract; client code never imports a
+server Function module. [Queries](/docs/queries), [Mutations](/docs/mutations),
+and [Calling Functions](/docs/calling-functions) own the declaration and call
+semantics.
+
+## Keep generated output derived
+
+Development mode regenerates after valid backend changes. Outside development
+mode, generate after a fresh checkout and before a workspace-wide typecheck.
+In CI, regenerate first and fail when the committed contract differs.
+
+[Development Workflow](/docs/development-workflow) owns when those commands run
+and [Configuration Reference](/docs/configuration-reference) owns the generated
+path setting.

@@ -1,0 +1,76 @@
+---
+title: "Local File Storage"
+description: "Keep file bytes on the server filesystem."
+---
+
+<Warning title="Experimental">
+  Files are experimental. Their API and capabilities will probably change before
+  the feature is stable. Use them only where you can update alongside AckerDB.
+</Warning>
+
+Local storage keeps uploaded bytes on the filesystem of the server that owns
+the AckerDB database. It is the default backend and is a good fit for local
+development or a single-server deployment with durable attached storage.
+
+## Configuration
+
+Set the files section in .ackerdb.config.json. Paths are resolved from the
+application directory.
+
+~~~json title=".ackerdb.config.json"
+{
+  "files": {
+    "backend": "filesystem",
+    "path": "./var/files",
+    "publicUrl": "https://app.example.com",
+    "maxBytes": 104857600
+  }
+}
+~~~
+
+When files is omitted, AckerDB uses filesystem storage under
+./.ackerdb/files. The default maximum file size is 1 GiB. A deployment can
+choose any positive maximum up to 5 GiB.
+
+The path must not be the database directory, contain it, or be contained by
+it. Keep it on a durable volume with enough capacity for active files and
+temporary staging. The physical object layout is an implementation detail:
+do not browse it as an application API, rename objects, or copy a partial
+directory while the server is writing.
+
+## Public URL
+
+publicUrl is the externally reachable HTTP or HTTPS origin that clients use
+for upload sessions and file grants. It must not contain credentials or a URL
+fragment.
+
+Use the address visible to browsers, not an internal container hostname:
+
+~~~json
+{
+  "files": {
+    "backend": "filesystem",
+    "path": "./var/files",
+    "publicUrl": "https://api.example.com"
+  }
+}
+~~~
+
+For a local server, the default is the configured host and port. Behind a
+reverse proxy, explicitly set publicUrl to the proxy's public origin.
+
+## Operational model
+
+The filesystem store stages writes, verifies them, and atomically makes the
+result available. At startup it checks that the configured storage is
+writable. If the active database is bound to a different physical store,
+startup refuses to proceed; switch storage with the migration command instead
+of manually changing paths.
+
+Back up database and file storage as one recovery unit. A database backup that
+references bytes absent from the volume cannot serve those files, and a copied
+volume without its database cannot reconstruct metadata or access grants.
+
+For client flows and ownership, see
+[Uploads and Downloads](/docs/uploads-and-downloads). To move a deployment
+to object storage, follow [Migrating File Storage](/docs/migrating-file-storage).

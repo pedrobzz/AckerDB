@@ -1,0 +1,22 @@
+---
+title: Installation
+description: Install the AckerDB server, React client, and CLI at one exact lockstep version.
+---
+
+Use **Bun %BUN_VERSION%** for this documentation version.
+
+AckerDB packages are released in lockstep. Install the server, React client,
+and CLI at exactly the same version; do not mix versions or use version ranges.
+
+```bash title="Terminal"
+bun add --exact @ackerdb/server@%ACKERDB_PACKAGE_VERSION% @ackerdb/client-react@%ACKERDB_PACKAGE_VERSION%
+bun add --dev --exact @ackerdb/cli@%ACKERDB_PACKAGE_VERSION%
+```
+
+- `@ackerdb/server` provides the application, schema, database, and Function APIs.
+- `@ackerdb/client-react` provides the typed React connection and hooks.
+- `@ackerdb/cli` provides the `acker` command used for code generation and running the server.
+
+Update all three together to the same exact release. Continue to
+[Basic Usage](/docs/basic-usage) to connect these packages inside an existing
+Bun workspace.

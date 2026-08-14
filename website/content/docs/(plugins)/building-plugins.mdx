@@ -1,0 +1,138 @@
+---
+title: "Building Plugins"
+description: "Package typed capabilities, lifecycle, and storage for reuse."
+---
+
+Build a Plugin when a capability needs its own typed surface, private storage,
+or reusable configuration. A Plugin factory is a side-effect-free declaration;
+the application mounts an instance in its manifest.
+
+## Define a contract and implementation
+
+Use a contract when consumers may depend on the capability. It fixes operation
+kinds, argument validation, result validation, and the friendly call shape.
+
+~~~ts title="plugins/notes.ts"
+import {
+  definePlugin,
+  definePluginContract,
+  defineSchema,
+  defineTable,
+  pluginMutation,
+  pluginQuery,
+  v,
+} from "@ackerdb/server";
+
+const notes = definePluginContract({
+  get: pluginQuery({
+    args: { key: v.string() },
+    returns: v.string().optional(),
+    expose: (call) => (key: string) => call({ key }),
+  }),
+  set: pluginMutation({
+    args: { key: v.string(), value: v.string() },
+    returns: v.boolean(),
+    expose: (call) => (key: string, value: string) => call({ key, value }),
+  }),
+});
+
+export const notesPlugin = definePlugin({
+  id: "@example/notes",
+  schema: defineSchema({
+    entries: defineTable({
+      id: v.primaryKey(),
+      key: v.string(),
+      value: v.string(),
+    }).index(["key"], { unique: true }),
+  }),
+  create: ({ query, mutation }) => ({
+    exports: {
+      get: query(notes.get, async (ctx, args) =>
+        (await ctx.db.entries.query().where((entry) => entry.key.eq(args.key)).unique())?.value,
+      ),
+      set: mutation(notes.set, async (ctx, args) => {
+        const existing = await ctx.db.entries
+          .query()
+          .where((entry) => entry.key.eq(args.key))
+          .unique();
+        if (existing === null) {
+          await ctx.db.entries.insert(args);
+        } else {
+          await ctx.db.entries.patch(existing.id, { value: args.value });
+        }
+        return true;
+      }),
+    },
+  }),
+});
+~~~
+
+The builders implement operations of the matching kind. A query has read
+capabilities, a mutation has transactional write capabilities, and a procedure
+has external-work capabilities. The generated function context exposes only
+operations permitted by that function kind.
+
+## Private storage and boundaries
+
+Plugin schema is private to the Plugin and isolated by its mount. It is not a
+shortcut to the application's root database: Plugin code has access only to
+its private schema and declared providers. Event tables are not allowed in
+Plugin private schema.
+
+Use an explicit contract for a dependency:
+
+~~~ts
+export const reportingPlugin = definePlugin({
+  id: "@example/reporting",
+  schema: defineSchema({}),
+  dependencies: { notes },
+  create: ({ query }) => ({
+    exports: {
+      summary: query({
+        args: { key: v.string() },
+        returns: v.string().optional(),
+        handler: (ctx, args) => ctx.notes.get(args.key),
+      }),
+    },
+  }),
+});
+~~~
+
+When an instance is created, its dependency slots receive concrete provider
+instances. Their contracts must be structurally compatible; a provider can
+offer additional operations, but cannot change the required operation kind,
+arguments, or result.
+
+## Lifecycle
+
+Use lifecycle only for a resource that must open with the application and
+close with it.
+
+~~~ts
+create: ({ procedure }) => {
+  let connection;
+
+  return {
+    exports: {
+      ping: procedure({
+        args: {},
+        returns: v.boolean(),
+        handler: async () => connection.isReady(),
+      }),
+    },
+    lifecycle: async ({ abortSignal }) => {
+      connection = await openConnection({ abortSignal });
+      return () => connection.close();
+    },
+  };
+}
+~~~
+
+Plugin lifecycles start in provider-before-dependent order and clean up in
+reverse. Keep construction pure: open connections in lifecycle, not in
+definePlugin or the factory call.
+
+Plugin IDs are stable, package-like identities. Private schema changes use the
+storage workflow in [Plugin Storage](/docs/plugin-storage); do not make a
+destructive change appear safe through a second hidden table or a compatibility
+wrapper.
