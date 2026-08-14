@@ -49,14 +49,6 @@
         "@happy-dom/global-registrator": "^20.10.6",
       },
     },
-    "packages/cache": {
-      "name": "@ackerdb/cache",
-      "version": "0.18.0",
-      "dependencies": {
-        "@ackerdb/core": "workspace:0.18.0",
-        "@ackerdb/server": "workspace:0.18.0",
-      },
-    },
     "packages/cli": {
       "name": "@ackerdb/cli",
       "version": "0.18.0",
@@ -178,8 +170,6 @@
     "uuid": "11.1.1",
   },
   "packages": {
-    "@ackerdb/cache": ["@ackerdb/cache@workspace:packages/cache"],
-
     "@ackerdb/cli": ["@ackerdb/cli@workspace:packages/cli"],
 
     "@ackerdb/client": ["@ackerdb/client@workspace:packages/client"],

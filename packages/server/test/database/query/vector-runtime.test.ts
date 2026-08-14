@@ -57,27 +57,6 @@ describe("native vector runtime", () => {
       `,
     ], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
     expect(storedSchema.exitCode).toBe(0);
-
-    const pluginSchema = Bun.spawnSync([
-      process.execPath,
-      "-e",
-      `
-        import { createRequire } from "node:module";
-        import { Engine, defineSchema, defineTable, v } from "@ackerdb/server";
-        const root = defineSchema({ roots: defineTable({ id: v.primaryKey() }) });
-        const plugin = defineSchema({
-          documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
-        });
-        const engine = new Engine(root, ":memory:");
-        const require = createRequire(import.meta.url);
-        if (Object.keys(require.cache).some((path) => path.includes("numkong"))) process.exit(20);
-        engine.createPluginScope("vectors", plugin);
-        const loaded = Object.keys(require.cache).some((path) => path.includes("numkong"));
-        engine.close("clean");
-        if (!loaded) process.exit(21);
-      `,
-    ], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
-    expect(pluginSchema.exitCode).toBe(0);
   });
 
   test("fails Engine startup when a stored-vector schema cannot load native kernels", () => {

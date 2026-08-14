@@ -9,7 +9,7 @@
     "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/cache/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun test ./bench && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
+    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun test ./bench && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
     "test:mcp:conformance": "bun scripts/mcp-conformance.ts",
     "test:mcp:hosts": "bun scripts/mcp-host-acceptance.ts",
     "test:packages": "bun scripts/verify-packages.ts",

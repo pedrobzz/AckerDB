@@ -9,18 +9,11 @@ export const initialize = mutation({
   access: staffAccess,
   args: {},
   handler: async (ctx) => {
-    const cached = await ctx.cache.setupState.get(SEED_KEY);
-    if (cached !== undefined)
-      return { created: false, completedAt: cached.completedAt };
-
     const existing = await ctx.db.setupState
       .query()
       .where((state) => state.key.eq(SEED_KEY))
       .unique();
     if (existing !== null) {
-      await ctx.cache.setupState.set(SEED_KEY, {
-        completedAt: existing.completedAt,
-      });
       return { created: false, completedAt: existing.completedAt };
     }
 
@@ -289,7 +282,6 @@ export const initialize = mutation({
     });
 
     await ctx.db.setupState.insert({ key: SEED_KEY, completedAt: now });
-    await ctx.cache.setupState.set(SEED_KEY, { completedAt: now });
     return { created: true, completedAt: now };
   },
 });

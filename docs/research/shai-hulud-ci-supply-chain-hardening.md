@@ -99,7 +99,7 @@ remain untrusted at a credential boundary.
 1. A protected-branch event starts on a fresh GitHub-hosted runner with
    `contents: read`, no secrets and no OIDC permission.
 2. It installs exactly `bun.lock` with `--frozen-lockfile --ignore-scripts` and
-   without an Actions package cache, builds/tests, and creates all twelve
+   without an Actions package cache, builds/tests, and creates all eleven
    publishable tarballs with package scripts disabled.
 3. It records each tarball's SHA-256 and creates provenance/attestations for
    native binaries and release artifacts. Attestations make the producing

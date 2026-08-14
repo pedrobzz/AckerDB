@@ -27,11 +27,6 @@ are also scoped so a returned `Err` commits no application state. AckerDB may
 persist the completed error in framework idempotency metadata without
 publishing an application-data commit.
 
-Plugin operations retain their existing capability contracts in this runtime
-beta. Bringing them under the same typed Result and child-scope contract is a
-separate breaking Plugin-contract change; this ADR must not be read as claiming
-that work has shipped.
-
 `ctx.tx` remains the only public API for a procedure-owned transaction. Its
 callback is Result-aware: success commits, `Err` rolls back, and throw poisons
 and rolls back. A separate `ctx.atomic` API is unnecessary.

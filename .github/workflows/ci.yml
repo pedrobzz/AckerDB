@@ -120,14 +120,11 @@ jobs:
         if: needs.changes.outputs.workflows == 'true'
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
 
-  # The benchmark gates every pull request that touches a measured input,
-  # because a regression is only cheap to fix while it still belongs to one
-  # change. It used to run on the `canary` → `main` promotion alone, which meant
-  # `Benchmark ✅` on a pull request into `canary` was a two-second no-op — and a
-  # branch that cost most of the framework's throughput reached a clean review
-  # with that green tick beside it. The release delta is a real measurement, but
-  # it arrives at the one moment when attributing it costs the whole cycle, so
-  # the same comparison now runs on the way in as well as on the way out.
+  # The benchmark reports every pull request that touches a measured input. Its
+  # comparison is informational: a detected regression is evidence for review,
+  # never a merge veto. The same comparison runs on the way into `canary` and on
+  # the `canary` → `main` promotion so a change and the release delta are both
+  # visible.
   #
   # `always()` with the prerequisite gate below mirrors Fast CI: a required check
   # must report a conclusion even when it has nothing to measure, or a pull
@@ -162,15 +159,10 @@ jobs:
           "${{ github.event.pull_request.base.sha }}"
           "${{ github.event.pull_request.head.sha }}"
           benchmark-results
-      # `shell: bash` is load-bearing: it turns on `pipefail`, without which the
-      # pipeline's exit code would be `tee`'s and a reported regression would
-      # leave the check green.
-      - name: Read the comparison and decide
+      - name: Report the comparison
         if: needs.changes.outputs.performance == 'true'
-        shell: bash
         run: bun bench/report.ts benchmark-results | tee benchmark-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
-      # Uploaded even when the comparison failed: the numbers that failed it are
-      # the ones worth reading.
+      # Upload the raw evidence and rendered report for review.
       - if: always() && needs.changes.outputs.performance == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

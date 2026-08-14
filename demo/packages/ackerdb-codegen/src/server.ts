@@ -9,11 +9,9 @@ import {
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
-  service as serviceGeneric,
   sseProcedure as sseProcedureGeneric,
 } from "@ackerdb/server";
 import type {
-  AppPluginCapabilities,
   AppSchema,
   ChannelBuilder,
   DbReader,
@@ -27,8 +25,6 @@ import type {
   QueryBuilder,
   RealtimeBuilder,
   QueryCtx as GenericQueryCtx,
-  ServiceBuilder,
-  ServiceContext as GenericServiceContext,
   SseBuilder,
   SseCtx as GenericSseCtx,
   SystemCtx as GenericSystemCtx,
@@ -36,25 +32,21 @@ import type {
 import type app from "../../../app/server/app.ts";
 
 export type Schema = AppSchema<typeof app>;
-type QueryPlugins = AppPluginCapabilities<typeof app, "query">;
-type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;
-type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;
+type Capabilities = Readonly<Record<never, never>>;
 
-export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins>;
+export const query = queryGeneric as QueryBuilder<Schema, Capabilities>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins>;
+export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities>;
 export const mcp = mcpGeneric as McpBuilder<Schema>;
 export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
 
-export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins>;
-export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
-export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>;
-export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>;
-export type SystemCtx = GenericSystemCtx<Schema, ProcedurePlugins, MutationPlugins>;
-export type ServiceCtx = GenericServiceContext<SystemCtx>;
+export type QueryCtx = GenericQueryCtx<Schema, Capabilities>;
+export type MutationCtx = GenericMutationCtx<Schema, Capabilities>;
+export type ProcedureCtx = GenericProcedureCtx<Schema, Capabilities, Capabilities>;
+export type SseCtx = GenericSseCtx<Schema, Capabilities, Capabilities>;
+export type SystemCtx = GenericSystemCtx<Schema, Capabilities, Capabilities>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;

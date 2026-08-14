@@ -9,9 +9,8 @@ while `Err(...)` is always explicit. Thrown failures remain outside the
 application-error contract.
 
 The beta applies to application queries, mutations, and procedures. Ordinary
-TypeScript helpers are not registered function boundaries. Plugin operations,
-SSE handler completion, and event streams retain their existing contracts;
-Plugin Result contracts require a separate breaking Plugin API change. An SSE
+TypeScript helpers are not registered function boundaries. SSE handler
+completion and event streams retain their existing contracts. An SSE
 procedure's `ctx.tx` does use the same Result-aware transaction contract.
 
 ## Desired authoring model
@@ -701,10 +700,6 @@ The work should land by semantic boundary, not as parallel compatibility paths:
 4. `@ackerdb/client`: protocol decoding and imperative `ClientResult`.
 5. `@ackerdb/client-react`: exhaustive query state and typed mutation/procedure
    hooks.
-6. Plugin invocation (follow-up): change Plugin contracts and exposed
-   capabilities to typed Results before applying automatic Plugin mutation
-   scopes. The beta does not silently change current Plugin call shapes.
-
 The feature is intentionally breaking. The implementation removes the former
 raw imperative client return and rejected-promise application-error behavior
 rather than preserving both.

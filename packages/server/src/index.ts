@@ -2,7 +2,6 @@ export {
   defineApp,
   isApp,
   type App,
-  type AppPluginCapabilities,
   type AppSchema,
   type AppScope,
 } from "./app/definition.ts";
@@ -65,29 +64,6 @@ export {
   type ParsedCredentialToken,
 } from "./auth/credential-token.ts";
 export type { CredentialLimits } from "./auth/credential-vault.ts";
-export {
-  definePluginContract,
-  pluginMutation,
-  pluginProcedure,
-  pluginQuery,
-  type PluginOperationSpec,
-} from "./plugins/contract.ts";
-export {
-  type PluginMutationCtx,
-  type PluginProcedureCtx,
-  type PluginQueryCtx,
-} from "./plugins/capabilities.ts";
-export { type PluginBuilders } from "./plugins/builders.ts";
-export {
-  definePlugin,
-  type PluginCleanup,
-  type PluginExportTree,
-  type PluginInstance,
-  type PluginLifecycle,
-  type PluginLifecycleContext,
-} from "./plugins/definition.ts";
-export { assemblePlugins } from "./plugins/assembly.ts";
-export { pluginValidator } from "./plugins/validator.ts";
 export {
   type FileGrantId,
   type FileId,
@@ -184,35 +160,13 @@ export {
   type EngineStatus,
   type IntegrityReport,
   type RestorePublicationHook,
+  schemaFingerprintFor,
   type TablePlan,
   type TagMap,
 } from "./database/engine.ts";
 export { restoreVerifiedDatabase } from "./database/restore.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
-export {
-  desiredPluginMounts,
-  dropPluginStorage,
-  PluginStorageRequirementsError,
-  reconcilePluginStorage,
-  resetPluginStorage,
-  type DesiredPluginMounts,
-  type PluginStorageRequirement,
-} from "./plugins/storage.ts";
-export { PluginRuntime } from "./plugins/runtime.ts";
-export {
-  declareServices,
-  isService,
-  service,
-  type AnyService,
-  type DeclaredService,
-  type Service,
-  type ServiceBuilder,
-  type ServiceCleanup,
-  type ServiceContext,
-  type ServiceDefinition,
-  type ServiceStart,
-} from "./services/definition.ts";
 export {
   declareJobs,
   isJob,
@@ -255,13 +209,6 @@ export {
   type JobHandle,
 } from "./runtime/jobs/runtime.ts";
 export { type JobRow, type JobRunRow } from "./runtime/jobs/store.ts";
-export {
-  ServiceError,
-  ServiceRuntime,
-  type ServicePhase,
-  type ServiceRuntimeOptions,
-  type ServiceRuntimeState,
-} from "./services/runtime.ts";
 export type { DurabilityPolicy } from "@ackerdb/core";
 export type { TransportSource } from "./runtime/caller.ts";
 export {

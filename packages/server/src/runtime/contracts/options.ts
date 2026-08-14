@@ -1,7 +1,6 @@
 import type { CredentialVerifier, ScopeResolver } from "../../auth/credentials.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { Engine } from "../../database/engine.ts";
-import type { PluginRuntime } from "../../plugins/runtime.ts";
 import type { RealtimeRuntimeModule } from "../../realtime/host.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
@@ -11,8 +10,6 @@ import type { RuntimeFilesOptions } from "../../files/namespace.ts";
 export interface RuntimeOptions {
   readonly engine: Engine;
   readonly registry: Registry;
-  /** A started Plugin graph bound to this Engine's reconciled private scopes. */
-  readonly pluginRuntime?: PluginRuntime;
   readonly verifier?: CredentialVerifier;
   /**
    * Resolves the grant patterns an Identity holds, re-read on every credential

@@ -4,8 +4,8 @@ status: accepted
 
 # Files separate identity, access, and physical storage
 
-AckerDB Files are immutable built-in application resources rather than Plugin
-state. A File has fixed framework metadata and an application-facing identity
+AckerDB Files are immutable built-in application resources. A File has fixed
+framework metadata and an application-facing identity
 that is independent of its opaque physical object key; ordinary application
 tables own searchable business metadata through File references. Independently
 revocable File grants own download authority, so revoking a URL never requires
@@ -179,8 +179,8 @@ remains available for intentionally standalone Files. Replacing or deleting a
 reference never deletes the previous File automatically because other rows or
 grants may still own its lifecycle.
 
-Byte streams are external File-store I/O. Procedures, HTTP handlers, Services,
-and system runs may store and read them; queries and mutations may inspect File
+Byte streams are external File-store I/O. Procedures, HTTP handlers, and system
+runs may store and read them; queries and mutations may inspect File
 metadata and manage transactional File state but never stream bytes. This keeps
 reactive reads deterministic and prevents slow storage or network I/O from
 holding AckerDB's single writer.

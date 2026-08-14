@@ -87,13 +87,13 @@ typed from the generated module (`HttpHandlerCtx`):
 | --- | --- |
 | `timestamp` | The runtime's read timestamp. |
 | `abortSignal` | Fires when the caller disconnects or the Runtime shuts down. |
-| `tx` | A transaction with application authority, plus mounted Plugin capabilities. |
+| `tx` | A transaction with application authority. |
 
 The auth members (`auth`, `linkAccount`, `unlinkAccount`) are deliberately
 absent: raw routes resolve no credential, so they could only ever carry a
-hardcoded anonymous. `tx` holds application authority on the same trust
-rationale as a [Service](services.md) — application-owned code at the
-boundary. An authenticated caller speaking AckerDB's own bearer scheme belongs
+hardcoded anonymous. `tx` holds application authority because the handler is
+application-owned code at the boundary. An authenticated caller speaking
+AckerDB's own bearer scheme belongs
 on a contract function, which is the surface built for that; if a later
 feature adds opt-in framework auth here, `auth` has an obvious place to
 return to.

@@ -14,7 +14,6 @@ import {
   Engine,
   LocalFileStore,
   reconcile,
-  reconcilePluginStorage,
 } from "@ackerdb/server";
 import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import { importApp } from "../../src/app/manifest.ts";
@@ -31,8 +30,7 @@ import {
   type RestoreReport,
   type StatusReport,
 } from "../../src/commands/operations.ts";
-import { FIXTURE_APP, FIXTURE_DEFINE_APP, makeFixture } from "../support/fixture.ts";
-import { desiredPluginMounts } from "@ackerdb/server";
+import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
 
 import { runCli } from "../support/process.ts";
 
@@ -68,7 +66,6 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"), { durability });
   try {
     reconcile(engine);
-    reconcilePluginStorage(engine, desiredPluginMounts(app));
     const role = engine.tags.get("Role")!.toTag.get("member")!;
     const payload = engine.tags.get("Payload")!.toTag.get("nothing")!;
     engine.writer.exec("BEGIN IMMEDIATE");
@@ -135,29 +132,6 @@ async function seedFile(dir: string): Promise<{ objectKey: string; contents: str
   }
   return { objectKey, contents };
 }
-
-function appWithPlugin(
-  mount: string,
-  definitionId: string,
-  valueValidator: "v.string()" | "v.int()" = "v.string()",
-): string {
-  return FIXTURE_APP
-    .replace("defineApp,", "defineApp, definePlugin,")
-    .replace(
-      FIXTURE_DEFINE_APP,
-      `const pluginSchema = defineSchema({
-  entries: defineTable({ id: v.primaryKey(), value: ${valueValidator} }),
-});
-const plugin = definePlugin({
-  id: ${JSON.stringify(definitionId)},
-  schema: pluginSchema,
-  create: () => ({ exports: {} }),
-})();
-
-export default defineApp({ schema, apiPaths: ["internal"], plugins: { ${mount}: plugin } });`,
-    );
-}
-
 
 function outputJson<T>(stdout: string): T {
   const lines = stdout.trim().split("\n");
@@ -523,25 +497,6 @@ describe("acker backup, restore, and status", () => {
     expect(mismatchedResult.code).toBe(1);
     expect(mismatchedResult.stderr).toContain("schema fingerprint");
     expect(existsSync(join(mismatchedTarget, ".ackerdb"))).toBe(false);
-  }, 30_000);
-
-  test("rejects a target App whose Plugin storage layout differs from the backup", async () => {
-    const source = fixture(appWithPlugin("cache", "@test/cache"));
-    await seed(source);
-    const artifact = join(source, "backup.db");
-    expect((await runCli(["backup", artifact, source])).code).toBe(0);
-
-    const targets = [
-      fixture(appWithPlugin("store", "@test/cache")),
-      fixture(appWithPlugin("cache", "@test/cache-next")),
-      fixture(appWithPlugin("cache", "@test/cache", "v.int()")),
-    ];
-    for (const target of targets) {
-      const result = await runCli(["restore", artifact, target]);
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("storage layout");
-      expect(existsSync(join(target, ".ackerdb"))).toBe(false);
-    }
   }, 30_000);
 
   test("rechecks App layout after child verification and before canonical publication", async () => {

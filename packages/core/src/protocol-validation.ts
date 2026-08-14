@@ -70,7 +70,7 @@ const MAX_VERSION_LENGTH = 64;
  * accepts exactly its own.
  *
  * There is no protocol number to negotiate with, because there was never a
- * compatibility on offer to negotiate: all thirteen packages ship one lockstep
+ * compatibility on offer to negotiate: all eleven packages ship one lockstep
  * version with `workspace:X.Y.Z` interdependencies, so AckerDB X is contracted
  * to speak to AckerDB X and nothing else. A separate number could only have
  * promised what the contract refuses — "both releases speak protocol 6" reads

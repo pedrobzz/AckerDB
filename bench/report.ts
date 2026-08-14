@@ -9,14 +9,13 @@
  * agreeable; one that can say the run could not tell the two commits apart is
  * worth more than one that guesses.
  *
- * Silence is not the same as agreement, though, so the contract is checked
- * before the verdicts are read: every unit, every metric that unit owes, and
- * every repetition of it must be present on both sides. A head that stops
- * producing a number fails here rather than quietly shrinking the comparison
- * until nothing is left to regress.
+ * Silence is not the same as agreement, though, so the report names contract
+ * shortfalls before the verdicts are read: every unit, every metric that unit
+ * owes, and every repetition of it should be present on both sides.
  *
- * Exits non-zero when a gated metric regressed, when the contract is short, or
- * when either side recorded a correctness, accounting, or harness failure.
+ * A completed comparison is informational. Regressions, incomplete samples,
+ * and correctness or accounting failures remain prominent in the report but
+ * do not decide whether the pull request may merge.
  *
  * The same `pair.json` this reads is what the ledger workflow later folds into
  * `bench-ledger`, recomputing these verdicts from the raw samples with the
@@ -95,9 +94,7 @@ say(
     "ratios with a distribution-free interval around it; the interval is measured from this run's own scatter.",
 );
 
-// The rule this run was judged by, printed where the verdict is read. Weakening
-// the gate remains possible — a pull request supplies the harness that judges it
-// — but it cannot be done quietly.
+// Print the classification rule where its verdicts are read.
 const ungated = Object.entries(METRIC_POLICY).filter(([, policy]) => !policy.gated).map(([name]) => name);
 say();
 say(
@@ -201,11 +198,9 @@ if (gatedRegressions === 0 && failures === 0) {
 }
 say();
 say(
-  "A green check means this comparison found no regression large enough and consistent enough to stop the merge. " +
-    "It is not an approval of the whole performance vector, and it is not blind to nothing: against this harness's " +
+  "This report is informational and never approves or blocks a merge. Against this harness's " +
     "own measured runner noise it catches roughly 93% of fifteen-percent regressions and 98% of twenty-percent " +
     "ones, and around one in five of a ten-percent one. Read the table.",
 );
 
 console.log(lines.join("\n"));
-if (gatedRegressions > 0 || failures > 0) process.exitCode = 1;

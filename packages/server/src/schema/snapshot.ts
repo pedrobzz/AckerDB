@@ -59,7 +59,7 @@ export function canonicalSnapshotJson(snapshot: SchemaSnapshot): string {
   return JSON.stringify(canonicalJson(snapshot));
 }
 
-/** Stable schema identity derived from the same representation persisted for Plugins. */
+/** Stable schema identity derived from the persisted representation. */
 export function canonicalSchemaSnapshot(schema: Schema): string {
   return canonicalSnapshotJson(snapshotOf(schema));
 }

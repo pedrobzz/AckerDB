@@ -102,7 +102,7 @@ migration explicitly. Removing the declaration drops only its private FTS
 objects.
 
 AckerDB checks for both FTS5 and the `fts3tokenize(unicode61)` SQL interface only
-when a root or Plugin schema declares a full-text target. A runtime missing
+when the application schema declares a full-text target. A runtime missing
 either capability fails explicitly; schemas without FTS do not initialize
 tokenizer machinery. An FTS-enabled Engine owns one private in-memory SQLite
 connection for literal tokenization, so read-side query preparation never

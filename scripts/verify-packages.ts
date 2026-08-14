@@ -408,19 +408,6 @@ async function main(): Promise<void> {
     }
     assertNoProductionAiDependency(serverManifest);
 
-    const cacheManifest = readManifest(
-      join(consumerDir, "node_modules/@ackerdb/cache/package.json"),
-    );
-    for (const [subpath, target] of Object.entries({
-      ".": "./src/index.ts",
-      "./redis": "./src/adapters/redis.ts",
-      "./upstash": "./src/adapters/upstash.ts",
-    })) {
-      if (cacheManifest.exports?.[subpath] !== target) {
-        throw new Error(`packed @ackerdb/cache does not expose ${subpath} from ${target}`);
-      }
-    }
-
     writeFileSync(join(consumerDir, "app.ts"), `
 import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
 
@@ -504,9 +491,6 @@ import {
   mcp as mcpFromSubpath,
   mcpContent as mcpContentFromSubpath,
 } from "@ackerdb/server/mcp";
-import { cachePlugin, defineCacheStore } from "@ackerdb/cache";
-import { redisCacheStore } from "@ackerdb/cache/redis";
-import { upstashCacheStore } from "@ackerdb/cache/upstash";
 
 if ("S3FileStore" in serverRoot) {
   throw new Error("the root @ackerdb/server entrypoint eagerly exposes the optional S3 adapter");
@@ -561,47 +545,6 @@ const endpoint = mcpFromSubpath({
   tools: { package_probe: { fn: probe, access: "public" } },
 });
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
-
-let customStoreOpens = 0;
-const customStore = defineCacheStore({
-  keyPrefix: "packed-custom",
-  open() {
-    customStoreOpens++;
-    throw new Error("packed import verification must not open Cache stores");
-  },
-});
-let upstashRequests = 0;
-const redisStore = redisCacheStore({
-  url: "redis://127.0.0.1:1",
-  keyPrefix: "packed-redis",
-});
-const upstashStore = upstashCacheStore({
-  url: "https://packed.example.com",
-  token: "packed-token",
-  keyPrefix: "packed-upstash",
-  fetch: async () => {
-    upstashRequests++;
-    throw new Error("packed import verification must not issue Cache requests");
-  },
-});
-const cacheInstances = [
-  cachePlugin(),
-  cachePlugin({ store: customStore }),
-  cachePlugin({ store: redisStore }),
-  cachePlugin({ store: upstashStore }),
-];
-const cacheDefinitionIds = cacheInstances.map((plugin) => plugin.definitionId);
-if (JSON.stringify(cacheDefinitionIds) !== JSON.stringify([
-  "@ackerdb/cache",
-  "@ackerdb/cache-external",
-  "@ackerdb/cache-external",
-  "@ackerdb/cache-external",
-])) {
-  throw new Error("packed @ackerdb/cache root export returned the wrong Plugin definition");
-}
-if (customStoreOpens !== 0 || upstashRequests !== 0) {
-  throw new Error("packed Cache imports or construction performed external work");
-}
 
 const vectorSchema = defineSchema({
   documents: defineTable({

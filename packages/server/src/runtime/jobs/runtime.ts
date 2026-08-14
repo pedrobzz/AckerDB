@@ -332,7 +332,7 @@ export class RuntimeJobs {
     return { id, deduped: false };
   }
 
-  /** Standalone enqueue: opens its own transaction (procedures, services). */
+  /** Standalone enqueue: opens its own transaction. */
   async enqueue(
     name: string,
     args: unknown,

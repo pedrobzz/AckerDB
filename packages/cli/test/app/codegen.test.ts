@@ -75,34 +75,25 @@ describe("codegen", () => {
       readFileSync(join(config.generatedDir, f), "utf8"),
     );
     const server = bytes[1]!;
-    expect(server).toContain("AppPluginCapabilities,");
+    expect(server).toContain("type Capabilities = Readonly<Record<never, never>>;");
+    expect(server).toContain("QueryBuilder<Schema, Capabilities, QueryJobs, Scope>");
+    expect(server).toContain("MutationBuilder<Schema, Capabilities, MutationJobs, Scope>");
     expect(server).toContain(
-      'type QueryPlugins = AppPluginCapabilities<typeof app, "query">;',
+      "ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
     );
     expect(server).toContain(
-      'type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;',
+      "unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>",
     );
     expect(server).toContain(
-      'type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;',
+      "SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
     );
-    expect(server).toContain("QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>");
-    expect(server).toContain("MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>");
+    expect(server).toContain("GenericQueryCtx<Schema, Capabilities, QueryJobs>");
+    expect(server).toContain("GenericMutationCtx<Schema, Capabilities, MutationJobs>");
     expect(server).toContain(
-      "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>",
-    );
-    expect(server).toContain(
-      "unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>",
+      "GenericProcedureCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>",
     );
     expect(server).toContain(
-      "SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>",
-    );
-    expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins, QueryJobs>");
-    expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins, MutationJobs>");
-    expect(server).toContain(
-      "GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
-    );
-    expect(server).toContain(
-      "GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
+      "GenericSseCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>",
     );
     // second run: identical output, nothing rewritten
     const second = await runCodegen(config);
@@ -143,52 +134,6 @@ await acker.system.run("fixture.typed", async (ctx) => {
     expect(readFileSync(join(config.generatedDir, "server.ts"), "utf8")).toContain(
       "export type SystemCtx",
     );
-    expect(typecheckFixture(dir)).toBe("");
-  });
-
-  test("binds application services to the exact generated application context", async () => {
-    const dir = fixture();
-    const config = loadConfig(dir);
-    await runCodegen(config);
-    mkdirSync(join(dir, "services"), { recursive: true });
-    writeFileSync(join(dir, "services", "providers.ts"), `
-import { service, type ServiceCtx } from "../_generated/server.ts";
-
-async function persist({ system }: ServiceCtx) {
-  await system.run("providers.event", async (ctx) => {
-    const principal: "system" = ctx.auth.kind;
-    await ctx.tx((tx) => tx.db.messages.insert({
-      channelId: 1n,
-      body: principal,
-      role: "member",
-      payload: { tag: "text", value: "device" },
-    }));
-    // @ts-expect-error the service's authority is bound to this schema.
-    await ctx.tx((tx) => tx.db.unknown.insert({}));
-    // @ts-expect-error "role" is an enum of this application, not any string.
-    await ctx.tx((tx) => tx.db.messages.insert({ role: "nobody" }));
-  });
-}
-
-export const tuya = service({
-  start: async (ctx) => {
-    await persist(ctx);
-    ctx.abortSignal.addEventListener("abort", () => {});
-    setTimeout(() => ctx.fail(new Error("broker ended")), 0);
-    // Cleanup still holds authority, which is where a consumer flushes.
-    return async () => { await persist(ctx); };
-  },
-});
-`, { flag: "w" });
-    // The manifest must not import the generated module, or deriving the app's
-    // types from it would be a cycle.
-    expect(readFileSync(join(dir, "app.ts"), "utf8")).not.toContain("_generated");
-
-    const server = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
-    expect(server).toContain(
-      "ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>",
-    );
-    expect(server).toContain("export type ServiceCtx = GenericServiceContext<SystemCtx>");
     expect(typecheckFixture(dir)).toBe("");
   });
 
@@ -325,227 +270,6 @@ export const agentMcp = mcp({
     // the only server-only export.
     expect(applicationAddresses(registry)).toEqual(["api.agent.echo"]);
     expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
-  });
-
-  test("derives exact local Plugin capabilities without exposing them remotely or to MCP", async () => {
-    const dir = makeFixture({
-      "app.ts": `
-import { defineApp, definePlugin, defineSchema, v } from "@ackerdb/server";
-
-const cachePlugin = definePlugin({
-  id: "@fixture/cache",
-  schema: defineSchema({}),
-  create: ({ query, mutation, procedure }) => ({
-    exports: {
-      get: query({
-        args: { key: v.string() },
-        returns: v.string().optional(),
-        expose: (call) => (key: string) => call({ key }),
-        handler: () => undefined,
-      }),
-      set: mutation({
-        args: { key: v.string(), value: v.string() },
-        returns: v.boolean(),
-        expose: (call) => (key: string, value: string) => call({ key, value }),
-        handler: () => true,
-      }),
-      flush: procedure({
-        args: {},
-        returns: v.boolean(),
-        expose: (call) => () => call({}),
-        handler: () => true,
-      }),
-    },
-  }),
-});
-
-const workerPlugin = definePlugin({
-  id: "@fixture/worker",
-  schema: defineSchema({}),
-  create: ({ procedure }) => ({
-    exports: {
-      run: procedure({
-        args: {},
-        returns: v.boolean(),
-        expose: (call) => () => call({}),
-        handler: () => true,
-      }),
-    },
-  }),
-});
-
-const writerPlugin = definePlugin({
-  id: "@fixture/writer",
-  schema: defineSchema({}),
-  create: ({ mutation }) => ({
-    exports: {
-      bump: mutation({
-        args: {},
-        returns: v.boolean(),
-        expose: (call) => () => call({}),
-        handler: () => true,
-      }),
-    },
-  }),
-});
-
-export default defineApp({
-  schema: defineSchema({}),
-  plugins: {
-    cache: cachePlugin(),
-    worker: workerPlugin(),
-    writer: writerPlugin(),
-  },
-});
-`,
-      "functions/surface.ts": `
-import { v } from "@ackerdb/server";
-import {
-  mutation,
-  procedure,
-  query,
-  sseProcedure,
-  type MutationCtx,
-  type ProcedureCtx,
-  type QueryCtx,
-  type SseCtx,
-  type SystemCtx,
-} from "../_generated/server.ts";
-
-const checkQuery = (ctx: QueryCtx) => {
-  const get: Promise<string | undefined> = ctx.cache.get("key");
-  // @ts-expect-error mutations are absent from query contexts
-  ctx.cache.set;
-  // @ts-expect-error procedure-only mounts are omitted from query contexts
-  ctx.worker;
-  // @ts-expect-error mutation-only mounts are omitted from query contexts
-  ctx.writer;
-  // @ts-expect-error Plugins are mounted directly, never behind ctx.plugins
-  ctx.plugins;
-  return get;
-};
-
-const checkMutation = async (ctx: MutationCtx) => {
-  await ctx.cache.get("key");
-  await ctx.cache.set("key", "value");
-  await ctx.writer.bump();
-  // @ts-expect-error procedures are absent from mutation contexts
-  ctx.cache.flush;
-  // @ts-expect-error procedure-only mounts are omitted from mutation contexts
-  ctx.worker;
-};
-
-const checkProcedure = async (ctx: ProcedureCtx) => {
-  await ctx.cache.get("key");
-  await ctx.cache.set("key", "value");
-  await ctx.cache.flush();
-  await ctx.worker.run();
-  await ctx.writer.bump();
-  await ctx.tx(async (tx) => {
-    await tx.cache.get("key");
-    await tx.cache.set("key", "value");
-    await tx.writer.bump();
-    // @ts-expect-error procedure operations are absent from explicit tx
-    tx.cache.flush;
-    // @ts-expect-error procedure-only mounts are omitted from explicit tx
-    tx.worker;
-  });
-};
-
-const checkSse = async (ctx: SseCtx) => {
-  await ctx.cache.flush();
-  await ctx.worker.run();
-  await ctx.writer.bump();
-  await ctx.tx(async (tx) => {
-    await tx.cache.set("key", "value");
-    await tx.writer.bump();
-    // @ts-expect-error procedure-only mounts are omitted from explicit tx
-    tx.worker;
-  });
-};
-
-const checkSystem = async (ctx: SystemCtx) => {
-  const principal: "system" = ctx.auth.kind;
-  await ctx.cache.get("key");
-  await ctx.cache.set("key", "value");
-  await ctx.cache.flush();
-  await ctx.worker.run();
-  await ctx.writer.bump();
-  await ctx.tx(async (tx) => {
-    const transactionPrincipal: "system" = tx.auth.kind;
-    await tx.cache.get(principal);
-    await tx.cache.set(transactionPrincipal, "value");
-    await tx.writer.bump();
-    // @ts-expect-error procedure operations are absent from explicit tx
-    tx.cache.flush;
-    // @ts-expect-error procedure-only mounts are omitted from explicit tx
-    tx.worker;
-  });
-};
-
-void checkSystem;
-
-export const read = query({
-  access: "public",
-  args: {},
-  handler: (ctx) => checkQuery(ctx),
-});
-
-export const write = mutation({
-  access: "public",
-  args: {},
-  handler: (ctx) => checkMutation(ctx),
-});
-
-export const run = procedure({
-  access: "public",
-  args: {},
-  handler: (ctx) => checkProcedure(ctx),
-});
-
-export const stream = sseProcedure({
-  access: "public",
-  args: {},
-  yields: v.string(),
-  handler: async function* (ctx) {
-    await checkSse(ctx);
-    yield "done";
-  },
-});
-
-export const echo = procedure({
-  description: "Echo.",
-  access: "public",
-  args: {},
-  returns: v.object({ text: v.string() }),
-  handler: (ctx: ProcedureCtx) => {
-    void (ctx as { readonly cache?: unknown }).cache;
-    return { text: "ok" };
-  },
-});
-`,
-      "client.ts": `
-import { api } from "./_generated/api.ts";
-void api.surface.read;
-void api.surface.write;
-void api.surface.run;
-void api.surface.stream;
-// @ts-expect-error Plugin mounts are not remotely addressable
-api.cache;
-void api.surface.echo;
-`,
-    });
-    dirs.push(dir);
-    const config = loadConfig(dir);
-
-    await runCodegen(config);
-
-    expect(typecheckFixture(dir)).toBe("");
-    const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
-    expect(api).not.toContain("AppPluginCapabilities");
-    expect(api).not.toContain("cache:");
-    expect(api).not.toContain("worker:");
-    expect(api).not.toContain("writer:");
   });
 
   test("types.ts carries enum namespaces, union constructors and row types", async () => {

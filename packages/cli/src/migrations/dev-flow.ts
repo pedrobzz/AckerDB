@@ -15,14 +15,6 @@ import { deriveSlug, type PlanWire } from "./plan.ts";
 import { renderLedger, runApplyForm, runConsentForm, runDivergenceForm, type Consent } from "./consent.ts";
 import { runRenameForm, type Ask, type FormResult } from "./form.ts";
 import type { GenerateRequest } from "./write.ts";
-import {
-  pluginStorageCommand,
-  renderPluginStorageRequirement,
-  runPluginStorageConsentForm,
-  type PluginApplyResult,
-  type PluginPlanWire,
-  type PluginStorageConsent,
-} from "../plugins/storage.ts";
 
 /** What a `__generate` child reports: the artifacts it wrote, or a consent gone stale. */
 export type GenerateResult = { written: string[] } | { stale: true };
@@ -33,10 +25,6 @@ export type PromptOutcome<T> = { answer: T } | { interrupted: true } | { cancele
 export interface DevFlowEffects {
   plan(): Promise<PlanWire>;
   generate(request: GenerateRequest): Promise<GenerateResult>;
-  /** Fresh-process projection of the next deterministic Plugin requirement. */
-  pluginPlan(): Promise<PluginPlanWire>;
-  /** Fresh-process, fingerprint-bound reset/drop of exactly one Plugin mount. */
-  applyPlugin(consent: PluginStorageConsent): Promise<PluginApplyResult>;
   /** Run one form on the terminal. At most one prompt is ever open. */
   prompt<T>(form: (ask: Ask) => Promise<T>): Promise<PromptOutcome<T>>;
   deleteFiles(files: string[]): void;
@@ -60,22 +48,6 @@ const APPLY_WAITING_BANNER =
 interface DeclineMemory {
   ledger: string | null;
   apply: string | null;
-  plugin: string | null;
-}
-
-function pluginRequirementIdentity(wire: Extract<PluginPlanWire, { clean: false }>): string {
-  const requirement = wire.requirement;
-  return [
-    requirement.kind,
-    requirement.mount,
-    requirement.currentFingerprint,
-    requirement.targetFingerprint,
-  ].join("\u0000");
-}
-
-function pluginDeclinedBanner(wire: Extract<PluginPlanWire, { clean: false }>): string {
-  const requirement = wire.requirement;
-  return `[ackerdb] Plugin storage ${requirement.kind} declined — server stays down; edit the Plugin manifest, run \`${pluginStorageCommand(requirement)}\`, or wipe all local data with \`acker reset\``;
 }
 
 /**
@@ -88,37 +60,6 @@ async function runFlow(fx: DevFlowEffects, declined: DeclineMemory): Promise<voi
     const wire = await fx.plan();
     if ("error" in wire) return; // fresh db, or a diverged chain the child already reported
     if (wire.clean) {
-      const pluginWire = await fx.pluginPlan();
-      if (!pluginWire.clean) {
-        const identity = pluginRequirementIdentity(pluginWire);
-        if (identity === declined.plugin) {
-          fx.error(pluginDeclinedBanner(pluginWire));
-          return;
-        }
-        fx.log(renderPluginStorageRequirement(pluginWire.requirement));
-        const consent = await fx.prompt((ask) =>
-          runPluginStorageConsentForm(pluginWire.requirement, ask)
-        );
-        if ("canceled" in consent) return;
-        if ("interrupted" in consent || !consent.answer) {
-          declined.plugin = identity;
-          fx.error(pluginDeclinedBanner(pluginWire));
-          return;
-        }
-        const result = await fx.applyPlugin({
-          kind: pluginWire.requirement.kind,
-          mount: pluginWire.requirement.mount,
-          currentFingerprint: pluginWire.requirement.currentFingerprint,
-          targetFingerprint: pluginWire.requirement.targetFingerprint,
-        });
-        if ("stale" in result) {
-          fx.error("[ackerdb] the Plugin manifest or storage changed while the question was open — re-planning");
-          continue;
-        }
-        declined.plugin = null;
-        await fx.startServer(false);
-        return;
-      }
       // Deleting a stale scaffold can leave nothing to answer — the crash is
       // resolved, so the server comes straight back.
       if (deletedScaffold) await fx.startServer(false);
@@ -202,7 +143,7 @@ export function makeDevFlowHandler(
 ): { onCrash: () => Promise<void>; retractPrompt: () => void } {
   let running = false;
   let crashPending = false;
-  const declined: DeclineMemory = { ledger: null, apply: null, plugin: null };
+  const declined: DeclineMemory = { ledger: null, apply: null };
 
   const onCrash = async (): Promise<void> => {
     if (!gate()) return;

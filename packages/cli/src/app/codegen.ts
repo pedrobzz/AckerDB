@@ -122,11 +122,9 @@ import {
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
-  service as serviceGeneric,
   sseProcedure as sseProcedureGeneric,
 } from "@ackerdb/server";
 import type {
-  AppPluginCapabilities,
   AppSchema,
   AppScope,
   ChannelBuilder,
@@ -148,8 +146,6 @@ import type {
   QueryJobsOf,
   RealtimeBuilder,
   QueryCtx as GenericQueryCtx,
-  ServiceBuilder,
-  ServiceContext as GenericServiceContext,
   SseBuilder,
   SseCtx as GenericSseCtx,
   SystemCtx as GenericSystemCtx,
@@ -159,33 +155,29 @@ ${jobImports.join("\n")}${jobImports.length > 0 ? "\n" : ""}
 export type Schema = AppSchema<typeof app>;
 /** The declared scope vocabulary; \`never\` when the application declares none. */
 export type Scope = AppScope<typeof app>;
-type QueryPlugins = AppPluginCapabilities<typeof app, "query">;
-type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;
-type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;
+type Capabilities = Readonly<Record<never, never>>;
 ${jobsType("QueryJobs", "QueryJobsOf")}
 ${jobsType("MutationJobs", "MutationJobsOf")}
 ${jobsType("ProcedureJobs", "ProcedureJobsOf")}
 
-export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins, QueryJobs, Scope>;
+export const query = queryGeneric as QueryBuilder<Schema, Capabilities, QueryJobs, Scope>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins, MutationJobs, Scope>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs, Scope>;
-export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export const job = jobGeneric as JobBuilder<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
+export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities, MutationJobs, Scope>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;
+export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, Capabilities, Capabilities>;
+export const job = jobGeneric as JobBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
 export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;
 
-export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins, QueryJobs>;
-export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins, MutationJobs>;
-export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema, ProcedurePlugins, MutationPlugins>;
-export type SystemCtx = GenericSystemCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export type ServiceCtx = GenericServiceContext<SystemCtx>;
-export type JobCtx = GenericJobCtx<Schema, ProcedurePlugins, MutationPlugins, ProcedureJobs, MutationJobs>;
-export type JobTxCtx = GenericJobTxCtx<Schema, MutationPlugins, MutationJobs>;
+export type QueryCtx = GenericQueryCtx<Schema, Capabilities, QueryJobs>;
+export type MutationCtx = GenericMutationCtx<Schema, Capabilities, MutationJobs>;
+export type ProcedureCtx = GenericProcedureCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
+export type SseCtx = GenericSseCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
+export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema, Capabilities, Capabilities>;
+export type SystemCtx = GenericSystemCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
+export type JobCtx = GenericJobCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
+export type JobTxCtx = GenericJobTxCtx<Schema, Capabilities, MutationJobs>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
 `;

@@ -50,8 +50,6 @@ export interface AppConfig {
   appPath: string;
   /** Directory of function modules. */
   functionsDir: string;
-  /** Directory of application service modules. */
-  servicesDir: string;
   /** Directory of job modules. */
   jobsDir: string;
   /** Directory of migration modules and their `meta/` sidecars. */
@@ -80,7 +78,6 @@ export interface AppConfig {
 interface RawConfig {
   app?: string;
   functions?: string;
-  services?: string;
   jobs?: string;
   migrations?: string;
   generated?: string;
@@ -99,7 +96,6 @@ interface RawConfig {
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "app",
   "functions",
-  "services",
   "jobs",
   "migrations",
   "generated",
@@ -399,7 +395,6 @@ export function loadConfig(
     appDir: dir,
     appPath: abs(raw.app ?? "./app.ts"),
     functionsDir: abs(raw.functions ?? "./functions"),
-    servicesDir: abs(raw.services ?? "./services"),
     jobsDir: abs(raw.jobs ?? "./jobs"),
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),

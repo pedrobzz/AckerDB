@@ -25,7 +25,6 @@
  * (the same "only if it wins" rule the wiki applies to sized numerics).
  */
 import { createHash, randomUUID } from "node:crypto";
-import { compareCodeUnits } from "../shared/ordering.ts";
 import {
   constants as fsConstants,
   closeSync,
@@ -80,7 +79,6 @@ import {
   type TableSnapshot,
 } from "../schema/snapshot.ts";
 import { isValidationError, ValidationError } from "../validation/error.ts";
-import { isPluginDefinitionId, isPluginIdentifier } from "../plugins/identifiers.ts";
 import {
   DatabaseOwnership,
   canonicalizeDatabasePath,
@@ -165,8 +163,6 @@ export interface TablePlan extends PhysicalTablePlan {
 
 /** One logical schema bound to its isolated physical storage plans. */
 export interface StorageScope {
-  /** `null` is the application root; Plugin scopes carry their manifest mount. */
-  readonly mount: string | null;
   readonly schema: Schema;
   readonly plans: ReadonlyMap<string, TablePlan>;
   /**
@@ -178,19 +174,6 @@ export interface StorageScope {
   readonly tags: ReadonlyMap<string, TagMap>;
   tagIdentity(typeName: string): string;
   plan(logicalName: string): TablePlan;
-}
-
-/** One verified row from the persisted Plugin storage inventory. */
-export interface StoredPluginStorage {
-  readonly mount: string;
-  readonly definitionId: string;
-  readonly snapshot: SchemaSnapshot;
-  readonly encodedSnapshot: string;
-}
-
-export interface NormalizedPluginSnapshot {
-  readonly snapshot: SchemaSnapshot;
-  readonly encoded: string;
 }
 
 const BORROWED_DATABASE_OWNERSHIP = Symbol("ackerdb.borrowedDatabaseOwnership");
@@ -279,29 +262,14 @@ export interface RestorePublicationHook {
   rollback(): void | Promise<void>;
 }
 
-const ENGINE_SCHEMA_VERSION = 13;
+const ENGINE_SCHEMA_VERSION = 14;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
 const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
-const PLUGIN_TABLE_PREFIX = "_ackerdb_plugin_";
-const PLUGIN_INDEX_PREFIX = `ix_${PLUGIN_TABLE_PREFIX}`;
 const FULL_TEXT_OBJECT_PREFIX = "_ackerdb_fts_";
 const quote = (name: string) => `"${name}"`;
-
-/** Length-prefixing makes mount/table boundaries injective even when either contains `_`. */
-function pluginStoragePrefix(mount: string): string {
-  return `${PLUGIN_TABLE_PREFIX}${mount.length}:${mount}`;
-}
-
-export function pluginPhysicalTableName(mount: string, logicalName: string): string {
-  return `${pluginStoragePrefix(mount)}${logicalName}`;
-}
-
-export function pluginTagIdentity(mount: string, typeName: string): string {
-  return `${mount.length}:${mount}${typeName}`;
-}
 
 /** Compile the exact physical row shape expected by `rowFromSql`. */
 export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
@@ -336,12 +304,6 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     name: "_ackerdb_tags",
     table: "_ackerdb_tags",
     sql: "CREATE TABLE _ackerdb_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
-  },
-  {
-    type: "table",
-    name: "_ackerdb_plugins",
-    table: "_ackerdb_plugins",
-    sql: "CREATE TABLE _ackerdb_plugins (mount TEXT PRIMARY KEY, definition_identity TEXT NOT NULL, schema TEXT NOT NULL)",
   },
   {
     type: "table",
@@ -689,97 +651,26 @@ function canonicalJson(value: unknown): unknown {
   return normalized;
 }
 
-/** Canonical Plugin inventory representation: validated JSON with recursively sorted object keys. */
-export function normalizePluginSnapshot(snapshot: SchemaSnapshot): NormalizedPluginSnapshot {
-  const encoded = canonicalSnapshotJson(snapshot);
-  return Object.freeze({ snapshot: parseStoredSnapshot(encoded), encoded });
-}
-
-function verifyPluginSnapshotShape(mount: string, snapshot: SchemaSnapshot): void {
-  for (const [tableName, table] of Object.entries(snapshot.tables)) {
-    if (table.kind === "event") {
-      throw new CorruptDatabaseError(
-        `stored Plugin "${mount}" schema contains event table ${tableName}`,
-      );
-    }
-    if (Object.values(table.columns).some((descriptor) => descriptor["k"] === "scheduleAt")) {
-      throw new CorruptDatabaseError(
-        `stored Plugin "${mount}" schema contains scheduled table ${tableName}`,
-      );
-    }
-  }
-}
-
-/** Load and fully validate the persisted Plugin inventory in deterministic mount order. */
-export function readStoredPluginInventory(
-  connection: Database,
-): ReadonlyMap<string, StoredPluginStorage> {
-  const inventory = new Map<string, StoredPluginStorage>();
-  const rows = connection
-    .query("SELECT mount, definition_identity, schema FROM _ackerdb_plugins ORDER BY mount")
-    .all() as { mount: unknown; definition_identity: unknown; schema: unknown }[];
-  for (const row of rows) {
-    if (typeof row.mount !== "string" || !isPluginIdentifier(row.mount)) {
-      throw new CorruptDatabaseError("stored Plugin inventory contains an invalid mount");
-    }
-    if (
-      typeof row.definition_identity !== "string" ||
-      !isPluginDefinitionId(row.definition_identity)
-    ) {
-      throw new CorruptDatabaseError(
-        `stored Plugin "${row.mount}" has an invalid definition identity`,
-      );
-    }
-    if (typeof row.schema !== "string") {
-      throw new CorruptDatabaseError(`stored Plugin "${row.mount}" schema is not text`);
-    }
-    const parsed = parseStoredSnapshot(row.schema);
-    const normalized = normalizePluginSnapshot(parsed);
-    if (row.schema !== normalized.encoded) {
-      throw new CorruptDatabaseError(
-        `stored Plugin "${row.mount}" schema snapshot is not normalized`,
-      );
-    }
-    verifyPluginSnapshotShape(row.mount, normalized.snapshot);
-    inventory.set(row.mount, Object.freeze({
-      mount: row.mount,
-      definitionId: row.definition_identity,
-      snapshot: normalized.snapshot,
-      encodedSnapshot: normalized.encoded,
-    }));
-  }
-  return inventory;
-}
-
-export interface StorageLayoutPlugin {
-  readonly mount: string;
-  readonly definitionId: string;
-  readonly schema: SchemaSnapshot;
-}
-
-/** Hash one complete logical storage layout without consulting or mutating an Engine. */
-export function storageLayoutFingerprint(
-  root: SchemaSnapshot,
-  plugins: readonly StorageLayoutPlugin[],
-): string {
-  const sortedPlugins = [...plugins].sort((left, right) => compareCodeUnits(left.mount, right.mount));
+/** Hash the persisted application schema without consulting or mutating an Engine. */
+function schemaSnapshotFingerprint(root: SchemaSnapshot): string {
   return createHash("sha256")
-    .update(JSON.stringify(canonicalJson({ root, plugins: sortedPlugins })))
+    .update(JSON.stringify(canonicalJson(root)))
     .digest("hex");
 }
 
-function persistedLayoutFingerprint(connection: Database): string {
+/** Fingerprint the exact logical storage layout requested by an application schema. */
+export function schemaFingerprintFor(schema: Schema): string {
+  if (!isSchema(schema)) throw new TypeError("schema must be created with defineSchema(...)");
+  return schemaSnapshotFingerprint(snapshotOf(withFrameworkTables(schema)));
+}
+
+function persistedSchemaFingerprint(connection: Database): string {
   const storedRoot = connection
     .query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'")
     .get() as { value: string } | null;
   if (storedRoot === null) throw new CorruptDatabaseError("artifact is missing its schema snapshot");
   const root = parseStoredSnapshot(storedRoot.value);
-  const plugins = [...readStoredPluginInventory(connection).values()].map((plugin) => ({
-    mount: plugin.mount,
-    definitionId: plugin.definitionId,
-    schema: plugin.snapshot,
-  }));
-  return storageLayoutFingerprint(root, plugins);
+  return schemaSnapshotFingerprint(root);
 }
 
 interface StoredNamedDefinition {
@@ -1201,7 +1092,7 @@ function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaF
     const mutationReplay = scanMutationReplay(db);
     return {
       format: 1,
-      schemaFingerprint: persistedLayoutFingerprint(db),
+      schemaFingerprint: persistedSchemaFingerprint(db),
       commitVersion: mutationReplay.commitVersion,
     };
   }, () => db.close(false), `backup inspection and SQLite close both failed: ${path}`);
@@ -1255,7 +1146,7 @@ export class Engine {
   readonly recoveredFromCrash: boolean;
   readonly tags = new Map<string, TagMap>();
   readonly rootScope: StorageScope;
-  /** The application's root physical plans. Plugin plans live on their own StorageScope. */
+  /** The application's physical table plans. */
   readonly plans: ReadonlyMap<string, TablePlan>;
   private readonly databaseOwnership: DatabaseOwnership | null;
   private readonly releasesDatabaseOwnership: boolean;
@@ -1327,9 +1218,7 @@ export class Engine {
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
       this[credentialVaultOwner] = new CredentialVault(writer);
-      // The root scope plans straight into the Engine's own tag store: it is
-      // the application's own schema, so there is no consent step to wait for.
-      this.rootScope = this.buildStorageScope(null, schema, this.tags);
+      this.rootScope = this.buildStorageScope(schema, this.tags);
       this.plans = this.rootScope.plans;
       if ([...this.plans.values()].some((plan) => plan.fullText.length > 0)) {
         this.enableFullTextSupport();
@@ -1496,7 +1385,7 @@ export class Engine {
     this.verifyInternalState(connection);
     const mutationReplay = scanMutationReplay(connection);
     // Called for its verification, not its value: the stored snapshot must parse
-    // and must agree with `sqlite_master`, the Plugin inventory and the interned
+    // and must agree with `sqlite_master` and the interned
     // tags before this database is opened for writing. The value is deliberately
     // NOT handed onward to reconciliation — `reconcile` repeats the pass because
     // physical drift can appear after the Engine is open (see its comment).
@@ -1547,8 +1436,6 @@ export class Engine {
     const unknown = objects.find(
       (object) =>
         (object.name.startsWith("_ackerdb_") || object.name.startsWith("ix__ackerdb_")) &&
-        !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
-        !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
         !object.name.startsWith(FULL_TEXT_OBJECT_PREFIX) &&
         // Framework tables live in the logical schema; their shapes are
         // verified against the snapshot like application tables.
@@ -1688,7 +1575,7 @@ export class Engine {
   }
 
   schemaFingerprint(): string {
-    return persistedLayoutFingerprint(this.writer);
+    return persistedSchemaFingerprint(this.writer);
   }
 
   /**
@@ -1797,82 +1684,30 @@ export class Engine {
     return prepareLiteralFullTextQuery(this.fullTextTokenizer!, input, path);
   }
 
-  /**
-   * Plan one mounted Plugin schema's private SQLite storage. Pure with respect
-   * to the Engine: it reads `_ackerdb_tags` and builds plans, but publishes no
-   * tags and initializes no capabilities, so a mount that reconciliation ends up
-   * refusing for want of consent leaves nothing behind. `activateScope` is the
-   * commit-time other half.
-   */
-  planPluginScope(mount: string, schema: Schema): StorageScope {
-    if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
-      throw new ValidationError("Plugin storage mount must be an identifier");
-    }
-    return this.buildStorageScope(mount, schema, new Map());
-  }
-
-  /**
-   * Publish a planned scope's tags to the Engine and initialize the capabilities
-   * its tables need. Call once the scope is accepted — after consent and inside
-   * (or immediately before) the transaction that commits it.
-   */
-  activateScope(scope: StorageScope): void {
-    loadVectorRuntimeForSchema(scope.schema);
-    for (const [identity, map] of scope.tags) this.tags.set(identity, map);
-    this.enableFullTextForScope(scope);
-  }
-
-  /** Plan and immediately activate one mounted Plugin schema. */
-  createPluginScope(mount: string, schema: Schema): StorageScope {
-    const scope = this.planPluginScope(mount, schema);
-    this.activateScope(scope);
-    return scope;
-  }
-
   /** Resolve the scope-aware tag map used by one table plan. */
   tagMap(plan: TablePlan, typeName: string): TagMap {
     return this.tags.get(plan.tagIdentity(typeName))!;
   }
 
   private buildStorageScope(
-    mount: string | null,
     schema: Schema,
     tags: Map<string, TagMap>,
   ): StorageScope {
-    const tagIdentity: StorageScope["tagIdentity"] = mount === null
-      ? (typeName) => typeName
-      : (typeName) => pluginTagIdentity(mount, typeName);
-    if (mount !== null) {
-      for (const [logicalName, table] of Object.entries(schema.tables)) {
-        const displayName = `${mount}.${logicalName}`;
-        if (table.kind === "event") {
-          throw new ValidationError(`${displayName}: Plugin private schemas cannot contain event tables`);
-        }
-        if (table.scheduleAtColumn !== null) {
-          throw new ValidationError(`${displayName}: Plugin private schemas cannot contain scheduled tables`);
-        }
-      }
-    }
+    const tagIdentity: StorageScope["tagIdentity"] = (typeName) => typeName;
     this.internTags(schema, tagIdentity, tags);
-    // Lazy by construction: the root scope's store IS `this.tags`, so when a
+    // Lazy by construction: the scope's store IS `this.tags`, so when a
     // migration relabels variants `reinternTags` replaces the map these plans
-    // encode through. A planned Plugin scope reads its own store, which
-    // activation then publishes.
+    // encode through.
     const tagsOf: TagsOf = (typeName) => tags.get(tagIdentity(typeName))!;
     const plans = new Map<string, TablePlan>();
     for (const [logicalName, table] of Object.entries(schema.tables)) {
       if (table.kind === "event") continue;
-      const physicalName = mount === null
-        ? logicalName
-        : pluginPhysicalTableName(mount, logicalName);
-      const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
       plans.set(
         logicalName,
-        planTable(table, logicalName, physicalName, displayName, tagIdentity, tagsOf),
+        planTable(table, logicalName, logicalName, logicalName, tagIdentity, tagsOf),
       );
     }
     const scope: StorageScope = {
-      mount,
       schema,
       plans,
       tags,
@@ -1880,8 +1715,7 @@ export class Engine {
       plan(logicalName) {
         const plan = plans.get(logicalName);
         if (plan === undefined) {
-          const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
-          throw new Error(`unknown table "${displayName}"`);
+          throw new Error(`unknown table "${logicalName}"`);
         }
         return plan;
       },
@@ -1977,32 +1811,22 @@ export class Engine {
       | { value: string }
       | null;
     const snapshot = row === null ? null : parseStoredSnapshot(row.value);
-    const plugins = readStoredPluginInventory(connection);
-    this.verifyApplicationSchema(snapshot, plugins, connection);
-    this.verifySnapshotTags(snapshot, plugins, connection);
+    this.verifyApplicationSchema(snapshot, connection);
+    this.verifySnapshotTags(snapshot, connection);
     return snapshot;
   }
 
   private verifyApplicationSchema(
     snapshot: SchemaSnapshot | null,
-    plugins: ReadonlyMap<string, StoredPluginStorage>,
     connection: Database,
   ): void {
     const actual = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
-    const pluginObjects = [...plugins.values()].flatMap((plugin) =>
-      expectedApplicationObjects(
-        plugin.snapshot,
-        (table) => pluginPhysicalTableName(plugin.mount, table),
-        (table) => `${plugin.mount}.${table}`,
-      )
-    );
     const expected = new Map(
       [
         ...INTERNAL_OBJECTS,
         ...(snapshot === null ? [] : expectedApplicationObjects(snapshot)),
-        ...pluginObjects,
       ]
         .map((object) => [object.name, object]),
     );
@@ -2030,18 +1854,11 @@ export class Engine {
 
   private verifySnapshotTags(
     snapshot: SchemaSnapshot | null,
-    plugins: ReadonlyMap<string, StoredPluginStorage>,
     connection: Database,
   ): void {
     const rootDefinitions: ReadonlyMap<string, StoredNamedDefinition> = snapshot === null
       ? new Map()
       : namedDefinitionsOf(snapshot);
-    const pluginDefinitions = new Map<string, StoredNamedDefinition>();
-    for (const plugin of plugins.values()) {
-      for (const [typeName, definition] of namedDefinitionsOf(plugin.snapshot)) {
-        pluginDefinitions.set(pluginTagIdentity(plugin.mount, typeName), definition);
-      }
-    }
     const stored = new Map<string, Set<string>>();
     for (const row of connection.query("SELECT type, variant FROM _ackerdb_tags").all() as { type: string; variant: string }[]) {
       const variants = stored.get(row.type) ?? new Set<string>();
@@ -2053,22 +1870,6 @@ export class Engine {
       if (missing !== undefined) {
         throw new CorruptDatabaseError(`AckerDB tag assignment is missing ${type}.${missing}`);
       }
-    }
-    for (const [identity, definition] of pluginDefinitions) {
-      const variants = stored.get(identity);
-      const missing = definition.variants.find((variant) => !variants?.has(variant));
-      if (missing !== undefined) {
-        throw new CorruptDatabaseError(`AckerDB tag assignment is missing ${identity}.${missing}`);
-      }
-      if (variants!.size !== definition.variants.length) {
-        throw new CorruptDatabaseError(`AckerDB Plugin tag assignment ${identity} has unknown variants`);
-      }
-    }
-    const unknownPluginTag = [...stored.keys()].find(
-      (identity) => !STORED_NAME.test(identity) && !pluginDefinitions.has(identity),
-    );
-    if (unknownPluginTag !== undefined) {
-      throw new CorruptDatabaseError(`AckerDB tag assignment has unknown Plugin identity ${unknownPluginTag}`);
     }
   }
 

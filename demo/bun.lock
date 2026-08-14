@@ -87,7 +87,6 @@
     "app/server": {
       "name": "@demo/server",
       "dependencies": {
-        "@ackerdb/cache": "0.14.2-canary.4",
         "@ackerdb/core": "0.14.2-canary.4",
         "@ackerdb/server": "0.14.2-canary.4",
         "@ai-sdk/gateway": "4.0.23",
@@ -114,8 +113,6 @@
     },
   },
   "packages": {
-    "@ackerdb/cache": ["@ackerdb/cache@0.14.2-canary.4", "", { "dependencies": { "@ackerdb/core": "0.14.2-canary.4", "@ackerdb/server": "0.14.2-canary.4" } }, "sha512-eYNhlMUqd+gwz/lZqAGuY9ilKfw7LUNl1Naaw4ZLmJFDWmCywQC3EEJrERgA1am/NonW/8fOYE47cfobTeL6OQ=="],
-
     "@ackerdb/cli": ["@ackerdb/cli@0.14.2-canary.4", "", { "dependencies": { "@ackerdb/core": "0.14.2-canary.4", "@ackerdb/server": "0.14.2-canary.4" }, "bin": { "acker": "src/commands/main.ts" } }, "sha512-SfG6MwTH/zoLfZpD7nlA2B1CJaA/On4IWfjtcRMq3SoDpkgGx5iXsBETrjHihRdQ+j4OVmLxKlj1B+PLbtnq0w=="],
 
     "@ackerdb/client": ["@ackerdb/client@0.14.2-canary.4", "", { "dependencies": { "@ackerdb/core": "0.14.2-canary.4" } }, "sha512-jozm6L3HYFbVi4aEuFMmizXLuOqRndfdgGi0km3pBbs7FoXgb9qHypzK/NbfcKFbwM6zvnpzp18kAhS1Yu/KGg=="],

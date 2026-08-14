@@ -44,9 +44,6 @@ import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
 import type { McpCallToolResult } from "../mcp/content.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
-import {
-  PluginRuntime,
-} from "../plugins/runtime.ts";
 import { OrderedReactive } from "../subscriptions/reactive/ordered.ts";
 import type { Registry } from "../app/registry.ts";
 import {
@@ -119,7 +116,6 @@ export class Runtime implements RuntimePort {
   readonly fileMaxBytes: number;
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
-  private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly credentials: RuntimeCredentials;
   /** Application scopes plus the framework's: what every grant expands against. */
   private readonly vocabulary: readonly string[];
@@ -148,10 +144,6 @@ export class Runtime implements RuntimePort {
     this.now = options.now ?? Date.now;
     this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
-    if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
-      throw new TypeError("Runtime requires a ready Plugin runtime");
-    }
-    this.pluginRuntime = options.pluginRuntime;
     const hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
     this.channels = new ChannelHub({
@@ -229,7 +221,6 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       reads: this.reads,
       reactive: this.reactive,
-      pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
       publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
@@ -334,7 +325,6 @@ export class Runtime implements RuntimePort {
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
-      ...(this.pluginRuntime === undefined ? {} : { pluginRuntime: this.pluginRuntime }),
       ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
       reads: this.reads,
       functions: this.functions,

@@ -2,7 +2,6 @@ import type { SystemPrincipal } from "../auth/credentials.ts";
 import type { Schema } from "../schema/definition.ts";
 import type {
   App,
-  AppPluginCapabilities,
   AppSchema,
 } from "./definition.ts";
 import type {
@@ -51,9 +50,7 @@ export type SystemCtx<
 
 /** The exact system context derived from one application manifest. */
 export type AppSystemCtx<A extends App> = SystemCtx<
-  AppSchema<A>,
-  AppPluginCapabilities<A, "procedure">,
-  AppPluginCapabilities<A, "mutation">
+  AppSchema<A>
 >;
 
 export interface SystemRunOptions {

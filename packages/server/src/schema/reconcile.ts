@@ -42,7 +42,7 @@ export function reconcile(
   const target = snapshotOf(engine.schema);
   // A fresh read, not the one storage validation already performed at open: this
   // re-verifies the snapshot against physical reality (`sqlite_master`, the
-  // Plugin inventory, the interned tags) and refuses if they have drifted apart
+  // interned tags) and refuses if they have drifted apart
   // since — including drift applied through this Engine's own writer. Reusing
   // the open-time value would drop that gate; the duplicated work is the parse,
   // and it is a small fraction of the verification that must happen anyway.

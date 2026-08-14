@@ -10,7 +10,7 @@ export function makeFixture(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "ackerdb-cli-"));
   // bare "@ackerdb/*" specifiers must resolve from the fixture
   mkdirSync(join(dir, "node_modules", "@ackerdb"), { recursive: true });
-  for (const pkg of ["core", "server", "client", "cache", "cli"]) {
+  for (const pkg of ["core", "server", "client", "cli"]) {
     symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@ackerdb", pkg));
   }
   for (const [path, content] of Object.entries(files)) {
@@ -21,8 +21,7 @@ export function makeFixture(files: Record<string, string>): string {
   return dir;
 }
 
-/** The manifest line fixtures rewrite to mount plugins; kept as one literal. */
-export const FIXTURE_DEFINE_APP =
+const APP_DEFINITION =
   `export default defineApp({ schema, apiPaths: ["internal"] });`;
 
 export const FIXTURE_APP = `
@@ -52,7 +51,7 @@ const schema = defineSchema({
   }),
 });
 
-${FIXTURE_DEFINE_APP}
+${APP_DEFINITION}
 `;
 
 export const FIXTURE_MESSAGES = `
