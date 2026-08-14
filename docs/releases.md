@@ -58,8 +58,8 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - runtime-only WebRTC test changes reuse verified published binaries in one
   macOS job and do not compile Rust.
 
-The benchmark is not part of `Fast CI`. It is its own required check on every
-pull request — see [Benchmark job](#benchmark-job).
+The benchmark is not part of `Fast CI`. It is its own required reporting check
+on every pull request — see [Benchmark job](#benchmark-job).
 
 Ordinary work is consolidated into `Select affected work` and one `Fast CI`
 job. This avoids paying a full runner minute for each short package or boundary
@@ -79,10 +79,11 @@ as a successful no-op, because the commit was already tested before it entered
 
 ## Benchmark job
 
-**The benchmark gates every pull request that touches a measured input.** It
+**The benchmark reports every pull request that touches a measured input.** It
 runs on the way into `canary` and again on the `canary` → `main` promotion,
-with the same harness and the same decision rule. A regression is then
-attributable to one pull request first and to the release second.
+with the same harness and classification rule. Its findings are informational
+and never block a merge. A regression is attributable to one pull request first
+and to the release second.
 
 It used to run on the promotion only. That made `Benchmark ✅` on a pull request
 into `canary` a two-second no-op, and a branch that cost most of the
@@ -354,16 +355,16 @@ it — and connect-readiness `p95` carries a scheduling tail that belongs to the
 host. Idle RSS and CPU are sampled once per side, as context beside the table
 rather than through it.
 
-Correctness and accounting failures fail the check outright. They are not
-converted into a performance verdict; they are reasons the numbers should not be
-believed.
+Correctness and accounting failures are reported prominently. They are not
+converted into a performance verdict or a merge veto; they are reasons the
+numbers should not be believed.
 
-A green `Benchmark` proves that this comparison found no regression large enough
-and consistent enough to stop the merge. It is not an approval of the whole
-performance vector. GitHub stores both sides' samples, the paired series, and
-the rendered comparison as a pull-request artifact and step summary for thirty
-days, and the paired deltas on the `bench-ledger` branch for good; Pedro and an
-agent still read the table and capture that judgment before merge.
+A completed `Benchmark` only proves that the reporting job ran. It is not an
+approval of the whole performance vector. GitHub stores both sides' samples,
+the paired series, and the rendered comparison as a pull-request artifact and
+step summary for thirty days, and the paired deltas on the `bench-ledger` branch
+for good; Pedro and an agent still read the table and capture that judgment
+before merge.
 
 The committed files under `bench/results/` are historical records from the
 superseded vendor-comparison policy. They are not current merge or release
