@@ -814,7 +814,7 @@ Individual hooks are not a product until real consumers can install the exact ar
 
 ## Acceptance criteria
 
-- [ ] All twelve `@ackerdb` publication units share one exact version, and GitHub release policy rejects drift.
+- [ ] All eleven `@ackerdb` publication units share one exact version, and GitHub release policy rejects drift.
 - [ ] Public npm and local beta publication include `@ackerdb/client-react` in dependency order and resume safely after interruption.
 - [ ] Packed clean browser and Expo consumers resolve the correct exports, peers, raw TypeScript/types, and optional `/ai` subpath.
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.

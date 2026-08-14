@@ -102,7 +102,7 @@ SFU, provider, device, or Internet-reachability evidence.
 | Shared client lifecycle | `packages/client/test/realtime-session.test.ts` | Equal handler keys share one peer and handler bundle; conflicting keys fail; transient loss recovers through a fresh generation; terminal failures and explicit disconnect prevent unintended recovery; release has one bounded cleanup request. |
 | Handler data plane | `packages/realtime/test/transport.test.ts` | A typed event reaches the handler, which performs an HTTP call, registered procedure call, and committed transaction before returning a typed event. |
 | Real native public session | `packages/realtime/native/webrtc/test/public-session.test.ts` | A public `AckerDBClient` and bundled server peer exchange a typed event and audio track; the handler performs its procedure/HTTP/transaction flow; release returns active/reserved sessions and owned server resources to zero. |
-| Packed consumer | `bun run test:packages` | The current twelve-package working tree was packed, static artifacts were verified, and a clean Bun consumer selected the Darwin arm64 optional native package before completing that same public native-session fixture. CI repeats this boundary from the exact clean-HEAD candidate artifact. |
+| Packed consumer | `bun run test:packages` | The current eleven-package working tree was packed, static artifacts were verified, and a clean Bun consumer selected the Darwin arm64 optional native package before completing that same public native-session fixture. CI repeats this boundary from the exact clean-HEAD candidate artifact. |
 
 The real same-host native fixture uses only its runtime's explicit isolated-LAN
 `network.allowPrivateCandidateAddresses` opt-in, because the two peers advertise

@@ -445,7 +445,7 @@ bun run publish:beta       # publish the next local beta
 bun run publish:beta:demo  # publish it, repin matching demo packages, reinstall
 ```
 
-The publisher accepts a dirty topic branch, assembles the exact thirteen-package
+The publisher accepts a dirty topic branch, assembles the exact eleven-package
 set, chooses the next registry-backed beta number, and restores every release
 manifest and generated native evidence byte-for-byte even after a failed
 publication. It can reuse a matching native artifact set from Verdaccio or
