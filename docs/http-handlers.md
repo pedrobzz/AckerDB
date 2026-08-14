@@ -85,7 +85,6 @@ typed from the generated module (`HttpHandlerCtx`):
 
 | Field | What it is |
 | --- | --- |
-| `log` | The application logger. |
 | `timestamp` | The runtime's read timestamp. |
 | `abortSignal` | Fires when the caller disconnects or the Runtime shuts down. |
 | `tx` | A transaction with application authority, plus mounted Plugin capabilities. |

@@ -7,8 +7,7 @@
     "./async": "./src/async.ts",
     "./client-transport": "./src/client-transport.ts",
     "./dom": "./src/dom.ts",
-    "./framework-functions": "./src/framework-functions.ts",
-    "./signals": "./src/signals.ts"
+    "./framework-functions": "./src/framework-functions.ts"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6"

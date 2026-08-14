@@ -3,8 +3,6 @@ import type { Registry } from "../../app/registry.ts";
 import type { Engine } from "../../database/engine.ts";
 import type { PluginRuntime } from "../../plugins/runtime.ts";
 import type { RealtimeRuntimeModule } from "../../realtime/host.ts";
-import type { AnalyticsStrategy } from "../../signals/analytics.ts";
-import type { LoggerStrategy } from "../../signals/logger.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
 import type { DeclaredJob } from "../../jobs/definition.ts";
@@ -25,8 +23,6 @@ export interface RuntimeOptions {
   /** The application scope vocabulary (`defineApp({ scopes })`); absent when none. */
   readonly scopes?: readonly string[];
   readonly limits?: ServiceLimits;
-  readonly loggerStrategy?: LoggerStrategy;
-  readonly analyticsStrategy?: AnalyticsStrategy;
   readonly hooks?: RuntimeHooks;
   /** Declared jobs, named and ordered by declareJobs(...). */
   readonly jobs?: readonly DeclaredJob[];

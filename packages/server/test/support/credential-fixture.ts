@@ -297,8 +297,6 @@ export interface CredentialFixture {
 export interface CredentialFixtureOptions {
   readonly limits?: ServiceLimits;
   readonly now?: RuntimeOptions["now"];
-  readonly loggerStrategy?: RuntimeOptions["loggerStrategy"];
-  readonly analyticsStrategy?: RuntimeOptions["analyticsStrategy"];
   readonly resolveScopes?: RuntimeOptions["resolveScopes"];
 }
 
@@ -324,8 +322,6 @@ export function fixture(
     // Parent identities hold the full vocabulary unless a test narrows it,
     // so child-credential intersections read a real issuer grant.
     resolveScopes: options.resolveScopes ?? (() => FIXTURE_SCOPES),
-    loggerStrategy: options.loggerStrategy,
-    analyticsStrategy: options.analyticsStrategy,
     ...(options.now === undefined ? {} : { now: options.now }),
     limits: options.limits ?? {
       ...PRODUCTION_LIMITS,

@@ -191,9 +191,8 @@ transport — WebSocket sessions, exposed HTTP functions, and MCP endpoints —
 through the Runtime's one composed credential authority, producing an ordinary
 `user` principal (`issuer: "ackerdb:credentials"`, subject = token id,
 non-expiring). A vault-prefixed bearer can never fall through to an application
-verifier. Fairness, File ownership, and analytics all key on the credential's own
-Identity, and a credential cannot be linked as an external account onto another
-Identity.
+verifier. Fairness and File ownership key on the credential's own Identity, and
+a credential cannot be linked as an external account onto another Identity.
 
 Limits live in `limits.credentials`: `maxPerIdentity`, `maxNameBytes`,
 `maxMetadataBytes`.

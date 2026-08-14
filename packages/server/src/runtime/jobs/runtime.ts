@@ -28,7 +28,6 @@ import { decode, isApplicationError, isResult, stableEncode, type OutcomeCode } 
 import type { SystemCtx, SystemRunner } from "../../app/system.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import { ValidationError } from "../../validation/error.ts";
-import type { Logger } from "../../signals/logger.ts";
 import {
   DEFAULT_JOB_RETENTION_MS,
   type AnyJob,
@@ -102,7 +101,6 @@ export interface RuntimeJobsOptions {
   readonly registry: Pick<Registry, "get">;
   readonly reads: RuntimeReadExecutor;
   readonly system: SystemRunner;
-  readonly log: Logger;
   readonly limits: RuntimeJobsLimits;
   readonly now: () => number;
   readonly signal: () => AbortSignal;
@@ -214,9 +212,7 @@ export class RuntimeJobs {
           });
         }
       }).catch((error) => {
-        // Arming still proceeds and enqueues re-wake the runner, but the
-        // failure leaves evidence.
-        this.options.log.error("job bootstrap failed", {
+        console.log("job bootstrap failed", {
           outcome: outcomeFromError(error).code,
         });
       });
@@ -561,7 +557,7 @@ export class RuntimeJobs {
       // page of runs alone wakes nothing on commit.
       this.stalled = claims === 0 && !(await this.reap(signal));
     } catch (error) {
-      this.options.log.error("job batch failed", {
+      console.log("job batch failed", {
         outcome: outcomeFromError(error).code,
       });
     }
@@ -861,7 +857,7 @@ export class RuntimeJobs {
     } catch (error) {
       // Shutdown or a failed settle commit: the lease expires and recovery
       // re-runs the run — at-least-once, as declared.
-      this.options.log.error("job settlement failed", {
+      console.log("job settlement failed", {
         outcome: outcomeFromError(error).code,
       });
     }

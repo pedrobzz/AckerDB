@@ -249,13 +249,6 @@ export class RuntimeHttp {
               // anything — crosses as the one sanitized `internal` outcome:
               // the handler authors its failures as Responses, so a thrown
               // message is never the handler speaking to the caller. The
-              // specifics stay in the server log. Rethrowing a plain Error
-              // keeps the abort conversion above intact.
-              //
-              // Describing the cause is itself handler-controlled work: an
-              // accessor that throws would otherwise escape past this frame
-              // carrying its own message to the caller, which is the exact
-              // leak the sanitizing throw below exists to close.
               let described: string;
               try {
                 described = cause instanceof Error
@@ -264,13 +257,10 @@ export class RuntimeHttp {
               } catch {
                 described = "<unreadable handler error>";
               }
-              try {
-                context.value.log.error(`http handler "${input.address}" failed`, {
-                  error: described,
-                });
-              } catch {
-                // Logging is best effort; the sanitized failure is the contract.
-              }
+              console.log(`http handler "${input.address}" failed`, {
+                error: described,
+              });
+              // Rethrowing a plain Error keeps the abort conversion above intact.
               throw new Error(`http handler "${input.address}" failed`);
             }
           }),

@@ -56,8 +56,8 @@ for the length of that transaction, which is the whole of "no downtime": the
 replacement already authenticates when the old one stops.
 
 The price is real and we accept it. The administrative Identity changes, because
-a credential *is* an Identity; Files owned by the old one and analytics
-attributed to it keep pointing at an Identity no credential answers to. The
+a credential *is* an Identity; Files owned by the old one keep pointing at an
+Identity no credential answers to. The
 orphaned row is left where every other revocation already leaves one — `revoke`
 has always deleted credential rows and never identities — because a cleanup
 special-cased to this one credential kind is the patch, not the fix. One row per

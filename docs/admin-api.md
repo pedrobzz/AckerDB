@@ -220,8 +220,8 @@ Three consequences worth knowing before you rotate:
 
 - **The administrative Identity changes.** A credential *is* an Identity, and
   the replacement is a new credential. Anything keyed on the old Identity —
-  Files it owns, analytics attributed to it — keeps pointing at an Identity no
-  credential answers to any more. Re-keying the row instead was considered and
+  Files it owns — keeps pointing at an Identity no credential answers to any
+  more. Re-keying the row instead was considered and
   rejected: the invalidation channel names a credential by its token id, so an
   old secret and its replacement sharing one id would be one subject, and
   "revoke the leaked secret's sessions but not the new one's" would not be
