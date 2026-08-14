@@ -1,6 +1,6 @@
 /**
  * Two-phase shutdown: leaving readiness is separable from draining, so an owner
- * of application-supervised services can release them through `system.run`
+ * of application-owned resources can release them through `system.run`
  * while the Runtime is still live, and only then close system-run admission.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -89,7 +89,7 @@ test("beginShutdown leaves readiness while liveness and system authority remain"
   expect(ready).toMatchObject({ ready: false, state: "draining" });
 
   // The whole point of the phase: trusted work still runs and commits.
-  const written = await runtime.system.run("services.cleanup", (ctx) =>
+  const written = await runtime.system.run("shutdown.cleanup", (ctx) =>
     ctx.tx((tx: Ctx) => tx.db.notes.insert({ body: "flushed" })));
   expect(written).toMatchObject({ ok: true });
   expect(engine.writer.query("SELECT body FROM notes").all()).toEqual([{ body: "flushed" }]);

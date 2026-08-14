@@ -25,7 +25,7 @@ hotfix/*     ──urgent pull request──────────────
   every merge still publishes a distinct `X.Y.Z-canary.N`. Declare a version
   step only when the work releases a new source version: run
   `bun run release:prepare <level>` after the branch is based on the current
-  target. The command updates all thirteen package manifests, their exact
+  target. The command updates all eleven package manifests, their exact
   workspace interdependencies, the generated native loader, and `bun.lock`,
   then creates the release-intent commit.
 - A `hotfix/*` pull request into `main` always declares exactly one `major`,
@@ -109,7 +109,7 @@ A benchmark-exercised input is one of:
 - the pull-request workflow or its path classifier.
 
 All other changes—including docs, tests, release metadata/version bumps,
-`cache`, `client-react`, the WebRTC media package, and native Rust—skip the
+`client-react`, the WebRTC media package, and native Rust—skip the
 benchmark immediately. Those paths either cannot affect the measured workload or
 have their own relevant checks. A real run compares the pull request's AckerDB
 with the base branch's AckerDB. It does not run Convex, SpacetimeDB, or another
@@ -372,10 +372,10 @@ holds ratios, not absolute numbers.
 
 ## Public npm delivery
 
-All twelve packages move in lockstep:
+All eleven packages move in lockstep:
 
-- seven user-facing packages: `@ackerdb/core`, `server`, `realtime`, `cache`,
-  `client`, `client-react`, and `cli`;
+- six user-facing packages: `@ackerdb/core`, `server`, `realtime`, `client`,
+  `client-react`, and `cli`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
 Every merge into `canary` prepares the current source version as

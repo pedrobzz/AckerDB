@@ -80,8 +80,7 @@ export type AckerDBStartupPhase =
   | "migrating"
   | "reconciling"
   | "loading-runtime"
-  | "issuing-credential"
-  | "starting-services";
+  | "issuing-credential";
 
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
@@ -122,8 +121,6 @@ export type { McpHttpOptions } from "../mcp/http-boundary.ts";
 export interface AckerDBServerStatus {
   readonly state: AckerDBServerState;
   readonly startupPhase: AckerDBStartupPhase | null;
-  /** The application service currently in setup, while that phase is active. */
-  readonly startupService: string | null;
   readonly connections: number;
   readonly preHelloConnections: number;
   readonly connectionRejections: number;
@@ -197,7 +194,6 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   reconciling: 5,
   "loading-runtime": 6,
   "issuing-credential": 7,
-  "starting-services": 8,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -737,7 +733,6 @@ export class AckerDBServer {
   private activeRuntime: Runtime | null = null;
   private lifecycle: AckerDBServerState = "starting";
   private startup: AckerDBStartupPhase | null = "listening";
-  private startupService: string | null = null;
   private connectionRejections = 0;
   /** Server-owned request ids for path-addressed calls. */
   private httpRequests = 0;
@@ -849,7 +844,6 @@ export class AckerDBServer {
     return Object.freeze({
       state: this.lifecycle,
       startupPhase: this.startup,
-      startupService: this.startupService,
       connections: this.connections.size,
       preHelloConnections: this.preHelloConnections(),
       connectionRejections: this.connectionRejections,
@@ -877,19 +871,6 @@ export class AckerDBServer {
       throw new Error("startup phases must advance monotonically");
     }
     this.startup = phase;
-    this.startupService = null;
-  }
-
-  /**
-   * Name the application service currently in setup. Services start one at a
-   * time and each may open a network connection, so without this a stalled
-   * handshake is an unattributable pause between "loading-runtime" and ready.
-   */
-  reportStartingService(name: string | null): void {
-    // A report that arrives after the phase moved on is stale, not wrong: a
-    // startup that failed or was interrupted still settles its supervisor.
-    if (this.startup !== "starting-services") return;
-    this.startupService = name;
   }
 
   /** Atomically attach the fully constructed Runtime and admit application traffic. */
@@ -917,7 +898,6 @@ export class AckerDBServer {
     }
     this.activeRuntime = runtime;
     this.startup = null;
-    this.startupService = null;
     this.lifecycle = "ready";
   }
 
@@ -967,7 +947,6 @@ export class AckerDBServer {
         ready,
         state,
         ...(this.startup === null ? {} : { phase: this.startup }),
-        ...(this.startupService === null ? {} : { service: this.startupService }),
       }, ready ? 200 : 503);
     }
     const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);

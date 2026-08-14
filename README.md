@@ -21,7 +21,6 @@ backups are verified by restoring them before they are accepted.
 | --- | --- |
 | `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
 | `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, and limits. |
-| `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
 | `@ackerdb/cli` | Application development, code generation, schema operations, backup/restore, status, and FileStore migration commands. |
@@ -41,17 +40,16 @@ Do not install a host-specific `@ackerdb/realtime-*` package directly.
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # app.ts, functions/, jobs/, services/, .ackerdb.config.json
+│   ├── server/                 # app.ts, functions/, jobs/, .ackerdb.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
         └── _generated/{server,api,types}.ts
 ```
 
-- `app.ts` default-exports `defineApp({ schema, plugins })`, the executable
-  assembly point for the root `defineSchema(...)` and explicitly mounted
-  server-side Plugins. Persistent tables use `defineTable`; `defineEventTable`
-  declares non-persistent live events.
+- `app.ts` default-exports `defineApp({ schema })`, the executable assembly
+  point for the root `defineSchema(...)`. Persistent tables use `defineTable`;
+  `defineEventTable` declares non-persistent live events.
 - Functions use the generated `query`, `mutation`, `procedure`,
   `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
   must declare `access` as
@@ -115,15 +113,6 @@ client.close();
 - [Vectors and exact similarity search](docs/vector-search.md) documents
   Float32 vector storage, external embedding generation, filtered cosine/L2/dot
   search, bounded ranking, reactivity, and backfill.
-- [Plugins](docs/plugins.md) documents private schemas, contracts, flat
-  dependency injection, direct context mounts, execution boundaries,
-  lifecycle, and alpha storage reset/drop behavior.
-- [Services](docs/services.md) documents application-owned external services —
-  broker consumers, job workers, webhook managers — their typed system
-  authority, sequential startup, readiness reporting, fatal-failure handling,
-  and the shutdown ordering that lets cleanup still write.
-- [Cache](docs/cache.md) documents disposable Cache semantics, namespaces,
-  limits, TTL and conditions, and built-in, Redis, Upstash, or custom stores.
 - [Files](docs/files.md) documents immutable File identity, local and generic
   S3-compatible stores, typed references, uploads, reactive metadata,
   revocable bearer/authenticated/validated URLs, deletion, and byte streaming.
@@ -210,8 +199,6 @@ acker dev [app-dir]
 acker start [app-dir]
 acker codegen [app-dir]
 acker openapi <document> [app-dir]
-acker plugin reset <mount> [app-dir]
-acker plugin drop <mount> [app-dir]
 acker reset [app-dir]
 acker status [app-dir]
 acker backup <artifact> [app-dir] [--metadata-only]

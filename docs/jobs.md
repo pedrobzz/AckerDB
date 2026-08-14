@@ -13,14 +13,13 @@ arguments, scheduling intent, dedupe identity. A Job run is one claim through
 one settlement, with its own timing, outcome, and error. A dedupe hit produces
 no run at all, because no handler executes.
 
-Jobs supersede scheduled tables (ADR-0018). A Job is not a Service: a Service
-is a long-lived external resource with its own lifecycle (ADR-0016); a Job is
-one unit of work with an envelope and a policy. No client can address a job —
-clients observe job state only through functions the application authors.
+Jobs supersede scheduled tables (ADR-0018). A Job is one unit of work with an
+envelope and a policy. No client can address a job — clients observe job state
+only through functions the application authors.
 
 ## Declare a job
 
-Jobs live in `jobs/` beside `functions/` and `services/`, named the same way:
+Jobs live in `jobs/` beside `functions/`, named the same way:
 `jobs/emails.ts` exporting `sendReceipt` is the job `emails.sendReceipt`.
 Configure a different directory with `jobs` in `.ackerdb.config.json`.
 
@@ -66,7 +65,7 @@ Each definition declares its envelope; `"procedure"` is the default.
 | --- | --- |
 | queries | `query()` — the reactive builder over `_ackerdb_jobs`, scoped to the definition — and `runs(job)`, the builder over one Job's runs |
 | mutations, transactions | `enqueue(args, opts?)`, `query()`, `runs(job)` |
-| procedures, system runs, services, job handlers | `enqueue`, `run`, `wait`, `cancel`, `retry`, `runAgain`, `forceRunAgain`, `reschedule`, `delete` |
+| procedures, system runs, job handlers | `enqueue`, `run`, `wait`, `cancel`, `retry`, `runAgain`, `forceRunAgain`, `reschedule`, `delete` |
 
 ```ts
 // In a mutation: transactional — the job exists iff this commit does.

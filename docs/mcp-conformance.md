@@ -56,15 +56,13 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs the eight public and five native lockstep `@ackerdb/*` tarballs,
+This gate packs the six public and five native lockstep `@ackerdb/*` tarballs,
 then installs the public packages plus the host-selected native package in a
 temporary consumer. It verifies:
 
 - every installed AckerDB package has the same exact version and packed internal
   dependencies contain literal versions rather than `workspace:` specifiers;
 - `@ackerdb/server/mcp` resolves and executes under Bun;
-- `@ackerdb/cache`, `@ackerdb/cache/redis`, and `@ackerdb/cache/upstash` resolve and
-  construct without opening external connections;
 - packaged `acker codegen` emits the schema-bound, vocabulary-typed `mcp` builder,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
@@ -75,7 +73,7 @@ temporary consumer. It verifies:
   `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides to point transitive
-`@ackerdb/*` versions at the seven tarballs under test. This isolates package
+`@ackerdb/*` versions at the six tarballs under test. This isolates package
 verification from whichever stable, canary, or local beta is currently
 published. The packed manifests themselves remain unchanged and are asserted
 after installation.

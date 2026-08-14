@@ -7,7 +7,7 @@ Updated: 2026-07-31
 AckerDB terminates authenticated signaling and gives one user handler one
 WebRTC peer. Media stays on native tracks. Typed events and bounded byte streams
 use one internal data channel. The handler may bridge any provider and call
-procedures, HTTP services, and transactions.
+procedures, HTTP endpoints, and transactions.
 
 This is not an SFU, conferencing server, provider SDK, capture library, or
 background-call framework. The initial envelope is a single AckerDB node

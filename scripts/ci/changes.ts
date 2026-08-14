@@ -119,7 +119,7 @@ const DEPENDENCY_FIELDS = Object.freeze([
  * source, so a path list alone would report a successful no-op for it.
  *
  * Workspace `@ackerdb/*` entries are excluded deliberately: every release step
- * rewrites all twelve of them in lockstep, and a version bump that ships the
+ * rewrites all eleven of them in lockstep, and a version bump that ships the
  * same code is exactly the case the benchmark must not spend a runner on.
  */
 export function measuredDependenciesChanged(base: string, head: string): boolean {

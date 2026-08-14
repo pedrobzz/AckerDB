@@ -7,7 +7,6 @@
  *   acker codegen [dir]  one-shot codegen
  *   acker openapi <file> [dir]  write the HTTP surface's OpenAPI 3.1 document
  *   acker reset [dir]    delete the local database (dev escape hatch)
- *   acker plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
  *   acker status [dir]   inspect a database as JSON
  *   acker backup <file> [dir] [--metadata-only]   create and verify a backup
  *   acker restore <file> [dir]  verify and restore into a fresh target
@@ -44,14 +43,6 @@ import {
   verifyBackupArtifact,
   type FreshProcessVerifier,
 } from "./operations.ts";
-import {
-  applyPluginStorageConsent,
-  executePluginStorageCommand,
-  planPluginStorage,
-  type PluginApplyResult,
-  type PluginPlanWire,
-  type PluginStorageConsent,
-} from "../plugins/storage.ts";
 import { migrateActiveFileStore } from "../files/command.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -70,26 +61,14 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
   process.once("SIGTERM", onSignal);
   try {
     const running = await startApp(config, { ...options, signal: startup.signal });
-    // A service that dies after setup ends the application the same way a
-    // signal does. AckerDB never restarts it; the process supervisor does.
-    const failure = await Promise.race([
-      shutdownRequested.then(() => null),
-      running.serviceFailure,
-    ]);
-    if (failure !== null) {
-      console.error(`[ackerdb] ${failure.message} — shutting down`);
-    }
+    await shutdownRequested;
     await running.drain();
-    if (failure !== null) throw failure;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     // Drain is the whole obligation: storage is committed and the engine is
-    // closed. Anything still holding the event loop past it is a resource a
-    // service cleanup failed to release — a surviving interval or socket — and
-    // waiting on it would keep this child alive forever, wedging the `acker
-    // dev` supervisor that awaits its exit. Exiting is scheduled, not
-    // immediate, so a failure still reaches the reporting boundary first.
+    // closed. Exiting is scheduled rather than immediate so failures still
+    // reach the reporting boundary first.
     setTimeout(() => process.exit(process.exitCode ?? 0), 0).unref();
   }
 }
@@ -101,8 +80,6 @@ function usage(): never {
   acker codegen [app-dir]
   acker openapi <document> [app-dir]
   acker generate [name] [app-dir]
-  acker plugin reset <mount> [app-dir]
-  acker plugin drop <mount> [app-dir]
   acker credential reset [app-dir]
   acker reset [app-dir]
   acker status [app-dir]
@@ -203,61 +180,6 @@ async function generateChild(appDir: string, request: GenerateRequest): Promise<
   const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   if (code !== 0) throw new Error("migration generation failed (see the error above)");
   return JSON.parse(lastJsonLine(out)) as GenerateResult;
-}
-
-/** Inspect the next Plugin requirement in a child with fresh user modules. */
-async function pluginPlanChild(appDir: string): Promise<PluginPlanWire> {
-  const child = Bun.spawn([process.execPath, CLI_PATH, "__plugin_plan", appDir], {
-    stdout: "pipe",
-    stderr: "inherit",
-  });
-  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  if (code !== 0) throw new Error("could not inspect Plugin storage (see the error above)");
-  return JSON.parse(lastJsonLine(out)) as PluginPlanWire;
-}
-
-/** Apply one displayed Plugin consent in a fresh child that re-proves it. */
-async function applyPluginChild(
-  appDir: string,
-  consent: PluginStorageConsent,
-): Promise<PluginApplyResult> {
-  const child = Bun.spawn([
-    process.execPath,
-    CLI_PATH,
-    "__plugin_apply",
-    appDir,
-    JSON.stringify(consent),
-  ], {
-    stdout: "pipe",
-    stderr: "inherit",
-  });
-  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  if (code !== 0) throw new Error("Plugin storage change failed (see the error above)");
-  return JSON.parse(lastJsonLine(out)) as PluginApplyResult;
-}
-
-function parsePluginConsent(json: string): PluginStorageConsent {
-  const parsed = JSON.parse(json) as Record<string, unknown>;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    Object.keys(parsed).some((key) =>
-      key !== "kind" && key !== "mount" && key !== "currentFingerprint" && key !== "targetFingerprint"
-    ) ||
-    (parsed.kind !== "reset" && parsed.kind !== "drop") ||
-    typeof parsed.mount !== "string" ||
-    typeof parsed.currentFingerprint !== "string" ||
-    typeof parsed.targetFingerprint !== "string"
-  ) {
-    throw new Error("__plugin_apply requires an exact Plugin storage consent");
-  }
-  return {
-    kind: parsed.kind,
-    mount: parsed.mount,
-    currentFingerprint: parsed.currentFingerprint,
-    targetFingerprint: parsed.targetFingerprint,
-  };
 }
 
 function isInteractive(): boolean {
@@ -464,8 +386,6 @@ async function dev(appDir: string): Promise<void> {
     {
       plan: () => planChild(appDir),
       generate: (request) => generateChild(appDir, request),
-      pluginPlan: () => pluginPlanChild(appDir),
-      applyPlugin: (consent) => applyPluginChild(appDir, consent),
       prompt: async <T,>(form: (ask: Ask) => Promise<T>): Promise<PromptOutcome<T>> => {
         promptCancel = new AbortController();
         try {
@@ -601,15 +521,6 @@ try {
       await generate(args[0], resolve(args[1] ?? "."));
       break;
     }
-    case "plugin": {
-      requireArgumentCount(args, 2, 3);
-      const action = args[0];
-      if (action !== "reset" && action !== "drop") usage();
-      const config = loadConfig(resolve(args[2] ?? "."));
-      const requirement = await executePluginStorageCommand(config, action, args[1]!);
-      console.log(`[ackerdb] ${action === "reset" ? "reset" : "dropped"} Plugin storage mount "${requirement.mount}"`);
-      break;
-    }
     case "__plan": {
       requireArgumentCount(args, 1, 1);
       const config = loadConfig(resolve(args[0]!));
@@ -628,19 +539,6 @@ try {
         if (!(error instanceof StaleConsentError)) throw error;
         console.log(JSON.stringify({ stale: true }));
       }
-      break;
-    }
-    case "__plugin_plan": {
-      requireArgumentCount(args, 1, 1);
-      console.log(JSON.stringify(await planPluginStorage(loadConfig(resolve(args[0]!)))));
-      break;
-    }
-    case "__plugin_apply": {
-      requireArgumentCount(args, 2, 2);
-      console.log(JSON.stringify(await applyPluginStorageConsent(
-        loadConfig(resolve(args[0]!)),
-        parsePluginConsent(args[1]!),
-      )));
       break;
     }
     case "credential": {

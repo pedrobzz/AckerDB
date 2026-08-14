@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import type { ReadRecorder } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
-import type { PluginReadExecution } from "../../plugins/runtime.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   BoundedExecutor,
@@ -18,6 +17,11 @@ export interface RuntimeReadExecutorOptions {
   readonly engine: ReadEngine;
   readonly limits: ReadLimits;
   readonly now: () => number;
+}
+
+export interface ReadExecution {
+  readonly connection: Database;
+  readonly reads: ReadRecorder | null;
 }
 
 /** Owns the bounded reader pool and every snapshot transaction boundary. */
@@ -45,7 +49,7 @@ export class RuntimeReadExecutor {
     requestBytes: number,
     reads: ReadRecorder | null,
     work: (
-      execution: Readonly<PluginReadExecution>,
+      execution: Readonly<ReadExecution>,
       commitVersion: bigint,
     ) => T | Promise<T>,
   ): Promise<T> {

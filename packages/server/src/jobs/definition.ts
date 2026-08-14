@@ -4,9 +4,8 @@
  * row in `_ackerdb_jobs` plus one `_ackerdb_job_runs` row per handler
  * execution.
  *
- * A Job is not a Service: a Service is a long-lived external resource with its
- * own lifecycle (ADR-0016); a Job is a unit of work with a durable row, an
- * envelope (claim → run → settle), and a policy. It is also not a function
+ * A Job is a unit of work with a durable row, an envelope (claim → run →
+ * settle), and a policy. It is not a function
  * module export: no client can address a job, and jobs reach clients only
  * through user-authored functions over the jobs tables.
  */
@@ -190,7 +189,7 @@ export type JobCtx<
 
 /**
  * The exact builder code generation publishes, bound to one application's
- * schema, Plugin capabilities, and jobs directory.
+ * schema and jobs directory.
  */
 export interface JobBuilder<
   S extends Schema,
@@ -428,7 +427,7 @@ export interface DeclaredJob {
 }
 
 /**
- * Resolve job modules to declarations, mirroring services and the function
+ * Resolve job modules to declarations, mirroring the function
  * registry: `jobs/emails.ts` exporting `sendReceipt` is `emails.sendReceipt`,
  * in deterministic module-then-export order. Helpers are ignored; an unbranded
  * export *shaped* like a job is the residue of forgetting `job(...)` and fails

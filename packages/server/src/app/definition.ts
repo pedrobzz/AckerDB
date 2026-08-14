@@ -1,10 +1,4 @@
 import { brand, hasBrand } from "../shared/identity.ts";
-import type { PluginCapabilities } from "../plugins/capabilities.ts";
-import type { PluginOperationKind } from "../plugins/contract.ts";
-import {
-  assemblePlugins,
-  type PluginMounts,
-} from "../plugins/assembly.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 import { ADMIN_API_PATH, DEFAULT_API_PATH } from "@ackerdb/core";
 import { apiPath } from "./functions.ts";
@@ -12,15 +6,11 @@ import { validateScopeVocabulary, type ScopeValues } from "../auth/scopes.ts";
 
 const APP_IDENTITY = Symbol.for("@ackerdb/server/App/v1");
 
-type EmptyPluginMounts = Readonly<Record<never, never>>;
-
 export interface App<
   S extends Schema = Schema,
-  Plugins extends PluginMounts = PluginMounts,
   Scopes extends ScopeValues | undefined = ScopeValues | undefined,
 > {
   readonly schema: S;
-  readonly plugins: Readonly<Plugins>;
   /** Groups beyond the framework's own that this application publishes in. */
   readonly apiPaths: readonly string[];
   /** The application's scope vocabulary; absent when it declares none. */
@@ -29,11 +19,9 @@ export interface App<
 
 export interface AppDefinition<
   S extends Schema,
-  Plugins extends PluginMounts = EmptyPluginMounts,
   Scopes extends ScopeValues | undefined = undefined,
 > {
   readonly schema: S;
-  readonly plugins?: Plugins;
   /**
    * The API paths this application publishes beyond the framework's own
    * `"api"` and `"admin"`. Code generation reads only this manifest — never
@@ -51,8 +39,6 @@ export interface AppDefinition<
 
 /** The application's exact root schema, as consumed by host code generation. */
 export type AppSchema<A extends App> = A["schema"];
-/** The application's exact Plugin mount map, as consumed by host code generation. */
-export type AppPlugins<A extends App> = A["plugins"];
 /**
  * The declared scope union, as consumed by host code generation: generated
  * server modules instantiate the function builders with it, so a function
@@ -61,22 +47,6 @@ export type AppPlugins<A extends App> = A["plugins"];
 export type AppScope<A extends App> = A["scopes"] extends ScopeValues
   ? A["scopes"][number]
   : never;
-
-/** Direct host capabilities for every mounted Plugin at one execution boundary. */
-export type AppPluginCapabilities<
-  A extends App,
-  Kind extends PluginOperationKind,
-> = {
-  readonly [Mount in keyof AppPlugins<A> as keyof PluginCapabilities<
-    NonNullable<AppPlugins<A>[Mount]["_contract"]>,
-    Kind
-  > extends never
-    ? never
-    : Mount]: PluginCapabilities<
-      NonNullable<AppPlugins<A>[Mount]["_contract"]>,
-      Kind
-    >;
-};
 
 /**
  * The groups the framework publishes on every application's behalf: the
@@ -123,9 +93,8 @@ function declaredApiPaths(value: unknown): readonly string[] {
 
 export function defineApp<
   const S extends Schema,
-  const Plugins extends PluginMounts = EmptyPluginMounts,
   const Scopes extends ScopeValues | undefined = undefined,
->(definition: AppDefinition<S, Plugins, Scopes>): App<S, Plugins, Scopes> {
+>(definition: AppDefinition<S, Scopes>): App<S, Scopes> {
   if (
     typeof definition !== "object" ||
     definition === null ||
@@ -138,7 +107,6 @@ export function defineApp<
   for (const option of Object.keys(definition)) {
     if (
       option !== "schema" &&
-      option !== "plugins" &&
       option !== "apiPaths" &&
       option !== "scopes"
     ) {
@@ -148,12 +116,8 @@ export function defineApp<
   if (!Object.hasOwn(definition, "schema") || !isSchema(definition.schema)) {
     throw new TypeError("application schema must be created with defineSchema(...)");
   }
-  const plugins = assemblePlugins(
-    definition.plugins === undefined ? {} : definition.plugins,
-  ).mounts as Readonly<Plugins>;
   const app = {
     schema: definition.schema,
-    plugins,
     apiPaths: declaredApiPaths(definition.apiPaths),
     scopes: (definition.scopes === undefined
       ? undefined

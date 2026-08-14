@@ -203,7 +203,7 @@ A `canary` pull request may keep the current source version — every merge
 still publishes a distinct `X.Y.Z-canary.N` — and declares exactly one major,
 minor, or patch step with `bun run release:prepare <level>` only when it
 releases a new source version. A `hotfix/*` pull request into `main` always
-declares exactly one step. All eight public packages and five host-specific
+declares exactly one step. All six public packages and five host-specific
 native packages stay on one stable source version with `workspace:X.Y.Z`
 interdependencies. A `canary` promotion may contain several accumulated steps
 and only needs to be newer than `main`.

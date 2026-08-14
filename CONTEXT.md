@@ -99,38 +99,12 @@ _Avoid_: Application error, returned `Err`
 **Nested mutation scope** — The atomic child scope owned by every nested
 registered application mutation. `Ok` merges its writes into the parent, `Err`
 discards them, and an unhandled failure poisons the whole ambient transaction.
-Plugin operations retain their separate pre-Result contract until that API is
-changed explicitly.
 _Avoid_: Independent transaction, ordinary helper call
 
 ## Framework runtime
 
-**Plugin** — A reusable backend unit that owns isolated state and functions
-and exposes a declared capability contract. A plugin never implicitly
-extends its host's schema or gains access to host state.
-
 **Application manifest** — The application's single executable assembly point,
-declaring its root schema and named plugin instances. Operational settings
-remain outside the manifest.
-_Avoid_: Plugin registry, plugins file
-
-**Service** — A long-lived external resource an application owns for one
-process generation: a broker consumer, a job worker, a webhook subscription.
-Unlike a plugin it is not isolated—it holds root application authority and
-executes trusted work through system runs. Unlike a function it has no address
-and no client can call it. The framework starts it, supervises it, and releases
-it; it never restarts it.
-_Avoid_: Background job, daemon, worker plugin
-
-**Service module** — A file in the application's service directory. Its path
-and export name give each service its exact name, exactly as function modules
-are addressed. Only the serving path imports these modules, so code generation
-and schema tooling never open a service's external connection.
-
-**Process generation** — One running application process, from the moment
-services start to the moment their cleanups finish. Every declared service
-starts exactly once per generation, and a development reload fully ends one
-generation before beginning the next.
+declaring its root schema. Operational settings remain outside the manifest.
 
 **Job definition** — A declared kind of durable application work, combining
 its handler with the policies governing its execution.
@@ -177,73 +151,9 @@ its execution time. A projected calendar occurrence is not an Upcoming Job, and
 its first Job run does not exist until the handler is claimed.
 _Avoid_: Upcoming run, forecast Job, projected occurrence
 
-**Plugin instance** — One configured occurrence of a plugin in an
-application. Each instance has its own identity and isolated state, even when
-several instances come from the same plugin definition. Every instance must
-be named exactly once in the application manifest's `plugins` object;
-dependency injection references that mount and never installs an instance.
-
-**Plugin factory** — An ordinary typed TypeScript function that creates a
-configured plugin instance. `definePlugin({ id, schema, create })`
-returns this callable factory directly; the pure `create` callback receives
-schema-bound function builders and returns the exported capabilities and any
-lifecycle declaration. Plugin packages ship their source contract, not
-plugin-specific generated bindings.
-
-**Plugin definition identity** — The stable package-level name shared by
-every instance and version of one plugin definition. It anchors the
-definition's one static private schema identity. Factory options cannot select
-or mutate a schema variant.
-
-**Plugin mount** — A plugin instance's unique key in the application
-manifest's `plugins` object. The mount names its server capability and
-persistent private state, and becomes a direct property on every eligible
-function context. It cannot collide with a built-in context field. In the alpha,
-changing the key creates a fresh mount; removing the old mount requires an
-explicit private-data drop.
-
-**Plugin dependency** — An explicit reference to another plugin
-instance's declared capabilities. The reference grants no access to the
-dependency's private state or implementation, does not create another mount,
-and is valid only when the referenced instance is mounted explicitly. A
-definition declares each dependency under a local slot name; that slot becomes
-a direct field on the plugin function context and is not re-exported.
-
-**Capability contract** — The typed operations and execution kinds a plugin
-dependency requires. Dependency injection targets this contract rather than a
-specific plugin definition identity. The contract owns the consumer's exposed
-call shape and compatibility metadata. Provider wiring compares canonical input
-and result semantics, not the provider's normalized handler input; the selected
-provider still owns runtime argument validation and normalization before its
-handler runs.
-
-**Plugin capability** — A plugin's declared server-only interface for
-its host and dependent plugins. A mount named `cache` is used as `ctx.cache`,
-not `ctx.plugins.cache`. Mounting a capability never creates a
-client-callable endpoint; the application must expose any client operation
-through its own function.
-
-**Exported plugin function** — A plugin-owned query, mutation, or
-procedure returned under `exports` by its plugin factory. The runtime binds
-it under the plugin's mount name while preserving its execution kind and
-isolation.
-
-**Plugin call** — Invocation of an exported plugin function through a mounted
-or injected capability. Queries and mutations use the caller's database context
-without adding a Result boundary or child savepoint. A procedure call starts an
-independent operation when no transaction exists.
-
-**Internal plugin function** — A plugin-owned function omitted from its
-factory's returned `exports`. Only the plugin itself may invoke it.
-
-**Plugin authority** — Identity or claims explicitly passed to a plugin
-function by its caller. A plugin never inherits the application's
-authentication context implicitly.
-
 **Invocation timestamp** — Unix time in milliseconds captured once when a
-top-level function begins execution. Nested application functions, plugin
-functions, and transactions inherit the same value explicitly as
-`ctx.timestamp`.
+top-level function begins execution. Nested application functions and
+transactions inherit the same value explicitly as `ctx.timestamp`.
 
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
@@ -252,122 +162,6 @@ procedure capabilities and external I/O outside a transaction, and may open
 short Result-aware transactions. It never inherits ambient caller authority or
 pretends to be a request, session, or registered outer function.
 _Avoid_: Local procedure call, background job, ambient system context
-
-**Plugin schema reset** — The v0.6.0 alpha recovery for an unsafe private
-schema change. After explicit operator consent, AckerDB deletes only that mounted
-plugin's private data and recreates its current schema. Safe changes
-reconcile without data loss; plugins have no migration API or history in
-this alpha. Development may request consent interactively; non-interactive
-startup refuses until `acker plugin reset <mount>` is run explicitly.
-
-**Plugin lifecycle** — The AckerDB-managed startup and shutdown boundary for a
-plugin's external resources. Plugin construction is side-effect free;
-resources start only after dependencies and private schemas are ready and stop
-in reverse dependency order.
-
-**Transactional capability** — A plugin capability whose work participates
-in the caller's database transaction. It may be available to queries and
-mutations, with each function receiving only the operations its execution kind
-permits.
-
-**External capability** — A plugin capability that crosses the AckerDB process
-boundary to another service. It is available only to procedures and never from
-inside a database transaction.
-
-**Cache** — Disposable key/value acceleration whose contents are never a
-source of truth. Clearing every entry may reduce performance but cannot change
-an application's correct result or behavior.
-_Avoid_: Durable store, key/value database
-
-**Cache expiration** — The point after which an entry is a cache miss,
-regardless of whether its stored bytes have been reclaimed. Physical deletion
-is bounded cache maintenance, not scheduled application work. `set` replaces
-the previous deadline. For the built-in store, a positive safe-integer duration
-produces `ctx.timestamp + expiresInMs` and is compared with the frozen
-invocation timestamp. External stores receive the duration and use their native
-clock. Omitting the duration means no deadline in either case.
-
-**Invalid cache expiration** — An `expiresInMs` that is zero, negative,
-fractional, non-finite, unsafe as an integer, or would produce an unsafe
-built-in deadline. It throws `InvalidCacheExpirationError` before the Cache
-store is called.
-
-**Cache capacity** — The finite logical-byte and entry-count budget owned by a
-built-in cache instance. It defaults to 64 MiB total, 1 MiB per normalized key
-plus encoded payload, and 10,000 entries. All limits are configurable but never
-unlimited. Every entry remains evictable under capacity pressure, including
-entries without an expiration deadline. The budget is shared across all
-namespaces in that instance.
-
-**Cache entry too large** — A `set` whose normalized key and encoded payload
-exceed the instance's per-entry limit. It throws `CacheEntryTooLargeError`;
-`set` returns `false` only when its atomic `if` condition is not satisfied.
-
-**Cache eviction** — Capacity reclamation that removes expired entries first
-and then entries in oldest-write order. Reads never update eviction metadata.
-
-**Cache maintenance** — Bounded physical reclamation performed by the built-in
-store on its write path. Cache reads never delete, update metadata, start a
-timer, or perform a background sweep; external stores own their physical TTL
-and eviction machinery.
-
-**Cache API** — AckerDB's small TypeScript-native interface for key/value cache
-operations, expiration, and conditional writes. Its semantics are familiar to
-Redis users, but it is not a Redis command or protocol compatibility surface.
-It is not a query capability: AckerDB queries read the source database directly.
-_Avoid_: Redis client, Redis-compatible API
-
-**Cache store** — The backend-independent storage contract required by a cache
-plugin instance. The built-in store uses plugin-owned AckerDB storage;
-external stores cross the procedure-only capability boundary. A custom store is
-defined by `defineCacheStore({ keyPrefix, open })`; `open` returns only `get`,
-atomic conditional `set`, `delete`, and an optional `close`.
-
-**Cache-store adapter** — A bridge from an external cache service or client to
-the Cache store contract. It owns vendor serialization and semantics without
-exposing the vendor client through AckerDB. Every external adapter requires an
-explicit application-and-environment key prefix; Cache appends its encoding
-version, plugin mount, namespace, key type, and key. AckerDB owns the adapter's
-resource lifecycle.
-
-**Cache package** — The lockstep `@ackerdb/cache` package. Its root exports the
-Cache plugin and store-authoring contract; `@ackerdb/cache/redis` and
-`@ackerdb/cache/upstash` expose first-party adapters without creating separate
-packages or vendor-specific context APIs.
-
-**Cache namespace** — A named key partition declared by a cache plugin
-instance with one value contract. It is only a typed validation and key-prefix
-facade: it adds no capacity, eviction, lifecycle, or storage boundary. A stored
-value that no longer satisfies the contract is a cache miss and may remain
-physically stored until ordinary eviction.
-
-**Cache key** — A string, finite number, or bigint normalized to its textual
-representation with an internal type tag within one cache namespace. Strings,
-numbers, and bigints with the same visible text remain distinct; numeric `0`
-and `-0` intentionally share a key. Compound identity is an explicit string
-composed by the caller.
-
-**Cache payload** — A cache value encoded exactly once with the AckerDB wire
-format before it reaches a Cache store. Stores treat the encoded string as
-opaque and return it unchanged for decoding.
-
-**Cache miss** — The absence of a usable cache entry, represented by
-`undefined`. `null` remains a valid cache value, including for negative caching.
-
-**Cache presence** — A non-expired encoded entry exists at the normalized store
-key. Atomic `set` conditions test presence before decoding or namespace
-validation, so a malformed or namespace-invalid entry may be present while
-`get` reports a cache miss. An unconditional `set` replaces it.
-
-**Cache deletion** — One store operation that physically removes the encoded
-key without decoding its payload. It returns whether the entry was live at the
-invocation timestamp: malformed and namespace-invalid live entries return
-`true`, while an expired row is reclaimed but returns `false`.
-
-**Cache store failure** — A storage, transport, timeout, authentication, or
-connection failure reported as `CacheStoreError` with its original cause. It is
-never converted into a miss or conditional result; callers choose explicitly
-whether to catch it and fail open.
 
 ## Durable jobs
 
@@ -601,7 +395,7 @@ _Avoid_: Track declaration, conflated setup and connected event
 Initial offer, answer, and ICE trickle use an established HTTP POST/PATCH shape.
 After the reliable internal data channel opens, later descriptions and
 candidates travel as internal control frames on that channel. No WebSocket,
-second socket, or permanent HTTP polling loop participates. AckerDB services
+second socket, or permanent HTTP polling loop participates. AckerDB handles
 the native `negotiationneeded` event through serialized perfect negotiation so
 ordinary peer mutations do not require application signaling.
 _Avoid_: Application signaling, media-signaling WebSocket

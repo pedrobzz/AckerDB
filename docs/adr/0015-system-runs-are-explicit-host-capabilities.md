@@ -11,14 +11,14 @@ ownership.
 We therefore expose one explicit capability on the programmatically running
 application: `system.run(name, callback, { signal? })`. Possession of that
 handle is the authority check. AckerDB creates no process-global current app,
-ambient service locator, remote endpoint, shorter alias, or Plugin requirement.
+ambient locator, remote endpoint, or shorter alias.
 
 Every call starts under Runtime's pristine execution snapshot with the frozen
 system principal. Ambient request, session, transaction, MCP, realtime, and
 user authority never cross into it. The callback receives the same underlying
-procedure-context implementation used by HTTP procedures, including mounted
-procedure capabilities, one invocation timestamp, an abort signal, and
-`ctx.tx`. Identity-linking methods retain their ordinary user-principal checks;
+procedure-context implementation used by HTTP procedures, including one
+invocation timestamp, an abort signal, and `ctx.tx`. Identity-linking methods
+retain their ordinary user-principal checks;
 system work never receives a fabricated user and those calls are denied.
 When a run is started from transaction-owned async work, the callback still
 starts pristine and may perform non-writer work, but writer operations in that

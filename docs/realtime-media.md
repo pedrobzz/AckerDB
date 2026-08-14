@@ -103,7 +103,7 @@ server peer. `ctx.on`/`ctx.send` and `ctx.onStream`/`ctx.openStream` are
 inferred from the declaration. Returning from `handler` does not close the
 session.
 
-## Call procedures, HTTP services, and transactions
+## Call procedures, HTTP endpoints, and transactions
 
 Realtime handlers receive the same procedure capabilities as ordinary
 procedures and `sseProcedure` handlers. Registered procedures remain directly
@@ -132,11 +132,9 @@ handler(ctx) {
 ```
 
 The nested procedure revalidates its arguments and access policy and keeps the
-same authenticated principal, abort signal, Plugin capabilities, result
-contract and transaction-poisoning rules. Generated realtime
-contexts include the application's procedure capabilities and their
-transaction counterparts, so procedures using mounted Plugins remain callable
-without casts.
+same authenticated principal, abort signal, result contract, and
+transaction-poisoning rules. Generated realtime contexts include the
+application's procedure capabilities and their transaction counterparts.
 
 HTTP calls use ordinary `fetch`; pass `ctx.abortSignal` so disconnecting the
 generation cancels the request:

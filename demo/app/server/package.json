@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@ackerdb/cache": "0.14.2-canary.4",
     "@ackerdb/core": "0.14.2-canary.4",
     "@ackerdb/server": "0.14.2-canary.4",
     "@demo/ackerdb-codegen": "workspace:*",

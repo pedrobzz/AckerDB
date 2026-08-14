@@ -1,4 +1,3 @@
-import { cachePlugin } from "@ackerdb/cache";
 import {
   v,
   defineApp,
@@ -160,10 +159,4 @@ const schema = defineSchema({
   ),
 });
 
-const cache = cachePlugin({
-  namespaces: {
-    setupState: v.object({ completedAt: v.int() }),
-  },
-});
-
-export default defineApp({ schema, plugins: { cache } });
+export default defineApp({ schema });

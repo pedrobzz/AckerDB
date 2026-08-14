@@ -32,9 +32,9 @@ collide — application table names must start with a letter. Enqueue is a row
 insert in the caller's own transaction: the job exists if and only if the
 mutation committed.
 
-Jobs are declared in a `jobs/` directory, discovered and named like functions
-and services, for ADR-0016's reasons: typed authority without a manifest
-cycle, and no handler imports in schema tooling. Each definition declares its
+Jobs are declared in a `jobs/` directory, discovered and named like functions:
+typed authority without a manifest cycle, and no handler imports in schema
+tooling. Each definition declares its
 envelope. A mutation-kind job collapses claim, handler, and settle into one
 writer transaction — exactly-once, no external I/O, the old scheduled-table
 guarantee kept. A procedure-kind job (the default) is claimed under a lease,
@@ -72,6 +72,6 @@ mutation holds the serialized writer and must not wait behind it.
 
 What jobs deliberately do not do: run handlers in worker threads or
 subprocesses, rate-limit by time window, express declarative DAGs, order
-strictly across retry backoffs, or distribute across machines. A Service
-owning an external queue remains the escape hatch for workloads outside the
-single-node envelope.
+strictly across retry backoffs, or distribute across machines. An
+application-owned external queue remains the escape hatch for workloads outside
+the single-node envelope.

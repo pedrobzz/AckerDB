@@ -117,9 +117,9 @@ no group leaves the default one, rather than waiving the rule.
 The agreement is enforced at startup rather than in the type system. A widened
 `apiPath` *is* a compile error, because a group that is not one literal breaks
 the type-level tree selection — a type problem with a type fix. Whether a
-literal names a group this application declared is a manifest disagreement, and
-manifest disagreements are startup refusals here, as schema and plugin
-mismatches already are. Threading the declared groups through every builder as
+a literal names a group this application declared is a manifest disagreement,
+and manifest disagreements are startup refusals here, as schema mismatches
+already are. Threading the declared groups through every builder as
 a sixth type parameter would buy an earlier error and pay for it in the
 signature of every kind.
 

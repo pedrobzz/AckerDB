@@ -1,5 +1,4 @@
 import type { Engine } from "../../database/engine.ts";
-import type { PluginRuntime } from "../../plugins/runtime.ts";
 import type { RealtimeRuntime } from "../../realtime/host.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
@@ -28,7 +27,6 @@ const utf8 = new TextEncoder();
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
-  readonly pluginRuntime?: PluginRuntime;
   readonly realtime?: RealtimeRuntime;
   readonly reads: RuntimeReadExecutor;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
@@ -235,7 +233,6 @@ export class RuntimeControl {
       const errors = settled.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : []);
       try {
-        await this.options.pluginRuntime?.stop(draining);
       } catch (error) {
         errors.push(error);
       }
@@ -256,7 +253,6 @@ export class RuntimeControl {
       timeout = setTimeout(() => {
         deadlineReached = true;
         this.shutdownController.abort(deadlineError);
-        void this.options.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
       }, Math.max(0, deadlineAtMs - Date.now()));
     });

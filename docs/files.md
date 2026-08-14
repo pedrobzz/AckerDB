@@ -277,7 +277,7 @@ belong in application tables that reference `FileId`.
 
 ## Work with bytes in backend code
 
-Procedures, raw HTTP handlers, Services, and system runs may stream bytes.
+Procedures, raw HTTP handlers, and system runs may stream bytes.
 Queries and mutations remain metadata-only so external I/O never holds the
 database writer.
 

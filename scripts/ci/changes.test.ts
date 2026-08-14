@@ -82,7 +82,6 @@ describe("benchmark selection", () => {
       "README.md",
       "docs/releases.md",
       "packages/core/test/protocol.test.ts",
-      "packages/cache/src/storage/store.ts",
       "packages/client-react/src/provider.tsx",
       "packages/realtime/src/session.ts",
       "packages/realtime/native/webrtc/src/peer.rs",

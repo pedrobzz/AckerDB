@@ -8,7 +8,7 @@
  * - mutations: `enqueue` (a same-transaction Job insert: the Job exists iff the
  *   mutation commits) plus the read builders. Awaiting and transitions are
  *   absent by construction — a mutation holds the writer and cannot wait on it.
- * - procedures, system runs, services, and job handlers: `enqueue`, `run`,
+ * - procedures, system runs, and job handlers: `enqueue`, `run`,
  *   `wait`, `cancel`, `retry`, `runAgain`, `forceRunAgain`, `reschedule`,
  *   `delete` — each transition in its own transaction. This is the whole
  *   administration surface: state and run history move only through it, so no
@@ -85,7 +85,7 @@ export function mutationJobsNamespace(
   return Object.freeze(root);
 }
 
-/** ctx.jobs for procedures, system runs, services, and job handlers. */
+/** ctx.jobs for procedures, system runs, and job handlers. */
 export function procedureJobsNamespace(jobs: RuntimeJobs): unknown {
   const root: Record<string, unknown> = Object.create(null);
   for (const name of jobs.declaredNames) {

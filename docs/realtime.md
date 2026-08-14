@@ -14,7 +14,7 @@ HTTP, where the first frame is the greeting. Session frames carry no version,
 because the peer's build was settled by the handshake their connection opened
 with. Missing, extra, out-of-range, or malformed framework fields are
 `malformed`. There is no compatibility or negotiation layer between versions:
-all thirteen packages ship lockstep, so AckerDB X speaks to AckerDB X and
+all eleven packages ship lockstep, so AckerDB X speaks to AckerDB X and
 mixing them is one command away from fixed.
 
 ## Query transition model

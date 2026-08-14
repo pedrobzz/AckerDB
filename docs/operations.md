@@ -296,58 +296,6 @@ non-null while `lastCheckpoint` is null. Busy or residual frames mean the
 invocation did not fully checkpoint the WAL; checkpointing is not a substitute
 for a commit acknowledgement or verified backup.
 
-## Plugin storage reconciliation
-
-Each mounted Plugin owns a private SQLite scope identified by its manifest
-mount and stable definition ID. Its physical tables and tag records are
-isolated from the root application schema and from every other mount, including
-another instance of the same Plugin definition. Startup reconciles all desired
-Plugin scopes after the root schema and migration chain are ready and before
-Plugin lifecycle callbacks run.
-
-Safe private-schema changes use the normal schema planner and are applied
-automatically in one Plugin-schema transaction. The v0.6.0 alpha deliberately
-has no Plugin migration or rename API. AckerDB instead produces an exact pending
-requirement when:
-
-- a schema change is unsafe or conflicts with private rows: reset that mount;
-- the definition ID at an existing mount changes: reset that mount; or
-- a stored mount is no longer in `defineApp({ plugins })`: drop that stale
-  mount.
-
-Changing a mount name therefore creates a fresh Plugin instance and leaves the
-old name as a pending drop; AckerDB never guesses that the two names are a rename.
-A reset drops only the named mount's private state and creates its target
-schema. A drop removes only the named stale scope. Neither action grants
-authority over root application tables or another Plugin mount.
-
-Interactive `acker dev` prints the affected mount, reason, safe changes that
-would otherwise apply, and data refusals, then asks with a default of no. A
-decline keeps the server down until the manifest changes or the requirement is
-resolved. `acker start` and non-interactive development never clear Plugin data;
-startup refuses and prints the exact recovery command instead:
-
-```sh
-acker plugin reset <mount> [app-dir]
-acker plugin drop <old-mount> [app-dir]
-```
-
-These are not arbitrary deletion commands. Each command re-imports the current
-manifest, re-plans storage in a fresh process, and executes only a currently
-pending requirement whose current and target fingerprints still match. A
-changed manifest or storage state makes old consent stale rather than widening
-it. `acker reset [app-dir]` remains the separate development escape hatch that
-acquires the same database ownership and removes only `data.db`, its exact
-SQLite sidecars, and exact UUIDv4 AckerDB initialization/restore staging files.
-It refuses while startup or restore is live, retains the coordination database,
-retains exact coordination crash residues, and leaves every unrelated entry in
-`.ackerdb` untouched.
-
-Because unsafe Plugin evolution is reset-only in this alpha, a Plugin's design
-must make that data disposable or keep its durable source of truth elsewhere.
-See [Plugins](plugins.md#private-schema-changes-in-the-alpha) and
-[Cache](cache.md), whose private state is disposable by definition.
-
 ## Health and protected status
 
 The server exposes three versioned JSON endpoints:
@@ -487,12 +435,11 @@ The exact manifest format is version 2 with `sha256`, `bytes`,
 included byte count. A failed verification removes the candidate database and
 File artifacts instead of publishing an unverified backup.
 
-The SQLite artifact includes AckerDB's commit state,
-retained mutation replay ledger, stored Plugin inventory, and all private
-tables. Its schema fingerprint covers both the root schema and those Plugin
-scopes. Restore therefore preserves still-retained mutation request IDs and
-their exact-once replay results; the full engine open also validates the ledger
-counters and stored Plugin layouts before the artifact is accepted. By default,
+The SQLite artifact includes AckerDB's commit state and retained mutation replay
+ledger. Its schema fingerprint covers the root schema. Restore therefore
+preserves still-retained mutation request IDs and their exact-once replay
+results; the full engine open also validates the ledger counters before the
+artifact is accepted. By default,
 the adjacent `.files` directory contains the corresponding immutable File bytes
 under framework File IDs; private physical object keys remain only inside the
 verified database. `--metadata-only` records an explicit `metadata-only` mode
@@ -500,8 +447,8 @@ and omits that directory for operators who protect their File store separately.
 
 `acker restore` validates the exact manifest shape, digest, size, commit version,
 and target App storage layout in a fresh verification process before claiming
-the target. The layout comparison includes the root schema plus every Plugin
-mount, definition ID, and private schema; restore never reconciles either side.
+the target. The layout comparison uses the root schema; restore never
+reconciles either side.
 For an included backup it also verifies every File against the database,
 refuses to replace an existing object key, and restores bytes to the target
 App's configured active File store while the verified database remains staged.

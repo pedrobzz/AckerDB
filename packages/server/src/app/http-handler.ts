@@ -34,7 +34,7 @@ type EmptyContextCapabilities = Readonly<Record<never, never>>;
  * absent: raw routes resolve no credential, so `Authorization` is an ordinary
  * request header and verification — HMAC, static-token comparison, or nothing
  * — is the handler's own job. `tx` carries application authority on the same
- * trust rationale as a Service: application-owned code at the boundary.
+ * trust rationale as other application-owned code at the boundary.
  */
 export type HttpHandlerCtx<
   S extends Schema = Schema,

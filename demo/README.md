@@ -117,17 +117,6 @@ Order and item status changes are recorded as events. The Customer App listens o
 
 When a guest orders an item, a schedule is set. If that item sits without a status advance for more than **2 minutes**, the Admin Panel gets a toast reminding staff to pick it up — a small ops nudge powered by AckerDB schedules, not a client-side timer.
 
-### Plugin-mounted Cache
-
-The server manifest mounts `@ackerdb/cache` with a validated `setupState`
-namespace. The idempotent seed mutation checks that Cache before reading the
-immutable setup marker from SQLite, fills it after a database hit, and writes it
-alongside a newly created marker. The database remains authoritative: clearing
-the Cache changes only the next seed call from a Cache hit to a database read.
-Cache is server-only and is not used by reactive Queries.
-
----
-
 ## Scripts
 
 From `demo/`:

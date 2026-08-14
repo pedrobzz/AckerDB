@@ -73,11 +73,6 @@ export function listFunctionModules(config: AppConfig): ModuleFile[] {
   return listModules(config.functionsDir, "function");
 }
 
-/** Deterministically list application service module files (sorted by key). */
-export function listServiceModules(config: AppConfig): ModuleFile[] {
-  return listModules(config.servicesDir, "service");
-}
-
 /** Deterministically list job module files (sorted by key). */
 export function listJobModules(config: AppConfig): ModuleFile[] {
   return listModules(config.jobsDir, "job");
@@ -122,17 +117,6 @@ export async function importFunctionModules(
   config: AppConfig,
 ): Promise<Record<string, Record<string, unknown>>> {
   return importModules(listFunctionModules(config));
-}
-
-/**
- * Import service modules. Only the serving path calls this: manifest
- * inspection, code generation, and migration tooling never do, which is what
- * keeps a broker connection out of `acker codegen`.
- */
-export async function importServiceModules(
-  config: AppConfig,
-): Promise<Record<string, Record<string, unknown>>> {
-  return importModules(listServiceModules(config));
 }
 
 /**

@@ -45,12 +45,6 @@ import {
 } from "../../auth/credential-context.ts";
 import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
 import {
-  PluginRuntime,
-  type PluginInvocationCapabilities,
-  type PluginReadExecution,
-  type PluginWriteExecution,
-} from "../../plugins/runtime.ts";
-import {
   ReactiveCommit,
   type Subscriber,
 } from "../../subscriptions/reactive/contract.ts";
@@ -83,7 +77,7 @@ import {
   queryJobsNamespace,
 } from "../jobs/namespace.ts";
 import type { RuntimeJobs } from "../jobs/runtime.ts";
-import { RuntimeReadExecutor } from "./read.ts";
+import { RuntimeReadExecutor, type ReadExecution } from "./read.ts";
 import { applicationDatabase, RuntimeFiles } from "../../files/namespace.ts";
 import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
@@ -173,7 +167,6 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly limits: ServiceLimits;
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
-  readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
   /** Application scopes plus the framework's: what a credential grant expands against. */
   readonly vocabulary: readonly string[];
@@ -343,7 +336,7 @@ export class RuntimeFunctionExecutor<C> {
     fn: AnyRegistered,
     args: unknown,
     principal: Principal,
-    execution: Readonly<PluginReadExecution>,
+    execution: Readonly<ReadExecution>,
   ): Promise<unknown> {
     const db = makeDbReader(
       this.options.engine,
@@ -452,26 +445,6 @@ export class RuntimeFunctionExecutor<C> {
     const currentTimestamp = typeof timestamp === "function"
       ? timestamp
       : () => timestamp;
-    const initialTimestamp = currentTimestamp();
-    const plugins = this.options.pluginRuntime?.bindProcedure({
-      invocation: this.pluginInvocationCapabilities(initialTimestamp),
-      abortSignal: signal,
-      runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
-      runMutation: (work) => this.executePluginWrite(
-        "mutation",
-        fairnessKey,
-        signal,
-        requestBytes,
-        work,
-      ),
-      runTransaction: (work) => this.executePluginWrite(
-        "transaction",
-        fairnessKey,
-        signal,
-        requestBytes,
-        work,
-      ),
-    }) ?? {};
     const value = Object.freeze({
       ...(surface === "http" ? {} : { auth: principal }),
       abortSignal: signal,
@@ -480,7 +453,6 @@ export class RuntimeFunctionExecutor<C> {
       },
       jobs: procedureJobsNamespace(this.options.jobs()),
       files: this.fileProcedures.capability(principal, signal),
-      ...plugins,
       tx: <R>(work: (ctx: TxCtx) => R) =>
         this.executeWrite(
           "transaction",
@@ -543,19 +515,14 @@ export class RuntimeFunctionExecutor<C> {
     db: unknown,
     principal: Principal,
     timestamp: number,
-    execution: Readonly<PluginReadExecution>,
+    execution: Readonly<ReadExecution>,
   ): QueryCtx {
-    const plugins = this.options.pluginRuntime?.bindQuery({
-      ...execution,
-      invocation: this.pluginInvocationCapabilities(timestamp),
-    }) ?? {};
     return Object.freeze({
       db: applicationDatabase(db),
       auth: principal,
       timestamp,
       jobs: queryJobsNamespace(this.options.jobs(), db),
       files: this.options.files.query(db),
-      ...plugins,
     }) as QueryCtx;
   }
 
@@ -566,10 +533,6 @@ export class RuntimeFunctionExecutor<C> {
     writes: WriteCollector,
     extras?: Record<string, unknown>,
   ): MutationCtx {
-    const plugins = this.options.pluginRuntime?.bindMutation({
-      writes,
-      invocation: this.pluginInvocationCapabilities(timestamp),
-    }) ?? {};
     return Object.freeze({
       ...extras,
       db: applicationDatabase(db),
@@ -585,7 +548,6 @@ export class RuntimeFunctionExecutor<C> {
           ? at
           : Math.min(writes.fileCleanupAt, at);
       }, () => markOneTimeResult(writes)),
-      ...plugins,
     }) as MutationCtx;
   }
 
@@ -745,32 +707,6 @@ export class RuntimeFunctionExecutor<C> {
     return nextDueJobAt(this.options.engine, connection, inProcessIds, notBefore);
   }
 
-  private executePluginQuery<T>(
-    fairnessKey: string,
-    signal: AbortSignal,
-    requestBytes: number,
-    work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
-  ): Promise<T> {
-    return this.options.reads.execute(fairnessKey, signal, requestBytes, null, work);
-  }
-
-  private executePluginWrite<T>(
-    operation: "mutation" | "transaction",
-    fairnessKey: string,
-    signal: AbortSignal,
-    requestBytes: number,
-    work: (execution: Readonly<PluginWriteExecution>) => T | Promise<T>,
-  ): Promise<T> {
-    const execute = () => this.executeWrite(
-      operation,
-      fairnessKey,
-      signal,
-      requestBytes,
-      (_db, writes) => work(Object.freeze({ writes })),
-    );
-    return execute();
-  }
-
   private async linkAccount(
     principal: Principal,
     rawBearerToken: string,
@@ -859,12 +795,6 @@ export class RuntimeFunctionExecutor<C> {
     if (result === "last_account") {
       throw new AckerDBError("conflict", "cannot unlink the final external account");
     }
-  }
-
-  private pluginInvocationCapabilities(timestamp: number): Readonly<PluginInvocationCapabilities> {
-    return Object.freeze({
-      timestamp,
-    } satisfies PluginInvocationCapabilities);
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

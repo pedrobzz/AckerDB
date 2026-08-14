@@ -11,30 +11,22 @@ import {
   type AppSystemCtx,
   Engine,
   LocalFileStore,
-  PluginRuntime,
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
   type FileStore,
   type RuntimeOptions,
   assertCredentialVerifier,
-  assemblePlugins,
   createOidcVerifier,
   ensureAdminCredential,
-  desiredPluginMounts,
   type CredentialVerifier,
   type EngineCloseDisposition,
   type ScopeResolver,
   type RealtimeRuntimeModule,
   type SystemRunner,
   MigrationError,
-  PluginStorageRequirementsError,
-  reconcilePluginStorage,
   reconcile,
-  declareServices,
   declareJobs,
-  ServiceError,
-  ServiceRuntime,
   UnsafeSchemaChange,
   validateHistoryPrefix,
 } from "@ackerdb/server";
@@ -45,12 +37,10 @@ import {
   importConfiguredDefault,
   importFunctionModules,
   importJobModules,
-  importServiceModules,
 } from "./manifest.ts";
 import { resolveAppPackage } from "./optional-package.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
-import { pluginStorageRecourse } from "../plugins/storage.ts";
 import { fileStoreIdentity } from "../files/identity.ts";
 
 export interface RunningApp<A extends App = App> {
@@ -58,14 +48,6 @@ export interface RunningApp<A extends App = App> {
   runtime: Runtime;
   engine: Engine;
   system: SystemRunner<AppSystemCtx<A>>;
-  /** Declared application service names, in start order. */
-  services: readonly string[];
-  /**
-   * Resolves when a service reports an unrecoverable failure after setup, and
-   * otherwise never settles. Programmatic hosts own what happens next: ADR-0015
-   * keeps signal and exit ownership at the CLI adapter.
-   */
-  serviceFailure: Promise<ServiceError>;
   /** Idempotently drain; success marks storage clean, while failure releases it unclean. */
   drain(): Promise<void>;
 }
@@ -200,13 +182,6 @@ function credentialVerifierLoader(
   }
 }
 
-/**
- * The abort reason every service observes at shutdown. Services see it before
- * their cleanup runs, so a blocking consumer can begin cooperative
- * cancellation immediately rather than waiting to be torn down.
- */
-const SERVICES_STOPPING = new Error("application is shutting down");
-
 export async function createFileStore(config: AppConfig): Promise<FileStore> {
   const files = config.files;
   if (files.backend === "filesystem") {
@@ -250,14 +225,8 @@ export async function startApp<const A extends App = App>(
   let activated = false;
   let engineClosed = false;
   let runtime: Runtime | undefined;
-  let pluginRuntime: PluginRuntime | undefined;
-  let serviceRuntime: ServiceRuntime | undefined;
   let ownedEngine: Engine | undefined;
   let drainPromise: Promise<void> | null = null;
-  let reportServiceFailure!: (error: ServiceError) => void;
-  const serviceFailure = new Promise<ServiceError>((resolve) => {
-    reportServiceFailure = resolve;
-  });
   let interruptStartup!: () => void;
   const startupInterrupted = new Promise<never>((_resolve, reject) => {
     interruptStartup = () => reject(new StartupInterruptedError());
@@ -282,8 +251,6 @@ export async function startApp<const A extends App = App>(
     if (drainPromise !== null) return drainPromise;
     releaseStartupSignal();
     drainPromise = (async () => {
-      // One budget for the whole sequence. Service cleanup does not get a
-      // second window on top of the graceful shutdown the operator configured.
       const deadlineAtMs = Date.now() + PRODUCTION_LIMITS.gracefulShutdownMs;
       let shutdown: EngineCloseDisposition = "unclean";
       const errors: unknown[] = [];
@@ -295,22 +262,12 @@ export async function startApp<const A extends App = App>(
         }
       };
       try {
-        // Leave readiness before releasing services, so a service cleanup still
-        // holds system authority (drain is what closes it) while no new
-        // transport work is admitted against a half-released application.
         server.beginShutdown();
-        if (serviceRuntime !== undefined) {
-          await collect(() => serviceRuntime!.stop(SERVICES_STOPPING, deadlineAtMs));
-        }
-        // The server must drain even when a service refused to release, or the
-        // listener and runtime would outlive the engine we are about to close.
         await collect(async () => {
           if (activated) {
             await server.drain(deadlineAtMs);
           } else if (runtime !== undefined) {
             await Promise.all([server.drain(deadlineAtMs), runtime.drain(deadlineAtMs)]);
-          } else if (pluginRuntime !== undefined) {
-            await Promise.all([server.drain(deadlineAtMs), pluginRuntime.stop()]);
           } else {
             await server.drain(deadlineAtMs);
           }
@@ -390,27 +347,14 @@ export async function startApp<const A extends App = App>(
     // not schema migration. Load them only after durable schema work commits so
     // unrelated runtime configuration cannot block a pending migration.
     server.advanceStartup("loading-runtime");
-    const [verifier, resolveScopes, modules, serviceModules, jobModules] = await awaitStartup(Promise.all([
+    const [verifier, resolveScopes, modules, jobModules] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
       loadScopeResolver(),
       importFunctionModules(config),
-      importServiceModules(config),
       importJobModules(config),
     ]));
     requireStartupOwnership();
-    const declaredServices = declareServices(serviceModules);
     const declaredJobs = declareJobs(jobModules);
-
-    const assembly = assemblePlugins(app.plugins);
-    const pluginStorage = reconcilePluginStorage(ownedEngine, desiredPluginMounts(app));
-    for (const line of pluginStorage.applied) console.log(`[ackerdb] Plugin ${line}`);
-    pluginRuntime = new PluginRuntime({
-      engine: ownedEngine,
-      assembly,
-      scopes: pluginStorage.scopes,
-    });
-    await awaitStartup(pluginRuntime.start());
-    requireStartupOwnership();
     const registry = new Registry(modules, app.apiPaths, config.admin);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
@@ -423,7 +367,6 @@ export async function startApp<const A extends App = App>(
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
-      pluginRuntime,
       jobs: declaredJobs,
       files: {
         store: files,
@@ -437,8 +380,8 @@ export async function startApp<const A extends App = App>(
     });
 
     // Administration must exist before anything can be administered, so the
-    // master credential is settled before services run and long before the
-    // listener admits a request. A failure here is fatal by design: a server
+    // master credential is settled before the listener admits a request. A
+    // failure here is fatal by design: a server
     // nobody can administer, that printed nothing to say so, is discovered at
     // the moment administration is most needed.
     //
@@ -467,21 +410,6 @@ export async function startApp<const A extends App = App>(
     }
     requireStartupOwnership();
 
-    // Services own trusted background work, so they start only once the Runtime
-    // can serve `system.run`, and finish before the server admits its first
-    // request: readiness must never describe a half-started application.
-    if (declaredServices.length > 0) {
-      server.advanceStartup("starting-services");
-      serviceRuntime = new ServiceRuntime({
-        services: declaredServices,
-        system: runtime.system,
-        onStarting: (name) => server.reportStartingService(name),
-        onFatal: reportServiceFailure,
-      });
-      await awaitStartup(serviceRuntime.start());
-      requireStartupOwnership();
-    }
-
     server.activate(runtime);
     activated = true;
 
@@ -489,11 +417,8 @@ export async function startApp<const A extends App = App>(
     const displayHostname = server.hostname.includes(":")
       ? `[${server.hostname}]`
       : server.hostname;
-    const serviceSummary = declaredServices.length === 0
-      ? ""
-      : `, ${declaredServices.length} service(s)`;
     console.log(
-      `[ackerdb] ready on http://${displayHostname}:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s)${serviceSummary}, db at ${relative(process.cwd(), config.dbDir) || "."}`,
+      `[ackerdb] ready on http://${displayHostname}:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
     );
     releaseStartupSignal();
     return {
@@ -501,8 +426,6 @@ export async function startApp<const A extends App = App>(
       runtime,
       engine: ownedEngine,
       system: runtime.system as SystemRunner<AppSystemCtx<A>>,
-      services: declaredServices.map((declared) => declared.name),
-      serviceFailure,
       drain,
     };
   } catch (error) {
@@ -514,9 +437,6 @@ export async function startApp<const A extends App = App>(
     }
     if (error instanceof UnsafeSchemaChange || error instanceof MigrationError) {
       throw new Error(withGenerationRecourse(error.message), { cause: error });
-    }
-    if (error instanceof PluginStorageRequirementsError) {
-      throw new Error(pluginStorageRecourse(error, config.appDir), { cause: error });
     }
     throw error;
   }
