@@ -63,8 +63,6 @@ interface Harness {
   readonly session: SessionRuntimeContext;
   readonly controller: AbortController;
   readonly storeScope: StorageScope;
-  readonly logMessages: string[];
-  readonly analyticsEvents: string[];
   nextId: number;
 }
 
@@ -190,8 +188,6 @@ async function makeHarness(
     create: ({ query: pluginQueryBuilder, mutation: pluginMutationBuilder, procedure: pluginProcedureBuilder }) => ({
       exports: {
         set: pluginMutationBuilder(providerSet, async (ctx, args) => {
-          ctx.log.info("plugin set", { key: args.key });
-          ctx.analytics.track("plugin set tracked", { key: args.key });
           await ctx.db.entries.upsert({ key: args.key }, { value: args.value });
           return {
             timestamp: ctx.timestamp,
@@ -200,7 +196,6 @@ async function makeHarness(
           };
         }),
         read: pluginQueryBuilder(providerRead, async (ctx, args) => {
-          ctx.log.debug("plugin read", { key: args.key });
           return {
             value: (await ctx.db.entries
               .query()
@@ -216,7 +211,6 @@ async function makeHarness(
           throw new Error(`store failure:${args.key}`);
         }),
         external: pluginProcedureBuilder(providerProcedure, (ctx) => {
-          ctx.log.warn("plugin procedure");
           return {
             timestamp: ctx.timestamp,
             mount: ctx.mount,
@@ -261,7 +255,6 @@ async function makeHarness(
             dependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx, args) => {
-            ctx.log.debug("facade read", { key: args.key });
             const result = await ctx.store.read(args.key);
             return {
               value: result.value,
@@ -282,7 +275,6 @@ async function makeHarness(
             dependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx, args) => {
-            ctx.log.info("facade put", { key: args.key });
             const result = await ctx.store.set(args.key, args.value);
             return {
               consumerTimestamp: ctx.timestamp,
@@ -304,14 +296,8 @@ async function makeHarness(
             transactionDependencyOperations: v.array(v.string()),
           }),
           handler: async (ctx) => {
-            if (false) {
-              // @ts-expect-error Plugin procedures track only inside transaction-owned work.
-              ctx.analytics.track("invalid outer procedure event");
-            }
-            ctx.log.warn("facade flow");
             const direct = await ctx.store.set("flow-direct", "flow-direct");
             const transaction = await ctx.tx(async (tx) => {
-              tx.analytics.track("plugin transaction tracked");
               const result = await tx.store.set("flow-tx", "flow-tx");
               expect("external" in tx.store).toBe(false);
               return {
@@ -466,18 +452,10 @@ async function makeHarness(
     },
   };
   let clock = Date.now();
-  const logMessages: string[] = [];
-  const analyticsEvents: string[] = [];
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     pluginRuntime,
-    loggerStrategy: {
-      write: (_level, message) => logMessages.push(message),
-    },
-    analyticsStrategy: {
-      track: (event) => analyticsEvents.push(event),
-    },
     now: () => ++clock,
   });
   const controller = new AbortController();
@@ -497,8 +475,6 @@ async function makeHarness(
     session,
     controller,
     storeScope: scopes.get("store")!,
-    logMessages,
-    analyticsEvents,
     nextId: 1,
   };
   harnesses.push(harness);
@@ -506,44 +482,6 @@ async function makeHarness(
 }
 
 describe("Plugin invocation boundaries", () => {
-  test("routes query, mutation, procedure, and nested Plugin logs through the configured strategy", async () => {
-    const harness = await makeHarness();
-
-    await callQuery(harness, "api.plugins.inspect", { key: "logged" });
-    await callMutation(harness, "api.plugins.sameTransaction", {
-      key: "logged",
-      value: "value",
-    });
-    await callProcedure(harness, "api.plugins.pluginFlow", {});
-    expect(harness.logMessages).toEqual([
-      "facade read",
-      "plugin read",
-      "facade put",
-      "plugin set",
-      "plugin read",
-      "facade flow",
-      "plugin set",
-      "plugin set",
-      "plugin procedure",
-    ]);
-  });
-
-  test("routes Plugin mutation and transaction analytics through the configured strategy", async () => {
-    const harness = await makeHarness();
-
-    await callMutation(harness, "api.plugins.sameTransaction", {
-      key: "tracked",
-      value: "value",
-    });
-    await callProcedure(harness, "api.plugins.pluginFlow", {});
-    expect(harness.analyticsEvents).toEqual([
-      "plugin set tracked",
-      "plugin set tracked",
-      "plugin transaction tracked",
-      "plugin set tracked",
-    ]);
-  });
-
   test("binds procedure and transaction capabilities to a system execution root", async () => {
     const harness = await makeHarness();
 

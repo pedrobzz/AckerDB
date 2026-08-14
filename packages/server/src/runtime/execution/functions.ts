@@ -55,8 +55,6 @@ import {
   type Subscriber,
 } from "../../subscriptions/reactive/contract.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
-import type { Analytics } from "../../signals/analytics.ts";
-import type { Logger } from "../../signals/logger.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   CommitCoordinator,
@@ -106,7 +104,7 @@ export interface JobsWriteSurface {
   savepoint(): { rollback(): void; release(): void };
   /**
    * Run a mutation-kind job handler under a system-principal mutation context
-   * with the same bindings (credential vault, analytics attribution) a
+   * with the same bindings a
    * registered mutation would have.
    */
   runMutationHandler<T>(
@@ -175,8 +173,6 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly limits: ServiceLimits;
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
-  readonly log: Logger;
-  readonly analytics: Analytics;
   readonly pluginRuntime?: PluginRuntime;
   readonly credentialVerifier?: CredentialVerifier;
   /** Application scopes plus the framework's: what a credential grant expands against. */
@@ -406,8 +402,6 @@ export class RuntimeFunctionExecutor<C> {
             const context = Object.freeze({
               db,
               auth: principal,
-              analytics: this.options.analytics,
-              log: this.options.log,
               timestamp,
             }) as TxCtx;
             try {
@@ -481,7 +475,6 @@ export class RuntimeFunctionExecutor<C> {
     const value = Object.freeze({
       ...(surface === "http" ? {} : { auth: principal }),
       abortSignal: signal,
-      log: this.options.log,
       get timestamp(): number {
         return currentTimestamp();
       },
@@ -559,7 +552,6 @@ export class RuntimeFunctionExecutor<C> {
     return Object.freeze({
       db: applicationDatabase(db),
       auth: principal,
-      log: this.options.log,
       timestamp,
       jobs: queryJobsNamespace(this.options.jobs(), db),
       files: this.options.files.query(db),
@@ -582,8 +574,6 @@ export class RuntimeFunctionExecutor<C> {
       ...extras,
       db: applicationDatabase(db),
       auth: principal,
-      analytics: this.options.analytics,
-      log: this.options.log,
       timestamp,
       jobs: mutationJobsNamespace(
         this.options.jobs(),
@@ -874,8 +864,6 @@ export class RuntimeFunctionExecutor<C> {
   private pluginInvocationCapabilities(timestamp: number): Readonly<PluginInvocationCapabilities> {
     return Object.freeze({
       timestamp,
-      log: () => this.options.log,
-      analytics: () => this.options.analytics,
     } satisfies PluginInvocationCapabilities);
   }
 

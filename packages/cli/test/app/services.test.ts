@@ -82,7 +82,6 @@ import { record } from "../lib/record.ts";
 
 async function persist(system, source) {
   await system.run("devices.event", (ctx) => {
-    ctx.log.info("service event", { source });
     return ctx.tx((tx) => tx.db.deviceEvents.insert({ source }));
   });
 }

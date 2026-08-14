@@ -20,7 +20,7 @@ backups are verified by restoring them before they are accepted.
 | Package | Purpose |
 | --- | --- |
 | `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
-| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, logging, and analytics strategies. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, and limits. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
@@ -172,11 +172,8 @@ client.close();
   `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
   reviewer-gated public npm delivery, trusted publishing, and local
   Verdaccio betas.
-- [Historical documents](docs/history/) keep superseded reports and completed
-  implementation plans — among them the production-readiness report's issue #1
-  implementation and decision history, its verification and benchmark evidence,
-  and the operational gap versus Convex Cloud and SpacetimeDB/Maincloud. They
-  are records of how AckerDB got here, not current procedure.
+- [Historical documents](docs/history/) keep superseded implementation plans.
+  They are records of how AckerDB got here, not current procedure.
 
 The remaining single-node and product limitations are listed explicitly in
 [Operations: remaining limitations](docs/operations.md#remaining-limitations).

@@ -7,7 +7,6 @@ import { v } from "../../src/validation/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { serve } from "../../src/transport/server.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
-import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import {
   cleanupCredentialFixtures,
   databasePath,
@@ -125,7 +124,6 @@ const insertOwnershipRecord = typedMutation({
     if (ctx.auth.kind !== "user" || ctx.auth.tokenId === null) {
       throw new Error("expected a credential-backed principal");
     }
-    ctx.analytics.track("ownership record inserted");
     return ctx.db.records.insert({ owner: ctx.auth.identity, value: args.value });
   },
 });
@@ -190,7 +188,6 @@ interface Harness {
 function startHarness(
   maxOperations = 8,
   maxOperationsPerCaller = 4,
-  analyticsStrategy?: RuntimeOptions["analyticsStrategy"],
 ): Harness {
   const limits = defineServiceLimits({
     ...PRODUCTION_LIMITS,
@@ -206,7 +203,7 @@ function startHarness(
     databasePath("ackerdb-mcp-runtime-"),
     undefined,
     ownershipModules,
-    { limits, analyticsStrategy },
+    { limits },
   );
   const server = serve({ runtime: value.runtime, port: 0 });
   trackCleanup(() => server.drain());
@@ -412,10 +409,7 @@ describe("MCP Runtime ownership", () => {
   });
 
   test("keeps nested invocations and a transaction under one Runtime lease", async () => {
-    const analytics: string[] = [];
-    const value = startHarness(4, 2, {
-      track: (event) => analytics.push(event),
-    });
+    const value = startHarness(4, 2);
     const [token] = await tokens(value, "nested", ["Nested"]);
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
@@ -439,7 +433,6 @@ describe("MCP Runtime ownership", () => {
     });
     await expectIdle(value);
 
-    expect(analytics).toEqual(["ownership record inserted"]);
   });
 
   test("cancels queued contention and preserves commit/rollback ownership", async () => {

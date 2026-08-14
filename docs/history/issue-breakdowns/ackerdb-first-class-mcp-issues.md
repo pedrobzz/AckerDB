@@ -581,7 +581,6 @@ Backend-managed integrations are a valid deployment mode, but folding them into 
 
 - Keep system and owner entry points explicit while sharing the deep token-vault operations.
 - Do not add a wrapper whose only purpose is calling another exported function; expose the correct primitive directly.
-- Audit telemetry must identify system administration without recording secrets.
 
 ## Blocked by
 
@@ -613,11 +612,11 @@ AFK
 
 ## What to build
 
-Harden each MCP HTTP exchange with independent authentication/admission, Host validation, Origin policy, native-host compatibility when Origin is absent, bounded telemetry, and systematic redaction of credentials, arguments, and sensitive results.
+Harden each MCP HTTP exchange with independent authentication/admission, Host validation, Origin policy, native-host compatibility when Origin is absent, and systematic redaction of credentials, arguments, and sensitive results.
 
 ### Why this slice exists
 
-A correct tool protocol is not a safe public endpoint until browser/DNS-rebinding boundaries and observability behavior are explicit.
+A correct tool protocol is not a safe public endpoint until browser/DNS-rebinding boundaries are explicit.
 
 ## Acceptance criteria
 
@@ -626,11 +625,11 @@ A correct tool protocol is not a safe public endpoint until browser/DNS-rebindin
 - [ ] Requests without Origin from native MCP hosts remain usable under Host policy.
 - [ ] Bearer secrets, provider credentials, tool arguments, sensitive results, and unbounded values never enter logs or metric labels.
 - [ ] Production deployment requires HTTPS at AckerDB or a trusted terminating proxy.
-- [ ] Body, header, tool-count, and telemetry-cardinality limits fail safely.
+- [ ] Body, header, and tool-count limits fail safely.
 
 ### Implementation notes
 
-- Reuse the existing listener's body reader, admission, and telemetry ownership.
+- Reuse the existing listener's body reader and admission ownership.
 - Make local-development Host/Origin policy explicit without weakening deployed defaults.
 - Do not put bearer tokens in URLs, generated code, client bundles, or error messages.
 
@@ -664,7 +663,7 @@ AFK
 
 ## What to build
 
-Prove and harden concurrent MCP calls under the existing AckerDB Runtime: per-principal fairness, admission, nested invocation, transaction ownership, cancellation, telemetry, drain, and shutdown must work without a second listener, conflicting top-level lease, or leaked resource.
+Prove and harden concurrent MCP calls under the existing AckerDB Runtime: per-principal fairness, admission, nested invocation, transaction ownership, cancellation, drain, and shutdown must work without a second listener, conflicting top-level lease, or leaked resource.
 
 ### Why this slice exists
 
@@ -676,7 +675,6 @@ MCP is first-class only when it obeys the database runtime's production invarian
 - [ ] Nested query/mutation composition retains principal and instrumentation without acquiring a conflicting second top-level lease.
 - [ ] Client disconnect, server drain, and shutdown cancel/settle work through existing Runtime ownership.
 - [ ] Transactions commit/rollback normally under contention and queued work respects request cancellation.
-- [ ] Telemetry remains bounded and attributes MCP endpoint/tool outcomes without secrets.
 - [ ] Repeated exchanges leave no listeners, timers, sessions, dispatch entries, or transaction resources.
 
 ### Implementation notes
@@ -697,7 +695,7 @@ MCP is first-class only when it obeys the database runtime's production invarian
 
 - Load concurrent public and authenticated tools through admission limits.
 - Drain and shut down during queued, transactional, and long-running calls.
-- Use resource counters and telemetry assertions to detect leaks or double leases.
+- Use resource counters to detect leaks or double leases.
 - Run the version-bound Hetzner comparison and interpret material movements
   across the full performance vector in the release handoff.
 

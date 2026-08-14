@@ -386,9 +386,6 @@ describe("definePlugin", () => {
     expect(() => assemblePlugins({ db: valid })).toThrow(
       "collides with a built-in context field",
     );
-    expect(() => assemblePlugins({ analytics: valid })).toThrow(
-      "collides with a built-in context field",
-    );
     expect(() => assemblePlugins({ "not-valid": valid } as never)).toThrow(
       "must be an identifier",
     );

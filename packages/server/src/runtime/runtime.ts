@@ -54,8 +54,6 @@ import {
 } from "../channels/hub.ts";
 import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
-import { Analytics } from "../signals/analytics.ts";
-import { Logger } from "../signals/logger.ts";
 import {
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -111,8 +109,6 @@ export class Runtime implements RuntimePort {
   readonly registry: Registry;
   readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
-  readonly log: Logger;
-  readonly analytics: Analytics;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
@@ -150,8 +146,6 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
-    this.log = new Logger(options.loggerStrategy);
-    this.analytics = new Analytics(options.analyticsStrategy);
     this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
     if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
@@ -235,8 +229,6 @@ export class Runtime implements RuntimePort {
       limits: this.limits,
       reads: this.reads,
       reactive: this.reactive,
-      log: this.log,
-      analytics: this.analytics,
       pluginRuntime: this.pluginRuntime,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
@@ -334,7 +326,6 @@ export class Runtime implements RuntimePort {
       registry: this.registry,
       reads: this.reads,
       system: this.system,
-      log: this.log,
       limits: this.limits.jobs,
       now: this.now,
       signal: () => this.control.shutdownSignal,

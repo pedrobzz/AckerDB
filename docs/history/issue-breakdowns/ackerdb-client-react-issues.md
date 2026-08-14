@@ -431,7 +431,7 @@ Authentication affects every reconnect but is independently demoable as a browse
 
 ### Implementation notes
 
-- Likely surfaces include authentication observability in `packages/client`, React external stores/hooks, and integration with server auth leases.
+- Likely surfaces include authentication state in `packages/client`, React external stores/hooks, and integration with server auth leases.
 - Do not create a second token cache or persistent credential store.
 - Credential sourcing stays in provider configuration; native process persistence remains out of scope.
 

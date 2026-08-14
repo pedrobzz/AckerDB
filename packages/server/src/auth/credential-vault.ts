@@ -3,7 +3,7 @@
  *
  * Every credential IS an Identity. Creating one mints a fresh Identity row, so
  * an agent authenticating with the token is a first-class user at every choke
- * point — fairness, file ownership, and analytics all key on it
+ * point — fairness and file ownership key on it
  * without knowing it came from a token. `parent_identity` records delegation
  * lineage: null for a standalone identity whose grant comes straight from the
  * vocabulary, otherwise the issuing Identity whose current grant bounds the

@@ -12,13 +12,11 @@ export function isPluginDefinitionId(value: string): boolean {
 /** Context field names a plugin mount or dependency slot may not shadow. */
 export const BUILTIN_CONTEXT_FIELDS: ReadonlySet<string> = new Set([
   "abortSignal",
-  "analytics",
   "auth",
   "db",
   "files",
   "jobs",
   "linkAccount",
-  "log",
   "mount",
   "timestamp",
   "tx",

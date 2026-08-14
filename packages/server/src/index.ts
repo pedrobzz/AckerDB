@@ -421,19 +421,6 @@ export {
   type QueueLimits,
   type ServiceLimits,
 } from "./runtime/limits.ts";
-export {
-  Logger,
-  consoleLoggerStrategy,
-  type LoggerStrategy,
-  type LogLevel,
-  type LogMetadata,
-} from "./signals/logger.ts";
-export {
-  Analytics,
-  consoleAnalyticsStrategy,
-  type AnalyticsProperties,
-  type AnalyticsStrategy,
-} from "./signals/analytics.ts";
 export { invokeFunction } from "./app/invocation.ts";
 export type { AccessPolicy, InvocationContext } from "./app/access.ts";
 export type {

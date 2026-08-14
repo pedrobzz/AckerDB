@@ -7,8 +7,6 @@ import {
 } from "../database/access.ts";
 import type { Engine, StorageScope } from "../database/engine.ts";
 import { deepFreeze } from "../shared/immutable.ts";
-import type { Analytics } from "../signals/analytics.ts";
-import type { Logger } from "../signals/logger.ts";
 import {
   isPluginOperationSpec,
   type AnyPluginOperationSpec,
@@ -49,8 +47,6 @@ export interface PluginWriteExecution {
 
 export interface PluginInvocationCapabilities {
   readonly timestamp: number;
-  readonly log: (functionAddress: string, functionKind: PluginOperationKind) => Logger;
-  readonly analytics: (functionAddress: string, functionKind: PluginOperationKind) => Analytics;
 }
 
 export interface PluginQueryBinding extends PluginReadExecution {
@@ -580,7 +576,6 @@ export class PluginRuntime {
       return Object.freeze({
         timestamp: read.invocation.timestamp,
         mount,
-        log: read.invocation.log(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -601,8 +596,6 @@ export class PluginRuntime {
       return Object.freeze({
         timestamp: binding.value.invocation.timestamp,
         mount,
-        analytics: binding.value.invocation.analytics(functionAddress, functionKind),
-        log: binding.value.invocation.log(functionAddress, functionKind),
         db,
         ...dependencies,
       });
@@ -614,7 +607,6 @@ export class PluginRuntime {
     return Object.freeze({
       timestamp: binding.value.invocation.timestamp,
       mount,
-      log: binding.value.invocation.log(functionAddress, functionKind),
       abortSignal: binding.value.abortSignal,
       ...dependencies,
       tx: <T>(work: (context: Readonly<Record<string, unknown>>) => T | Promise<T>) =>

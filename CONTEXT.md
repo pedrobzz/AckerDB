@@ -245,22 +245,6 @@ top-level function begins execution. Nested application functions, plugin
 functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
-**Application log** — A developer-authored diagnostic message with optional
-structured metadata, sent immediately to the configured `LoggerStrategy`.
-The default strategy writes to `console.log`; AckerDB does not retain it.
-_Avoid_: Durable log record, framework event
-
-**Analytics event** — A named occurrence of product behavior with optional
-structured properties, sent immediately to the configured
-`AnalyticsStrategy`. The default strategy writes to `console.log`; AckerDB does
-not retain, enrich, batch, or export it.
-_Avoid_: Application log record, log event
-
-**Signal strategy** — The replaceable destination behind `Logger` or
-`Analytics`. Application contexts depend only on these two narrow interfaces,
-so a future integration can be supplied without changing execution ownership.
-_Avoid_: Provider SDK in application contexts, global signal singleton
-
 **System execution root** — Trusted application work initiated directly by an
 in-process host that explicitly holds the running application's system
 capability. Each run begins with only the canonical system principal, may use

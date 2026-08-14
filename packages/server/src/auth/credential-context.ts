@@ -375,8 +375,8 @@ export const credentials: CredentialOperations = Object.freeze({
  * The two live at once for the length of one transaction, which is what makes
  * the rotation downtime-free: the new credential is already usable when the old
  * one stops being. The cost is that the administrative Identity changes, and
- * with it everything keyed on that Identity — File ownership, analytics
- * attribution, and every credential delegated beneath the old master, which the
+ * with it everything keyed on that Identity — File ownership and every
+ * credential delegated beneath the old master, which the
  * revocation cascade takes with it.
  */
 export const adminCredentials: AdminCredentialOperations = Object.freeze({

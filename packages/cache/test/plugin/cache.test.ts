@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { decode, encode } from "@ackerdb/core";
-import { noopAnalytics, noopLogger } from "ackerdb-test-support/signals";
 import {
   assemblePlugins,
   definePlugin,
@@ -32,8 +31,6 @@ type TestPluginOperation = Exclude<PluginExportTree[string], PluginExportTree>;
 
 const pluginInvocation = (timestamp: number) => Object.freeze({
   timestamp,
-  log: () => noopLogger,
-  analytics: () => noopAnalytics,
 });
 
 interface TestEntryRow {

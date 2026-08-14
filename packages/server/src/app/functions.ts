@@ -46,8 +46,6 @@ import {
 } from "../auth/scopes.ts";
 import type { Schema } from "../schema/definition.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
-import type { Analytics } from "../signals/analytics.ts";
-import type { Logger } from "../signals/logger.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
 import type {
   FileMutationCapability,
@@ -66,7 +64,6 @@ export type QueryCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
-  readonly log: Logger;
   readonly timestamp: number;
   /** Declared jobs, read-only: the reactive builder scoped per definition. */
   readonly jobs: Jobs;
@@ -81,8 +78,6 @@ export type MutationCtx<
 > = InvocationContext & Capabilities & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
-  readonly analytics: Analytics;
-  readonly log: Logger;
   readonly timestamp: number;
   /** Declared jobs: transactional enqueue — the job exists iff this commits. */
   readonly jobs: Jobs;
@@ -105,7 +100,6 @@ export type ProcedureCtx<
   TxJobs extends object = AnyJobsNamespace,
 > = InvocationContext & Capabilities & {
   readonly auth: AuthCtx;
-  readonly log: Logger;
   readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;
