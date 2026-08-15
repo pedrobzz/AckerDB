@@ -1,5 +1,7 @@
 Before designing, implementing, changing, or refactoring any code, always read the `policy-and-commodity` skill and follow it. AckerDB adds to that doctrine in *Prefer less code and proven work* below; nothing here relaxes it.
 
+Treat removed systems as absent. Analyze or reconstruct a former implementation from Git history or memory only when the user explicitly requests historical analysis.
+
 ## Performance, correctness, and code quality
 
 Standing rules for every change. Terms are defined in `CONTEXT.md`
