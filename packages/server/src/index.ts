@@ -29,12 +29,7 @@ export {
   type NormalizedAdminApplication,
   type NormalizedAdminOptions,
 } from "./admin/options.ts";
-export {
-  ADMIN_CREDENTIAL_NAME,
-  ensureAdminCredential,
-  type AdminCredentialBoot,
-  type AdminCredentialMint,
-} from "./admin/credentials.ts";
+export { ADMIN_CREDENTIAL_NAME } from "./admin/credentials.ts";
 export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
 export {
   ADMINISTRATIVE_GRANT,

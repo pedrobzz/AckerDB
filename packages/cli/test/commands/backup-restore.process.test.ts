@@ -18,7 +18,7 @@ import {
 import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
 import { importApp } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
-import { fileStoreIdentity } from "../../src/files/identity.ts";
+import { createFileStore } from "../../src/files/store.ts";
 import { mutationReplayOwner } from "../../../server/src/database/mutation-replay.ts";
 import {
   backupFilesPath,
@@ -113,7 +113,7 @@ async function seedFile(dir: string): Promise<{ objectKey: string; contents: str
   const app = await importApp(config);
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
   try {
-    resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
+    resolveFileStoreBinding(engine, await (await createFileStore(config.files)).identity());
     engine.writer.query(`INSERT INTO _ackerdb_files (
       id, state, objectKey, owner, size, sha256, contentType, name, createdAt, pendingExpiresAt
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -170,8 +170,8 @@ describe("acker backup, restore, and status", () => {
       join(targetConfig.dbDir, "data.db"),
     );
     try {
-      resolveFileStoreBinding(restoredEngine, await fileStoreIdentity(targetConfig.files));
-      const sourceIdentity = await fileStoreIdentity(loadConfig(source).files);
+      resolveFileStoreBinding(restoredEngine, await (await createFileStore(targetConfig.files)).identity());
+      const sourceIdentity = await (await createFileStore(loadConfig(source).files)).identity();
       expect(() => resolveFileStoreBinding(
         restoredEngine,
         sourceIdentity,

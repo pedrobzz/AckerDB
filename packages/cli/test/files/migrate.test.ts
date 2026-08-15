@@ -71,6 +71,10 @@ class DelegatingStore implements FileStore {
     return this.delegate.probe(options);
   }
 
+  identity(options?: FileStoreOptions) {
+    return this.delegate.identity(options);
+  }
+
   put(key: string, body: ReadableStream<Uint8Array>, options: FileStorePutOptions) {
     return this.delegate.put(key, body, options);
   }

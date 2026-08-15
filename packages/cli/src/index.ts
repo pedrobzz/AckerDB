@@ -9,10 +9,10 @@ export {
 } from "./migrations/scaffold.ts";
 export {
   startApp,
-  type RunningApp,
   type StartAppOptions,
   type StartupPreparation,
 } from "./app/start.ts";
+export type { RunningApp } from "@ackerdb/server";
 export {
   importApp,
   importFunctionModules,

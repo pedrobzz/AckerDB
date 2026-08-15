@@ -1,6 +1,5 @@
 import { join } from "node:path";
 import {
-  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -15,6 +14,7 @@ import {
   reconcile,
   sseProcedure,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 
 const KiB = 1024;
 const port = Number(process.argv[2]);
@@ -164,8 +164,7 @@ const runtime = new Runtime({
   limits,
 });
 await runtime.start();
-const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port });
-server.activate(runtime);
+const server = listen(runtime, { port });
 
 let shutdown;
 const drain = () => shutdown ??= server.drain().then(

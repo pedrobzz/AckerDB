@@ -96,7 +96,7 @@ function parts(overrides: PartsOverrides = {}): BootOptions & { readonly dir: st
       ...(overrides.hostname === undefined ? {} : { hostname: overrides.hostname }),
     },
     storage: { path: join(dir, ".ackerdb", "data.db") },
-    files: { store: new LocalFileStore({ root: join(dir, "files") }), identity: "filesystem:test" },
+    files: { store: new LocalFileStore({ root: join(dir, "files") }) },
     limits,
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     ...(overrides.reporter === undefined ? {} : { reporter: overrides.reporter }),
@@ -201,13 +201,26 @@ describe("boot", () => {
     expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
   });
 
-  test("refuses an already-aborted signal with its reason, without touching storage", async () => {
+  test("refuses an already-aborted signal with its reason, without binding a port or touching storage", async () => {
     const lifecycle = new AbortController();
     const reason = new Error("stopped before it began");
     lifecycle.abort(reason);
-    const options = parts({ signal: lifecycle.signal });
-    await expect(boot(options)).rejects.toBe(reason);
-    expect(existsSync(options.storage.path)).toBe(false);
+    const port = await new Promise<number>((resolve) => {
+      const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+      const chosen = probe.port!;
+      void probe.stop(true).then(() => resolve(chosen));
+    });
+    // Hold the port ourselves: a boot that tried to bind it would fail with
+    // EADDRINUSE instead of the signal's reason.
+    const holder = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("held") });
+    try {
+      const options = parts({ port, signal: lifecycle.signal });
+      await expect(boot(options)).rejects.toBe(reason);
+      expect(existsSync(options.storage.path)).toBe(false);
+      expect(existsSync(join(options.dir, "files"))).toBe(false);
+    } finally {
+      await holder.stop(true);
+    }
   });
 
   test("interruption stops the boot at the next boundary, drains, and releases the port", async () => {
@@ -377,7 +390,7 @@ describe("boot", () => {
       .catch((error: unknown) => error);
     expect(held).toBeInstanceOf(MigrationsHeldError);
     expect((held as MigrationsHeldError).pending).toBe(1);
-    expect((held as Error).message).toContain("1 pending migration(s) held for confirmation");
+    expect((held as Error).message).toBe("1 pending migration(s) held for confirmation");
     expect(Bun.file(join(first.dir, ".ackerdb", "data.db")).lastModified).toBe(before);
 
     // A fresh database is never held: there is nothing to rewrite.
@@ -458,16 +471,17 @@ describe("boot", () => {
     expect(authorized.status).toBe(200);
   });
 
-  test("a created Runtime never ran a repeat job before the credential existed", async () => {
+  test("the credential is reported before the first repeat Job runs", async () => {
     const order: string[] = [];
     const jobs = declareJobsModule(() => order.push("job ran"));
     const app = await start({
       jobs,
       reporter: { adminCredentialIssued: () => order.push("credential") },
     });
-    // The first occurrence is minted at start; drive the runner once.
+    // The first occurrence is minted at start and due immediately; drive the
+    // runner once and the handler observes a credential that already exists.
     await app.runtime.runJobs();
-    expect(order[0]).toBe("credential");
+    expect(order).toEqual(["credential", "job ran"]);
     const rows = app.engine.reader.query(`SELECT COUNT(*) AS count FROM ${JOBS_TABLE}`).get() as { count: number | bigint };
     expect(Number(rows.count)).toBeGreaterThan(0);
   });

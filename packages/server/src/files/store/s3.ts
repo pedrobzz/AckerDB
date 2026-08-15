@@ -161,6 +161,16 @@ export class S3FileStore implements FileStore {
     this.#config = config;
   }
 
+  /** Normalized endpoint, region and bucket: the location, never the access or write policy around it. */
+  async identity(): Promise<string> {
+    validateS3FileStoreConfig(this.#config, "identity");
+    return `s3:${JSON.stringify({
+      endpoint: this.#config.endpoint === undefined ? null : new URL(this.#config.endpoint).href,
+      region: this.#config.region,
+      bucket: this.#config.bucket,
+    })}`;
+  }
+
   async probe(options: FileStoreOptions = {}): Promise<void> {
     const operation = "probe";
     let probeKey: string | undefined;

@@ -5,7 +5,6 @@ import {
   type MutationMessage,
 } from "@ackerdb/core";
 import {
-  AckerDBServer,
   v,
   defineSchema,
   Engine,
@@ -20,6 +19,7 @@ import {
   type SessionRuntimeContext,
   type UserPrincipal,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 import { credentials, mcp, mcpContent, type McpToolResult } from "@ackerdb/server";
 
 const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
@@ -301,8 +301,7 @@ async function main(): Promise<void> {
   )).value as { readonly id: string; readonly token: string };
   const codex = await create("Codex acceptance");
   const claude = await create("Claude Code acceptance");
-  const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port: 0 });
-  server.activate(runtime);
+  const server = listen(runtime);
 
   emit({
     type: "ready",

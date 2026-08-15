@@ -25,9 +25,8 @@ import {
   resolveFileStoreBinding,
 } from "@ackerdb/server/files/binding";
 import { importApp } from "../app/manifest.ts";
-import { createFileStore } from "../app/start.ts";
-import type { AppConfig } from "../app/config.ts";
-import { fileStoreIdentity } from "../files/identity.ts";
+import { createFileStore } from "../files/store.ts";
+import { databasePath, type AppConfig } from "../app/config.ts";
 import {
   assertRestoreKeysVacant,
   backupFilesPath,
@@ -89,10 +88,6 @@ export type FreshProcessVerifier = (
   artifact: string,
   manifest: VerifiedBackupManifest,
 ) => Promise<void>;
-
-function databasePath(config: AppConfig): string {
-  return join(config.dbDir, "data.db");
-}
 
 export function backupManifestPath(artifact: string): string {
   return `${artifact}.manifest.json`;
@@ -366,7 +361,7 @@ export async function createVerifiedBackup(
   let backupFailed = false;
   let backupFailure: unknown;
     try {
-      resolveFileStoreBinding(engine, await fileStoreIdentity(config.files));
+      resolveFileStoreBinding(engine, await (await createFileStore(config.files)).identity());
       const engineManifest = engine.backup(artifact);
       const fileManifest = options.metadataOnly === true
         ? await createMetadataOnlyFilesBackup(artifact)
@@ -477,8 +472,8 @@ export async function restoreVerifiedBackup(
     const manifest = readBackupManifest(artifact);
     await verify(config, artifact, manifest);
 
-    const fileStore = await createFileStore(config);
-    const configuredFileStoreIdentity = await fileStoreIdentity(config.files);
+    const fileStore = await createFileStore(config.files);
+    const configuredFileStoreIdentity = await fileStore.identity();
     if (manifest.files.mode === "included") await assertRestoreKeysVacant(fileStore, artifact);
     const filePublication = fileRestorePublication(
       config,

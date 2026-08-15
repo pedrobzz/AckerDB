@@ -190,14 +190,14 @@ export class RuntimeJobs {
    * `Runtime.start()`, before the runner is armed; a failure is the start's.
    */
   async bootstrap(): Promise<void> {
-    const bootstrap = [...this.definitions.entries()].filter(
+    const repeating = [...this.definitions.entries()].filter(
       ([, definition]) =>
         definition.repeat !== null && Object.keys(definition.args).length === 0,
     );
-    if (bootstrap.length === 0) return;
+    if (repeating.length === 0) return;
     await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
       const now = this.options.now();
-      for (const [name, definition] of bootstrap) {
+      for (const [name, definition] of repeating) {
         const argsJson = stableEncode({});
         const argsHash = hashJobArgs(argsJson);
         if (surface.jobs.liveFor(name, argsHash) !== null) continue;

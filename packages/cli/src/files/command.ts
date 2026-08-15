@@ -21,17 +21,17 @@ import {
   resolveFileStoreBinding,
 } from "@ackerdb/server/files/binding";
 import {
+  databasePath,
   resolveFilesConfig,
   type AppConfig,
 } from "../app/config.ts";
 import { importApp } from "../app/manifest.ts";
-import { createFileStore } from "../app/start.ts";
+import { createFileStore } from "./store.ts";
 import {
   migrateFileStore,
   type FileStoreMigrationCompleteReport,
   type FileStoreMigrationProgressEvent,
 } from "./migrate.ts";
-import { fileStoreIdentity } from "./identity.ts";
 
 const CONFIG_NAME = ".ackerdb.config.json";
 const MAX_TARGET_DESCRIPTOR_BYTES = 64 * 1024;
@@ -197,8 +197,10 @@ export async function migrateActiveFileStore(
       ...targetRaw,
     };
     const targetFiles = resolveFilesConfig(targetDocument, config);
-    const sourceIdentity = await fileStoreIdentity(config.files);
-    const targetIdentity = await fileStoreIdentity(targetFiles);
+    const source: FileStore = await createFileStore(config.files);
+    const target: FileStore = await createFileStore(targetFiles);
+    const sourceIdentity = await source.identity();
+    const targetIdentity = await target.identity();
     if (sourceIdentity === targetIdentity) {
       throw new Error("FileStore migration target is the active physical FileStore");
     }
@@ -213,13 +215,11 @@ export async function migrateActiveFileStore(
       throw new Error("filesystem migration source and target roots must not overlap");
     }
 
-    const database = join(config.dbDir, "data.db");
+    const database = databasePath(config);
     if (!existsSync(database) || !statSync(database).isFile() || statSync(database).size === 0) {
       throw new Error(`AckerDB database not found at ${database}`);
     }
     const app = await importApp(config);
-    const source: FileStore = await createFileStore(config);
-    const target: FileStore = await createFileStore({ ...config, files: targetFiles });
     const engine = new Engine(app.schema, database, {
       durability: config.durability,
       integrityCheck: "full",

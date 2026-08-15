@@ -843,7 +843,7 @@ export class AckerDBServer {
     this.startup = phase;
   }
 
-  /** Atomically attach the fully constructed Runtime and admit application traffic. */
+  /** Atomically attach the started Runtime and admit application traffic. */
   activate(runtime: Runtime): void {
     if (this.lifecycle !== "starting" || this.activeRuntime !== null) {
       throw new Error("server can only be activated once while starting");

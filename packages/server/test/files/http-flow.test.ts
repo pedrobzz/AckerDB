@@ -88,6 +88,7 @@ class BlockingDeleteStore implements FileStore {
   }
 
   probe(options?: FileStoreOptions) { return this.delegate.probe(options); }
+  identity(options?: FileStoreOptions) { return this.delegate.identity(options); }
   async put(key: string, body: ReadableStream<Uint8Array>, options: FileStorePutOptions) {
     this.putKeys.push(key);
     if (this.blockPuts) {

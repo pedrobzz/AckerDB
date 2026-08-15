@@ -22,8 +22,6 @@
  * Runtime's start are bounded local transactions and are never abandoned. On
  * interruption boot drains what it built and rejects with the signal's reason.
  */
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import type { DurabilityPolicy } from "@ackerdb/core";
 import { ensureAdminCredential, type AdminCredentialBoot } from "./admin/credentials.ts";
 import type { AdminOptions } from "./admin/options.ts";
@@ -84,15 +82,13 @@ export interface BootReporter {
 }
 
 export interface BootStorage {
-  /** The database file; its directory is created if absent. */
+  /** The database file; the Engine creates its directory if absent. */
   readonly path: string;
   readonly durability?: DurabilityPolicy;
 }
 
 export interface BootFiles extends RuntimeFilesOptions {
   readonly store: FileStore;
-  /** The store's physical identity, checked against the database's binding. */
-  readonly identity: string;
 }
 
 export interface BootOptions<A extends App = App> {
@@ -118,6 +114,8 @@ export interface BootOptions<A extends App = App> {
 }
 
 export interface RunningApp<A extends App = App> {
+  /** The manifest this application booted from. */
+  readonly app: A;
   readonly server: AckerDBServer;
   readonly runtime: Runtime;
   readonly engine: Engine;
@@ -131,7 +129,7 @@ export class MigrationsHeldError extends Error {
   override readonly name = "MigrationsHeldError";
 
   constructor(readonly pending: number) {
-    super(`${pending} pending migration(s) held for confirmation — the dev supervisor asks before applying`);
+    super(`${pending} pending migration(s) held for confirmation`);
   }
 }
 
@@ -139,6 +137,8 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
   const limits = options.limits ?? PRODUCTION_LIMITS;
   const signal = options.signal ?? AbortSignal.any([]);
   const reporter = options.reporter ?? {};
+  // An aborted boot touches nothing: not even the port.
+  if (signal.aborted) throw signal.reason;
   const server = new AckerDBServer({
     ...options.listener,
     limits,
@@ -148,7 +148,6 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
 
   let engine: Engine | undefined;
   let runtime: Runtime | undefined;
-  let activated = false;
   let drainPromise: Promise<void> | null = null;
 
   const drain = (): Promise<void> => {
@@ -160,7 +159,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
         server.beginShutdown();
         // An activated listener drains its Runtime; before activation the two
         // are still separate owners and drain side by side.
-        await (activated || runtime === undefined
+        await (server.runtime !== null || runtime === undefined
           ? server.drain(deadlineAtMs)
           : Promise.all([server.drain(deadlineAtMs), runtime.drain(deadlineAtMs)]));
         shutdown = "clean";
@@ -212,12 +211,11 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     }
 
     advance("opening-storage");
-    if (options.storage.path !== ":memory:") mkdirSync(dirname(options.storage.path), { recursive: true });
     engine = new Engine(app.schema, options.storage.path, {
       ...(options.storage.durability === undefined ? {} : { durability: options.storage.durability }),
     });
     await raced(options.files.store.probe({ signal }));
-    resolveFileStoreBinding(engine, options.files.identity);
+    resolveFileStoreBinding(engine, await raced(options.files.store.identity({ signal })));
 
     // A present chain reports `migrating` distinctly; an empty one reconciles
     // exactly as before. The chain form owns history, the per-step apply, and
@@ -228,7 +226,10 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
 
     // Administration must exist before anything can be administered, and
     // before any application code runs: the mint needs only the reconciled
-    // engine, the manifest's scope vocabulary and the limits. A failure here
+    // engine, the manifest's scope vocabulary and the limits. (The vocabulary
+    // is a pure, frozen derivation of `app.scopes`; the Registry check and the
+    // Runtime derive it again from the same manifest rather than take it as a
+    // second input that could disagree with the first.) A failure here
     // is fatal by design — a server nobody can administer, that printed
     // nothing to say so, is discovered at the moment administration is most
     // needed. It is not raced against the signal: abandoning it loses the
@@ -281,8 +282,8 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     checkpoint();
 
     server.activate(runtime);
-    activated = true;
     return {
+      app,
       server,
       runtime,
       engine,

@@ -124,11 +124,18 @@ boot events; nothing here commits to a plugin API.
   behavioural-equivalence proof. `StartupInterruptedError` is gone. Signal
   handling stays in the CLI, per
   [ADR-0015](0015-system-runs-are-explicit-host-capabilities.md).
-- The FileStore instance and its physical identity are values the CLI builds
-  before calling `boot`, so the local store's identity marker is written (and
-  the S3 adapter imported) before the listener binds rather than at
-  `opening-storage`. A held dev boot therefore leaves the marker behind; the
-  identity is the same one every later boot reads.
+- Physical identity is a capability of the store: `FileStore.identity()` joins
+  the contract (the local adapter mints and reads its durable marker, S3
+  derives it from endpoint, region and bucket), and boot asks for it at
+  `opening-storage`, right after the probe. The CLI's separate identity
+  derivation is gone, and a held dev boot writes nothing — CONTEXT's
+  *Declined* holds without an exception.
+- The CLI's clean-stop mapping narrowed: only a boot that rejected with the
+  startup signal's own reason exits 0. Before, `startApp` mapped *any* error
+  thrown after a shutdown request to an interruption. A genuine failure in
+  un-raced work (the mint, `start()`) after SIGTERM now exits 1 with its
+  message — a failure is a failure. A drain failure on the way out still exits
+  1, as before.
 - The CLI's orchestration shrank by roughly a third; the boot module and its
   types are about as long as what they replaced, so production line count is
   roughly flat rather than negative. The point of the change is ownership, not

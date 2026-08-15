@@ -5,12 +5,10 @@
  * directory — and `boot()` from `@ackerdb/server` owns the sequence. What boot
  * reports is printed here, and nowhere else.
  */
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 import {
   type App,
-  LocalFileStore,
   PRODUCTION_LIMITS,
-  type FileStore,
   assertCredentialVerifier,
   boot,
   createOidcVerifier,
@@ -21,7 +19,7 @@ import {
   MigrationError,
   UnsafeSchemaChange,
 } from "@ackerdb/server";
-import type { AppConfig } from "./config.ts";
+import { databasePath, type AppConfig } from "./config.ts";
 import {
   importApp,
   importConfiguredDefault,
@@ -29,9 +27,7 @@ import {
   importJobModules,
 } from "./manifest.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
-import { fileStoreIdentity } from "../files/identity.ts";
-
-export type { RunningApp } from "@ackerdb/server";
+import { createFileStore } from "../files/store.ts";
 
 export type StartupPreparation = (
   config: AppConfig,
@@ -122,22 +118,6 @@ function credentialVerifierLoader(
   }
 }
 
-export async function createFileStore(config: AppConfig): Promise<FileStore> {
-  const files = config.files;
-  if (files.backend === "filesystem") {
-    return new LocalFileStore({ root: files.root });
-  }
-  const { S3FileStore } = await import("@ackerdb/server/files/s3");
-  return new S3FileStore({
-    ...(files.endpoint === undefined ? {} : { endpoint: files.endpoint }),
-    region: files.region,
-    bucket: files.bucket,
-    forcePathStyle: files.forcePathStyle,
-    checksum: files.checksum,
-    encryption: files.encryption,
-  });
-}
-
 export async function startApp<const A extends App = App>(
   config: AppConfig,
   options: StartAppOptions<A> = {},
@@ -145,17 +125,15 @@ export async function startApp<const A extends App = App>(
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
   const loadScopeResolver = scopeResolverLoader(config, options.resolveScopes);
   const prepare = options.prepare;
-  let manifest: App | undefined;
   const parts: BootOptions<A> = {
     listener: {
       hostname: config.hostname,
       port: config.port,
       statusScope: config.statusScope,
     },
-    storage: { path: join(config.dbDir, "data.db"), durability: config.durability },
+    storage: { path: databasePath(config), durability: config.durability },
     files: {
-      store: await createFileStore(config),
-      identity: await fileStoreIdentity(config.files),
+      store: await createFileStore(config.files),
       publicUrl: config.files.publicUrl,
       maxBytes: config.files.maxBytes,
     },
@@ -170,7 +148,6 @@ export async function startApp<const A extends App = App>(
           options.app === undefined ? importApp(config) as Promise<A> : Promise.resolve(options.app),
           loadMigrationChain(config),
         ]);
-        manifest = app;
         return { app, migrations };
       },
       runtime: async () => {
@@ -218,7 +195,7 @@ export async function startApp<const A extends App = App>(
   console.log(`@@ackerdb-startup ${JSON.stringify({ durability: config.durability })}`);
   const displayHostname = server.hostname.includes(":") ? `[${server.hostname}]` : server.hostname;
   console.log(
-    `[ackerdb] ready on http://${displayHostname}:${server.port} — ${running.runtime.registry.functions.size} function(s), ${Object.keys(manifest!.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+    `[ackerdb] ready on http://${displayHostname}:${server.port} — ${running.runtime.registry.functions.size} function(s), ${Object.keys(running.app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
   );
   return running;
 }

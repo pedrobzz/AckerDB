@@ -16,7 +16,7 @@ import {
 } from "@ackerdb/server";
 import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
-import type { AppConfig } from "../app/config.ts";
+import { databasePath, type AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
 import { planFingerprint, probeOptimisticRefusals } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";
@@ -48,9 +48,9 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   if (!MIGRATION_NAME.test(request.name)) {
     throw new Error(`migration name "${request.name}" must be one or more of [A-Za-z0-9_]`);
   }
-  const state = readStoredState(join(config.dbDir, "data.db"));
+  const state = readStoredState(databasePath(config));
   if (state === null) {
-    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`acker dev\` to initialize it first`);
+    throw new Error(`no database at ${databasePath(config)}; run \`acker dev\` to initialize it first`);
   }
   const chain = await loadMigrationChain(config);
   const { pending } = validateHistoryPrefix(state.applied, chain);

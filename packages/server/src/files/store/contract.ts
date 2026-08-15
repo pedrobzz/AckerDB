@@ -1,4 +1,4 @@
-export type FileStoreOperation = "probe" | "put" | "open" | "attributes" | "delete";
+export type FileStoreOperation = "probe" | "identity" | "put" | "open" | "attributes" | "delete";
 
 export type FileStoreErrorCode =
   | "cancelled"
@@ -70,6 +70,13 @@ export interface FileStoreOpenOptions extends FileStoreOptions {
 /** Physical storage port. Keys are opaque, caller-owned identifiers. */
 export interface FileStore {
   probe(options?: FileStoreOptions): Promise<void>;
+  /**
+   * The store's durable physical identity: what the database's FileStore
+   * binding is checked against, so an absent, replaced, or wrongly mounted
+   * store fails closed. Placement only — presentation, path spelling and write
+   * policy do not change it.
+   */
+  identity(options?: FileStoreOptions): Promise<string>;
   put(
     key: string,
     body: ReadableStream<Uint8Array>,

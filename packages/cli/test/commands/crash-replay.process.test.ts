@@ -62,13 +62,13 @@ const COMMIT_FAULT_SERVER = `
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  AckerDBServer,
   Engine,
   Registry,
   Runtime,
   reconcile,
   type RuntimeHooks,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 import app from "./app.ts";
 import * as messages from "./functions/messages.ts";
 
@@ -99,8 +99,7 @@ const runtime = new Runtime({
   ...(hooks === undefined ? {} : { hooks }),
 });
 await runtime.start();
-const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port });
-server.activate(runtime);
+const server = listen(runtime, { port });
 let draining: Promise<void> | undefined;
 const drain = () => draining ??= server.drain().then(
   () => engine.close("clean"),
