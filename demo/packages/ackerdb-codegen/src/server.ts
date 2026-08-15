@@ -30,20 +30,19 @@ import type {
 import type app from "../../../app/server/app.ts";
 
 export type Schema = AppSchema<typeof app>;
-type Capabilities = Readonly<Record<never, never>>;
 
-export const query = queryGeneric as QueryBuilder<Schema, Capabilities>;
+export const query = queryGeneric as QueryBuilder<Schema>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities>;
+export const mutation = mutationGeneric as MutationBuilder<Schema>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema>;
 export const mcp = mcpGeneric as McpBuilder<Schema>;
 export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
 
-export type QueryCtx = GenericQueryCtx<Schema, Capabilities>;
-export type MutationCtx = GenericMutationCtx<Schema, Capabilities>;
-export type ProcedureCtx = GenericProcedureCtx<Schema, Capabilities, Capabilities>;
-export type SseCtx = GenericSseCtx<Schema, Capabilities, Capabilities>;
-export type SystemCtx = GenericSystemCtx<Schema, Capabilities, Capabilities>;
+export type QueryCtx = GenericQueryCtx<Schema>;
+export type MutationCtx = GenericMutationCtx<Schema>;
+export type ProcedureCtx = GenericProcedureCtx<Schema>;
+export type SseCtx = GenericSseCtx<Schema>;
+export type SystemCtx = GenericSystemCtx<Schema>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;

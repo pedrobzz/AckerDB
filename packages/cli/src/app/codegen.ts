@@ -153,28 +153,27 @@ ${jobImports.join("\n")}${jobImports.length > 0 ? "\n" : ""}
 export type Schema = AppSchema<typeof app>;
 /** The declared scope vocabulary; \`never\` when the application declares none. */
 export type Scope = AppScope<typeof app>;
-type Capabilities = Readonly<Record<never, never>>;
 ${jobsType("QueryJobs", "QueryJobsOf")}
 ${jobsType("MutationJobs", "MutationJobsOf")}
 ${jobsType("ProcedureJobs", "ProcedureJobsOf")}
 
-export const query = queryGeneric as QueryBuilder<Schema, Capabilities, QueryJobs, Scope>;
+export const query = queryGeneric as QueryBuilder<Schema, QueryJobs, Scope>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities, MutationJobs, Scope>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;
-export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema, Capabilities, Capabilities>;
-export const job = jobGeneric as JobBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, MutationJobs, Scope>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedureJobs, MutationJobs, Scope>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedureJobs, MutationJobs, Scope>;
+export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema>;
+export const job = jobGeneric as JobBuilder<Schema, ProcedureJobs, MutationJobs>;
 export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;
 
-export type QueryCtx = GenericQueryCtx<Schema, Capabilities, QueryJobs>;
-export type MutationCtx = GenericMutationCtx<Schema, Capabilities, MutationJobs>;
-export type ProcedureCtx = GenericProcedureCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
-export type SseCtx = GenericSseCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
-export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema, Capabilities, Capabilities>;
-export type SystemCtx = GenericSystemCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
-export type JobCtx = GenericJobCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>;
-export type JobTxCtx = GenericJobTxCtx<Schema, Capabilities, MutationJobs>;
+export type QueryCtx = GenericQueryCtx<Schema, QueryJobs>;
+export type MutationCtx = GenericMutationCtx<Schema, MutationJobs>;
+export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedureJobs, MutationJobs>;
+export type SseCtx = GenericSseCtx<Schema, ProcedureJobs, MutationJobs>;
+export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema>;
+export type SystemCtx = GenericSystemCtx<Schema, ProcedureJobs, MutationJobs>;
+export type JobCtx = GenericJobCtx<Schema, ProcedureJobs, MutationJobs>;
+export type JobTxCtx = GenericJobTxCtx<Schema, MutationJobs>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
 `;

@@ -678,8 +678,8 @@ Any reproducible query-path regression under the same useful workload requires
 whole-vector judgment across latency, throughput, memory, tails, useful work,
 and correctness. No percentage decides acceptance.
 
-Automatic mutation scopes have real cost, so their measurements are reported
-separately from query performance. That cost is paid only at registered nested
+Automatic mutation scopes have real cost and must be evaluated separately from
+query performance when measured. That cost is paid only at registered nested
 mutation boundaries and buys observable rollback semantics; it must not leak
 into ordinary database operations.
 

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -34,16 +33,6 @@ function nodeFiles(directory: string): string[] {
       ? nodeFiles(path)
       : entry.name.endsWith(".node") ? [path] : [];
   });
-}
-
-function assertArray(
-  actual: readonly string[] | undefined,
-  expected: readonly string[],
-  label: string,
-): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`${label} is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
-  }
 }
 
 function assertPackagedLicenses(consumerDirectory: string): void {
@@ -108,7 +97,6 @@ async function main(): Promise<void> {
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
     );
-    const serverDirectory = join(consumerDir, "node_modules/@ackerdb/server");
     if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
       throw new Error("packed @ackerdb/server does not expose ./mcp from ./src/mcp/index.ts");
     }
@@ -358,7 +346,7 @@ try {
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} public @ackerdb packages at ${version}, lazy S3 and Cache adapter exports, generated MCP types, Bun runtime, SDK 1.30.0 with audited transitive security floors, and native NumKong exact search, with no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} public @ackerdb packages at ${version}, lazy S3 adapter exports, generated MCP types, Bun runtime, SDK 1.30.0 with audited transitive security floors, and native NumKong exact search, with no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

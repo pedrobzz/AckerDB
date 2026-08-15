@@ -215,7 +215,6 @@ export class RuntimeControl {
     this.options.functions.close();
     this.options.reads.close();
     const reactiveDrain = this.options.reactive.close();
-    let deadlineReached = false;
     const coreShutdown = (async () => {
       const settled = await Promise.allSettled([
         this.waitForActiveOperations(),
@@ -227,10 +226,6 @@ export class RuntimeControl {
       ]);
       const errors = settled.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : []);
-      try {
-      } catch (error) {
-        errors.push(error);
-      }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) {
         throw new AggregateError(errors, "Runtime shutdown failed");
@@ -246,7 +241,6 @@ export class RuntimeControl {
     let timeout!: ReturnType<typeof setTimeout>;
     const deadline = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
-        deadlineReached = true;
         this.shutdownController.abort(deadlineError);
         reject(deadlineError);
       }, Math.max(0, deadlineAtMs - Date.now()));
@@ -259,7 +253,6 @@ export class RuntimeControl {
       },
       async (error) => {
         clearTimeout(timeout);
-        deadlineReached = true;
         this.shutdownController.abort(error);
         this.lifecycle = "failed";
         throw error;

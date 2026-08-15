@@ -27,8 +27,6 @@ export const HTTP_HANDLER_METHODS = Object.freeze([
 
 export type HttpHandlerMethod = (typeof HTTP_HANDLER_METHODS)[number];
 
-type EmptyContextCapabilities = Readonly<Record<never, never>>;
-
 /**
  * A strict subset of the procedure context. The auth members are deliberately
  * absent: raw routes resolve no credential, so `Authorization` is an ordinary
@@ -36,11 +34,7 @@ type EmptyContextCapabilities = Readonly<Record<never, never>>;
  * — is the handler's own job. `tx` carries application authority on the same
  * trust rationale as other application-owned code at the boundary.
  */
-export type HttpHandlerCtx<
-  S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
-> = Capabilities & {
+export type HttpHandlerCtx<S extends Schema = Schema> = {
   readonly timestamp: number;
   /** Fires when the caller disconnects or the Runtime shuts down. */
   readonly abortSignal: AbortSignal;
@@ -48,7 +42,7 @@ export type HttpHandlerCtx<
   readonly files: FileProcedureCapability;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<R>(
-    fn: (tx: TxCtx<S, TransactionCapabilities>) => R,
+    fn: (tx: TxCtx<S>) => R,
   ): Promise<FunctionResult<R>>;
 };
 
@@ -80,11 +74,7 @@ export type AnyRegisteredHttpHandler = RegisteredHttpHandler<any>;
  * field-refusal list are derived from it, so the shape cannot drift between
  * what the builder accepts and what registration allows.
  */
-export interface HttpHandlerDef<
-  S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
-> {
+export interface HttpHandlerDef<S extends Schema = Schema> {
   /**
    * The group this route is published in; `"api"` by default. Unlike the four
    * function kinds it need not be a string literal: a raw handler appears in
@@ -95,17 +85,13 @@ export interface HttpHandlerDef<
   readonly apiPath?: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: (
-    ctx: HttpHandlerCtx<S, Capabilities, TransactionCapabilities>,
+    ctx: HttpHandlerCtx<S>,
     request: Request,
   ) => Response | Promise<Response>;
 }
 
-export type HttpHandlerBuilder<
-  S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
-> = (
-  def: HttpHandlerDef<S, Capabilities, TransactionCapabilities>,
+export type HttpHandlerBuilder<S extends Schema> = (
+  def: HttpHandlerDef<S>,
 ) => RegisteredHttpHandler<S>;
 
 function validateMethods(value: unknown, where: string): readonly HttpHandlerMethod[] {

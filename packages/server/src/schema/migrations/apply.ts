@@ -386,7 +386,6 @@ function snapshotPlan(name: string, snap: TableSnapshot, tagsOf: TagsOf): Physic
     logicalName: name,
     name,
     displayName: name,
-    tagIdentity: (typeName) => typeName,
     pk,
     scheduleAt,
     columns,

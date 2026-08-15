@@ -105,7 +105,7 @@ describe("table query", () => {
       .take(1);
 
     expect(issuedSql).toBeDefined();
-    const statusTag = engine.tagMap(engine.plan("documents"), "QueryDocumentStatus").toTag.get("active")!;
+    const statusTag = engine.plan("documents").columns.get("status")!.variantTag!("active")!;
     const plan = engine.reader
       .query(`EXPLAIN QUERY PLAN ${issuedSql!}`)
       .all(1n, statusTag) as { detail: string }[];

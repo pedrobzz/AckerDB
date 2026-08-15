@@ -66,8 +66,9 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"), { durability });
   try {
     reconcile(engine);
-    const role = engine.tags.get("Role")!.toTag.get("member")!;
-    const payload = engine.tags.get("Payload")!.toTag.get("nothing")!;
+    const messages = engine.plan("messages");
+    const role = messages.columns.get("role")!.variantTag!("member")!;
+    const payload = messages.columns.get("payload")!.variantTag!("nothing")!;
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
       engine.writer

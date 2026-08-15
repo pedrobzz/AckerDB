@@ -28,23 +28,20 @@ export function isSystemOperationName(value: unknown): value is string {
 /** Transaction powers inherited by one trusted in-process system run. */
 export type SystemTxCtx<
   S extends Schema = Schema,
-  Capabilities extends object = Readonly<Record<never, never>>,
   Jobs extends object = AnyJobsNamespace,
-> = Omit<MutationCtx<S, Capabilities, Jobs>, "auth"> & {
+> = Omit<MutationCtx<S, Jobs>, "auth"> & {
   readonly auth: SystemPrincipal;
 };
 
 /** Procedure-like powers owned by trusted in-process application work. */
 export type SystemCtx<
   S extends Schema = Schema,
-  Capabilities extends object = Readonly<Record<never, never>>,
-  TransactionCapabilities extends object = Readonly<Record<never, never>>,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
-> = Omit<ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs>, "auth" | "tx"> & {
+> = Omit<ProcedureCtx<S, Jobs, TxJobs>, "auth" | "tx"> & {
   readonly auth: SystemPrincipal;
   tx<R>(
-    fn: (tx: SystemTxCtx<S, TransactionCapabilities, TxJobs>) => R,
+    fn: (tx: SystemTxCtx<S, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
 

@@ -44,9 +44,9 @@ const scopelessApp = defineApp({ schema });
 const noScope: AppScope<typeof scopelessApp> = "orders.get";
 void noScope;
 
-const typedMutation = mutation as MutationBuilder<typeof schema, object, object, Scope>;
-const typedProcedure = procedure as ProcedureBuilder<typeof schema, object, object, object, object, Scope>;
-const typedQuery = query as QueryBuilder<typeof schema, object, object, Scope>;
+const typedMutation = mutation as MutationBuilder<typeof schema, object, Scope>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema, object, object, Scope>;
+const typedQuery = query as QueryBuilder<typeof schema, object, Scope>;
 const typedMcp = mcpDeclaration as McpBuilder<typeof schema, Scope>;
 
 const addNote = typedMutation({

@@ -271,7 +271,6 @@ export class JobSteps {
     return await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
       this.assertOwned(surface.runs.byId(this.options.runId));
       const value = await surface.runMutationHandler(
-        `jobs.${this.options.jobName}`,
         this.options.runNumber,
         (ctx) => this.invoke(fn, ctx, args),
       );
@@ -306,7 +305,6 @@ export class JobSteps {
     return await this.options.executor.jobsWrite(this.options.signal, async (surface) => {
       this.assertOwned(surface.runs.byId(this.options.runId));
       const value = await surface.runMutationHandler(
-        `jobs.${this.options.jobName}`,
         this.options.runNumber,
         (ctx) => fn(ctx as never),
       );

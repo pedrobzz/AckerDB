@@ -254,7 +254,7 @@ function readOne<Row>(
   where: string,
   params: unknown[],
 ): Row | null {
-  const plan = engine.rootScope.plan(table);
+  const plan = engine.plan(table);
   const raw = connection
     .query(`SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${where} LIMIT 1`)
     .get(...(params as never[])) as Record<string, unknown> | null;
@@ -274,8 +274,8 @@ export function nextDueJobAt(
   inProcessIds: readonly bigint[] = [],
   notBefore = 0,
 ): number | null {
-  const jobs = engine.rootScope.plan(JOBS_TABLE);
-  const runs = engine.rootScope.plan(JOB_RUNS_TABLE);
+  const jobs = engine.plan(JOBS_TABLE);
+  const runs = engine.plan(JOB_RUNS_TABLE);
   // One MIN per due state, not one `IN` over both: `IN` costs SQLite the
   // min-from-index shortcut and makes it walk each state's whole range instead
   // — and this runs on every commit that touches a jobs table.

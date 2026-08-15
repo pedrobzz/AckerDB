@@ -55,8 +55,7 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs the six public and five native lockstep `@ackerdb/*` tarballs,
-then installs the public packages plus the host-selected native package in a
+This gate packs the five lockstep `@ackerdb/*` tarballs, then installs them in a
 temporary consumer. It verifies:
 
 - every installed AckerDB package has the same exact version and packed internal
@@ -72,7 +71,7 @@ temporary consumer. It verifies:
   `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides to point transitive
-`@ackerdb/*` versions at the six tarballs under test. This isolates package
+`@ackerdb/*` versions at the five tarballs under test. This isolates package
 verification from whichever stable, canary, or local beta is currently
 published. The packed manifests themselves remain unchanged and are asserted
 after installation.

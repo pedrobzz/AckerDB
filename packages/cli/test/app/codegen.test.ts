@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
@@ -75,23 +75,14 @@ describe("codegen", () => {
       readFileSync(join(config.generatedDir, f), "utf8"),
     );
     const server = bytes[1]!;
-    expect(server).toContain("type Capabilities = Readonly<Record<never, never>>;");
-    expect(server).toContain("QueryBuilder<Schema, Capabilities, QueryJobs, Scope>");
-    expect(server).toContain("MutationBuilder<Schema, Capabilities, MutationJobs, Scope>");
-    expect(server).toContain(
-      "ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
-    );
-    expect(server).toContain(
-      "SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
-    );
-    expect(server).toContain("GenericQueryCtx<Schema, Capabilities, QueryJobs>");
-    expect(server).toContain("GenericMutationCtx<Schema, Capabilities, MutationJobs>");
-    expect(server).toContain(
-      "GenericProcedureCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>",
-    );
-    expect(server).toContain(
-      "GenericSseCtx<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs>",
-    );
+    expect(server).toContain("QueryBuilder<Schema, QueryJobs, Scope>");
+    expect(server).toContain("MutationBuilder<Schema, MutationJobs, Scope>");
+    expect(server).toContain("ProcedureBuilder<Schema, ProcedureJobs, MutationJobs, Scope>");
+    expect(server).toContain("SseBuilder<Schema, ProcedureJobs, MutationJobs, Scope>");
+    expect(server).toContain("GenericQueryCtx<Schema, QueryJobs>");
+    expect(server).toContain("GenericMutationCtx<Schema, MutationJobs>");
+    expect(server).toContain("GenericProcedureCtx<Schema, ProcedureJobs, MutationJobs>");
+    expect(server).toContain("GenericSseCtx<Schema, ProcedureJobs, MutationJobs>");
     // second run: identical output, nothing rewritten
     const second = await runCodegen(config);
     expect(second.written).toEqual([]);

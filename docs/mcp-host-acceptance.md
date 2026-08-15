@@ -14,9 +14,8 @@ Install and authenticate both CLIs, then run from the repository root:
 bun run test:mcp:hosts
 ```
 
-The gate uses `codex` and `claude` from `PATH`. It packs all lockstep AckerDB
-tarballs, installs the public packages plus the host-selected native package in
-a clean temporary consumer, starts its fixture on an
+The gate uses `codex` and `claude` from `PATH`. It packs and installs all five
+lockstep AckerDB tarballs in a clean temporary consumer, starts its fixture on an
 ephemeral loopback port, and creates separate Identity-bound tokens for the two
 hosts. The fixture and consumer are deleted after the run. Model access from
 the installed hosts is required, so this command is not part of the unattended

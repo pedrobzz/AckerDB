@@ -35,8 +35,6 @@ function assertOnlyKeys(
   }
 }
 
-type EmptyContextCapabilities = Readonly<Record<never, never>>;
-
 /** A Job's own state. `retrying` is non-terminal: its next run is scheduled. */
 export const JOB_STATES = [
   "pending",
@@ -94,9 +92,8 @@ export interface JobDedupe {
 /** The transaction powers of a mutation-kind job handler. */
 export type JobTxCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   TxJobs extends object = AnyJobsNamespace,
-> = Omit<MutationCtx<S, Capabilities, TxJobs>, "auth"> & {
+> = Omit<MutationCtx<S, TxJobs>, "auth"> & {
   readonly auth: SystemPrincipal;
   /** 1-based number of this Job run. */
   readonly runNumber: number;
@@ -130,7 +127,6 @@ export type JobStepQueryCtx<
  */
 export interface JobStep<
   S extends Schema = Schema,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   TxJobs extends object = AnyJobsNamespace,
 > {
   /**
@@ -152,7 +148,7 @@ export interface JobStep<
   /** An inline write step: one writer transaction, journal entry included — exactly-once. */
   mutation<R>(
     name: string,
-    fn: (tx: JobTxCtx<S, TransactionCapabilities, TxJobs>) => R | PromiseLike<R>,
+    fn: (tx: JobTxCtx<S, TxJobs>) => R | PromiseLike<R>,
   ): Promise<Awaited<R>>;
   /** An inline external-work step: at-least-once, journaled on completion. */
   procedure<R>(name: string, fn: () => R | PromiseLike<R>): Promise<Awaited<R>>;
@@ -167,12 +163,10 @@ export interface JobStep<
 /** The powers of a procedure-kind job handler: external work plus explicit tx. */
 export type JobCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
 > = Omit<
-  ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs>,
+  ProcedureCtx<S, Jobs, TxJobs>,
   "auth" | "tx" | "linkAccount" | "unlinkAccount"
 > & {
   readonly auth: SystemPrincipal;
@@ -181,9 +175,9 @@ export type JobCtx<
   /** Fires on cancel, shutdown, or lease expiry: stop cooperatively. */
   readonly abortSignal: AbortSignal;
   /** Durable steps: using them is the opt-in; a handler with no steps is untouched. */
-  readonly step: JobStep<S, TransactionCapabilities, TxJobs>;
+  readonly step: JobStep<S, TxJobs>;
   tx<R>(
-    fn: (tx: JobTxCtx<S, TransactionCapabilities, TxJobs>) => R,
+    fn: (tx: JobTxCtx<S, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
 
@@ -193,22 +187,20 @@ export type JobCtx<
  */
 export interface JobBuilder<
   S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
 > {
   <A extends ObjectShape, R>(
     definition: MutationJobDefinition<
       A,
-      JobTxCtx<S, TransactionCapabilities, TxJobs>,
+      JobTxCtx<S, TxJobs>,
       R
     >,
   ): Job<A, Awaited<R>>;
   <A extends ObjectShape, R>(
     definition: ProcedureJobDefinition<
       A,
-      JobCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+      JobCtx<S, Jobs, TxJobs>,
       R
     >,
   ): Job<A, Awaited<R>>;

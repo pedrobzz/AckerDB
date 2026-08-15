@@ -190,29 +190,33 @@ describe("tag interning", () => {
 
   test("tags are stable across reopen, reorder, delete and re-add", () => {
     const path = freshPath();
+    const tags = (engine: Engine, variants: readonly string[]) => {
+      const variantTag = engine.plan("items").columns.get("status")!.variantTag!;
+      return new Map(variants.map((variant) => [variant, variantTag(variant)]));
+    };
 
     const first = new Engine(schemaWith(["draft", "published", "archived"]), path);
     first.createAll();
-    expect(first.tags.get("Status")!.toTag).toEqual(
+    expect(tags(first, ["draft", "published", "archived"])).toEqual(
       new Map([["draft", 0], ["published", 1], ["archived", 2]]),
     );
     first.close("clean");
 
     // reorder: purely cosmetic, tags unchanged
     const reordered = new Engine(schemaWith(["archived", "draft", "published"]), path);
-    expect(reordered.tags.get("Status")!.toTag).toEqual(
+    expect(tags(reordered, ["draft", "published", "archived"])).toEqual(
       new Map([["draft", 0], ["published", 1], ["archived", 2]]),
     );
     reordered.close("clean");
 
     // drop "published", add "trashed": new variant gets a fresh tag (3), never 1
     const changed = new Engine(schemaWith(["draft", "archived", "trashed"]), path);
-    expect(changed.tags.get("Status")!.toTag.get("trashed")).toBe(3);
+    expect(tags(changed, ["trashed"]).get("trashed")).toBe(3);
     changed.close("clean");
 
     // re-adding "published" finds its original tag again
     const readded = new Engine(schemaWith(["draft", "published", "archived", "trashed"]), path);
-    expect(readded.tags.get("Status")!.toTag.get("published")).toBe(1);
+    expect(tags(readded, ["published"]).get("published")).toBe(1);
     readded.close("clean");
   });
 });
