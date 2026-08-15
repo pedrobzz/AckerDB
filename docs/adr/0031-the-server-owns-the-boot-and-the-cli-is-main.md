@@ -118,8 +118,18 @@ boot events; nothing here commits to a plugin API.
 - `serve` and its options type are gone. Suites that build a Runtime by hand
   start it and put it on a listener through a test-support helper; production
   hosts boot.
-- The CLI's `startApp` keeps its name, options and tests; its body is config →
-  parts → `boot`. `StartupInterruptedError` is gone. Signal handling stays in
-  the CLI, per [ADR-0015](0015-system-runs-are-explicit-host-capabilities.md).
-- Net production lines are negative; the point of the change is ownership, not
+- The CLI's `startApp` keeps its name and options; its body is config → parts
+  → `boot`, and its programmatic startup tests move to the server's boot suite
+  while the process-level `acker start`/`acker dev` tests stay as the
+  behavioural-equivalence proof. `StartupInterruptedError` is gone. Signal
+  handling stays in the CLI, per
+  [ADR-0015](0015-system-runs-are-explicit-host-capabilities.md).
+- The FileStore instance and its physical identity are values the CLI builds
+  before calling `boot`, so the local store's identity marker is written (and
+  the S3 adapter imported) before the listener binds rather than at
+  `opening-storage`. A held dev boot therefore leaves the marker behind; the
+  identity is the same one every later boot reads.
+- The CLI's orchestration shrank by roughly a third; the boot module and its
+  types are about as long as what they replaced, so production line count is
+  roughly flat rather than negative. The point of the change is ownership, not
   size.

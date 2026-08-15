@@ -63,7 +63,7 @@ export class RuntimeControl {
    */
   async start(): Promise<void> {
     if (this.lifecycle !== "created") {
-      throw new Error("Runtime can only be started once, from created");
+      throw new Error(`Runtime.start() requires a created Runtime (state: ${this.lifecycle})`);
     }
     this.options.functions.bindFileRecoveryBarrier(this.options.fileCleanup.activate());
     await this.options.jobs.bootstrap();

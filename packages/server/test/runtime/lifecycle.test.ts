@@ -99,14 +99,14 @@ test("start() makes it ready: repeat jobs are minted, the runner is armed, opera
 
 test("start() twice is misuse", async () => {
   await runtime.start();
-  await expect(runtime.start()).rejects.toThrow("Runtime can only be started once");
+  await expect(runtime.start()).rejects.toThrow("Runtime.start() requires a created Runtime");
 });
 
 test("a created Runtime drains cleanly without ever having started", async () => {
   await runtime.drain();
   expect(runtime.state).toBe("stopped");
   expect(jobRows()).toBe(0);
-  await expect(runtime.start()).rejects.toThrow("Runtime can only be started once");
+  await expect(runtime.start()).rejects.toThrow("Runtime.start() requires a created Runtime");
 });
 
 test("a failed jobs bootstrap fails start()", async () => {

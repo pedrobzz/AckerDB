@@ -338,11 +338,7 @@ export class Runtime implements RuntimePort {
     return this.control.state;
   }
 
-  /**
-   * created → ready: begin File cleanup recovery, mint the repeat Jobs, arm the
-   * runner. Nothing runs on the Runtime's own initiative before this, so a host
-   * holds a constructed but quiescent Runtime until it decides otherwise.
-   */
+  /** created → ready; nothing runs on the Runtime's own initiative before this. */
   start(): Promise<void> {
     return this.control.start();
   }

@@ -21,12 +21,12 @@ import type { MigrationStep } from "../src/schema/migrations/types.ts";
 import { snapshotOf } from "../src/schema/snapshot.ts";
 import { v } from "../src/validation/v.ts";
 import { AckerDBError } from "../src/shared/errors.ts";
+import type { LoadedModules } from "../src/app/registry.ts";
 import {
   boot,
   MigrationsHeldError,
   type BootOptions,
   type BootReporter,
-  type FunctionModules,
   type RunningApp,
 } from "../src/boot.ts";
 import type { AckerDBStartupPhase } from "../src/transport/server.ts";
@@ -43,7 +43,7 @@ const schema = defineSchema({
 });
 const app = defineApp({ schema });
 
-const functions: FunctionModules = {
+const functions: LoadedModules = {
   notes: {
     add: mutation({
       access: "public",
@@ -81,9 +81,9 @@ interface PartsOverrides {
   readonly reporter?: BootReporter;
   readonly prepare?: (signal: AbortSignal) => Promise<unknown>;
   readonly pendingMigrations?: "apply" | "hold";
-  readonly migrations?: readonly MigrationStep[];
-  readonly functions?: FunctionModules;
-  readonly jobs?: FunctionModules;
+  readonly migrations?: MigrationStep[];
+  readonly functions?: LoadedModules;
+  readonly jobs?: LoadedModules;
   readonly loadRuntime?: BootOptions["load"]["runtime"];
 }
 
@@ -480,7 +480,7 @@ describe("boot", () => {
   });
 });
 
-function declareJobsModule(onRun: () => void): FunctionModules {
+function declareJobsModule(onRun: () => void): LoadedModules {
   const declared = declareJobs({
     beat: {
       tick: job({

@@ -28,12 +28,13 @@ import type { DurabilityPolicy } from "@ackerdb/core";
 import { ensureAdminCredential, type AdminCredentialBoot } from "./admin/credentials.ts";
 import type { AdminOptions } from "./admin/options.ts";
 import type { App } from "./app/definition.ts";
-import { Registry } from "./app/registry.ts";
+import { Registry, type LoadedModules } from "./app/registry.ts";
 import type { AppSystemCtx, SystemRunner } from "./app/system.ts";
 import type { CredentialVerifier, ScopeResolver } from "./auth/credentials.ts";
 import { knownScopeVocabulary } from "./auth/scopes.ts";
 import { Engine, type EngineCloseDisposition } from "./database/engine.ts";
 import { resolveFileStoreBinding } from "./files/binding.ts";
+import type { RuntimeFilesOptions } from "./files/namespace.ts";
 import type { FileStore } from "./files/store/contract.ts";
 import { declareJobs } from "./jobs/definition.ts";
 import { settleOnAbort } from "./runtime/abort.ts";
@@ -49,18 +50,16 @@ import {
   type AckerDBStartupPhase,
 } from "./transport/server.ts";
 
-export type FunctionModules = Record<string, Record<string, unknown>>;
-
 /** What durable schema work needs: the manifest and its migration chain. */
 export interface LoadedApp<A extends App = App> {
   readonly app: A;
-  readonly migrations: readonly MigrationStep[];
+  readonly migrations: MigrationStep[];
 }
 
 /** What the request runtime needs; loaded only after durable schema work commits. */
 export interface LoadedRuntime {
-  readonly functions: FunctionModules;
-  readonly jobs: FunctionModules;
+  readonly functions: LoadedModules;
+  readonly jobs: LoadedModules;
   readonly verifier?: CredentialVerifier;
   readonly resolveScopes?: ScopeResolver;
 }
@@ -90,12 +89,10 @@ export interface BootStorage {
   readonly durability?: DurabilityPolicy;
 }
 
-export interface BootFiles {
+export interface BootFiles extends RuntimeFilesOptions {
   readonly store: FileStore;
   /** The store's physical identity, checked against the database's binding. */
   readonly identity: string;
-  readonly publicUrl?: string;
-  readonly maxBytes?: number;
 }
 
 export interface BootOptions<A extends App = App> {
@@ -206,7 +203,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
       if (stored !== null) {
         let pending = 0;
         try {
-          pending = validateHistoryPrefix(stored.applied, [...migrations]).pending.length;
+          pending = validateHistoryPrefix(stored.applied, migrations).pending.length;
         } catch {
           // Divergence is the engine's message to deliver, not the gate's.
         }
@@ -226,7 +223,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // exactly as before. The chain form owns history, the per-step apply, and
     // the trailing safe reconcile in one call.
     advance(migrations.length > 0 ? "migrating" : "reconciling");
-    const { applied } = await reconcile(engine, [...migrations]);
+    const { applied } = await reconcile(engine, migrations);
     reporter.reconciled?.(applied);
 
     // Administration must exist before anything can be administered, and
@@ -261,7 +258,6 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // and the credential commit.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    checkpoint();
     const registry = new Registry(loaded.functions, app.apiPaths, options.admin);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
@@ -271,11 +267,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
       registry,
       limits,
       jobs: declareJobs(loaded.jobs),
-      files: {
-        store: options.files.store,
-        ...(options.files.publicUrl === undefined ? {} : { publicUrl: options.files.publicUrl }),
-        ...(options.files.maxBytes === undefined ? {} : { maxBytes: options.files.maxBytes }),
-      },
+      files: options.files,
       ...(loaded.verifier === undefined ? {} : { verifier: loaded.verifier }),
       ...(loaded.resolveScopes === undefined ? {} : { resolveScopes: loaded.resolveScopes }),
       ...(app.scopes === undefined ? {} : { scopes: app.scopes }),

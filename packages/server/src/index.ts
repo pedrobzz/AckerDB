@@ -13,7 +13,6 @@ export {
   type BootOptions,
   type BootReporter,
   type BootStorage,
-  type FunctionModules,
   type LoadedApp,
   type LoadedRuntime,
   type RunningApp,
@@ -501,7 +500,7 @@ export {
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
-export { Registry, type ExposedFunction } from "./app/registry.ts";
+export { Registry, type ExposedFunction, type LoadedModules } from "./app/registry.ts";
 export {
   OutboundBudget,
   type OutboundBudgetSnapshot,

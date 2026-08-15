@@ -285,7 +285,7 @@ export class RuntimeJobs {
     if (this.running !== null) return this.running;
     const batch = this.batch().finally(() => {
       this.running = null;
-      if (this.options.isReady()) this.arm("requeue");
+      if (this.options.isReady()) void this.arm("requeue");
     });
     this.running = batch;
     return batch;
@@ -827,7 +827,7 @@ export class RuntimeJobs {
   private releaseRun(jobId: bigint, controller: AbortController): void {
     this.activeRuns--;
     if (this.runControllers.get(jobId) === controller) this.runControllers.delete(jobId);
-    if (this.options.isReady()) this.arm();
+    if (this.options.isReady()) void this.arm();
   }
 
   /** The settle transaction: re-validate the run and its lease, then record. */
