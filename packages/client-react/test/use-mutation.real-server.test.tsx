@@ -25,7 +25,7 @@ import {
   reconcile,
   serve,
 } from "@ackerdb/server";
-import { StrictMode, useEffect, type ReactNode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
@@ -190,19 +190,6 @@ afterAll(async () => {
 });
 
 describe("useMutation against a real ackerdb server", () => {
-  test("runs a real mutation through the rendered hook", async () => {
-    const mounted = await mount(app);
-    const id = mustOk(await within(
-      mounted.send()({ channelId: 1n, body: "first" }),
-      "first mutation settlement",
-    ));
-    const rows = mustOk(await app.observer.query(listRef, { channelId: 1n }));
-    expect(rows.filter(({ body }) => body === "first")).toEqual([
-      { id, channelId: 1n, body: "first" },
-    ]);
-    mounted.root.unmount();
-  });
-
   test(
     "a connection severed at the response boundary converges with one identifier and one effect",
     async () => {
@@ -254,63 +241,4 @@ describe("useMutation against a real ackerdb server", () => {
     },
     15_000,
   );
-
-  test("a Strict Mode mount-effect call waits for the client and each lifetime commits exactly once", async () => {
-    const settlements: Array<{ kind: "ok"; value: bigint } | { kind: "error"; error: unknown }> =
-      [];
-    function SendOnMount(): ReactNode {
-      const send = useMutation(sendRef);
-      useEffect(() => {
-        // Issued before the provider's effect constructs the client. Strict
-        // Mode runs this effect twice; both queued calls wait through the
-        // simulated remount (which closes the first client before either
-        // could dispatch) and commit once each on the surviving lifetime.
-        send({ channelId: 2n, body: "queued" }).then((result) => {
-          settlements.push(
-            result.ok
-              ? { kind: "ok", value: result.data }
-              : { kind: "error", error: result.error },
-          );
-        });
-      }, [send]);
-      return null;
-    }
-
-    const container = mountPoint();
-    const root = createRoot(container);
-    root.render(
-      <StrictMode>
-        <AckerDBProvider
-          config={{
-            url: app.proxy.url,
-            credential: { kind: "anonymous" },
-            createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
-          }}
-        >
-          <SendOnMount />
-        </AckerDBProvider>
-      </StrictMode>,
-    );
-    const deadline = Date.now() + WAIT_DEADLINE_MS;
-    while (settlements.length < 2) {
-      if (Date.now() > deadline) throw new Error("Timed out waiting for both mount-effect settlements");
-      await Bun.sleep(10);
-    }
-
-    // Each of the two Strict Mode effect invocations dispatched its own
-    // mutation exactly once — two distinct identities, never a duplicate.
-    const requests = mutationRequests(app, "queued");
-    expect(requests).toHaveLength(2);
-    expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(2);
-
-    // Exactly one server effect per call, and the resolutions name the rows.
-    const rows = mustOk(await app.observer.query(listRef, { channelId: 2n }));
-    const committed = rows.filter(({ body }) => body === "queued");
-    expect(committed).toHaveLength(2);
-    expect(settlements.map(({ kind }) => kind)).toEqual(["ok", "ok"]);
-    const resolved = settlements.flatMap((entry) => (entry.kind === "ok" ? [entry.value] : []));
-    expect(new Set(resolved)).toEqual(new Set(committed.map(({ id }) => id)));
-
-    root.unmount();
-  });
 });

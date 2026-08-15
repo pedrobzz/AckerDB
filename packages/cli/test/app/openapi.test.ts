@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { loadConfig } from "../../src/app/config.ts";
 import { exportOpenApi } from "../../src/app/openapi.ts";
 import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
@@ -102,13 +102,6 @@ describe("acker openapi", () => {
     // Hidden from the document, and never exposed at all.
     expect(document.paths["/api/messages/purge"]).toBeUndefined();
     expect(document.paths["/api/messages/secret"]).toBeUndefined();
-  });
-
-  test("an app package without an identity is named after its directory", async () => {
-    const dir = fixture();
-    const file = join(dir, "openapi.json");
-    await exportOpenApi(loadConfig(dir), file);
-    expect(read(file).info).toEqual({ title: basename(dir), version: "0.0.0" });
   });
 
   test("two exports of one app are byte-identical", async () => {

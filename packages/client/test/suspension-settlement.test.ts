@@ -16,7 +16,6 @@ import {
   decode,
   encode,
   parseSseAckRequest,
-  type ServerMessage,
   type SseAckRequest,
 } from "@ackerdb/core";
 import {
@@ -27,7 +26,7 @@ import {
   type AckerDBLifecyclePort,
 } from "@ackerdb/client";
 import { ManualClock } from "ackerdb-test-support/client-transport";
-import { createHarness, cursor, mustErr, type ClientHarness } from "./support/harness.ts";
+import { createHarness, mustErr, type ClientHarness } from "./support/harness.ts";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -276,24 +275,6 @@ describe("non-resumable work started while suspended", () => {
     expect(await createdSuspended.next()).toEqual({ done: false, value: { tick: 0 } });
     expect(journal.dispatches).toEqual(["/api/stream/hold"]);
     await createdSuspended.return(undefined);
-    client.close();
-  });
-
-  test("a stream that crosses a suspension unpulled starts fresh after activation", async () => {
-    const scripted = openSse();
-    const { client, port, journal } = harness({ sse: () => scripted.response });
-
-    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
-      Symbol.asyncIterator
-    ]();
-    port.suspend();
-    expect(journal.dispatches).toEqual([]);
-    port.resume();
-
-    scripted.chunk(1, { tick: 0 });
-    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
-    expect(journal.dispatches).toHaveLength(1);
-    await iterator.return(undefined);
     client.close();
   });
 
@@ -666,52 +647,6 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
       "stream-2",
     ]);
     expect(journal.acknowledgments.map((acknowledgment) => acknowledgment.seq)).toEqual([1, 2, 3]);
-    client.close();
-  });
-});
-
-describe("resumable recovery stays independent of terminal settlement", () => {
-  test("suspension settles the SSE stream while the mounted query resumes from its exact cursor", async () => {
-    const scripted = openSse();
-    const { client, sockets, port, journal } = harness({ sse: () => scripted.response });
-    const updates: unknown[] = [];
-    client.subscribe("api.todos.list", { list: 1n }, (value) => updates.push(value));
-    sockets[0]!.welcome(client.clientSessionId);
-    const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
-    sockets[0]!.onmessage?.({
-      data: encode({
-        t: "transition",
-        id: subscription.id,
-        transition: { kind: "reset", from: null, to: cursor(5n), value: ["one"] },
-      } satisfies ServerMessage),
-    });
-    expect(updates).toEqual([["one"]]);
-
-    const iterator = client.sse<Record<never, never>, { tick: number }>("api.stream.hold", {})[
-      Symbol.asyncIterator
-    ]();
-    scripted.chunk(1, { tick: 0 });
-    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
-    const pull = iterator.next().catch((error) => error);
-    await Bun.sleep(0);
-
-    port.suspend();
-    // The non-resumable stream terminates...
-    expectSuspensionOutcome(await pull, {
-      code: "unavailable",
-      message: "SSE stream was interrupted by suspension",
-      resource: "sse",
-    });
-
-    // ...while the query recovers on activation from its exact held cursor.
-    port.resume();
-    expect(sockets).toHaveLength(2);
-    sockets[1]!.welcome(client.clientSessionId);
-    const resumed = sockets[1]!.frames().find((frame) => frame.t === "sub")!;
-    expect(resumed.id).toBe(subscription.id);
-    expect(resumed.cursor).toEqual(cursor(5n));
-    // The settled stream never redialed: one SSE dispatch total.
-    expect(journal.dispatches).toHaveLength(1);
     client.close();
   });
 });

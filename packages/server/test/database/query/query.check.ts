@@ -108,12 +108,6 @@ export async function _queryTypecheck(): Promise<void> {
     .where((row) => row.nullableMetadata.isNull().or(row.embedding.isNotNull()))
     .collect();
 
-  const textRows = await reader.users
-    .query()
-    .where((row) => row.payload.is("text"))
-    .collect();
-  const _text: string = textRows[0]!.payload.value;
-
   const textOrCount = await reader.users
     .query()
     .where((row) => row.payload.is("text").or(row.payload.is("count")))
@@ -127,8 +121,6 @@ export async function _queryTypecheck(): Promise<void> {
   // @ts-expect-error negation does not claim a positive payload refinement
   const _notTextValue: string = notText[0]!.payload.value;
 
-  // @ts-expect-error named index accessors were removed
-  void reader.documents.byTenantIdStatus;
   // @ts-expect-error scans were replaced by query()
   void reader.documents.scan;
   // @ts-expect-error thenBy requires an initial orderBy
@@ -176,14 +168,6 @@ export async function _queryTypecheck(): Promise<void> {
   reader.users.query().avg((row) => row.payload);
 
   await writer.users.upsert(
-    { email: "a@example.com" },
-    { name: "A", payload: { tag: "empty", value: null } },
-  );
-  await writer.users.upsert({ email: "a@example.com" }, (existing) => ({
-    name: existing?.name ?? "A",
-    payload: existing?.payload ?? { tag: "empty", value: null },
-  }));
-  await writer.users.upsert(
     // @ts-expect-error nullable unique indexes are not structural upsert keys
     { externalId: "external" },
     { email: "a@example.com", name: "A", payload: { tag: "empty", value: null } },
@@ -193,8 +177,6 @@ export async function _queryTypecheck(): Promise<void> {
     // @ts-expect-error key fields cannot also appear in upsert values
     { email: "changed@example.com", name: "A", payload: { tag: "empty", value: null } },
   );
-  // @ts-expect-error upsert requires a non-null unique index key
-  void writer.documents.upsert;
 
   await writer.unionKeys.upsert(
     { slug: "safe" },

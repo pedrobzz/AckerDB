@@ -85,6 +85,11 @@ describe("HTTP-exposed function paths", () => {
     expect(() => new Registry({ _internal: { echo: grouped } }, ["internal"])).toThrow(
       'claims AckerDB-owned path "/internal/_internal/echo"; "_" is reserved to AckerDB',
     );
+    // A raw handler claims its path through the same check, named by its kind.
+    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    expect(() => new Registry({ _internal: { hook } })).toThrow(
+      'http handler "api._internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
+    );
   });
 
   test("owns the root the protocol endpoints moved to, and nothing deeper", () => {
@@ -146,6 +151,11 @@ describe("HTTP-exposed function paths", () => {
     expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, notes: { echo: exposed } })).toThrow(message);
     expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
+    // A raw handler at the same path meets the same check, named by its kind.
+    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    expect(() => new Registry({ notes: { echo: hook }, mcp: { endpoint } })).toThrow(
+      'http handler "api.notes.echo" and MCP "agent" both use path "/api/notes/echo"',
+    );
   });
 
   test("refuses two addresses projecting onto one path", () => {
@@ -205,41 +215,6 @@ describe("raw http handler routes", () => {
     // Not a contract function: it is neither addressable nor exposed.
     expect(registry.get("api.hooks.stripe")).toBeUndefined();
     expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
-  });
-
-  test("refuses the AckerDB-owned module prefix", () => {
-    expect(() => new Registry({ _internal: { hook } })).toThrow(
-      'http handler "api._internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
-    );
-  });
-
-  test("refuses a path claimed by both a handler and an MCP endpoint, in either order", () => {
-    const endpoint = mcp({
-      name: "agent",
-      path: "/api/hooks/stripe",
-      tools: {},
-    });
-    const message = 'http handler "api.hooks.stripe" and MCP "agent" both use path "/api/hooks/stripe"';
-
-    expect(() => new Registry({ hooks: { stripe: hook }, mcp: { endpoint } })).toThrow(message);
-    expect(() => new Registry({ mcp: { endpoint }, hooks: { stripe: hook } })).toThrow(message);
-  });
-
-  test("refuses one handler exported at two addresses", () => {
-    expect(() => new Registry({ hooks: { stripe: hook, again: hook } })).toThrow(
-      'registered http handler is exported at both "api.hooks.again" and "api.hooks.stripe"',
-    );
-  });
-
-  test("refuses a malformed shape from an untyped export", () => {
-    const badMethod = { ...hook, methods: ["POST", "FETCH"] } as never;
-    expect(() => new Registry({ hooks: { badMethod } })).toThrow(
-      'http handler "hooks.badMethod" methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
-    );
-    const noHandler = { ...hook, handler: "later" } as never;
-    expect(() => new Registry({ hooks: { noHandler } })).toThrow(
-      'http handler "hooks.noHandler" handler must be a function',
-    );
   });
 
   test("refuses an untyped export missing the client-erasure marker", () => {
@@ -331,6 +306,11 @@ describe("the httpHandler builder", () => {
     );
     expect(() => httpHandler({ methods: ["POST", "POST"], handler })).toThrow(
       'httpHandler methods must not repeat "POST"',
+    );
+    // An untyped export reaches the same interpreter, named by its address.
+    const badMethod = { ...httpHandler({ methods: ["POST"], handler }), methods: ["POST", "FETCH"] } as never;
+    expect(() => new Registry({ hooks: { badMethod } })).toThrow(
+      'http handler "hooks.badMethod" methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
     );
   });
 

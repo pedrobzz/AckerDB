@@ -107,14 +107,19 @@ beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
 describe("useQueryProcedure", () => {
-  test("canonical arguments continue one observation while changed arguments start fresh demand", async () => {
+  test("canonical arguments continue one observation while any changed key starts fresh demand", async () => {
     observed.clear();
     const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
-    const page = (value: string) => (
+    const page = (value: string, procedure = uppercase, refreshIntervalMs?: number) => (
       <AckerDBProvider config={harness.config()}>
-        <Report id="changing" value={value} />
+        <Report
+          id="changing"
+          procedure={procedure}
+          value={value}
+          refreshIntervalMs={refreshIntervalMs}
+        />
       </AckerDBProvider>
     );
 
@@ -132,7 +137,6 @@ describe("useQueryProcedure", () => {
       });
     });
     const firstSnapshot = observed.get("changing")!;
-    const firstRefresh = firstSnapshot.refresh;
 
     // Report constructs a fresh argument object on every render. Canonical
     // equality keeps the existing observation and does not execute again.
@@ -140,26 +144,36 @@ describe("useQueryProcedure", () => {
     expect(harness.live().framesOf("p")).toHaveLength(1);
     expect(observed.get("changing")).toBe(firstSnapshot);
 
-    await render(root, page("two"));
-    expect(harness.live().framesOf("p")).toHaveLength(2);
-    expect(observed.get("changing")!.status).toBe("pending");
-    expect(observed.get("changing")!.refresh).not.toBe(firstRefresh);
-
-    // Refresh belongs to its observation lifetime and becomes inert after
-    // that keyed demand has been released.
-    firstRefresh();
-    expect(harness.live().framesOf("p")).toHaveLength(2);
-
-    const second = harness.live().framesOf("p")[1]!;
-    await act(async () => {
-      harness.live().receive({
-        t: "ok",
-        id: second.id,
-        kind: "procedure",
-        value: { value: "TWO" },
+    // Every key dimension — arguments, address, refresh configuration — starts
+    // a fresh observation with its own snapshot and refresh identity; refresh
+    // belongs to its observation lifetime and is inert once that keyed demand
+    // has been released.
+    const changes: Array<[string, typeof uppercase, number | undefined]> = [
+      ["two", uppercase, undefined],
+      ["two", reverse, undefined],
+      ["two", reverse, 10_000],
+    ];
+    for (const [index, [value, procedure, refreshIntervalMs]] of changes.entries()) {
+      const previous = observed.get("changing")!;
+      await render(root, page(value, procedure, refreshIntervalMs));
+      const requests = harness.live().framesOf("p");
+      expect(requests).toHaveLength(index + 2);
+      expect(requests.at(-1)!.ref).toBe(procedure.$ref);
+      expect(observed.get("changing")!.status).toBe("pending");
+      expect(observed.get("changing")).not.toBe(previous);
+      expect(observed.get("changing")!.refresh).not.toBe(previous.refresh);
+      previous.refresh();
+      expect(harness.live().framesOf("p")).toHaveLength(index + 2);
+      await act(async () => {
+        harness.live().receive({
+          t: "ok",
+          id: requests.at(-1)!.id,
+          kind: "procedure",
+          value: { value: "TWO" },
+        });
       });
-    });
-    expect(container.textContent).toBe("success:TWO");
+      expect(container.textContent).toBe("success:TWO");
+    }
     await act(async () => root.unmount());
   });
 
@@ -185,66 +199,6 @@ describe("useQueryProcedure", () => {
       "api.tools.uppercase",
       "api.tools.uppercase",
     ]);
-    await act(async () => root.unmount());
-  });
-
-  test("changed address and configuration replace state and refresh identities", async () => {
-    observed.clear();
-    const harness = createHarness(APP);
-    const container = mountPoint();
-    const root = createRoot(container);
-    const page = (
-      procedure: typeof uppercase,
-      refreshIntervalMs?: number,
-    ) => (
-      <AckerDBProvider config={harness.config()}>
-        <Report
-          id="identity"
-          procedure={procedure}
-          value="one"
-          refreshIntervalMs={refreshIntervalMs}
-        />
-      </AckerDBProvider>
-    );
-
-    await render(root, page(uppercase));
-    await act(async () => {
-      harness.live().welcome(SESSION);
-    });
-    const firstRequest = harness.live().framesOf("p")[0]!;
-    await act(async () => {
-      harness.live().receive({
-        t: "ok",
-        id: firstRequest.id,
-        kind: "procedure",
-        value: { value: "ONE" },
-      });
-    });
-    const first = observed.get("identity")!;
-
-    await render(root, page(reverse));
-    const secondRequest = harness.live().framesOf("p")[1]!;
-    expect(secondRequest.ref).toBe("api.tools.reverse");
-    expect(observed.get("identity")).not.toBe(first);
-    expect(observed.get("identity")!.refresh).not.toBe(first.refresh);
-    first.refresh();
-    expect(harness.live().framesOf("p")).toHaveLength(2);
-    await act(async () => {
-      harness.live().receive({
-        t: "ok",
-        id: secondRequest.id,
-        kind: "procedure",
-        value: { value: "eno" },
-      });
-    });
-    const second = observed.get("identity")!;
-
-    await render(root, page(reverse, 10_000));
-    expect(harness.live().framesOf("p")).toHaveLength(3);
-    expect(observed.get("identity")).not.toBe(second);
-    expect(observed.get("identity")!.refresh).not.toBe(second.refresh);
-    second.refresh();
-    expect(harness.live().framesOf("p")).toHaveLength(3);
     await act(async () => root.unmount());
   });
 

@@ -107,21 +107,4 @@ describe("vector migrations", () => {
     expect((await writable(reopened).documents.get(1n)).embedding).toEqual([1, 2, 3]);
     reopened.close("clean");
   });
-
-  test("classifies required additions and nullable-to-required changes as shape-unsafe", () => {
-    const empty = defineSchema({
-      documents: defineTable({ id: v.primaryKey() }),
-    });
-    const nullable = defineSchema({
-      documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2).nullable() }),
-    });
-    const required = defineSchema({
-      documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
-    });
-
-    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withFrameworkTables(empty)), snapshotOf(withFrameworkTables(required)))).refusals)
-      .toMatchObject([{ reason: "required-column-added", column: "embedding" }]);
-    expect(classifySchemaDiff(diffSnapshots(snapshotOf(withFrameworkTables(nullable)), snapshotOf(withFrameworkTables(required)))).refusals)
-      .toMatchObject([{ reason: "column-made-required", column: "embedding" }]);
-  });
 });

@@ -705,7 +705,7 @@ async function recoverCutConnection(
 }
 
 async function runSemanticCut(cut: number): Promise<void> {
-  const app = await createPublicApp({ oneTransitionHistory: cut === 12 });
+  const app = await createPublicApp();
   let semanticUpdates: ObservationLog<readonly MessageRow[]> | undefined;
   try {
     if (cut >= 1 && cut <= 4) {
@@ -762,10 +762,6 @@ async function runSemanticCut(cut: number): Promise<void> {
         cutConnectionId = app.proxy.connectionsOpened;
         await app.proxy.dropConnections();
         app.commitGate.release();
-      } else if (cut === 8) {
-        const fault = app.proxy.cutNextServerFrame(transitionFrame("update"));
-        mutationEvidence = beginMutation(app, body);
-        cutConnectionId = (await fault).connectionId;
       } else if (cut === 9) {
         const heldPromise = app.proxy.holdNextServerFrame((message) =>
           message.t === "ok" && message.kind === "mutation"
@@ -787,7 +783,7 @@ async function runSemanticCut(cut: number): Promise<void> {
       }
 
       expect(mutationEvidence.settlements()).toBe(0);
-      await recoverCutConnection(app, cutConnectionId, baseline - 1, cut <= 8 ? "update" : "resume");
+      await recoverCutConnection(app, cutConnectionId, baseline - 1, cut <= 7 ? "update" : "resume");
       await assertMutation(
         app,
         mutationEvidence,
@@ -795,41 +791,6 @@ async function runSemanticCut(cut: number): Promise<void> {
         cut === 5 ? "executed" : cut === 6 ? undefined : "replayed",
         updates,
       );
-      expect(updates.errors).toEqual([]);
-    } else if (cut === 11) {
-      const updates = mountMessages(app);
-      semanticUpdates = updates;
-      await updates.waitFor((rows) => rows.length === 0, "R2.11 initial snapshot");
-      const baseline = await statusConnections(app);
-      const first = app.proxy.connectionsOpened;
-      await app.proxy.dropConnections();
-      await prepareReconnect(app, first, baseline - 1);
-      const fault = app.proxy.cutNextServerFrame(transitionFrame("resume"));
-      await advanceReconnect(app);
-      const cutFrame = await fault;
-      await recoverCutConnection(app, cutFrame.connectionId, baseline - 1, "resume");
-      await assertMutation(app, beginMutation(app, "semantic-11"), 1, "executed", updates);
-      expect(updates.errors).toEqual([]);
-    } else if (cut === 12) {
-      const updates = mountMessages(app);
-      semanticUpdates = updates;
-      await updates.waitFor((rows) => rows.length === 0, "R2.12 initial snapshot");
-      const firstBaseline = await statusConnections(app);
-      const first = app.proxy.connectionsOpened;
-      await app.proxy.dropConnections();
-      await prepareReconnect(app, first, firstBaseline - 1);
-      await app.observer.mutation("api.messages.send", { channelId: 1n, body: "history-one" });
-      await app.observer.mutation("api.messages.send", { channelId: 1n, body: "history-two" });
-      const remaining = await statusConnections(app);
-      const fault = app.proxy.cutNextServerFrame(transitionFrame("reset"));
-      await advanceReconnect(app);
-      const cutFrame = await fault;
-      await recoverCutConnection(app, cutFrame.connectionId, remaining, "reset");
-      await updates.waitFor(
-        (rows) => rows.some(({ body }) => body === "history-two"),
-        "R2.12 authoritative reset snapshot",
-      );
-      await assertMutation(app, beginMutation(app, "semantic-12"), 1, "executed", updates);
       expect(updates.errors).toEqual([]);
     } else {
       throw new Error(`unknown semantic cut ${cut}`);
@@ -971,7 +932,9 @@ async function runTransitionCase(entry: TransitionCase): Promise<void> {
 }
 
 describe("public realtime transition failure acceptance", () => {
-  for (let cut = 1; cut <= 12; cut++) {
+  // Cuts 8, 11 and 12 (before update / before resume / before reset) live in
+  // TRANSITION_CASES below, which additionally pin the exact update sequences.
+  for (const cut of [1, 2, 3, 4, 5, 6, 7, 9, 10]) {
     test(`reconnects at authoritative R2 semantic cut ${cut}`, () => runSemanticCut(cut), 15_000);
   }
   for (const entry of TRANSITION_CASES) {

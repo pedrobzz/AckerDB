@@ -163,12 +163,19 @@ export default defineMigration({ tables: { items: (row) => row } });
     await expect(loadMigrationChain(config)).rejects.toThrow("has no matching migration file");
   });
 
-  test("rejects a malformed migration filename", async () => {
-    const config = chain({
+  test("rejects a malformed migration filename or a stray entry in migrations/", async () => {
+    const malformed = chain({
       "migrations/1_count.ts": MIGRATION_TS,
       "migrations/meta/1_count.json": metaJson(),
     });
-    await expect(loadMigrationChain(config)).rejects.toThrow("is not a valid migration file");
+    await expect(loadMigrationChain(malformed)).rejects.toThrow("is not a valid migration file");
+
+    const stray = chain({
+      "migrations/README.md": "notes",
+      "migrations/0001_count_to_string.ts": MIGRATION_TS,
+      "migrations/meta/0001_count_to_string.json": metaJson(),
+    });
+    await expect(loadMigrationChain(stray)).rejects.toThrow("is not a valid migration file");
   });
 
   test("rejects migration number zero", async () => {
@@ -177,15 +184,6 @@ export default defineMigration({ tables: { items: (row) => row } });
       "migrations/meta/0000_count.json": metaJson({ number: 0, name: "count" }),
     });
     await expect(loadMigrationChain(config)).rejects.toThrow("migration number 0");
-  });
-
-  test("rejects an unexpected entry in migrations/", async () => {
-    const config = chain({
-      "migrations/README.md": "notes",
-      "migrations/0001_count_to_string.ts": MIGRATION_TS,
-      "migrations/meta/0001_count_to_string.json": metaJson(),
-    });
-    await expect(loadMigrationChain(config)).rejects.toThrow("is not a valid migration file");
   });
 
   test("rejects a sidecar whose number or name disagrees with the filename", async () => {

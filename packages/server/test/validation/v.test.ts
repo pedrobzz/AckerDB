@@ -186,12 +186,12 @@ describe("Standard Schema contract", () => {
 
   test("keeps runtime-native Standard Schema honest until a protocol codec is compiled", () => {
     expect(() => v.bigint()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("requires a standard-JSON protocol codec");
+      .toThrow("$: v.bigint() requires a standard-JSON protocol codec");
     expect(() => v.identity()["~standard"].jsonSchema.output({ target: "draft-2020-12" }))
       .toThrow("requires a standard-JSON protocol codec");
     expect(() => v.bytes()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
       .toThrow("requires a standard-JSON protocol codec");
     expect(() => v.literal(1n)["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("requires a standard-JSON protocol codec");
+      .toThrow("v.literal(bigint) requires a standard-JSON protocol codec");
   });
 });

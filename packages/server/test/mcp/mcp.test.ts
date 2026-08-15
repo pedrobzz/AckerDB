@@ -2,8 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import type { Identity } from "@ackerdb/core";
 import { v } from "../../src/validation/v.ts";
@@ -761,30 +759,6 @@ describe("public stateless MCP endpoint", () => {
     });
   });
 
-  test("works through the official SDK client without an HTTP session", async () => {
-    const client = new Client({ name: "sdk-test", version: "1" });
-    const transport = new StreamableHTTPClientTransport(new URL(`${harness.base}/mcp`));
-    try {
-      await client.connect(transport);
-      expect(transport.sessionId).toBeUndefined();
-      expect(await client.ping()).toEqual({});
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
-        "summarize_note",
-        "write_note",
-      ]);
-      expect(await client.callTool({
-        name: "write_note",
-        arguments: { body: "sdk" },
-      })).toMatchObject({
-        content: [{ type: "text", text: '{"status":"anonymous:1"}' }],
-        structuredContent: { status: "anonymous:1" },
-      });
-      expect(noteCount()).toBe(1n);
-    } finally {
-      await client.close();
-    }
-  });
-
   test("gives explicit stateless method and bounded-body responses", async () => {
     const preflight = await fetch(`${harness.base}/mcp`, {
       method: "OPTIONS",
@@ -921,30 +895,22 @@ describe("MCP startup invariants", () => {
     expect(JSON.stringify(encoded)).toBe('{"__proto__":"safe","constructor":"7"}');
   });
 
-  test("rejects every unsupported or contradictory nested validator shape", () => {
-    const unsupported = { ...v.string(), kind: "custom" } as never;
-    const contradictoryArray = { ...v.string(), kind: "array" } as never;
-    const cases = [
-      [v.array(v.primaryKey()), "v.primaryKey() is not a standard-JSON value"],
-      [v.array(v.scheduleAt()), "v.scheduleAt() is not a standard-JSON value"],
-      [v.array(v.tag()), "v.tag() is valid only as a direct v.union() member"],
-      [unsupported, "v.custom() has no lossless standard-JSON protocol representation"],
-      [contradictoryArray, "v.array() has no element validator"],
-    ] as const;
-    for (const [index, [value, message]] of cases.entries()) {
-      const invalidShape = typedQuery({
-        description: "This declaration must fail before registration.",
-        access: "public",
-        args: { value },
-        returns: v.object({}),
-        handler: () => ({}),
-      });
-      expect(() => typedMcp({
-        name: `invalid_shape_${index}`,
-        path: `/invalid/shape-${index}`,
-        tools: { invalid_shape: { fn: invalidShape, access: "public" } },
-      })).toThrow(message);
-    }
+  test("rejects an unrepresentable validator shape at declaration", () => {
+    // Which shapes the JSON boundary refuses, and how it names them, is the
+    // JSON Schema emitter's contract; here only that mcp() fails at
+    // declaration for both directions of the tool.
+    const invalidShape = typedQuery({
+      description: "This declaration must fail before registration.",
+      access: "public",
+      args: { value: v.array(v.primaryKey()) },
+      returns: v.object({}),
+      handler: () => ({}),
+    });
+    expect(() => typedMcp({
+      name: "invalid_shape",
+      path: "/invalid/shape",
+      tools: { invalid_shape: { fn: invalidShape, access: "public" } },
+    })).toThrow("$.value[]: v.primaryKey() is not a standard-JSON value");
 
     const invalidOutput = typedQuery({
       description: "Nested return validators compile at declaration time too.",

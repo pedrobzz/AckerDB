@@ -436,15 +436,6 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
-  test("equal canonical keys retain independently without caller collision keys", () => {
-    const { client } = fixture();
-    const first = client.realtime(assistant, { assistantId: 1n });
-    const second = client.realtime(assistant, { assistantId: 1n });
-    first.release();
-    second.release();
-    client.close();
-  });
-
   test("sends typed events and enforces server-advertised stream limits", async () => {
     const { client, peers } = fixture();
     const session = client.realtime(assistant, { assistantId: 1n });

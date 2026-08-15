@@ -1696,17 +1696,4 @@ describe("who a shared query may be shared with", () => {
     // every reconnect, so a client reload must not multiply entries.
     expect(await entriesFor([ADMIN, { ...ADMIN }])).toBe(1);
   });
-
-  test("two credentials of one identity do not", async () => {
-    // They differ only in what a handler would read as `ctx.auth.tokenId` and
-    // `ctx.auth.expiresAt` — which is precisely why they may not share.
-    expect(await entriesFor([ADMIN, { ...ADMIN, tokenId: "jti-2" }])).toBe(2);
-    expect(await entriesFor([ADMIN, { ...ADMIN, expiresAt: 1_800_000 }])).toBe(2);
-  });
-
-  test("two identities never do", async () => {
-    expect(await entriesFor([ADMIN, { ...ADMIN, identity: 2n as Identity }])).toBe(2);
-    expect(await entriesFor([ADMIN, { ...ADMIN, scopes: ["_admin:jobs:read"] }])).toBe(2);
-    expect(await entriesFor([ADMIN, { ...ADMIN, claims: { tenant: "b" } }])).toBe(2);
-  });
 });

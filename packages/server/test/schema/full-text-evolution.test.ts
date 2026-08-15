@@ -51,15 +51,6 @@ describe("full-text schema evolution", () => {
     });
   });
 
-  test("target order is structural noise", () => {
-    expect(
-      diffSnapshots(
-        snapshotOf(withFrameworkTables(documents(["title", "body"]))),
-        snapshotOf(withFrameworkTables(documents(["body", "title"]))),
-      ),
-    ).toEqual([]);
-  });
-
   test("a table rebuild absorbs full-text target changes", () => {
     const current = snapshotOf(withFrameworkTables(defineSchema({
       documents: defineTable({

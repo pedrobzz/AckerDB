@@ -6,6 +6,7 @@ describe("function references", () => {
     expect(anyApi.messages.list.$ref).toBe("api.messages.list");
     expect(anyApi.admin.users.get.$ref).toBe("api.admin.users.get");
     expect(anyApi.events.typingEvents.$ref).toBe("api.events.typingEvents");
+    expect(anyApi.events.typingEvents.$ref).toBe(`${EVENTS_ADDRESS_PREFIX}typingEvents`);
   });
 
   test("a group is the address's first segment, not a field beside it", () => {
@@ -15,10 +16,6 @@ describe("function references", () => {
     expect(apiGroup("admin").messages.list.$ref).toBe("admin.messages.list");
     expect(anyApi.messages.list.$ref).not.toBe(apiGroup("internal").messages.list.$ref);
     expect(Object.keys(anyApi.messages.list)).toEqual(["$ref"]);
-  });
-
-  test("the event namespace is addressed inside the default group like everything else", () => {
-    expect(anyApi.events.typingEvents.$ref).toBe(`${EVENTS_ADDRESS_PREFIX}typingEvents`);
   });
 
   test("an exposed function's URL is its address, segment for segment", () => {

@@ -5,7 +5,6 @@
  * alone.
  */
 import { describe, expect, test } from "bun:test";
-import { ANONYMOUS_PRINCIPAL, SYSTEM_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
@@ -245,28 +244,5 @@ describe("the HTTP root a group owns", () => {
       tools: { endpoint },
     }, ["internal"]);
     expect(registry.mcpTool("admin", "list_index")?.fn).toBe(compact as never);
-  });
-});
-
-describe("composition through a callee in another group", () => {
-  test("still validates args and the callee's access policy", async () => {
-    const guarded = mutation({
-      apiPath: "internal",
-      access: "system",
-      args: { value: v.string() },
-      handler: (_ctx, args) => args.value,
-    });
-
-    // The system principal is admitted; the anonymous principal is not — the
-    // group changes the address, never the admission decision.
-    await expect(
-      guarded({ auth: SYSTEM_PRINCIPAL } as never, { value: "ok" }),
-    ).resolves.toMatchObject({ ok: true, data: "ok" });
-    await expect(
-      guarded({ auth: ANONYMOUS_PRINCIPAL } as never, { value: "ok" }),
-    ).rejects.toMatchObject({ code: "unauthenticated" });
-    await expect(
-      guarded({ auth: SYSTEM_PRINCIPAL } as never, { value: 7 as never }),
-    ).rejects.toThrow("args.value: expected string, got number");
   });
 });

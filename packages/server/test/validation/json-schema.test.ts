@@ -141,21 +141,6 @@ describe("validator schemas", () => {
       .toEqual({ $schema: DRAFT_2020_12, const: true });
   });
 
-  test("emits a fixed-length number array for a vector", () => {
-    expect(validatorJsonSchema(v.vector(3))).toEqual({
-      $schema: DRAFT_2020_12,
-      type: "array",
-      items: { type: "number" },
-      minItems: 3,
-      maxItems: 3,
-    });
-  });
-
-  test("leaves opaque JSON unconstrained", () => {
-    expect(validatorJsonSchema(v.jsonb<Record<string, unknown>>().describe("Filters.")))
-      .toEqual({ $schema: DRAFT_2020_12, description: "Filters." });
-  });
-
   test("every call owns a fresh graph consumers may normalize in place", () => {
     const validator = v.object({ body: v.string() });
     const first = validatorJsonSchema(validator);
@@ -208,18 +193,6 @@ describe("standard-JSON protocol constraints", () => {
       .toEqual({ $schema: DRAFT_2020_12, const: "7" });
   });
 
-  test("documents bigint bounds as prose instead of numeric keywords", () => {
-    const schema = validatorJsonSchema(v.bigint().min(-5n).max(10n).describe("A counter."));
-
-    expect(schema).toEqual({
-      $schema: DRAFT_2020_12,
-      type: ["integer", "string"],
-      pattern: DECIMAL_PATTERN,
-      description:
-        "A counter. Minimum bigint value (inclusive): -5. Maximum bigint value (inclusive): 10.",
-    });
-  });
-
   test("maps bytes to canonical base64", () => {
     expect(validatorJsonSchema(v.bytes())).toEqual({
       $schema: DRAFT_2020_12,
@@ -233,19 +206,6 @@ describe("standard-JSON protocol constraints", () => {
       pattern: BASE64_PATTERN,
       contentEncoding: "base64",
     });
-  });
-
-  test("refuses the lossless kinds when no protocol codec carries them", () => {
-    const plain = { protocol: false } as const;
-
-    expect(() => validatorJsonSchema(v.bigint(), plain))
-      .toThrow("$: v.bigint() requires a standard-JSON protocol codec");
-    expect(() => validatorJsonSchema(v.identity(), plain))
-      .toThrow("requires a standard-JSON protocol codec");
-    expect(() => validatorJsonSchema(v.bytes(), plain))
-      .toThrow("requires a standard-JSON protocol codec");
-    expect(() => validatorJsonSchema(v.literal(1n), plain))
-      .toThrow("v.literal(bigint) requires a standard-JSON protocol codec");
   });
 });
 

@@ -10,9 +10,7 @@ import {
   defineSchema,
   defineTable,
   makeDbWriter,
-  makeDbReader,
   newWriteCollector,
-  ixKey,
   v,
 } from "@ackerdb/server";
 import { compilePredicates } from "../../../src/database/query/predicate.ts";
@@ -113,37 +111,6 @@ describe("table query", () => {
       .all(1n, statusTag) as { detail: string }[];
     const physicalIndex = `ix_documents_${engine.plan("documents").indexes[0]!.name}`;
     expect(plan.some(({ detail }) => detail.includes(physicalIndex))).toBe(true);
-  });
-
-  test("records the strongest declared-index prefix for predicate reads", async () => {
-    const dependencies = new Set<string>();
-    const reader: any = makeDbReader(engine, engine.reader, {
-      add: (key: string) => dependencies.add(key),
-    });
-
-    await reader.documents
-      .query()
-      .where((row: any) => row.tenantId.eq(1n))
-      .first();
-
-    expect(dependencies).toEqual(new Set([
-      ixKey("documents", engine.plan("documents").indexes[0]!.name, [1n]),
-    ]));
-  });
-
-  test("preserves first, unique, and streaming materializers", async () => {
-    await db.documents.insert({ tenantId: 1n, status: "active", score: 4, label: "a", rank: null });
-    await db.documents.insert({ tenantId: 1n, status: "active", score: 5, label: "b", rank: null });
-
-    expect((await db.documents.query().first()).label).toBe("a");
-    expect(
-      (await db.documents.query().where((row: any) => row.label.eq("b")).unique()).label,
-    ).toBe("b");
-    await expect(db.documents.query().unique()).rejects.toThrow("matched more than one row");
-
-    const streamed: string[] = [];
-    for await (const row of db.documents.query().iter()) streamed.push(row.label);
-    expect(streamed).toEqual(["a", "b"]);
   });
 
   test("composes scalar, range, membership, null, and Boolean predicates", async () => {

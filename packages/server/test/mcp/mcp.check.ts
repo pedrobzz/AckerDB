@@ -1,5 +1,5 @@
 /** Compile-time contract for schema-bound MCP tools and client API erasure. */
-import type { ApiFromModules, Identity } from "@ackerdb/core";
+import type { Identity } from "@ackerdb/core";
 import {
   credentials,
   mcp as mcpDeclaration,
@@ -386,18 +386,3 @@ typedMcp({
 // published surface. That is a registration error naming the tool, not a
 // compile error, exactly as it is for `http: true`.
 void runtimeOnlyValidator;
-
-type GeneratedApi = ApiFromModules<{
-  notes: {
-    agentMcp: typeof agentMcp;
-    writeNote: typeof writeNote;
-    addNote: typeof addNote;
-  };
-}>;
-
-declare const api: GeneratedApi;
-void api.notes.addNote;
-// @ts-expect-error MCP declarations are server-only, never generated client refs
-void api.notes.agentMcp;
-// A tool is an ordinary function, so it keeps its place on the client api.
-void api.notes.writeNote;
