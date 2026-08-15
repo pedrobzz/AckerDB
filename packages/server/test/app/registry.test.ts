@@ -96,7 +96,7 @@ describe("HTTP-exposed function paths", () => {
     // The protocol endpoints all live behind the marker at the root, and the
     // operational ones deliberately do not — the reserved-name list is what
     // keeps an application route off `/live`, `/ready`, and `/status`.
-    for (const path of ["/_ws", "/_sse/ack", "/_realtime", "/_files/x", "/_openapi.json"]) {
+    for (const path of ["/_ws", "/_sse/ack", "/_files/x", "/_openapi.json"]) {
       expect(isAckerDBHttpRoute(path)).toBe(true);
     }
     for (const operational of [
@@ -110,7 +110,7 @@ describe("HTTP-exposed function paths", () => {
 
     // One reservation, applied wherever a path is claimed: the group, the
     // module namespace under it, and an MCP endpoint's free-form path alike.
-    expect(claimsReservedName("/api/_realtime")).toBe(true);
+    expect(claimsReservedName("/api/_files")).toBe(true);
     expect(claimsReservedName("/_ws")).toBe(true);
     expect(claimsReservedName("/mcp/_private")).toBe(true);
     expect(claimsReservedName("/api/notes/_echo")).toBe(false);
@@ -118,16 +118,16 @@ describe("HTTP-exposed function paths", () => {
   });
 
   test("refuses an MCP endpoint reaching into a marked name", () => {
-    // `/api/_realtime` holds no framework route any more, but the marker is
-    // still AckerDB's — and the rule cannot hold for functions while lapsing
-    // for the one surface that picks its path by hand.
+    // `/api/_files` holds no framework route, but the marker is still
+    // AckerDB's — and the rule cannot hold for functions while lapsing for the
+    // one surface that picks its path by hand.
     const squatter = mcp({
       name: "squatter",
-      path: "/api/_realtime",
+      path: "/api/_files",
       tools: {},
     });
     expect(() => new Registry({ mcp: { squatter } })).toThrow(
-      'MCP "squatter" path "/api/_realtime" claims a "_"-marked name reserved to AckerDB',
+      'MCP "squatter" path "/api/_files" claims a "_"-marked name reserved to AckerDB',
     );
     // A path that really is a built-in route says so instead.
     const collider = mcp({

@@ -14,10 +14,6 @@ import {
   syncedVersion,
   tryGit,
 } from "../lib.ts";
-import {
-  WEBRTC_LOADER_REPOSITORY_PATH,
-  writeWebRtcLoader,
-} from "../../packages/realtime/native/webrtc/generate-loader.ts";
 
 const LEVELS = ["patch", "minor", "major"] as const;
 const level = process.argv[2] as (typeof LEVELS)[number] | undefined;
@@ -63,7 +59,6 @@ for (const pkg of PACKAGES) {
   updatedSources.set(pkg, source);
   await Bun.write(pkgJsonPath(pkg), source);
 }
-await writeWebRtcLoader(next);
 
 // Bun does not always refresh version-only workspace snapshots. Updating the
 // dependency-free core workspace rebuilds them without changing third-party
@@ -105,7 +100,6 @@ git(
   `chore(release): target v${next}`,
   "--",
   ...PACKAGES.map(pkgJsonPath),
-  WEBRTC_LOADER_REPOSITORY_PATH,
   "bun.lock",
 );
 

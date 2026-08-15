@@ -55,17 +55,15 @@ AckerDB's policy merges into one definition what is normally several systems: a
 procedure is observed reactively, served over exposed HTTP, offered as an MCP
 tool, and memoized as a durable step, under one authorization vocabulary, one
 result contract, and one version contract. That convergence is policy and is
-where AckerDB may invent. It says nothing about whether an ICE stack, a
-full-text index, or a JWKS client should be written here.
+where AckerDB may invent. It says nothing about whether a full-text index or a
+JWKS client should be written here.
 
 Because that policy is unusual, a mature implementation often covers nearly
 everything a converged surface needs while the missing part makes it unusable:
 a capability that exists internally but is not exported, or a contract that
 assumes the surfaces stay separate. A supervised fork or vendored copy is the
 expected answer there, between composing proven solutions and building new
-commodity. The realtime native packages already carry a pinned libwebrtc fork
-on a recorded LiveKit revision — that one is a real fork, and it is owned as one
-(`packages/realtime-native/*/PROVENANCE.md`).
+commodity.
 
 A fork is ownership, not a shortcut: pin an immutable revision, record the
 upstream revision it came from, verify inputs by digest, publish its provenance

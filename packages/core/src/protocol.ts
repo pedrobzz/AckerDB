@@ -30,10 +30,9 @@ export { ProtocolError, type FrameSender } from "./protocol-validation.ts";
  * decoder accepts exactly its own — see {@link frameVersion} for why that is
  * the whole of the compatibility contract. Every frame carries it rather than
  * only the handshake pair, because several of these frames reach a decoder
- * through a door that has no handshake: an SSE stream and the realtime
- * signaling exchange are HTTP, where the first frame *is* the greeting. One
- * uniform rule guards all of them without depending on which frame arrives
- * first.
+ * through a door that has no handshake: an SSE stream is HTTP, where the first
+ * frame *is* the greeting. One uniform rule guards all of them without
+ * depending on which frame arrives first.
  */
 
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;

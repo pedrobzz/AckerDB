@@ -4,7 +4,6 @@
 import {
   mcp as mcpGeneric,
   channel as channelGeneric,
-  realtime as realtimeGeneric,
   mcpAuth as mcpAuthGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
@@ -23,7 +22,6 @@ import type {
   ProcedureBuilder,
   ProcedureCtx as GenericProcedureCtx,
   QueryBuilder,
-  RealtimeBuilder,
   QueryCtx as GenericQueryCtx,
   SseBuilder,
   SseCtx as GenericSseCtx,
@@ -36,7 +34,6 @@ type Capabilities = Readonly<Record<never, never>>;
 
 export const query = queryGeneric as QueryBuilder<Schema, Capabilities>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>;
 export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities>;

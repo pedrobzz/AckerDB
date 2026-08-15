@@ -2,9 +2,7 @@
 
 Application channels are typed bidirectional messages multiplexed over the
 same WebSocket AckerDB already uses for queries, mutations, and subscriptions.
-They add no physical socket per channel or room. They are for ordinary
-application messages; continuous audio and video belong on
-[realtime media sessions](realtime-media.md).
+They add no physical socket per channel or room.
 
 ## Define a channel
 

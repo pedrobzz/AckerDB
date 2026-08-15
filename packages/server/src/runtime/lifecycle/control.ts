@@ -1,5 +1,4 @@
 import type { Engine } from "../../database/engine.ts";
-import type { RealtimeRuntime } from "../../realtime/host.ts";
 import { AckerDBError } from "../../shared/errors.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
@@ -27,7 +26,6 @@ const utf8 = new TextEncoder();
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;
-  readonly realtime?: RealtimeRuntime;
   readonly reads: RuntimeReadExecutor;
   readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
@@ -183,7 +181,6 @@ export class RuntimeControl {
       activeOperations: this.activeOperations,
       activeOperationCallers: this.externalOperations.size,
       activeSse: this.options.sseProducers.size,
-      realtime: this.options.realtime?.snapshot() ?? null,
       declaredJobs: this.options.jobs.declaredCount,
       jobsArmed: this.options.jobs.armed,
       reader: this.options.reads.snapshot(),
@@ -213,7 +210,6 @@ export class RuntimeControl {
     this.systemDrainController.abort(draining);
     const sessionDrains = [...this.options.sessions.values()].map((state) =>
       this.options.sessions.startClose(state));
-    const realtimeDrain = this.options.realtime?.drain() ?? Promise.resolve();
     for (const producer of this.options.sseProducers.values()) producer.fail(draining);
 
     this.options.functions.close();
@@ -227,7 +223,6 @@ export class RuntimeControl {
         this.options.fileCleanup.drain(),
         reactiveDrain,
         this.options.reads.drain(),
-        realtimeDrain,
         ...sessionDrains,
       ]);
       const errors = settled.flatMap((result) =>

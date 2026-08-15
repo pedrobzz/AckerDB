@@ -14,7 +14,7 @@ handle is the authority check. AckerDB creates no process-global current app,
 ambient locator, remote endpoint, or shorter alias.
 
 Every call starts under Runtime's pristine execution snapshot with the frozen
-system principal. Ambient request, session, transaction, MCP, realtime, and
+system principal. Ambient request, session, transaction, MCP, and
 user authority never cross into it. The callback receives the same underlying
 procedure-context implementation used by HTTP procedures, including one
 invocation timestamp, an abort signal, and `ctx.tx`. Identity-linking methods

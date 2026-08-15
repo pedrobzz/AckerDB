@@ -82,9 +82,6 @@ describe("codegen", () => {
       "ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
     );
     expect(server).toContain(
-      "unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>",
-    );
-    expect(server).toContain(
       "SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>",
     );
     expect(server).toContain("GenericQueryCtx<Schema, Capabilities, QueryJobs>");

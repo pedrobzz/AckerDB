@@ -1,5 +1,0 @@
-packages/realtime/native/webrtc/.cargo/** text eol=lf
-packages/realtime/native/webrtc/Cargo.lock text eol=lf
-packages/realtime/native/webrtc/Cargo.toml text eol=lf
-packages/realtime/native/webrtc/build.rs text eol=lf
-packages/realtime/native/webrtc/src/** text eol=lf

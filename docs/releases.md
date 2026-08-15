@@ -25,9 +25,9 @@ hotfix/*     ──urgent pull request──────────────
   every merge still publishes a distinct `X.Y.Z-canary.N`. Declare a version
   step only when the work releases a new source version: run
   `bun run release:prepare <level>` after the branch is based on the current
-  target. The command updates all eleven package manifests, their exact
-  workspace interdependencies, the generated native loader, and `bun.lock`,
-  then creates the release-intent commit.
+  target. The command updates all five package manifests, their exact
+  workspace interdependencies, and `bun.lock`, then creates the release-intent
+  commit.
 - A `hotfix/*` pull request into `main` always declares exactly one `major`,
   `minor`, or `patch` step.
 - `canary` may accumulate several declared releases before promotion. A
@@ -52,21 +52,12 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - the release and branch-policy check;
 - package tests for directly affected packages and their AckerDB dependents;
 - the repository TypeScript checks, skipped when only documentation changed;
-- package, MCP, and workflow boundary checks only when their inputs changed;
-- the native matrix only when the WebRTC Rust source, native build/evidence
-  contract, distribution/evidence tests, or native workflow changed;
-- runtime-only WebRTC test changes reuse verified published binaries in one
-  macOS job and do not compile Rust.
+- package, MCP, and workflow boundary checks only when their inputs changed.
 
 Ordinary work is consolidated into `Select affected work` and one `Fast CI`
 job. This avoids paying a full runner minute for each short package or boundary
-check. The native multi-platform matrix remains separate because the five host
-targets require different operating systems, and it stays path-gated.
-
-Lockstep version-only edits to native `package.json` files do not compile Rust.
-Native jobs cache Cargo dependencies, compiled targets, and evidence tools.
-Every job carries a hard timeout so a hung process can never hold a runner for
-hours.
+check. Every job carries a hard timeout so a hung process can never hold a
+runner for hours.
 
 A `canary` → `main` pull request runs the release-policy check; `Fast CI`
 completes as a successful no-op because the commit was already tested before it
@@ -75,11 +66,8 @@ into `main` runs only npm delivery.
 
 ## Public npm delivery
 
-All eleven packages move in lockstep:
-
-- six user-facing packages: `@ackerdb/core`, `server`, `realtime`, `client`,
-  `client-react`, and `cli`;
-- five host-filtered `@ackerdb/realtime-*` native packages.
+All five user-facing packages move in lockstep: `@ackerdb/core`, `server`,
+`client`, `client-react`, and `cli`.
 
 Every merge into `canary` prepares the current source version as
 `X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
@@ -103,12 +91,6 @@ the current protected `canary` or `main` commit. It crosses the same environment
 OIDC, clean-merge, branch, and byte-identity checks as a push-triggered delivery;
 stable dispatches also require stable approval. It is not a separate release
 path and cannot publish a topic branch.
-
-Native Rust builds remain conditional. When native source changed, delivery
-downloads the five artifacts produced by that pull request. When native source
-did not change, it reuses a previously published five-target artifact set only
-when every manifest has the exact current native-source digest. There is no
-unverified local or single-host substitute.
 
 Publication uses npm trusted publishing from `.github/workflows/release.yml`,
 the `pedrobzz/AckerDB` repository, and the protected-branch-only `npm` GitHub
@@ -145,8 +127,8 @@ not offer.
 
 **A frame carries the version exactly when it can be decoded on a connection
 that has not completed a handshake.** That is `hello`, `welcome`, `err`, and
-every frame of the transports that have no handshake at all — SSE and realtime
-signaling are HTTP, where the first frame is the greeting. Everything after a
+every frame of the transports that have no handshake at all — SSE is HTTP,
+where the first frame is the greeting. Everything after a
 handshake carries none: the peer's build was established once and no connection
 changes builds under itself, so repeating it spends the hottest field in the
 system for a fact already known.
@@ -194,16 +176,12 @@ bun run publish:beta       # publish the next local beta
 bun run publish:beta:demo  # publish it, repin matching demo packages, reinstall
 ```
 
-The publisher accepts a dirty topic branch, assembles the exact eleven-package
+The publisher accepts a dirty topic branch, assembles the exact five-package
 set, chooses the next registry-backed beta number, and restores every release
-manifest and generated native evidence byte-for-byte even after a failed
-publication. It can reuse a matching native artifact set from Verdaccio or
-public npm; it never compiles five Rust targets locally.
+manifest byte-for-byte even after a failed publication.
 
 The demo's `.npmrc` intentionally points `@ackerdb` to Verdaccio. Ordinary
-consumers use public npm and should install exact versions. Never install a
-host-specific `@ackerdb/realtime-*` package directly; package-manager platform
-selection owns it through `@ackerdb/realtime` optional dependencies.
+consumers use public npm and should install exact versions.
 
 Release tooling lives in `scripts/release/`, pull-request policy in
 `scripts/ci/`, workflows in `.github/workflows/`, and the local registry in

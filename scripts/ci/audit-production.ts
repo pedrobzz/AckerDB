@@ -17,7 +17,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PUBLIC_PACKAGES } from "../lib.ts";
+import { PACKAGES } from "../lib.ts";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -39,7 +39,7 @@ export function productionDependencies(
   manifestOf: (pkg: string) => Manifest,
 ): Readonly<Record<string, string>> {
   const shipped: Record<string, string> = {};
-  for (const pkg of PUBLIC_PACKAGES) {
+  for (const pkg of PACKAGES) {
     const manifest = manifestOf(pkg);
     const declared = {
       ...manifest.dependencies,
@@ -89,7 +89,7 @@ if (import.meta.main) {
     }
     console.log(
       `Auditing ${Object.keys(dependencies).length} published runtime dependencies` +
-        ` across ${PUBLIC_PACKAGES.length} packages.`,
+        ` across ${PACKAGES.length} packages.`,
     );
     const audit = Bun.spawnSync(["bun", "audit"], {
       cwd: directory,

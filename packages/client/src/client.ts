@@ -25,19 +25,12 @@ import {
   type ApplicationError,
   type ApplicationErrorMessage,
   type AnyChannelRef,
-  type AnyRealtimeRef,
   type AuthenticationDescriptor,
   type ChannelArgs,
   type ChannelRoom,
   type ChannelServerEvents,
   type ChannelClientEvents,
   type ChannelError,
-  type RealtimeArgs,
-  type RealtimeClientEvents,
-  type RealtimeClientStreams,
-  type RealtimeError,
-  type RealtimeServerEvents,
-  type RealtimeServerStreams,
   type ClientMessage,
   type Credential,
   type EventRef,
@@ -71,11 +64,6 @@ import {
   AckerDBFilesClient,
   type AckerDBFiles,
 } from "./files/client.ts";
-import {
-  RealtimeManager,
-  type AckerDBPeerConnectionFactory,
-  type AckerDBRealtime,
-} from "./realtime/session.ts";
 import { SseEventDecoder } from "./sse/event-decoder.ts";
 import {
   SubscriptionRetryScheduler,
@@ -98,8 +86,6 @@ export interface AckerDBReconnectOptions {
   readonly maxDelayMs: number;
   readonly stableOpenMs: number;
   readonly disconnectedGraceMs: number;
-  readonly iceRestartTimeoutMs: number;
-  readonly realtimeSetupTimeoutMs: number;
 }
 
 export interface AckerDBClientClock {
@@ -171,11 +157,6 @@ export interface AckerDBClientOptionsBase {
   readonly clock?: AckerDBClientClock;
   readonly random?: () => number;
   readonly createWebSocket?: AckerDBWebSocketFactory;
-  /**
-   * Standard WebRTC peer constructor. Bare React Native applications may
-   * inject their native implementation or register its globals once.
-   */
-  readonly createPeerConnection?: AckerDBPeerConnectionFactory;
   readonly fetch?: AckerDBFetch;
   readonly lifecycle?: AckerDBLifecycleSource;
 }
@@ -294,8 +275,6 @@ export const ACKERDB_RECONNECT_DEFAULTS: AckerDBReconnectOptions = Object.freeze
   maxDelayMs: 3_000,
   stableOpenMs: 10_000,
   disconnectedGraceMs: 5_000,
-  iceRestartTimeoutMs: 10_000,
-  realtimeSetupTimeoutMs: 20_000,
 });
 
 const CLIENT_CLOSE_CODE = Object.freeze({
@@ -687,17 +666,6 @@ function authenticationFromFrame(
 
 const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as AckerDBWebSocket;
-const SYSTEM_PEER_CONNECTION_FACTORY: AckerDBPeerConnectionFactory = (
-  configuration,
-) => {
-  const PeerConnection = Reflect.get(globalThis, "RTCPeerConnection");
-  if (typeof PeerConnection !== "function") {
-    throw new TypeError(
-      "RTCPeerConnection is unavailable; install/register a native WebRTC implementation or pass createPeerConnection",
-    );
-  }
-  return Reflect.construct(PeerConnection, [configuration]);
-};
 const SYSTEM_FETCH: AckerDBFetch = (url, init) => fetch(url, init);
 const SYSTEM_RANDOM = (): number => {
   const value = new Uint32Array(1);
@@ -723,7 +691,6 @@ export class AckerDBClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly activeFetches = new Set<AbortController>();
   private readonly channels: ChannelManager;
-  private readonly realtimeSessions: RealtimeManager;
   private readonly subscriptionRetries: SubscriptionRetryScheduler;
 
   /** Undefined only on a credential-source client before its first successful pull. */
@@ -838,26 +805,6 @@ export class AckerDBClient {
       },
       generation: () => this.connectionGeneration,
       authEpoch: () => this.authentication?.authEpoch,
-    });
-    this.realtimeSessions = new RealtimeManager({
-      fetch: this.fetcher,
-      createPeerConnection:
-        options.createPeerConnection ?? SYSTEM_PEER_CONNECTION_FACTORY,
-      clock: this.clock,
-      reconnect: this.reconnect,
-      random: this.random,
-      url: (path) => `${this.httpUrl}${path}`,
-      headers: () => this.httpHeaders(),
-      readResponse: (response, signal) =>
-        this.readBoundedResponse(
-          response,
-          this.limits.maxFrameBytes,
-          signal,
-          "connection",
-        ),
-      clientError: (outcome) => new AckerDBClientError(outcome),
-      isClientError: (error): error is AckerDBClientError =>
-        error instanceof AckerDBClientError,
     });
     this.files = new AckerDBFilesClient({
       mutation: (ref, args) => this.mutation(ref, args),
@@ -997,7 +944,6 @@ export class AckerDBClient {
     // The deadline describes the accepted credential; this one is not
     // accepted until the server confirms it.
     this.credentialExpiresAtMs = undefined;
-    this.realtimeSessions.authenticationChanged();
     this.authBlocked = false;
     this.blockingError = undefined;
     let resolve!: (authentication: AckerDBAuthentication) => void;
@@ -1295,20 +1241,6 @@ export class AckerDBClient {
         ChannelServerEvents<Ref>
       >,
     );
-  }
-
-  realtime<Ref extends AnyRealtimeRef>(
-    ref: Ref,
-    args: NoInfer<RealtimeArgs<Ref>>,
-  ): AckerDBRealtime<
-    RealtimeClientEvents<Ref>,
-    RealtimeClientStreams<Ref>,
-    RealtimeServerEvents<Ref>,
-    RealtimeServerStreams<Ref>,
-    RealtimeError<Ref>
-  > {
-    this.assertUsable();
-    return this.realtimeSessions.retain(ref, args);
   }
 
   query<A, Data = unknown, Error extends ApplicationError = never>(
@@ -1652,7 +1584,6 @@ export class AckerDBClient {
     }
     this.subscriptions.clear();
     this.channels.close();
-    this.realtimeSessions.close();
     for (const controller of this.activeFetches) controller.abort();
     this.activeFetches.clear();
     const socket = this.socket;
@@ -1690,7 +1621,6 @@ export class AckerDBClient {
       }
     }
     this.suspended = true;
-    this.realtimeSessions.suspend();
     this.resuming = false;
     this.clearReconnectTimer();
     // Background timers cannot be trusted to fire; resume pulls the source
@@ -1770,7 +1700,6 @@ export class AckerDBClient {
   private resumeTransport(): void {
     if (this.closed || !this.suspended) return;
     this.suspended = false;
-    this.realtimeSessions.resume();
     for (const subscription of this.subscriptions.values()) {
       this.armSubscriptionRetry(subscription);
     }
@@ -2621,7 +2550,6 @@ export class AckerDBClient {
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.channels.failAll(error);
-    this.realtimeSessions.authenticationBlocked(error);
     // Awaiting a new credential is the source's job when one is configured:
     // the bounded backoff pulls it instead of waiting for application code.
     this.clearSourceRefreshTimer();
@@ -2643,7 +2571,6 @@ export class AckerDBClient {
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.channels.failAll(error);
-    this.realtimeSessions.failAll(error);
     for (const subscription of this.subscriptions.values()) {
       this.subscriptionRetries.clear(subscription.retry);
       this.releasePersistent(subscription.bytes);

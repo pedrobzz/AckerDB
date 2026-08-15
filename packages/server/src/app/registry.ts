@@ -45,10 +45,6 @@ import {
   type AnyRegisteredChannel,
 } from "../channels/definition.ts";
 import {
-  isRegisteredRealtime,
-  type AnyRegisteredRealtime,
-} from "../realtime/definition.ts";
-import {
   isMcpDeclaration,
   type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
@@ -121,7 +117,6 @@ export class Registry {
   readonly httpRoutes = new Map<string, HttpHandlerRoute>();
   private readonly httpHandlersByAddress = new Map<string, AnyRegisteredHttpHandler>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
-  readonly realtime = new Map<string, AnyRegisteredRealtime>();
   readonly serverOnly = new Map<string, ServerOnlyExport>();
   readonly mcps = new Map<string, AnyMcpDeclaration>();
   readonly mcpTools = new Map<string, AnyRegisteredMcpTool>();
@@ -210,14 +205,6 @@ export class Registry {
       const address = `${DEFAULT_API_PATH}.${name}`;
       this.registerAddress(address, value);
       this.channels.set(address, value);
-    }
-
-    for (const { name, value } of moduleExports) {
-      if (!isRegisteredRealtime(value)) continue;
-      refuseApiPathDeclaration(value, `realtime declaration "${name}"`);
-      const address = `${DEFAULT_API_PATH}.${name}`;
-      this.registerAddress(address, value);
-      this.realtime.set(address, value);
     }
 
     for (const { name, value } of moduleExports) {
@@ -478,7 +465,6 @@ export class Registry {
       this.functions.has(address) ||
       this.httpHandlersByAddress.has(address) ||
       this.channels.has(address) ||
-      this.realtime.has(address) ||
       this.serverOnly.has(address)
     ) {
       throw new Error(`duplicate server export address "${address}"`);
@@ -491,8 +477,6 @@ export class Registry {
           ? "registered http handler"
         : isRegisteredChannel(value)
           ? "registered channel"
-          : isRegisteredRealtime(value)
-            ? "registered realtime"
           : "server-only value";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
@@ -547,15 +531,10 @@ export class Registry {
     return this.channels.get(address);
   }
 
-  getRealtime(address: string): AnyRegisteredRealtime | undefined {
-    return this.realtime.get(address);
-  }
-
   kindOf(address: string): string | undefined {
     return this.functions.get(address)?.kind ??
       this.httpHandlersByAddress.get(address)?.kind ??
-      this.channels.get(address)?.kind ??
-      this.realtime.get(address)?.kind;
+      this.channels.get(address)?.kind;
   }
 
   addressOf(value: object): string | undefined {

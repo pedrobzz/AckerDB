@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { PUBLIC_PACKAGES } from "../lib.ts";
+import { PACKAGES } from "../lib.ts";
 import { productionDependencies } from "./audit-production.ts";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -21,14 +21,14 @@ describe("production dependency audit", () => {
 
   test("workspace siblings are audited through their own entry, not twice", () => {
     const shipped = productionDependencies(realManifest);
-    for (const pkg of PUBLIC_PACKAGES) {
+    for (const pkg of PACKAGES) {
       expect(shipped).not.toHaveProperty(`@ackerdb/${pkg}`);
     }
   });
 
   test("optional dependencies ship, so they are audited", () => {
     const shipped = productionDependencies((pkg) =>
-      pkg === PUBLIC_PACKAGES[0]
+      pkg === PACKAGES[0]
         ? { optionalDependencies: { "some-native-binding": "1.2.3" } }
         : {});
     expect(shipped).toEqual({ "some-native-binding": "1.2.3" });
@@ -37,7 +37,7 @@ describe("production dependency audit", () => {
   test("two packages cannot ship one dependency at two versions", () => {
     expect(() =>
       productionDependencies((pkg) => ({
-        dependencies: { jose: pkg === PUBLIC_PACKAGES[0] ? "6.2.3" : "6.3.0" },
+        dependencies: { jose: pkg === PACKAGES[0] ? "6.2.3" : "6.3.0" },
       }))
     ).toThrow(/disagree on "jose"/);
   });

@@ -5,15 +5,12 @@ status: accepted
 # Application channels use one multiplexed typed transport
 
 AckerDB application channels are typed bidirectional application streams
-multiplexed over the client's existing application connection. They are
-separate from external-provider realtime sessions, may opt into PartyKit-style
-rooms, and preserve native WebSocket expectations: live delivery, explicit
-failure, and no hidden outbound queue or replay.
+multiplexed over the client's existing application connection. They may opt
+into PartyKit-style rooms, and preserve native WebSocket expectations: live
+delivery, explicit failure, and no hidden outbound queue or replay.
 
-This is the ordinary non-media socket. Channel events carry text-oriented typed
-application values; binary values remain supported through AckerDB's existing
-base64 wire encoding. The channel does not provide audio, video, camera, codec,
-jitter, synchronization, or other realtime-media semantics.
+Channel events carry text-oriented typed application values; binary values
+remain supported through AckerDB's existing base64 wire encoding.
 
 ## Contracts and rooms
 

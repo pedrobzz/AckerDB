@@ -11,7 +11,6 @@ modules; do not add new implementation files to this root.
 | `database/` | SQLite access, engine, durability artifacts, ownership, restore, and reset |
 | `files/` | File identity, durable store binding, lifecycle, transfer, and physical-store adapters |
 | `mcp/` | MCP declarations, scopes, tokens, HTTP handling, content, and wire behavior |
-| `realtime/` | WebRTC declarations, signaling, authenticated peer generations, and typed data planes |
 | `subscriptions/` | Publications, reactive subscriptions, delivery, and sessions |
 | `runtime/` | Admission, execution, mutation coordination, request outcomes, and orchestration |
 | `schema/` | Schema definitions, snapshots, planning, reconciliation, and migrations |

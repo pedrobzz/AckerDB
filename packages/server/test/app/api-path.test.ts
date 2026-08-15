@@ -9,7 +9,6 @@ import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
 import { channel } from "../../src/channels/definition.ts";
-import { realtime } from "../../src/realtime/definition.ts";
 import { mcp } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { applicationAddresses, applicationRoutes } from "ackerdb-test-support/framework-functions";
@@ -87,7 +86,7 @@ describe("apiPath declarations", () => {
     ).toThrow('sse must not declare "internal"');
   });
 
-  test("refuses apiPath on socket-addressed kinds", () => {
+  test("refuses apiPath on the socket-addressed kind", () => {
     expect(() =>
       channel({
         apiPath: "internal",
@@ -95,18 +94,6 @@ describe("apiPath declarations", () => {
         args: {},
         clientEvents: {},
         serverEvents: {},
-        authorization: () => true,
-      } as never),
-    ).toThrow("cannot declare apiPath");
-    expect(() =>
-      realtime({
-        apiPath: "internal",
-        access: "public",
-        args: {},
-        clientEvents: {},
-        serverEvents: {},
-        clientStreams: {},
-        serverStreams: {},
         authorization: () => true,
       } as never),
     ).toThrow("cannot declare apiPath");

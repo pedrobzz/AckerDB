@@ -49,8 +49,6 @@ import type { Registry } from "../app/registry.ts";
 import {
   ChannelHub,
 } from "../channels/hub.ts";
-import type { RealtimePeerDiagnostic, RealtimeRuntime } from "../realtime/host.ts";
-import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
 import {
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -108,7 +106,6 @@ export class Runtime implements RuntimePort {
   readonly limits: ServiceLimits;
   readonly reactive: OrderedReactive<RuntimeReactiveContext>;
   readonly channels: ChannelHub;
-  readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly system: SystemRunner;
 
   private readonly now: () => number;
@@ -152,18 +149,6 @@ export class Runtime implements RuntimePort {
       maxMembersPerSession: this.limits.maxSubscriptionsPerConnection,
       disconnectTimeoutMs: Math.min(5_000, this.limits.gracefulShutdownMs),
     });
-    if (this.registry.realtime.size > 0) {
-      if (options.realtime === undefined) {
-        throw new TypeError(
-          "Runtime has realtime definitions but @ackerdb/realtime is not configured",
-        );
-      }
-      this.realtime = options.realtime.create({
-        application: this.realtimeApplication(),
-        now: this.now,
-        definition: (address) => this.registry.getRealtime(address),
-      });
-    }
     const mcpToolCounts = new Map<string, number>();
     for (const tool of this.registry.mcpTools.values()) {
       const count = (mcpToolCounts.get(tool.mcp.name) ?? 0) + 1;
@@ -325,7 +310,6 @@ export class Runtime implements RuntimePort {
     this.control = new RuntimeControl({
       limits: this.limits,
       engine: this.engine,
-      ...(this.realtime === undefined ? {} : { realtime: this.realtime }),
       reads: this.reads,
       functions: this.functions,
       reactive: this.reactive,
@@ -539,72 +523,8 @@ export class Runtime implements RuntimePort {
     return this.control.status();
   }
 
-  realtimeDiagnostic(
-    sessionId: string,
-    owner: string,
-  ): Promise<RealtimePeerDiagnostic> {
-    if (this.realtime === undefined) {
-      return Promise.reject(
-        new AckerDBError("not_found", "realtime service is not configured"),
-      );
-    }
-    return this.realtime.diagnostic(sessionId, owner);
-  }
-
   drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
     return this.control.drain(deadlineAtMs);
-  }
-
-  private realtimeApplication() {
-    return createRealtimeRuntimeApplication({
-      addressOf: (definition) => this.registry.addressOf(definition),
-      createAuthorizationContext: (
-        principal,
-        fairnessKey,
-        signal,
-        requestBytes,
-      ) => this.functions.createProcedureContext(
-        principal,
-        fairnessKey,
-        signal,
-        requestBytes,
-        this.readNow(),
-        this.immediateProcedureInvalidations.publish,
-      ),
-      createSessionContext: (principal, fairnessKey, signal) => {
-        const invalidations = this.immediateProcedureInvalidations;
-        const owned = this.functions.createProcedureContext(
-          principal,
-          fairnessKey,
-          signal,
-          1,
-          () => this.readNow(),
-          invalidations.publish,
-        );
-        return Object.freeze({
-          value: owned.value,
-          release: () => {
-            owned.release();
-            invalidations.finish();
-          },
-        });
-      },
-      run: (
-        address,
-        fairnessKey,
-        signal,
-        requestBytes,
-        work,
-      ) => this.operations.run(
-        null,
-        requestBytes,
-        work,
-        {
-          fairnessKey,
-          abortSignal: signal,
-        },
-      ),
-    });
   }
 
   private channelProcedureContext(

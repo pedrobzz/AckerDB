@@ -44,13 +44,6 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Concurrently running job handlers (`jobs.maxRunning`) | 64 |
 | Job attempt lease (`jobs.leaseMs`) | 60 s |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
-| Realtime peers, global / per principal | 1,024 / 16 |
-| Realtime handshakes, per principal and 10 s window | 32 |
-| Realtime typed streams, buffered input / event-handler concurrency, per generation | 16 / 256 KiB / 128 |
-| Realtime auxiliary peers / decoded streams / media sources, per generation | 4 / 8 / 8 |
-| Realtime data channels / senders / transceivers, per peer | 16 / 32 / 32 |
-| Realtime auxiliary peers / decoded streams / media sources / tracks, process-wide | 2,048 / 32,768 / 32,768 / 131,072 |
-| Realtime native queue reservations, per generation / process-wide | 32 MiB / 512 MiB |
 | Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
 
@@ -94,72 +87,6 @@ The stock client has a separate exported `ACKERDB_CLIENT_LIMITS` object, and
 `Engine` defaults its SQLite busy timeout to 5 seconds. The CLI does not expose
 arbitrary service-limit overrides in `.ackerdb.config.json`; programmatic
 `Runtime` construction does.
-
-## Realtime media deployment
-
-Realtime media is one AckerDB-relayed WebRTC generation, not a media
-WebSocket. `RuntimeOptions.realtime` owns deployment policy: ICE configuration
-or built-in coturn REST credentials, interface and candidate policy, admission
-limits, per-generation limits, process-wide native-resource limits, and
-independent authorization, configuration, handler, signaling, ICE, DTLS, and
-data-channel deadlines. Common application code does not configure those
-details.
-
-Production reachability needs UDP plus TURN/TLS on 443 for networks that block
-direct ICE. AckerDB validates configuration at startup and provides
-`preflightRealtimeTurn` for independent TURN/UDP and TURN/TLS relay-only
-allocation and data-path checks. Each path has an absolute deadline and a
-stable, secret-safe result. The [coturn deployment guide](deployment/coturn/README.md)
-defines the supported topology and hardening. TURN credentials are short-lived
-and principal-bound. SDP, candidates, mapped addresses, and credentials never
-appear in aggregate status.
-
-Admission happens before native peer allocation. Session and principal
-ceilings, handshake windows, peer object limits, typed-stream budgets, handler
-concurrency, and the shared auxiliary-peer/decoder/source/track budget all fail
-with a bounded typed outcome instead of retaining more native state. Every
-generation owns its tracks, sources, decoded streams, auxiliary peers, data
-channels, and partial typed streams; close releases them. Recovery never
-replays application events, provider state, media, or partial streams.
-
-`Runtime.status().realtime` exposes bounded admission, setup-stage, recovery,
-close-reason, resource, and pressure state.
-`Runtime.realtimeDiagnostic(sessionId, principal)` is the authorized,
-on-demand, redacted per-peer diagnostic. It has the deployment's absolute
-`diagnosticTimeoutMs` deadline (5 seconds by default), so a stalled native
-statistics request cannot hold shutdown.
-
-The server native engine runs in the Bun process. A peer/session failure is
-generation-contained, but a native process crash requires an ordinary process
-supervisor to restart AckerDB; clients with demand create fresh generations.
-Run the server under launchd, systemd, Kubernetes, or an equivalent supervisor
-with bounded restart policy. In-process worker isolation is not part of the
-current contract.
-
-Published `@ackerdb/realtime` releases must have verified optional native
-packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64, plus the
-aggregate manifest, SHA-256 digests, and third-party notices. The root package
-contains no native binary; a consumer installs only its
-matching optional target package.
-
-GitHub builds all five targets only when actual WebRTC native inputs change.
-The pull-request artifacts are used by the following canary delivery. When the
-native source digest is unchanged, canary, stable, and local beta publication
-reuse an already verified five-target public or local artifact set instead of
-recompiling Rust. Every reused target manifest must match the exact current
-native-source digest, binary digest, loader digest, and package version after
-retargeting.
-
-Merges into `canary` publish `X.Y.Z-canary.N` to public npm; merges into `main`
-publish `X.Y.Z`. Verdaccio receives repeatable `X.Y.Z-beta.N` local test builds
-only. CI executes native and exact-packed-package suites on Darwin arm64;
-physical-device, provider, network-change, TURN-only, churn, and soak exercises
-remain release/operator validation rather than hidden package claims. See
-[Releases and protected branches](releases.md).
-
-The complete API and recovery semantics are in
-[Realtime media](realtime-media.md); build provenance is in
-[`packages/realtime/native/webrtc/PROVENANCE.md`](../packages/realtime/native/webrtc/PROVENANCE.md).
 
 ## Typed outcomes
 

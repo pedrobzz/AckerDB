@@ -5,36 +5,22 @@
 // as X.Y.Z-beta.N and may be published repeatedly for the same target version.
 import {
   appendFileSync,
-  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   rmSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   PACKAGES,
   assertRegistryReachable,
-  assertWebRtcDistribution,
   fail,
   git,
   pkgJsonPath,
   syncedVersion,
 } from "../lib.ts";
 import { withPackageLicense } from "./package-license.ts";
-import {
-  WEBRTC_LOADER_DECLARATION_PATH,
-  WEBRTC_LOADER_PATH,
-  writeWebRtcLoader,
-} from "../../packages/realtime/native/webrtc/generate-loader.ts";
-import {
-  sha256File,
-  targetBinaryName,
-  type TargetBuildManifest,
-} from "../../packages/realtime/native/webrtc/evidence.ts";
-import { WEBRTC_TARGETS } from "../../packages/realtime/native/webrtc/provenance.ts";
-import { ensureNativeArtifacts } from "./native-artifacts.ts";
 import {
   assertStableVersion,
   nextBetaVersion,
@@ -43,9 +29,6 @@ import {
 
 const PUBLIC_REGISTRY = "https://registry.npmjs.org";
 const LOCAL_REGISTRY = "http://127.0.0.1:4874";
-const BINDING_DIRECTORY = dirname(WEBRTC_LOADER_PATH);
-const NATIVE_PACKAGES_DIRECTORY = "packages/realtime-native";
-const DISTRIBUTION_DIRECTORY = "packages/realtime/native/webrtc/distribution";
 const mode = process.argv[2];
 if (mode !== "npm" && mode !== "beta") {
   fail("usage: bun scripts/release/publish.ts <npm|beta> [--demo]");
@@ -146,7 +129,9 @@ async function identicalPublishedTarball(
       `published tarball for @ackerdb/${pkg}@${version} returned ${response.status}`,
     );
   }
-  const local = await sha256File(tarball);
+  const local = new Bun.CryptoHasher("sha256")
+    .update(await Bun.file(tarball).arrayBuffer())
+    .digest("hex");
   const remote = new Bun.CryptoHasher("sha256")
     .update(await response.arrayBuffer())
     .digest("hex");
@@ -251,63 +236,17 @@ if (mode === "beta") {
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "ackerdb-release-"));
-const bindingSnapshot = join(temporary, "binding");
-const nativePackagesSnapshot = join(temporary, "realtime-native");
-const distributionSnapshot = join(temporary, "distribution");
-const hadDistribution = existsSync(DISTRIBUTION_DIRECTORY);
-cpSync(BINDING_DIRECTORY, bindingSnapshot, { recursive: true, preserveTimestamps: true });
-cpSync(NATIVE_PACKAGES_DIRECTORY, nativePackagesSnapshot, {
-  recursive: true,
-  preserveTimestamps: true,
-});
-if (hadDistribution) {
-  cpSync(DISTRIBUTION_DIRECTORY, distributionSnapshot, {
-    recursive: true,
-    preserveTimestamps: true,
-  });
-}
 
 async function restore(): Promise<void> {
-  rmSync(BINDING_DIRECTORY, { recursive: true, force: true });
-  cpSync(bindingSnapshot, BINDING_DIRECTORY, { recursive: true, preserveTimestamps: true });
-  rmSync(NATIVE_PACKAGES_DIRECTORY, { recursive: true, force: true });
-  cpSync(nativePackagesSnapshot, NATIVE_PACKAGES_DIRECTORY, {
-    recursive: true,
-    preserveTimestamps: true,
-  });
-  rmSync(DISTRIBUTION_DIRECTORY, { recursive: true, force: true });
-  if (hadDistribution) {
-    cpSync(distributionSnapshot, DISTRIBUTION_DIRECTORY, {
-      recursive: true,
-      preserveTimestamps: true,
-    });
-  }
   for (const pkg of PACKAGES) await Bun.write(pkgJsonPath(pkg), sources.get(pkg)!);
   rmSync(temporary, { recursive: true, force: true });
 }
 
 let publicationError: unknown;
 try {
-  await ensureNativeArtifacts(
-    mode === "beta" ? [LOCAL_REGISTRY, PUBLIC_REGISTRY] : [PUBLIC_REGISTRY],
-  );
   for (const pkg of PACKAGES) {
     await Bun.write(pkgJsonPath(pkg), retargetManifest(sources.get(pkg)!, version));
   }
-  await writeWebRtcLoader(version);
-  const loader = {
-    cjsSha256: await sha256File(WEBRTC_LOADER_PATH),
-    dtsSha256: await sha256File(WEBRTC_LOADER_DECLARATION_PATH),
-  };
-  for (const target of WEBRTC_TARGETS) {
-    const path = join(
-      BINDING_DIRECTORY,
-      targetBinaryName(target).replace(/\.node$/, ".manifest.json"),
-    );
-    const manifest = JSON.parse(await Bun.file(path).text()) as TargetBuildManifest;
-    await Bun.write(path, `${JSON.stringify({ ...manifest, version, loader }, null, 2)}\n`);
-  }
-  assertWebRtcDistribution();
   const tarballs = new Map<string, string>();
   for (const pkg of PACKAGES) {
     tarballs.set(pkg, await packPackage(pkg, temporary));

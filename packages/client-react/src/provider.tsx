@@ -61,8 +61,6 @@ function lifetimeKey(config: AckerDBProviderConfig): string {
           reconnect.maxDelayMs,
           reconnect.stableOpenMs,
           reconnect.disconnectedGraceMs,
-          reconnect.iceRestartTimeoutMs,
-          reconnect.realtimeSetupTimeoutMs,
         ]
       : null,
   ]);

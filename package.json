@@ -5,23 +5,16 @@
   "license": "FSL-1.1-ALv2",
   "workspaces": [
     "packages/*",
-    "packages/realtime-native/*",
     "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
+    "test": "bun test ./packages/core/test ./packages/server/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
     "test:mcp:conformance": "bun scripts/mcp-conformance.ts",
     "test:mcp:hosts": "bun scripts/mcp-host-acceptance.ts",
     "test:packages": "bun scripts/verify-packages.ts",
-    "test:packages:webrtc": "bun scripts/verify-packages.ts --require-webrtc",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
     "typecheck:tooling": "bunx tsc -p scripts/tsconfig.json --noEmit",
-    "build:webrtc": "bun packages/realtime/native/webrtc/build.ts",
-    "assemble:webrtc": "bun packages/realtime/native/webrtc/package.ts",
-    "pack:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts pack",
-    "verify:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts verify",
     "audit:prod": "bun scripts/ci/audit-production.ts",
-    "test:webrtc": "bun run build:webrtc && bun test ./packages/realtime/native/webrtc/test",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "release:prepare": "bun scripts/release/prepare.ts",
     "publish:beta": "bun scripts/release/publish.ts beta",
@@ -31,7 +24,6 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/conformance": "0.1.16",
-    "@napi-rs/cli": "3.8.2",
     "@types/bun": "^1.2.0",
     "@types/node": "22.15.3",
     "ackerdb-test-support": "workspace:*",
