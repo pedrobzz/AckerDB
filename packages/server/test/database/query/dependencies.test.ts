@@ -63,9 +63,7 @@ describe("predicate reactive dependencies", () => {
   }
 
   function statusTag(status: "active" | "archived"): number {
-    return engine
-      .tagMap(engine.plan("documents"), "DependencyDocumentStatus")
-      .toTag.get(status)!;
+    return engine.plan("documents").columns.get("status")!.variantTag!(status)!;
   }
 
   async function dependencies(

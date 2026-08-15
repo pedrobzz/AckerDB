@@ -464,7 +464,7 @@ describe("writes", () => {
 
   test("write keys cover id, scan and every index prefix level", async () => {
     const id = await pay(5n, "active", 100);
-    const tag = engine.tags.get("PayStatus")!.toTag.get("active")!;
+    const tag = engine.plan("payments").columns.get("status")!.variantTag!("active")!;
     const [userIndex, compositeIndex] = engine.plan("payments").indexes;
     expect(writes.keys).toEqual(
       new Set([

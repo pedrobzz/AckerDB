@@ -96,8 +96,6 @@ export interface OptimisticProbeOptions {
   readonly storedTags?: StoredTagNames;
   /** Logical variant renames for a CLI post-answer preview over old tag rows. */
   readonly variantRenames?: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** Resolve logical named types to their storage-scope tag identity. */
-  readonly tagIdentity?: (typeName: string) => string;
 }
 
 /** What the planner needs to translate a classified change into physical work, carried once instead of threaded. */
@@ -230,12 +228,7 @@ export class SchemaPlanner {
       current,
       this.queued,
       (table, index) => planOf(table).indexes.find((candidate) => candidate.name === index)!.columns,
-      {
-        storedTags,
-        tagIdentity: this.queued.length === 0
-          ? undefined
-          : planOf(this.queued[0]!.change.table).tagIdentity,
-      },
+      { storedTags },
     );
     for (const { change } of this.queued) {
       if (change.op === "tighten-constraints") {
@@ -347,17 +340,16 @@ export function probeOptimisticChanges(
   }
 
   if (groups.size > 0) {
-    const tagIdentity = options.tagIdentity ?? ((typeName: string) => typeName);
     const loadedTags = options.storedTags ?? loadStoredTags(writer);
     const tags = options.variantRenames === undefined
       ? loadedTags
-      : renameStoredTagNames(loadedTags, options.variantRenames, tagIdentity);
+      : renameStoredTagNames(loadedTags, options.variantRenames);
     for (const group of groups.values()) {
       const table = current.tables[group.table];
       if (table === undefined || table.kind !== "table") continue;
       const selected = new Set(group.changes.map((change) => change.column));
       const physical = new Set([...physicalColumnsOf(table)].map(group.phys.column));
-      const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected, tagIdentity);
+      const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected);
       const projection = decoder.columns.filter((column) => column.present).flatMap((column) => column.phys);
 
       for (const raw of pageStoredRows(writer, group.phys.table, decoder.physicalPk, projection)) {
@@ -412,14 +404,12 @@ export function probeOptimisticChanges(
 function renameStoredTagNames(
   tags: StoredTagNames,
   renames: NonNullable<OptimisticProbeOptions["variantRenames"]>,
-  tagIdentity: NonNullable<OptimisticProbeOptions["tagIdentity"]>,
 ): StoredTagNames {
   const renamed = new Map(tags);
   for (const [typeName, variants] of Object.entries(renames)) {
-    const identity = tagIdentity(typeName);
-    const names = tags.get(identity);
+    const names = tags.get(typeName);
     if (names === undefined) continue;
-    renamed.set(identity, new Map([...names].map(([tag, name]) => [
+    renamed.set(typeName, new Map([...names].map(([tag, name]) => [
       tag,
       Object.hasOwn(variants, name) ? variants[name]! : name,
     ])));

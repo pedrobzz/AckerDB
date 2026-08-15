@@ -726,7 +726,7 @@ export class RuntimeJobs {
       // be claimed and thrown out of again, forever, with nothing recorded. A
       // job that cannot run must say so once, durably, not spin.
       const args = decode(job.argsJson);
-      value = await surface.runMutationHandler(job.name, run.number, (ctx) =>
+      value = await surface.runMutationHandler(run.number, (ctx) =>
         definition.handler(ctx as never, args as never));
       if (isResult(value) && !value.ok) {
         failure = { error: value.error };

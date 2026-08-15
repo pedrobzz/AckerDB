@@ -55,13 +55,10 @@ import type {
 
 export type AuthCtx = Principal;
 
-type EmptyContextCapabilities = Readonly<Record<never, never>>;
-
 export type QueryCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
-> = InvocationContext & Capabilities & {
+> = InvocationContext & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
   readonly timestamp: number;
@@ -73,9 +70,8 @@ export type QueryCtx<
 
 export type MutationCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
-> = InvocationContext & Capabilities & {
+> = InvocationContext & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
   readonly timestamp: number;
@@ -88,17 +84,14 @@ export type MutationCtx<
 /** The context inside `ctx.tx(...)`: a mutation's powers, structurally. */
 export type TxCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
-> = MutationCtx<S, Capabilities, Jobs>;
+> = MutationCtx<S, Jobs>;
 
 export type ProcedureCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
-> = InvocationContext & Capabilities & {
+> = InvocationContext & {
   readonly auth: AuthCtx;
   readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
@@ -113,7 +106,7 @@ export type ProcedureCtx<
   unlinkAccount(account: ExternalAccount): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<R>(
-    fn: (tx: TxCtx<S, TransactionCapabilities, TxJobs>) => R,
+    fn: (tx: TxCtx<S, TxJobs>) => R,
   ): Promise<FunctionResult<R>>;
 };
 
@@ -133,11 +126,9 @@ export type SseSource<Chunk> = ReadableStream<Chunk> | AsyncIterable<Chunk>;
 
 export type SseCtx<
   S extends Schema = Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
-> = ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>;
+> = ProcedureCtx<S, Jobs, TxJobs>;
 
 /** Args as the caller provides them: only optional/nullish keys may be omitted. */
 export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
@@ -876,12 +867,11 @@ export function sseProcedure<
  */
 export type QueryBuilder<
   S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities, Jobs>, Scope>,
+  const Definition extends FunctionDef<A, QueryCtx<S, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -894,18 +884,17 @@ export type QueryBuilder<
 > &
   ApiPathOf<Definition> &
   ((
-    ctx: QueryCtx<S, Capabilities, Jobs>,
+    ctx: QueryCtx<S, Jobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
 export type MutationBuilder<
   S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   Scope extends string = string,
 > = <
   A extends ObjectShape,
-  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities, Jobs>, Scope>,
+  const Definition extends FunctionDef<A, MutationCtx<S, Jobs>, Scope>,
 >(
   def: { readonly args: A } &
     Definition &
@@ -918,14 +907,12 @@ export type MutationBuilder<
 > &
   ApiPathOf<Definition> &
   ((
-    ctx: MutationCtx<S, Capabilities, Jobs>,
+    ctx: MutationCtx<S, Jobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
 export type ProcedureBuilder<
   S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
   Scope extends string = string,
@@ -933,7 +920,7 @@ export type ProcedureBuilder<
   A extends ObjectShape,
   const Definition extends FunctionDef<
     A,
-    ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    ProcedureCtx<S, Jobs, TxJobs>,
     Scope
   >,
 >(
@@ -948,14 +935,12 @@ export type ProcedureBuilder<
 > &
   ApiPathOf<Definition> &
   ((
-    ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    ctx: ProcedureCtx<S, Jobs, TxJobs>,
     args: Expand<ArgsInput<A>>,
   ) => Promise<ResultOfDefinition<Definition>>);
 
 export type SseBuilder<
   S extends Schema,
-  Capabilities extends object = EmptyContextCapabilities,
-  TransactionCapabilities extends object = EmptyContextCapabilities,
   Jobs extends object = AnyJobsNamespace,
   TxJobs extends object = AnyJobsNamespace,
   Scope extends string = string,
@@ -965,14 +950,14 @@ export type SseBuilder<
   const Definition extends SseDef<
     A,
     Y,
-    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    SseCtx<S, Jobs, TxJobs>,
     Scope
   >,
 >(
   def: SseDef<
     A,
     Y,
-    SseCtx<S, Capabilities, TransactionCapabilities, Jobs, TxJobs>,
+    SseCtx<S, Jobs, TxJobs>,
     Scope
   > & Definition & ApiPathConstraint<NoInfer<Definition>>,
 ) => RegisteredSse<A, Expand<InferValidator<Y>>, S> & ApiPathOf<Definition>;

@@ -23,7 +23,6 @@ import {
   type WriteCollector,
 } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
-import { emitWriteKeys } from "../../database/keys.ts";
 import {
   invokeFunction,
   poisonCurrentInvocation,
@@ -97,12 +96,10 @@ export interface JobsWriteSurface {
    */
   savepoint(): { rollback(): void; release(): void };
   /**
-   * Run a mutation-kind job handler under a system-principal mutation context
-   * with the same bindings a
-   * registered mutation would have.
+   * Run a mutation-kind job handler under the same system-principal mutation
+   * context bindings a registered mutation would have.
    */
   runMutationHandler<T>(
-    jobAddress: string,
     runNumber: number,
     run: (ctx: MutationCtx & { readonly runNumber: number }) => T | Promise<T>,
   ): Promise<T>;
@@ -344,7 +341,7 @@ export class RuntimeFunctionExecutor<C> {
       execution.reads,
     );
     const timestamp = this.readNow();
-    const context = this.hostQueryContext(db, principal, timestamp, execution);
+    const context = this.hostQueryContext(db, principal, timestamp);
     return this.bindCredentialContext(
       context,
       principal,
@@ -515,7 +512,6 @@ export class RuntimeFunctionExecutor<C> {
     db: unknown,
     principal: Principal,
     timestamp: number,
-    execution: Readonly<ReadExecution>,
   ): QueryCtx {
     return Object.freeze({
       db: applicationDatabase(db),
@@ -664,7 +660,7 @@ export class RuntimeFunctionExecutor<C> {
               },
             };
           },
-          runMutationHandler: async (jobAddress, runNumber, run) => {
+          runMutationHandler: async (runNumber, run) => {
             // The run number is part of the context object itself: capability
             // bindings key off the exact frozen identity, so no caller may
             // spread a bound context into a copy.
@@ -805,20 +801,6 @@ export class RuntimeFunctionExecutor<C> {
         ? []
         : this.options.reactive.affectedQueryIds(caller, writes.keys),
     );
-  }
-
-  private expectMutation(address: string): AnyRegistered {
-    const fn = this.options.registry.get(address);
-    if (fn === undefined) {
-      throw new AckerDBError("not_found", `unknown function "${address}"`);
-    }
-    if (fn.kind !== "mutation") {
-      throw new AckerDBError(
-        "validation",
-        `"${address}" is a ${fn.kind}, expected a mutation`,
-      );
-    }
-    return fn;
   }
 
   private readNow(): number {

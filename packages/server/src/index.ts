@@ -162,7 +162,6 @@ export {
   type RestorePublicationHook,
   schemaFingerprintFor,
   type TablePlan,
-  type TagMap,
 } from "./database/engine.ts";
 export { restoreVerifiedDatabase } from "./database/restore.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";

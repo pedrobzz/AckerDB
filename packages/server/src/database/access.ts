@@ -4,7 +4,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { ValidationError } from "../validation/error.ts";
-import type { ColumnPlan, Engine, StorageScope, TablePlan } from "./engine.ts";
+import type { Engine, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { TableDef } from "../schema/definition.ts";
 import { emitFullTextWriteKeys, emitWriteKeys, idKey } from "./keys.ts";
@@ -263,7 +263,7 @@ function claimFileReferences(
   }
   if (ids.size === 0) return;
 
-  const filePlan = engine.rootScope.plan(FILES_TABLE);
+  const filePlan = engine.plan(FILES_TABLE);
   for (const id of ids) {
     const raw = engine.statement(
       engine.writer,
@@ -627,10 +627,9 @@ export function makeDbReader(
   engine: Engine,
   conn: Database,
   reads: ReadRecorder | null,
-  scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
-  for (const plan of scope.plans.values()) {
+  for (const plan of engine.plans.values()) {
     db[plan.logicalName] = readMethods(engine, conn, reads, plan);
   }
   return db;
@@ -726,15 +725,14 @@ export function makeDbWriter(
   engine: Engine,
   writes: WriteCollector,
   nextEventId: (table: string) => bigint,
-  scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
-  for (const [name, table] of Object.entries(scope.schema.tables)) {
+  for (const [name, table] of Object.entries(engine.schema.tables)) {
     if (table.kind === "event") {
       db[name] = eventWriteMethods(writes, table, name, nextEventId);
       continue;
     }
-    const plan = scope.plan(name);
+    const plan = engine.plan(name);
     const writer = writeMethods(engine, writes, plan);
     const reader = readMethods(engine, engine.writer, null, plan);
     const accessor: Record<string, unknown> = Object.assign(
@@ -790,7 +788,7 @@ export function makeFrameworkTableWriter(
   writes: WriteCollector,
   table: string,
 ): ReturnType<typeof writeMethods> & { plan: TablePlan } {
-  const plan = engine.rootScope.plan(table);
+  const plan = engine.plan(table);
   return Object.assign(writeMethods(engine, writes, plan), { plan });
 }
 
