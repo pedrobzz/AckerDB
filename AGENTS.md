@@ -1,7 +1,5 @@
 Before designing, implementing, changing, or refactoring any code, always read the `policy-and-commodity` skill and follow it. AckerDB adds to that doctrine in *Prefer less code and proven work* below; nothing here relaxes it.
 
-Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not AckerDB decisions or domain modeling.
-
 ## Performance, correctness, and code quality
 
 Standing rules for every change. Terms are defined in `CONTEXT.md`
@@ -54,10 +52,6 @@ across every dimension of the performance vector:
 | Tail behavior | A slow consumer, a hot key, a full queue, or a dependency failure gets a bounded typed outcome instead of poisoning unrelated work. |
 | Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
 | Durable correctness | A number is meaningless if the operation loses, corrupts, duplicates, or silently hides data. |
-
-External systems may inform architecture research, but the repository benchmark
-does not run them. Its only comparison is AckerDB at the pull request's base and
-head commits under the same workload and on the same machine.
 
 ### Judge by net-effect judgment
 
@@ -167,11 +161,9 @@ OpenSRC and its primary sources first.
 ### Evidence and verification
 
 Most mature systems problems already have prior art. Before inventing, inspect
-current OpenSRC snapshots and primary sources. When the user explicitly asks to
-capture the research, put external source material and compiled findings in the
-LLM Wiki (`raw/` and `wiki/`); put AckerDB terminology and settled domain
-boundaries in `CONTEXT.md`; put material AckerDB tradeoffs in the decision ledger.
-Revisit all three when later evidence changes a decision.
+current OpenSRC snapshots and primary sources. Put AckerDB terminology and
+settled domain boundaries in `CONTEXT.md`; put material AckerDB tradeoffs in the
+decision ledger. Revisit both when later evidence changes a decision.
 
 Verify at the boundary that previously failed; prove the old failure path is
 gone rather than masked.
@@ -185,9 +177,9 @@ Before accepting a performance/correctness change, answer:
 4. Does it preserve data and make ambiguity explicit?
 5. Does it remove a model problem or create another branch around it?
 6. Which OpenSRC/primary-source decision or AckerDB ledger entry supports it?
-7. What boundary test and, when relevant, benchmark prove the claim?
+7. What boundary test proves the claim?
 
-# Release branches, benchmarks, and publishing
+# Release branches and publishing
 
 [Releases and protected branches](docs/releases.md) is the authoritative
 procedure. Do not recreate an alternate release path in another document or
@@ -251,51 +243,6 @@ and response bodies are the application's own arguments and results, published
 in its OpenAPI document for callers who are not AckerDB builds at all, so it has
 no framework envelope to version and must not grow one. Its compatibility
 contract belongs to the application.
-
-The `Benchmark` check reports every pull request that touches a measured input,
-on the way into `canary` and again on the `canary` → `main` promotion, where it
-is required alongside `Release policy` and `Fast CI`. Its comparison is
-informational: regressions and invalid measurements are reported prominently
-but never veto a merge. Running it at both boundaries attributes evidence to
-one pull request first and to the release second.
-Version bumps, docs, tests, and unrelated packages still must not spend
-benchmark time, and it never runs another vendor.
-
-Both commits are measured live and interleaved, one unit of work at a time, so
-drift lands on both sides instead of on whichever ran second. That is published
-prior art — duet benchmarking, Bulej et al., ICPE '20 — not a house rule, and the
-decision rule around it is `criterion.rs`'s shape. Each metric is judged over
-sixteen repetitions on the median of its paired ratios against a
-distribution-free interval built from the repetitions themselves — a noise band
-measured from the run, not a threshold carried in. A metric is classified as a
-regression only when that interval keeps the whole median on the worse side of
-neutral **and** the median clears a twelve-percent floor; anything else reports
-no signal, which is an answer. Correctness, accounting, and incomplete
-measurements are also reported rather than converted into merge policy. `p99`
-and connect-readiness `p95` remain contextual and are never classified as
-blocking regressions.
-
-Every run's paired deltas are appended to the `bench-ledger` data branch — ratios
-only, never absolute numbers, because a paired interleaved ratio is
-machine-independent and an ephemeral runner's throughput is not. Nothing reads
-it. It exists so the next question about this gate's own noise is a query over
-runs that already happened instead of a null campaign, which is how rustc-perf,
-Perfherder, and Bencher all work. Do not make it a threshold, and do not adjust a
-per-metric threshold to make something pass: MongoDB's static-threshold system
-produced false positives up to 99% depending on how you count, and per-test
-adjustment is what they call fixes and band-aids. A metric that is genuinely
-unfit is reported and never gated, on evidence, which is the category `p99`
-already sits in.
-
-This is detection, not acceptance. Measured against its own runner noise the report
-catches roughly ninety-eight percent of twenty-percent regressions, ninety-three
-percent of fifteen-percent ones, and about one in five below ten, so a green
-result is not a performance verdict: Pedro and an agent still interpret the
-complete vector and anomalies by reasoning before merge.
-A run declares the host it executed on rather than refusing to execute off the
-runner; a paired interleaved comparison is meaningful wherever it runs, but a
-number without a machine beside it is not. Historical files in `bench/results/`
-are not current release evidence.
 
 Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
 Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is

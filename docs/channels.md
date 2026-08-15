@@ -51,10 +51,10 @@ export const room = channel({
     },
   },
   onConnect(ctx) {
-    console.log("joined", ctx.room, ctx.state.joinedAt);
+    recordJoin(ctx.room, ctx.state.joinedAt);
   },
   onDisconnect(_ctx, reason) {
-    console.log("left", reason);
+    recordDisconnect(reason);
   },
 });
 ```
@@ -145,7 +145,7 @@ const membership = client.channel(
     room,
     on: {
       message(value) {
-        console.log(value);
+        renderMessage(value);
       },
     },
   },

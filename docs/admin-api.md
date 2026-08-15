@@ -66,10 +66,10 @@ _admin:database:read     _admin:database:write
 _admin:errors:read       _admin:errors:write
 _admin:functions:run     _admin:impersonate
 _admin:jobs:read         _admin:jobs:write
-_admin:logs:read         _admin:system:read
+_admin:system:read
 ```
 
-A domain is what an operator authorizes — `logs`, `jobs`, `database` — so the
+A domain is what an operator authorizes — `jobs`, `database`, `system` — so the
 vocabulary is two levels deep and not three. The list may grow: a grant expands
 against the vocabulary known *at the moment of the check*, so a credential
 minted today covers a domain added tomorrow.

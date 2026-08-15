@@ -19,7 +19,7 @@ describe("Files framework schema", () => {
       }),
     }), ":memory:");
 
-    expect([...engine.rootScope.plans.keys()]).toEqual([
+    expect([...engine.plans.keys()]).toEqual([
       "documents",
       JOBS_TABLE,
       JOB_RUNS_TABLE,
@@ -29,7 +29,7 @@ describe("Files framework schema", () => {
       FILE_CLEANUP_TABLE,
     ]);
 
-    expect(engine.rootScope.plan(FILES_TABLE).table.indexes.map((index) => index.columns)).toEqual([
+    expect(engine.plan(FILES_TABLE).table.indexes.map((index) => index.columns)).toEqual([
       ["createdAt"],
       ["owner", "createdAt"],
       ["state", "createdAt"],

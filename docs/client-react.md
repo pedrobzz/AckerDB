@@ -206,19 +206,19 @@ callers pass the rest.
 import { skip, usePaginatedQuery } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
-function LogList({ level }: { level: string | null }) {
-  const logs = usePaginatedQuery(
-    api.logs.list,
-    level === null ? skip : { level },
+function OrderList({ status }: { status: string | null }) {
+  const orders = usePaginatedQuery(
+    api.orders.list,
+    status === null ? skip : { status },
     { pageSize: 50 },
   );
 
-  if (logs.status !== "success") return <LogListFallback state={logs} />;
+  if (orders.status !== "success") return <OrderListFallback state={orders} />;
   return (
     <>
-      <ul>{logs.items.map((row) => <li key={row.id}>{row.message}</li>)}</ul>
-      {logs.exhausted ? null : (
-        <button onClick={logs.loadMore} disabled={logs.loadingMore}>Load more</button>
+      <ul>{orders.items.map((row) => <li key={row.id}>{row.total}</li>)}</ul>
+      {orders.exhausted ? null : (
+        <button onClick={orders.loadMore} disabled={orders.loadingMore}>Load more</button>
       )}
     </>
   );
@@ -269,12 +269,12 @@ The server function is an ordinary query — pagination needs no special kind:
 
 ```ts
 export const list = query({
-  args: { level: v.string(), cursor: v.string().nullable(), pageSize: v.int() },
+  args: { status: v.string(), cursor: v.string().nullable(), pageSize: v.int() },
   access: "authenticated",
   handler: async (ctx, args) =>
-    await ctx.db.logs
+    await ctx.db.orders
       .query()
-      .where((row) => row.level.eq(args.level))
+      .where((row) => row.status.eq(args.status))
       .orderBy((row) => row.id.desc())
       .paginate({ cursor: args.cursor, pageSize: args.pageSize }),
 });
@@ -290,12 +290,12 @@ UI renders them beside the controls that produced them — no `try`/`catch`, no
 separate validation round trip:
 
 ```tsx
-const logs = usePaginatedQuery(api.logs.list, { filter });
+const orders = usePaginatedQuery(api.orders.list, { filter });
 
-if (logs.status === "application-error" && logs.error.code === "filter.invalid") {
+if (orders.status === "application-error" && orders.error.code === "filter.invalid") {
   return (
     <ul>
-      {logs.error.body.issues.map((issue) => (
+      {orders.error.body.issues.map((issue) => (
         <li key={issue.path}>{issue.path}: {issue.message}</li>
       ))}
     </ul>
@@ -321,13 +321,13 @@ function AddOrderButton() {
     const result = await createOrder({ table: 12 });
     if (!result.ok) {
       if (result.error.kind === "application") {
-        console.log(result.error.code, result.error.body);
+        showApplicationError(result.error.code, result.error.body);
       } else {
-        console.log(result.error.code);
+        showFailure(result.error.code);
       }
       return;
     }
-    console.log(result.data);
+    showCreatedOrder(result.data);
   }
 
   return <button onClick={() => void create()}>Add order</button>;
@@ -421,7 +421,7 @@ function ExportButton() {
     );
     if (!result.ok) {
       if (result.error.kind === "application") {
-        console.log(result.error.code, result.error.body);
+        showApplicationError(result.error.code, result.error.body);
       }
       return;
     }
@@ -504,7 +504,7 @@ function GenerateButton() {
     for (;;) {
       const part = await reader.read();
       if (part.done) return;
-      console.log(part.value);
+      appendGeneratedPart(part.value);
     }
   }
 
@@ -531,9 +531,9 @@ function OrderNotifications() {
     api.orderEvents.byRestaurant,
     { restaurantId: "rest_1" },
     (event) => {
-      if (event.kind === "row") console.log(event.row);
+      if (event.kind === "row") showOrderEvent(event.row);
       else if (event.kind === "gap") console.warn("events were lost");
-      else console.log("new event-stream boundary"); // reset
+      else beginNewEventBoundary(); // reset
     },
     (error) => console.error(error),
   );

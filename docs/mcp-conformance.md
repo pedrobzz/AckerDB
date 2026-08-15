@@ -32,10 +32,9 @@ official CLI against it. It runs these stable scenarios:
 | `dns-rebinding-protection` | Rejected foreign Host/Origin and accepted loopback Host/Origin |
 
 The runner's complete active suite is deliberately not used as a substitute
-for capability selection. AckerDB currently exposes tools, not MCP resources,
-prompts, completion, logging, sampling, elicitation, progress notifications,
-subscriptions, or stateful SSE streams. Those optional scenarios are therefore
-outside this gate. The runner's `json-schema-2020-12` fixture also requires a
+for capability selection. AckerDB exposes tools, so every optional scenario
+outside that surface remains outside this gate. The runner's
+`json-schema-2020-12` fixture also requires a
 specific hard-coded tool with reusable `$defs`/`$ref`; AckerDB emits honest
 2020-12 object schemas from its validator surface, but does not add an
 arbitrary-schema escape hatch solely for that fixture.
@@ -95,12 +94,3 @@ instructions, anonymous public access, least-privilege discovery,
 authenticated/structured/rich calls, a live scope reduction, and live
 revocation. See [the reproducible host record](mcp-host-acceptance.md) for the
 exact versions, configuration, assertions, and current host limitations.
-
-## Pull-request performance
-
-Runtime MCP changes under the measured server source enter GitHub's paired
-benchmark. Documentation, conformance fixtures, and other non-runtime MCP work
-receive the benchmark status's immediate successful no-op. A real Hetzner job
-compares the branch's AckerDB with the base branch's AckerDB and records the full
-vector without thresholds or an automated verdict; Pedro and an agent interpret
-it before merge. See [the benchmark contract](../bench/README.md).

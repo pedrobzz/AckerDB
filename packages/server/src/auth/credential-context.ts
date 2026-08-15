@@ -53,9 +53,9 @@ export type {
 };
 
 /** Any mutation or transaction context, whatever its exact schema. */
-export type WriteContext = MutationCtx<any, object, object> | TxCtx<any, object, object>;
+export type WriteContext = MutationCtx<any, object> | TxCtx<any, object>;
 /** Any invocation context that can read, whatever its exact schema. */
-export type ReadContext = QueryCtx<any, object, object> | WriteContext;
+export type ReadContext = QueryCtx<any, object> | WriteContext;
 
 export interface CredentialOperations {
   create(ctx: WriteContext, input: CredentialCreateInput): CreatedCredential;

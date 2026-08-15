@@ -7,7 +7,7 @@
  * halves apart inside the single namespace — so a grant reaches this list only
  * through `_*` or an explicit `_admin:` pattern, and never through a bare `*`.
  *
- * **A domain is what an operator authorizes.** `logs`, `jobs`, `database` are
+ * **A domain is what an operator authorizes.** `jobs`, `database`, and `system` are
  * the things a scope screen offers and an agent credential is narrowed to; the
  * category above them is not, so the vocabulary is two levels deep and not
  * three.
@@ -35,7 +35,6 @@ export const ADMIN_SCOPES = Object.freeze([
   "_admin:impersonate",
   "_admin:jobs:read",
   "_admin:jobs:write",
-  "_admin:logs:read",
   "_admin:system:read",
 ] as const);
 

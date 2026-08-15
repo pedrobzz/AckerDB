@@ -143,5 +143,4 @@ Pedro deferred these empirical acceptance tests:
 - multi-host failover.
 
 Those limits constrain the proven operating envelope; they do not imply that
-the state machine or packaging code ran those tests. Stable releases use the
-repository's Hetzner benchmark policy rather than local performance results.
+the state machine or packaging code ran those tests.

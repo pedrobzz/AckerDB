@@ -44,7 +44,7 @@ describe("defineApp scope vocabulary", () => {
   test("rejects the framework's marked names at the one declaration site", () => {
     expect(() => defineApp({
       schema: defineSchema({}),
-      scopes: ["_admin:logs:read"] as const,
+      scopes: ["_admin:jobs:read"] as const,
     })).toThrow(/framework/);
     expect(() => defineApp({
       schema: defineSchema({}),

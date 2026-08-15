@@ -13,7 +13,7 @@ public API.
 hides tool failures completely — the model apologizes vaguely and you learn
 nothing. Wire `onError` to return the real message. Do this only for trusted
 transcripts (the demo's chat is staff-only); for end-user surfaces, map to a
-safe message but *log* the real one.
+safe message.
 
 ## Always end the turn with text
 

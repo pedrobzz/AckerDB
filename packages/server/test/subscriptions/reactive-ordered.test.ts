@@ -1676,7 +1676,7 @@ describe("who a shared query may be shared with", () => {
     for (const principal of principals) {
       id += 1;
       await reactive.subscribeQuery({
-        address: "admin.logs.list",
+        address: "admin.jobs.list",
         args: null,
         policyScopeFingerprint: stableEncode(policyScope(principal)),
         context: { principal },
@@ -1706,7 +1706,7 @@ describe("who a shared query may be shared with", () => {
 
   test("two identities never do", async () => {
     expect(await entriesFor([ADMIN, { ...ADMIN, identity: 2n as Identity }])).toBe(2);
-    expect(await entriesFor([ADMIN, { ...ADMIN, scopes: ["_admin:logs:read"] }])).toBe(2);
+    expect(await entriesFor([ADMIN, { ...ADMIN, scopes: ["_admin:jobs:read"] }])).toBe(2);
     expect(await entriesFor([ADMIN, { ...ADMIN, claims: { tenant: "b" } }])).toBe(2);
   });
 });

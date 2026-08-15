@@ -204,7 +204,7 @@ An audio source exposes native playout controls:
 
 ```ts
 await output.captureFrame(frame);
-console.log(output.queuedDuration); // native buffered seconds remaining
+renderQueuedDuration(output.queuedDuration); // native buffered seconds remaining
 await output.waitForPlayout();
 
 // Barge-in:

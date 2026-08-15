@@ -1,8 +1,7 @@
 # Provider-neutral Identity and `@ackerdb/client-react` — issue breakdown
 
 > Historical implementation plan. Its local-only publication, merge-guard,
-> alpha prerelease, and vendor-comparison benchmark instructions are
-> superseded; do not execute them. Current policy is in
+> and alpha prerelease instructions are superseded; do not execute them. Current policy is in
 > [Releases and protected branches](../../releases.md).
 
 - Parent PRD: `PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming`
@@ -68,8 +67,6 @@ Every later hook needs a correct React ownership boundary. This slice proves pac
 - Use React's external-store contract for observable connection state; do not mirror mutable client state through ad hoc effects.
 - Provider options are immutable for one lifetime. Make replacement explicit rather than partially mutating a live client.
 - Target only the current approved React line. Do not add backward-compatibility branches.
-- Changes to measured `core`, `client`, or `server` source enter the paired
-  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -123,8 +120,6 @@ Live queries are the central React value proposition. This slice delivers the en
 - Likely surfaces include the React package query hook/store, generated reference types from `packages/core`, and public client subscription events in `packages/client`.
 - Preserve existing cursor, reset, limit, and error semantics. Do not introduce a second query cache protocol or one-off query API.
 - Keep query snapshots immutable and stable when observable state did not change.
-- Changes to measured `core`, `client`, or `server` source enter the paired
-  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -176,8 +171,6 @@ The single-consumer query path already delivers user value. This slice adds the 
 - The registry belongs to the provider/client lifetime, not a process-global singleton.
 - Derive deterministic keys from generated references and validated arguments; do not rely on caller object identity.
 - Likely surfaces include the query store introduced by `ISSUE-02` and React concurrent-rendering tests.
-- Changes to measured `core`, `client`, or `server` source enter the paired
-  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -228,8 +221,6 @@ Mutations are independent of query caching and can ship as a complete write path
 - Likely surfaces include the React hook and public mutation entry points in `packages/client/src/client.ts`.
 - Do not add optimistic cache behavior or a second retry policy.
 - Avoid wrapping an existing mutation function with another function whose only job is renaming it; expose the correct callable directly through the hook.
-- Changes to measured `core`, `client`, or `server` source enter the paired
-  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -331,8 +322,6 @@ This is the smallest complete slice that fixes the root type-model defect. Chang
 - Likely surfaces include `packages/server/src/app/functions.ts`, server invocation/delivery, `packages/core/src/refs.ts`, `packages/cli/src/app/codegen.ts`, `packages/client`, and the new React hook.
 - This is an approved breaking correction; do not retain a compatibility overload for the incorrect completion-type model.
 - Preserve the current acknowledgement protocol and high-water behavior.
-- Measured server or client streaming changes enter the paired AckerDB GitHub
-  benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -401,7 +390,7 @@ Row events are a separate AckerDB capability from current-state queries. This sl
 
 ### Out of scope
 
-- Historical event replay, durable event logs, query cache updates, and native AppState orchestration.
+- Historical event replay, durable event history, query cache updates, and native AppState orchestration.
 
 ## ISSUE-08: Authentication state and operations hook
 
@@ -538,8 +527,6 @@ This is the decisive packaging tracer bullet: one package, one public API, two r
 - Likely surfaces include `packages/core/src/wire.ts`, runtime capabilities in `packages/client`, conditional exports and peers in the React package, and browser/Expo consumer fixtures.
 - Shared React hooks must not import native modules. The native entry supplies only capabilities and lifecycle integration points.
 - A separate native package is permitted only if a documented Metro failure proves conditional exports impossible; keep it as thin re-exports plus capabilities.
-- Portable wire/client changes under measured source enter the paired AckerDB
-  GitHub benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -594,8 +581,6 @@ A single mounted query is the narrowest complete proof of durable recovery. It e
 - The lifecycle observer belongs below hooks in the native runtime adapter, while connection generation ownership belongs in the base client state machine.
 - Retain logical work separately from physical transport state. Do not infer liveness from a remembered WebSocket state.
 - No network-reachability dependency or background service is needed; failed immediate attempts enter ordinary reconnect behavior.
-- Structural changes under measured client source enter the paired AckerDB
-  GitHub benchmark; native-adapter-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -651,8 +636,6 @@ Query recovery proves the lifecycle state machine. This slice adds the two resum
 - Reuse the generation and logical-demand model from `ISSUE-11`; do not create operation-specific sockets or AppState observers.
 - Preserve base mutation UUIDs and event reset semantics exactly.
 - Backgrounding during handshake, authentication, mutation response, or event subscription application must converge deterministically.
-- Structural changes under measured client source enter the paired AckerDB
-  GitHub benchmark; native-adapter-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -832,8 +815,6 @@ Individual hooks are not a product until real consumers can install the exact ar
   `.github/workflows/`, consumer fixtures, and release documentation.
 - Exercise public canary delivery and repeatable local Verdaccio betas with exact version pins.
 - This issue assembles and verifies earlier behavior; it must not become a bucket for unfinished hook or lifecycle implementation.
-- Do not commit a benchmark result; the current-head GitHub artifact and human
-  reasoning in the pull request are the merge evidence.
 
 ## Blocked by
 
@@ -851,9 +832,6 @@ Individual hooks are not a product until real consumers can install the exact ar
 - Pack and install exact artifacts into clean consumers, then run browser production build and Expo Metro/release builds.
 - Exercise release preparation, protected policy, interrupted publish/resume,
   exact install, beta numbering, and version-drift failure paths.
-- When measured runtime source changed, review the paired Hetzner artifact for
-  the current pull-request commit; otherwise verify the immediate no-op. Never
-  let benchmark values approve or veto the release automatically.
 
 ### Out of scope
 

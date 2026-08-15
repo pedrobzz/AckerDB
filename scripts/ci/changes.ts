@@ -13,7 +13,6 @@ interface ChangeSet {
   readonly code: boolean;
   readonly nativeBuild: boolean;
   readonly nativeTests: boolean;
-  readonly performance: boolean;
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
   readonly workflows: boolean;
@@ -85,7 +84,6 @@ export function classifyChanges(base: string, head: string): ChangeSet {
 
   const nativeBuild = nativeBuildInputsChanged(files);
   const nativeTests = nativeTestInputsChanged(files);
-  const performance = performanceInputsChanged(files) || measuredDependenciesChanged(base, head);
   const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
@@ -97,41 +95,10 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     code,
     nativeBuild,
     nativeTests,
-    performance,
     verifyPackages,
     mcp,
     workflows,
   };
-}
-
-/** The packages whose code the benchmark workload actually executes. */
-const MEASURED_PACKAGES = Object.freeze(["core", "client", "server", "cli"]);
-
-const DEPENDENCY_FIELDS = Object.freeze([
-  "dependencies",
-  "peerDependencies",
-  "optionalDependencies",
-]);
-
-/**
- * Whether a measured package's third-party dependencies moved. A dependency
- * update changes the executable product without touching a single line of
- * source, so a path list alone would report a successful no-op for it.
- *
- * Workspace `@ackerdb/*` entries are excluded deliberately: every release step
- * rewrites all eleven of them in lockstep, and a version bump that ships the
- * same code is exactly the case the benchmark must not spend a runner on.
- */
-export function measuredDependenciesChanged(base: string, head: string): boolean {
-  const externals = (ref: string): string =>
-    JSON.stringify(MEASURED_PACKAGES.map((pkg) => {
-      const manifest = JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, unknown>;
-      return DEPENDENCY_FIELDS.map((field) => {
-        const entries = Object.entries((manifest[field] ?? {}) as Record<string, string>);
-        return entries.filter(([name]) => !name.startsWith("@ackerdb/")).sort();
-      });
-    }));
-  return externals(base) !== externals(head);
 }
 
 export function codeInputsChanged(files: readonly string[]): boolean {
@@ -158,20 +125,6 @@ export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
     (file.startsWith("packages/realtime/native/") &&
       !file.startsWith("packages/realtime/native/webrtc/test/")) ||
     file.startsWith("packages/realtime-native/")
-  );
-}
-
-export function performanceInputsChanged(files: readonly string[]): boolean {
-  return files.some((file) =>
-    file.startsWith("packages/core/src/") ||
-    file.startsWith("packages/client/src/") ||
-    file.startsWith("packages/server/src/") ||
-    file === "packages/cli/src/app/codegen.ts" ||
-    file === "packages/cli/src/app/config.ts" ||
-    file === "packages/cli/src/app/manifest.ts" ||
-    (file.startsWith("bench/") && !file.endsWith(".md") && !file.startsWith("bench/results/")) ||
-    file === ".github/workflows/ci.yml" ||
-    file === "scripts/ci/changes.ts"
   );
 }
 
@@ -202,7 +155,6 @@ if (import.meta.main) {
       `code=${changes.code}`,
       `native_build=${changes.nativeBuild}`,
       `native_tests=${changes.nativeTests}`,
-      `performance=${changes.performance}`,
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,

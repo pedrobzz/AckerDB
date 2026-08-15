@@ -40,14 +40,5 @@ registry/htpasswd
 
 sandbox/
 
-# benchmark artifacts (local backend state, generated bindings)
-# bench/results/ retains only the final version-bound release evidence.
-bench/convex-app/.convex/
-bench/convex-app/.env.local
-bench/convex-app/convex/_generated/
-bench/ackerdb-app/_generated/
-bench/spacetime-app/.stdb-data/
-bench/spacetime-app/module_bindings/
-
 .internal-docs
 .workflow/

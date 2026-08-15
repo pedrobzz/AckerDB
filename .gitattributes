@@ -1,4 +1,3 @@
-bench/results/*.json -diff
 packages/realtime/native/webrtc/.cargo/** text eol=lf
 packages/realtime/native/webrtc/Cargo.lock text eol=lf
 packages/realtime/native/webrtc/Cargo.toml text eol=lf

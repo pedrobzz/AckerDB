@@ -64,9 +64,6 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 - Extend the existing registry with a distinct server-only export kind instead of disguising tools as procedures.
 - Mount into the existing Bun listener and reuse bounded body parsing; do not use AckerDB's private tagged wire codec.
 - Build the shared dispatcher as the only handler execution path from the first slice.
-- Runtime work under the measured server source enters GitHub's paired AckerDB
-  benchmark; docs and fixtures receive its immediate no-op. Do not create a
-  local baseline.
 
 ## Blocked by
 
@@ -337,8 +334,6 @@ This proves the central product promise—external agents act as the same applic
 - Create two tokens, restart, authenticate each to the correct endpoint, and assert shared row ownership.
 - Inspect storage to prove the secret is absent and list output never reveals it.
 - Reject wrong endpoint, malformed/unknown tokens, cross-owner listing, and MCP self-administration.
-- Authentication lookup source is measured by the conditional paired Hetzner
-  benchmark; do not create an ad hoc microbenchmark record.
 
 ### Out of scope
 
@@ -594,7 +589,7 @@ Backend-managed integrations are a valid deployment mode, but folding them into 
 
 - Mint for a selected Identity, authenticate, and revoke through system authority.
 - Reject external user, workload without system authority, MCP principal, and arbitrary Identity escalation.
-- Verify one-time secret and log redaction.
+- Verify one-time secret handling and absence from public errors.
 
 ### Out of scope
 
@@ -623,7 +618,7 @@ A correct tool protocol is not a safe public endpoint until browser/DNS-rebindin
 - [ ] Every POST independently authenticates and enters ingress admission; no session identifier acts as identity or a resource lease.
 - [ ] Configured Host validation rejects unexpected hosts and invalid Origin receives HTTP 403.
 - [ ] Requests without Origin from native MCP hosts remain usable under Host policy.
-- [ ] Bearer secrets, provider credentials, tool arguments, sensitive results, and unbounded values never enter logs or metric labels.
+- [ ] Bearer secrets, provider credentials, tool arguments, sensitive results, and unbounded values never enter metric labels or public errors.
 - [ ] Production deployment requires HTTPS at AckerDB or a trusted terminating proxy.
 - [ ] Body, header, and tool-count limits fail safely.
 
@@ -644,7 +639,7 @@ A correct tool protocol is not a safe public endpoint until browser/DNS-rebindin
 ### Test plan
 
 - Exercise allowed/denied Host and Origin combinations, absent Origin, oversized bodies/headers, and invalid credentials.
-- Capture logs/metrics across success and every failure and scan for secrets/arguments/results.
+- Capture responses and metrics across success and every failure and scan for secrets, arguments, and results.
 - Run concurrent requests to verify independent admission.
 
 ### Out of scope
@@ -887,10 +882,6 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
 - [ ] Packed `@ackerdb/server` contains no AI SDK production dependency.
-- [ ] When measured runtime source changed, the current pull-request commit has
-      paired base/head Hetzner observations and Pedro plus an agent interpret
-      the full vector explicitly; otherwise the benchmark status is an
-      immediate no-op. Values never approve or veto the release automatically.
 - [ ] All compile, unit, integration, security, cancellation, leak, and package tests run in the normal repository gate.
 
 ### Implementation notes
@@ -966,7 +957,7 @@ Conformance proves the protocol; this release gate proves the exact external hos
 
 - Use current documented Streamable HTTP configuration for each host.
 - Prefer noninteractive repeatable smoke commands, but retain HITL classification where host login/approval is unavoidable.
-- Do not broaden this issue into OAuth or a host plugin.
+- Do not broaden this issue into OAuth or host-specific packaging.
 
 ## Blocked by
 
@@ -985,4 +976,4 @@ Conformance proves the protocol; this release gate proves the exact external hos
 
 ### Out of scope
 
-- OAuth login, ChatGPT hosted plugins, Claude Desktop-specific packaging, stdio, model-quality evaluation, and permanent external test infrastructure.
+- OAuth login, provider-hosted packaging, Claude Desktop-specific packaging, stdio, model-quality evaluation, and permanent external test infrastructure.

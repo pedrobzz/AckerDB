@@ -178,7 +178,7 @@ entry answers instead of executing, and a mismatch between journal and code
 refuses with a typed outcome rather than guessing. It outlives one Job run —
 a Manual retry resumes it and only a Force run again clears it — and it lives
 and dies with its Job.
-_Avoid_: Event log, workflow state, checkpoint
+_Avoid_: Event history, workflow state, checkpoint
 
 ## File storage
 
@@ -601,7 +601,7 @@ resolved into exact configuration at startup. A preset fills in only the
 fields whose values follow from what the provider mints, refuses the ones
 only the application can supply, and its resolution is always inspectable.
 It compresses exact configuration; it never replaces or weakens it.
-_Avoid_: Provider plugin, auth integration package, discovery-trusted config
+_Avoid_: Auth integration package, discovery-trusted config
 
 **Private plaintext boundary** — The rule deciding where an identity
 provider may be reached without TLS: loopback hosts by default, where

@@ -34,7 +34,7 @@ over-limit or slow-loris body answers without the handler existing), and every
 framework-authored response speaks the bare `Outcome` the rest of the surface
 speaks — admission shed, over-limit, `405` with `Allow` for an undeclared
 method, `503` before readiness, and the sanitized `internal` `500` for an
-uncaught throw, whose cause reaches the server log and never the wire. A
+uncaught throw, whose cause never reaches the wire. A
 handler that returns anything that is not a `Response` is the same defect,
 answered identically.
 
@@ -104,8 +104,8 @@ return to.
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
 - The listener numbers raw-route requests from the same monotonic sequence as
-  path-addressed calls, so operations stay correlatable in logs; the id never
-  reaches the response. Cancellation is the request abort, surfaced as
+  path-addressed calls; the id never reaches the response. Cancellation is the
+  request abort, surfaced as
   `ctx.abortSignal`.
 - `Runtime.runHttpHandler` is the direct entry point — a buffered `Request`
   in, the handler's `Response` out — which is also how a handler is tested
