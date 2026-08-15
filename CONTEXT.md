@@ -403,8 +403,8 @@ packages each own one verified Darwin arm64/x64, Linux GNU arm64/x64, or
 Windows x64 binary. Their binding source is one immutable AckerDB libwebrtc
 fork commit based on a recorded LiveKit upstream revision; target-specific
 Google libwebrtc archives are separate digest-verified LiveKit build inputs.
-Per-target and aggregate manifests, SHA-256 digests, notices, and SBOM define
-the published boundary. Every target is built before publication; runtime
+Per-target and aggregate manifests, SHA-256 digests, and notices define the
+published boundary. Every target is built before publication; runtime
 execution is a separate platform-support claim.
 _Avoid_: Runtime download, host-only publish, local crate patch, LiveKit server dependency
 

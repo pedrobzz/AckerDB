@@ -179,7 +179,6 @@ async function fixture(): Promise<Fixture> {
         files: [
           manifest.file,
           "manifest.json",
-          "sbom.cdx.json",
           "THIRD_PARTY_NOTICES.txt",
           "PROVENANCE.md",
           "licenses",
@@ -190,16 +189,6 @@ async function fixture(): Promise<Fixture> {
       }),
       [manifest.file]: binary,
       "manifest.json": JSON.stringify(manifest),
-      "sbom.cdx.json": JSON.stringify({
-        bomFormat: "CycloneDX",
-        specVersion: "1.5",
-        metadata: {
-          properties: [{
-            name: "cdx:rustc:sbom:target:triple",
-            value: target.rustTarget,
-          }],
-        },
-      }),
       "LICENSE.md": `fixture license for ${target.host}\n`,
       "THIRD_PARTY_NOTICES.txt": `notices for ${target.host}\n`,
       "PROVENANCE.md": `at immutable commit \`${ACKERDB_LIBWEBRTC_REVISION}\`.\n`,
@@ -360,7 +349,7 @@ describe("WebRTC release candidate evidence", () => {
       const missingPackage = copyCandidate(value.candidate);
       missingPackage.tarballs.pop();
       await writeFile(value.candidatePath, JSON.stringify(missingPackage));
-      await expectVerificationFailure(value.candidatePath, "12 publish tarballs");
+      await expectVerificationFailure(value.candidatePath, `${PACKAGES.length} publish tarballs`);
 
       const sourceManifest = copyCandidate(value.candidate);
       sourceManifest.tarballs.find((entry) => entry.packageName === "@ackerdb/core")!
@@ -441,19 +430,6 @@ describe("WebRTC release candidate evidence", () => {
       const evidence = copyCandidate(value.candidate);
       await writeCandidateTarballDigest(evidence, value, target.packageName);
       await expectVerificationFailure(value.candidatePath, "final evidence differs");
-      await writeFile(join(value.directory, targetTarball.file), originalTargetTarball);
-      await writeFile(value.candidatePath, `${JSON.stringify(value.candidate, null, 2)}\n`);
-
-      await rewriteTarball(join(value.directory, targetTarball.file), async (directory) => {
-        const sbom = JSON.parse(await readFile(join(directory, "sbom.cdx.json"), "utf8")) as {
-          metadata: { properties: { name: string; value: string }[] };
-        };
-        sbom.metadata.properties[0]!.value = "different-target";
-        await writeFile(join(directory, "sbom.cdx.json"), JSON.stringify(sbom));
-      });
-      const targetBoundSbom = copyCandidate(value.candidate);
-      await writeCandidateTarballDigest(targetBoundSbom, value, target.packageName);
-      await expectVerificationFailure(value.candidatePath, "not target-bound CycloneDX evidence");
       await writeFile(join(value.directory, targetTarball.file), originalTargetTarball);
       await writeFile(value.candidatePath, `${JSON.stringify(value.candidate, null, 2)}\n`);
 

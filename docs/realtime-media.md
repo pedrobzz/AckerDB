@@ -397,7 +397,7 @@ LiveKit revision; AckerDB keeps no local crate patches or vendored SDK copy.
 Separately, each target’s compiled Google libwebrtc engine remains a
 digest-verified LiveKit release archive. Stable and prerelease publication fail
 before publishing any package unless every target binary, per-target manifest,
-aggregate manifest, SBOM, and notice file agree.
+aggregate manifest, and notice file agree.
 
 See the committed [native provenance record](../packages/realtime/native/webrtc/PROVENANCE.md).
 

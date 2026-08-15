@@ -138,8 +138,8 @@ current contract.
 
 Published `@ackerdb/realtime` releases must have verified optional native
 packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64, plus the
-aggregate manifest, SHA-256 digests, third-party notices, and Cargo CycloneDX
-SBOM. The root package contains no native binary; a consumer installs only its
+aggregate manifest, SHA-256 digests, and third-party notices. The root package
+contains no native binary; a consumer installs only its
 matching optional target package.
 
 GitHub builds all five targets only when actual WebRTC native inputs change.

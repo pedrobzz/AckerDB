@@ -51,14 +51,13 @@ packet-loss recovery, and synchronization.
 
 `@ackerdb/realtime` contains the NAPI-RS generated loader and declarations but
 no native binary. Five optional `@ackerdb/realtime-*` packages each own one
-target binary, target manifest, SBOM, notices, provenance record, and license
+target binary, target manifest, notices, provenance record, and license
 corpus. Their npm host metadata selects Darwin arm64/x64, Linux GNU arm64/x64,
 or Windows x64 at install time. Stable and prerelease publication assemble and
 verify all five packages before publishing any unit.
 
 The candidate checks the locked Cargo graph with `cargo-deny`; each target then
-emits a CycloneDX SBOM with `cargo-cyclonedx` and third-party Rust notices with
-`cargo-about`. The verified `LICENSE.md` from the target's native archive is
+emits third-party Rust notices with `cargo-about`. The verified `LICENSE.md` from the target's native archive is
 the packaged Google WebRTC license evidence. The target manifest binds those
 inputs to the binary, Rust-source digest, and generated loader digests.
 
@@ -78,13 +77,12 @@ arm64.
 
 To refresh the binding source, start from an explicit LiveKit upstream commit,
 reapply only still-required behavior as ordinary fork commits, pass the fork
-workflow, and pin the resulting full commit in AckerDB. Update this record, the
-package manifest, and the SBOM with both the new fork revision and its upstream
-base. Delete fork code when upstream provides the same ownership and error
+workflow, and pin the resulting full commit in AckerDB. Update this record and the
+package manifest with both the new fork revision and its upstream base. Delete fork code when upstream provides the same ownership and error
 semantics; do not restore local patches or a compatibility path.
 
 Refresh a native archive deliberately and separately: verify the official
 LiveKit release asset digest, update the accepted digest, rebuild every
-advertised target, regenerate the package manifest and SBOM, and execute the
-native suite. The binding source revision and native binary tag are distinct
+advertised target, regenerate the package manifest, and execute the native
+suite. The binding source revision and native binary tag are distinct
 inputs; every supported pair must pass the complete AckerDB boundary above.

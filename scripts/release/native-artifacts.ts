@@ -27,7 +27,6 @@ function artifactPaths(target: WebRtcTarget): readonly [string, string][] {
   return [
     [targetBinaryName(target), `${prefix}.node`],
     ["manifest.json", `${prefix}.manifest.json`],
-    ["sbom.cdx.json", `${prefix}.sbom.cdx.json`],
     ["THIRD_PARTY_NOTICES.txt", `${prefix}.THIRD_PARTY_NOTICES.txt`],
     ["PROVENANCE.md", `${prefix}.PROVENANCE.md`],
     ["licenses/Google-WebRTC-LICENSE.md", `${prefix}.licenses/Google-WebRTC-LICENSE.md`],

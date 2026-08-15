@@ -15,7 +15,6 @@ import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
   assertProvenanceRevision,
-  assertTargetCycloneDx,
   assertTargetBuildManifest,
   nativeBindingSourceDigest,
   sha256File,
@@ -71,15 +70,13 @@ async function readTarget(
   if (await sha256File(binary) !== manifest.sha256) {
     throw new Error(`WebRTC build digest mismatch for ${target.platformArchABI}`);
   }
-  const [sbom, notices] = await Promise.all([
-    readFile(join(bindingDirectory, `${prefix}.sbom.cdx.json`), "utf8"),
+  const [notices] = await Promise.all([
     readFile(join(bindingDirectory, `${prefix}.THIRD_PARTY_NOTICES.txt`), "utf8"),
     mustExist(
       join(bindingDirectory, `${prefix}.licenses`, "Google-WebRTC-LICENSE.md"),
       "archive license",
     ),
   ]);
-  assertTargetCycloneDx(JSON.parse(sbom), target);
   if (notices.trim() === "") throw new Error(`empty cargo-about notices for ${target.packageName}`);
   assertProvenanceRevision(await readFile(sourceProvenance, "utf8"));
   return manifest;
@@ -143,8 +140,6 @@ async function stageTarget(manifest: TargetBuildManifest): Promise<void> {
   await Promise.all([
     rm(join(directory, targetBinaryName(target)), { force: true }),
     rm(join(directory, "manifest.json"), { force: true }),
-    rm(join(directory, "sbom.cdx.json"), { force: true }),
-    rm(join(directory, "sbom.spdx.json"), { force: true }),
     rm(join(directory, "THIRD_PARTY_NOTICES.txt"), { force: true }),
     rm(join(directory, "PROVENANCE.md"), { force: true }),
     rm(join(directory, "licenses"), { force: true, recursive: true }),
@@ -158,10 +153,6 @@ async function stageTarget(manifest: TargetBuildManifest): Promise<void> {
     copyFile(
       join(bindingDirectory, `${prefix}.manifest.json`),
       join(directory, "manifest.json"),
-    ),
-    copyFile(
-      join(bindingDirectory, `${prefix}.sbom.cdx.json`),
-      join(directory, "sbom.cdx.json"),
     ),
     copyFile(
       join(bindingDirectory, `${prefix}.THIRD_PARTY_NOTICES.txt`),

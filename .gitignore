@@ -18,14 +18,11 @@ dist
 target/
 packages/realtime/native/webrtc/binding/*.node
 packages/realtime/native/webrtc/binding/*.manifest.json
-packages/realtime/native/webrtc/binding/*.sbom.cdx.json
 packages/realtime/native/webrtc/binding/*.THIRD_PARTY_NOTICES.txt
 packages/realtime/native/webrtc/binding/*.licenses/
-packages/realtime/native/webrtc/*.sbom.cdx.json
 packages/realtime/native/webrtc/distribution/
 packages/realtime-native/*/*.node
 packages/realtime-native/*/manifest.json
-packages/realtime-native/*/sbom.cdx.json
 packages/realtime-native/*/THIRD_PARTY_NOTICES.txt
 packages/realtime-native/*/PROVENANCE.md
 packages/realtime-native/*/licenses/

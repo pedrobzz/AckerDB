@@ -39,7 +39,7 @@ relaying one application session to one handler.
 - TURN REST credentials, deployment networking controls, and a relay-only
   preflight.
 - Reproducible native builds with pinned inputs, hashes, provenance, an ABI
-  manifest, SBOM, notices, target-package checks, and a clean packed-consumer
+  manifest, notices, target-package checks, and a clean packed-consumer
   load test.
 - The native engine and server media runtime ship only in
   `@ackerdb/realtime`. `@ackerdb/server` retains the route contract and host
