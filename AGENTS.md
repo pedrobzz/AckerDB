@@ -2,10 +2,10 @@ Before designing, implementing, changing, or refactoring any code, always read t
 
 Treat removed systems as absent. Analyze or reconstruct a former implementation from Git history or memory only when the user explicitly requests historical analysis.
 
-## Performance, correctness, and code quality
+## Standing rules for every change
 
-Standing rules for every change. Terms are defined in `CONTEXT.md`
-(Engineering philosophy)—use those names; do not redefine them here.
+Terms are defined in `CONTEXT.md` (Engineering philosophy)—use those names; do
+not redefine them here.
 
 ### Organize every touched neighborhood
 
@@ -19,84 +19,6 @@ Folders must represent real module ownership. Do not create one-file wrapper
 folders, barrel-only indirection, or pass-through files merely to make a tree
 look nested. Keep package entrypoints explicit and place implementation files
 beside the behavior, invariants, and tests they belong to.
-
-### Target and scale
-
-Optimize for the default deployment envelope under the design load: smooth
-operation with meaningful headroom, not a single fast metric that saturates
-CPU or memory. Normal production at that size must not live near CPU, memory,
-queue, file-descriptor, or transport saturation. The more useful work that
-fits inside that envelope, the better. It is not a claim that every
-concurrency level fits on 4 GiB—for example, ~100k concurrent users are
-expected to need a larger host that the operator can afford.
-
-Apply minimal proportional cost: CPU and RAM may grow with connections, users,
-subscriptions, and updates, but only in proportion to that work, and that
-proportion must stay as small as possible. Super-linear growth, global scans,
-and duplicated per-connection machinery violate the rule. Design load is a
-design target, not an excuse to pre-allocate for every theoretical maximum.
-
-Development may use more resources than production, but must remain bounded
-and must not make the developer machine hostile to use.
-
-### Measure the whole performance vector
-
-State the operation and load shape first: data size, concurrency, subscription
-count, latency target, durability point, and failure mode. Evaluate a change
-across every dimension of the performance vector:
-
-| Dimension | What good looks like |
-| --- | --- |
-| Useful latency and throughput | Fast p50/p95/p99 and high completed useful work for the actual operation, not a synthetic partial path. |
-| Idle cost | Near-zero CPU when there is no work; no background churn, polling, or retained state without a purpose. |
-| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, and history must earn their bytes. |
-| Scale shape | Minimal proportional cost. No global scans, duplicated recomputation, or allocation cliffs. Larger loads may use larger machines. |
-| Tail behavior | A slow consumer, a hot key, a full queue, or a dependency failure gets a bounded typed outcome instead of poisoning unrelated work. |
-| Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
-| Durable correctness | A number is meaningless if the operation loses, corrupts, duplicates, or silently hides data. |
-
-### Judge by net-effect judgment
-
-Score against the simplest design that still satisfies the required
-invariant—not against the decision's stated intention. Apply the same rule to
-performance, correctness, and code quality:
-
-| Score | Meaning |
-| --- | --- |
-| 8–10 | Exceptional net improvement. Use only when evidence shows a material gain and no relevant cost offsets it. |
-| 6–7 | Net improvement with explicit costs. |
-| 5 | Neutral, mixed, or not directed at that dimension. |
-| 1–4 | Net regression, even if it buys another dimension. State the benefit and the cost plainly. |
-| 0 | Substantially harmful for the stated target. |
-
-Do not give a high score merely because a mechanism has a good purpose. A
-retry model may increase correctness while worsening tail latency; an all-RAM
-database may improve raw reads while worsening capacity; a massive workspace
-may isolate ownership while making contributors slower; a validation layer may
-prevent bad data while adding deployment and write cost. If a system's choices
-all score above 5 in every dimension, the review is not judging its tradeoffs.
-
-### Correct code
-
-Correctness is broader than “the happy-path test passed.” Correct AckerDB code:
-
-1. **Does not lose data silently.** Persisted state, migrations, retries,
-   ordering, recovery, and destructive operations must be explicit. A failure
-   must preserve evidence and say what is known, unknown, committed, or not
-   committed.
-2. **Is organized enough to change safely.** A new contributor should find the
-   owner, invariant, data flow, and test boundary without weeks of archaeology.
-   Small direct modules and one source of truth beat wrappers, duplicate paths,
-   and hidden state.
-3. **Solves the design instead of stacking fixes.** A new guard that is part of
-   the real contract—an implementation safeguard such as validation, a
-   transaction, a bound, a typed outcome, or a migration transform—is
-   implementation. A branch added only to compensate for a wrong shape is
-   debt, not a solution.
-4. **Addresses severe credible edge cases.** Probability and impact are both
-   relevant. An ultra-rare theoretical case can remain when its cure would make
-   the system worse. A 0.01% event that can lose data, leak memory, or break a
-   customer is credible enough to fix deliberately.
 
 ### When a design wall appears
 
@@ -115,14 +37,6 @@ patch. The patch merely hides the failure and becomes future machinery.
 When the only correct design is breaking, make the break explicit: state what
 changes, why the replacement is simpler/safer/faster, and how consumers move.
 Do not add backwards compatibility unless it was explicitly requested.
-
-### Distinguish safeguards from debt
-
-| Kind | Test | Treatment |
-| --- | --- | --- |
-| Implementation safeguard | The desired design needs it to enforce an invariant. | Keep it direct, name the invariant, and test it. |
-| Deferred-design workaround | It exists only because the correct structure is known but too expensive to implement now. | Avoid. If explicitly approved, constrain it tightly and add a `TODO` naming the protection, missing design, and deletion condition. |
-| Accidental patch | It creates a special/parallel path to avoid changing the wrong model. | Reject it; return to the ownership or invariant that made it appear necessary. |
 
 ### Prefer less code and proven work
 
@@ -170,99 +84,16 @@ decision ledger. Revisit both when later evidence changes a decision.
 Verify at the boundary that previously failed; prove the old failure path is
 gone rather than masked.
 
-Before accepting a performance/correctness change, answer:
-
-1. What useful work became faster or safer, under which load shape?
-2. What RAM, CPU, queue, network, and storage ownership did it add or remove?
-3. What happens at saturation, crash, timeout, disconnect, restart, and
-   schema change?
-4. Does it preserve data and make ambiguity explicit?
-5. Does it remove a model problem or create another branch around it?
-6. Which OpenSRC/primary-source decision or AckerDB ledger entry supports it?
-7. What boundary test proves the claim?
-
 # Release branches and publishing
 
 [Releases and protected branches](docs/releases.md) is the authoritative
-procedure. Do not recreate an alternate release path in another document or
-script.
-
-GitHub protects both `canary` and `main`. Normal pull requests target
-`canary`; only `canary` targets `main`. The sole exception is a
-Pedro-authored `hotfix/*` pull request to `main` carrying
-`release:urgent`. There are no direct-push, force-push, local-merge, or
-administrator-bypass release paths.
-
-A `canary` pull request may keep the current source version — every merge
-still publishes a distinct `X.Y.Z-canary.N` — and declares exactly one major,
-minor, or patch step with `bun run release:prepare <level>` only when it
-releases a new source version. A `hotfix/*` pull request into `main` always
-declares exactly one step. All six public packages and five host-specific
-native packages stay on one stable source version with `workspace:X.Y.Z`
-interdependencies. A `canary` promotion may contain several accumulated steps
-and only needs to be newer than `main`.
-
-**The AckerDB version is the compatibility contract, and there is no separate
-number on the wire.** Packages ship lockstep with `workspace:X.Y.Z` precisely
-because version X is contracted to speak to version X, so a connection's
-handshake declares the build that opened it and the decoder accepts exactly its
-own — `ACKERDB_VERSION` in `@ackerdb/core`, read from that package's manifest so
-one fact answers on a server and inside a bundled browser client alike. Running
-mixed versions is the user's error to make and the framework's job to name; the
-refusal says which two versions met and that matching ones must be installed,
-never which mixes might be legal.
-
-Changing the wire therefore costs nothing and needs no permission. Do not add a
-field to avoid reshaping one, do not preserve an old frame shape, and do not
-reintroduce a protocol number to describe a compatibility this contract does
-not offer.
-
-**A frame carries the version exactly when it can be decoded on a connection
-that has not completed a handshake.** That is `hello`, `welcome`, `err`, and
-every frame of the transports that have no handshake at all — SSE and realtime
-signaling are HTTP, where the first frame is the greeting. Everything after a
-handshake carries none: the peer's build was established once and no connection
-changes builds under itself, so repeating it spends the hottest field in the
-system for a fact already known.
-
-`err` is a member of that set and not an exception to it. A client admits a
-connection-level `err` before its `welcome` on purpose, because that is how a
-server delivers a refusal it will not open a session for — and a
-version-refusing server's refusal *is* an `err`. Leaving it unversioned would
-make the one frame that explains a mixed install the one frame nobody could
-check.
-
-The rule is enforced by the parse surfaces, not by this document. Each
-direction has a handshake parser that accepts only what is admissible before a
-session and reads the version on every one of them, and a session parser for
-everything after; a frame's base interface decides whether it even has a `v` to
-set. Admitting a new frame before the handshake therefore means adding a case
-to a parser that checks the version, and forgetting means the frame is refused
-rather than silently trusted.
-
-The exposed HTTP surface is the deliberate exception and not a gap: its request
-and response bodies are the application's own arguments and results, published
-in its OpenAPI document for callers who are not AckerDB builds at all, so it has
-no framework envelope to version and must not grow one. Its compatibility
-contract belongs to the application.
-
-Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
-Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is
-GitHub-only and uses the protected-branch-only `npm` environment's trusted
-publisher. Canary delivery starts automatically after merge; stable delivery
-requires Pedro's approval before its publish job. A normal stable promotion
-requires the same source version to exist publicly as a canary first.
-
-Verdaccio at `http://127.0.0.1:4874` is exclusively for repeatable local
-`X.Y.Z-beta.N` builds. Publish one whenever a prepared branch is testable with
-`bun run publish:beta` or `bun run publish:beta:demo`. Never publish stable,
-canary, or alpha versions to Verdaccio, and never publish beta or alpha
-versions to public npm.
-
-Fast CI runs affected package tests and their dependents in one consolidated
-billed job, keeps repository typechecks fast, and builds the five Rust targets
-only when actual WebRTC native inputs changed. A `canary` → `main` promotion repeats none of
-that work; it runs branch policy before merge and npm delivery after merge.
+procedure for branch topology, version steps, Fast CI, npm delivery, Verdaccio
+betas, and the version compatibility contract on the wire. Do not recreate an
+alternate release path in another document or script. The short form: topic
+branches open pull requests into `canary`, only `canary` promotes to `main`,
+`bun run release:prepare <level>` runs only when a pull request releases a new
+source version, and Verdaccio (`http://127.0.0.1:4874`) receives only local
+`X.Y.Z-beta.N` builds.
 
 ## Agent skills
 
@@ -274,7 +105,7 @@ above; the vocabulary is in `CONTEXT.md`.
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues (`pedrobzz/ackerdb`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues live in this repo's GitHub Issues (`pedrobzz/AckerDB`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -4,47 +4,11 @@ Glossary of domain terms. Definitions only — no implementation details.
 
 ## Engineering philosophy
 
-**Product performance** — Completing useful work quickly while remaining
-predictable, economical, and safe at the intended load—not a narrow throughput
-result that saturates a host.
-
-**Default deployment envelope** — The default machine size AckerDB optimizes for:
-4 vCPU / 4 GiB RAM.
-
-**Design load** — Near-term sizing for the default deployment envelope: about
-5,000 MAU with roughly 10% concurrently active (~500 connections with multiple
-subscriptions).
-
-**Minimal proportional cost** — CPU/RAM growth that stays in proportion to
-connections, users, subscriptions, and updates, at the smallest practical
-per-unit cost.
-
-**Performance vector** — The dimensions used to judge a change: useful
-latency/throughput, idle cost, memory ownership, scale shape, tail behavior,
-startup/recovery, and durable correctness.
-
-**Correctness** — Preservation of data and explicit uncertainty, a coherent
-navigable design, and deliberate handling of severe credible edge cases.
-
 **Design wall** — A case where a specification, assumption, test, or
 integration does not fit the current model.
 
-**Implementation safeguard** — Machinery the intended contract needs to
-enforce an invariant (transaction, validation, bound, typed outcome, explicit
-migration transform). Implementation, not a patch.
-
-**Deferred-design workaround** — Narrow temporary behavior that exists only
-because the known correct design is deferred.
-
 **Accidental patch** — A special case, shim, parallel path, alternate channel,
 compatibility layer, or test dodge added to avoid changing a wrong model.
-
-**Severe credible edge case** — A low-frequency event whose realistic impact is
-data loss, corruption, unbounded resource use, or a material customer failure.
-
-**Net-effect judgment** — Scoring a decision against the simplest design that
-still satisfies the required invariant, not against the decision's stated
-purpose.
 
 **Simplest sufficient design** — The implementation with the fewest mechanisms
 that still enforces the required invariant. AckerDB does not add machinery merely
