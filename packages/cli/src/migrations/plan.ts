@@ -26,6 +26,7 @@ import {
   migrationIdentity,
   MigrationError,
   probeOptimisticChanges,
+  readStoredState,
   renameRoutes,
   refusalSite,
   snapshotOf,
@@ -42,11 +43,8 @@ import {
 } from "@ackerdb/server";
 import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
-import type { AppConfig } from "../app/config.ts";
+import { databasePath, type AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
-import { readStoredState } from "./stored.ts";
-
-export { readStoredState, type StoredState } from "./stored.ts";
 
 /**
  * Preview every optimistic unique-index or validator tightening against the
@@ -68,7 +66,7 @@ export function probeOptimisticRefusals(
   const { optimistic } = classifySchemaDiff(diffSnapshots(renamedCurrent, target));
   if (optimistic.length === 0) return [];
   const routes = renameRoutes(target, normalized);
-  const db = new Database(join(config.dbDir, "data.db"), { readonly: true });
+  const db = new Database(databasePath(config), { readonly: true });
   try {
     return probeOptimisticChanges(
       db,
@@ -326,7 +324,7 @@ export type PlanOutcome =
  * after the scaffold, and deleting + re-deriving may serve better than filling.
  */
 export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
-  const state = readStoredState(config);
+  const state = readStoredState(databasePath(config));
   if (state === null) return { status: "no-database" };
   const chain = await loadMigrationChain(config);
   const nextNumber = (chain.at(-1)?.number ?? 0) + 1;
@@ -397,7 +395,7 @@ const EMPTY_CANDIDATES: RenameCandidates = { tables: { dropped: [], added: [] },
 export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
   switch (outcome.status) {
     case "no-database":
-      return { error: `no database at ${join(config.dbDir, "data.db")}; \`acker dev\` initializes a fresh one` };
+      return { error: `no database at ${databasePath(config)}; \`acker dev\` initializes a fresh one` };
     case "diverged":
       return { error: outcome.message };
     case "clean":

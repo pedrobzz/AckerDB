@@ -12,9 +12,9 @@ import {
   procedure,
   query,
   reconcile,
-  serve,
   sseProcedure,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 
 const KiB = 1024;
 const port = Number(process.argv[2]);
@@ -163,7 +163,8 @@ const runtime = new Runtime({
   verifier,
   limits,
 });
-const server = serve({ runtime, port });
+await runtime.start();
+const server = listen(runtime, { port });
 
 let shutdown;
 const drain = () => shutdown ??= server.drain().then(

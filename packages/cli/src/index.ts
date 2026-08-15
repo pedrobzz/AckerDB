@@ -8,12 +8,11 @@ export {
   type GenerateMigrationInput,
 } from "./migrations/scaffold.ts";
 export {
-  StartupInterruptedError,
   startApp,
-  type RunningApp,
   type StartAppOptions,
   type StartupPreparation,
 } from "./app/start.ts";
+export type { RunningApp } from "@ackerdb/server";
 export {
   importApp,
   importFunctionModules,
@@ -24,13 +23,11 @@ export {
   computePlan,
   deriveSlug,
   planToWire,
-  readStoredState,
   renameCandidates,
   type CandidateGroup,
   type PlanOutcome,
   type PlanWire,
   type RenameCandidates,
-  type StoredState,
 } from "./migrations/plan.ts";
 export { writeMigration, type GenerateRequest } from "./migrations/write.ts";
 export { runRenameForm, type Ask, type FormResult } from "./migrations/form.ts";

@@ -266,7 +266,7 @@ const modules = {
 let directory: string;
 let engine: Engine;
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -274,6 +274,7 @@ beforeEach(() => {
     engine,
     registry: new Registry(modules),
   });
+  await runtime.start();
   nativeInput = undefined;
   roundTripCalls = 0;
   retainedTools = undefined;

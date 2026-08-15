@@ -87,6 +87,10 @@ class CorruptingStore implements FileStore {
 
   async probe(): Promise<void> {}
 
+  async identity(): Promise<string> {
+    return "test:corrupting";
+  }
+
   async put(_key: string, body: ReadableStream<Uint8Array>) {
     this.puts++;
     const source = new Uint8Array(await new Response(body).arrayBuffer());
@@ -122,6 +126,10 @@ class MemoryStore implements FileStore {
   corruptOpenFor: string | undefined;
 
   async probe(): Promise<void> {}
+
+  async identity(): Promise<string> {
+    return "test:memory";
+  }
 
   async put(key: string, body: ReadableStream<Uint8Array>) {
     const bytes = new Uint8Array(await new Response(body).arrayBuffer());

@@ -23,7 +23,7 @@ import {
   type RestorePublicationHook,
 } from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
-import { createFileStore } from "../app/start.ts";
+import { createFileStore } from "../files/store.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const FILE_SCAN_BATCH = 128;
@@ -258,7 +258,7 @@ export async function createFilesBackup(
 ): Promise<BackupFilesManifest> {
   const destination = backupFilesPath(artifact);
   const temporary = `${destination}.tmp-${crypto.randomUUID()}`;
-  const store = await createFileStore(config);
+  const store = await createFileStore(config.files);
   let published = false;
   try {
     mkdirSync(temporary, { recursive: false, mode: 0o700 });

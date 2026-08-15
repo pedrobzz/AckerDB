@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { apiGroup, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
+  type AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -13,7 +14,6 @@ import {
   v,
   defineSchema,
   reconcile,
-  serve,
   sseProcedure,
   type SseCtx,
 } from "@ackerdb/server";
@@ -27,6 +27,7 @@ import {
   type SseProcedureCall,
 } from "@ackerdb/client-react";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -123,11 +124,11 @@ function registry(): Registry {
 interface App {
   readonly base: string;
   readonly runtime: Runtime;
-  readonly server: ReturnType<typeof serve>;
+  readonly server: AckerDBServer;
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-sse-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -136,7 +137,8 @@ function createApp(): App {
     registry: registry(),
     limits: PRODUCTION_LIMITS,
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     runtime,
@@ -224,8 +226,8 @@ async function mountSse(
 let app: App;
 const roots: Mounted[] = [];
 
-beforeAll(() => {
-  app = createApp();
+beforeAll(async () => {
+  app = await createApp();
 });
 afterAll(() => app.close());
 beforeEach(() => {
@@ -364,7 +366,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
   });
 
   test("server disconnect fails the stream once with the typed outcome and never restarts", async () => {
-    const local = createApp();
+    const local = await createApp();
     const log: string[] = [];
     const mounted = await mountSse(local.base, "api.stream.hold", log);
     try {

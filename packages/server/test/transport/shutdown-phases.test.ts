@@ -64,6 +64,7 @@ beforeEach(async () => {
   await reconcile(engine, []);
   server = new AckerDBServer({ limits, port: 0 });
   runtime = new Runtime({ engine, registry: new Registry(modules), limits });
+  await runtime.start();
   server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });

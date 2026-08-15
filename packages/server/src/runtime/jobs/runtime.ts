@@ -185,43 +185,44 @@ export class RuntimeJobs {
     return definition;
   }
 
-  /** Mint the first occurrence of every argless repeating job, then arm. */
-  async activate(): Promise<void> {
-    const bootstrap = [...this.definitions.entries()].filter(
+  /**
+   * Mint the first occurrence of every argless repeating job. Runs once, from
+   * `Runtime.start()`, before the runner is armed; a failure is the start's.
+   */
+  async bootstrap(): Promise<void> {
+    const repeating = [...this.definitions.entries()].filter(
       ([, definition]) =>
         definition.repeat !== null && Object.keys(definition.args).length === 0,
     );
-    if (bootstrap.length > 0) {
-      await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
-        const now = this.options.now();
-        for (const [name, definition] of bootstrap) {
-          const argsJson = stableEncode({});
-          const argsHash = hashJobArgs(argsJson);
-          if (surface.jobs.liveFor(name, argsHash) !== null) continue;
-          const at = definition.repeat!(now, now);
-          if (at === null) continue;
-          await this.insertJob(surface.jobs, {
-            name,
-            argsJson,
-            argsHash,
-            key: null,
-            at,
-            now,
-            trigger: "repeat",
-            parentJobId: null,
-          });
-        }
-      }).catch((error) => {
-        console.log("job bootstrap failed", {
-          outcome: outcomeFromError(error).code,
+    if (repeating.length === 0) return;
+    await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
+      const now = this.options.now();
+      for (const [name, definition] of repeating) {
+        const argsJson = stableEncode({});
+        const argsHash = hashJobArgs(argsJson);
+        if (surface.jobs.liveFor(name, argsHash) !== null) continue;
+        const at = definition.repeat!(now, now);
+        if (at === null) continue;
+        await this.insertJob(surface.jobs, {
+          name,
+          argsJson,
+          argsHash,
+          key: null,
+          at,
+          now,
+          trigger: "repeat",
+          parentJobId: null,
         });
-      });
-    }
-    this.arm();
+      }
+    });
   }
 
-  /** Commit-wake: called after any transaction that touched the jobs tables. */
-  arm(reason: "wake" | "requeue" = "wake"): void {
+  /**
+   * Commit-wake: called after any transaction that touched the jobs tables.
+   * Settles once the timer decision is made; commit hooks fire and forget it,
+   * `Runtime.start()` awaits it so a started Runtime is observably armed.
+   */
+  arm(reason: "wake" | "requeue" = "wake"): Promise<void> {
     if (reason === "wake") this.stalled = false;
     const generation = ++this.generation;
     if (this.timer !== null) clearTimeout(this.timer);
@@ -229,8 +230,8 @@ export class RuntimeJobs {
     // No short-circuit on an empty definition list: an application that
     // removed a job definition still owns the rows it left behind, and their
     // retention is still a promise.
-    if (!this.options.isReady()) return;
-    void this.nextDueAt().then(
+    if (!this.options.isReady()) return Promise.resolve();
+    return this.nextDueAt().then(
       (at) => {
         if (!this.options.isReady() || generation !== this.generation) return;
         if (at === null) return;
@@ -247,7 +248,7 @@ export class RuntimeJobs {
         if (!this.options.isReady() || generation !== this.generation) return;
         this.timer = setTimeout(() => {
           this.timer = null;
-          this.arm();
+          void this.arm();
         }, 1_000);
         this.timer.unref?.();
       },
@@ -284,7 +285,7 @@ export class RuntimeJobs {
     if (this.running !== null) return this.running;
     const batch = this.batch().finally(() => {
       this.running = null;
-      if (this.options.isReady()) this.arm("requeue");
+      if (this.options.isReady()) void this.arm("requeue");
     });
     this.running = batch;
     return batch;
@@ -826,7 +827,7 @@ export class RuntimeJobs {
   private releaseRun(jobId: bigint, controller: AbortController): void {
     this.activeRuns--;
     if (this.runControllers.get(jobId) === controller) this.runControllers.delete(jobId);
-    if (this.options.isReady()) this.arm();
+    if (this.options.isReady()) void this.arm();
   }
 
   /** The settle transaction: re-validate the run and its lease, then record. */

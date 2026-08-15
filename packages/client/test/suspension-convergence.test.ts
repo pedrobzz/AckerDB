@@ -34,6 +34,7 @@ import { FakeSocket, ManualClock, parseSentFrame } from "ackerdb-test-support/cl
 import { createHarness, cursor, mustOk } from "./support/harness.ts";
 
 import {
+  type AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -45,13 +46,13 @@ import {
   mutation,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import {
   FrameProxy,
   assertTcpPortReleased,
 } from "../../server/test/support/frame-proxy.ts";
 import { until, within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -891,7 +892,8 @@ async function createRealApp(): Promise<RealApp> {
     registry: realRegistry(),
     limits: PRODUCTION_LIMITS,
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,
@@ -1370,7 +1372,8 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
       });
-      const server = serve({ runtime, port: 0 });
+      await runtime.start();
+      const server = listen(runtime);
       const serverPort = server.port;
 
       let lifecyclePort: AckerDBLifecyclePort | undefined;
@@ -1398,7 +1401,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         },
       });
       client.subscribeConnectionState((state) => phases.push(state.phase));
-      let restarted: { server: ReturnType<typeof serve>; engine: Engine } | undefined;
+      let restarted: { server: AckerDBServer; engine: Engine } | undefined;
       try {
         const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
@@ -1442,7 +1445,8 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
         });
-        restarted = { server: serve({ runtime: runtime2, port: serverPort }), engine: engine2 };
+        await runtime2.start();
+        restarted = { server: listen(runtime2, { port: serverPort }), engine: engine2 };
 
         const id = await within(result, "the post-restart settlement");
         expect(settlements).toBe(1);
@@ -1500,11 +1504,12 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         registry: realRegistry(),
         limits: PRODUCTION_LIMITS,
       });
-      const server = serve({ runtime, port: 0 });
+      await runtime.start();
+      const server = listen(runtime);
       const upstreamPort = server.port;
       const proxy = await FrameProxy.listen({ upstreamPort });
       const { client, port } = suspendableClient(proxy.url);
-      let restarted: { server: ReturnType<typeof serve>; engine: Engine } | undefined;
+      let restarted: { server: AckerDBServer; engine: Engine } | undefined;
       try {
         const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
@@ -1563,7 +1568,8 @@ describe("server unavailable at activation against a real ackerdb server", () =>
           registry: realRegistry(),
           limits: PRODUCTION_LIMITS,
         });
-        restarted = { server: serve({ runtime: runtime2, port: upstreamPort }), engine: engine2 };
+        await runtime2.start();
+        restarted = { server: listen(runtime2, { port: upstreamPort }), engine: engine2 };
 
         port.resume();
         const id = await within(result, "the durable replay settlement");

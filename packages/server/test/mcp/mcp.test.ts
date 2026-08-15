@@ -27,7 +27,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { serve } from "../../src/transport/server.ts";
+import { listen } from "ackerdb-test-support/listen";
 
 const ACKERDB_VERSION = "2025-11-25";
 
@@ -232,21 +232,20 @@ interface Harness {
   readonly engine: Engine;
   readonly registry: Registry;
   readonly runtime: Runtime;
-  readonly server: ReturnType<typeof serve>;
+  readonly server: ReturnType<typeof listen>;
   readonly base: string;
 }
 
 let harness: Harness;
 
-function startHarness(limits?: ServiceLimits): Harness {
+async function startHarness(limits?: ServiceLimits): Promise<Harness> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry(modules);
   const runtime = new Runtime({ engine, registry, limits });
-  const server = serve({
-    runtime,
-    port: 0,
+  await runtime.start();
+  const server = listen(runtime, {
     mcpHttp: { allowedOrigins: ["https://agent.example"] },
   });
   return {
@@ -313,13 +312,13 @@ function noteCount(): bigint {
   }).count;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   handlerCalls = 0;
   summaryHandlerCalls = 0;
   valueHandlerCalls = 0;
   lastHandlerContext = undefined;
   lastNativeValues = undefined;
-  harness = startHarness();
+  harness = await startHarness();
 });
 
 afterEach(async () => {
@@ -784,7 +783,7 @@ describe("public stateless MCP endpoint", () => {
     }
 
     await stopHarness(harness);
-    harness = startHarness({ ...PRODUCTION_LIMITS, maxRequestBytes: 256 });
+    harness = await startHarness({ ...PRODUCTION_LIMITS, maxRequestBytes: 256 });
     const oversized = await fetch(`${harness.base}/mcp`, {
       method: "POST",
       headers: mcpHeaders(),

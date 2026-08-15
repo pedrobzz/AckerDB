@@ -267,7 +267,7 @@ const modules = {
   },
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-cancellation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -285,6 +285,7 @@ beforeEach(() => {
       },
     },
   });
+  await runtime.start();
   executionControllers = {
     active: new AbortController(),
     canceled: new AbortController(),

@@ -40,8 +40,8 @@ afterEach(async () => {
   await cleanupCredentialFixtures();
 });
 
-function start(): CredentialFixture {
-  const value = fixture(databasePath("ackerdb-credential-lineage-"));
+async function start(): Promise<CredentialFixture> {
+  const value = await fixture(databasePath("ackerdb-credential-lineage-"));
   trackCleanup(value.close);
   return value;
 }
@@ -75,7 +75,7 @@ async function credentialSession(
 
 describe("credential delegation lineage", () => {
   test("revoking a credential revokes everything delegated beneath it", async () => {
-    const { runtime, engine } = start();
+    const { runtime, engine } = await start();
     const alice = await user(runtime, "lineage-owner", FIXTURE_SCOPES);
     const aliceSession = session(alice, "lineage-owner");
     await runtime.openSession(aliceSession);
@@ -104,7 +104,7 @@ describe("credential delegation lineage", () => {
   });
 
   test("narrowing a parent's grant reaches the descendants it bounds", async () => {
-    const { runtime, engine } = start();
+    const { runtime, engine } = await start();
     const alice = await user(runtime, "narrow-owner", FIXTURE_SCOPES);
     const aliceSession = session(alice, "narrow-owner");
     await runtime.openSession(aliceSession);
@@ -138,7 +138,7 @@ describe("credential delegation lineage", () => {
     // lineage was walked — which is why an application narrowing or revoking a
     // grant upstream terminates the delegate now. A vault principal never
     // expires, so "at its next authentication" would have meant never.
-    const { runtime } = start();
+    const { runtime } = await start();
     const alice = await user(runtime, "alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "alice");
     await runtime.openSession(aliceSession);
@@ -181,7 +181,7 @@ describe("credential delegation lineage", () => {
     // as separate steps. Two doors that build the principal differently are two
     // chances to drop the lineage, and a principal that drops it is one an
     // upstream invalidation cannot reach. They must agree.
-    const { runtime } = start();
+    const { runtime } = await start();
     const alice = await user(runtime, "two-doors", FIXTURE_SCOPES);
     const aliceSession = session(alice, "two-doors");
     await runtime.openSession(aliceSession);
@@ -220,7 +220,7 @@ describe("credential delegation lineage", () => {
       },
       verify: async () => { throw new Error("no provider bearer in this test"); },
     };
-    const { runtime } = fixture(databasePath("ackerdb-credential-upstream-"), provider);
+    const { runtime } = await fixture(databasePath("ackerdb-credential-upstream-"), provider);
     const alice = await user(runtime, "upstream-parent", FIXTURE_SCOPES);
     const aliceSession = session(alice, "upstream-parent");
     await runtime.openSession(aliceSession);
@@ -242,7 +242,7 @@ describe("credential delegation lineage", () => {
   });
 
   test("a revocation that rolls back invalidates nothing", async () => {
-    const { runtime, engine } = start();
+    const { runtime, engine } = await start();
     const alice = await user(runtime, "rollback-owner", FIXTURE_SCOPES);
     const aliceSession = session(alice, "rollback-owner");
     await runtime.openSession(aliceSession);
@@ -280,8 +280,8 @@ describe("credential delegation lineage", () => {
     }
   });
 
-  test("the lineage walk names the credential and every delegate under it", () => {
-    const { runtime, engine } = start();
+  test("the lineage walk names the credential and every delegate under it", async () => {
+    const { runtime, engine } = await start();
     void runtime;
     const vault = engine[credentialVaultOwner];
     const identity = (engine.writer

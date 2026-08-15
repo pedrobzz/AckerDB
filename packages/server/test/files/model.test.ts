@@ -16,7 +16,7 @@ describe("File references and grants", () => {
   let engine: Engine;
   let runtime: Runtime;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), "ackerdb-file-model-"));
     engine = new Engine(defineSchema({
       documents: defineTable({
@@ -35,6 +35,7 @@ describe("File references and grants", () => {
         store: new LocalFileStore({ root: join(directory, "files") }),
       },
     });
+    await runtime.start();
   });
 
   afterEach(async () => {

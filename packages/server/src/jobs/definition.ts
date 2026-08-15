@@ -10,6 +10,7 @@
  * through user-authored functions over the jobs tables.
  */
 import type { FunctionReference, Result } from "@ackerdb/core";
+import type { LoadedModules } from "../app/registry.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { Schema } from "../schema/definition.ts";
 import type { DbReader } from "../database/query/types.ts";
@@ -425,9 +426,7 @@ export interface DeclaredJob {
  * export *shaped* like a job is the residue of forgetting `job(...)` and fails
  * loudly instead of never running.
  */
-export function declareJobs(
-  modules: Record<string, Record<string, unknown>>,
-): DeclaredJob[] {
+export function declareJobs(modules: LoadedModules): DeclaredJob[] {
   const declared: DeclaredJob[] = [];
   const names = new Set<string>();
   for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>

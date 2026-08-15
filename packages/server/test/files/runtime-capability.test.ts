@@ -16,7 +16,7 @@ describe("built-in Files capability", () => {
   let engine: Engine;
   let runtime: Runtime;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), "ackerdb-files-runtime-"));
     engine = new Engine(defineSchema({
       documents: defineTable({ id: v.primaryKey(), title: v.string() }),
@@ -28,6 +28,7 @@ describe("built-in Files capability", () => {
       now: () => NOW,
       files: { publicUrl: "https://files.example.test/root/" },
     });
+    await runtime.start();
   });
 
   afterEach(async () => {

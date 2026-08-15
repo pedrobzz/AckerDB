@@ -13,13 +13,13 @@ import {
   reconcile,
   Registry,
   Runtime,
-  serve,
   type McpBuilder,
   type MutationBuilder,
   type ProcedureBuilder,
   type SessionRuntimeContext,
   type UserPrincipal,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 import { credentials, mcp, mcpContent, type McpToolResult } from "@ackerdb/server";
 
 const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
@@ -269,6 +269,7 @@ async function main(): Promise<void> {
     scopes: [READ_SCOPE, ADMIN_SCOPE],
     resolveScopes: () => [READ_SCOPE, ADMIN_SCOPE],
   });
+  await runtime.start();
   const identity = await runtime.resolveIdentity({
     issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
@@ -300,7 +301,7 @@ async function main(): Promise<void> {
   )).value as { readonly id: string; readonly token: string };
   const codex = await create("Codex acceptance");
   const claude = await create("Claude Code acceptance");
-  const server = serve({ runtime, port: 0 });
+  const server = listen(runtime);
 
   emit({
     type: "ready",

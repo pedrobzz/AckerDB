@@ -44,10 +44,10 @@ function limits(overrides: Partial<ServiceLimits["jobs"]> = {}): ServiceLimits {
   };
 }
 
-function start(
+async function start(
   jobs: DeclaredJob[],
   functions: Record<string, Record<string, unknown>> = {},
-): void {
+): Promise<void> {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-steps-"));
   directories.push(directory);
   engine = new Engine(schema, join(directory, "data.db"));
@@ -59,6 +59,7 @@ function start(
     jobs,
     now: () => clock,
   });
+  await runtime.start();
 }
 
 /** Reopen the same database file with a fresh Runtime: the restart seam. */
@@ -77,6 +78,7 @@ async function restart(
     jobs,
     now: () => clock,
   });
+  await runtime.start();
 }
 
 function jobRows(): Array<{
@@ -157,7 +159,7 @@ describe("step replay", () => {
     clock = 1_000_000;
     let externalCalls = 0;
     let attempts = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           fulfill: job({
@@ -224,7 +226,7 @@ describe("step replay", () => {
         },
       });
 
-    start(definitions(), functions);
+    await start(definitions(), functions);
     const handle = await runtime.jobs.enqueue("flows.sync", {});
     const wait = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
@@ -244,7 +246,7 @@ describe("step replay", () => {
 describe("step.run", () => {
   test("registered callees: query and mutation results are journaled Results", async () => {
     clock = 3_000_000;
-    start(
+    await start(
       declareJobs({
         flows: {
           observe: job({
@@ -269,7 +271,7 @@ describe("step.run", () => {
   test("a returned Err is a journaled value, not a failure", async () => {
     clock = 4_000_000;
     let attempts = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           dunning: job({
@@ -296,7 +298,7 @@ describe("step.run", () => {
 
   test("an unknown callee fails the run through the ordinary retry policy", async () => {
     clock = 5_000_000;
-    start(
+    await start(
       declareJobs({
         flows: {
           typo: job({
@@ -317,7 +319,7 @@ describe("step.run", () => {
 describe("mismatch refusals", () => {
   test("a duplicate step name in one run fails without consulting retry", async () => {
     clock = 6_000_000;
-    start(
+    await start(
       declareJobs({
         flows: {
           doubled: job({
@@ -344,7 +346,7 @@ describe("mismatch refusals", () => {
   test("changed args under a step.run name is the determinism tripwire", async () => {
     clock = 7_000_000;
     let nondeterministic = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           drifting: job({
@@ -408,7 +410,7 @@ describe("mismatch refusals", () => {
         },
       });
 
-    start(v1());
+    await start(v1());
     const handle = await runtime.jobs.enqueue("flows.notify", {});
     const wait = runtime.jobs.wait(handle.id);
     await runtime.runJobs();
@@ -450,7 +452,7 @@ describe("step.sleep", () => {
     clock = 9_000_000;
     let before = 0;
     let after = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           settle: job({
@@ -498,7 +500,7 @@ describe("step.sleep", () => {
   test("a handler that swallows the sleep signal is a stale run", async () => {
     clock = 10_000_000;
     let leaked: string | null = null;
-    start(
+    await start(
       declareJobs({
         flows: {
           swallower: job({
@@ -549,7 +551,7 @@ describe("step.sleep", () => {
   test("reschedule moves a sleeping run's wake: the row's due time is the authority", async () => {
     clock = 11_000_000;
     let after = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           patient: job({
@@ -584,7 +586,7 @@ describe("journal integrity", () => {
   test("an unreadable journal refuses instead of replaying from nothing", async () => {
     clock = 12_000_000;
     let externalCalls = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           careful: job({
@@ -623,7 +625,7 @@ describe("journal integrity", () => {
   test("an impossible entry — readable JSON, invalid shape — also refuses", async () => {
     clock = 12_500_000;
     let externalCalls = 0;
-    start(
+    await start(
       declareJobs({
         flows: {
           strict: job({
@@ -664,7 +666,7 @@ describe("journal integrity", () => {
         return "ok";
       },
     });
-    start(
+    await start(
       declareJobs({
         flows: {
           bound: job({

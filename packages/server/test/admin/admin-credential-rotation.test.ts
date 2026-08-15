@@ -39,9 +39,9 @@ import {
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { serve } from "../../src/transport/server.ts";
 import { v } from "../../src/validation/v.ts";
 import { within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   records: defineTable({
@@ -85,6 +85,7 @@ const modules = { operator: { operatorMcp, rotateAdminCredential } };
  */
 const APP_SCOPES = ["records:read", "records:write"] as const;
 const VOCABULARY = knownScopeVocabulary(APP_SCOPES);
+const MINT = { vocabulary: VOCABULARY, limits: PRODUCTION_LIMITS.credentials, now: Date.now };
 
 interface Fixture {
   readonly base: string;
@@ -102,21 +103,23 @@ async function fixture(limits?: ServiceLimits): Promise<Fixture> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-admin-rotation-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  // The boot's order: the master is minted before the Runtime exists.
+  const minted = ensureAdminCredential(engine, MINT);
+  if (minted.token === undefined) throw new Error("a fresh vault must mint an Admin Credential");
   const runtime = new Runtime({
     engine,
     registry: new Registry(modules),
     scopes: APP_SCOPES,
     ...(limits === undefined ? {} : { limits }),
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   cleanups.push(async () => {
     await server.drain().catch(() => {});
     await runtime.drain().catch(() => {});
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
   });
-  const minted = await ensureAdminCredential(engine, runtime.system);
-  if (minted.token === undefined) throw new Error("a fresh vault must mint an Admin Credential");
   return { base: `http://127.0.0.1:${server.port}`, token: minted.token, engine };
 }
 

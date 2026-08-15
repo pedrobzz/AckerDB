@@ -24,8 +24,8 @@ import type {
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { serve } from "../../src/transport/server.ts";
 import { v } from "../../src/validation/v.ts";
+import { listen } from "ackerdb-test-support/listen";
 
 class BlockingDeleteStore implements FileStore {
   blockDeletes = false;
@@ -88,6 +88,7 @@ class BlockingDeleteStore implements FileStore {
   }
 
   probe(options?: FileStoreOptions) { return this.delegate.probe(options); }
+  identity(options?: FileStoreOptions) { return this.delegate.identity(options); }
   async put(key: string, body: ReadableStream<Uint8Array>, options: FileStorePutOptions) {
     this.putKeys.push(key);
     if (this.blockPuts) {
@@ -219,11 +220,11 @@ describe("File HTTP flow", () => {
   let directory: string;
   let engine: Engine;
   let runtime: Runtime;
-  let server: ReturnType<typeof serve>;
+  let server: ReturnType<typeof listen>;
   let base: string;
   let fileStore: BlockingDeleteStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     authorizationCalls = 0;
     directory = mkdtempSync(join(tmpdir(), "ackerdb-file-http-"));
     engine = new Engine(defineSchema({
@@ -240,7 +241,8 @@ describe("File HTTP flow", () => {
         store: fileStore,
       },
     });
-    server = serve({ runtime, port: 0 });
+    await runtime.start();
+    server = listen(runtime);
     base = `http://127.0.0.1:${server.port}`;
   });
 

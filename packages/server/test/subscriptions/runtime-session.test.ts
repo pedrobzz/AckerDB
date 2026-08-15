@@ -510,6 +510,7 @@ async function reconnectTransitionEvidence(
     limits,
     now: () => NOW,
   });
+  await runtime.start();
   const writerSink = new DeterministicSink();
   const writer = new Session({
     runtime,
@@ -726,6 +727,7 @@ describe("Session + Runtime integration", () => {
       verifier: new UserVerifier(),
       now: () => NOW,
     });
+    await runtime.start();
     const sink = new DeterministicSink();
     const session = new Session({
       runtime,
@@ -887,6 +889,7 @@ describe("Session + Runtime integration", () => {
       verifier: new UserVerifier(),
       now: () => NOW,
     });
+    await runtime.start();
     const clock = new FixedClock();
     let socket!: SessionSocket;
     const client = new AckerDBClient({
@@ -1013,6 +1016,7 @@ describe("Session + Runtime integration", () => {
       verifier,
       now: () => NOW,
     });
+    await runtime.start();
     const slowSink = new DeterministicSink();
     const targetSink = new DeterministicSink();
     const callerSink = new DeterministicSink();

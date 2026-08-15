@@ -29,6 +29,9 @@ export interface LocalFileStoreConfig {
   root: string;
 }
 
+const FILE_STORE_ID = ".ackerdb-store-id";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function nodeErrorCode(error: unknown): string | undefined {
   return error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
@@ -107,6 +110,44 @@ export class LocalFileStore implements FileStore {
       }
     }
     if (failure !== undefined) throw failure;
+  }
+
+  /**
+   * A durable marker in the root, minted once and read forever after: moving
+   * the whole directory keeps its identity, while a new or replaced directory
+   * at the same path is a different store.
+   */
+  async identity(options: FileStoreOptions = {}): Promise<string> {
+    const operation = "identity";
+    this.#validateConfiguration(operation);
+    throwIfFileStoreAborted(options.signal, operation);
+    const marker = join(this.#root, FILE_STORE_ID);
+    try {
+      await ensureDurableDirectory(this.#root);
+      const handle = await fs.open(marker, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+      try {
+        await handle.writeFile(`${randomUUID()}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await syncDirectory(this.#root);
+    } catch (error) {
+      if (nodeErrorCode(error) !== "EEXIST") throw this.#classify(error, operation);
+    }
+    const stat = await fs.lstat(marker);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new FileStoreError(
+        "invalid_configuration",
+        operation,
+        `filesystem FileStore marker must be a regular file: ${marker}`,
+      );
+    }
+    const id = (await fs.readFile(marker, "utf8")).trim();
+    if (!UUID.test(id)) {
+      throw new FileStoreError("invalid_configuration", operation, `filesystem FileStore marker is invalid: ${marker}`);
+    }
+    return `filesystem:${id}`;
   }
 
   async put(

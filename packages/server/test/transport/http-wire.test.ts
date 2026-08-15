@@ -20,7 +20,8 @@ import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
-import { serve } from "../../src/transport/server.ts";
+import type { AckerDBServer } from "../../src/transport/server.ts";
+import { listen } from "ackerdb-test-support/listen";
 import { jsonSchemaViolations } from "../support/json-schema-check.ts";
 
 // The document is plain JSON; navigating it in tests is not a typed contract.
@@ -74,17 +75,18 @@ const functions = {
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
-let server: ReturnType<typeof serve>;
+let server: AckerDBServer;
 let base: string;
 let document: Ctx;
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-wire-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   const registry = new Registry(functions);
   runtime = new Runtime({ engine, registry, limits });
-  server = serve({ runtime, port: 0 });
+  await runtime.start();
+  server = listen(runtime);
   base = `http://127.0.0.1:${server.port}`;
   document = openApiDocument(registry, info);
 });

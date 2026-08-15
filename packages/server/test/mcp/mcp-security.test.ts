@@ -11,7 +11,8 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
-import { AckerDBServer, serve, type McpHttpOptions } from "../../src/transport/server.ts";
+import { AckerDBServer, type McpHttpOptions } from "../../src/transport/server.ts";
+import { listen } from "ackerdb-test-support/listen";
 
 const ACKERDB_VERSION = "2025-11-25";
 const ARGUMENT_CANARY = "private-mcp-argument-canary";
@@ -61,11 +62,11 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-function fixture(options: {
+async function fixture(options: {
   readonly hostname?: string;
   readonly limits?: ServiceLimits;
   readonly mcpHttp?: McpHttpOptions;
-} = {}): Fixture {
+} = {}): Promise<Fixture> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-security-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -74,9 +75,8 @@ function fixture(options: {
     registry: new Registry(modules),
     limits: options.limits,
   });
-  const server = serve({
-    runtime,
-    port: 0,
+  await runtime.start();
+  const server = listen(runtime, {
     hostname: options.hostname,
     mcpHttp: options.mcpHttp,
   });
@@ -133,7 +133,7 @@ async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void
 
 describe("MCP HTTP security boundary", () => {
   test("derives loopback Host and same-origin policy while allowing native clients", async () => {
-    const value = fixture({ mcpHttp: { allowedOrigins: ["https://agent.example"] } });
+    const value = await fixture({ mcpHttp: { allowedOrigins: ["https://agent.example"] } });
 
     const native = await rpc(value, "ping");
     expect(native.status).toBe(200);
@@ -168,7 +168,7 @@ describe("MCP HTTP security boundary", () => {
   });
 
   test("validates the exact browser preflight without authenticating OPTIONS", async () => {
-    const value = fixture({ mcpHttp: { allowedOrigins: ["https://agent.example"] } });
+    const value = await fixture({ mcpHttp: { allowedOrigins: ["https://agent.example"] } });
     const preflight = (method: string, requestedHeaders: string) =>
       fetch(`${value.base}${securityMcp.path}`, {
         method: "OPTIONS",
@@ -205,13 +205,12 @@ describe("MCP HTTP security boundary", () => {
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     const runtime = new Runtime({ engine, registry: new Registry(modules) });
-    expect(() => serve({ runtime, port: 0, hostname: "0.0.0.0" })).toThrow(
+    await runtime.start();
+    expect(() => listen(runtime, { hostname: "0.0.0.0" })).toThrow(
       'mcpHttp.transport "trusted-https-proxy"',
     );
 
-    const server = serve({
-      runtime,
-      port: 0,
+    const server = listen(runtime, {
       hostname: "0.0.0.0",
       mcpHttp: {
         transport: "trusted-https-proxy",
@@ -248,7 +247,8 @@ describe("MCP HTTP security boundary", () => {
       engine: noMcpEngine,
       registry: new Registry({}),
     });
-    const noMcpServer = serve({ runtime: noMcpRuntime, port: 0, hostname: "0.0.0.0" });
+    await noMcpRuntime.start();
+    const noMcpServer = listen(noMcpRuntime, { hostname: "0.0.0.0" });
     cleanups.push(async () => {
       await noMcpServer.drain().catch(() => {});
       await noMcpRuntime.drain().catch(() => {});
@@ -277,7 +277,7 @@ describe("MCP HTTP security boundary", () => {
       ...PRODUCTION_LIMITS,
       mcp: { ...PRODUCTION_LIMITS.mcp, maxHeaderBytes: 256 },
     };
-    const value = fixture({ limits });
+    const value = await fixture({ limits });
     const canary = "private-oversized-header-canary";
     const rejected = await rpc(value, "ping", undefined, {
       "x-padding": `${canary}:${"x".repeat(512)}`,
@@ -360,7 +360,7 @@ describe("MCP HTTP security boundary", () => {
       maxOperationsPerCaller: 1,
       maxOperationsPerConnection: 1,
     };
-    const value = fixture({ limits });
+    const value = await fixture({ limits });
     const controller = new AbortController();
     const stalled = fetch(`${value.base}${securityMcp.path}`, {
       method: "POST",
@@ -396,7 +396,7 @@ describe("MCP HTTP security boundary", () => {
   });
 
   test("keeps bearer credentials and handler errors out of framework responses", async () => {
-    const value = fixture();
+    const value = await fixture();
 
     const success = await rpc(value, "tools/call", {
       name: "echo_secret",

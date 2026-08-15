@@ -6,12 +6,11 @@ import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { AckerDBClient } from "@ackerdb/client";
 import type { CredentialVerifier } from "@ackerdb/server";
-import { startApp, StartupInterruptedError } from "../../src/app/start.ts";
+import { startApp } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 import { CLI_ENV } from "../support/process.ts";
-import { within } from "ackerdb-test-support/async";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 
@@ -158,17 +157,6 @@ const authenticatedClientFor = (port: number) => new AckerDBClient({
   credential: { kind: "bearer", token: "accepted-token" },
 });
 
-function shutdownMarker(dir: string): bigint {
-  const db = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true, safeIntegers: true });
-  try {
-    return (db.query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1").get() as {
-      clean_shutdown: bigint;
-    }).clean_shutdown;
-  } finally {
-    db.close();
-  }
-}
-
 describe("ackerdb CLI", () => {
   test("start loads a configured verifier and preserves the bearer user's durable Identity", async () => {
     const port = freePort();
@@ -251,178 +239,6 @@ describe("ackerdb CLI", () => {
     )).rejects.toThrow(
       "startApp credentialVerifier cannot be combined with configured oidc or credentialVerifier",
     );
-  }, 20_000);
-
-  test("programmatic startApp never owns process signal listeners", async () => {
-    const reservation = await reservePort();
-    const port = reservation.port;
-    await reservation.release();
-    const dir = fixture(port);
-    const before = {
-      sigint: process.listeners("SIGINT"),
-      sigterm: process.listeners("SIGTERM"),
-    };
-
-    const running = await startApp(
-      loadConfig(dir, { }),
-      { prepare: runCodegen },
-    );
-    try {
-      expect(process.listeners("SIGINT")).toEqual(before.sigint);
-      expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
-    } finally {
-      await running.drain();
-    }
-    expect(process.listeners("SIGINT")).toEqual(before.sigint);
-    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
-  }, 20_000);
-
-  test("programmatic startup refuses an already-aborted lifecycle", async () => {
-    const reservation = await reservePort();
-    const port = reservation.port;
-    await reservation.release();
-    const dir = fixture(port);
-    const lifecycle = new AbortController();
-    lifecycle.abort();
-
-    const outcome = await startApp(
-      loadConfig(dir, { }),
-      { signal: lifecycle.signal, prepare: runCodegen },
-    ).then(
-      async (running) => {
-        await running.drain();
-        return "started" as const;
-      },
-      (error: unknown) => error,
-    );
-
-    expect(outcome).toBeInstanceOf(StartupInterruptedError);
-  }, 20_000);
-
-  test("programmatic lifecycle interruption owns startup without process listeners", async () => {
-    const reservation = await reservePort();
-    const port = reservation.port;
-    await reservation.release();
-    const dir = fixture(port);
-    const lifecycle = new AbortController();
-    const preparationEntered = Promise.withResolvers<void>();
-    const preparationStopped = Promise.withResolvers<void>();
-    const before = {
-      sigint: process.listeners("SIGINT"),
-      sigterm: process.listeners("SIGTERM"),
-    };
-    const startup = startApp(
-      loadConfig(dir, { }),
-      {
-        signal: lifecycle.signal,
-        prepare: async (_config, signal) => {
-          preparationEntered.resolve();
-          await new Promise<void>((resolve) => {
-            if (signal.aborted) resolve();
-            else signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-          preparationStopped.resolve();
-        },
-      },
-    );
-    await preparationEntered.promise;
-    expect(process.listeners("SIGINT")).toEqual(before.sigint);
-    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
-
-    lifecycle.abort();
-    await expect(startup).rejects.toBeInstanceOf(StartupInterruptedError);
-    await preparationStopped.promise;
-    expect(process.listeners("SIGINT")).toEqual(before.sigint);
-    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
-
-    const rebound = Bun.serve({
-      hostname: "127.0.0.1",
-      port,
-      fetch: () => new Response("released"),
-    });
-    await rebound.stop(true);
-  }, 20_000);
-
-  test("programmatic hosts run trusted work directly under the system principal", async () => {
-    const reservation = await reservePort();
-    const port = reservation.port;
-    await reservation.release();
-    const dir = fixture(port);
-    const running = await startApp(
-      loadConfig(dir, { }),
-      { prepare: runCodegen },
-    );
-    try {
-      const outcome = await running.system.run("fixture.direct", async (ctx) => {
-        const external = await (await fetch("data:text/plain,direct")).text();
-        const transaction = await ctx.tx((tx) => tx.db.messages!.insert({
-          channelId: 9n,
-          body: external,
-          role: "admin",
-          payload: { tag: "nothing", value: null },
-        }));
-        return {
-          principal: ctx.auth.kind,
-          external,
-          committed: transaction.ok,
-        };
-      });
-      expect(outcome).toEqual({
-        principal: "system",
-        external: "direct",
-        committed: true,
-      });
-      expect(running.engine.reader.query(
-        'SELECT body FROM "messages" WHERE channelId = 9',
-      ).all()).toEqual([{ body: "direct" }]);
-    } finally {
-      await running.drain();
-    }
-  }, 20_000);
-
-  test("programmatic drain signals and settles system work before closing storage", async () => {
-    const reservation = await reservePort();
-    const port = reservation.port;
-    await reservation.release();
-    const dir = fixture(port);
-    const running = await startApp(
-      loadConfig(dir, { }),
-      { prepare: runCodegen },
-    );
-    const entered = Promise.withResolvers<void>();
-    const signaled = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    let storageClosed = false;
-    const closeEngine = running.engine.close.bind(running.engine);
-    running.engine.close = (shutdown) => {
-      storageClosed = true;
-      closeEngine(shutdown);
-    };
-    const work = running.system.run("fixture.drain", async (ctx) => {
-      entered.resolve();
-      await new Promise<void>((resolve) => {
-        if (ctx.abortSignal.aborted) resolve();
-        else ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-      });
-      signaled.resolve();
-      await release.promise;
-    });
-    const outcome = work.catch((error: unknown) => error);
-    await entered.promise;
-
-    const drain = running.drain();
-    expect(running.drain()).toBe(drain);
-    await signaled.promise;
-    expect(storageClosed).toBe(false);
-
-    release.resolve();
-    await expect(outcome).resolves.toMatchObject({
-      code: "indeterminate",
-      message: "system callback completion is unknown after cancellation",
-    });
-    await drain;
-    expect(storageClosed).toBe(true);
-    expect(shutdownMarker(dir)).toBe(1n);
   }, 20_000);
 
   test("startApp rejects a malformed verifier default export before activation", async () => {
@@ -555,65 +371,6 @@ describe("ackerdb CLI", () => {
 
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
-  });
-
-  test("failed drain releases ownership without recording a clean shutdown", async () => {
-    const port = freePort();
-    const dir = makeFixture({
-      "app.ts": `
-        import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
-        const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
-        export default defineApp({ schema });
-      `,
-      ".ackerdb.config.json": JSON.stringify({ port }),
-    });
-    dirs.push(dir);
-    const config = loadConfig(dir, { });
-    const failed = await startApp(config);
-    const failure = new Error("injected drain failure");
-    const drainServer = failed.server.drain.bind(failed.server);
-    failed.server.drain = async () => {
-      await drainServer();
-      throw failure;
-    };
-
-    await expect(within(failed.drain(), "failed drain")).rejects.toBe(failure);
-    await expect(failed.drain()).rejects.toBe(failure);
-    expect(shutdownMarker(dir)).toBe(0n);
-
-    const restarted = await startApp(config);
-    try {
-      expect(restarted.engine.recoveredFromCrash).toBe(true);
-      await within(restarted.drain(), "successful drain");
-      expect(shutdownMarker(dir)).toBe(1n);
-    } finally {
-      await restarted.drain().catch(() => {});
-    }
-  }, 20_000);
-
-  test("startApp binds the configured listener hostname", async () => {
-    const port = freePort();
-    const dir = makeFixture({
-      "app.ts": `
-        import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
-        const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
-        export default defineApp({ schema });
-      `,
-      ".ackerdb.config.json": JSON.stringify({ hostname: "0.0.0.0", port }),
-    });
-    dirs.push(dir);
-
-    const running = await startApp(loadConfig(dir, { }));
-    try {
-      expect(running.server.hostname).toBe("0.0.0.0");
-      expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
-        version: 1,
-        ready: true,
-        state: "ready",
-      });
-    } finally {
-      await running.drain();
-    }
   });
 
   test("start owns one live port continuously from codegen through readiness", async () => {

@@ -8,6 +8,16 @@
 > refusal at the first frame, named as the mixed install it is. Read "and the
 > protocol version is 7" as "and this is a wire change, which the AckerDB
 > version already covers".
+>
+> Amended by [ADR-0031](0031-the-server-owns-the-boot-and-the-cli-is-main.md):
+> boot-mint no longer runs "under system authority" through `system.run`. It
+> mints directly through the vault, from the boot, before the Runtime exists —
+> which is what makes "before any application code runs" structural rather than
+> a matter of ordering inside one function. The vault predicate, the printed-once
+> rule, and the fatal-on-failure rule below are unchanged. One consequence
+> below moves with it: a fresh database still spends Identity 1 on the master,
+> but no logical commit version — the mint is a framework write outside the
+> coordinator's commit path, like the FileStore binding and break-glass.
 
 An application had no way to be administered. `FRAMEWORK_SCOPES` had just been
 filled by [ADR-0026](0026-administration-is-a-first-class-surface.md), so a

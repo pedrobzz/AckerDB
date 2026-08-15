@@ -30,8 +30,9 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { openApiBytes, openApiDocument } from "../../src/transport/openapi.ts";
-import { AckerDBServer, serve } from "../../src/transport/server.ts";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import { deferred, within, type Deferred } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 function uuidV7(sequence: number): string {
   const timestamp = Date.now().toString(16).padStart(12, "0");
@@ -452,11 +453,11 @@ function sendHeldMutation(client: WsClient, id: number): void {
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
-let server: ReturnType<typeof serve>;
+let server: AckerDBServer;
 let verifier: TestVerifier;
 let base: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   longSseStarted = null;
   blockedProcedureStarted = null;
   blockedProcedureRelease = null;
@@ -474,7 +475,8 @@ beforeEach(() => {
     verifier,
     limits,
   });
-  server = serve({ runtime, port: 0 });
+  await runtime.start();
+  server = listen(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });
 
@@ -658,6 +660,7 @@ describe("health and protected status", () => {
         verifier,
         limits,
       });
+      await earlyRuntime.start();
       early.activate(earlyRuntime);
 
       const ready = await fetch(`${earlyBase}/ready`);
@@ -729,15 +732,15 @@ describe("health and protected status", () => {
   });
 
   test("validates configured status scope", () => {
-    expect(() => serve({ runtime, port: 0, statusScope: "" })).toThrow(TypeError);
-    expect(() => serve({ runtime, port: 0, statusScope: "two scopes" })).toThrow(TypeError);
-    expect(() => serve({ runtime, port: 0, statusScope: "x".repeat(129) })).toThrow(TypeError);
+    expect(() => listen(runtime, { statusScope: "" })).toThrow(TypeError);
+    expect(() => listen(runtime, { statusScope: "two scopes" })).toThrow(TypeError);
+    expect(() => listen(runtime, { statusScope: "x".repeat(129) })).toThrow(TypeError);
 
     const unsafeRuntime = Object.create(runtime) as Runtime;
     Object.defineProperty(unsafeRuntime, "limits", {
       value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
     });
-    expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
+    expect(() => listen(unsafeRuntime)).toThrow(
       "maxRequestBytes or configured File limit + 1 must be a safe integer",
     );
     expect(() => new AckerDBServer({
@@ -1142,7 +1145,8 @@ describe("exposed HTTP procedures", () => {
         readQueue: { ...limits.readQueue, maxAgeMs: 500 },
       }),
     });
-    const fairServer = serve({ runtime: fairRuntime, port: 0 });
+    await fairRuntime.start();
+    const fairServer = listen(fairRuntime);
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const sourceController = new AbortController();
     const sseController = new AbortController();
@@ -1783,9 +1787,9 @@ describe("the opt-in OpenAPI endpoint", () => {
   });
 
   /** A second listener that asks for the document; the shared one never does. */
-  function documented(
+  async function documented(
     modules: Record<string, Record<string, unknown>> = functions,
-  ): { readonly base: string; readonly registry: Registry } {
+  ): Promise<{ readonly base: string; readonly registry: Registry }> {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
@@ -1798,7 +1802,8 @@ describe("the opt-in OpenAPI endpoint", () => {
     });
     // Recorded before activation so a refused document is still torn down.
     owned = { dir, engine, runtime: documentedRuntime };
-    const documentedServer = serve({ runtime: documentedRuntime, port: 0, openapiEndpoint: info });
+    await documentedRuntime.start();
+    const documentedServer = listen(documentedRuntime, { openapiEndpoint: info });
     owned.server = documentedServer;
     return { base: `http://127.0.0.1:${documentedServer.port}`, registry };
   }
@@ -1813,7 +1818,7 @@ describe("the opt-in OpenAPI endpoint", () => {
   });
 
   test("serves the export's bytes, and only for GET", async () => {
-    const { base: documentedBase } = documented();
+    const { base: documentedBase } = await documented();
     const response = await fetch(`${documentedBase}${OPENAPI}`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
@@ -1841,11 +1846,11 @@ describe("the opt-in OpenAPI endpoint", () => {
     expect(wrongMethod.headers.get("allow")).toBe("GET");
   });
 
-  test("assembles the document at activation, so it never fails a caller", () => {
+  test("assembles the document at activation, so it never fails a caller", async () => {
     // A non-finite literal crosses the wire as itself, so the codec registers
     // it; only a JSON Schema cannot express it, and the activation says so
     // rather than the first caller of a served path.
-    expect(() => documented({
+    await expect(documented({
       notes: {
         latest: query({
           access: "public",
@@ -1855,11 +1860,11 @@ describe("the opt-in OpenAPI endpoint", () => {
           handler: () => Number.NaN,
         }),
       },
-    })).toThrow(/function "api\.notes\.latest" returns cannot be documented/);
+    })).rejects.toThrow(/function "api\.notes\.latest" returns cannot be documented/);
   });
 
   test("serves the bytes it cached, never a fresh walk of the registry", async () => {
-    const { base: documentedBase, registry } = documented();
+    const { base: documentedBase, registry } = await documented();
     const first = await (await fetch(`${documentedBase}${OPENAPI}`)).text();
     expect((JSON.parse(first) as Ctx).paths[httpPath("api.notes.list")]).toBeDefined();
 
@@ -2136,7 +2141,8 @@ describe("WebSocket Session transport", () => {
       verifier: new TestVerifier(),
       limits: fairLimits,
     });
-    const fairServer = serve({ runtime: fairRuntime, port: 0 });
+    await fairRuntime.start();
+    const fairServer = listen(fairRuntime);
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const wsUrl = `ws://127.0.0.1:${fairServer.port}/_ws`;
     const clients: WsClient[] = [];
@@ -2254,7 +2260,8 @@ describe("WebSocket Session transport", () => {
       registry: new Registry(functions, APP_API_PATHS),
       limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
     });
-    const overlapServer = serve({ runtime: overlapRuntime, port: 0 });
+    await overlapRuntime.start();
+    const overlapServer = listen(overlapRuntime);
     const url = `ws://127.0.0.1:${overlapServer.port}/_ws`;
     const sessionId = "overlapping-session";
     const open = async (): Promise<WsClient> => {
@@ -2362,7 +2369,8 @@ describe("lifecycle drain", () => {
       registry: new Registry(functions, APP_API_PATHS),
       limits: slowLimits,
     });
-    const slowServer = serve({ runtime: slowRuntime, port: 0 });
+    await slowRuntime.start();
+    const slowServer = listen(slowRuntime);
     const slowBase = `http://127.0.0.1:${slowServer.port}`;
     const stalledCreditController = new AbortController();
     try {

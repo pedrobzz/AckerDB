@@ -23,13 +23,13 @@ import {
   mutation,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
 import { within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -86,7 +86,8 @@ async function createApp(): Promise<App> {
     },
   });
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,

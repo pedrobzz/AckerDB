@@ -73,6 +73,11 @@ export interface AppConfig {
   admin: NormalizedAdminOptions;
 }
 
+/** The one database file under the configured data directory. */
+export function databasePath(config: Pick<AppConfig, "dbDir">): string {
+  return join(config.dbDir, "data.db");
+}
+
 interface RawConfig {
   app?: string;
   functions?: string;

@@ -44,6 +44,7 @@ const schema = defineSchema({
 const APP_SCOPES = ["records:read", "records:write"] as const;
 const VOCABULARY = knownScopeVocabulary(APP_SCOPES);
 const LIMITS: CredentialLimits = PRODUCTION_LIMITS.credentials;
+const MINT = { vocabulary: VOCABULARY, limits: LIMITS, now: Date.now };
 
 interface Fixture {
   readonly path: string;
@@ -58,7 +59,7 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-function fixture(): Fixture {
+async function fixture(): Promise<Fixture> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-admin-credential-"));
   const path = join(directory, "data.db");
   const engine = new Engine(schema, path);
@@ -68,6 +69,7 @@ function fixture(): Fixture {
     registry: new Registry({}),
     scopes: APP_SCOPES,
   });
+  await runtime.start();
   let closed = false;
   const close = (): void => {
     if (closed) return;
@@ -91,8 +93,8 @@ function administrative(value: Fixture): readonly string[] {
 }
 
 describe("what the vault calls an Admin Credential", () => {
-  test("is a root credential holding exactly the administrative grant", () => {
-    const value = fixture();
+  test("is a root credential holding exactly the administrative grant", async () => {
+    const value = await fixture();
     const vault = value.engine[credentialVaultOwner];
     const master = value.engine.writer.transaction(() =>
       vault.create(null, { name: "master", scopes: ADMINISTRATIVE_GRANT }, VOCABULARY, LIMITS, 1))();
@@ -100,8 +102,8 @@ describe("what the vault calls an Admin Credential", () => {
     expect(administrative(value)).toEqual([master.id]);
   });
 
-  test("does not depend on the order the two patterns were stored in", () => {
-    const value = fixture();
+  test("does not depend on the order the two patterns were stored in", async () => {
+    const value = await fixture();
     const vault = value.engine[credentialVaultOwner];
     const master = value.engine.writer.transaction(() =>
       vault.create(null, { name: "reversed", scopes: ["_*", "*"] }, VOCABULARY, LIMITS, 1))();
@@ -109,8 +111,8 @@ describe("what the vault calls an Admin Credential", () => {
     expect(administrative(value)).toEqual([master.id]);
   });
 
-  test("is not a root credential whose grant is anything else", () => {
-    const value = fixture();
+  test("is not a root credential whose grant is anything else", async () => {
+    const value = await fixture();
     const vault = value.engine[credentialVaultOwner];
     value.engine.writer.transaction(() => {
       // Everything the framework has, and the whole application vocabulary
@@ -129,8 +131,8 @@ describe("what the vault calls an Admin Credential", () => {
     expect(administrative(value)).toEqual([]);
   });
 
-  test("is not a child credential, however generous its own patterns", () => {
-    const value = fixture();
+  test("is not a child credential, however generous its own patterns", async () => {
+    const value = await fixture();
     const vault = value.engine[credentialVaultOwner];
     const created = value.engine.writer.transaction(() => {
       const master = vault.create(
@@ -159,8 +161,8 @@ describe("what the vault calls an Admin Credential", () => {
 
 describe("boot-mint", () => {
   test("issues one master on a fresh vault and discloses the plaintext once", async () => {
-    const value = fixture();
-    const minted = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const minted = ensureAdminCredential(value.engine, MINT);
 
     expect(minted.token).toBeString();
     expect(administrative(value)).toEqual([minted.id]);
@@ -168,8 +170,8 @@ describe("boot-mint", () => {
   });
 
   test("holds the whole vocabulary, application scopes and framework scopes alike", async () => {
-    const value = fixture();
-    const minted = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const minted = ensureAdminCredential(value.engine, MINT);
     const parsed = parseCredentialToken(minted.token!);
     if (parsed === null) throw new Error("a minted credential must parse");
 
@@ -187,10 +189,10 @@ describe("boot-mint", () => {
   });
 
   test("mints nothing, and discloses nothing, when one already exists", async () => {
-    const value = fixture();
-    const first = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const first = ensureAdminCredential(value.engine, MINT);
     const before = value.engine.commitVersion();
-    const second = await ensureAdminCredential(value.engine, value.runtime.system);
+    const second = ensureAdminCredential(value.engine, MINT);
 
     expect(second).toEqual({ id: first.id });
     expect(administrative(value)).toEqual([first.id]);
@@ -200,8 +202,8 @@ describe("boot-mint", () => {
   });
 
   test("names every master the same, because the product manages one", async () => {
-    const value = fixture();
-    await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    ensureAdminCredential(value.engine, MINT);
 
     expect(
       value.engine[credentialVaultOwner]
@@ -213,8 +215,8 @@ describe("boot-mint", () => {
 
 describe("break-glass", () => {
   test("clears the masters and everything delegated beneath them", async () => {
-    const value = fixture();
-    const minted = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const minted = ensureAdminCredential(value.engine, MINT);
     const vault = value.engine[credentialVaultOwner];
     const masterIdentity = vault.listAdministrative(value.engine.reader)[0]!.identity as Identity;
     const delegate = value.engine.writer.transaction(() =>
@@ -230,8 +232,8 @@ describe("break-glass", () => {
   });
 
   test("refuses while the database is open, and clears nothing", async () => {
-    const value = fixture();
-    const minted = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const minted = ensureAdminCredential(value.engine, MINT);
 
     // The stopped-server guarantee is the ownership lock, not a check of its
     // own that could disagree with one.
@@ -240,13 +242,13 @@ describe("break-glass", () => {
   });
 
   test("leaves the next boot to mint a fresh master", async () => {
-    const value = fixture();
-    const first = await ensureAdminCredential(value.engine, value.runtime.system);
+    const value = await fixture();
+    const first = ensureAdminCredential(value.engine, MINT);
     value.close();
     resetAdminCredentials(value.path);
 
-    const restarted = fixtureAt(value.path);
-    const second = await ensureAdminCredential(restarted.engine, restarted.runtime.system);
+    const restarted = await fixtureAt(value.path);
+    const second = ensureAdminCredential(restarted.engine, MINT);
 
     expect(second.token).toBeString();
     expect(second.id).not.toBe(first.id);
@@ -267,7 +269,7 @@ describe("break-glass", () => {
 });
 
 /** A second Runtime over a database that already exists, for restart cases. */
-function fixtureAt(path: string): Fixture {
+async function fixtureAt(path: string): Promise<Fixture> {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
@@ -275,6 +277,7 @@ function fixtureAt(path: string): Fixture {
     registry: new Registry({}),
     scopes: APP_SCOPES,
   });
+  await runtime.start();
   let closed = false;
   const close = (): void => {
     if (closed) return;

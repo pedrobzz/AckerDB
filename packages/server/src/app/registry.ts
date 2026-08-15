@@ -107,6 +107,9 @@ export interface HttpHandlerRoute {
   readonly fn: AnyRegisteredHttpHandler;
 }
 
+/** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
+export type LoadedModules = Record<string, Record<string, unknown>>;
+
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
   /** HTTP-exposed functions keyed by the path they own. */
@@ -153,7 +156,7 @@ export class Registry {
    * call site would be two statements of one fact, and the second would drift.
    */
   constructor(
-    modules: Record<string, Record<string, unknown>>,
+    modules: LoadedModules,
     declaredApiPaths: readonly string[] = [],
     admin: AdminOptions = {},
   ) {
@@ -326,7 +329,7 @@ export class Registry {
    * export.
    */
   private contribute(
-    modules: Record<string, Record<string, unknown>>,
+    modules: LoadedModules,
     contributor: Contributor,
   ): ModuleExport[] {
     const contributed: ModuleExport[] = [];

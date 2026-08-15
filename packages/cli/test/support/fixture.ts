@@ -13,6 +13,7 @@ export function makeFixture(files: Record<string, string>): string {
   for (const pkg of ["core", "server", "client", "cli"]) {
     symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@ackerdb", pkg));
   }
+  symlinkSync(join(REPO, "fixtures", "test-support"), join(dir, "node_modules", "ackerdb-test-support"));
   for (const [path, content] of Object.entries(files)) {
     const target = join(dir, path);
     mkdirSync(dirname(target), { recursive: true });

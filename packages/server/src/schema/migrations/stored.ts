@@ -1,15 +1,16 @@
 /**
- * The stored-state peek: what the database last committed, read through a
- * plain READ-ONLY `bun:sqlite` connection. No Engine, no canonical ownership, no user
- * code — safe whether a serve child is freshly dead or still alive (a reader
- * sees only committed state). The planner diffs against it; startup's
- * hold-pending gate counts against it.
+ * The stored-state peek: what a database last committed, read through a plain
+ * READ-ONLY `bun:sqlite` connection. No Engine, no canonical ownership, no user
+ * code — safe whether the owning server is freshly dead or still alive (a
+ * reader sees only committed state). The boot's hold gate counts pending
+ * migrations against it before storage is opened; the CLI's plan and write
+ * commands diff against it.
  */
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { planFrameworkMigrations, type AppliedMigrationRow, type SchemaSnapshot } from "@ackerdb/server";
-import type { AppConfig } from "../app/config.ts";
+import type { SchemaSnapshot } from "../snapshot.ts";
+import type { AppliedMigrationRow } from "./chain.ts";
+import { planFrameworkMigrations } from "./framework.ts";
 
 export interface StoredState {
   /** The snapshot the database last committed — the pre-state new migrations sit on. */
@@ -20,16 +21,15 @@ export interface StoredState {
 
 /**
  * Read the stored snapshot and applied-migration rows. Reading the full
- * (number, identity) rows — not a bare COUNT — lets callers run the server's
- * exact prefix validation, so an edited applied migration cannot masquerade as
- * fully applied. `null` when there is no database yet (nothing to migrate —
- * `acker dev` initializes a fresh one), or when the file exists but holds no
+ * (number, identity) rows — not a bare COUNT — lets callers run the exact
+ * prefix validation, so an edited applied migration cannot masquerade as fully
+ * applied. `null` when there is no database yet (nothing to migrate — a fresh
+ * one is initialized on first boot), or when the file exists but holds no
  * snapshot.
  */
-export function readStoredState(config: AppConfig): StoredState | null {
-  const path = join(config.dbDir, "data.db");
-  if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
+export function readStoredState(databasePath: string): StoredState | null {
+  if (!existsSync(databasePath)) return null;
+  const db = new Database(databasePath, { readonly: true });
   try {
     const row = db.query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'").get() as
       | { value: string }

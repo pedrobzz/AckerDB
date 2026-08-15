@@ -37,7 +37,7 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionRuntimeContext } {
+async function noMcpRuntime(): Promise<{ readonly runtime: Runtime; readonly session: SessionRuntimeContext }> {
   const hiddenMcp = typedMcp({ name: "hidden", tools: {} });
   void hiddenMcp;
   const list = typedQuery({
@@ -63,6 +63,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({ engine, registry });
+  await runtime.start();
   const session = Object.freeze({
     clientSessionId: "no-mcp-context",
     principal: ANONYMOUS_PRINCIPAL,
@@ -81,7 +82,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
 
 describe("credential operations without an MCP endpoint", () => {
   test("binds credential operations everywhere while denying anonymous administration", async () => {
-    const { runtime, session } = noMcpRuntime();
+    const { runtime, session } = await noMcpRuntime();
     await runtime.openSession(session);
 
     await expect(runtime.query(

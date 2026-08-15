@@ -10,11 +10,11 @@ import {
   reconcile,
   Registry,
   Runtime,
-  serve,
   procedure,
   type McpBuilder,
   type ProcedureBuilder,
 } from "@ackerdb/server";
+import { listen } from "ackerdb-test-support/listen";
 import { mcp, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
@@ -233,7 +233,8 @@ async function main(): Promise<void> {
     engine,
     registry: new Registry(modules),
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
 
   try {
     const url = `http://127.0.0.1:${server.port}${conformanceMcp.path}`;

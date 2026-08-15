@@ -21,8 +21,9 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { serve, type AckerDBServer } from "../../src/transport/server.ts";
+import { type AckerDBServer } from "../../src/transport/server.ts";
 import { deferred, waitForAbort, within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 async function eventually(check: () => boolean): Promise<void> {
   await within((async () => {
@@ -167,7 +168,7 @@ describe("HTTP and SSE credential leases", () => {
   let server: AckerDBServer;
   let base: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     blockedProcedureStarted = deferred<void>();
     blockedSseStarted = deferred<void>();
     directory = mkdtempSync(join(tmpdir(), "ackerdb-serve-auth-lease-"));
@@ -179,7 +180,8 @@ describe("HTTP and SSE credential leases", () => {
       registry: new Registry(functions),
       verifier,
     });
-    server = serve({ runtime, port: 0 });
+    await runtime.start();
+    server = listen(runtime);
     base = `http://127.0.0.1:${server.port}`;
   });
 

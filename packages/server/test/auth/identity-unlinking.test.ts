@@ -203,7 +203,7 @@ interface Harness {
 const directories = new Set<string>();
 const harnesses = new Set<Harness>();
 
-function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking-"))): Harness {
+async function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking-"))): Promise<Harness> {
   directories.add(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -214,6 +214,7 @@ function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking
     verifier,
     now: () => NOW,
   });
+  await runtime.start();
   const harness = { directory, engine, runtime, verifier };
   harnesses.add(harness);
   return harness;
@@ -341,7 +342,7 @@ function hello(session: Session, token: string, clientSessionId: string): Promis
 
 describe("transactional external-account unlinking", () => {
   test("returns a truthful self-unlink response, retains application ownership, and stays detached across restart", async () => {
-    let harness = open();
+    let harness = await open();
     const aliceA = await authenticate(harness, "alice-a");
     await link(harness, aliceA, "alice-b");
     expect(await invoke(harness, aliceA, "api.owned.create", { value: "durable owner" }))
@@ -372,7 +373,7 @@ describe("transactional external-account unlinking", () => {
 
     const directory = harness.directory;
     await shutdown(harness);
-    harness = open(directory);
+    harness = await open(directory);
     const aliceB = await authenticate(harness, "alice-b");
     expect(aliceB.identity).toBe(aliceA.identity);
     expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
@@ -387,7 +388,7 @@ describe("transactional external-account unlinking", () => {
   });
 
   test("uses one safe ownership denial and blocks removal of the final account", async () => {
-    const harness = open();
+    const harness = await open();
     const alice = await authenticate(harness, "alice-a");
     await link(harness, alice, "alice-b");
     const bob = await authenticate(harness, "bob-a");
@@ -414,7 +415,7 @@ describe("transactional external-account unlinking", () => {
   });
 
   test("publishes only committed deletes, including a committed unlink followed by handler failure", async () => {
-    const harness = open();
+    const harness = await open();
     const alice = await authenticate(harness, "alice-a");
     await link(harness, alice, "alice-b");
     await link(harness, alice, "alice-c");
@@ -454,7 +455,7 @@ describe("transactional external-account unlinking", () => {
   });
 
   test("invalidates a live Session and the exact credential lease after commit", async () => {
-    const harness = open();
+    const harness = await open();
     const alice = await authenticate(harness, "alice-a");
     await link(harness, alice, "alice-b");
     const lease = await acquire(harness, "alice-a");
@@ -477,7 +478,7 @@ describe("transactional external-account unlinking", () => {
   });
 
   test("revokes every other consumer at commit while the one-shot origin survives through handoff", async () => {
-    const harness = open();
+    const harness = await open();
     const alice = await authenticate(harness, "alice-a");
     await link(harness, alice, "alice-b");
     const origin = await acquire(harness, "alice-a");
@@ -518,7 +519,7 @@ describe("transactional external-account unlinking", () => {
   });
 
   test("fails pending HTTP and Session authentication closed without reprovisioning", async () => {
-    const harness = open();
+    const harness = await open();
     const alice = await authenticate(harness, "alice-a");
     await link(harness, alice, "alice-b");
     await link(harness, alice, "alice-c");

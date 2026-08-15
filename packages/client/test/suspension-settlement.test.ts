@@ -36,11 +36,11 @@ import {
   defineSchema,
   procedure,
   reconcile,
-  serve,
   sseProcedure,
   type SseCtx,
 } from "@ackerdb/server";
 import { deferred, until, waitForAbort, within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const encoder = new TextEncoder();
 
@@ -698,7 +698,8 @@ describe("suspension settlement against a real ackerdb server", () => {
       },
     });
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-    const server = serve({ runtime, port: 0 });
+    await runtime.start();
+    const server = listen(runtime);
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.
     const clock = new ManualClock(Date.now());

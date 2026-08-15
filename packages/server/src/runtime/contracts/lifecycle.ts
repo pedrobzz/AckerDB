@@ -4,7 +4,12 @@ import type {
   CommitWaitHook,
 } from "../coordinator.ts";
 
-export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
+/**
+ * `created` is a constructed Runtime that admits nothing and arms nothing;
+ * `start()` is the one transition to `ready`. Every later state is reachable
+ * from either through `drain()`.
+ */
+export type RuntimeLifecycleState = "created" | "ready" | "draining" | "stopped" | "failed";
 
 export type RuntimeHookStage = CommitHookStage;
 export type RuntimeHookContext = CommitHookContext;

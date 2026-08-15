@@ -15,12 +15,12 @@ import {
   mutation,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AckerDBProvider, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -38,7 +38,7 @@ interface App {
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-query-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -57,7 +57,8 @@ function createApp(): App {
     },
   });
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     async close() {
@@ -98,8 +99,8 @@ function MessageBoard(): ReactNode {
 }
 
 let app: App;
-beforeAll(() => {
-  app = createApp();
+beforeAll(async () => {
+  app = await createApp();
 });
 afterAll(() => app.close());
 

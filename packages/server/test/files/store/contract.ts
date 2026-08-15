@@ -41,6 +41,15 @@ export function fileStoreContract(
   adapter: string,
   options: FileStoreContractOptions,
 ): void {
+  test(`${adapter}: names one physical identity, the same from every instance`, async () => {
+    const store = await options.create();
+    const identity = await store.identity();
+    expect(identity).toMatch(/^\S.*\S$/);
+    expect(await store.identity()).toBe(identity);
+    await store.probe();
+    expect(await store.identity()).toBe(identity);
+  });
+
   test(`${adapter}: probes, stores, describes, and streams whole objects`, async () => {
     const store = await options.create();
     await store.probe();

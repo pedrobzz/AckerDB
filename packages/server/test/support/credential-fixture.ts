@@ -306,12 +306,12 @@ export function databasePath(prefix: string): string {
   return join(directory, "data.db");
 }
 
-export function fixture(
+export async function fixture(
   path: string,
   verifier?: CredentialVerifier,
   extraModules: Record<string, Record<string, unknown>> = {},
   options: CredentialFixtureOptions = {},
-): CredentialFixture {
+): Promise<CredentialFixture> {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
@@ -328,6 +328,7 @@ export function fixture(
       credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
     },
   });
+  await runtime.start();
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;

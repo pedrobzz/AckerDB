@@ -21,14 +21,10 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { resetAdminCredentials, resetDatabase, type Renames } from "@ackerdb/server";
-import { loadConfig, type AppConfig } from "../app/config.ts";
+import { databasePath, loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
 import { exportOpenApi } from "../app/openapi.ts";
-import {
-  startApp,
-  StartupInterruptedError,
-  type StartAppOptions,
-} from "../app/start.ts";
+import { startApp, type StartAppOptions } from "../app/start.ts";
 import { runRenameForm, type Ask, type FormResult } from "../migrations/form.ts";
 import { renderLedger, runDivergenceForm } from "../migrations/consent.ts";
 import { makeDevFlowHandler, type GenerateResult, type PromptOutcome } from "../migrations/dev-flow.ts";
@@ -63,6 +59,11 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
     const running = await startApp(config, { ...options, signal: startup.signal });
     await shutdownRequested;
     await running.drain();
+  } catch (error) {
+    // A boot stopped by the signal is a clean stop, not a failure: it drained
+    // what it had built and rejected with the signal's reason. A drain that
+    // failed on the way out is its own error and still reports.
+    if (error !== startup.signal.reason) throw error;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -270,7 +271,7 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
     const outcome = await computePlan(config);
     switch (outcome.status) {
       case "no-database":
-        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`acker dev\` to initialize it first`);
+        throw new Error(`no database at ${databasePath(config)}; run \`acker dev\` to initialize it first`);
       case "diverged":
         throw new Error(outcome.message);
       case "pending": {
@@ -548,7 +549,7 @@ try {
       // the application is the one thing that cannot be assumed to work when an
       // operator has reached for this.
       const config = loadConfig(resolve(args[1] ?? "."));
-      const { cleared } = resetAdminCredentials(join(config.dbDir, "data.db"));
+      const { cleared } = resetAdminCredentials(databasePath(config));
       console.log(cleared.length === 0
         ? "[ackerdb] no Admin Credential to clear; the next start issues one"
         : `[ackerdb] cleared ${cleared.length} credential(s); the next start issues a new Admin Credential`);
@@ -557,7 +558,7 @@ try {
     case "reset": {
       requireArgumentCount(args, 0, 1);
       const config = loadConfig(resolve(args[0] ?? "."));
-      const database = join(config.dbDir, "data.db");
+      const database = databasePath(config);
       const result = resetDatabase(database);
       if (result.removed.length > 0) {
         const noun = result.removed.length === 1 ? "artifact" : "artifacts";
@@ -615,7 +616,6 @@ try {
       usage();
   }
 } catch (error) {
-  if (error instanceof StartupInterruptedError) process.exit(0);
   console.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }
