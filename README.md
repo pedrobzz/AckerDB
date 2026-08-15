@@ -160,8 +160,6 @@ client.close();
 - [Releases and protected branches](docs/releases.md) documents the
   `topic → canary → main` topology, fast affected CI, reviewer-gated public npm
   delivery, trusted publishing, and local Verdaccio betas.
-- [Historical documents](docs/history/) keep superseded implementation plans.
-  They are records of how AckerDB got here, not current procedure.
 
 The remaining single-node and product limitations are listed explicitly in
 [Operations: remaining limitations](docs/operations.md#remaining-limitations).
