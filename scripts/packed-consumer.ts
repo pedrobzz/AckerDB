@@ -8,13 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  NATIVE_PACKAGES,
   PACKAGES,
-  PUBLIC_PACKAGES,
   pkgJsonPath,
   syncedVersion,
 } from "./lib.ts";
-import { verifyCandidate } from "../packages/realtime/native/webrtc/candidate.ts";
 import { withPackageLicense } from "./release/package-license.ts";
 
 export interface PackageManifest {
@@ -66,11 +63,7 @@ export function readManifest(path: string): PackageManifest {
 
 export async function createPackedConsumer(name: string): Promise<PackedConsumer> {
   const root = resolve(import.meta.dir, "..");
-  const candidatePath = process.env.ACKERDB_RELEASE_CANDIDATE;
-  const candidate = candidatePath === undefined
-    ? undefined
-    : await verifyCandidate(resolve(candidatePath), { checkClean: false });
-  const version = candidate?.manifest.version ?? syncedVersion((pkg) =>
+  const version = syncedVersion((pkg) =>
     readFileSync(join(root, pkgJsonPath(pkg)), "utf8")
   );
   const bunTypesVersion = readManifest(
@@ -87,14 +80,6 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
     const tarballs: Record<string, string> = {};
     for (const pkg of PACKAGES) {
       const packageName = `@ackerdb/${pkg}`;
-      if (candidate !== undefined) {
-        const tarball = candidate.tarballs.get(packageName);
-        if (tarball === undefined) {
-          throw new Error(`verified release candidate has no tarball for ${packageName}`);
-        }
-        tarballs[packageName] = `file:${tarball}`;
-        continue;
-      }
       const output = await withPackageLicense(pkg, (packageRoot) => runCommand([
         process.execPath,
         "pm",
@@ -112,30 +97,19 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
     }
 
     const dependencies = Object.fromEntries(
-      PUBLIC_PACKAGES.map((pkg) => [
+      PACKAGES.map((pkg) => [
         `@ackerdb/${pkg}`,
         tarballs[`@ackerdb/${pkg}`]!,
       ]),
     );
-    const optionalDependencies = Object.fromEntries(
-      NATIVE_PACKAGES.map((pkg) => [
-        `@ackerdb/${pkg}`,
-        tarballs[`@ackerdb/${pkg}`]!,
-      ]),
-    );
-
     writeFileSync(join(consumerDir, "package.json"), JSON.stringify({
       name,
       private: true,
       type: "module",
       dependencies,
-      optionalDependencies,
       devDependencies: { "@types/bun": bunTypesVersion },
       // The release is intentionally unpublished: force transitive @ackerdb exact
       // versions to the same public tarballs while preserving packed manifests.
-      // The native tarballs stay optional. Bun materializes every local-file
-      // optional package, so the gate verifies their host metadata separately
-      // and proves that the generated loader resolves the current host.
       overrides: dependencies,
     }, null, 2));
     // A clean consumer resolves open transitive ranges at install time, so a

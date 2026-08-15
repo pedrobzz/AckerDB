@@ -11,5 +11,5 @@
     // sets the required "noEmit").
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "App.tsx", "realtime-webrtc-types/**/*.ts"]
+  "include": ["index.ts", "App.tsx"]
 }

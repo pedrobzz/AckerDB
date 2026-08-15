@@ -4,7 +4,6 @@
  */
 import { mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   AckerDBServer,
   type App,
@@ -22,7 +21,6 @@ import {
   type CredentialVerifier,
   type EngineCloseDisposition,
   type ScopeResolver,
-  type RealtimeRuntimeModule,
   type SystemRunner,
   MigrationError,
   reconcile,
@@ -38,7 +36,6 @@ import {
   importFunctionModules,
   importJobModules,
 } from "./manifest.ts";
-import { resolveAppPackage } from "./optional-package.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { fileStoreIdentity } from "../files/identity.ts";
@@ -74,48 +71,9 @@ export interface StartAppOptions<A extends App = App> {
    * Production starts and non-TTY dev never set this: they apply at startup.
    */
   holdPendingMigrations?: boolean;
-  /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
-  realtime?: RealtimeRuntimeModule;
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
-
-async function importConfiguredRealtimeRuntime(path: string): Promise<RealtimeRuntimeModule> {
-  const owner = `.ackerdb.config.json "realtime" module`;
-  const runtime = await importConfiguredDefault(path, owner);
-  if (
-    typeof runtime !== "object" ||
-    runtime === null ||
-    typeof (runtime as { create?: unknown }).create !== "function"
-  ) {
-    throw new TypeError(
-      `${owner} at ${path} must default-export the result of createRealtimeRuntime(...)`,
-    );
-  }
-  return runtime as RealtimeRuntimeModule;
-}
-
-async function importRealtimeRuntime(
-  appDir: string,
-  configuredPath?: string,
-): Promise<RealtimeRuntimeModule> {
-  if (configuredPath !== undefined) {
-    return importConfiguredRealtimeRuntime(configuredPath);
-  }
-  const entry = resolveAppPackage(appDir, "@ackerdb/realtime");
-  if (entry === null) {
-    throw new Error("this app declares realtime handlers but @ackerdb/realtime is not installed");
-  }
-  const module = await import(pathToFileURL(entry).href) as {
-    createRealtimeRuntime?: unknown;
-  };
-  if (typeof module.createRealtimeRuntime !== "function") {
-    throw new TypeError(
-      `@ackerdb/realtime at ${entry} does not export createRealtimeRuntime`,
-    );
-  }
-  return (module.createRealtimeRuntime as () => RealtimeRuntimeModule)();
-}
 
 async function importCredentialVerifier(path: string): Promise<CredentialVerifier> {
   const exported = await importConfiguredDefault(path, "credential verifier");
@@ -359,11 +317,6 @@ export async function startApp<const A extends App = App>(
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);
-    const realtime = registry.realtime.size === 0
-      ? undefined
-      : options.realtime ?? await awaitStartup(
-        importRealtimeRuntime(config.appDir, config.realtime),
-      );
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
@@ -376,7 +329,6 @@ export async function startApp<const A extends App = App>(
       ...(verifier === undefined ? {} : { verifier }),
       ...(resolveScopes === undefined ? {} : { resolveScopes }),
       ...(app.scopes === undefined ? {} : { scopes: app.scopes }),
-      ...(realtime === undefined ? {} : { realtime }),
     });
 
     // Administration must exist before anything can be administered, so the

@@ -1,7 +1,6 @@
 import { appendFileSync } from "node:fs";
 import {
   PACKAGES,
-  PUBLIC_PACKAGES,
   git,
   packageDirectory,
   pkgJsonPath,
@@ -11,15 +10,13 @@ interface ChangeSet {
   readonly files: readonly string[];
   readonly testPackages: readonly string[];
   readonly code: boolean;
-  readonly nativeBuild: boolean;
-  readonly nativeTests: boolean;
   readonly verifyPackages: boolean;
   readonly mcp: boolean;
   readonly workflows: boolean;
 }
 
 function sourcePackage(file: string): string | undefined {
-  for (const pkg of PUBLIC_PACKAGES) {
+  for (const pkg of PACKAGES) {
     const directory = `${packageDirectory(pkg)}/`;
     if (
       file.startsWith(directory) &&
@@ -34,10 +31,10 @@ function sourcePackage(file: string): string | undefined {
 
 function packageGraph(ref: string): ReadonlyMap<string, ReadonlySet<string>> {
   const dependents = new Map<string, Set<string>>(
-    PUBLIC_PACKAGES.map((pkg) => [pkg, new Set<string>()]),
+    PACKAGES.map((pkg) => [pkg, new Set<string>()]),
   );
-  const byName = new Map(PUBLIC_PACKAGES.map((pkg) => [`@ackerdb/${pkg}`, pkg]));
-  for (const pkg of PUBLIC_PACKAGES) {
+  const byName = new Map(PACKAGES.map((pkg) => [`@ackerdb/${pkg}`, pkg]));
+  for (const pkg of PACKAGES) {
     const manifest = JSON.parse(git("show", `${ref}:${pkgJsonPath(pkg)}`)) as Record<string, any>;
     for (const field of [
       "dependencies",
@@ -82,8 +79,6 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const testPackages = [...dependentClosure(directlyChanged, packageGraph(head))]
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
-  const nativeBuild = nativeBuildInputsChanged(files);
-  const nativeTests = nativeTestInputsChanged(files);
   const verifyPackages = verifyPackagesInputsChanged(files);
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
@@ -93,8 +88,6 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     files,
     testPackages,
     code,
-    nativeBuild,
-    nativeTests,
     verifyPackages,
     mcp,
     workflows,
@@ -110,9 +103,6 @@ export function codeInputsChanged(files: readonly string[]): boolean {
 /**
  * What changes the tarballs a release would produce, and therefore needs the
  * packed-package gate.
- *
- * The native directories are here because those packages publish built
- * binaries.
  */
 export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
   return files.some((file) =>
@@ -121,26 +111,7 @@ export function verifyPackagesInputsChanged(files: readonly string[]): boolean {
     file.endsWith("/package.json") ||
     file.startsWith("scripts/release/") ||
     file.startsWith("scripts/verify-packages") ||
-    file.startsWith("scripts/packed-consumer") ||
-    (file.startsWith("packages/realtime/native/") &&
-      !file.startsWith("packages/realtime/native/webrtc/test/")) ||
-    file.startsWith("packages/realtime-native/")
-  );
-}
-
-export function nativeBuildInputsChanged(files: readonly string[]): boolean {
-  return files.some((file) =>
-    file === ".github/workflows/native.yml" ||
-    file === "packages/realtime/native/webrtc/test/candidate.test.ts" ||
-    file === "packages/realtime/native/webrtc/test/distribution.test.ts" ||
-    /^packages\/realtime\/native\/webrtc\/(?:\.cargo\/|src\/|Cargo\.(?:lock|toml)$|about\.toml$|build\.(?:rs|ts)$|candidate\.ts$|deny\.toml$|evidence\.ts$|generate-evidence\.ts$|package\.ts$|provenance\.ts$|THIRD_PARTY_NOTICES\.hbs$)/.test(file)
-  );
-}
-
-export function nativeTestInputsChanged(files: readonly string[]): boolean {
-  return files.some((file) =>
-    /^packages\/realtime\/native\/webrtc\/test\/(?:native-engine|public-session)\.test\.ts$/.test(file) ||
-    file === "packages/realtime/native/webrtc/test/public-session-fixture.ts"
+    file.startsWith("scripts/packed-consumer")
   );
 }
 
@@ -153,8 +124,6 @@ if (import.meta.main) {
     appendFileSync(output, [
       `test_packages=${JSON.stringify(changes.testPackages)}`,
       `code=${changes.code}`,
-      `native_build=${changes.nativeBuild}`,
-      `native_tests=${changes.nativeTests}`,
       `verify_packages=${changes.verifyPackages}`,
       `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,

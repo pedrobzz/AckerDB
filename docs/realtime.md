@@ -9,8 +9,8 @@ do not have durable replay.
 A connection's handshake carries `v`, the AckerDB version of the build that
 produced it, and a decoder accepts exactly its own; a frame from any other build
 is `version_mismatch`, refused as the mixed install it is. So do `err` and every
-frame of the transports that have no handshake — SSE and realtime signaling are
-HTTP, where the first frame is the greeting. Session frames carry no version,
+frame of the transports that have no handshake — SSE is HTTP, where the first
+frame is the greeting. Session frames carry no version,
 because the peer's build was settled by the handshake their connection opened
 with. Missing, extra, out-of-range, or malformed framework fields are
 `malformed`. There is no compatibility or negotiation layer between versions:

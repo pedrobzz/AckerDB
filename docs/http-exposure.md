@@ -64,7 +64,7 @@ the lockstep release, breaks are explicit).
   `Vary: Authorization`: one URL answers different bearer credentials with
   different bodies, and the GET query form is the cacheable one.
 - CORS allows the methods the listener serves: `GET, POST, OPTIONS` for the
-  exposed function surface, plus `PATCH, DELETE` for the realtime session
+  exposed function surface, plus `PUT, PATCH, DELETE` for raw HTTP handler
   routes. It accepts `Idempotency-Key` beside `Content-Type` and
   `Authorization`, and exposes the receipt and SSE stream headers so a browser
   caller can read the values documented below.
@@ -129,7 +129,7 @@ send an `Authorization` header, so it would serve only anonymous streams.
 **The framework's own routes live at the root, behind the `_` marker.** `/api/`
 is one function group among however many an application names, so a protocol
 endpoint nested under it would be squatting in that group's namespace — there
-was never a principle separating `/ws` at the root from `/api/_realtime` below
+was never a principle separating `/ws` at the root from `/api/_files` below
 it, only history. At the root the rule is uniform: `_` belongs to AckerDB, and
 an `apiPath` may not begin with it, so a future built-in route can never
 collide with an application module.
@@ -140,9 +140,6 @@ collide with an application module.
 | `/api/sse` | deleted (replaced by per-function paths) |
 | `/ws` | → `/_ws` |
 | `/api/sse/ack` | → `/_sse/ack` |
-| `/api/realtime` | → `/_realtime` |
-| `/api/realtime/prepare` | → `/_realtime/prepare` |
-| `/api/realtime/<session>` | → `/_realtime/<session>` |
 | `/api/_files/<route>/…` | → `/_files/<route>/…` |
 | — | new, opt-in: `GET /_openapi.json` |
 | `/live`, `/ready`, `/status` | unchanged, and unmarked |
@@ -465,8 +462,7 @@ plus the wire format that path speaks: `sse()` encodes its args as standard
 JSON (`toStandardJson` in `@ackerdb/core`) and reads chunk values as standard
 JSON, never as wire escapes. The ack request itself stays a Protocol-2 frame.
 Because that path is the exposed one, an `sseProcedure` the client streams
-must carry `http`; a realtime session route was never an HTTP path, so the
-`_` prefix does not reach one.
+must carry `http`.
 
 One consequence is open: a streamed chunk is typed by `yields` through
 codegen, but the client holds no validators, so a chunk field declared

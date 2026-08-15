@@ -21,13 +21,6 @@ export type {
   AckerDBPaginatedQueryState,
 } from "./paginated-query-store.ts";
 export {
-  useRealtime,
-  type RealtimeOn,
-  type UseRealtimeOptions,
-  type UseRealtimeResult,
-  type UseRealtimeState,
-} from "./use-realtime.ts";
-export {
   useQueryProcedure,
   type AckerDBQueryProcedureOptions,
   type AckerDBQueryProcedureState,
@@ -46,7 +39,6 @@ export type {
   AckerDBLifecycleSource,
   AckerDBLiveEvent,
   AckerDBReconnectOptions,
-  AckerDBRealtimeState,
   EventRef,
   ProcedureRef,
   QueryRef,

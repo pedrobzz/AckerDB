@@ -120,8 +120,6 @@ describe("AckerDBProvider lifecycle", () => {
       maxDelayMs: 20,
       stableOpenMs: 30,
       disconnectedGraceMs: 40,
-      iceRestartTimeoutMs: 50,
-      realtimeSetupTimeoutMs: 60,
     };
     const app = (reconnect: typeof base): ReactNode => (
       <AckerDBProvider config={{ ...harness.config({ url: "http://one.test" }), reconnect }}>
@@ -133,8 +131,6 @@ describe("AckerDBProvider lifecycle", () => {
       { maxDelayMs: 21 },
       { stableOpenMs: 31 },
       { disconnectedGraceMs: 41 },
-      { iceRestartTimeoutMs: 51 },
-      { realtimeSetupTimeoutMs: 61 },
     ] as const;
 
     await render(root, app(base));

@@ -6,12 +6,12 @@
 // a package added there is picked up by classification and execution together,
 // instead of passing classification and then failing an allow-list in YAML.
 import { join } from "node:path";
-import { PUBLIC_PACKAGES, packageDirectory } from "../lib.ts";
+import { PACKAGES, packageDirectory } from "../lib.ts";
 
 /** The repository root, resolved from this file rather than the caller's cwd. */
 const REPOSITORY_ROOT = join(import.meta.dir, "../..");
 
-export type PublicPackage = typeof PUBLIC_PACKAGES[number];
+export type PublicPackage = typeof PACKAGES[number];
 
 /**
  * Read the `test_packages` output back into a checked list.
@@ -33,7 +33,7 @@ export function affectedPackages(raw: string | undefined): readonly PublicPackag
   if (!Array.isArray(parsed)) {
     throw new Error("TEST_PACKAGES must be a JSON array");
   }
-  const known = new Set<string>(PUBLIC_PACKAGES);
+  const known = new Set<string>(PACKAGES);
   if (parsed.some((name) => typeof name !== "string" || !known.has(name))) {
     throw new Error("affected package output contains an unknown package");
   }

@@ -6,7 +6,6 @@ import {
   ACKERDB_VERSION,
   decode,
   encode,
-  isRealtimeSessionId,
   parseSseAckRequest,
   stableEncode,
   type ErrorMessage,
@@ -68,7 +67,6 @@ import type {
 } from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { Session } from "../subscriptions/session/session.ts";
-import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
@@ -151,7 +149,7 @@ const utf8 = new TextEncoder();
 
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
-  // PATCH and DELETE are the realtime session routes; the exposed function
+  // PATCH, PUT and DELETE are raw HTTP handler methods; the exposed function
   // surface serves only GET and POST.
   "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
   "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, mcp-protocol-version, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
@@ -706,13 +704,6 @@ function requireStatusScope(principal: ClientPrincipal, required: string): void 
   }
 }
 
-function realtimeSessionId(path: string): string | null {
-  const prefix = `${ACKERDB_HTTP_ROUTES.realtime}/`;
-  if (!path.startsWith(prefix)) return null;
-  const id = path.slice(prefix.length);
-  return isRealtimeSessionId(id) ? id : null;
-}
-
 /** Owns listener admission, every WebSocket Session, and graceful Runtime drain. */
 export class AckerDBServer {
   readonly limits: ServiceLimits;
@@ -727,7 +718,6 @@ export class AckerDBServer {
   private readonly openapiInfo: OpenApiInfo | undefined;
   /** The OpenAPI document assembled at activation, or null while it is not served. */
   private openapi: Uint8Array<ArrayBuffer> | null = null;
-  private readonly realtimeHttp: RealtimeHttpTransport;
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
@@ -774,16 +764,6 @@ export class AckerDBServer {
       MAX_FILE_TRANSFERS_PER_CALLER,
       { owner: "File transfer", ingress: "File transfer" },
     );
-    this.realtimeHttp = new RealtimeHttpTransport({
-      runtime: () => this.requireRuntime(),
-      admit: (fairnessKey) => this.httpAdmission.admit(fairnessKey),
-      authenticate: (request, signal) => this.authenticate(request, signal),
-      parseBody: parseHttpBody,
-      json,
-      error: (error) => protocolError(error),
-      cors: CORS,
-    });
-
     try {
       this.listener = Bun.serve<WsData, never>({
         port: options.port,
@@ -1044,49 +1024,11 @@ export class AckerDBServer {
       return this.call(request, url, exposed, this.requestSource(request, listener));
     }
     if (
-      url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare &&
-      request.method === "POST"
-    ) {
-      return this.realtimeHttp.prepare(
-        request,
-        this.requestSource(request, listener),
-      );
-    }
-    if (
-      url.pathname === ACKERDB_HTTP_ROUTES.realtime &&
-      request.method === "POST"
-    ) {
-      return this.realtimeHttp.offer(
-        request,
-        this.requestSource(request, listener),
-      );
-    }
-    const realtimeId = realtimeSessionId(url.pathname);
-    if (
-      realtimeId !== null &&
-      (request.method === "PATCH" || request.method === "DELETE")
-    ) {
-      return this.realtimeHttp.session(
-        request,
-        realtimeId,
-        this.requestSource(request, listener),
-      );
-    }
-    if (
       url.pathname === ACKERDB_HTTP_ROUTES.live ||
       url.pathname === ACKERDB_HTTP_ROUTES.ready ||
       url.pathname === ACKERDB_HTTP_ROUTES.status
     ) {
       return methodNotAllowed("GET");
-    }
-    if (
-      url.pathname === ACKERDB_HTTP_ROUTES.realtime ||
-      url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare
-    ) {
-      return methodNotAllowed("POST");
-    }
-    if (realtimeId !== null) {
-      return methodNotAllowed("PATCH, DELETE");
     }
     // An unclaimed path answers the one shape every other failure here answers:
     // a caller decoding this surface meets `not_found`, never a plain-text body

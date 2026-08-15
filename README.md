@@ -2,8 +2,8 @@
 
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, durable jobs,
-live query subscriptions, application channels, and WebRTC media sessions
-over one versioned wire contract.
+live query subscriptions, and application channels over one versioned wire
+contract.
 
 The supported production topology is one Bun server process owning one local
 SQLite database file. AckerDB is not a horizontally scaled or replicated service,
@@ -19,21 +19,17 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel/realtime references. |
-| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, and limits. |
-| `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
-| `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
+| `@ackerdb/core` | Wire envelopes, encoding, outcomes, cursors, and typed function/channel references. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, authentication, reactivity, transport, and limits. |
+| `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, reconnect, and credential refresh. |
+| `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, authentication, and optional AI SDK integrations. |
 | `@ackerdb/cli` | Application development, code generation, schema operations, backup/restore, status, and FileStore migration commands. |
 
 Install public stable or canary packages from npm with exact versions:
 
 ```sh
 bun add --exact @ackerdb/server@X.Y.Z @ackerdb/client@X.Y.Z @ackerdb/cli@X.Y.Z
-# Realtime applications also install the root optional-native selector:
-bun add --exact @ackerdb/realtime@X.Y.Z
 ```
-
-Do not install a host-specific `@ackerdb/realtime-*` package directly.
 
 ## Application shape
 
@@ -51,7 +47,7 @@ your-app/
   point for the root `defineSchema(...)`. Persistent tables use `defineTable`;
   `defineEventTable` declares non-persistent live events.
 - Functions use the generated `query`, `mutation`, `procedure`,
-  `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
+  `sseProcedure`, and `channel` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
   A declaration may also name its `apiPath`: the group it is published in and
@@ -139,10 +135,6 @@ client.close();
 - [Application channels](docs/channels.md) documents typed bidirectional
   events, opt-in rooms, shared memberships, handler deduplication, and
   reconnect behavior over the existing application WebSocket.
-- [Realtime media sessions](docs/realtime-media.md) documents AckerDB-relayed
-  WebRTC, native tracks, typed events and byte streams, signaling,
-  deduplication, React/Expo setup, and the current native-server-engine
-  boundary.
 - [Operations, limits, and recovery](docs/operations.md) documents finite
   production defaults, typed outcomes, durability profiles, health endpoints,
   startup/readiness phases, evidence-preserving crash recovery, signal-driven
@@ -172,10 +164,7 @@ All `.ackerdb.config.json` fields are optional. The path defaults are
 `0.0.0.0` only when clients must connect through a trusted private development
 network. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
-never both. A `realtime` module path may default-export
-`createRealtimeRuntime(options)` for deployment-owned ICE, TURN, network, and
-resource configuration; it is loaded only when the application declares
-realtime handlers. The protected status scope is set in the same
+never both. The protected status scope is set in the same
 `.ackerdb.config.json` through `statusScope`.
 Durability is an exact environment switch:
 
@@ -229,5 +218,4 @@ bun run publish:beta
 AckerDB's main packages are source-available under the
 [Functional Source License 1.1 with an Apache 2.0 future license](LICENSE.md).
 Each released version becomes available under Apache-2.0 two years after that
-version is first made available. The separately distributed WebRTC native
-packages remain Apache-2.0 licensed.
+version is first made available.

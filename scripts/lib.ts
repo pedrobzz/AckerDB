@@ -1,26 +1,7 @@
 // Shared package, lockfile, registry, and git invariants for release tooling.
-export const PUBLIC_PACKAGES = [
-  "core",
-  "server",
-  "realtime",
-  "client",
-  "client-react",
-  "cli",
-] as const;
-
-export const NATIVE_PACKAGES = [
-  "realtime-darwin-arm64",
-  "realtime-darwin-x64",
-  "realtime-linux-arm64-gnu",
-  "realtime-linux-x64-gnu",
-  "realtime-win32-x64-msvc",
-] as const;
-
 export const PACKAGES = [
   "core",
   "server",
-  ...NATIVE_PACKAGES,
-  "realtime",
   "client",
   "client-react",
   "cli",
@@ -51,28 +32,8 @@ export async function assertRegistryReachable(registry: string): Promise<void> {
   }
 }
 
-/** Working-tree prereleases assemble and verify every advertised native target. */
-export function assertWebRtcDistribution(): void {
-  const result = Bun.spawnSync(
-    ["bun", "packages/realtime/native/webrtc/package.ts"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  if (result.exitCode !== 0) {
-    throw new Error(
-      "the WebRTC package is not assembled from all verified target builds:\n" +
-        result.stdout.toString() +
-        result.stderr.toString(),
-    );
-  }
-}
-
 export function packageDirectory(pkg: string): string {
-  const platform = pkg.startsWith("realtime-")
-    ? pkg.slice("realtime-".length)
-    : undefined;
-  return platform === undefined
-    ? `packages/${pkg}`
-    : `packages/realtime-native/${platform}`;
+  return `packages/${pkg}`;
 }
 
 export function pkgJsonPath(pkg: string): string {
@@ -133,7 +94,7 @@ export function fail(message: string): never {
   process.exit(1);
 }
 
-// All public and host-specific packages move in lockstep.
+// Every published package moves in lockstep.
 export function syncedVersion(
   read: (pkg: string) => string,
   packages: readonly string[] = PACKAGES,

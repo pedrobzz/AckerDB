@@ -64,8 +64,8 @@ be a word `export const <name>` rejects, and may not begin with `_` — the
 reserved marker, which keeps every root AckerDB may want permanently free of
 application routes. The marker rule is stated once and applied wherever a path
 is claimed — the group, the module namespace under it, and the free-form path
-an MCP endpoint chooses alike. Socket-addressed kinds (channels, realtime) have
-no HTTP root to group and refuse `apiPath` at startup.
+an MCP endpoint chooses alike. The socket-addressed kind (channels) has no
+HTTP root to group and refuses `apiPath` at startup.
 
 A group decides *where* a function answers, never *whether* it answers: plain
 HTTP still requires `http`, and over the socket a function is addressed by the

@@ -1,21 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { PUBLIC_PACKAGES } from "../lib.ts";
+import { PACKAGES } from "../lib.ts";
 import { affectedPackages, testPath } from "./test-affected.ts";
 
 describe("affected package selection", () => {
   test("accepts every package the classifier can emit, in the order given", () => {
-    const every = JSON.stringify(PUBLIC_PACKAGES);
-    expect(affectedPackages(every)).toEqual([...PUBLIC_PACKAGES]);
+    const every = JSON.stringify(PACKAGES);
+    expect(affectedPackages(every)).toEqual([...PACKAGES]);
     expect(affectedPackages('["server","cli"]')).toEqual(["server", "cli"]);
     expect(affectedPackages("[]")).toEqual([]);
   });
 
   test("refuses anything the classifier could not have produced", () => {
     expect(() => affectedPackages('["core","unknown"]')).toThrow(
-      "affected package output contains an unknown package",
-    );
-    // Native packages are never test targets: they carry no test directory.
-    expect(() => affectedPackages('["realtime-darwin-arm64"]')).toThrow(
       "affected package output contains an unknown package",
     );
     expect(() => affectedPackages('[1]')).toThrow(
@@ -35,7 +31,7 @@ describe("affected package selection", () => {
     // A bare relative path makes `bun test` crawl the whole tree as a filter
     // and starve child spawns; an absolute one resolves the same suite from
     // anywhere, so CI and a local run mean the same thing.
-    for (const pkg of PUBLIC_PACKAGES) {
+    for (const pkg of PACKAGES) {
       expect(testPath(pkg)).toStartWith("/");
       expect(testPath(pkg)).toEndWith(`/packages/${pkg}/test`);
     }

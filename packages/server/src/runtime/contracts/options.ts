@@ -1,7 +1,6 @@
 import type { CredentialVerifier, ScopeResolver } from "../../auth/credentials.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { Engine } from "../../database/engine.ts";
-import type { RealtimeRuntimeModule } from "../../realtime/host.ts";
 import type { ServiceLimits } from "../limits.ts";
 import type { RuntimeHooks } from "./lifecycle.ts";
 import type { DeclaredJob } from "../../jobs/definition.ts";
@@ -26,5 +25,4 @@ export interface RuntimeOptions {
   /** Built-in immutable File storage and delivery configuration. */
   readonly files?: RuntimeFilesOptions;
   readonly now?: () => number;
-  readonly realtime?: RealtimeRuntimeModule;
 }

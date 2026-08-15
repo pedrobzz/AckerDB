@@ -59,18 +59,8 @@ export {
   type ChannelClientEvents,
   type ChannelServerEvents,
   type ChannelError,
-  type RealtimeRef,
-  type AnyRealtimeRef,
-  type RealtimeArgs,
-  type RealtimeClientEvents,
-  type RealtimeServerEvents,
-  type RealtimeClientStreams,
-  type RealtimeServerStreams,
-  type RealtimeError,
-  type RealtimeStreamMap,
   type RegisteredFunction,
   type RegisteredChannelContract,
-  type RegisteredRealtimeContract,
   type RegisteredServerOnly,
   type RegisteredApiPath,
   type ApiFromModules,
@@ -95,8 +85,3 @@ export {
 } from "./admin.ts";
 export * from "./protocol.ts";
 export * from "./sse.ts";
-export * from "./realtime/protocol.ts";
-export * from "./realtime/data-plane.ts";
-export * from "./realtime/negotiation.ts";
-export * from "./realtime/signaling.ts";
-export * from "./realtime/webrtc.ts";

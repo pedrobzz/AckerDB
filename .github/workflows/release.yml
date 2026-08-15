@@ -6,7 +6,6 @@ on:
     branches: [canary, main]
 
 permissions:
-  actions: read
   contents: read
   id-token: write
   pull-requests: read
@@ -52,30 +51,6 @@ jobs:
           node -e 'const version = require("node:child_process").execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
           const [major, minor] = version.split(".").map(Number);
           if (major < 11 || (major === 11 && minor < 5)) throw new Error("npm " + version + " cannot use trusted publishing")'
-      - name: Find native artifacts from the merged PR
-        id: native
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          pr=$(gh api "repos/$REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.merged_at != null)] | first | .number // empty')
-          [ -n "$pr" ] || exit 0
-          head_sha=$(gh api "repos/$REPOSITORY/pulls/$pr" --jq .head.sha)
-          run_id=$(gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head_sha&status=success&per_page=1" --jq '.workflow_runs[0].id // empty')
-          [ -n "$run_id" ] || exit 0
-          count=$(gh api "repos/$REPOSITORY/actions/runs/$run_id/artifacts" --jq '[.artifacts[] | select(.name | startswith("webrtc-"))] | length')
-          if [ "$count" -eq 5 ]; then
-            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.native.outputs.run_id != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.native.outputs.run_id }}
-          pattern: webrtc-*
-          path: packages/realtime/native/webrtc/binding
-          merge-multiple: true
       - id: publish
         run: bun scripts/release/publish.ts npm
       - run: echo "Published @ackerdb/*@${{ steps.publish.outputs.version }} from protected ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"

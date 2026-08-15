@@ -25,8 +25,6 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   status: "/status",
   websocket: "/_ws",
   sseAck: "/_sse/ack",
-  realtime: "/_realtime",
-  realtimePrepare: "/_realtime/prepare",
   /** The root of the File byte routes; the segments after it name one grant. */
   files: "/_files",
   /** Served only when the serve options ask for it; a 404 otherwise. */

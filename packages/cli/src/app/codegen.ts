@@ -118,7 +118,6 @@ import {
   channel as channelGeneric,
   httpHandler as httpHandlerGeneric,
   job as jobGeneric,
-  realtime as realtimeGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -144,7 +143,6 @@ import type {
   ProcedureJobsOf,
   QueryBuilder,
   QueryJobsOf,
-  RealtimeBuilder,
   QueryCtx as GenericQueryCtx,
   SseBuilder,
   SseCtx as GenericSseCtx,
@@ -162,7 +160,6 @@ ${jobsType("ProcedureJobs", "ProcedureJobsOf")}
 
 export const query = queryGeneric as QueryBuilder<Schema, Capabilities, QueryJobs, Scope>;
 export const channel = channelGeneric as ChannelBuilder<Schema>;
-export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Capabilities, Capabilities>;
 export const mutation = mutationGeneric as MutationBuilder<Schema, Capabilities, MutationJobs, Scope>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, Capabilities, Capabilities, ProcedureJobs, MutationJobs, Scope>;

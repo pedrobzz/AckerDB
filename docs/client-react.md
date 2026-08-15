@@ -2,8 +2,8 @@
 
 `@ackerdb/client-react` is the declarative React binding for the generated AckerDB
 API. One `AckerDBProvider` owns the underlying client; components consume typed
-queries, mutations, procedures, event streams, application channels, WebRTC
-sessions, authentication, and connection state through hooks. The same root
+queries, mutations, procedures, event streams, application channels,
+authentication, and connection state through hooks. The same root
 imports work in browsers and Expo React Native applications.
 
 This page documents the currently implemented client, including typed
@@ -89,10 +89,8 @@ export function Root() {
 [`credentialSource`](#credential-source) callback. A bearer configuration is
 `{ kind: "bearer", token }`. Optional configuration includes
 `clientSessionId`, partial `limits`, partial `reconnect` settings, and injected
-`clock`, `random`, `createWebSocket`, `createPeerConnection`, `fetch`, or
-`lifecycle` capabilities. An Expo realtime application supplies only the peer
-constructor from its native WebRTC package; the Expo entry provides the other
-native capabilities automatically.
+`clock`, `random`, `createWebSocket`, `fetch`, or `lifecycle` capabilities.
+The Expo entry provides the native capabilities automatically.
 
 The provider constructs and connects one client after React commits, then
 closes it on teardown. Equal configuration values keep the same lifetime even
@@ -574,41 +572,6 @@ chat.send("compose", { text });
 future reconnect. See [Application channels](channels.md) for server
 declarations, room rules, publishing, state, and deduplication.
 
-## Realtime media sessions
-
-`useRealtime(ref, args, options)` retains one AckerDB-relayed WebRTC session.
-Audio and video remain native tracks on the exposed `RTCPeerConnection`; one
-reliable internal data channel carries typed events and finite typed byte
-streams. Equal client, reference, and canonical arguments always share one
-peer; every committed hook observes that peer with its own current handlers.
-
-```tsx
-const assistant = useRealtime(api.assistant.live, { assistantId }, {
-  on: {
-    async peerConnection(peer) {
-      const media = await navigator.mediaDevices.getUserMedia({ audio: true });
-      for (const track of media.getTracks()) peer.addTrack(track, media);
-      return () => media.getTracks().forEach((track) => track.stop());
-    },
-    event: {
-      transcript(value) {
-        store.append(value);
-      },
-    },
-    track(event) {
-      play(event.track);
-    },
-  },
-});
-```
-
-`RealtimeOn<typeof api.assistant.live>` derives the complete `on` type for a
-custom hook. Expo uses the same hook with its native
-`RTCPeerConnection` and capture APIs; it does not use browser
-`navigator.mediaDevices`. See [Realtime media sessions](realtime-media.md) for
-server declarations, native setup, streams, signaling, recovery, and the
-current native-server-engine boundary.
-
 ## Authentication and durable Identity
 
 `useAuthentication()` exposes state plus explicit refresh and sign-out
@@ -795,8 +758,7 @@ Recovery guarantees are operation-specific:
 
 - Native support is the Expo 57 conditional entry. Bare React Native and Expo
   Go are not supported targets; use a custom Expo development or release
-  build. Realtime applications inject the peer constructor from their selected
-  Expo-compatible WebRTC native package.
+  build.
 - The full physical iOS/Android duration, network-transition, Doze/App
   Standby, and release-build acceptance matrix remains deferred in
   [Issue #17](https://github.com/pedrobzz/ackerdb/issues/17). Current automated
