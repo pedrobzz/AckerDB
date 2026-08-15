@@ -12,7 +12,6 @@ import {
   v,
   defineSchema,
   reconcile,
-  serve,
   sseProcedure,
   type SseCtx,
 } from "@ackerdb/server";
@@ -36,6 +35,7 @@ import {
 } from "@ackerdb/client-react/ai";
 import { uiMessageChunk } from "./ui-message-chunk.ts";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -239,7 +239,7 @@ interface App {
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-ai-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -248,7 +248,8 @@ function createApp(): App {
     registry: registry(),
     limits: PRODUCTION_LIMITS,
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     runtime,
@@ -370,8 +371,8 @@ async function mountChat(base: string, options: MountOptions): Promise<Mounted> 
 let app: App;
 const roots: Mounted[] = [];
 
-beforeAll(() => {
-  app = createApp();
+beforeAll(async () => {
+  app = await createApp();
 });
 afterAll(() => app.close());
 beforeEach(() => {

@@ -682,6 +682,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
       }),
       now: () => clock,
     } as Ctx);
+    await runtime.start();
 
     await runtime.runJobs();
     await Bun.sleep(20);
@@ -724,6 +725,7 @@ describe("the pre-split jobs table is transformed, never dropped", () => {
       jobs: declared,
       now: () => clock,
     } as Ctx);
+    await runtime.start();
 
     // The lease it carried across the upgrade is already expired: recovery
     // settles the run it inherited through the retry policy, and the next run

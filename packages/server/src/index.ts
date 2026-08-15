@@ -6,6 +6,19 @@ export {
   type AppScope,
 } from "./app/definition.ts";
 export {
+  boot,
+  MigrationsHeldError,
+  type BootFiles,
+  type BootLoaders,
+  type BootOptions,
+  type BootReporter,
+  type BootStorage,
+  type FunctionModules,
+  type LoadedApp,
+  type LoadedRuntime,
+  type RunningApp,
+} from "./boot.ts";
+export {
   frameworkFunctionModules,
   type FrameworkFunctionModules,
 } from "./admin/index.ts";
@@ -21,6 +34,7 @@ export {
   ADMIN_CREDENTIAL_NAME,
   ensureAdminCredential,
   type AdminCredentialBoot,
+  type AdminCredentialMint,
 } from "./admin/credentials.ts";
 export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
 export {
@@ -292,6 +306,7 @@ export {
   type RowTransform,
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
+export { readStoredState, type StoredState } from "./schema/migrations/stored.ts";
 export {
   planFrameworkMigrations,
   type FrameworkMigration,
@@ -574,13 +589,11 @@ export {
 } from "./transport/openapi.ts";
 export {
   AckerDBServer,
-  serve,
   type AckerDBServerOptions,
   type AckerDBServerState,
   type AckerDBServerStatus,
   type AckerDBStartupPhase,
   type McpHttpOptions,
-  type ServeOptions,
 } from "./transport/server.ts";
 export {
   defineTable,

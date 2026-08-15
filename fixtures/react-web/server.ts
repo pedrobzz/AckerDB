@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -15,7 +16,6 @@ import {
   defineTable,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import index from "./index.html";
 
@@ -39,7 +39,9 @@ const registry = new Registry({
   },
 });
 const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-serve({ runtime, port: 3211 });
+await runtime.start();
+const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port: 3211 });
+server.activate(runtime);
 
 Bun.serve({ port: 3210, routes: { "/": index }, development: true });
 console.log("AckerDB server:  http://127.0.0.1:3211");

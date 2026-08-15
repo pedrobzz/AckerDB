@@ -32,7 +32,6 @@ import {
   mutation,
   query,
   reconcile,
-  serve,
   sseProcedure,
   type SseCtx,
 } from "@ackerdb/server";
@@ -43,6 +42,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AckerDBQueryState } from "@ackerdb/client-react";
 import { uiMessageChunk } from "./ai/ui-message-chunk.ts";
 import { deferred, type Deferred, until, waitForAbort } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -150,7 +150,7 @@ interface App {
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-native-settlement-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -159,7 +159,8 @@ function createApp(): App {
     registry: registry(),
     limits: PRODUCTION_LIMITS,
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     runtime,
@@ -223,7 +224,7 @@ let app: App;
 const roots: Root[] = [];
 
 beforeAll(async () => {
-  app = createApp();
+  app = await createApp();
   // Real data behind the mounted query, seeded through an ordinary client.
   const writer = new AckerDBClient({ url: app.base, credential: { kind: "anonymous" } });
   await writer.mutation("api.messages.add", { body: "one" });

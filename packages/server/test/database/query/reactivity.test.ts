@@ -245,6 +245,7 @@ describe("query prefix reactivity", () => {
       registry: new Registry(functions),
       limits: PRODUCTION_LIMITS,
     });
+    await runtime.start();
     session = new SessionHarness(runtime);
     await session.open();
   });

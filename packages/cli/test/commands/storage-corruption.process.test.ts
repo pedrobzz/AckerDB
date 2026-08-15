@@ -329,10 +329,10 @@ describe("fresh-process storage corruption rejection", () => {
     expect(recovered.query("SELECT value FROM records").all()).toEqual([
       { value: "committed-before-crash" },
     ]);
-    // The recovered commit, then the Admin Credential this fixture's database
-    // has never held: recovery restores the row, boot mints the master.
+    // The recovered commit is the only logical commit: recovery restores the
+    // row, and the boot's Admin Credential mint spends no commit version.
     expect(recovered.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
-      commit_version: 2n,
+      commit_version: 1n,
     });
     recovered.close();
 
@@ -375,9 +375,10 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(uncommitted);
     const rolledBack = new Database(uncommittedPath, { readonly: true, safeIntegers: true });
     expect(rolledBack.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
-    // The spilled write rolled back; version 1 is the boot's own mint.
+    // The spilled write rolled back, and the boot's own mint spends no
+    // logical commit version.
     expect(rolledBack.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
-      commit_version: 1n,
+      commit_version: 0n,
     });
     rolledBack.close();
 
@@ -426,9 +427,10 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(recoveredReset);
     const resetDatabase = new Database(resetPath, { readonly: true, safeIntegers: true });
     expect(resetDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 501n });
-    // Two recovered commits, plus the boot's own Admin Credential mint.
+    // Two recovered commits; the boot's own Admin Credential mint spends no
+    // logical commit version.
     expect(resetDatabase.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
-      commit_version: 3n,
+      commit_version: 2n,
     });
     resetDatabase.close();
 
@@ -519,10 +521,11 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(recovered);
     const recoveredDatabase = new Database(validPath, { readonly: true, safeIntegers: true });
     expect(recoveredDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
-    // The rolled-back write left nothing; version 1 is the boot's own mint.
+    // The rolled-back write left nothing, and the boot's own mint spends no
+    // logical commit version.
     expect(
       recoveredDatabase.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get(),
-    ).toEqual({ commit_version: 1n });
+    ).toEqual({ commit_version: 0n });
     recoveredDatabase.close();
 
     const corruptPort = await freePort();

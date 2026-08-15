@@ -5,7 +5,6 @@ import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { credentials } from "../../src/auth/credential-context.ts";
 import { v } from "../../src/validation/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { serve } from "../../src/transport/server.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import {
   cleanupCredentialFixtures,
@@ -22,6 +21,7 @@ import {
   user,
 } from "../support/credential-fixture.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const MCP_ACKERDB_VERSION = "2025-11-25";
 
@@ -180,15 +180,15 @@ const ownershipModules = {
 
 interface Harness {
   readonly runtime: Runtime;
-  readonly engine: ReturnType<typeof fixture>["engine"];
-  readonly server: ReturnType<typeof serve>;
+  readonly engine: Awaited<ReturnType<typeof fixture>>["engine"];
+  readonly server: ReturnType<typeof listen>;
   readonly base: string;
 }
 
-function startHarness(
+async function startHarness(
   maxOperations = 8,
   maxOperationsPerCaller = 4,
-): Harness {
+): Promise<Harness> {
   const limits = defineServiceLimits({
     ...PRODUCTION_LIMITS,
     maxOperations,
@@ -199,13 +199,13 @@ function startHarness(
     credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 4 },
     gracefulShutdownMs: 250,
   });
-  const value = fixture(
+  const value = await fixture(
     databasePath("ackerdb-mcp-runtime-"),
     undefined,
     ownershipModules,
     { limits },
   );
-  const server = serve({ runtime: value.runtime, port: 0 });
+  const server = listen(value.runtime);
   trackCleanup(() => server.drain());
   return {
     ...value,
@@ -311,7 +311,7 @@ afterEach(async () => {
 
 describe("MCP Runtime ownership", () => {
   test("shares HTTP and Runtime admission fairly by credential Identity", async () => {
-    const value = startHarness(2, 1);
+    const value = await startHarness(2, 1);
     const [aliceOne, aliceTwo] = await tokens(value, "alice", ["Alice one", "Alice two"]);
     const [bob] = await tokens(value, "bob", ["Bob"]);
     const [carol] = await tokens(value, "carol", ["Carol"]);
@@ -409,7 +409,7 @@ describe("MCP Runtime ownership", () => {
   });
 
   test("keeps nested invocations and a transaction under one Runtime lease", async () => {
-    const value = startHarness(4, 2);
+    const value = await startHarness(4, 2);
     const [token] = await tokens(value, "nested", ["Nested"]);
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
@@ -436,7 +436,7 @@ describe("MCP Runtime ownership", () => {
   });
 
   test("cancels queued contention and preserves commit/rollback ownership", async () => {
-    const value = startHarness(4, 2);
+    const value = await startHarness(4, 2);
     const [alice] = await tokens(value, "contention-alice", ["Alice"]);
     const [bob] = await tokens(value, "contention-bob", ["Bob"]);
     const transactionGate = gate("writer-active");
@@ -482,7 +482,7 @@ describe("MCP Runtime ownership", () => {
   });
 
   test("settles disconnect and graceful server shutdown through Runtime signals", async () => {
-    const value = startHarness(4, 2);
+    const value = await startHarness(4, 2);
     const directController = new AbortController();
     const directGate = gate("direct-disconnect");
     const directPrincipal = await user(value.runtime, "direct-disconnect");
@@ -565,7 +565,7 @@ describe("MCP Runtime ownership", () => {
   });
 
   test("bounds a stalled accepted exchange by the existing shutdown deadline", async () => {
-    const value = startHarness();
+    const value = await startHarness();
     const deadlineGate = gate("shutdown-deadline");
     const held = rpc(value, "hold_ownership", { gate: "shutdown-deadline" });
     await deadlineGate.started;
@@ -595,7 +595,7 @@ describe("MCP Runtime ownership", () => {
     const serverClose = spyOn(McpSdkServer.prototype, "close");
     const transportClose = spyOn(WebStandardStreamableHTTPServerTransport.prototype, "close");
     try {
-      const value = startHarness();
+      const value = await startHarness();
       const port = value.server.port;
       const exchanges = 32;
       for (let index = 0; index < exchanges; index++) {

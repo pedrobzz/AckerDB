@@ -227,7 +227,7 @@ afterEach(async () => {
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
-function fixture(): { engine: Engine; runtime: Runtime } {
+async function fixture(): Promise<{ engine: Engine; runtime: Runtime }> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-system-credentials-"));
   directories.push(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
@@ -243,6 +243,7 @@ function fixture(): { engine: Engine; runtime: Runtime } {
       credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
     },
   });
+  await runtime.start();
   cleanups.push(async () => {
     await runtime.drain().catch(() => {});
     engine.close("clean");
@@ -340,7 +341,7 @@ async function createSystemAgentToken(
 
 describe("system-managed identity credentials", () => {
   test("creates, lists, authenticates, and revokes once through scheduled system authority", async () => {
-    const { engine, runtime } = fixture();
+    const { engine, runtime } = await fixture();
     const bob = await user(runtime, "backend-managed-bob");
     const publications: SessionApplicationMessage[] = [];
     const bobSession = session(bob, "backend-managed-bob-session", publications);
@@ -400,7 +401,7 @@ describe("system-managed identity credentials", () => {
   });
 
   test("rejects user, workload, anonymous, and MCP principals before target validation", async () => {
-    const { engine, runtime } = fixture();
+    const { engine, runtime } = await fixture();
     const bob = await user(runtime, "target-bob");
     const bobSession = session(bob, "target-bob-session");
     await runtime.openSession(bobSession);
@@ -449,7 +450,7 @@ describe("system-managed identity credentials", () => {
   });
 
   test("keeps system revocation bound to the exact credential and Identity", async () => {
-    const endpoint = fixture();
+    const endpoint = await fixture();
     const endpointOwner = await user(endpoint.runtime, "endpoint-owner");
     const endpointSession = session(endpointOwner, "endpoint-owner-session");
     await endpoint.runtime.openSession(endpointSession);
@@ -470,7 +471,7 @@ describe("system-managed identity credentials", () => {
       "wrong-token",
     )).toMatchObject({ identity: endpointToken.identity, tokenId: endpointToken.id });
 
-    const identity = fixture();
+    const identity = await fixture();
     const bob = await user(identity.runtime, "identity-owner-bob");
     const bobSession = session(bob, "identity-owner-bob-session");
     await identity.runtime.openSession(bobSession);
@@ -491,7 +492,7 @@ describe("system-managed identity credentials", () => {
   });
 
   test("validates exact declared scopes before system create mutates storage", async () => {
-    const { engine, runtime } = fixture();
+    const { engine, runtime } = await fixture();
     const bob = await user(runtime, "scopes-owner");
     const bobSession = session(bob, "scopes-owner-session");
     await runtime.openSession(bobSession);
@@ -513,7 +514,7 @@ describe("system-managed identity credentials", () => {
     // grant that would start authorizing more the day the parent grows, with
     // nobody having granted the difference. Use-time intersection would hide
     // it: the child looks correctly narrow until it silently is not.
-    const { engine, runtime } = fixture();
+    const { engine, runtime } = await fixture();
     const bob = await user(runtime, "wildcard-owner");
     const bobSession = session(bob, "wildcard-owner-session");
     await runtime.openSession(bobSession);
@@ -529,7 +530,7 @@ describe("system-managed identity credentials", () => {
   });
 
   test("a root credential has no parent to outgrow, so it keeps its patterns", async () => {
-    const { engine, runtime } = fixture();
+    const { engine, runtime } = await fixture();
     const bob = await user(runtime, "root-minter");
     const bobSession = session(bob, "root-minter-session");
     await runtime.openSession(bobSession);

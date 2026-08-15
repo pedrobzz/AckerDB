@@ -97,7 +97,8 @@ import { FileCleanupRuntime } from "../files/cleanup.ts";
 
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
- * Engine lifetime remains with the caller so storage closes exactly once.
+ * Construction wires; `start()` is what begins work. Engine lifetime remains
+ * with the caller so storage closes exactly once.
  */
 export class Runtime implements RuntimePort {
   readonly engine: Engine;
@@ -331,12 +332,19 @@ export class Runtime implements RuntimePort {
       operationSignal: (signal) => this.control.operationSignal(signal),
       now: this.now,
     });
-    this.functions.bindFileRecoveryBarrier(this.fileCleanup.activate());
-    void this.jobs.activate();
   }
 
   get state(): RuntimeLifecycleState {
     return this.control.state;
+  }
+
+  /**
+   * created → ready: begin File cleanup recovery, mint the repeat Jobs, arm the
+   * runner. Nothing runs on the Runtime's own initiative before this, so a host
+   * holds a constructed but quiescent Runtime until it decides otherwise.
+   */
+  start(): Promise<void> {
+    return this.control.start();
   }
 
   get connectionCount(): number {

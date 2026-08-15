@@ -82,13 +82,14 @@ const schema = defineSchema({});
 const directories: string[] = [];
 const instances = new Map<Runtime, Engine>();
 
-function open(path: string): { readonly engine: Engine; readonly runtime: Runtime } {
+async function open(path: string): Promise<{ readonly engine: Engine; readonly runtime: Runtime }> {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
     engine,
     registry: new Registry({}),
   });
+  await runtime.start();
   instances.set(runtime, engine);
   return { engine, runtime };
 }
@@ -222,7 +223,7 @@ describe("provider-neutral exact-account Identity", () => {
   test("rejects unverified issuer, audience, algorithm, type, expiry, and claims before allocation", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-provider-validation-"));
     directories.push(directory);
-    const { engine, runtime } = open(join(directory, "data.db"));
+    const { engine, runtime } = await open(join(directory, "data.db"));
     const harness = await oidcHarness();
     const now = Math.floor(Date.now() / 1_000);
     const invalidTokens = await Promise.all([
@@ -250,7 +251,7 @@ describe("provider-neutral exact-account Identity", () => {
     directories.push(directory);
     const path = join(directory, "data.db");
     const harness = await oidcHarness();
-    const first = open(path);
+    const first = await open(path);
     const attempts = [
       ...Array.from({ length: 12 }, (_, index) => ({
         provider: "clerk" as const,
@@ -296,7 +297,7 @@ describe("provider-neutral exact-account Identity", () => {
     expect(engineCount(first.engine, "_ackerdb_identity_accounts")).toBe(BigInt(identitiesByAccount.size));
 
     await close(first.runtime, first.engine);
-    const second = open(path);
+    const second = await open(path);
     for (const provider of PROVIDERS) {
       const principal = await authenticate(
         second.runtime,
@@ -340,7 +341,7 @@ describe("provider-neutral exact-account Identity", () => {
     second.engine.writer.exec("COMMIT");
     await close(second.runtime, second.engine);
 
-    const third = open(path);
+    const third = await open(path);
     const replacement = await authenticate(
       third.runtime,
       harness,

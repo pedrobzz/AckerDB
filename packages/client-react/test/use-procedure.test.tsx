@@ -23,7 +23,6 @@ import {
   defineTable,
   procedure,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import {
   StrictMode,
@@ -42,6 +41,7 @@ import {
 } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
 import { deferred, until, type Deferred } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -89,7 +89,7 @@ interface App {
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-procedure-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -125,7 +125,8 @@ function createApp(): App {
     },
   });
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   const base = `http://127.0.0.1:${server.port}`;
   return {
     base,
@@ -190,8 +191,8 @@ async function unmount(root: Root): Promise<void> {
 }
 
 let app: App;
-beforeAll(() => {
-  app = createApp();
+beforeAll(async () => {
+  app = await createApp();
 });
 afterAll(() => app.close());
 

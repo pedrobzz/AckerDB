@@ -424,7 +424,7 @@ const modules = {
 let directory: string;
 let engine: Engine;
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-delegation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -433,6 +433,7 @@ beforeEach(() => {
     registry: new Registry(modules),
     scopes: VOCABULARY,
   });
+  await runtime.start();
   observations = [];
   retainedTools = undefined;
   parallelEnabled = false;

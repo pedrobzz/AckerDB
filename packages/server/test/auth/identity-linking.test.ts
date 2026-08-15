@@ -139,7 +139,7 @@ interface Harness {
 
 const harnesses: Harness[] = [];
 
-function open(): Harness {
+async function open(): Promise<Harness> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-linking-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -150,6 +150,7 @@ function open(): Harness {
     verifier,
     now: () => NOW,
   });
+  await runtime.start();
   const harness = { directory, engine, runtime, verifier };
   harnesses.push(harness);
   return harness;
@@ -208,7 +209,7 @@ function directoryCounts(engine: Engine): { identities: bigint; accounts: bigint
 
 describe("explicit provider-neutral account linking", () => {
   test("links two exact issuers to one Identity and both credentials own the same row", async () => {
-    const { engine, runtime, verifier } = open();
+    const { engine, runtime, verifier } = await open();
     const aliceA = await authenticate(runtime, verifier, "alice-a");
     expect(directoryCounts(engine)).toEqual({ identities: 1n, accounts: 1n });
 
@@ -238,7 +239,7 @@ describe("explicit provider-neutral account linking", () => {
   });
 
   test("rejects callers without user proof and never merges a conflicting Identity", async () => {
-    const { engine, runtime, verifier } = open();
+    const { engine, runtime, verifier } = await open();
     const alice = await authenticate(runtime, verifier, "alice-a");
     const bob = await authenticate(runtime, verifier, "bob-a");
     expect(alice.identity).not.toBe(bob.identity);
@@ -283,7 +284,7 @@ describe("explicit provider-neutral account linking", () => {
   });
 
   test("rolls back a failed canonical writer turn without leaving an account link", async () => {
-    const { engine, runtime, verifier } = open();
+    const { engine, runtime, verifier } = await open();
     const alice = await authenticate(runtime, verifier, "alice-a");
     engine.writer.exec(`CREATE TEMP TRIGGER fail_identity_link
       AFTER INSERT ON _ackerdb_identity_accounts

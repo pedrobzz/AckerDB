@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   AckerDBError,
+  AckerDBServer,
   v,
   defineSchema,
   defineTable,
@@ -10,7 +11,6 @@ import {
   reconcile,
   Registry,
   Runtime,
-  serve,
   procedure,
   type McpBuilder,
   type ProcedureBuilder,
@@ -233,7 +233,9 @@ async function main(): Promise<void> {
     engine,
     registry: new Registry(modules),
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port: 0 });
+  server.activate(runtime);
 
   try {
     const url = `http://127.0.0.1:${server.port}${conformanceMcp.path}`;

@@ -59,11 +59,11 @@ function limits(overrides: Partial<ServiceLimits["jobs"]> = {}): ServiceLimits {
   };
 }
 
-function start(
+async function start(
   jobs: DeclaredJob[],
   customLimits = limits(),
   functions: Record<string, Record<string, unknown>> = {},
-): void {
+): Promise<void> {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-jobs-"));
   directories.push(directory);
   engine = new Engine(schema, join(directory, "data.db"));
@@ -75,6 +75,7 @@ function start(
     jobs,
     now: () => clock,
   });
+  await runtime.start();
 }
 
 /** Reopen the same database file with a fresh Runtime: the restart seam. */
@@ -90,6 +91,7 @@ async function restart(jobs: DeclaredJob[], customLimits = limits()): Promise<vo
     jobs,
     now: () => clock,
   });
+  await runtime.start();
 }
 
 function jobRows(): Array<{
@@ -165,7 +167,7 @@ describe("procedure-kind jobs", () => {
   test("claims, runs the handler as a system operation, and settles the outcome", async () => {
     clock = 1_000_000;
     const seen: unknown[] = [];
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         greet: job({
           args: { who: v.string() },
@@ -201,7 +203,7 @@ describe("procedure-kind jobs", () => {
   test("a failed run reports nextRetryAt and the next run retries on schedule", async () => {
     clock = 2_000_000;
     let attempts = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         flaky: job({
           args: {},
@@ -249,7 +251,7 @@ describe("procedure-kind jobs", () => {
   test("exhausted retries fail the Job, and a manual retry adds a run to it", async () => {
     clock = 3_000_000;
     let runs = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         doomed: job({
           args: {},
@@ -289,7 +291,7 @@ describe("procedure-kind jobs", () => {
     const started = deferred<void>();
     const finish = deferred<string>();
     let abortedInHandler = false;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         slow: job({
           args: {},
@@ -330,7 +332,7 @@ describe("procedure-kind jobs", () => {
 describe("dedupe and memoization", () => {
   test("in-flight dedupe collapses equal args into one Job; fresh args run fresh", async () => {
     clock = 5_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         send: job({
           args: { to: v.string() },
@@ -363,7 +365,7 @@ describe("dedupe and memoization", () => {
 
   test("a dedupe hit is write-free: it changes no row and creates no run", async () => {
     clock = 5_500_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         once: job({
           args: { key: v.string() },
@@ -400,7 +402,7 @@ describe("dedupe and memoization", () => {
   test("two settles in one millisecond resolve to the newer outcome, not the luckier row", async () => {
     clock = 5_800_000;
     let runs = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         beat: job({
           args: {},
@@ -415,7 +417,6 @@ describe("dedupe and memoization", () => {
         }),
       },
     }));
-    await runtime.jobs.activate();
     await Bun.sleep(5);
 
     await runtime.runJobs();
@@ -437,7 +438,7 @@ describe("dedupe and memoization", () => {
   test("a completed window memoizes, and expiry releases a fresh run", async () => {
     clock = 6_000_000;
     let runs = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         memo: job({
           args: { key: v.string() },
@@ -477,7 +478,7 @@ describe("concurrency", () => {
     let maxPerKey = 0;
     let totalConcurrent = 0;
     const gates = new Map<string, Deferred<void>>();
-    start(declareJobs({
+    await start(declareJobs({
       carts: {
         process: job({
           args: { cart: v.string(), step: v.int() },
@@ -526,7 +527,7 @@ describe("concurrency", () => {
     let peak = 0;
     let active = 0;
     const gate = deferred<void>();
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         fan: job({
           args: { n: v.int() },
@@ -555,7 +556,7 @@ describe("recurrence", () => {
   test("repeat mints the next occurrence at settle regardless of outcome", async () => {
     clock = 9_000_000;
     let runs = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         tick: job({
           args: {},
@@ -569,7 +570,6 @@ describe("recurrence", () => {
     }));
 
     // Bootstrap minted the first occurrence for the argless repeating job.
-    await runtime.jobs.activate();
     await Bun.sleep(5);
     let rows = jobRows();
     expect(rows).toMatchObject([{ state: "pending", nextRunAt: 9_060_000, trigger: "repeat" }]);
@@ -617,7 +617,7 @@ describe("durability", () => {
         }),
       },
     });
-    start(jobs());
+    await start(jobs());
     await runtime.jobs.enqueue("work.note", { line: "after-restart" }, { at: 10_060_000 });
     expect(jobRows()).toMatchObject([{ state: "pending" }]);
 
@@ -648,7 +648,7 @@ describe("durability", () => {
         }),
       },
     });
-    start(jobs(true), limits({ leaseMs: 30_000 }));
+    await start(jobs(true), limits({ leaseMs: 30_000 }));
     const handle = await runtime.jobs.enqueue("work.crashy", {});
     await runtime.runJobs();
     await Bun.sleep(10);
@@ -666,6 +666,7 @@ describe("durability", () => {
       jobs: jobs(false),
       now: () => clock,
     });
+    await runtime.start();
     expect(jobRows()).toMatchObject([{ state: "running" }]);
 
     // Before the lease deadline nothing is recovered.
@@ -702,7 +703,7 @@ describe("durability", () => {
         }),
       },
     });
-    start(jobs(), limits({ leaseMs: 30_000 }));
+    await start(jobs(), limits({ leaseMs: 30_000 }));
     await runtime.jobs.enqueue("work.stuck", {});
     await runtime.runJobs();
     await Bun.sleep(10);
@@ -720,6 +721,7 @@ describe("durability", () => {
       jobs: jobs(),
       now: () => clock,
     });
+    await runtime.start();
     // No runJobs() call: the arm pass must see the expired lease and wake
     // recovery on its own timer.
     const deadline = Date.now() + 2_000;
@@ -730,7 +732,7 @@ describe("durability", () => {
 
   test("dedupe identity survives more than 64 retained same-identity Jobs", async () => {
     clock = 15_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         tick: job({
           kind: "mutation" as const,
@@ -741,7 +743,6 @@ describe("durability", () => {
         }),
       },
     }));
-    await runtime.jobs.activate();
     await Bun.sleep(5);
     // 70 settled occurrences share one identity; the mint-time live check must
     // still see the newest pending row or every settle would fork a duplicate.
@@ -757,7 +758,7 @@ describe("durability", () => {
   test("a gate-blocked overdue row parks the runner instead of spinning", async () => {
     clock = 16_000_000;
     const first = deferred<string>();
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         serial: job({
           args: { n: v.int() },
@@ -786,7 +787,7 @@ describe("durability", () => {
     clock = 17_000_000;
     const gate = deferred<string>();
     let otherRan = false;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         keyed: job({
           args: { n: v.int() },
@@ -820,7 +821,7 @@ describe("durability", () => {
   test("drain delivers a typed outcome to stranded waiters instead of holding them", async () => {
     clock = 18_000_000;
     const never = deferred<never>();
-    start(declareJobs({
+    await start(declareJobs({
       work: { forever: job({ args: {}, handler: async () => await never.promise }) },
     }));
     const handle = await runtime.jobs.enqueue("work.forever", {});
@@ -841,7 +842,7 @@ describe("durability", () => {
 
   test("a terminal Job and its runs are reaped after the retention window", async () => {
     clock = 12_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         brief: job({
           kind: "mutation" as const,
@@ -867,7 +868,7 @@ describe("durability", () => {
 
   test("retention outlives a longer dedupe window rather than cutting it short", async () => {
     clock = 19_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         cached: job({
           kind: "mutation" as const,
@@ -894,7 +895,7 @@ describe("durability", () => {
 
   test("a failed run of a live Job expires on its own, bounding a long retry chain", async () => {
     clock = 20_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         grinding: job({
           args: {},
@@ -926,7 +927,7 @@ describe("durability", () => {
 
   test("a terminal Job never loses the run its outcome is read from", async () => {
     clock = 25_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         brief: job({
           kind: "mutation" as const,
@@ -994,7 +995,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
         return "unknown";
       },
     });
-    start(
+    await start(
       declareJobs({
         work: { steady: job({ args: {}, handler: async () => null }) },
       }),
@@ -1058,7 +1059,7 @@ describe("administration transitions", () => {
   test("run again re-submits through dedupe; force adds a run under one identity", async () => {
     clock = 21_000_000;
     let runs = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         report: job({
           args: { day: v.string() },
@@ -1100,7 +1101,7 @@ describe("administration transitions", () => {
 
   test("canceling one occurrence does not disable the definition's repeat policy", async () => {
     clock = 24_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         tick: job({
           args: {},
@@ -1109,7 +1110,6 @@ describe("administration transitions", () => {
         }),
       },
     }));
-    await runtime.jobs.activate();
     await Bun.sleep(5);
     const upcoming = jobRows();
     expect(upcoming).toMatchObject([{ state: "pending", nextRunAt: 24_060_000 }]);
@@ -1126,7 +1126,7 @@ describe("administration transitions", () => {
 
   test("retention wakes an idle runner, and a full page brings it straight back", async () => {
     clock = 26_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         brief: job({
           kind: "mutation" as const,
@@ -1164,7 +1164,7 @@ describe("administration transitions", () => {
 
   test("cancel before the claim creates no run at all", async () => {
     clock = 22_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: { later: job({ args: {}, handler: async () => "never" }) },
     }));
     const handle = await runtime.jobs.enqueue("work.later", {}, { delayMs: 60_000 });
@@ -1176,7 +1176,7 @@ describe("administration transitions", () => {
 
   test("reopening a terminal Job restamps the run it leaves behind as history", async () => {
     clock = 27_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         cached: job({
           kind: "mutation" as const,
@@ -1204,7 +1204,7 @@ describe("administration transitions", () => {
 
   test("deleting a Job removes every run it owns", async () => {
     clock = 23_000_000;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         twice: job({
           args: {},
@@ -1241,7 +1241,7 @@ describe("administration transitions", () => {
     // savepoint took the claim down with it. The two envelopes had drifted.
     clock = 31_000_000;
     let ran = 0;
-    start(declareJobs({
+    await start(declareJobs({
       work: {
         readArgs: job({
           kind: "mutation",

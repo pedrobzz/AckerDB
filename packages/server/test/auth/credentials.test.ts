@@ -14,7 +14,6 @@ import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcp as mcpDeclaration } from "../../src/mcp/index.ts";
 import { query } from "../../src/app/functions.ts";
 import { v } from "../../src/validation/v.ts";
-import { serve } from "../../src/transport/server.ts";
 import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
   agentMcp,
@@ -32,6 +31,7 @@ import {
   trackCleanup,
   user,
 } from "../support/credential-fixture.ts";
+import { listen } from "ackerdb-test-support/listen";
 
 afterEach(cleanupCredentialFixtures);
 
@@ -73,7 +73,7 @@ interface CreatedValue {
 
 describe("Identity credentials", () => {
   test("creates one-time secrets in an ordinary mutation without persisting replayable plaintext", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-credential-create-"));
+    const { engine, runtime } = await fixture(databasePath("ackerdb-credential-create-"));
     const alice = await user(runtime, "alice");
     const aliceSession = session(alice, "alice-session");
     await runtime.openSession(aliceSession);
@@ -173,7 +173,7 @@ describe("Identity credentials", () => {
   });
 
   test("reactively edits and revokes only the owner's descriptors", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-credential-lifecycle-"));
+    const { engine, runtime } = await fixture(databasePath("ackerdb-credential-lifecycle-"));
     const alice = await user(runtime, "lifecycle-alice");
     const publications: SessionApplicationMessage[] = [];
     const aliceSession = session(alice, "lifecycle-alice-session", publications);
@@ -289,7 +289,7 @@ describe("Identity credentials", () => {
     await expect(runtime.authenticateCredential(created.token, "after-revoke"))
       .rejects.toMatchObject({ code: "unauthenticated" });
 
-    const server = serve({ runtime, port: 0 });
+    const server = listen(runtime);
     trackCleanup(async () => server.drain());
     const response = await rpc(
       `http://127.0.0.1:${server.port}`,
@@ -302,7 +302,7 @@ describe("Identity credentials", () => {
   });
 
   test("stores exact immutable grants and enforces explicit authenticated, any-of, and all-of policy", async () => {
-    const { engine, runtime } = fixture(databasePath("ackerdb-credential-scopes-"));
+    const { engine, runtime } = await fixture(databasePath("ackerdb-credential-scopes-"));
     const alice = await user(runtime, "scoped-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
@@ -474,7 +474,7 @@ describe("Identity credentials", () => {
   });
 
   test("filters discovery and reauthorizes every HTTP call against the current exact grant", async () => {
-    const { runtime } = fixture(databasePath("ackerdb-credential-discovery-"));
+    const { runtime } = await fixture(databasePath("ackerdb-credential-discovery-"));
     const alice = await user(runtime, "discovery-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "discovery-alice-session");
     await runtime.openSession(aliceSession);
@@ -485,7 +485,7 @@ describe("Identity credentials", () => {
       "api.tokens.createScopedToken",
     )))).value as CreatedValue;
 
-    const server = serve({ runtime, port: 0 });
+    const server = listen(runtime);
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
     const authorizeMcpTool = spyOn(runtime, "authorizeMcpTool");
@@ -644,7 +644,7 @@ describe("Identity credentials", () => {
     const path = databasePath("ackerdb-credential-order-");
     const timestamp = Date.now();
     const now = () => timestamp;
-    const first = fixture(path, undefined, {}, { now });
+    const first = await fixture(path, undefined, {}, { now });
     const alice = await user(first.runtime, "creation-order-alice");
     const firstSession = session(alice, "creation-order-first-session");
     await first.runtime.openSession(firstSession);
@@ -670,7 +670,7 @@ describe("Identity credentials", () => {
     ]);
     await first.close();
 
-    const second = fixture(path, undefined, {}, { now });
+    const second = await fixture(path, undefined, {}, { now });
     const reopenedAlice = await user(second.runtime, "creation-order-alice");
     const secondSession = session(reopenedAlice, "creation-order-second-session");
     await second.runtime.openSession(secondSession);
@@ -704,7 +704,7 @@ describe("Identity credentials", () => {
       },
     };
 
-    const first = fixture(path, permissiveVerifier);
+    const first = await fixture(path, permissiveVerifier);
     const firstAlice = await user(first.runtime, "alice");
     const firstSession = session(firstAlice, "first-session");
     await first.runtime.openSession(firstSession);
@@ -718,7 +718,7 @@ describe("Identity credentials", () => {
     )).value as CreatedValue;
     await first.close();
 
-    const second = fixture(path, permissiveVerifier);
+    const second = await fixture(path, permissiveVerifier);
     const secondAlice = await user(second.runtime, "alice");
     expect(secondAlice.identity).toBe(firstAlice.identity);
     const principal = await second.runtime.authenticateCredential(
@@ -784,7 +784,7 @@ describe("Identity credentials", () => {
     }
     expect(verifierCalls).toEqual([]);
 
-    const server = serve({ runtime: second.runtime, port: 0 });
+    const server = listen(second.runtime);
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
     const called = await rpc(base, "/agent/mcp", "tools/call", {

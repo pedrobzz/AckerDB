@@ -26,6 +26,7 @@ import {
   migrationIdentity,
   MigrationError,
   probeOptimisticChanges,
+  readStoredState,
   renameRoutes,
   refusalSite,
   snapshotOf,
@@ -44,9 +45,6 @@ import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
-import { readStoredState } from "./stored.ts";
-
-export { readStoredState, type StoredState } from "./stored.ts";
 
 /**
  * Preview every optimistic unique-index or validator tightening against the
@@ -326,7 +324,7 @@ export type PlanOutcome =
  * after the scaffold, and deleting + re-deriving may serve better than filling.
  */
 export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
-  const state = readStoredState(config);
+  const state = readStoredState(join(config.dbDir, "data.db"));
   if (state === null) return { status: "no-database" };
   const chain = await loadMigrationChain(config);
   const nextNumber = (chain.at(-1)?.number ?? 0) + 1;

@@ -70,6 +70,7 @@ import { Session } from "../subscriptions/session/session.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
+/** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
 export type AckerDBStartupPhase =
   | "listening"
   | "codegen"
@@ -77,8 +78,9 @@ export type AckerDBStartupPhase =
   | "opening-storage"
   | "migrating"
   | "reconciling"
+  | "issuing-credential"
   | "loading-runtime"
-  | "issuing-credential";
+  | "starting-runtime";
 
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
@@ -98,19 +100,6 @@ export interface AckerDBServerOptions {
    * path a 404 like any other unclaimed route: the CLI export is the default way
    * to consume the schema, and this endpoint is opt-in.
    */
-  readonly openapiEndpoint?: OpenApiInfo;
-}
-
-export interface ServeOptions {
-  readonly runtime: Runtime;
-  readonly port: number;
-  readonly hostname?: string;
-  /** Socket peers permitted to supply a client address through X-Forwarded-For. */
-  readonly trustedProxy?: string | readonly string[];
-  readonly mcpHttp?: McpHttpOptions;
-  /** Exact workload scope required by GET /status. */
-  readonly statusScope?: string;
-  /** Identity of the document served at GET /_openapi.json; absent, that path is a 404. */
   readonly openapiEndpoint?: OpenApiInfo;
 }
 
@@ -190,8 +179,9 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   "opening-storage": 3,
   migrating: 4,
   reconciling: 5,
-  "loading-runtime": 6,
-  "issuing-credential": 7,
+  "issuing-credential": 6,
+  "loading-runtime": 7,
+  "starting-runtime": 8,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -1494,22 +1484,4 @@ export class AckerDBServer {
       throw error;
     }
   }
-}
-
-export function serve(options: ServeOptions): AckerDBServer {
-  if (options.runtime.state !== "ready") {
-    throw new Error("Runtime must be ready before serving");
-  }
-  const server = new AckerDBServer({
-    limits: options.runtime.limits,
-    fileMaxBytes: options.runtime.fileMaxBytes,
-    port: options.port,
-    ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
-    ...(options.trustedProxy === undefined ? {} : { trustedProxy: options.trustedProxy }),
-    ...(options.mcpHttp === undefined ? {} : { mcpHttp: options.mcpHttp }),
-    ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
-    ...(options.openapiEndpoint === undefined ? {} : { openapiEndpoint: options.openapiEndpoint }),
-  });
-  server.activate(options.runtime);
-  return server;
 }

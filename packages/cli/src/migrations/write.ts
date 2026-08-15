@@ -9,6 +9,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  readStoredState,
   snapshotOf,
   validateHistoryPrefix,
   type Renames,
@@ -17,7 +18,7 @@ import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
-import { planFingerprint, probeOptimisticRefusals, readStoredState } from "./plan.ts";
+import { planFingerprint, probeOptimisticRefusals } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";
 
 /**
@@ -47,7 +48,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   if (!MIGRATION_NAME.test(request.name)) {
     throw new Error(`migration name "${request.name}" must be one or more of [A-Za-z0-9_]`);
   }
-  const state = readStoredState(config);
+  const state = readStoredState(join(config.dbDir, "data.db"));
   if (state === null) {
     throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`acker dev\` to initialize it first`);
   }

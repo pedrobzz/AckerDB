@@ -72,13 +72,14 @@ const functions = {
   },
 };
 
-function open(path: string): { engine: Engine; runtime: Runtime } {
+async function open(path: string): Promise<{ engine: Engine; runtime: Runtime }> {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
   });
+  await runtime.start();
   instances.set(runtime, engine);
   return { engine, runtime };
 }
@@ -136,7 +137,7 @@ describe("durable provider-neutral Identity", () => {
   test("concurrent misses converge and committed accounts stay on the bounded reader hot path", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-race-"));
     directories.push(directory);
-    const { engine, runtime } = open(join(directory, "data.db"));
+    const { engine, runtime } = await open(join(directory, "data.db"));
     const alice = { issuer: "https://issuer.example/", subject: "alice" } as const;
     const bob = { issuer: "https://issuer.example/", subject: "bob" } as const;
 
@@ -189,7 +190,7 @@ describe("durable provider-neutral Identity", () => {
     directories.push(directory);
     const path = join(directory, "data.db");
 
-    const first = open(path);
+    const first = await open(path);
     const firstPrincipal = await authenticate(first.runtime, verifier("alice", {
       email: "first@example.test",
     }));
@@ -216,7 +217,7 @@ describe("durable provider-neutral Identity", () => {
     instances.delete(first.runtime);
     first.engine.close("clean");
 
-    const second = open(path);
+    const second = await open(path);
     const secondPrincipal = await authenticate(second.runtime, verifier("alice", {
       email: "changed@example.test",
       displayName: "Changed claim",

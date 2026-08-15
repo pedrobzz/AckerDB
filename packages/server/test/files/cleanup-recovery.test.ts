@@ -45,7 +45,7 @@ describe("File cleanup restart recovery", () => {
   let runtime: Runtime;
   let store: LocalFileStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), "ackerdb-file-recovery-"));
     engine = new Engine(defineSchema({}), join(directory, "data.db"));
     reconcile(engine);
@@ -55,6 +55,7 @@ describe("File cleanup restart recovery", () => {
       registry: new Registry({}),
       files: { store },
     });
+    await runtime.start();
   });
 
   afterEach(async () => {
@@ -96,6 +97,7 @@ describe("File cleanup restart recovery", () => {
       registry: new Registry({}),
       files: { store },
     });
+    await runtime.start();
     const restarted = runtime as unknown as RuntimeInternals;
     const observed = await restarted.functions.filesWrite(signal, (value) =>
       (value as InternalDatabase)[FILE_UPLOADS_TABLE]!.get(uploadId));
@@ -113,6 +115,7 @@ describe("File cleanup restart recovery", () => {
       files: { store },
       now: () => now,
     });
+    await runtime.start();
     const first = runtime as unknown as RuntimeInternals;
     await first.fileCleanup.drain();
     first.fileCleanup.stop();
@@ -150,6 +153,7 @@ describe("File cleanup restart recovery", () => {
         files: { store },
         now: () => now,
       });
+      await runtime.start();
       await (runtime as unknown as RuntimeInternals).fileCleanup.drain();
     } finally {
       engine.writer.exec(`
@@ -242,6 +246,7 @@ describe("File cleanup restart recovery", () => {
       registry: new Registry({}),
       files: { store },
     });
+    await runtime.start();
     const restarted = runtime as unknown as RuntimeInternals;
     await restarted.fileCleanup.drain();
     expect(engine.commitVersion()).toBe(commitVersion);
@@ -324,6 +329,7 @@ describe("File cleanup restart recovery", () => {
       registry: new Registry({}),
       files: { store },
     });
+    await runtime.start();
     const restarted = runtime as unknown as RuntimeInternals;
     await eventually(async () => {
       const session = await restarted.functions.filesRead(signal, (value) =>

@@ -1,6 +1,7 @@
 /**
  * The Admin Credential: the bearer an operator authenticates with, and the two
- * of its three issuance paths that run inside a live server.
+ * of its three issuance paths that belong to a running application — the boot
+ * that mints it and the rotation that replaces it.
  *
  * **It is a credential and nothing else.** An Admin Credential is a root
  * identity credential in the one vault, holding the grant `["*", "_*"]` — no
@@ -10,11 +11,12 @@
  * first thing an operator can do with a fresh database is authenticate.
  *
  * **Boot-mint** answers the zero-config case. A server whose vault holds no
- * Admin Credential mints one during startup and hands the plaintext back once,
- * for the CLI to print. It is deliberately conditional on the vault's own
- * definition of the master rather than on a marker of its own, so the offline
- * break-glass reset and this path can never disagree about what they are
- * counting.
+ * Admin Credential mints one during the boot — through the vault, before any
+ * application code is imported and before the Runtime exists — and hands the
+ * plaintext back once, for the boot's reporter to print. It is deliberately
+ * conditional on the vault's own definition of the master rather than on a
+ * marker of its own, so the offline break-glass reset and this path can never
+ * disagree about what they are counting.
  *
  * **Rotation** answers the routine case, and is the reason this file's
  * functions are a query and a mutation rather than procedures: the credential
@@ -38,15 +40,10 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "../app/functions.ts";
-import type { SystemRunner } from "../app/system.ts";
-import {
-  adminCredentials,
-  systemCredentials,
-} from "../auth/credential-context.ts";
-import { credentialVaultOwner } from "../auth/credential-vault.ts";
+import { adminCredentials } from "../auth/credential-context.ts";
+import { credentialVaultOwner, type CredentialLimits } from "../auth/credential-vault.ts";
 import { ADMINISTRATIVE_GRANT, type ScopeRequirement } from "../auth/scopes.ts";
 import type { Engine } from "../database/engine.ts";
-import { AckerDBError } from "../shared/errors.ts";
 import { v } from "../validation/v.ts";
 import type { AdminScope } from "./scopes.ts";
 
@@ -56,9 +53,6 @@ import type { AdminScope } from "./scopes.ts";
  * ask for a name — issuing credentials to named agents — is not this one.
  */
 export const ADMIN_CREDENTIAL_NAME = "Admin Credential";
-
-/** The stable operation name of the startup run that mints the master. */
-const BOOT_MINT_OPERATION = "ackerdb:admin:credential:mint";
 
 const credentialShape = v.object({
   id: v.string(),
@@ -76,41 +70,53 @@ export interface AdminCredentialBoot {
   readonly token?: string;
 }
 
+/** What the boot-mint needs beyond the reconciled engine; nothing here is a Runtime. */
+export interface AdminCredentialMint {
+  /** Application scopes plus the framework's: what the administrative grant expands against. */
+  readonly vocabulary: readonly string[];
+  readonly limits: CredentialLimits;
+  readonly now: () => number;
+}
+
 /**
- * Mint the Admin Credential if the vault holds none, under system authority.
+ * Mint the Admin Credential if the vault holds none, directly through the vault.
  *
  * The existence test runs twice, against the one vault definition, and both
  * readings earn their place. The read on the open Engine is what keeps a boot
  * with nothing to do from writing at all — every other conditional startup
  * step, from schema reconciliation to the FileStore binding, holds the same
  * rule, and a server that rewrote a row on every restart would make a restart
- * indistinguishable from a change. The read inside the transaction is the
- * decision: only there are "none exists" and "now one does" the same instant,
- * so no arrangement of concurrent work can produce two masters.
+ * indistinguishable from a change. The read inside the immediate transaction is
+ * the decision: only there are "none exists" and "now one does" the same
+ * instant, so no arrangement of concurrent work can produce two masters.
+ *
+ * It goes through the vault and not through `systemCredentials.create` because
+ * at boot no Runtime exists, and the two live-runtime concerns that surface
+ * carries — recording the reactive read key, marking a token-bearing result
+ * one-time — have no subject yet. Break-glass calls the vault directly for the
+ * same reason. That is what lets the mint precede every application module
+ * import and the Runtime's start (ADR-0031).
  *
  * Failure is the caller's to make loud. A server nobody can administer, that
  * printed nothing to say so, is discovered at the moment administration is
  * needed most.
  */
-export async function ensureAdminCredential(
-  engine: Engine,
-  system: SystemRunner,
-): Promise<AdminCredentialBoot> {
-  const present = engine[credentialVaultOwner].listAdministrative(engine.reader)[0];
+export function ensureAdminCredential(engine: Engine, mint: AdminCredentialMint): AdminCredentialBoot {
+  const vault = engine[credentialVaultOwner];
+  const present = vault.listAdministrative(engine.reader)[0];
   if (present !== undefined) return Object.freeze({ id: present.id });
-  const result = await system.run(BOOT_MINT_OPERATION, (ctx) => ctx.tx((tx) => {
-    const held = adminCredentials.list(tx)[0];
+  return engine.writer.transaction((): AdminCredentialBoot => {
+    const held = vault.listAdministrative(engine.writer)[0];
     if (held !== undefined) return Object.freeze({ id: held.id });
-    const created = systemCredentials.create(tx, null, {
-      name: ADMIN_CREDENTIAL_NAME,
-      scopes: ADMINISTRATIVE_GRANT,
-    });
+    const created = vault.create(
+      null,
+      { name: ADMIN_CREDENTIAL_NAME, scopes: ADMINISTRATIVE_GRANT },
+      mint.vocabulary,
+      mint.limits,
+      mint.now(),
+    );
     return Object.freeze({ id: created.id, token: created.token });
-  }));
-  if (!result.ok) {
-    throw new AckerDBError("internal", "the Admin Credential could not be minted");
-  }
-  return result.data;
+  }).immediate();
 }
 
 /**

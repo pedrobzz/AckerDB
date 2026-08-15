@@ -736,7 +736,7 @@ let engine: Engine;
 let runtime: Runtime;
 let session: SessionHarness;
 
-function start(customLimits = limits()): void {
+async function start(customLimits = limits()): Promise<void> {
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   runtime = new Runtime({
@@ -746,6 +746,7 @@ function start(customLimits = limits()): void {
     jobs: declaredJobs(),
     now: () => currentTime ?? Date.now(),
   });
+  await runtime.start();
   session = new SessionHarness(runtime, "session-a");
 }
 
@@ -754,10 +755,10 @@ async function restart(customLimits: ServiceLimits): Promise<void> {
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
   directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-restart-"));
-  start(customLimits);
+  await start(customLimits);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-"));
   queryGate = null;
   queryFailureGate = null;
@@ -784,7 +785,7 @@ beforeEach(() => {
   });
   eventAccessInputs.length = 0;
   eventMatchInputs.length = 0;
-  start();
+  await start();
 });
 
 afterEach(async () => {
@@ -2737,7 +2738,7 @@ describe("configured capacity", () => {
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
     directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-capacity-"));
-    start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
+    await start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
   });
 
   test("reports the selected durability", () => {
@@ -3035,7 +3036,7 @@ describe("configured capacity", () => {
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
     directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-auth-capture-"));
-    start(limits({
+    await start(limits({
       maxFrameBytes: 1_024,
       webSocket: {
         ...PRODUCTION_LIMITS.webSocket,

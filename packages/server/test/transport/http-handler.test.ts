@@ -23,7 +23,8 @@ import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { AckerDBServer, serve } from "../../src/transport/server.ts";
+import { AckerDBServer } from "../../src/transport/server.ts";
+import { listen } from "ackerdb-test-support/listen";
 
 // Raw handlers carry no contract; navigating them in tests is not a typed one.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -166,16 +167,17 @@ const functions = {
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
-let server: ReturnType<typeof serve>;
+let server: AckerDBServer;
 let base: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   handlerRuns = 0;
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-handler-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   runtime = new Runtime({ engine, registry: new Registry(functions), limits });
-  server = serve({ runtime, port: 0 });
+  await runtime.start();
+  server = listen(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });
 

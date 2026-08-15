@@ -24,11 +24,7 @@ import { resetAdminCredentials, resetDatabase, type Renames } from "@ackerdb/ser
 import { loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
 import { exportOpenApi } from "../app/openapi.ts";
-import {
-  startApp,
-  StartupInterruptedError,
-  type StartAppOptions,
-} from "../app/start.ts";
+import { startApp, type StartAppOptions } from "../app/start.ts";
 import { runRenameForm, type Ask, type FormResult } from "../migrations/form.ts";
 import { renderLedger, runDivergenceForm } from "../migrations/consent.ts";
 import { makeDevFlowHandler, type GenerateResult, type PromptOutcome } from "../migrations/dev-flow.ts";
@@ -63,6 +59,11 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
     const running = await startApp(config, { ...options, signal: startup.signal });
     await shutdownRequested;
     await running.drain();
+  } catch (error) {
+    // A boot stopped by the signal is a clean stop, not a failure: it drained
+    // what it had built and rejected with the signal's reason. A drain that
+    // failed on the way out is its own error and still reports.
+    if (error !== startup.signal.reason) throw error;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -615,7 +616,6 @@ try {
       usage();
   }
 } catch (error) {
-  if (error instanceof StartupInterruptedError) process.exit(0);
   console.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

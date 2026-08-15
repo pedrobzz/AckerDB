@@ -43,7 +43,7 @@ export class RuntimeControl {
   private readonly activeWaiters = new Set<() => void>();
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
-  private lifecycle: RuntimeLifecycleState = "ready";
+  private lifecycle: RuntimeLifecycleState = "created";
   private activeOperations = 0;
   private drainPromise: Promise<void> | null = null;
 
@@ -51,6 +51,26 @@ export class RuntimeControl {
 
   get state(): RuntimeLifecycleState {
     return this.lifecycle;
+  }
+
+  /**
+   * created → ready. Everything a Runtime does on its own initiative starts
+   * here and nowhere earlier: File cleanup recovery begins, every argless
+   * repeating Job is minted, and the runner is armed. The bootstrap is awaited
+   * and its failure propagates — a Runtime that cannot mint its own repeat
+   * Jobs has a storage problem everything else will hit, so it is the owner's
+   * failure to make loud, not a line in a log.
+   */
+  async start(): Promise<void> {
+    if (this.lifecycle !== "created") {
+      throw new Error("Runtime can only be started once, from created");
+    }
+    this.options.functions.bindFileRecoveryBarrier(this.options.fileCleanup.activate());
+    await this.options.jobs.bootstrap();
+    // A drain that began during the bootstrap owns the state from here on.
+    if (this.lifecycle !== "created") return;
+    this.lifecycle = "ready";
+    await this.options.jobs.arm();
   }
 
   get isReady(): boolean {

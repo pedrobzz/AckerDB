@@ -5,6 +5,7 @@ import {
   type MutationMessage,
 } from "@ackerdb/core";
 import {
+  AckerDBServer,
   v,
   defineSchema,
   Engine,
@@ -13,7 +14,6 @@ import {
   reconcile,
   Registry,
   Runtime,
-  serve,
   type McpBuilder,
   type MutationBuilder,
   type ProcedureBuilder,
@@ -269,6 +269,7 @@ async function main(): Promise<void> {
     scopes: [READ_SCOPE, ADMIN_SCOPE],
     resolveScopes: () => [READ_SCOPE, ADMIN_SCOPE],
   });
+  await runtime.start();
   const identity = await runtime.resolveIdentity({
     issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
@@ -300,7 +301,8 @@ async function main(): Promise<void> {
   )).value as { readonly id: string; readonly token: string };
   const codex = await create("Codex acceptance");
   const claude = await create("Claude Code acceptance");
-  const server = serve({ runtime, port: 0 });
+  const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port: 0 });
+  server.activate(runtime);
 
   emit({
     type: "ready",

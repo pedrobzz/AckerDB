@@ -27,9 +27,9 @@ import {
   defineTable,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import { until, within } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -608,7 +608,8 @@ describe("suspension against a real ackerdb server", () => {
       },
     });
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-    const server = serve({ runtime, port: 0 });
+    await runtime.start();
+    const server = listen(runtime);
     // A fake clock against the real server: every timer the client sets is
     // inert unless advanced, so recovery reaching ready proves the whole
     // resume progression runs on socket events alone — no timer, no backoff.

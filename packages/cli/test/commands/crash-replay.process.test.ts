@@ -62,11 +62,11 @@ const COMMIT_FAULT_SERVER = `
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
   Registry,
   Runtime,
   reconcile,
-  serve,
   type RuntimeHooks,
 } from "@ackerdb/server";
 import app from "./app.ts";
@@ -98,7 +98,9 @@ const runtime = new Runtime({
   registry: new Registry({ messages }),
   ...(hooks === undefined ? {} : { hooks }),
 });
-const server = serve({ runtime, port });
+await runtime.start();
+const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port });
+server.activate(runtime);
 let draining: Promise<void> | undefined;
 const drain = () => draining ??= server.drain().then(
   () => engine.close("clean"),
@@ -387,10 +389,11 @@ describe("process crash replay", () => {
       client.clientSessionId,
       requestId,
     )).toBe(0);
-    // Version 1 is the first boot's Admin Credential mint; the killed mutation
-    // contributed nothing, which is the point of the assertion.
+    // The killed mutation contributed nothing, which is the point of the
+    // assertion; the boot's own Admin Credential mint is a framework write and
+    // spends no logical commit version.
     expect(storageState(database)).toEqual({
-      commitVersion: 1,
+      commitVersion: 0,
       mutationRecords: 0,
       mutationResultBytes: 0,
     });
@@ -430,14 +433,14 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 2 AND durability = 'production'",
+      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
       client.clientSessionId,
       requestId,
     )).toBe(1);
-    // Version 1 was the Admin Credential mint on the first boot, so the retried
-    // mutation is the second commit this database has ever taken.
+    // The retried mutation is the first logical commit this database has ever
+    // taken; the boot's Admin Credential mint spends no commit version.
     const committedState = storageState(database);
-    expect(committedState).toMatchObject({ commitVersion: 2, mutationRecords: 1 });
+    expect(committedState).toMatchObject({ commitVersion: 1, mutationRecords: 1 });
     expect(committedState.mutationResultBytes).toBeGreaterThan(0);
 
     client.close();

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { v } from "../../src/validation/v.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { serve } from "../../src/transport/server.ts";
 import { credentials } from "../../src/auth/credential-context.ts";
 import {
   cleanupCredentialFixtures,
@@ -18,6 +17,7 @@ import {
   user,
 } from "../support/credential-fixture.ts";
 import { deferred, within, type Deferred } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 interface ToolGate {
   readonly started: Deferred<void>;
@@ -267,7 +267,7 @@ function rpc(
 }
 
 async function createAgentToken(
-  runtime: ReturnType<typeof fixture>["runtime"],
+  runtime: Awaited<ReturnType<typeof fixture>>["runtime"],
   owner: ReturnType<typeof session>,
   id: number,
   name: string,
@@ -285,7 +285,7 @@ async function createAgentToken(
 }
 
 async function createScopedToken(
-  runtime: ReturnType<typeof fixture>["runtime"],
+  runtime: Awaited<ReturnType<typeof fixture>>["runtime"],
   owner: ReturnType<typeof session>,
   id: number,
   name: string,
@@ -314,7 +314,7 @@ afterEach(async () => {
 describe("bounded live MCP credential invalidation", () => {
   for (const authorityChange of ["revoke", "scope reduction"] as const) {
     test(`cancels active HTTP work and queued transactions after ${authorityChange}`, async () => {
-      const { runtime } = fixture(
+      const { runtime } = await fixture(
         databasePath(
           `ackerdb-mcp-${authorityChange === "revoke" ? "revoke" : "scope"}-`,
         ),
@@ -328,9 +328,7 @@ describe("bounded live MCP credential invalidation", () => {
         authorityChange === "revoke"
           ? await createAgentToken(runtime, owner, 1, "Target")
           : await createScopedToken(runtime, owner, 1, "Target");
-      const server = serve({
-        runtime,
-        port: 0,
+      const server = listen(runtime, {
         mcpHttp: { allowedOrigins: [AGENT_ORIGIN] },
       });
       trackCleanup(async () => server.drain());
@@ -426,7 +424,7 @@ describe("bounded live MCP credential invalidation", () => {
   }
 
   test("rollbacks and descriptor edits preserve active and fresh authority", async () => {
-    const { runtime } = fixture(
+    const { runtime } = await fixture(
       databasePath("ackerdb-mcp-rollback-"),
       undefined,
       extraModules,
@@ -436,7 +434,7 @@ describe("bounded live MCP credential invalidation", () => {
     await runtime.openSession(owner);
     const agent = await createAgentToken(runtime, owner, 10, "Agent");
     const scoped = await createScopedToken(runtime, owner, 11, "Scoped");
-    const server = serve({ runtime, port: 0 });
+    const server = listen(runtime);
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
 
@@ -519,7 +517,7 @@ describe("bounded live MCP credential invalidation", () => {
   });
 
   test("targets the exact token and endpoint while unrelated work continues", async () => {
-    const { runtime } = fixture(
+    const { runtime } = await fixture(
       databasePath("ackerdb-mcp-isolation-"),
       undefined,
       extraModules,
@@ -541,7 +539,7 @@ describe("bounded live MCP credential invalidation", () => {
       22,
       "Unrelated scoped",
     );
-    const server = serve({ runtime, port: 0 });
+    const server = listen(runtime);
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
 

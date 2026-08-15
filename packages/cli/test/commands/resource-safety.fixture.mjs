@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -12,7 +13,6 @@ import {
   procedure,
   query,
   reconcile,
-  serve,
   sseProcedure,
 } from "@ackerdb/server";
 
@@ -163,7 +163,9 @@ const runtime = new Runtime({
   verifier,
   limits,
 });
-const server = serve({ runtime, port });
+await runtime.start();
+const server = new AckerDBServer({ limits: runtime.limits, fileMaxBytes: runtime.fileMaxBytes, port });
+server.activate(runtime);
 
 let shutdown;
 const drain = () => shutdown ??= server.drain().then(

@@ -15,7 +15,6 @@ import {
   defineTable,
   query,
   reconcile,
-  serve,
 } from "@ackerdb/server";
 import type {
   CredentialVerifier,
@@ -34,6 +33,7 @@ import {
   type UseAuthenticationResult,
 } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
+import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -85,7 +85,7 @@ interface App {
   close(): Promise<void>;
 }
 
-function createApp(): App {
+async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -105,7 +105,8 @@ function createApp(): App {
     verifier,
     limits: PRODUCTION_LIMITS,
   });
-  const server = serve({ runtime, port: 0 });
+  await runtime.start();
+  const server = listen(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     verifier,
@@ -182,8 +183,8 @@ function operations(): UseAuthenticationResult {
 }
 
 let app: App;
-beforeAll(() => {
-  app = createApp();
+beforeAll(async () => {
+  app = await createApp();
 });
 afterAll(() => app.close());
 

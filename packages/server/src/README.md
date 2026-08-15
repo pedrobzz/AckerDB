@@ -1,7 +1,10 @@
 # Server source map
 
-`index.ts` is the package entrypoint. Implementation lives in ownership-based
-modules; do not add new implementation files to this root.
+`index.ts` is the package entrypoint. `boot.ts` is the one implementation file
+at this root: the boot composes every module below into a running application
+(listener → schema → credential → runtime → activation) and belongs to none of
+them. Every other implementation file lives in the ownership-based module that
+owns its invariants; do not add new files to this root.
 
 | Module | Owns |
 | --- | --- |

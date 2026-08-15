@@ -124,7 +124,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(): { runtime: Runtime } {
+async function fixture(): Promise<{ runtime: Runtime }> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-recompute-"));
   directories.push(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
@@ -137,6 +137,7 @@ function fixture(): { runtime: Runtime } {
     }),
     limits: PRODUCTION_LIMITS,
   });
+  await runtime.start();
   cleanups.push(async () => {
     await runtime.drain().catch(() => {});
     engine.close("clean");
@@ -184,7 +185,7 @@ function request<Message>(message: Message): RuntimeRequest<Message> {
 }
 
 test("a subscription recomputes cleanly after another principal's MCP tool commit", async () => {
-  const { runtime } = fixture();
+  const { runtime } = await fixture();
 
   const alice = await user(runtime, "alice");
   const publications: SessionApplicationMessage[] = [];
@@ -216,7 +217,7 @@ test("a subscription recomputes cleanly after another principal's MCP tool commi
 });
 
 test("a subscription recomputes cleanly after another principal's procedure ctx.tx commit", async () => {
-  const { runtime } = fixture();
+  const { runtime } = await fixture();
 
   const alice = await user(runtime, "alice");
   const publications: SessionApplicationMessage[] = [];
@@ -251,7 +252,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
 });
 
 test("an event subscription delivers cleanly after another principal's MCP tool commit", async () => {
-  const { runtime } = fixture();
+  const { runtime } = await fixture();
 
   const alice = await user(runtime, "alice");
   const publications: SessionApplicationMessage[] = [];
