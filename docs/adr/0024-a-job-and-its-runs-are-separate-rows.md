@@ -5,7 +5,7 @@ accumulated every question anyone could ask of a job: which work was admitted,
 when it is due, whether a duplicate should collapse into it, what its handler
 has already produced, and how each individual execution went. The last of those
 lived in `attemptsJson`, a JSON array rewritten in full on every settle. One
-row conflated a durable admission with an unbounded execution log, so history
+row conflated a durable admission with unbounded execution history, so history
 was O(n)-rewritten instead of appended, failures and timings could not be
 paged or indexed, list payloads grew with the number of retries, and the
 "cached outcome" of a completed job had no owner distinguishable from the job

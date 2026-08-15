@@ -207,73 +207,47 @@ describe("shared query registry", () => {
     await render(root, <></>);
   });
 
-  test("changing one consumer's arguments splits the entry with exact release counts", async () => {
-    const harness = createHarness(APP);
-    const container = mountPoint();
-    const root = createRoot(container);
+  test("changing one consumer's arguments splits the entry with exact release counts in either leaving order", async () => {
+    for (const leavesFirst of ["a", "b"] as const) {
+      const harness = createHarness(APP);
+      const root = createRoot(mountPoint());
 
-    await render(
-      root,
-      app(harness, [
-        { id: "a", args: { list: 1n } },
-        { id: "b", args: { list: 1n } },
-      ]),
-    );
-    await ready(harness);
-    const firstId = harness.frames("sub")[0]!.id;
+      await render(
+        root,
+        app(harness, [
+          { id: "a", args: { list: 1n } },
+          { id: "b", args: { list: 1n } },
+        ]),
+      );
+      await ready(harness);
+      const firstId = harness.frames("sub")[0]!.id;
 
-    // b moves to its own arguments: a second subscription starts and the
-    // first stays alive for a — nothing is released.
-    await render(
-      root,
-      app(harness, [
-        { id: "a", args: { list: 1n } },
-        { id: "b", args: { list: 2n } },
-      ]),
-    );
-    const subs = harness.frames("sub");
-    expect(subs).toHaveLength(2);
-    expect(subs[1]!.args).toEqual({ list: 2n });
-    expect(harness.frames("unsub")).toHaveLength(0);
-    const secondId = subs[1]!.id;
+      // b moves to its own arguments: a second subscription starts and the
+      // first stays alive for a — nothing is released.
+      await render(
+        root,
+        app(harness, [
+          { id: "a", args: { list: 1n } },
+          { id: "b", args: { list: 2n } },
+        ]),
+      );
+      const subs = harness.frames("sub");
+      expect(subs).toHaveLength(2);
+      expect(subs[1]!.args).toEqual({ list: 2n });
+      expect(harness.frames("unsub")).toHaveLength(0);
+      const secondId = subs[1]!.id;
 
-    // Each entry now has exactly one listener; unmounting releases exactly
-    // its own subscription.
-    await render(root, app(harness, [{ id: "b", args: { list: 2n } }]));
-    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([firstId]);
-    await render(root, app(harness, []));
-    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([firstId, secondId]);
-    await render(root, <></>);
-  });
-
-  test("release counts stay exact when listeners leave in the opposite order", async () => {
-    const harness = createHarness(APP);
-    const root = createRoot(mountPoint());
-
-    await render(
-      root,
-      app(harness, [
-        { id: "a", args: { list: 1n } },
-        { id: "b", args: { list: 1n } },
-      ]),
-    );
-    await ready(harness);
-    const firstId = harness.frames("sub")[0]!.id;
-    await render(
-      root,
-      app(harness, [
-        { id: "a", args: { list: 1n } },
-        { id: "b", args: { list: 2n } },
-      ]),
-    );
-    const secondId = harness.frames("sub")[1]!.id;
-
-    // Opposite order to the sibling test: the changed consumer leaves first.
-    await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
-    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([secondId]);
-    await render(root, app(harness, []));
-    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([secondId, firstId]);
-    await render(root, <></>);
+      // Each entry now has exactly one listener; whichever consumer leaves
+      // first releases exactly its own subscription, in either order.
+      const staying =
+        leavesFirst === "a" ? { id: "b", args: { list: 2n } } : { id: "a", args: { list: 1n } };
+      const releases = leavesFirst === "a" ? [firstId, secondId] : [secondId, firstId];
+      await render(root, app(harness, [staying]));
+      expect(harness.frames("unsub").map((frame) => frame.id)).toEqual(releases.slice(0, 1));
+      await render(root, app(harness, []));
+      expect(harness.frames("unsub").map((frame) => frame.id)).toEqual(releases);
+      await render(root, <></>);
+    }
   });
 
   test("losing one of several listeners keeps the query alive; the last release evicts, and a re-subscribe starts clean", async () => {
@@ -572,6 +546,8 @@ describe("shared query registry", () => {
     const subs = second.framesOf("sub");
     expect(subs).toHaveLength(1);
     expect(subs[0]!.cursor).toBeUndefined();
+    // One subscription per client lifetime: sharing never crosses clients.
+    expect(harness.frames("sub")).toHaveLength(2);
     await receive(harness, {
       t: "transition",
       id: subs[0]!.id,
@@ -657,30 +633,5 @@ describe("shared query registry", () => {
     await Bun.sleep(0);
     expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
     client.close();
-  });
-
-  test("identical keys on different clients stay in different registries", async () => {
-    const first = createHarness(APP);
-    const second = createHarness(APP);
-    const clientA = new AckerDBClient(first.config());
-    const clientB = new AckerDBClient(second.config());
-    first.live().welcome(SESSION);
-    second.live().welcome(SESSION);
-    const argsKey = stableEncode({ list: 1n });
-
-    const stopA = queryRegistryFor(clientA)
-      .source<string[]>("api.todos.list", argsKey, { list: 1n })
-      .listen(() => {});
-    const stopB = queryRegistryFor(clientB)
-      .source<string[]>("api.todos.list", argsKey, { list: 1n })
-      .listen(() => {});
-    // One subscription per client: sharing never crosses a client lifetime.
-    expect(first.frames("sub")).toHaveLength(1);
-    expect(second.frames("sub")).toHaveLength(1);
-
-    stopA();
-    stopB();
-    clientA.close();
-    clientB.close();
   });
 });

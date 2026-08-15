@@ -54,7 +54,7 @@ const matches = await ctx.db.documents
   .take(10);
 
 for (const { row, distance } of matches) {
-  console.log(row.title, distance);
+  renderMatch(row.title, distance);
 }
 ```
 

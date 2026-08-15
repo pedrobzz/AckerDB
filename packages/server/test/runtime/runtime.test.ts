@@ -1249,6 +1249,18 @@ describe("ordered convergence", () => {
       args: { channelId: 1n },
     }));
     await revalidationEntered.promise;
+    // An in-flight query is not a subscription control: the transition must
+    // not wait for it, and it still settles with its own handler failure.
+    queryFailureGate = deferred<void>();
+    queryFailureEntered = deferred<void>();
+    const failedQuery = runtime.query(session.context, request({
+      t: "q",
+      id: 61,
+      ref: "api.messages.blockFail",
+      args: {},
+    }));
+    void failedQuery.catch(() => {});
+    await queryFailureEntered.promise;
 
     let transitionSettled = false;
     const rotating = session.rotateBatch(user("bob")).finally(() => {
@@ -1262,63 +1274,9 @@ describe("ordered convergence", () => {
     const batch = await rotating;
     batch.release();
     expect(session.context).toMatchObject({ authEpoch: 1, principal: { subject: "bob" } });
-  });
 
-  test("does not encode an old-epoch error rejected by auth capture", async () => {
-    await restart(limits());
-    await session.open(user("alice"));
-    await runtime.subscribe(session.context, request({
-      t: "sub",
-      id: 89,
-      ref: "api.messages.parallelList",
-      args: { channelId: 1n },
-    }));
-    queryFailureGate = deferred<void>();
-    queryFailureEntered = deferred<void>();
-    const failedQuery = runtime.query(session.context, request({
-      t: "q",
-      id: 90,
-      ref: "api.messages.blockFail",
-      args: {},
-    }));
-    void failedQuery.catch(() => {});
-    await queryFailureEntered.promise;
-
-    revalidationGate = deferred<void>();
-    revalidationEntered = deferred<void>();
-    const nextController = new AbortController();
-    const nextPrincipal = user("bob");
-    const nextContext: SessionRuntimeContext = Object.freeze({
-      ...session.context,
-      principal: nextPrincipal,
-      fairnessKey: callerFairnessKey(nextPrincipal, TEST_SOURCE),
-      authEpoch: 1,
-      signal: nextController.signal,
-      publish: async () => true,
-    });
-    let transition: Promise<RuntimePublicationBatch> | undefined;
-    try {
-      transition = runtime.transitionAuth({
-        attemptId: 1,
-        reason: "refresh",
-        from: session.context,
-        to: nextContext,
-      });
-      await Promise.race([
-        revalidationEntered.promise,
-        transition.then(() => {
-          throw new Error("auth transition completed before revalidation stalled");
-        }),
-      ]);
-      queryFailureGate.resolve(undefined);
-      await expect(failedQuery).rejects.toThrow("stale query failure");
-    } finally {
-      queryFailureGate.resolve(undefined);
-      revalidationGate.resolve(undefined);
-      const batch = await transition;
-      batch?.release();
-      nextController.abort();
-    }
+    queryFailureGate.resolve(undefined);
+    await expect(failedQuery).rejects.toThrow("stale query failure");
   });
 
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {

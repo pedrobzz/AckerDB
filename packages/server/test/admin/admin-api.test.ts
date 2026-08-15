@@ -77,12 +77,6 @@ describe("the framework's own group", () => {
     const ordinary = query({ access: "public", args: {}, handler: () => null });
     expect(new Registry({ system: { info: ordinary } }).get("api.system.info")).toBeDefined();
   });
-
-  test("is not a group a manifest may list", () => {
-    expect(() => defineApp({ schema: defineSchema({}), apiPaths: [ADMIN_API_PATH] })).toThrow(
-      'application apiPaths must not list "admin" — every application publishes it',
-    );
-  });
 });
 
 describe("admin.system.info", () => {
@@ -158,15 +152,13 @@ describe("an application may not require a framework scope", () => {
   test("the runtime refuses what the generated Scope union already refuses", () => {
     // Untyped, the requirement passes the membership check — the framework's
     // names are in the same vocabulary — so the type system would say no while
-    // the runtime said yes. Ownership is the test, not the name.
-    expect(() => new Registry({ notes: { list: borrowed } }))
+    // the runtime said yes. Ownership is the test, not the name. It is refused
+    // at registration, so no host can skip it by never running the manifest
+    // cross-check.
+    const register = () => new Registry({ notes: { list: borrowed } });
+    expect(register).toThrow(TypeError);
+    expect(register)
       .toThrow(/function "api\.notes\.list" requires "_admin:system:read", which belongs to the framework's own vocabulary/);
-  });
-
-  test("is refused at registration, so no host can skip it", () => {
-    // The rule needs no manifest to decide, so it does not wait for the
-    // manifest cross-check a programmatic host might never run.
-    expect(() => new Registry({ notes: { list: borrowed } })).toThrow(TypeError);
   });
 
   test("cannot be dodged by rewriting the declaration after it is built", () => {

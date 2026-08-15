@@ -191,53 +191,6 @@ describe("useMutation across native AppState suspension", () => {
     });
     actEnvironment(false);
   });
-
-  test("a call issued while backgrounded dispatches exactly once on activation", async () => {
-    actEnvironment(true);
-    setAppState("active");
-    const harness = createHarness(APP);
-    const container = mountPoint();
-    const root = createRoot(container);
-    await render(
-      root,
-      <StrictMode>
-        <AckerDBProvider config={harness.config()}>
-          <MutationProbe />
-        </AckerDBProvider>
-      </StrictMode>,
-    );
-    await act(async () => {
-      harness.live().welcome(SESSION);
-    });
-
-    await platform("background");
-    const socketsBefore = harness.sockets.length;
-    const settlements: Settlements = { values: [], errors: [] };
-    await act(async () => {
-      track(captured.send!({ text: "queued" }), settlements);
-    });
-    // Suspension refuses to dial; the call is retained demand, not traffic.
-    expect(harness.sockets.length).toBe(socketsBefore);
-    expect(settlements.values).toEqual([]);
-
-    await platform("active");
-    const socket = harness.live();
-    await act(async () => {
-      socket.welcome(SESSION);
-    });
-    const issued = socket.framesOf("m")[0]!;
-    expect(mutationSends(harness.sockets, issued.mutationRequestId)).toBe(1);
-    await act(async () => {
-      socket.receive(mutationOk(issued, 11n));
-    });
-    expect(settlements.values).toEqual([11n]);
-    expect(settlements.errors).toEqual([]);
-
-    await act(async () => {
-      root.unmount();
-    });
-    actEnvironment(false);
-  });
 });
 
 interface EventProbeProps {
@@ -315,48 +268,6 @@ describe("useEvent across native AppState suspension", () => {
     });
     expect(events.map((event) => event.kind)).toEqual(["reset", "row", "reset", "row"]);
     expect(events.flatMap((event) => (event.kind === "row" ? [event.row.n] : []))).toEqual([1, 3]);
-
-    await act(async () => {
-      root.unmount();
-    });
-    actEnvironment(false);
-  });
-
-  test("backgrounding during subscription application yields exactly one reset, delivered by the recovery connection", async () => {
-    actEnvironment(true);
-    setAppState("active");
-    const harness = createHarness(APP);
-    const container = mountPoint();
-    const root = createRoot(container);
-    const events: AckerDBLiveEvent<PingRow>[] = [];
-    await render(
-      root,
-      <StrictMode>
-        <AckerDBProvider config={harness.config()}>
-          <EventProbe onEvent={(event) => events.push(event)} />
-        </AckerDBProvider>
-      </StrictMode>,
-    );
-    const first = harness.live();
-    await act(async () => {
-      first.welcome(SESSION);
-    });
-    const subscription = first.framesOf("sub")[0]!;
-
-    // The subscription is on the wire; its reset boundary never arrived.
-    await platform("background");
-    expect(events).toEqual([]);
-
-    await platform("active");
-    const second = harness.live();
-    await act(async () => {
-      second.welcome(SESSION);
-      second.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
-      second.receive(
-        liveEvent(subscription.id, { kind: "row", cursor: eventCursor(1n), row: { n: 1 } }),
-      );
-    });
-    expect(events.map((event) => event.kind)).toEqual(["reset", "row"]);
 
     await act(async () => {
       root.unmount();

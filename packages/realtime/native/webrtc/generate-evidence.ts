@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, rename, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -45,26 +45,9 @@ async function run(command: string[]): Promise<void> {
 }
 
 const prefix = `ackerdb_webrtc.${target.platformArchABI}`;
-const temporarySbom = join(nativeRoot, `${prefix}.sbom.cdx.json`);
-const sbom = join(bindingDirectory, `${prefix}.sbom.cdx.json`);
 const notices = join(bindingDirectory, `${prefix}.THIRD_PARTY_NOTICES.txt`);
-await rm(temporarySbom, { force: true });
-await rm(sbom, { force: true });
 await rm(notices, { force: true });
 
-await run([
-  "cargo",
-  "cyclonedx",
-  "--manifest-path",
-  join(nativeRoot, "Cargo.toml"),
-  "--format",
-  "json",
-  "--target",
-  target.rustTarget,
-  "--override-filename",
-  `${prefix}.sbom.cdx`,
-]);
-await rename(temporarySbom, sbom);
 await run([
   "cargo",
   "about",

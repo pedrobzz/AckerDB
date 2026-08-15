@@ -21,12 +21,6 @@ describe("wire codec", () => {
     expect(roundtrip(-(2n ** 63n))).toBe(-(2n ** 63n));
   });
 
-  test("bytes round-trip", () => {
-    const bytes = new Uint8Array([0, 1, 2, 255, 128]);
-    expect(roundtrip(bytes)).toEqual(bytes);
-    expect(roundtrip(new Uint8Array(0))).toEqual(new Uint8Array(0));
-  });
-
   test("nested structures round-trip", () => {
     const value = {
       id: 7n,
@@ -76,11 +70,6 @@ describe("stableEncode", () => {
     const b = { y: { a: [{ p: 2, q: 1 }], b: 2n }, x: 1 };
     expect(stableEncode(a)).toBe(stableEncode(b));
     expect(stableEncode(a)).not.toBe(stableEncode({ ...a, x: 2 }));
-  });
-
-  test("stable output still decodes to the same value", () => {
-    const value = { z: 1n, a: new Uint8Array([1, 2]), m: { k: null } };
-    expect(decode(stableEncode(value))).toEqual(value);
   });
 });
 

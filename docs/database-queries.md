@@ -137,11 +137,11 @@ declared index uses:
 import { filterableFields } from "@ackerdb/server";
 import { schema } from "./schema";
 
-export const logFilters = filterableFields(schema.tables.logs, [
-  "level",
-  "fn",
-  "durationMs",
-  "requestId",
+export const orderFilters = filterableFields(schema.tables.orders, [
+  "status",
+  "restaurantId",
+  "total",
+  "createdAt",
 ]);
 ```
 
@@ -158,10 +158,10 @@ as an ordinary application error and a client renders them inline:
 export const list = query({
   args: { filter: v.any(), cursor: v.string().nullable(), pageSize: v.int() },
   handler: async (ctx, args) => {
-    const filter = logFilters.validate(args.filter);
+    const filter = orderFilters.validate(args.filter);
     if (!filter.ok) return filter;
 
-    return await ctx.db.logs
+    return await ctx.db.orders
       .query()
       .where(filter.data)
       .orderBy((row) => row.id.desc())

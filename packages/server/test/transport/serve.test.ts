@@ -203,15 +203,6 @@ const functions = {
         identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
       }),
     }),
-    reject: procedure({
-      access: "public",
-      http: true,
-      args: {},
-      errors: {
-        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
-      },
-      handler: () => Err("notes.gone", { reason: "purged" }, Status.Gone),
-    }),
     identityQuery: query({
       access: "authenticated",
       http: true,
@@ -221,15 +212,6 @@ const functions = {
         subject: ctx.auth.subject,
         identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
       }),
-    }),
-    rejectQuery: query({
-      access: "public",
-      http: true,
-      args: {},
-      errors: {
-        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
-      },
-      handler: () => Err("notes.gone", { reason: "purged" }, Status.Gone),
     }),
     conflict: procedure({
       access: "public",
@@ -970,13 +952,6 @@ describe("exposed HTTP procedures", () => {
     expect(posted.headers.get("vary")).toBe("authorization");
   });
 
-  test("answers a declared application error with its declared Status and body", async () => {
-    expect(await call("api.notes.reject", {})).toEqual({
-      status: 410,
-      body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
-    });
-  });
-
   test("resolves one durable Identity for the same user over HTTP and WebSocket", async () => {
     const http = await call("api.notes.identity", {}, "Bearer user-token");
     expect(http.status).toBe(200);
@@ -1400,16 +1375,6 @@ describe("exposed HTTP queries", () => {
     const unauthenticated = await fetch(queryUrl("api.notes.identityQuery"));
     expect(unauthenticated.status).toBe(401);
     expect(JSON.parse(await unauthenticated.text())).toMatchObject({ code: "unauthenticated" });
-  });
-
-  test("answers a declared application error with its declared Status and body", async () => {
-    const expected = {
-      status: 410,
-      body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
-    };
-    const get = await fetch(queryUrl("api.notes.rejectQuery"));
-    expect({ status: get.status, body: JSON.parse(await get.text()) }).toEqual(expected);
-    expect(await call("api.notes.rejectQuery", {})).toEqual(expected);
   });
 
   test("offers GET on query paths alone and names the allowed methods", async () => {

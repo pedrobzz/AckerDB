@@ -1984,22 +1984,9 @@ describe("AckerDBClient connection state", () => {
     client.close();
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
     expect(sockets).toHaveLength(2);
+    expect(clock.taskCount).toBe(0);
     expect(phases).toEqual(["ready", "reconnecting", "ready", "closed"]);
     unsubscribe();
-  });
-
-  test("construction establishes standing demand that survives drops without operations", () => {
-    const { client, clock, sockets } = createHarness();
-    sockets[0]!.welcome(client.clientSessionId);
-    sockets[0]!.close();
-    expect(client.currentConnectionState.phase).toBe("reconnecting");
-    expect(sockets).toHaveLength(1);
-    clock.advance(100);
-    expect(sockets).toHaveLength(2);
-    sockets[1]!.welcome(client.clientSessionId);
-    expect(client.currentConnectionState.phase).toBe("ready");
-    client.close();
-    expect(clock.taskCount).toBe(0);
   });
 
   test("keeps the connecting snapshot when the first attempt drops before welcome", () => {
@@ -2036,6 +2023,10 @@ describe("AckerDBClient connection state", () => {
     expect(blocked.error).toBeInstanceOf(AckerDBClientError);
     expect(blocked.error.code).toBe(blocking.code);
     expect(client.currentConnectionState).toBe(blocked);
+    // The auth-state surface reports refresh-required with the very same error.
+    const authentication = client.currentAuthenticationState;
+    if (authentication.phase !== "refresh-required") throw new Error(`unexpected ${authentication.phase}`);
+    expect(authentication.error).toBe(blocked.error);
 
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     expect(client.currentConnectionState.phase).toBe("reconnecting");
@@ -2573,50 +2564,6 @@ describe("AckerDBClient authentication state", () => {
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
       authentication: { authEpoch: 3, ...USER_AUTHENTICATION },
-    });
-    client.close();
-  });
-
-  test("reports refresh-required with the exact error shared with the connection state", async () => {
-    const { client, sockets } = createHarness({ credential: { kind: "bearer", token: "token-a" } });
-    sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
-    sockets[0]!.receive({
-      v: ACKERDB_VERSION,
-      t: "err",
-      id: null,
-      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
-    });
-    const blocked = client.currentAuthenticationState;
-    if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
-    expect(blocked.error).toBeInstanceOf(AckerDBClientError);
-    expect(blocked.error.code).toBe("unauthenticated");
-    expect(client.currentAuthenticationState).toBe(blocked);
-    const connection = client.currentConnectionState;
-    if (connection.phase !== "authentication-blocked") throw new Error(`unexpected ${connection.phase}`);
-    expect(connection.error).toBe(blocked.error);
-
-    // A new credential leaves the blocked state and replays the handshake.
-    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
-    expect(client.currentAuthenticationState).toEqual({
-      phase: "authenticating",
-      credential: "bearer",
-    });
-    const second = sockets[1]!;
-    second.open();
-    // The reconnect hello presents the refreshed credential, so its welcome
-    // is the verification: one round-trip, no separate auth frame.
-    second.receive({
-      v: ACKERDB_VERSION,
-      t: "welcome",
-      clientSessionId: client.clientSessionId,
-      authEpoch: 0,
-      ...USER_AUTHENTICATION,
-    });
-    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
-    expect(client.currentAuthenticationState).toEqual({
-      phase: "authenticated",
-      authentication: { authEpoch: 0, ...USER_AUTHENTICATION },
     });
     client.close();
   });

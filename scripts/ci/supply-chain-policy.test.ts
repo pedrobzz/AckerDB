@@ -9,7 +9,6 @@ describe("public repository CI boundaries", () => {
   test("never executes pull-request code on a self-hosted runner", () => {
     expect(ciWorkflow).not.toContain("self-hosted");
     expect(ciWorkflow).not.toContain("hetzner");
-    expect(ciWorkflow).toContain("BENCH_EXECUTION_HOST: github-hosted");
   });
 
   test("keeps the release job cache-free and read-only", () => {

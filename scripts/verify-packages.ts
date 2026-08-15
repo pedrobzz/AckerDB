@@ -12,7 +12,6 @@ import { FSL_LICENSE, NATIVE_LICENSE } from "./release/package-license.ts";
 import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
-  assertTargetCycloneDx,
   assertTargetBuildManifest,
   nativeBindingSourceDigest,
   targetBinaryName,
@@ -172,14 +171,6 @@ async function assertPackagedWebRtc(
       .digest("hex") !== target.upstream.license.sha256
   ) {
     throw new Error(`packed ${packageName} has invalid archive license evidence`);
-  }
-  try {
-    assertTargetCycloneDx(
-      JSON.parse(readFileSync(join(nativeDirectory, "sbom.cdx.json"), "utf8")),
-      current,
-    );
-  } catch {
-    throw new Error(`packed ${packageName} has invalid target-bound Cargo SBOM evidence`);
   }
   if (readFileSync(join(nativeDirectory, "THIRD_PARTY_NOTICES.txt"), "utf8").trim() === "") {
     throw new Error(`packed ${packageName} has empty Cargo notices`);

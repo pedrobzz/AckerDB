@@ -207,19 +207,24 @@ describe.each(PROFILES.map((profile) => [profile.name, profile] as const))(
       expect(principal.expiresAt).toBeGreaterThan(Date.now());
     });
 
-    test("expired, foreign-key, and unknown-issuer tokens reject unauthenticated", async () => {
-      const fixture = await profileFixture(profile);
-      const verifier = createOidcVerifier(fixture.options);
-      await expectRejected(verifier.verify(await fixture.mint({ expiresInSeconds: -3_600 })), "unauthenticated");
-      await expectRejected(verifier.verify(await fixture.mint({ foreignKey: true })), "unauthenticated");
-      const beforeUnknownIssuer = fixture.networkCalls();
-      await expectRejected(
-        verifier.verify(await fixture.mint({ issuer: `${profile.issuer}.attacker.example` })),
-        "unauthenticated",
-      );
-      // An unknown issuer fails at the exact-issuer registry, before any JWKS fetch.
-      expect(fixture.networkCalls()).toBe(beforeUnknownIssuer);
-    });
+    // The reject matrix reads nothing profile-specific but the signing
+    // algorithm, so it runs once per algorithm: each RSA fixture is ~250 ms of
+    // keygen for the same three assertions.
+    if (profile === PROFILES.find((candidate) => candidate.alg === profile.alg)) {
+      test("expired, foreign-key, and unknown-issuer tokens reject unauthenticated", async () => {
+        const fixture = await profileFixture(profile);
+        const verifier = createOidcVerifier(fixture.options);
+        await expectRejected(verifier.verify(await fixture.mint({ expiresInSeconds: -3_600 })), "unauthenticated");
+        await expectRejected(verifier.verify(await fixture.mint({ foreignKey: true })), "unauthenticated");
+        const beforeUnknownIssuer = fixture.networkCalls();
+        await expectRejected(
+          verifier.verify(await fixture.mint({ issuer: `${profile.issuer}.attacker.example` })),
+          "unauthenticated",
+        );
+        // An unknown issuer fails at the exact-issuer registry, before any JWKS fetch.
+        expect(fixture.networkCalls()).toBe(beforeUnknownIssuer);
+      });
+    }
 
     if (profile.audiences !== "unchecked") {
       test("declared audiences stay enforced: missing and wrong aud reject", async () => {

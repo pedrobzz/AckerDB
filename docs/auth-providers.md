@@ -227,7 +227,7 @@ mandatory because Auth0 mints it.
 
 ## BetterAuth
 
-BetterAuth's JWT plugin signs with **EdDSA** by default and hardcodes the
+BetterAuth's JWT support signs with **EdDSA** by default and hardcodes the
 protected header to `{alg, kid}` — there is no `typ` and no way to configure
 one, so `tokenType` must be `"unchecked"`. Self-hosted locally it is a
 plaintext HTTP issuer: loopback addresses work with no further declaration,

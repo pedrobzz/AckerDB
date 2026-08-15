@@ -11,7 +11,7 @@ describe("affected package selection", () => {
   });
 
   test("refuses anything the classifier could not have produced", () => {
-    expect(() => affectedPackages('["core","bench"]')).toThrow(
+    expect(() => affectedPackages('["core","unknown"]')).toThrow(
       "affected package output contains an unknown package",
     );
     // Native packages are never test targets: they carry no test directory.

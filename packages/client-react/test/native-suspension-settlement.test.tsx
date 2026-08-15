@@ -2,10 +2,8 @@
  * ISSUE-13 at the React layer, driven through the native entry: real ackerdb
  * server, real AI SDK `useChat`, and platform suspension delivered through
  * the mocked React Native AppState. Backgrounding must terminate AI
- * generations as cancellation (never a false error), settle generic SSE
- * `ReadableStream`s with one suspension-marked terminal outcome while the
- * server iterator is released, and leave resumable query recovery entirely
- * independent of those terminal settlements.
+ * generations as cancellation (never a false error) and leave resumable query
+ * recovery entirely independent of those terminal settlements.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 // Registers happy-dom before any React module loads — every test file in this
@@ -18,7 +16,6 @@ import { join } from "node:path";
 import { decode } from "@ackerdb/core";
 import {
   AckerDBClient,
-  AckerDBClientError,
   type AckerDBFetch,
   type AckerDBWebSocket,
   type QueryRef,
@@ -43,7 +40,7 @@ import type { UIMessage, UIMessageChunk } from "ai";
 import { useChat } from "@ai-sdk/react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { AckerDBQueryState, SseProcedureCall } from "@ackerdb/client-react";
+import type { AckerDBQueryState } from "@ackerdb/client-react";
 import { uiMessageChunk } from "./ai/ui-message-chunk.ts";
 import { deferred, type Deferred, until, waitForAbort } from "ackerdb-test-support/async";
 
@@ -63,9 +60,7 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { AckerDBProvider, useConnectionState, useQuery, useSseProcedure } = await import(
-  "../src/index.native.ts"
-);
+const { AckerDBProvider, useConnectionState, useQuery } = await import("../src/index.native.ts");
 const { useChatTransport } = await import("../src/ai/index.ts");
 
 const schema = defineSchema({
@@ -84,7 +79,6 @@ type Ctx = any;
 let aiHoldStarted = deferred<void>();
 let aiHoldReleased = deferred<void>();
 let aiMidReleases: Array<Deferred<void>> = [];
-let genericReleases: Array<Deferred<void>> = [];
 
 const standardArgs = {
   trigger: v.string(),
@@ -140,24 +134,6 @@ function registry(): Registry {
             yield { type: "text-end", id: "h1" };
             yield { type: "tool-input-start", toolCallId: "call1", toolName: "search" };
             yield { type: "tool-input-delta", toolCallId: "call1", inputTextDelta: '{"q":' };
-            await waitForAbort(ctx.abortSignal);
-          } finally {
-            released.resolve(undefined);
-          }
-        },
-      }),
-    },
-    stream: {
-      holdAfterFirst: sseProcedure({
-        access: "public",
-        http: true,
-        args: {},
-        yields: v.object({ phase: v.string() }),
-        handler: async function* (ctx: SseCtx) {
-          const released = deferred<void>();
-          genericReleases.push(released);
-          try {
-            yield { phase: "one" };
             await waitForAbort(ctx.abortSignal);
           } finally {
             released.resolve(undefined);
@@ -259,7 +235,6 @@ beforeEach(() => {
   aiHoldStarted = deferred<void>();
   aiHoldReleased = deferred<void>();
   aiMidReleases = [];
-  genericReleases = [];
 });
 afterEach(() => {
   setAppState("active");
@@ -392,6 +367,7 @@ describe("suspension settlement through the native entry against a real server",
     await until(() => finishes.length === 1, "the generation to settle");
     expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
     expect(errors).toEqual([]);
+    expect(chat!.error).toBeUndefined();
     await aiHoldReleased.promise;
     await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
 
@@ -399,6 +375,7 @@ describe("suspension settlement through the native entry against a real server",
     await until(() => phase === "ready", "foreground recovery");
     await Bun.sleep(20);
     expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
+    expect(chat!.status).toBe("ready");
   });
 
   test("a replacement generation sent immediately after activation is owned by itself, not the settled predecessor", async () => {
@@ -519,173 +496,5 @@ describe("suspension settlement through the native entry against a real server",
     await Bun.sleep(20);
     expect(log).toEqual([]);
     expect(chat!.status).toBe("ready");
-  });
-
-  test("backgrounding while the server's error body is still streaming settles as abort", async () => {
-    // The stream request was rejected (503) but its error body is still
-    // arriving when the app backgrounds: the AI SDK must settle the
-    // generation as cancellation, never as an error it reports to the user.
-    let rejectedBodyDispatched = false;
-    const scriptedFetch: AckerDBFetch = (url, init) => {
-      if (new URL(url).pathname !== SSE_ACK_PATH) {
-        rejectedBodyDispatched = true;
-        return Promise.resolve(
-          new Response(new ReadableStream<Uint8Array>({ start: () => {} }), { status: 503 }),
-        );
-      }
-      return fetch(url, init);
-    };
-    let phase = "";
-    let chat: ReturnType<typeof useChat<UIMessage>> | undefined;
-    const errors: Error[] = [];
-    const finishes: Settled[] = [];
-
-    function Probe(): ReactNode {
-      phase = useConnectionState().phase;
-      const transport = useChatTransport({ $ref: "api.ai.holdBeforeFirst" } as StandardRef);
-      chat = useChat<UIMessage>({
-        id: "native-error-body",
-        transport,
-        onError: (error) => errors.push(error),
-        onFinish: ({ isAbort, isError, isDisconnect }) =>
-          finishes.push({ isAbort, isError, isDisconnect }),
-      });
-      return null;
-    }
-
-    const root = createRoot(mountPoint());
-    roots.push(root);
-    root.render(
-      <AckerDBProvider
-        config={{
-          url: app.base,
-          credential: { kind: "anonymous" },
-          createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
-          fetch: scriptedFetch,
-        }}
-      >
-        <Probe />
-      </AckerDBProvider>,
-    );
-    await until(() => phase === "ready", "the provider to reach ready");
-
-    void chat!.sendMessage({ text: "rejected slowly" });
-    await until(() => rejectedBodyDispatched, "the rejected stream request");
-    await Bun.sleep(10);
-
-    setAppState("background");
-    await until(() => finishes.length === 1, "the generation to settle");
-    expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
-    expect(errors).toEqual([]);
-    expect(chat!.error).toBeUndefined();
-
-    setAppState("active");
-    await until(() => phase === "ready", "foreground recovery");
-    expect(chat!.status).toBe("ready");
-  });
-
-  test("backgrounding during a pending pull settles the generic stream once with the marked outcome", async () => {
-    const log: string[] = [];
-    let phase = "";
-    let call: SseProcedureCall<Record<never, never>, { phase: string }> | undefined;
-
-    function Probe(): ReactNode {
-      phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
-      return null;
-    }
-
-    const root = createRoot(mountPoint());
-    roots.push(root);
-    root.render(
-      <AckerDBProvider config={providerConfig(log)}>
-        <Probe />
-      </AckerDBProvider>,
-    );
-    await until(() => phase === "ready", "the provider to reach ready");
-
-    const reader = call!({}).getReader();
-    expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
-    const pending = reader.read();
-
-    setAppState("background");
-    // The pending pull settles promptly with the suspension-marked outcome.
-    const failure = await pending.then(
-      () => {
-        throw new Error("suspension must fail the pending read");
-      },
-      (error: AckerDBClientError) => error,
-    );
-    expect(failure.name).toBe("AckerDBClientError");
-    expect(failure.code).toBe("unavailable");
-    expect(failure.message).toBe("SSE stream was interrupted by suspension");
-    expect(failure.interruption).toBe("suspension");
-    // Exactly one terminal outcome: the stream stays failed with that error.
-    expect(await reader.read().catch((error: unknown) => error)).toBe(failure);
-    // The source iterator was released on the server.
-    await genericReleases[0]!.promise;
-    await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
-
-    setAppState("active");
-    await until(() => phase === "ready", "foreground recovery");
-    await Bun.sleep(20);
-    expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
-  });
-
-  test("backgrounding with an unacknowledged chunk outstanding releases both sides eagerly", async () => {
-    const log: string[] = [];
-    let phase = "";
-    let call: SseProcedureCall<Record<never, never>, { phase: string }> | undefined;
-
-    function Probe(): ReactNode {
-      phase = useConnectionState().phase;
-      call = useSseProcedure<Record<never, never>, { phase: string }>("api.stream.holdAfterFirst");
-      return null;
-    }
-
-    const root = createRoot(mountPoint());
-    roots.push(root);
-    root.render(
-      <AckerDBProvider config={providerConfig(log)}>
-        <Probe />
-      </AckerDBProvider>,
-    );
-    await until(() => phase === "ready", "the provider to reach ready");
-
-    // A slow downstream consumer: chunk one is held, its credit not yet sent
-    // (each pull credits the previous chunk), and no further pull is pending.
-    const reader = call!({}).getReader();
-    expect(await reader.read()).toEqual({ done: false, value: { phase: "one" } });
-    expect(log).toEqual(["sse"]);
-
-    setAppState("background");
-    // Release does not wait for the consumer: the server iterator returns and
-    // the stream's acknowledgement state is dropped on both sides eagerly.
-    await genericReleases[0]!.promise;
-    await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
-    expect(log).toEqual(["sse"]);
-
-    // The consumer's next pull observes the marked terminal outcome, and the
-    // outstanding acknowledgement is never sent late.
-    const failure = await reader.read().then(
-      () => {
-        throw new Error("suspension must fail the next read");
-      },
-      (error: AckerDBClientError) => error,
-    );
-    expect(failure.code).toBe("unavailable");
-    expect(failure.interruption).toBe("suspension");
-    expect(log).toEqual(["sse"]);
-
-    setAppState("active");
-    await until(() => phase === "ready", "foreground recovery");
-    // The settled stream never restarts; a new stream from the same callable
-    // is ordinary fresh work on the replacement generation.
-    const fresh = call!({}).getReader();
-    expect(await fresh.read()).toEqual({ done: false, value: { phase: "one" } });
-    expect(log).toEqual(["sse", "sse"]);
-    await fresh.cancel("done proving");
-    await genericReleases[1]!.promise;
-    await until(() => app.runtime.status().activeSse === 0, "the fresh stream to settle");
   });
 });

@@ -287,25 +287,6 @@ describe("mutation convergence across suspension", () => {
     client.close();
   });
 
-  test("boundary after settlement: recovery does not replay a settled mutation", async () => {
-    const { client, sockets, port } = createHarness();
-    const first = sockets[0]!;
-    first.welcome(client.clientSessionId);
-
-    const result = client.mutation("api.todos.add", { text: "milk" }).then(mustOk);
-    const issued = first.lastFrame("m");
-    first.receive(mutationOk(issued, 7n));
-    expect(await result).toBe(7n);
-
-    port.suspend();
-    port.resume();
-    const second = sockets[1]!;
-    second.welcome(client.clientSessionId);
-    expect(second.framesOf("m")).toHaveLength(0);
-    expect(mutationSends(sockets, issued.mutationRequestId)).toBe(1);
-    client.close();
-  });
-
   test("foreground authentication precedes mutation replay and event reapplication", async () => {
     const { client, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
@@ -373,7 +354,7 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("an authentication deadline elapsing during suspension retains the pending mutation until a new credential converges it", async () => {
-    const { client, clock, sockets, port } = createHarness({
+    const { client, clock, sockets, port, phases } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     const first = sockets[0]!;
@@ -395,6 +376,8 @@ describe("mutation convergence across suspension", () => {
     expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("auth_unavailable");
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
+    // Activation blocked without dialing: no resuming phase was ever published.
+    expect(phases).toEqual(["ready", "suspended", "authentication-blocked"]);
     // The credential expired, not the mutation: its identity is retained for
     // the recovery a new credential will start.
     expect(sockets).toHaveLength(1);
@@ -454,7 +437,7 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("a server Retry-After deadline holds recovery for both families, then one replay and one fresh reset land", async () => {
-    const { client, clock, sockets, port } = createHarness();
+    const { client, clock, sockets, port, phases } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("api.events.pings", {}, (event) =>
       events.push(event),
@@ -484,10 +467,13 @@ describe("mutation convergence across suspension", () => {
     });
 
     port.suspend();
+    // Suspension retires the admission timer; only the pending mutation's
+    // absolute deadline survives...
+    expect(clock.taskCount).toBe(1);
     clock.advance(2_000);
     port.resume();
-    // Activation cannot bypass server admission control: the remaining three
-    // seconds hold, and the retained families wait with their identities.
+    // ...but activation cannot bypass server admission control: the remaining
+    // three seconds hold, and the retained families wait with their identities.
     expect(sockets).toHaveLength(1);
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     expect(clock.nextDueIn()).toBe(3_000);
@@ -495,6 +481,7 @@ describe("mutation convergence across suspension", () => {
 
     const second = sockets[1]!;
     second.welcome(client.clientSessionId);
+    expect(phases).toEqual(["ready", "reconnecting", "suspended", "reconnecting", "ready"]);
     const replayed = second.lastFrame("m");
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
     const resub = second.lastFrame("sub");

@@ -91,7 +91,7 @@ const client = new AckerDBClient({
   credential: { kind: "anonymous" },
 });
 
-const unsubscribe = client.subscribe(api.todos.list, {}, console.log);
+const unsubscribe = client.subscribe(api.todos.list, {}, renderTodos);
 await client.mutation(api.todos.create, { text: "ship it" });
 
 unsubscribe();
@@ -153,16 +153,13 @@ client.close();
 - [MCP release gates](docs/mcp-conformance.md) documents the pinned official
   conformance scenarios, retained raw protocol/security cases, clean packed
   consumer, real Codex and Claude Code host acceptance, unsupported optional
-  capabilities, and benchmark contract.
+  capabilities, and package boundaries.
 - [MCP and AI integration](docs/ai-integration.md) documents endpoint-owned
   tool blueprints, exact generated tool types, and the in-process AI SDK
   adapter.
 - [Releases and protected branches](docs/releases.md) documents the
-  `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
-  reviewer-gated public npm delivery, trusted publishing, and local
-  Verdaccio betas.
-- [Historical documents](docs/history/) keep superseded implementation plans.
-  They are records of how AckerDB got here, not current procedure.
+  `topic → canary → main` topology, fast affected CI, reviewer-gated public npm
+  delivery, trusted publishing, and local Verdaccio betas.
 
 The remaining single-node and product limitations are listed explicitly in
 [Operations: remaining limitations](docs/operations.md#remaining-limitations).
@@ -216,18 +213,8 @@ bun run test:packages
 # Requires locally installed and authenticated Codex and Claude Code hosts:
 bun run test:mcp:hosts
 bun run typecheck
-bun run typecheck:bench
 bun run typecheck:tooling
 ```
-
-GitHub's required benchmark status first classifies the pull request. It returns
-an immediate successful no-op unless code exercised by the benchmark or the
-benchmark contract itself changed. For those performance-relevant changes, it
-compares the pull request's AckerDB with its base branch's AckerDB on the
-credential-free GitHub-hosted runner. The check records evidence without static
-per-metric thresholds; Pedro and an agent interpret the complete vector.
-Do not run the protected benchmark locally. See [the benchmark
-contract](bench/README.md).
 
 Prepare a branch's release intent once it is based on the current target, then
 publish as many local Verdaccio betas as real-application testing needs:

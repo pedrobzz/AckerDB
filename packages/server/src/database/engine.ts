@@ -21,7 +21,7 @@
  * cosmetic, renames keep storage, deletions retire the tag forever.
  *
  * Direct indexes execute as SQLite b-tree indexes: same API and semantics;
- * the array-backed layout is a later optimization if benchmarks demand it
+ * the array-backed layout is a later optimization if production evidence demands it
  * (the same "only if it wins" rule the wiki applies to sized numerics).
  */
 import { createHash, randomUUID } from "node:crypto";

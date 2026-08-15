@@ -21,7 +21,6 @@ import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
   assertProvenanceRevision,
-  assertTargetCycloneDx,
   assertTargetBuildManifest,
   nativeBindingSourceDigest,
   sha256File,
@@ -352,7 +351,6 @@ function expectedTargetFiles(target: WebRtcTarget): readonly string[] {
     "package/LICENSE.md",
     `package/${targetBinaryName(target)}`,
     "package/manifest.json",
-    "package/sbom.cdx.json",
     "package/THIRD_PARTY_NOTICES.txt",
     "package/PROVENANCE.md",
     "package/licenses/Google-WebRTC-LICENSE.md",
@@ -362,7 +360,6 @@ function expectedTargetFiles(target: WebRtcTarget): readonly string[] {
 function expectedEvidencePaths(): readonly string[] {
   return [
     "manifest.json",
-    "sbom.cdx.json",
     "THIRD_PARTY_NOTICES.txt",
     "PROVENANCE.md",
     "licenses/Google-WebRTC-LICENSE.md",
@@ -480,14 +477,6 @@ function readCandidateTarget(
   const license = archiveFile(pack.tarball, licensePath);
   if (sha256(license) !== manifest.upstream.license.sha256) {
     fail(`${target.packageName} archive license digest differs from manifest`);
-  }
-  try {
-    assertTargetCycloneDx(json(
-      archiveFile(pack.tarball, "package/sbom.cdx.json"),
-      `${target.packageName} SBOM`,
-    ), target);
-  } catch {
-    fail(`${target.packageName} SBOM is not target-bound CycloneDX evidence`);
   }
   if (archiveFile(pack.tarball, "package/THIRD_PARTY_NOTICES.txt").byteLength === 0) {
     fail(`${target.packageName} notices are empty`);

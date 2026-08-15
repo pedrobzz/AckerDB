@@ -363,44 +363,4 @@ describe("native AppState lifecycle through the provider", () => {
     expect(appStateListenerCount()).toBe(0);
     actEnvironment(false);
   });
-
-  test("activation without demand keeps the native client idle", async () => {
-    actEnvironment(true);
-    setAppState("active");
-    const harness = createHarness(APP, () => new LoggingSocket());
-    const container = mountPoint();
-    const root = createRoot(container);
-
-    function ConnectionOnly(): ReactNode {
-      const connection = useConnectionState();
-      return <span>{connection.phase}</span>;
-    }
-
-    await render(
-      root,
-      <AckerDBProvider config={harness.config()}>
-        <ConnectionOnly />
-      </AckerDBProvider>,
-    );
-    // The provider establishes standing connection demand, so this client
-    // always redials on activation; the no-demand case is a base-client
-    // behavior (see packages/client/test/suspension.test.ts). Here the
-    // React-visible fact is the suspended -> resuming -> ready progression.
-    await act(async () => {
-      harness.live().welcome(SESSION);
-    });
-    expect(container.textContent).toBe("ready");
-    await platform("background");
-    expect(container.textContent).toBe("suspended");
-    await platform("active");
-    expect(container.textContent).toBe("resuming");
-    await act(async () => {
-      harness.live().welcome(SESSION);
-    });
-    expect(container.textContent).toBe("ready");
-    await act(async () => {
-      root.unmount();
-    });
-    actEnvironment(false);
-  });
 });

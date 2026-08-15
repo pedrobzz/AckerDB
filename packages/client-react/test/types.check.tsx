@@ -226,9 +226,6 @@ type UnexpectedExports = AssertNever<
     | "useSseProcedure"
   >
 >;
-type NoImperativeEscape = AssertNever<
-  Extract<PublicExports, "useAckerDBClient" | "useClient" | "useClose" | "close" | "AckerDBClient">
->;
 
 export {
   Consumer,
@@ -246,6 +243,5 @@ export {
   missingUrl,
   tokenless,
   withChildren,
-  type NoImperativeEscape,
   type UnexpectedExports,
 };

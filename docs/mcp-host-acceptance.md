@@ -100,5 +100,5 @@ Real MCP hosts passed against packed @ackerdb/* 0.3.0; credentials remained envi
 - This gate needs authenticated external host installations and model access.
   It remains HITL and is not permanent hosted infrastructure.
 
-OAuth, host plugins, stdio transport, Claude Desktop packaging, and model
+OAuth, stdio transport, Claude Desktop packaging, and model
 quality evaluation remain outside this gate.

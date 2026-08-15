@@ -33,7 +33,7 @@ const VOCABULARY = Object.freeze([
   "admin:write",
   "notes:read",
   "notes:write",
-  "_admin:logs:read",
+  "_admin:jobs:read",
   "_admin:jobs:write",
 ]);
 
@@ -70,7 +70,7 @@ describe("scope vocabulary", () => {
   });
 
   test("an application may never declare a framework scope or a pattern", () => {
-    expect(() => validateScopeVocabulary(["_admin:logs:read"])).toThrow(/framework/);
+    expect(() => validateScopeVocabulary(["_admin:jobs:read"])).toThrow(/framework/);
     expect(() => validateScopeVocabulary(["_"])).toThrow(/framework/);
     expect(() => validateScopeVocabulary(["notes:*"])).toThrow(/wildcard/);
     expect(() => validateScopeVocabulary(["*"])).toThrow(/wildcard/);
@@ -121,8 +121,9 @@ describe("expansion", () => {
 
   test("the framework half is reached only through a marked pattern", () => {
     expect(expandScopeGrant(["_*"], VOCABULARY))
-      .toEqual(["_admin:logs:read", "_admin:jobs:write"]);
-    expect(expandScopeGrant(["_admin:logs:*"], VOCABULARY)).toEqual(["_admin:logs:read"]);
+      .toEqual(["_admin:jobs:read", "_admin:jobs:write"]);
+    expect(expandScopeGrant(["_admin:jobs:*"], VOCABULARY))
+      .toEqual(["_admin:jobs:read", "_admin:jobs:write"]);
     // An administrative identity is one holding both halves — nothing else.
     expect(expandScopeGrant(["*", "_*"], VOCABULARY)).toEqual([...VOCABULARY]);
   });

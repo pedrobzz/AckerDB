@@ -3,7 +3,6 @@ import {
   codeInputsChanged,
   nativeBuildInputsChanged,
   nativeTestInputsChanged,
-  performanceInputsChanged,
   verifyPackagesInputsChanged,
 } from "./changes.ts";
 
@@ -51,43 +50,6 @@ describe("native CI selection", () => {
     expect(nativeTestInputsChanged([
       "packages/realtime/native/webrtc/test/candidate.test.ts",
       "packages/realtime/native/webrtc/test/distribution.test.ts",
-    ])).toBe(false);
-  });
-});
-
-describe("benchmark selection", () => {
-  test("runs only for code and harness inputs exercised by the benchmark", () => {
-    expect(performanceInputsChanged([
-      "packages/core/src/protocol.ts",
-    ])).toBe(true);
-    expect(performanceInputsChanged([
-      "packages/client/src/client.ts",
-    ])).toBe(true);
-    expect(performanceInputsChanged([
-      "packages/server/src/runtime/runtime.ts",
-    ])).toBe(true);
-    expect(performanceInputsChanged([
-      "packages/cli/src/app/manifest.ts",
-    ])).toBe(true);
-    expect(performanceInputsChanged([
-      "bench/workload.ts",
-    ])).toBe(true);
-    expect(performanceInputsChanged([
-      ".github/workflows/ci.yml",
-    ])).toBe(true);
-  });
-
-  test("does not spend benchmark time on non-performance changes", () => {
-    expect(performanceInputsChanged([
-      "README.md",
-      "docs/releases.md",
-      "packages/core/test/protocol.test.ts",
-      "packages/client-react/src/provider.tsx",
-      "packages/realtime/src/session.ts",
-      "packages/realtime/native/webrtc/src/peer.rs",
-      "packages/server/package.json",
-      "bun.lock",
-      ".github/workflows/native.yml",
     ])).toBe(false);
   });
 });

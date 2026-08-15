@@ -354,36 +354,6 @@ test("bundled libwebrtc exchanges data, PCM audio, and I420 video in Bun", async
   }
 }, 30_000);
 
-test("the default generation admits ordinary peer, audio, and video resources", async () => {
-  const engine = createBundledRealtimeEngine();
-  const generation = engine.createGeneration(
-    DEFAULT_GENERATION_MAX_QUEUED_BYTES,
-  );
-  let peer: ReturnType<typeof generation.createPeerConnection> | undefined;
-  let audioSource: ReturnType<typeof generation.createAudioSource> | undefined;
-  let videoSource: ReturnType<typeof generation.createVideoSource> | undefined;
-  let audioStream: ReturnType<typeof generation.createAudioStream> | undefined;
-  let videoStream: ReturnType<typeof generation.createVideoStream> | undefined;
-  try {
-    peer = generation.createPeerConnection();
-    audioSource = generation.createAudioSource();
-    videoSource = generation.createVideoSource({ width: 640, height: 480 });
-    audioStream = generation.createAudioStream(audioSource.track);
-    videoStream = generation.createVideoStream(videoSource.track);
-
-    expect(generation.nativeQueueMetrics().reservedBytes).toBeGreaterThan(0);
-    expect(engine.nativeQueueMetrics().reservedBytes).toBeGreaterThan(0);
-  } finally {
-    await audioStream?.cancel();
-    await videoStream?.cancel();
-    audioSource?.close();
-    videoSource?.close();
-    peer?.close();
-    generation.close();
-    engine.close();
-  }
-});
-
 test("a generation byte saturation does not poison another generation", () => {
   const engine = createBundledRealtimeEngine();
   const saturated = engine.createGeneration(1024 * 1024);
@@ -525,6 +495,7 @@ test("native lifecycle releases wrapped resources and queue permits", async () =
     videoStream = generation.createVideoStream(videoSource.track);
 
     expect(resources.snapshot().active.tracks).toBe(2);
+    expect(generation.nativeQueueMetrics().reservedBytes).toBeGreaterThan(0);
     expect(engine.nativeQueueMetrics().reservedBytes).toBeGreaterThan(0);
   } finally {
     await audioStream?.cancel();

@@ -59,7 +59,6 @@ describe("WebRTC package topology", () => {
     expect(TARGET_MANIFEST_SCHEMA_VERSION).toBe(4);
     expect(TARGET_EVIDENCE_FILES).toEqual([
       "manifest.json",
-      "sbom.cdx.json",
       "THIRD_PARTY_NOTICES.txt",
       "PROVENANCE.md",
       "licenses",

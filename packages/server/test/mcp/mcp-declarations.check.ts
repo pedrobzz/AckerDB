@@ -68,14 +68,6 @@ const endpoint = typedMcp({
 });
 
 typedMcp({
-  name: "invalid_scope",
-  tools: {
-    // @ts-expect-error a scope the vocabulary never declared cannot be named
-    admin_only: { fn: echo, access: { anyOf: ["admin"] } },
-  },
-});
-
-typedMcp({
   name: "streaming",
   tools: {
     // @ts-expect-error an sseProcedure is not a tool kind

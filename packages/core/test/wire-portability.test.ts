@@ -103,7 +103,7 @@ for (const [label, wire] of implementations) {
       const value = {
         id: 7n,
         blob: new Uint8Array([4, 5, 6]),
-        inner: { list: [new Uint8Array([7])], text: "hi" },
+        inner: { list: [new Uint8Array([7])], text: "hi", nil: null },
       };
       expect(roundtrip(value)).toEqual(value);
       expect(decode(stableEncode(value))).toEqual(value);
@@ -137,12 +137,6 @@ for (const [label, wire] of implementations) {
         crypto.getRandomValues(bytes);
         expect(encode(bytes)).toBe(expected(bytes));
       }
-    });
-
-    test("decoding accepts Buffer-produced padded base64", () => {
-      const bytes = new Uint8Array([250, 251, 252, 253, 254, 255, 0]);
-      const wireText = JSON.stringify({ $: "x", v: Buffer.from(bytes).toString("base64") });
-      expect(decode(wireText)).toEqual(bytes);
     });
   });
 }

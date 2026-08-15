@@ -138,8 +138,8 @@ current contract.
 
 Published `@ackerdb/realtime` releases must have verified optional native
 packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64, plus the
-aggregate manifest, SHA-256 digests, third-party notices, and Cargo CycloneDX
-SBOM. The root package contains no native binary; a consumer installs only its
+aggregate manifest, SHA-256 digests, and third-party notices. The root package
+contains no native binary; a consumer installs only its
 matching optional target package.
 
 GitHub builds all five targets only when actual WebRTC native inputs change.
@@ -215,7 +215,7 @@ mutation receipt and storage status.
 | Profile | SQLite setting | Contract |
 | --- | --- | --- |
 | `production` | `PRAGMA synchronous=FULL` | Default production acknowledgement profile, including SQLite's FULL WAL sync before commit acknowledgement. |
-| `balanced` | `PRAGMA synchronous=NORMAL` | Benchmark-oriented profile. It remains process-crash consistent but may lose recent acknowledged commits after an OS crash, hard reset, or power loss. |
+| `balanced` | `PRAGMA synchronous=NORMAL` | Reduced-durability profile. It remains process-crash consistent but may lose recent acknowledged commits after an OS crash, hard reset, or power loss. |
 
 No software setting can compensate for storage hardware or a filesystem that
 lies about durable sync. `balanced` must not be presented as the same power-loss

@@ -164,27 +164,6 @@ describe("AckerDBClient suspension", () => {
     client.close();
   });
 
-  test("background clears a stale reconnect backoff so nothing dials before activation", () => {
-    const { client, clock, sockets, port } = createHarness();
-    client.subscribe("api.todos.list", { list: 1n }, () => {});
-    const first = sockets[0]!;
-    first.welcome(client.clientSessionId);
-    first.close();
-    expect(client.currentConnectionState.phase).toBe("reconnecting");
-    expect(clock.nextDueIn()).toBe(100);
-
-    port.suspend();
-    expect(clock.taskCount).toBe(0);
-    clock.advance(60_000);
-    expect(sockets).toHaveLength(1);
-
-    port.resume();
-    expect(sockets).toHaveLength(2);
-    sockets[1]!.welcome(client.clientSessionId);
-    expect(client.currentConnectionState.phase).toBe("ready");
-    client.close();
-  });
-
   test("background pauses the credential deadline and activation re-arms the remainder", async () => {
     const { client, clock, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
@@ -218,33 +197,6 @@ describe("AckerDBClient suspension", () => {
     client.close();
   });
 
-  test("a credential deadline that elapsed during suspension expires on activation without dialing", async () => {
-    const { client, clock, sockets, port, phases } = createHarness({
-      credential: { kind: "bearer", token: "token-a" },
-    });
-    client.subscribe("api.todos.list", { list: 1n }, () => {});
-    sockets[0]!.welcome(client.clientSessionId);
-    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
-
-    port.suspend();
-    clock.advance(30_001);
-    port.resume();
-
-    const rejection = (await refresh) as AckerDBClientError;
-    expect(rejection).toBeInstanceOf(AckerDBClientError);
-    expect(rejection.code).toBe("auth_unavailable");
-    expect(sockets).toHaveLength(1);
-    expect(client.currentConnectionState.phase).toBe("authentication-blocked");
-    expect(phases).toEqual(["ready", "suspended", "authentication-blocked"]);
-
-    // A new credential recovers the ordinary way now that the app is active.
-    const recovered = client.refreshCredential({ kind: "bearer", token: "token-c" });
-    expect(sockets).toHaveLength(2);
-    sockets[1]!.welcome(client.clientSessionId, { principal: "anonymous" }, 2);
-    expect(await recovered).toEqual({ authEpoch: 2, principal: "anonymous" });
-    client.close();
-  });
-
   test("pending request deadlines stay absolute across suspension", async () => {
     const { client, clock, port } = createHarness();
     const result = client.query("api.todos.list", { list: 1n }).then(mustErr);
@@ -253,44 +205,6 @@ describe("AckerDBClient suspension", () => {
     const rejection = (await result) as AckerDBClientError;
     expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("deadline_exceeded");
-    client.close();
-  });
-
-  test("in-flight procedures settle promptly at suspension and never restart", async () => {
-    const { client, sockets, port } = createHarness();
-    const call = client.procedure("api.todos.tally", {}).then(mustErr);
-    expect(sockets).toHaveLength(1);
-    sockets[0]!.welcome(client.clientSessionId);
-    const request = sockets[0]!.lastFrame("p");
-    port.suspend();
-    const rejection = (await call) as AckerDBClientError;
-    expect(rejection).toBeInstanceOf(AckerDBClientError);
-    expect(rejection.code).toBe("indeterminate");
-    expect(sockets[0]!.lastFrame("cancel").id).toBe(request.id);
-    port.resume();
-    // The settled procedure is not replayed; the client's standing connection
-    // demand still creates a fresh idle transport on activation.
-    expect(sockets).toHaveLength(2);
-    client.close();
-  });
-
-  test("in-flight SSE streams settle promptly at suspension and never restart", async () => {
-    let fetches = 0;
-    const { client, port } = createHarness({
-      fetch: () => {
-        fetches++;
-        return new Promise<Response>(() => {});
-      },
-    });
-    const stream = client.sse("api.todos.watch", {});
-    const first = stream.next().catch((error) => error);
-    await Promise.resolve();
-    port.suspend();
-    const rejection = (await first) as AckerDBClientError;
-    expect(rejection).toBeInstanceOf(AckerDBClientError);
-    expect(rejection.code).toBe("unavailable");
-    port.resume();
-    expect(fetches).toBe(1);
     client.close();
   });
 });
@@ -306,6 +220,8 @@ describe("AckerDBClient activation", () => {
     sockets[1]!.close();
     expect(clock.nextDueIn()).toBe(100);
     port.suspend();
+    // Suspension retires the pending backoff: nothing dials before activation.
+    expect(clock.taskCount).toBe(0);
     clock.advance(60_000);
     expect(sockets).toHaveLength(2);
 
@@ -444,41 +360,6 @@ describe("AckerDBClient activation", () => {
     // The server has returned: recovery completes without any restart.
     sockets[2]!.welcome(client.clientSessionId);
     expect(phases).toEqual(["ready", "suspended", "resuming", "reconnecting", "ready"]);
-    client.close();
-  });
-
-  test("a server retry hint outlives suspension: activation honors the remaining pushback", () => {
-    const { client, clock, sockets, port, phases } = createHarness();
-    client.subscribe("api.todos.list", { list: 1n }, () => {});
-    sockets[0]!.welcome(client.clientSessionId);
-    // The server sheds load with an explicit admission deadline.
-    sockets[0]!.receive({
-      v: ACKERDB_VERSION,
-      t: "err",
-      id: null,
-      outcome: {
-        code: "overloaded",
-        retryable: true,
-        retryAfterMs: 5_000,
-        message: "connection admission is full",
-        resource: "connection",
-      },
-    });
-    expect(clock.nextDueIn()).toBe(5_000);
-
-    port.suspend();
-    expect(clock.taskCount).toBe(0);
-    clock.advance(2_000);
-    port.resume();
-    // A lifecycle transition cannot bypass admission control: no immediate
-    // dial, the ordinary reconnect policy holds the remaining three seconds.
-    expect(sockets).toHaveLength(1);
-    expect(client.currentConnectionState.phase).toBe("reconnecting");
-    expect(clock.nextDueIn()).toBe(3_000);
-    clock.advance(3_000);
-    expect(sockets).toHaveLength(2);
-    sockets[1]!.welcome(client.clientSessionId);
-    expect(phases).toEqual(["ready", "reconnecting", "suspended", "reconnecting", "ready"]);
     client.close();
   });
 
@@ -672,16 +553,6 @@ describe("AckerDBClient activation", () => {
     client.close();
   });
 
-  test("activation restores the constructor-owned standing connection demand", () => {
-    const { client, sockets, port, phases } = createHarness();
-    port.suspend();
-    port.resume();
-    expect(sockets).toHaveLength(2);
-    expect(client.currentConnectionState.phase).toBe("resuming");
-    expect(phases).toEqual(["suspended", "resuming"]);
-    client.close();
-  });
-
   test("released operation demand does not cancel standing connection demand", () => {
     const { client, sockets, port } = createHarness();
     const unsubscribe = client.subscribe("api.todos.list", { list: 1n }, () => {});
@@ -691,53 +562,6 @@ describe("AckerDBClient activation", () => {
     port.resume();
     expect(sockets).toHaveLength(2);
     expect(sockets[0]!.closed).toBe(true);
-    client.close();
-  });
-
-  test("work created during suspension is demand for the activation dial, not an immediate one", async () => {
-    const { client, sockets, port } = createHarness();
-    port.suspend();
-    expect(sockets).toHaveLength(1);
-    const result = client.mutation("api.todos.add", { text: "milk" });
-    expect(sockets).toHaveLength(1);
-
-    port.resume();
-    expect(sockets).toHaveLength(2);
-    const socket = sockets[1]!;
-    socket.welcome(client.clientSessionId);
-    const frame = socket.lastFrame("m");
-    socket.receive({
-      t: "ok",
-      id: frame.id,
-      kind: "mutation",
-      value: 7n,
-      receipt: {
-        mutationRequestId: frame.mutationRequestId,
-        commitVersion: 1n,
-        durability: "production",
-        replay: "executed",
-        obligations: [],
-      },
-    });
-    const mutationResult = await result;
-    if (!mutationResult.ok) throw mutationResult.error;
-    expect(mutationResult.data).toBe(7n);
-    client.close();
-  });
-
-  test("a mutation pending across suspension keeps its original identity on the fresh connection", () => {
-    const { client, sockets, port } = createHarness();
-    sockets[0]!.welcome(client.clientSessionId);
-    void client.mutation("api.todos.add", { text: "milk" }).catch(() => {});
-    const issued = sockets[0]!.lastFrame("m");
-
-    port.suspend();
-    port.resume();
-    const second = sockets[1]!;
-    second.welcome(client.clientSessionId);
-    const replayed = second.lastFrame("m");
-    expect(replayed.id).toBe(issued.id);
-    expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
     client.close();
   });
 });

@@ -31,7 +31,7 @@ export type DefaultApiPath = typeof DEFAULT_API_PATH;
  * carrying no reserved marker — the marker belongs to roots and scopes, and a
  * group's name becomes a generated binding, which the marker is reserved
  * against. What keeps the surface unsquattable is the address rule itself: an
- * application's `logs.list` is `api.logs.list`, never `admin.logs.list`, so
+ * application's `orders.list` is `api.orders.list`, never `admin.orders.list`, so
  * the two can never name one function. An application may still publish its
  * own functions here, which is why the group is shared rather than sealed.
  *

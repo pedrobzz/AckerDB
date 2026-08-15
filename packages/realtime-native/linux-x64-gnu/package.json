@@ -17,7 +17,6 @@
   "files": [
     "ackerdb_webrtc.linux-x64-gnu.node",
     "manifest.json",
-    "sbom.cdx.json",
     "THIRD_PARTY_NOTICES.txt",
     "PROVENANCE.md",
     "licenses"

@@ -420,7 +420,9 @@ describe("migrate: validation refuses before touching anything", () => {
     const path = freshPath();
     await seedOne(path);
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toThrow(/refused table\(s\): posts/);
+    const refused = reconcile(engine, chain(engine, defineMigration({ tables: {} })));
+    await expect(refused).rejects.toBeInstanceOf(MigrationError);
+    await expect(refused).rejects.toThrow(/refused table\(s\): posts/);
     assertUntouched(engine);
     engine.close("clean");
   });
@@ -445,14 +447,6 @@ describe("migrate: validation refuses before touching anything", () => {
       /"posts" still exists/,
     );
     assertUntouched(engine);
-    engine.close("clean");
-  });
-
-  test("validation errors are MigrationError", async () => {
-    const path = freshPath();
-    await seedOne(path);
-    const engine = new Engine(b, path);
-    await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toBeInstanceOf(MigrationError);
     engine.close("clean");
   });
 });

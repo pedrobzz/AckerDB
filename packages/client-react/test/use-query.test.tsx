@@ -687,7 +687,10 @@ describe("awaiting principal change", () => {
     };
   }
 
-  test("a demand rejected while anonymous re-demands exactly once after sign-in", async () => {
+  test.each([
+    { code: "unauthenticated", message: "sign in first" },
+    { code: "unauthorized", message: "not yours" },
+  ] as const)("a demand rejected while anonymous ($code) re-demands exactly once after sign-in", async ({ code, message }) => {
     const harness = createHarness(APP);
     const client = new AckerDBClient(harness.config());
     const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
@@ -702,7 +705,7 @@ describe("awaiting principal change", () => {
       v: ACKERDB_VERSION,
       t: "err",
       id,
-      outcome: { code: "unauthenticated", retryable: false, message: "sign in first" },
+      outcome: { code, retryable: false, message },
     });
     await flush();
     expect(entry.snapshot()).toMatchObject({ status: "rejected" });
@@ -731,37 +734,6 @@ describe("awaiting principal change", () => {
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["mine"] },
     });
     expect(entry.snapshot()).toMatchObject({ status: "success", data: ["mine"] });
-    stopListening();
-    client.close();
-  });
-
-  test("an unauthorized rejection behaves identically to an unauthenticated one", async () => {
-    const harness = createHarness(APP);
-    const client = new AckerDBClient(harness.config());
-    const entry = new QueryStoreEntry<string[]>(client, "api.todos.list", { list: 1n });
-    const stopListening = entry.listen(() => {});
-    const socket = harness.live();
-    socket.welcome(SESSION);
-    const id = socket.framesOf("sub")[0]!.id;
-    socket.receive({
-      v: ACKERDB_VERSION,
-      t: "err",
-      id,
-      outcome: { code: "unauthorized", retryable: false, message: "not yours" },
-    });
-    await flush();
-    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-a" });
-    const attempt = socket.framesOf("auth")[0]!;
-    const accepted = alice();
-    socket.receive({
-      t: "auth",
-      attemptId: attempt.attemptId,
-      authEpoch: accepted.authEpoch,
-      ...accepted.descriptor,
-    });
-    await refreshed;
-    await flush();
-    expect(socket.framesOf("sub")).toHaveLength(2);
     stopListening();
     client.close();
   });

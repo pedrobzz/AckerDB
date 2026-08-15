@@ -15,13 +15,12 @@ import {
 
 export const TARGET_MANIFEST_SCHEMA_VERSION = 4;
 export const DISTRIBUTION_MANIFEST_SCHEMA_VERSION = 1;
-// A candidate binds every one of the twelve lockstep publish tarballs, not
+// A candidate binds every lockstep publish tarball, not
 // merely the native package set. Schema 2 added each source and packed
 // package-manifest digest to make that complete release boundary explicit.
 export const CANDIDATE_MANIFEST_SCHEMA_VERSION = 2;
 export const TARGET_EVIDENCE_FILES = Object.freeze([
   "manifest.json",
-  "sbom.cdx.json",
   "THIRD_PARTY_NOTICES.txt",
   "PROVENANCE.md",
   "licenses",
@@ -73,27 +72,6 @@ export function targetBinaryName(target: WebRtcTarget): string {
 export function assertProvenanceRevision(provenance: string): void {
   if (!provenance.includes(`at immutable commit \`${ACKERDB_LIBWEBRTC_REVISION}\`.`)) {
     throw new Error("WebRTC provenance does not name the immutable fork revision");
-  }
-}
-
-/** A Cargo SBOM is valid only for the target package it accompanies. */
-export function assertTargetCycloneDx(sbom: unknown, target: WebRtcTarget): void {
-  const properties = (sbom as {
-    readonly metadata?: {
-      readonly properties?: readonly { readonly name?: unknown; readonly value?: unknown }[];
-    };
-  } | null)?.metadata?.properties;
-  const triples = Array.isArray(properties)
-    ? properties.flatMap((property) =>
-      property?.name === "cdx:rustc:sbom:target:triple" ? [property.value] : []
-    )
-    : [];
-  if (
-    (sbom as { readonly bomFormat?: unknown } | null)?.bomFormat !== "CycloneDX" ||
-    triples.length !== 1 ||
-    triples[0] !== target.rustTarget
-  ) {
-    throw new Error(`invalid target-bound Cargo SBOM for ${target.packageName}`);
   }
 }
 

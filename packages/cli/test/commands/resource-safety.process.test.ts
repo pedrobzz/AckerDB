@@ -16,7 +16,7 @@ import {
   ProcessTreeMonitor,
   PROCESS_TREE_RSS_KIND,
   snapshotProcessTree,
-} from "../../../../bench/process-tree.ts";
+} from "../support/process-tree.ts";
 import { makeFixture } from "../support/fixture.ts";
 import { decodeChunkedBody, parseSseBody, pausedSse } from "./paused-sse.ts";
 import { freePort } from "../support/port.ts";

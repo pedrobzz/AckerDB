@@ -1,3 +1,4 @@
+// Process-level resource tests sample the fixture and every child it owns.
 const PS_COMMAND = ["ps", "-ww", "-axo", "pid=,ppid=,rss=,time=,etime="];
 
 export const PROCESS_TREE_RSS_KIND = "sumProcessRss" as const;

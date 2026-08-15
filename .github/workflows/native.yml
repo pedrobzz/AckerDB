@@ -72,8 +72,7 @@ jobs:
         with:
           path: |
             ~/.cargo/bin/cargo-about*
-            ~/.cargo/bin/cargo-cyclonedx*
-          key: evidence-tools-${{ runner.os }}-${{ runner.arch }}-cyclonedx-0.5.9-about-0.9.1
+          key: evidence-tools-${{ runner.os }}-${{ runner.arch }}-about-0.9.1
       - name: Install Linux headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libglib2.0-dev
@@ -81,7 +80,6 @@ jobs:
       - name: Install evidence tools when absent
         shell: bash
         run: |
-          command -v cargo-cyclonedx >/dev/null || cargo install --locked cargo-cyclonedx --version 0.5.9
           command -v cargo-about >/dev/null || cargo install --locked cargo-about --version 0.9.1 --features cli
       - run: bun run build:webrtc
       - name: Verify generated loader
@@ -98,7 +96,6 @@ jobs:
           path: |
             packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.node
             packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.manifest.json
-            packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.sbom.cdx.json
             packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.THIRD_PARTY_NOTICES.txt
             packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.PROVENANCE.md
             packages/realtime/native/webrtc/binding/ackerdb_webrtc.${{ matrix.platform_arch_abi }}.licenses/**

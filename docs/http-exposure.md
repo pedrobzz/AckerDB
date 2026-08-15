@@ -53,11 +53,10 @@ the lockstep release, breaks are explicit).
 - GET exists for queries only: it makes anonymous/public queries cacheable
   and curl-able. Individual query parameters (`?limit=10`) are deliberately
   not supported; string coercion fights the validator model. Large or
-  sensitive args belong in a POST body — URLs leak into access logs.
+  sensitive args belong in a POST body — URLs are routinely retained by HTTP infrastructure.
 - Cancellation is the HTTP request abort; there is no cancel endpoint.
 - Callers send no request id. The listener numbers path-addressed calls from
-  its own monotonic sequence so the operation stays correlatable in logs; the
-  id never reaches the response.
+  its own monotonic sequence; the id never reaches the response.
 - A value response emits no `Cache-Control`; caching policy belongs to the
   operator. An SSE response is not policy — it sets
   `Cache-Control: no-cache, no-transform` (and `X-Accel-Buffering: no`), because

@@ -623,7 +623,7 @@ Instead, in the runtime beta:
 
 Omitting `returns` adds no successful-result validation walk. Declaring
 `returns` deliberately opts that function into its structural runtime check;
-the final benchmark must report that cost rather than pretending it is free.
+whole-request performance evidence must include that cost.
 
 Validating only the first query result is forbidden: one value cannot prove
 that later data-dependent results satisfy the same shape.
@@ -676,9 +676,7 @@ the affected graph, not the whole application, after startup.
 
 Any reproducible query-path regression under the same useful workload requires
 whole-vector judgment across latency, throughput, memory, tails, useful work,
-and correctness. No percentage decides acceptance. The paired pull-request
-benchmark remains evidence for Pedro and an agent rather than an automatic
-performance verdict.
+and correctness. No percentage decides acceptance.
 
 Automatic mutation scopes have real cost, so their measurements are reported
 separately from query performance. That cost is paid only at registered nested

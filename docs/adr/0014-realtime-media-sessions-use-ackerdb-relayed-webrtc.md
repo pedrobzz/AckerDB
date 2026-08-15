@@ -181,8 +181,8 @@ native binary revisions; npm host metadata selects the consumer’s package.
 The binding source is an immutable commit from AckerDB’s focused
 `ackerdb-libwebrtc` fork, based on a recorded LiveKit upstream revision.
 Target-specific Google libwebrtc archives remain digest-verified LiveKit build
-inputs. Manifests, notices, licenses, provenance, and an SBOM ship with the
-root distribution record and each platform package.
+inputs. Manifests, notices, licenses, and provenance ship with the root
+distribution record and each platform package.
 
 Every advertised target must build and enter the assembled package. Native and
 packed runtime execution is currently proven only on Darwin arm64; other

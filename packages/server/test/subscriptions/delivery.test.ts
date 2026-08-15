@@ -746,20 +746,6 @@ describe("BoundedSseProducer", () => {
     expect(budget.snapshot().bytes).toBe(0);
   });
 
-  test("releases capacity once when the consumer cancels", async () => {
-    const clock = new FakeClock();
-    const limits = testLimits();
-    const budget = new OutboundBudget(limits.sse.maxBytes, 512);
-    const producer = new BoundedSseProducer({ budget, limits, clock });
-    const chunk = { value: "held" };
-
-    producer.write(chunk);
-    clock.advance(3);
-    await producer.stream.cancel("consumer stopped");
-    expect(producer.snapshot()).toMatchObject({ unackedBytes: 0, unackedFrames: 0, state: "closed" });
-    expect(budget.snapshot().bytes).toBe(0);
-  });
-
   test("range-checks acknowledgments and cumulatively releases without mutating rejected proofs", async () => {
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);

@@ -1,7 +1,7 @@
 # Administration is a first-class surface, declared by the framework and reached through the ordinary funnel
 
-Every application needs to be looked at: its logs read, its jobs inspected, its
-rows corrected. Until now AckerDB shipped none of that, and the machinery that
+Every application needs to be operated: its jobs inspected, its rows corrected,
+and its system state understood. Until now AckerDB shipped none of that, and the machinery that
 would carry it was built for exactly one producer. `Registry`'s only input was a
 walk of the user's `functionsDir`; `packages/server/src/**` never called
 `query()`, `mutation()` or `procedure()` once, and every reference to the
@@ -55,8 +55,8 @@ own reservation.
 
 It buys nothing, because the address rule already does the work. Since
 [ADR-0023](0023-api-paths-group-function-addresses.md)'s amendment the group is
-the address's *first segment*, so `logs.list` in an application is
-`api.logs.list` and can never be `admin.logs.list`. Squatting requires naming
+the address's *first segment*, so `orders.list` in an application is
+`api.orders.list` and can never be `admin.orders.list`. Squatting requires naming
 the framework's group, module and export at once, and the one address space
 refuses that at startup with the collision it already had.
 
@@ -70,7 +70,7 @@ and listing it would emit the binding twice into one generated file.
 
 `validateScopeVocabulary` already refused an application *declaring* a
 `_`-prefixed scope. Once `FRAMEWORK_SCOPES` is populated, an untyped
-`scopes: { anyOf: ["_admin:logs:read"] }` on an application declaration passes
+`scopes: { anyOf: ["_admin:jobs:read"] }` on an application declaration passes
 `checkRequirementAgainstVocabulary` — the name is in the known vocabulary — while
 the generated `Scope` union refuses it at compile time. **The type system saying
 no and the runtime saying yes is the bug**, and the hole is reachable by any

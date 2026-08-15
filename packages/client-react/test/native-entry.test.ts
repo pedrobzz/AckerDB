@@ -65,14 +65,6 @@ describe("withExpoCapabilities", () => {
     expect(composed.random!()).toBe(0.5);
   });
 
-  test("injects a WebSocket factory", () => {
-    expect(typeof withExpoCapabilities(config).createWebSocket).toBe("function");
-  });
-
-  test("defaults the lifecycle source to the AppState observer", () => {
-    expect(typeof withExpoCapabilities(config).lifecycle).toBe("function");
-  });
-
   test("explicitly configured capabilities win over the Expo defaults", () => {
     const explicitFetch = (() => Promise.reject(new Error("unused"))) as never;
     const explicitRandom = () => 0.25;

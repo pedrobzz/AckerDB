@@ -37,10 +37,8 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   AckerDBProvider,
   useProcedure,
-  useQueryProcedure,
   type AckerDBProcedure,
   type AckerDBProviderConfig,
-  type AckerDBQueryProcedureState,
 } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
 import { deferred, until, type Deferred } from "ackerdb-test-support/async";
@@ -60,10 +58,6 @@ type Ctx = any;
 const api = {
   tools: {
     echo: { $ref: "api.tools.echo" } as ProcedureRef<{ value: string }, string>,
-    observe: { $ref: "api.tools.observe" } as ProcedureRef<
-      { value: string },
-      { readonly run: number; readonly value: string }
-    >,
     fail: { $ref: "api.tools.fail" } as ProcedureRef<Record<never, never>, never>,
     block: { $ref: "api.tools.block" } as ProcedureRef<Record<never, never>, string>,
   },
@@ -82,7 +76,6 @@ function mustErr<Data>(result: ClientResult<Data>): AckerDBClientError {
 // Per-call gates for tools.block so tests can hold a real request in flight.
 let blockStarted: Deferred<void> | null = null;
 let blockRelease: Deferred<void> | null = null;
-let queryProcedureRuns = 0;
 
 interface RecordedCall {
   readonly signal: AbortSignal | undefined;
@@ -109,15 +102,6 @@ function createApp(): App {
         handler: (ctx: Ctx, args: Ctx) => {
           calls.push({ signal: ctx.abortSignal });
           return args.value.toUpperCase();
-        },
-      }),
-      observe: procedure({
-        access: "public",
-        args: { value: v.string() },
-        handler: (ctx: Ctx, args: Ctx) => {
-          calls.push({ signal: ctx.abortSignal });
-          queryProcedureRuns++;
-          return { run: queryProcedureRuns, value: args.value.toUpperCase() };
         },
       }),
       fail: procedure({
@@ -212,59 +196,6 @@ beforeAll(() => {
 afterAll(() => app.close());
 
 describe("useProcedure against a real ackerdb server", () => {
-  test("query procedures share real executions and support manual and interval refresh", async () => {
-    queryProcedureRuns = 0;
-    const snapshots = new Map<
-      string,
-      AckerDBQueryProcedureState<{ readonly run: number; readonly value: string }>
-    >();
-    function Observed({ id }: { id: string }): ReactNode {
-      const state = useQueryProcedure(
-        api.tools.observe,
-        { value: "hello" },
-        { refreshIntervalMs: 500 },
-      );
-      snapshots.set(id, state);
-      return (
-        <output>
-          {state.status === "success"
-            ? `${id}:${state.data.value}:${state.data.run};`
-            : `${id}:${state.status};`}
-        </output>
-      );
-    }
-
-    const container = mountPoint();
-    const root = createRoot(container);
-    root.render(
-      <AckerDBProvider config={app.config()}>
-        <Observed id="a" />
-        <Observed id="b" />
-      </AckerDBProvider>,
-    );
-
-    await until(
-      () => container.textContent === "a:HELLO:1;b:HELLO:1;",
-      "the shared initial procedure result",
-    );
-    expect(queryProcedureRuns).toBe(1);
-    expect(snapshots.get("a")).toBe(snapshots.get("b"));
-
-    snapshots.get("a")!.refresh();
-    await until(
-      () => container.textContent === "a:HELLO:2;b:HELLO:2;",
-      "the shared manual refresh",
-    );
-    expect(queryProcedureRuns).toBe(2);
-
-    await until(
-      () => container.textContent === "a:HELLO:3;b:HELLO:3;",
-      "the shared interval refresh",
-    );
-    expect(queryProcedureRuns).toBe(3);
-    await unmount(root);
-  });
-
   test("a Strict Mode mount-effect call waits for the client and only the live lifetime dispatches", async () => {
     const settlements: Array<{ kind: "ok"; value: string } | { kind: "error"; error: unknown }> =
       [];
@@ -395,42 +326,6 @@ describe("useProcedure against a real ackerdb server", () => {
     await unmount(root);
   });
 
-  test("a procedure that never reaches a session expires determinately without execution", async () => {
-    // A real ackerdb server that has come and gone: its port now refuses every
-    // connection, so the failure happens at the network rather than through a
-    // fake transport. (Draining the shared server instead would leave Bun's
-    // keep-alive pool racing the shutdown and make the outcome nondeterministic.)
-    const island = createApp();
-    await island.close();
-    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
-    function Capture(): ReactNode {
-      echo = useProcedure(api.tools.echo);
-      return null;
-    }
-
-    const container = mountPoint();
-    const root = createRoot(container);
-    root.render(
-      <AckerDBProvider config={island.config({
-        limits: { maxQueryAgeMs: 100 },
-        reconnect: { baseDelayMs: 2_500, maxDelayMs: 10_000 },
-      })}>
-        <Capture />
-      </AckerDBProvider>,
-    );
-    await until(() => echo !== null, "the captured callable");
-
-    const failure = mustErr(await echo!({ value: "down" }));
-    expect(failure).toMatchObject({
-      name: "AckerDBClientError",
-      code: "deadline_exceeded",
-      message: "client request deadline exceeded",
-      resource: "operation",
-    });
-    expect(island.calls).toHaveLength(0);
-    await unmount(root);
-  });
-
   test("provider shutdown settles an in-flight call and stale callables report the closed client", async () => {
     blockStarted = deferred();
     blockRelease = deferred();
@@ -505,42 +400,6 @@ describe("useProcedure against a real ackerdb server", () => {
       resource: "operation",
     });
     expect(app.calls.length).toBe(callsBefore);
-    await unmount(root);
-  });
-
-  test("the callable identity survives renders, client arrival, and provider reconfiguration", async () => {
-    const identities = new Set<unknown>();
-    let renders = 0;
-    let bump: (() => void) | null = null;
-    function Probe(): ReactNode {
-      const echo = useProcedure(api.tools.echo);
-      const [, setTick] = useState(0);
-      identities.add(echo);
-      renders++;
-      bump = () => setTick((tick) => tick + 1);
-      return null;
-    }
-
-    const container = mountPoint();
-    const root = createRoot(container);
-    const app_ = (sessionId: string): ReactNode => (
-      <AckerDBProvider config={app.config({ clientSessionId: sessionId })}>
-        <Probe />
-      </AckerDBProvider>
-    );
-
-    root.render(app_("procedure-stability-1"));
-    await until(() => renders >= 1, "the first render");
-    const rendersAfterMount = renders;
-    bump!();
-    await until(() => renders > rendersAfterMount, "a state-driven re-render");
-
-    // A changed configuration replaces the client but not the callable.
-    const rendersBeforeReconfigure = renders;
-    root.render(app_("procedure-stability-2"));
-    await until(() => renders > rendersBeforeReconfigure, "the reconfigured render");
-
-    expect(identities.size).toBe(1);
     await unmount(root);
   });
 

@@ -1140,34 +1140,9 @@ describe("Session Protocol-2 ownership", () => {
       source: TEST_SOURCE,
       revocationDeadlineMs: 1,
     })).not.toThrow();
-  });
-
-  test("rejects an invalid invalidation guarantee before opening the session", () => {
-    for (const deadlineMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const revocationBound = { kind: "invalidation", deadlineMs } as unknown as RevocationBound;
-
-      expect(() => new Session({
-        runtime: new FakeRuntime([], new FakeVerifier(revocationBound)),
-        sink: new FakeSink(),
-        source: TEST_SOURCE,
-      })).toThrow("verifier invalidation deadlineMs must be a positive finite number");
-    }
-
-    const missingBound = new FakeVerifier();
-    Object.defineProperty(missingBound, "revocationBound", { value: undefined });
+    // The guarantee is validated (auth/auth-lease.test.ts) before the session opens.
     expect(() => new Session({
-      runtime: new FakeRuntime([], missingBound),
-      sink: new FakeSink(),
-      source: TEST_SOURCE,
-    })).toThrow("verifier must declare a revocationBound");
-  });
-
-  test("rejects an invalidation guarantee above the configured revocation bound", () => {
-    expect(() => new Session({
-      runtime: new FakeRuntime(
-        [],
-        new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 }),
-      ),
+      runtime: new FakeRuntime([], new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 })),
       sink: new FakeSink(),
       source: TEST_SOURCE,
       revocationDeadlineMs: 4_999,

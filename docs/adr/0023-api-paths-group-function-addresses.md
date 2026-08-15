@@ -125,14 +125,14 @@ signature of every kind.
 
 ## The group is a namespace, not a label
 
-As first shipped, `apiPath` grouped nothing. `apiGroup("admin").logs.list`
-produced `{ $ref: "logs.list", $apiPath: "admin" }` — the group rode beside the
+As first shipped, `apiPath` grouped nothing. `apiGroup("admin").jobs.list`
+produced `{ $ref: "jobs.list", $apiPath: "admin" }` — the group rode beside the
 address and only the URL builder ever read it. Two consequences followed, and
 both contradict the paragraphs above. `api.messages.list` and
 `internal.messages.list` were one function at two URLs, not two functions. And
-a group could be squatted: the framework declaring `admin.logs.list` would have
-claimed the bare address `logs.list`, so any application with a
-`functions/logs.ts` exporting `list` failed to start — which is the opposite of
+a group could be squatted: the framework declaring `admin.jobs.list` would have
+claimed the bare address `jobs.list`, so any application with a
+`functions/jobs.ts` exporting `list` failed to start — which is the opposite of
 "a surface of their own that no application module can squat on".
 
 Making the group the address's first segment closes both, and it deletes rather
