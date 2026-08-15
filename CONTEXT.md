@@ -70,6 +70,19 @@ _Avoid_: Independent transaction, ordinary helper call
 **Application manifest** — The application's single executable assembly point,
 declaring its root schema. Operational settings remain outside the manifest.
 
+**Boot** — The server-owned startup sequence from a bound listener to an
+activated application: listening, codegen, loading, opening storage,
+migrating or reconciling, issuing the Admin Credential, loading the runtime
+modules, starting the Runtime, activation. `boot()` in `@ackerdb/server` is
+its one home; `acker start` and every programmatic host are a `main` around it.
+_Avoid_: startup orchestration, serve path, composition root (in the CLI)
+
+**Started runtime** — A Runtime after `start()`: File-cleanup recovery begun,
+repeat Jobs minted, the runner armed, operations admitted. A constructed
+Runtime is *created* — it admits nothing, including system runs, and arms
+nothing — until it is started; activation refuses a Runtime that is not started.
+_Avoid_: ready-on-construction, implicit start
+
 **Job definition** — A declared kind of durable application work, combining
 its handler with the policies governing its execution.
 _Avoid_: Job, job handler
