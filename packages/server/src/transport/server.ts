@@ -3,7 +3,6 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
-  APPLICATION_ADDRESS_ROOT,
   decode,
   parseSseAckRequest,
   stableEncode,
@@ -55,7 +54,7 @@ import {
   type HttpRouteHandler,
   type HttpRouteResult,
 } from "./routing/route.ts";
-import type { ExposedFunction, HttpRouteDefinition } from "../app/registry.ts";
+import type { ExposedFunction } from "../app/registry.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
@@ -133,6 +132,26 @@ const SSE_HEADERS = Object.freeze({
   vary: VARY_AUTHORIZATION,
   "x-accel-buffering": "no",
 });
+
+/**
+ * Framework CORS is the same preflight everywhere it applies, so it is one
+ * handler value under several method keys rather than several handlers.
+ */
+const preflight = (): Response => new Response(null, { status: 204, headers: CORS });
+
+/**
+ * Every method a compiled route answers reaches the same closure: which of the
+ * route's own handlers runs is the route value's business, and the Runtime
+ * reads it from the request.
+ */
+function everyMethod(
+  methods: readonly string[],
+  handler: HttpRouteHandler,
+): HttpHandlers<HttpRouteCtx, HttpRouteResult> {
+  const handlers: Record<string, HttpRouteHandler> = {};
+  for (const method of methods) handlers[method] = handler;
+  return handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>;
+}
 
 const MAX_FILE_TRANSFERS = 128;
 const MAX_FILE_TRANSFERS_PER_CALLER = 16;
@@ -726,10 +745,29 @@ export class AckerDBServer {
       // insertion, and readiness flips only after the last one — with no await
       // anywhere between, so no request can observe half an application.
       const application: readonly (readonly [HttpRoute, string])[] = [
-        ...[...runtime.registry.exposed.values()]
-          .map((exposed) => [this.exposedRoute(exposed), exposed.address] as const),
-        ...runtime.registry.httpRoutes
-          .map((definition) => [this.applicationRoute(definition), definition.address] as const),
+        // An exposed function answers the methods its kind declares — the very
+        // table OpenAPI documents from, so served and published cannot drift —
+        // plus framework CORS. Its closure is the whole of `call`.
+        ...[...runtime.registry.exposed.values()].map((exposed) => [
+          frameworkHttp(exposed.path, {
+            ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
+              this.call(request, new URL(request.url), exposed, this.requestSource(request))),
+            OPTIONS: preflight,
+          }),
+          exposed.address,
+        ] as const),
+        // A raw route answers exactly what it declared, preflight included or
+        // not: its OPTIONS is its author's, or it has none.
+        ...runtime.registry.httpRoutes.map(({ address, http }) => [
+          frameworkHttp(
+            http.path,
+            everyMethod(
+              Object.keys(http.handlers),
+              (ctx, request) => this.applicationRouteCall(request, http, ctx.params),
+            ),
+          ),
+          address,
+        ] as const),
       ];
       for (const [route, owner] of application) this.routes.add(route, owner);
     } catch (error) {
@@ -786,9 +824,6 @@ export class AckerDBServer {
    * themselves, because when a route is reachable is its own policy.
    */
   private frameworkRoutes(): readonly HttpRoute[] {
-    // Framework CORS is the same preflight everywhere it applies, so it is one
-    // handler value assigned to several routes rather than several handlers.
-    const preflight = (): Response => new Response(null, { status: 204, headers: CORS });
     const grants = ACKERDB_HTTP_ROUTES.fileDownload;
     // GET and HEAD are the same route behaviour, so they are the same handler
     // value under two keys rather than two closures that must stay equal.
@@ -855,40 +890,6 @@ export class AckerDBServer {
         OPTIONS: preflight,
       })]),
     ];
-  }
-
-  /**
-   * One exposed function as a route: the path its address derives, the methods
-   * its kind answers, and a compiled closure that is the whole of `call` —
-   * authentication, decoding, admission, idempotency, and the Runtime
-   * invocation. The method table is the one OpenAPI documents from, so the
-   * served methods and the published ones cannot drift.
-   */
-  private exposedRoute(exposed: ExposedFunction): HttpRoute {
-    const call: HttpRouteHandler = (_ctx, request) =>
-      this.call(request, new URL(request.url), exposed, this.requestSource(request));
-    const handlers: Record<string, HttpRouteHandler> = {
-      OPTIONS: () => new Response(null, { status: 204, headers: CORS }),
-    };
-    for (const method of EXPOSED_HTTP_METHODS[exposed.kind]) handlers[method] = call;
-    return frameworkHttp(exposed.path, handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>);
-  }
-
-  /**
-   * One application-owned raw route as the listener serves it. Every declared
-   * method reaches the same closure, because which handler runs is the route
-   * value's own business and the Runtime reads it from the request; what this
-   * adds is the framework's part — reachability, admission, and the byte bound.
-   */
-  private applicationRoute(definition: HttpRouteDefinition): HttpRoute {
-    const call: HttpRouteHandler = (ctx, request) =>
-      this.applicationRouteCall(request, definition.http, ctx.params);
-    const handlers: Record<string, HttpRouteHandler> = {};
-    for (const method of Object.keys(definition.http.handlers)) handlers[method] = call;
-    return frameworkHttp(
-      definition.http.path,
-      handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>,
-    );
   }
 
   /**

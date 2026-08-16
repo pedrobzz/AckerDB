@@ -7,8 +7,7 @@ import {
   type OutcomeCode,
   type ResourceClass,
 } from "@ackerdb/core";
-import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
-import { methodNotAllowed, outcomeResponse } from "../transport/response.ts";
+import { outcomeResponse } from "../transport/response.ts";
 import type { Principal } from "../auth/credentials.ts";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import {
