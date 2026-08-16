@@ -224,7 +224,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // commits.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    const registry = new Registry(loaded.functions, app.apiPaths);
+    const registry = new Registry(loaded.functions);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);

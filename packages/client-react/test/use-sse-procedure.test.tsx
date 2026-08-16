@@ -3,7 +3,7 @@ import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apiGroup, decode, type SseRef } from "@ackerdb/core";
+import { anyApi, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
   type AckerDBServer,
@@ -42,9 +42,7 @@ let unmountHoldReleased = deferred<void>();
 function registry(): Registry {
   return new Registry({
     stream: {
-      /** Published in another group, so its root is `/internal/` not `/api/`. */
       grouped: sseProcedure({
-        apiPath: "internal",
         access: "public",
         http: true,
         args: {},
@@ -118,7 +116,7 @@ function registry(): Registry {
         },
       }),
     },
-  }, ["internal"]);
+  });
 }
 
 interface App {
@@ -251,11 +249,8 @@ async function mount(
 }
 
 describe("useSseProcedure against a real ackerdb server", () => {
-  test("streams from the root of the group its reference names", async () => {
-    // The hook takes a reference apart to key its callable, so the group has
-    // to travel with the address: a real server only answers `api.stream.grouped`
-    // under `/internal/`, and reading a chunk is the proof it was asked there.
-    const ref = apiGroup("internal").stream.grouped as SseRef<
+  test("streams from the fixed-root address its reference names", async () => {
+    const ref = anyApi.stream.grouped as SseRef<
       Record<string, unknown>,
       { tick: number }
     >;
@@ -265,7 +260,7 @@ describe("useSseProcedure against a real ackerdb server", () => {
     await reader.cancel();
 
     // The callable's identity survives a rerender, exactly as it does for a
-    // plain address: the group is one more string in its dependency list.
+    // plain address.
     const before = mounted.call;
     mounted.rerender();
     await until(() => mounted.calls.length > 0, "a committed render");

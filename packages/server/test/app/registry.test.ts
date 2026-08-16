@@ -27,7 +27,7 @@ const hidden = procedure({
   handler: () => null,
 });
 
-const internal = procedure({
+const unexposed = procedure({
   access: "public",
   args: {},
   handler: () => null,
@@ -43,7 +43,7 @@ const listing = query({
 describe("HTTP-exposed function paths", () => {
   test("maps address segments to path segments and keeps unexposed functions out", () => {
     const registry = new Registry({
-      messages: { list: listing, internal },
+      messages: { list: listing, unexposed },
       "admin.messages": { purge: hidden },
       notes: { echo: exposed },
     });
@@ -65,8 +65,8 @@ describe("HTTP-exposed function paths", () => {
       address: "api.admin.messages.purge",
       openapi: false,
     });
-    expect(registry.exposed.get("/api/messages/internal")).toBeUndefined();
-    expect(registry.get("api.messages.internal")).toBe(internal);
+    expect(registry.exposed.get("/api/messages/unexposed")).toBeUndefined();
+    expect(registry.get("api.messages.unexposed")).toBe(unexposed);
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
@@ -75,12 +75,6 @@ describe("HTTP-exposed function paths", () => {
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
     expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
-    // The reservation is the marker, not the `/api/` root: it holds in every
-    // group, which is what keeps a future built-in route collision-free.
-    const grouped = { ...exposed, apiPath: "internal" } as never;
-    expect(() => new Registry({ _internal: { echo: grouped } }, ["internal"])).toThrow(
-      'claims AckerDB-owned path "/internal/_internal/echo"; "_" is reserved to AckerDB',
-    );
     // A raw handler claims its path through the same check, named by its kind.
     const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
     expect(() => new Registry({ _internal: { hook } })).toThrow(
@@ -104,8 +98,8 @@ describe("HTTP-exposed function paths", () => {
       expect(isAckerDBHttpRoute(operational)).toBe(true);
     }
 
-    // One reservation, applied wherever a path is claimed: the group, the
-    // module namespace under it, and an MCP endpoint's free-form path alike.
+    // One reservation, applied wherever a path is claimed: the application
+    // root, its top-level module, and an MCP endpoint's free-form path alike.
     expect(claimsReservedName("/api/_files")).toBe(true);
     expect(claimsReservedName("/_ws")).toBe(true);
     expect(claimsReservedName("/mcp/_private")).toBe(true);
@@ -146,7 +140,7 @@ describe("HTTP-exposed function paths", () => {
 
     expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);
     expect(() => new Registry({ mcp: { endpoint }, notes: { echo: exposed } })).toThrow(message);
-    expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
+    expect(() => new Registry({ notes: { echo: unexposed }, mcp: { endpoint } })).not.toThrow();
     // A raw handler at the same path meets the same check, named by its kind.
     const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
     expect(() => new Registry({ notes: { echo: hook }, mcp: { endpoint } })).toThrow(

@@ -139,11 +139,11 @@ export const renewSubscription = job({
   args: { subscriptionId: v.bigint() },
   retry: { attempts: 5, backoff: "exponential" },
   handler: async (ctx, args) => {
-    const sub = await ctx.step.run(internal.subscriptions.get, { id: args.subscriptionId });
+    const sub = await ctx.step.run(api.subscriptions.get, { id: args.subscriptionId });
     if (!sub.ok || sub.data === null) return null;
 
     // A registered procedure as a step — reused by the dunning flow too.
-    const payment = await ctx.step.run(internal.billing.payInvoice, { invoiceId: sub.data.invoiceId });
+    const payment = await ctx.step.run(api.billing.payInvoice, { invoiceId: sub.data.invoiceId });
     if (!payment.ok) return { failed: payment.error };
 
     await ctx.step.sleep("settlement-window", 60_000);
@@ -160,14 +160,14 @@ export const renewSubscription = job({
 ```
 
 - `step.run(ref, args, { name? })` invokes a registered query, mutation, or
-  procedure from any API path — the example's `internal.*` binding comes from
-  `defineApp({ apiPaths: ["internal"] })` — and records its typed Result. Kind
-  comes from the reference; the journal identity defaults to the callee's
-  address (`name` disambiguates two calls to one ref). A query or mutation
-  callee commits atomically with its journal entry in one writer
-  transaction — exactly-once; a procedure callee is at-least-once, journaled
-  on completion. A returned `Err` is a recorded value handed back to the
-  handler; only a throw fails the run.
+  procedure from the generated `api` tree and records its typed Result. Jobs
+  execute as the system principal, but the callee still enforces its own
+  `access` and scope requirements. Kind comes from the reference; the journal
+  identity defaults to the callee's address (`name` disambiguates two calls to
+  one ref). A query or mutation callee commits atomically with its journal
+  entry in one writer transaction — exactly-once; a procedure callee is
+  at-least-once, journaled on completion. A returned `Err` is a recorded value
+  handed back to the handler; only a throw fails the run.
 - `step.query(name, fn)` / `step.mutation(name, fn)` / `step.procedure(name, fn)`
   are inline steps: the closure's return value is the journaled result and
   must be wire-representable. Inline mutations get the same atomic

@@ -6,7 +6,6 @@
  * came back would let the deleted Admin model be reachable again, and a type
  * test is the only thing that notices an absence.
  */
-import type * as core from "@ackerdb/core";
 import type * as server from "@ackerdb/server";
 import {
   v,
@@ -35,10 +34,6 @@ type RemovedFromServer =
   | Absent<typeof server, "resetAdminCredentials">
   | Absent<typeof server, "normalizeAdminOptions">
   | Absent<typeof server, "frameworkFunctionModules">;
-type RemovedFromCore =
-  | Absent<typeof core, "adminApi">
-  | Absent<typeof core, "ADMIN_API_PATH">;
-
 /** Each union member is its own name, or `never` if the export came back. */
 const removedFromServer: RemovedFromServer[] = [
   "ADMIN_SCOPES",
@@ -50,9 +45,7 @@ const removedFromServer: RemovedFromServer[] = [
   "normalizeAdminOptions",
   "frameworkFunctionModules",
 ];
-const removedFromCore: RemovedFromCore[] = ["adminApi", "ADMIN_API_PATH"];
 void removedFromServer;
-void removedFromCore;
 
 // --------------------------------------------------------------------------
 // The capability, and the boundary around the framework's own tables.

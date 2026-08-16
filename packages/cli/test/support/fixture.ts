@@ -22,8 +22,7 @@ export function makeFixture(files: Record<string, string>): string {
   return dir;
 }
 
-const APP_DEFINITION =
-  `export default defineApp({ schema, apiPaths: ["internal"] });`;
+const APP_DEFINITION = `export default defineApp({ schema });`;
 
 export const FIXTURE_APP = `
 import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@ackerdb/server";
@@ -100,7 +99,7 @@ export const enqueueNote = mutation({
 
 export const FIXTURE_JOBS = `
 import { v } from "@ackerdb/server";
-import { internal } from "../_generated/api.ts";
+import { api } from "../_generated/api.ts";
 import { job } from "../_generated/server.ts";
 
 export const record = job({
@@ -116,13 +115,12 @@ export const record = job({
   },
 });
 
-// The point of a group's binding: a server-side caller names a function that
-// is not part of the default surface, fully typed.
+// A server-side caller names a system-only function through the same typed API.
 export const sweep = job({
   kind: "procedure",
   args: { channelId: v.bigint() },
   handler: async (ctx, args) => {
-    await ctx.step.run(internal.admin.users.compact, { channelId: args.channelId });
+    await ctx.step.run(api.admin.users.compact, { channelId: args.channelId });
   },
 });
 `;
@@ -137,10 +135,7 @@ export const count = query({
   handler: (ctx) => ctx.db.messages.query().count(),
 });
 
-// A group's own binding, imported by the module graph code generation must
-// never import back: the manifest alone names the group.
 export const compact = mutation({
-  apiPath: "internal",
   access: "system",
   args: { channelId: v.bigint() },
   handler: (ctx, args) =>

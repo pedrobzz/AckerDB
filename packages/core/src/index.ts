@@ -62,15 +62,12 @@ export {
   type RegisteredFunction,
   type RegisteredChannelContract,
   type RegisteredServerOnly,
-  type RegisteredApiPath,
   type ApiFromModules,
-  apiGroup,
   httpPathForAddress,
-  DEFAULT_API_PATH,
+  APPLICATION_ADDRESS_ROOT,
   EVENTS_ADDRESS_PREFIX,
   EVENTS_NAMESPACE,
   RESERVED_MARKER,
-  type DefaultApiPath,
 } from "./refs.ts";
 export * from "./protocol.ts";
 export * from "./sse.ts";

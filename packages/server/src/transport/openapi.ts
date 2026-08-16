@@ -231,13 +231,13 @@ function operationId(address: string, method: string): string {
 
 /**
  * The tag an operation carries: its address's top-level module, which is the
- * segment after the group. Tagging by the group instead would put every
- * operation of a single-group application under one tag, which is no grouping
- * at all — the module is what the document has always sorted operations by.
+ * segment after the fixed root. Tagging by the root would put every operation
+ * under one tag, while the module is what the document has always sorted
+ * operations by.
  */
 function topLevelModule(address: string): string {
-  const afterGroup = address.indexOf(".") + 1;
-  return address.slice(afterGroup, address.indexOf(".", afterGroup));
+  const afterRoot = address.indexOf(".") + 1;
+  return address.slice(afterRoot, address.indexOf(".", afterRoot));
 }
 
 function applicationErrorSchema(

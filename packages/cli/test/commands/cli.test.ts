@@ -313,9 +313,9 @@ describe("ackerdb CLI", () => {
     const first = spawnCli(["start", dir], CLI_ENV);
     await first.waitFor("ready on");
     expect(first.output()).not.toContain("ackerdb_credential.");
-    // The `admin` group belongs to the application, and this one declares
-    // nothing there.
-    const absent = await fetch(`http://127.0.0.1:${port}/admin/credentials/list`, {
+    // The framework publishes no administration functions into the
+    // application's address tree.
+    const absent = await fetch(`http://127.0.0.1:${port}/api/admin/credentials/list`, {
       method: "POST",
       body: JSON.stringify({}),
     });

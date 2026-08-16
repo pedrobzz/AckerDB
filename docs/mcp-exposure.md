@@ -279,10 +279,10 @@ it; membership in a tools record is not itself a client-visible property and
 does not filter codegen. A function may legitimately be a client query, an
 HTTP route, and a tool at once — that reuse is the point.
 
-A tools record may name a function from any API path (ADR-0023) — a tool entry
-groups nothing and grants nothing. The endpoint is its own declaration with its
-own authentication, and the named function keeps answering wherever its own
-group and its own `access` say it does.
+A tools record may name any compatible function from the generated `api` tree
+— a tool entry grants nothing. The endpoint is its own declaration with its own
+authentication, and the named function keeps its own `access` policy on every
+surface.
 
 ## Breaking changes
 
