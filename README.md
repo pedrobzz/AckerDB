@@ -54,7 +54,7 @@ your-app/
   path and export name: `functions/orders/list.ts` exporting `open` becomes
   `api.orders.list.open`. The HTTP route is that address segment for segment.
   A file named `index.ts` takes its directory's name, and `access` alone decides
-  who may call (ADR-0033).
+  who may call.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs

@@ -181,9 +181,7 @@ also remains opt-in: a function without `http` has no URL.
 
 The module path is therefore the only application namespace. A function moved
 from `functions/users.ts` to `functions/admin/users.ts` deliberately changes
-from `api.users.<export>` to `api.admin.users.<export>` on every surface. There
-is no parallel routing declaration for code generation or the server to
-reconcile.
+from `api.users.<export>` to `api.admin.users.<export>` on every surface.
 
 **A file named `index.ts` takes its directory's name.**
 `functions/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
@@ -192,10 +190,10 @@ module of its own name beside its siblings. Two files may not claim one name:
 naming both, and so is a `functions/index.ts` with no directory to be named
 after.
 
-The application manifest consequently declares the schema and cross-cutting
-policy such as scopes, not routing namespaces. Code generation can emit the
-fixed root without importing function modules, avoiding a cycle because those
-modules import the generated constructors themselves.
+The application manifest declares the schema and cross-cutting policy such as
+scopes. Code generation emits the fixed root without importing function
+modules, avoiding a cycle because those modules import the generated
+constructors themselves.
 
 ## Per-function exposure
 

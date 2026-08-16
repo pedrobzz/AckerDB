@@ -574,8 +574,8 @@ const SSE_KEYS = Object.freeze(Object.keys(SSE_FIELDS));
 /**
  * Every field a declaration may carry, refused by name otherwise. An
  * intersection parameter turns off TypeScript's excess-property check, so a
- * misspelled or retired key — `internal`, once — would otherwise be dropped in
- * silence and read as an expectation nothing meets.
+ * misspelled key would otherwise be dropped in silence and read as an
+ * expectation nothing meets.
  *
  * Every own key, enumerable or not, string or symbol: a field hidden behind
  * `enumerable: false` is still a field the author expected something to

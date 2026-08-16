@@ -39,7 +39,6 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   RECEIPT_HEADERS,
   SSE_STREAM_HEADERS,
-  isAckerDBHttpRoute,
 } from "./http-surface.ts";
 import type { ExposedHttpCodec } from "./http-codec.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
@@ -945,8 +944,7 @@ export class AckerDBServer {
     // belongs to its handler and no handler exists yet.
     if (
       (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
-      url.pathname.startsWith(`/${APPLICATION_ADDRESS_ROOT}/`) &&
-      !isAckerDBHttpRoute(url.pathname)
+      url.pathname.startsWith(`/${APPLICATION_ADDRESS_ROOT}/`)
     ) {
       return outcomeError(unavailableWhile(this.lifecycle));
     }

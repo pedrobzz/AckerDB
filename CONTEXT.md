@@ -681,15 +681,8 @@ glob with no carve-outs: `*` is the empty prefix and covers the whole
 vocabulary, `_*` covers the declared names beginning with `_`.
 _Avoid_: Role, superuser flag, permission group
 
-**Application address root** — The fixed first segment, `api`, of every
-application function and channel address. One root gives generated references,
-in-process composition, jobs, channels, plain HTTP, and MCP derivation the same
-address grammar. It is not an admission rule: `access` and scope requirements
-alone decide who may call.
-_Avoid_: Group, binding name, route prefix
-
 **Function address** — The one dotted name every registered function answers
-to, in process and over every transport: the application address root, then the
+to, in process and over every transport: the fixed `api` root, then the
 directory segments of the module declaring it, then the export name. The HTTP
 route is that address segment for segment. A file named `index.ts` contributes
 its directory's name rather than its own, so a directory may hold a module of
