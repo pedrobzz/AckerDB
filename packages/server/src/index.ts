@@ -336,6 +336,7 @@ export {
   type WorkloadPrincipal,
 } from "./auth/credentials.ts";
 export { assertCredentialVerifier } from "./auth/lease.ts";
+export { SYSTEM_CLOCK, type Clock } from "./shared/clock.ts";
 export {
   AckerDBError,
   isAckerDBError,

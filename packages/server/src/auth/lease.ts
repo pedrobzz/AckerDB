@@ -18,9 +18,7 @@ import {
   type AuthInvalidationScope,
 } from "./invalidation.ts";
 import { cancellation, throwIfAborted, type AckerDBError } from "../shared/errors.ts";
-import { MAX_TIMER_DELAY_MS } from "../shared/numbers.ts";
-import { SYSTEM_CLOCK, type Clock } from "../shared/clock.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS, SYSTEM_CLOCK, type Clock } from "../shared/clock.ts";
 
 export interface AuthLease {
   readonly principal: ClientPrincipal;
@@ -104,6 +102,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   }
 
   const clock = options.clock ?? SYSTEM_CLOCK;
+  const now = finiteClock(() => clock.now(), "auth lease clock");
   const verifier = options.verifier;
   validateCredentialVerifierRevocation(verifier, options.revocationDeadlineMs);
   if (verifier === undefined) {
@@ -111,7 +110,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
       options.credential,
       undefined,
       options.resolveIdentity,
-      () => clock.now(),
+      now,
       options.resolveScopes,
     );
     throw new Error("unreachable credential verification result");
@@ -179,7 +178,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     // AckerDB credentials never expire; invalidation revokes them instead.
     if (!Number.isFinite(verified.expiresAt)) return;
     try {
-      const remaining = verified.expiresAt - finiteMillis(clock.now(), "auth lease clock");
+      const remaining = verified.expiresAt - now();
       if (remaining <= 0) {
         abort(credentialExpired());
         return;
@@ -224,7 +223,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         options.credential,
         verifier,
         (account) => options.resolveIdentity(account, controller.signal),
-        () => clock.now(),
+        now,
         options.resolveScopes,
       ),
       interrupted,

@@ -10,7 +10,7 @@ import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
 import { PUBLIC_ERROR_FALLBACK, fitOutcome, outcomeFromError } from "../../runtime/outcome.ts";
 import type { OutboundBudget, OutboundReservation } from "./budget.ts";
-import { SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
+import { finiteClock, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 
 export interface BoundedSseProducerOptions {
@@ -135,6 +135,7 @@ export class BoundedSseProducer {
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
   private readonly clock: Clock;
+  private readonly now: () => number;
   private readonly controller: ReadableStreamDefaultController<Uint8Array>;
   private readonly abortController = new AbortController();
   private readonly reservations = new Map<number, StreamReservation>();
@@ -170,6 +171,7 @@ export class BoundedSseProducer {
     this.budget = options.budget;
     this.limits = options.limits;
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.now = finiteClock(() => this.clock.now(), "delivery clock");
     this.externalSignal = options.signal;
     this.signal = this.abortController.signal;
 
@@ -620,9 +622,9 @@ export class BoundedSseProducer {
 
   private armStall(): void {
     if (this.state === "closed" || this.unackedBytes === 0) return;
-    if (this.stallSince === null) this.stallSince = this.clock.now();
+    if (this.stallSince === null) this.stallSince = this.now();
     if (this.stallTimer !== undefined) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     this.stallTimer = this.clock.setTimeout(
       () => this.onStallTimer(),
       Math.max(1, this.limits.sse.maxStallMs - elapsed),
@@ -632,7 +634,7 @@ export class BoundedSseProducer {
   private restartStall(): void {
     if (this.stallTimer !== undefined) this.clock.clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
-    this.stallSince = this.clock.now();
+    this.stallSince = this.now();
     this.armStall();
   }
 
@@ -645,7 +647,7 @@ export class BoundedSseProducer {
   private onStallTimer(): void {
     this.stallTimer = undefined;
     if (this.state === "closed" || this.stallSince === null || this.unackedBytes === 0) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     if (elapsed < this.limits.sse.maxStallMs) {
       this.armStall();
       return;

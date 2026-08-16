@@ -1,8 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { UUID_V4 } from "../shared/identity.ts";
 
-/** A v4 UUID exactly as this framework mints and stores one. */
-export const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 
 function exactStagingArtifacts(

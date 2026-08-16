@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import type { ReadRecorder } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
 import { transactionAsync } from "../../database/transaction.ts";
-import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
+import { throwIfAborted } from "../../shared/errors.ts";
 import {
   BoundedExecutor,
   type ExecutorSnapshot,
@@ -61,16 +61,7 @@ export class RuntimeReadExecutor {
         const value = await work(Object.freeze({ connection, reads }), commitVersion);
         throwIfAborted(signal);
         return value;
-      }, {
-        begin: "deferred",
-        onRollbackFailure: (_primary, rollbackError) => {
-          throw new AckerDBError(
-            "unavailable",
-            "reader snapshot could not be closed",
-            { resource: "reader", cause: rollbackError },
-          );
-        },
-      });
+      }, { begin: "deferred" });
     }, {
       bytes: requestBytes,
       fairnessKey,

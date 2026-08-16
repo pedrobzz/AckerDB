@@ -91,7 +91,7 @@ import { RuntimeFiles } from "../../files/namespace.ts";
 import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
 import { settleOnAbort } from "../abort.ts";
-import { finiteMillis } from "../../shared/clock.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
@@ -205,8 +205,10 @@ export class RuntimeFunctionExecutor<C> {
   private readonly authInvalidationByWrites =
     new WeakMap<WriteCollector, (account: ExternalAccount) => void>();
   private fileRecoveryBarrier: Promise<void> = Promise.resolve();
+  private readonly now: () => number;
 
   constructor(private readonly options: RuntimeFunctionExecutorOptions<C>) {
+    this.now = finiteClock(options.now, "runtime clock");
     this.coordinator = new CommitCoordinator({
       engine: options.engine,
       limits: options.limits,
@@ -221,11 +223,11 @@ export class RuntimeFunctionExecutor<C> {
         }
       },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
-      now: options.now,
+      now: this.now,
     });
     this.fileProcedures = new FileProcedureRuntime({
       files: options.files,
-      now: options.now,
+      now: this.now,
       lifecycleSignal: options.fileLifecycleSignal,
       read: (signal, work) => this.filesRead(signal, work),
       write: (signal, work) => this.filesWrite(signal, work),
@@ -254,7 +256,7 @@ export class RuntimeFunctionExecutor<C> {
       writes: writes === null ? null : {
         collector: writes,
         limits: this.options.limits.credentials,
-        now: this.options.now,
+        now: this.now,
       },
     });
   }
@@ -378,7 +380,7 @@ export class RuntimeFunctionExecutor<C> {
       execution.connection,
       execution.reads,
     );
-    const timestamp = finiteMillis(this.options.now(), "runtime clock");
+    const timestamp = this.now();
     return invokeFunction(fn, this.hostQueryContext(db, principal, timestamp), args);
   }
 
@@ -548,7 +550,7 @@ export class RuntimeFunctionExecutor<C> {
     args: unknown,
   ): (db: MutationCtx["db"], writes: WriteCollector) => unknown {
     return (db, writes) => {
-      const invocation = this.hostMutationContext(db, principal, finiteMillis(this.options.now(), "runtime clock"), writes);
+      const invocation = this.hostMutationContext(db, principal, this.now(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
         invokeFunction(fn, invocation, args, { mutationAccess }));
@@ -655,7 +657,7 @@ export class RuntimeFunctionExecutor<C> {
             const context = this.hostMutationContext(
               db,
               SYSTEM_PRINCIPAL,
-              finiteMillis(this.options.now(), "runtime clock"),
+              this.now(),
               writes,
               { runNumber },
             ) as MutationCtx & { readonly runNumber: number };
@@ -698,7 +700,7 @@ export class RuntimeFunctionExecutor<C> {
     const account = await verifyUserBearerCredential(
       rawBearerToken,
       this.options.credentialVerifier,
-      this.options.now,
+      this.now,
     );
     if (account.issuer === CREDENTIAL_ISSUER) {
       // An AckerDB credential is already a first-class Identity; aliasing it
@@ -710,7 +712,7 @@ export class RuntimeFunctionExecutor<C> {
     }
     throwIfAborted(signal);
     await this.identityWrite(fairnessKey, signal, requestBytes, async (identities) => {
-      if (account.expiresAt <= finiteMillis(this.options.now(), "runtime clock")) {
+      if (account.expiresAt <= this.now()) {
         throw unauthenticated();
       }
       if (!await identities.attach(principal.identity, account.issuer, account.subject)) {

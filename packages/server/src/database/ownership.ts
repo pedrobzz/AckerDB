@@ -13,15 +13,15 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { fsyncPathSync } from "../shared/durability.ts";
+import { fsyncPathSync } from "../shared/fsync.ts";
 import { combinedFailure } from "../shared/cleanup.ts";
 import { Database } from "bun:sqlite";
 import { transaction } from "./transaction.ts";
 import {
   databasePublicationArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
-  UUID_V4,
 } from "./artifacts.ts";
+import { UUID_V4 } from "../shared/identity.ts";
 
 /** ASCII `AckerDB`, persisted in SQLite's application_id header field. */
 const ACKERDB_COORDINATION_APPLICATION_ID = 0x44425a5a;

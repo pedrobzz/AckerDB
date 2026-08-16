@@ -1,6 +1,6 @@
 import { validateQueueLimits, type QueueLimits } from "./limits.ts";
 import { AckerDBError, DRAIN_RETRY_AFTER_MS } from "../shared/errors.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { finiteClock, finiteMillis } from "../shared/clock.ts";
 
 export type AdmissionResource =
   | "reader"
@@ -166,7 +166,7 @@ export class AdmissionQueue<T> {
     this.limits = validateQueueLimits(options.limits);
     this.resource = options.resource;
     this.retryAfterMs = retryAfterMs;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "admission clock");
   }
 
   enqueue(value: T, options: AdmissionRequestOptions): Promise<AdmissionLease<T>> {
@@ -181,7 +181,7 @@ export class AdmissionQueue<T> {
     }
     if (options.deadlineMs !== undefined) finiteMillis(options.deadlineMs, "deadlineMs");
 
-    const now = finiteMillis(this.now(), "admission clock");
+    const now = this.now();
     if (this.isClosed) return this.rejectImmediately("closed");
     if (options.signal?.aborted) return this.rejectImmediately("canceled");
     if (options.deadlineMs !== undefined && options.deadlineMs <= now) {
@@ -223,7 +223,7 @@ export class AdmissionQueue<T> {
   }
 
   take(): AdmissionLease<T> | undefined {
-    const now = finiteMillis(this.now(), "admission clock");
+    const now = this.now();
     this.expire(now);
     let entry: PendingAdmission<T> | undefined;
     let servedGroup: FairnessGroup<T> | undefined;
@@ -262,7 +262,7 @@ export class AdmissionQueue<T> {
     return lease;
   }
 
-  expire(now = finiteMillis(this.now(), "admission clock")): number {
+  expire(now = this.now()): number {
     finiteMillis(now, "expiry time");
     let expired = 0;
     this.discardInactiveExpiryHeads();
@@ -284,7 +284,7 @@ export class AdmissionQueue<T> {
   }
 
   snapshot(): AdmissionQueueSnapshot {
-    const now = finiteMillis(this.now(), "admission clock");
+    const now = this.now();
     this.expire(now);
     this.discardInactiveExpiryHeads();
     return Object.freeze({

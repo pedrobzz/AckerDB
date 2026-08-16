@@ -32,7 +32,7 @@ import {
   type FileStoreMigrationCompleteReport,
   type FileStoreMigrationProgressEvent,
 } from "./migrate.ts";
-import { fsyncPathSync, runWithCleanupAsync } from "../shared/durability.ts";
+import { fsyncPathSync, runWithCleanup, runWithCleanupAsync } from "../shared/fsync.ts";
 
 const CONFIG_NAME = ".ackerdb.config.json";
 const MAX_TARGET_DESCRIPTOR_BYTES = 64 * 1024;
@@ -97,12 +97,14 @@ function publishActiveFilesConfig(
   let published = false;
   try {
     const descriptor = openSync(temporary, "wx", snapshot.mode);
-    try {
-      writeFileSync(descriptor, `${JSON.stringify({ ...snapshot.document, files: target }, null, 2)}\n`);
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
+    runWithCleanup(
+      () => {
+        writeFileSync(descriptor, `${JSON.stringify({ ...snapshot.document, files: target }, null, 2)}\n`);
+        fsyncSync(descriptor);
+      },
+      () => closeSync(descriptor),
+      `configuration write and descriptor close both failed: ${temporary}`,
+    );
     if (!unchanged(snapshot)) {
       throw new Error(
         `FileStore migration completed, but ${snapshot.path} changed during maintenance; ` +

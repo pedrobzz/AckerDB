@@ -26,6 +26,7 @@ import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { v } from "../../src/validation/v.ts";
 import { listen } from "ackerdb-test-support/listen";
+import { FILE_UPLOADS_TABLE } from "../../src/files/tables.ts";
 
 class BlockingDeleteStore implements FileStore {
   blockDeletes = false;
@@ -537,6 +538,37 @@ describe("File HTTP flow", () => {
     expect(retry.status).toBe(200);
     expect(await retry.json()).toEqual(await first.json());
     expect(fileStore.putKeys).toHaveLength(1);
+  });
+
+  /**
+   * The bytes landed, but the commit could not be written and ownership of the
+   * completion could not be proven either — so the answer is indeterminate on
+   * the *idempotency* of this Upload Session: retry this exact request identity,
+   * do not mint a new one.
+   */
+  test("answers an unprovable upload completion as an idempotency-indeterminate 503", async () => {
+    const created = await runtime.system.run("test.files.create-unprovable-upload", (ctx) =>
+      ctx.tx((tx) => tx.files.createUploadSession()),
+    );
+    if (!created.ok) throw created.error;
+    const sessionPath = new URL(created.data.url).pathname;
+    fileStore.blockNextPut();
+
+    const upload = fetch(`${base}${sessionPath}`, { method: "PUT", body: "orphaned" });
+    await fileStore.putEntered;
+    // The Upload Session disappears while its bytes are in flight: the commit
+    // has no row to patch, and the proof read has no row to recognize.
+    engine.writer.query(`DELETE FROM "${FILE_UPLOADS_TABLE}"`).run();
+    fileStore.releaseBlockedPut();
+
+    const response = await upload;
+    expect(response.status).toBe(503);
+    expect(parseOutcome(await response.json())).toEqual({
+      code: "indeterminate",
+      message: "file upload completion could not be proven",
+      retryable: false,
+      resource: "idempotency",
+    });
   });
 
   test("keeps stalled File transfers out of ordinary HTTP admission", async () => {

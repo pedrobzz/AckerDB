@@ -33,7 +33,7 @@ import {
   verifyFilesBackup,
   type BackupFilesManifest,
 } from "./backup-files.ts";
-import { fsyncPathSync } from "../shared/durability.ts";
+import { fsyncPathSync } from "../shared/fsync.ts";
 import { exactFields } from "../shared/json.ts";
 
 export { backupFilesPath } from "./backup-files.ts";

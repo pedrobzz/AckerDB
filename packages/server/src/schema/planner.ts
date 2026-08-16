@@ -33,7 +33,7 @@
  * new-target plan resolver, so no positional threading crosses the seam.
  */
 import type { Database } from "bun:sqlite";
-import { Engine, indexSqlName, type PhysicalTablePlan } from "../database/engine.ts";
+import { Engine, indexSqlName, persistTagMaps, type PhysicalTablePlan } from "../database/engine.ts";
 import { transaction } from "../database/transaction.ts";
 import { CorruptDatabaseError } from "../shared/errors.ts";
 import { isValidationError } from "../validation/error.ts";
@@ -483,7 +483,7 @@ export function planDiff(ctx: PlanContext, diff: SchemaDiff): SchemaPlan {
 export function commitPlan(engine: Engine, target: SchemaSnapshot, plan: SchemaPlan): void {
   transaction(engine.writer, () => {
     verifyPlanProbes(plan);
-    engine.persistTags();
+    persistTagMaps(engine.writer, engine.tags);
     for (const op of plan.ops) op();
     engine.saveSnapshot(target);
   });

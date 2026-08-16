@@ -7,13 +7,14 @@ export interface SubscriptionRetryClock {
 }
 
 export interface SubscriptionRetryState {
-  attempt: number;
+  /** The next delay's backoff step; 1 is the first retry after a settled stream. */
+  backoffStep: number;
   handle?: unknown;
   notBeforeMs?: number;
 }
 
 export function createSubscriptionRetryState(): SubscriptionRetryState {
-  return { attempt: 0 };
+  return { backoffStep: 1 };
 }
 
 /** Owns retry deadlines and timers while the subscription owns logical demand. */
@@ -33,12 +34,12 @@ export class SubscriptionRetryScheduler {
     if (state.notBeforeMs !== undefined) return;
     const delay = retryDelay(
       this.policy,
-      state.attempt,
+      state.backoffStep,
       floorMs,
       this.random,
       this.maximumDelayMs,
     );
-    state.attempt++;
+    state.backoffStep++;
     state.notBeforeMs = this.clock.now() + delay;
   }
 
@@ -53,7 +54,7 @@ export class SubscriptionRetryScheduler {
   }
 
   settle(state: SubscriptionRetryState): void {
-    state.attempt = 0;
+    state.backoffStep = 1;
     this.clear(state);
   }
 

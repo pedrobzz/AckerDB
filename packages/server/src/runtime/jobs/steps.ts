@@ -31,6 +31,7 @@ import {
   type Result,
 } from "@ackerdb/core";
 import { AckerDBError } from "../../shared/errors.ts";
+import { finiteClock } from "../../shared/clock.ts";
 import { hashJobArgs } from "../../jobs/identity.ts";
 import type { AnyRegistered } from "../../app/functions.ts";
 import type { Registry } from "../../app/registry.ts";
@@ -192,7 +193,10 @@ export class JobSteps {
   /** A journal that failed validation; surfaced on first step use, lazily. */
   private corruption: StepRefusalError | null = null;
 
+  private readonly now: () => number;
+
   constructor(private readonly options: JobStepsOptions) {
+    this.now = finiteClock(options.now, "jobs clock");
     try {
       for (const entry of parseStepJournal(options.stepsJson)) {
         this.entries.set(entry.name, entry);
@@ -259,7 +263,7 @@ export class JobSteps {
       calleeKind: fn.kind as RunStepEntry["calleeKind"],
       argsHash,
       result: encodeResult(value),
-      completedAt: this.options.now(),
+      completedAt: this.now(),
     });
     if (fn.kind === "procedure") {
       const value = await this.invoke(fn, calleeCtx, args);
@@ -312,7 +316,7 @@ export class JobSteps {
         name,
         kind,
         result: stableEncode(value),
-        completedAt: this.options.now(),
+        completedAt: this.now(),
       });
       return value;
     });
@@ -326,7 +330,7 @@ export class JobSteps {
       name,
       kind: "procedure",
       result: stableEncode(value),
-      completedAt: this.options.now(),
+      completedAt: this.now(),
     });
     return value;
   }
@@ -347,7 +351,7 @@ export class JobSteps {
     // re-suspends.
     if (prior !== null) return;
 
-    const wakeAt = this.options.now() + durationMs;
+    const wakeAt = this.now() + durationMs;
     // One writer transaction: journal entry, pending state, wake time, and
     // lease release commit together — no crash window between "recorded" and
     // "suspended". The run itself stays open and unleased, so the claim that
@@ -358,7 +362,7 @@ export class JobSteps {
         name,
         kind: "sleep",
         wakeAt,
-        completedAt: this.options.now(),
+        completedAt: this.now(),
       });
       await surface.runs.patch(this.options.runId, { leaseToken: null, leaseUntil: null });
       await surface.jobs.patch(this.options.jobId, {

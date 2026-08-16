@@ -42,7 +42,7 @@ import type { RuntimeQueries } from "../queries/runtime.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "./store.ts";
 import { RuntimeSessionStore } from "./store.ts";
 import { digestOfWire } from "../../shared/digest.ts";
-import { finiteMillis } from "../../shared/clock.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
@@ -63,7 +63,11 @@ export interface RuntimeSessionApplicationOptions {
 
 /** Owns the client-session protocol operations layered over RuntimeSessionStore. */
 export class RuntimeSessionApplication {
-  constructor(private readonly options: RuntimeSessionApplicationOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: RuntimeSessionApplicationOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
+  }
 
   subscribe(
     context: SessionRuntimeContext,
@@ -216,7 +220,7 @@ export class RuntimeSessionApplication {
             context.fairnessKey,
             signal,
             requestBytes,
-            finiteMillis(this.options.now(), "runtime clock"),
+            this.now(),
             invalidations.publish,
           );
           const result = await invokeSideEffectingHandler(

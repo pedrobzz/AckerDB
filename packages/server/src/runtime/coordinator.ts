@@ -30,7 +30,7 @@ import {
   poisonTransaction,
   runInTransaction,
 } from "./transaction-context.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
@@ -161,7 +161,7 @@ export class CommitCoordinator<Publication> {
     this.limits = options.limits;
     this.reservePublication = options.reservePublication;
     this.afterCommit = options.afterCommit;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "coordinator clock");
     this.wait = options.wait;
     this.writer = new BoundedExecutor({
       concurrency: 1,
@@ -249,7 +249,7 @@ export class CommitCoordinator<Publication> {
           },
         };
       }
-      const now = finiteMillis(this.now(), "coordinator clock");
+      const now = this.now();
       const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
       if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
         throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
@@ -332,7 +332,7 @@ export class CommitCoordinator<Publication> {
                 result: result ?? null,
                 resultBytes,
                 durability: this.engine.durability,
-              }, finiteMillis(this.now(), "coordinator clock"), "replay");
+              }, this.now(), "replay");
               this.engine.writer.exec("COMMIT");
               transactionOpen = false;
               this.engine[mutationReplayOwner].committed(staged);
@@ -388,7 +388,7 @@ export class CommitCoordinator<Publication> {
           result: result ?? null,
           resultBytes,
           durability: this.engine.durability,
-        }, finiteMillis(this.now(), "coordinator clock"));
+        }, this.now());
         commitVersion = stagedMutation.commitVersion;
       } else {
         commitVersion = this.engine.allocateCommitVersion();
@@ -454,7 +454,7 @@ export class CommitCoordinator<Publication> {
   }
 
   private pruneExpiredMutations(): void {
-    const now = finiteMillis(this.now(), "coordinator clock");
+    const now = this.now();
     if (now < this.nextPruneAtMs) return;
     this.nextPruneAtMs = now + 60_000;
     const before = now - this.limits.mutationReplay.maxAgeMs;

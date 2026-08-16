@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server";
+import { transaction } from "../../src/database/transaction.ts";
 
 const dirs: string[] = [];
 const freshPath = () => {
@@ -258,5 +259,58 @@ describe("tag interning", () => {
     const readded = new Engine(schemaWith(["draft", "published", "archived", "trashed"]), path);
     expect(tags(readded, ["published"]).get("published")).toBe(1);
     readded.close("clean");
+  });
+});
+
+describe("transaction()", () => {
+  /**
+   * bun:sqlite commits at the first `await`, so an asynchronous body inside a
+   * synchronous transaction would silently publish half its work. The refusal
+   * has to leave nothing behind: the transaction is rolled back, and the
+   * statement the dangling promise runs later must find no live transaction to
+   * ride — otherwise it would be committed by whoever ends that one.
+   */
+  test("refuses a thenable body, rolls back, and strands no live transaction", async () => {
+    const engine = new Engine(
+      defineSchema({ notes: defineTable({ id: v.primaryKey(), body: v.string() }) }),
+      freshPath(),
+    );
+    engine.createAll();
+    const insert = (body: string): void => {
+      engine.writer.query('INSERT INTO "notes" ("body") VALUES (?)').run(body);
+    };
+    const bodies = (): string[] =>
+      (engine.reader.query('SELECT "body" FROM "notes" ORDER BY "id"').all() as { body: string }[])
+        .map((row) => row.body);
+
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    let dangling: Promise<void> | undefined;
+    let failure: unknown;
+    try {
+      transaction(engine.writer, () => {
+        dangling = (async () => {
+          insert("before-await");
+          await released;
+          insert("after-await");
+        })();
+        return dangling as unknown as void;
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as TypeError).message).toContain("transactionAsync");
+    expect(engine.writer.inTransaction).toBe(false);
+    // The write the body managed before its first await is gone with the rollback.
+    expect(bodies()).toEqual([]);
+
+    release();
+    await dangling;
+    // The late statement ran on its own — autocommitted, visible to a reader,
+    // and unable to resurrect the rolled-back write.
+    expect(engine.writer.inTransaction).toBe(false);
+    expect(bodies()).toEqual(["after-await"]);
+    engine.close("clean");
   });
 });

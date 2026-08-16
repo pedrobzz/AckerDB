@@ -46,7 +46,6 @@ import {
 import { AckerDBError, drainingError, isAckerDBError } from "../../shared/errors.ts";
 import { PRODUCTION_LIMITS } from "../../runtime/limits.ts";
 import { outcomeFromError } from "../../runtime/outcome.ts";
-import { MAX_TIMER_DELAY_MS } from "../../shared/numbers.ts";
 import {
   assertRuntimePublication,
   prepareRuntimeRequest,
@@ -66,7 +65,7 @@ import {
   type DecodedClientFrame,
   type SessionWireFrame,
 } from "./frame.ts";
-import { finiteMillis, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 
 function authenticationDescriptor(
   principal: ClientPrincipal,
@@ -112,6 +111,7 @@ export class Session {
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
   private readonly clock: Clock;
+  private readonly now: () => number;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
   private clientSessionId: string | null = null;
@@ -138,6 +138,7 @@ export class Session {
     this.runtime = options.runtime;
     this.sink = options.sink;
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.now = finiteClock(() => this.clock.now(), "session clock");
     this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
     this.maxRequestBytes = positiveSafeInteger(limits.maxRequestBytes, "maxRequestBytes");
@@ -328,7 +329,7 @@ export class Session {
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
-        ...authenticationDescriptor(principal, finiteMillis(this.clock.now(), "session clock")),
+        ...authenticationDescriptor(principal, this.now()),
       });
       if (this.isClosed()) return;
       this.paused = false;
@@ -400,7 +401,7 @@ export class Session {
       void this.terminate(internalError(new Error("auth completed before hello")));
       return;
     }
-    if (result.kind !== "anonymous" && result.expiresAt <= finiteMillis(this.clock.now(), "session clock")) {
+    if (result.kind !== "anonymous" && result.expiresAt <= this.now()) {
       void this.terminate(credentialExpired());
       return;
     }
@@ -455,7 +456,7 @@ export class Session {
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
-          ...authenticationDescriptor(result, finiteMillis(this.clock.now(), "session clock")),
+          ...authenticationDescriptor(result, this.now()),
         };
         await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
@@ -597,7 +598,7 @@ export class Session {
       credential,
       this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
-      () => finiteMillis(this.clock.now(), "session clock"),
+      this.now,
       this.runtime.resolveScopes,
     );
     if (signal?.aborted) throw signal.reason;
@@ -623,7 +624,7 @@ export class Session {
     ) return;
     const schedule = () => {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
-      const remaining = principal.expiresAt - finiteMillis(this.clock.now(), "session clock");
+      const remaining = principal.expiresAt - this.now();
       if (remaining <= 0) {
         void this.terminate(credentialExpired());
         return;

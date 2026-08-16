@@ -15,7 +15,6 @@ import {
   hasCredentialTokenPrefix,
   CREDENTIAL_AUTHORITY,
 } from "./credential-token.ts";
-import { finiteMillis } from "../shared/clock.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -601,7 +600,7 @@ export async function verifyBearerCredential(
     expiresAt,
     tokenId,
   });
-  const timestamp = finiteMillis(now(), "credential clock");
+  const timestamp = now();
   if (verified.expiresAt <= timestamp) throw unauthenticated();
   return verified;
 }
@@ -691,7 +690,7 @@ export async function verifyClientCredential(
     // delegated credential over one transport and miss it over another.
     derivedFrom = grant.derivedFrom;
   }
-  const resolvedAt = finiteMillis(now(), "credential clock");
+  const resolvedAt = now();
   if (verified.expiresAt <= resolvedAt) throw unauthenticated();
   return Object.freeze({
     kind: "user",

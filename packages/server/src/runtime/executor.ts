@@ -5,8 +5,8 @@ import {
 } from "./admission.ts";
 import type { QueueLimits } from "./limits.ts";
 import type { AdmissionResource } from "./admission.ts";
-import { MAX_TIMER_DELAY_MS, positiveSafeInteger } from "../shared/numbers.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { positiveSafeInteger } from "../shared/numbers.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS } from "../shared/clock.ts";
 
 export interface ExecutorTaskOptions {
   readonly bytes: number;
@@ -61,7 +61,7 @@ export class BoundedExecutor {
       retryAfterMs: options.retryAfterMs,
       now: options.now,
     });
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "executor clock");
   }
 
   submit<T>(work: () => T | Promise<T>, options: ExecutorTaskOptions): Promise<T> {
@@ -153,7 +153,6 @@ export class BoundedExecutor {
     this.clearExpiryTimer();
     if (snapshot.closed || snapshot.nextExpiryAtMs === undefined) return;
     const now = this.now();
-    finiteMillis(now, "executor clock");
     const delay = Math.min(Math.max(0, snapshot.nextExpiryAtMs - now), MAX_TIMER_DELAY_MS);
     this.expiryTimer = setTimeout(() => {
       this.expiryTimer = undefined;

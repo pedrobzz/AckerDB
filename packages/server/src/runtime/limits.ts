@@ -1,4 +1,5 @@
-import { MAX_TIMER_DELAY_MS, positiveSafeInteger } from "../shared/numbers.ts";
+import { positiveSafeInteger } from "../shared/numbers.ts";
+import { MAX_TIMER_DELAY_MS } from "../shared/clock.ts";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;

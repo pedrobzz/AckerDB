@@ -667,7 +667,8 @@ export class AckerDBClient {
   private sourcePull: Promise<AckerDBAuthentication> | null = null;
   /** One queued fresh pull for explicit refreshes that arrive mid-flight. */
   private sourceFollowUp: Promise<AckerDBAuthentication> | null = null;
-  private sourceRetryAttempt = 0;
+  /** The next credential-source retry's backoff step; 1 is the first retry. */
+  private sourceBackoffStep = 1;
   private sourceRetryHandle?: unknown;
   private sourceRefreshHandle?: unknown;
   /** When the accepted credential dies, in clock time; undefined while anonymous. */
@@ -696,7 +697,8 @@ export class AckerDBClient {
    */
   private connectionGeneration = 0;
   private nextId = 1;
-  private reconnectAttempt = 0;
+  /** The next reconnect's backoff step; 1 is the first retry after a live connection. */
+  private reconnectBackoffStep = 1;
   /**
    * Absolute clock time before which the server asked this client not to
    * reconnect (a retryable session error's Retry-After hint). An admission
@@ -875,7 +877,7 @@ export class AckerDBClient {
           "a credential-source client owns its credential; refreshCredential() re-invokes the source",
         );
       }
-      this.sourceRetryAttempt = 0;
+      this.sourceBackoffStep = 1;
       this.clearSourceRetryTimer();
       return this.demandFreshPull();
     }
@@ -975,7 +977,7 @@ export class AckerDBClient {
     const tracked: Promise<AckerDBAuthentication> = this.runSourcePull().then(
       (authentication) => {
         if (this.sourcePull === tracked) this.sourcePull = null;
-        this.sourceRetryAttempt = 0;
+        this.sourceBackoffStep = 1;
         return authentication;
       },
       (error: unknown) => {
@@ -1047,12 +1049,12 @@ export class AckerDBClient {
     }
     let delay: number;
     try {
-      delay = retryDelay(this.reconnect, this.sourceRetryAttempt, 0, this.random, MAX_RETRY_AFTER_MS);
+      delay = retryDelay(this.reconnect, this.sourceBackoffStep, 0, this.random, MAX_RETRY_AFTER_MS);
     } catch {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    this.sourceRetryAttempt++;
+    this.sourceBackoffStep++;
     this.sourceRetryHandle = this.clock.setTimeout(() => {
       this.sourceRetryHandle = undefined;
       void this.pullCredentialSource().catch(() => {});
@@ -2554,7 +2556,7 @@ export class AckerDBClient {
     try {
       delay = retryDelay(
         this.reconnect,
-        this.reconnectAttempt,
+        this.reconnectBackoffStep,
         floor,
         this.random,
         MAX_RETRY_AFTER_MS,
@@ -2563,7 +2565,7 @@ export class AckerDBClient {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    this.reconnectAttempt++;
+    this.reconnectBackoffStep++;
     this.reconnectHandle = this.clock.setTimeout(() => {
       this.reconnectHandle = undefined;
       this.ensureConnected();
@@ -2574,7 +2576,7 @@ export class AckerDBClient {
     this.clearConnectionTimers();
     const generation = this.connectionGeneration;
     this.stableHandle = this.clock.setTimeout(() => {
-      if (this.ready && this.connectionGeneration === generation) this.reconnectAttempt = 0;
+      if (this.ready && this.connectionGeneration === generation) this.reconnectBackoffStep = 1;
     }, this.reconnect.stableOpenMs);
     this.pingHandle = this.clock.setInterval(() => {
       if (this.ready && this.connectionGeneration === generation) {
@@ -2793,6 +2795,7 @@ export class AckerDBClient {
     const startedAt = this.now();
     const deadlineAt = Math.min(Number.MAX_SAFE_INTEGER, startedAt + maxAgeMs);
     let attempts = 0;
+    let backoffStep = 0;
 
     for (;;) {
       attempts++;
@@ -2888,7 +2891,7 @@ export class AckerDBClient {
       try {
         delayMs = retryDelay(
           this.reconnect,
-          attempts - 2,
+          backoffStep,
           retryAfterMs,
           this.random,
           MAX_RETRY_AFTER_MS,
@@ -2896,6 +2899,7 @@ export class AckerDBClient {
       } catch {
         throw localError("internal", "client random source is invalid", "sse");
       }
+      backoffStep++;
       if (delayMs >= remainingMs) {
         throw localError("deadline_exceeded", "SSE acknowledgment cannot retry before its deadline", "sse");
       }
@@ -2915,10 +2919,7 @@ export class AckerDBClient {
     }
     const controller = new AbortController();
     let timeoutHandle: unknown;
-    let rejectInterrupted!: (error: AckerDBClientError) => void;
-    const interrupted = new Promise<never>((_resolve, reject) => {
-      rejectInterrupted = reject;
-    });
+    const { promise: interrupted, reject: rejectInterrupted } = Promise.withResolvers<never>();
     const onAbort = () => {
       controller.abort(signal.reason);
       rejectInterrupted(localError("unavailable", "SSE acknowledgment was canceled", "sse"));

@@ -54,7 +54,6 @@ export interface RuntimeCredentialsOptions {
   readonly engine: Engine;
   /** Lazy: the read executor is constructed after this owner. */
   readonly reads: () => RuntimeReadExecutor;
-  readonly now: () => number;
   readonly assertReady: () => void;
   readonly operationSignal: (signal?: AbortSignal) => AbortSignal;
   readonly appVerifier?: CredentialVerifier;

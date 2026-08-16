@@ -14,7 +14,7 @@ import { runInInvocationRoot } from "../invocation-state.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { inTransaction } from "../transaction-context.ts";
-import { finiteMillis } from "../../shared/clock.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 const SYSTEM_FAIRNESS_KEY = callerFairnessKey(
   SYSTEM_PRINCIPAL,
@@ -33,7 +33,11 @@ export interface RuntimeSystemOptions {
 export class RuntimeSystem {
   private readonly root = AsyncLocalStorage.snapshot();
 
-  constructor(private readonly options: RuntimeSystemOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: RuntimeSystemOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
+  }
 
   run<R>(
     name: string,
@@ -61,7 +65,7 @@ export class RuntimeSystem {
           SYSTEM_FAIRNESS_KEY,
           signal,
           1,
-          finiteMillis(this.options.now(), "runtime clock"),
+          this.now(),
           this.options.invalidations.publish,
         );
         return await invokeSideEffectingHandler(

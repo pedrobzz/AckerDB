@@ -83,7 +83,7 @@ import {
   type RuntimeFileRequest,
 } from "../files/http.ts";
 import { FileCleanupRuntime } from "../files/cleanup.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
@@ -128,7 +128,7 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "runtime clock");
     this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
@@ -150,7 +150,6 @@ export class Runtime implements RuntimePort {
     this.credentials = new RuntimeCredentials({
       engine: this.engine,
       reads: () => this.reads,
-      now: this.now,
       assertReady: () => this.control.assertReady(),
       operationSignal: (signal) => this.control.operationSignal(signal),
       ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
@@ -481,7 +480,7 @@ export class Runtime implements RuntimePort {
       state.context.fairnessKey,
       signal,
       requestBytes,
-      finiteMillis(this.now(), "runtime clock"),
+      this.now(),
       invalidations.publish,
     );
     let active = true;

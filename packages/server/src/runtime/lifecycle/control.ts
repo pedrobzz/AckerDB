@@ -22,7 +22,6 @@ import type { FileCleanupRuntime } from "../../files/cleanup.ts";
 import { wireByteLength } from "../../shared/bytes.ts";
 import { finiteMillis } from "../../shared/clock.ts";
 
-
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
   readonly engine: Engine;

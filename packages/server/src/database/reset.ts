@@ -6,7 +6,7 @@ import {
   restoreArtifactPaths,
 } from "./artifacts.ts";
 import { DatabaseOwnership } from "./ownership.ts";
-import { fsyncPathSync } from "../shared/durability.ts";
+import { fsyncPathSync } from "../shared/fsync.ts";
 
 export interface DatabaseResetResult {
   readonly database: string;

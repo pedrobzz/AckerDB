@@ -18,6 +18,9 @@ export const SYSTEM_CLOCK: Clock = Object.freeze({
   clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 });
 
+/** The largest delay `setTimeout` can hold: a 32-bit signed millisecond count. */
+export const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
+
 /**
  * Refuse a millisecond value that is not one. A broken clock fails here, loudly,
  * instead of writing `NaN` into a durable row or a timer delay.
@@ -25,4 +28,14 @@ export const SYSTEM_CLOCK: Clock = Object.freeze({
 export function finiteMillis(value: number, what: string): number {
   if (!Number.isFinite(value)) throw new RangeError(`${what} must be finite milliseconds`);
   return value;
+}
+
+/**
+ * Check an injected clock once, where it is injected, so every later read is
+ * already a millisecond. A component wraps its `now` in its constructor and then
+ * calls `this.now()` plainly — there is no second place a broken clock can slip
+ * past, and no call site has to remember to check.
+ */
+export function finiteClock(now: () => number, what: string): () => number {
+  return () => finiteMillis(now(), what);
 }

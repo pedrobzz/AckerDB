@@ -65,10 +65,12 @@ import {
 } from "./framework-schema.ts";
 import {
   canonicalJson,
+  canonicalSnapshotJson,
   snapshotOf,
   type SchemaSnapshot,
   type TableSnapshot,
 } from "../schema/snapshot.ts";
+import { sha256Hex } from "../shared/digest.ts";
 import { isValidationError } from "../validation/error.ts";
 import {
   DatabaseOwnership,
@@ -94,7 +96,7 @@ import {
   prepareFullTextLiteral as prepareLiteralFullTextQuery,
   type FullTextTargetPlan,
 } from "./full-text.ts";
-import { fsyncPathSync } from "../shared/durability.ts";
+import { fsyncPathSync } from "../shared/fsync.ts";
 import {
   cleanupOnFailure,
   combinedFailure,
@@ -617,9 +619,7 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
 
 /** Hash the persisted application schema without consulting or mutating an Engine. */
 function schemaSnapshotFingerprint(root: SchemaSnapshot): string {
-  return createHash("sha256")
-    .update(JSON.stringify(canonicalJson(root)))
-    .digest("hex");
+  return sha256Hex(canonicalSnapshotJson(root));
 }
 
 /** Fingerprint the exact logical storage layout requested by an application schema. */
@@ -987,7 +987,7 @@ function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaF
 function restoreArtifact(source: string, destination: string, manifest: BackupManifest): void {
   if (existsSync(destination)) throw new Error(`restore destination already exists: ${destination}`);
   const bytes = statSync(source).size;
-  const sha256 = createHash("sha256").update(readFileSync(source)).digest("hex");
+  const sha256 = sha256Hex(readFileSync(source));
   if (bytes !== manifest.bytes || sha256 !== manifest.sha256) {
     throw new CorruptDatabaseError("backup artifact does not match its manifest");
   }
@@ -1019,7 +1019,8 @@ export class Engine {
   /** Maximum bind parameters accepted by one statement in the active SQLite library. */
   readonly sqliteParameterLimit: number;
   readonly recoveredFromCrash: boolean;
-  private readonly tags = new Map<string, TagMap>();
+  /** The application's tag plan; `persistTagMaps` is what commits it. */
+  readonly tags = new Map<string, TagMap>();
   /** The application's physical table plans. */
   readonly plans: ReadonlyMap<string, TablePlan>;
   private readonly databaseOwnership: DatabaseOwnership | null;
@@ -1398,11 +1399,6 @@ export class Engine {
     }
   }
 
-  /** Persist the application's tag plan. The caller owns the schema transaction. */
-  persistTags(): void {
-    persistTagMaps(this.writer, this.tags);
-  }
-
   /**
    * Re-derive every in-memory tag map from `_ackerdb_tags` + the live schema. Run
    * after a migration relabels variants (`UPDATE _ackerdb_tags`) so the renamed-to
@@ -1531,7 +1527,7 @@ export class Engine {
   /** Create all tables and indexes for a fresh database and store the snapshot. */
   createAll(): void {
     transaction(this.writer, () => {
-      this.persistTags();
+      persistTagMaps(this.writer, this.tags);
       for (const plan of this.plans.values()) this.createTablePhysical(plan);
       this.saveSnapshot(snapshotOf(this.schema));
     });
@@ -1719,7 +1715,7 @@ export class Engine {
       published = true;
       fsyncPathSync(dirname(destination));
       const bytes = statSync(destination).size;
-      const sha256 = createHash("sha256").update(readFileSync(destination)).digest("hex");
+      const sha256 = sha256Hex(readFileSync(destination));
       return {
         ...inspected,
         sha256,

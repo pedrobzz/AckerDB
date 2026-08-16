@@ -45,7 +45,7 @@ import type { JobCursor, JobRow, JobRunRow, JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { Database } from "bun:sqlite";
 import { outcomeFromError } from "../outcome.ts";
-import { MAX_TIMER_DELAY_MS } from "../../shared/numbers.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS } from "../../shared/clock.ts";
 
 /** The slice of the function executor the runner consumes. */
 export interface JobsExecutor {
@@ -159,8 +159,10 @@ export class RuntimeJobs {
    * enqueues) and dispatch completions wake the runner instead.
    */
   private stalled = false;
+  private readonly now: () => number;
 
   constructor(private readonly options: RuntimeJobsOptions) {
+    this.now = finiteClock(options.now, "jobs clock");
     for (const { name, job } of options.declared) {
       this.definitions.set(name, job);
     }
@@ -197,7 +199,7 @@ export class RuntimeJobs {
     );
     if (repeating.length === 0) return;
     await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
-      const now = this.options.now();
+      const now = this.now();
       for (const [name, definition] of repeating) {
         const argsJson = stableEncode({});
         const argsHash = hashJobArgs(argsJson);
@@ -236,7 +238,7 @@ export class RuntimeJobs {
       (at) => {
         if (!this.options.isReady() || generation !== this.generation) return;
         if (at === null) return;
-        const now = this.options.now();
+        const now = this.now();
         if (at <= now && this.stalled) return; // overdue but unclaimable: wait for a wake
         const delay = Math.min(Math.max(0, at - now), MAX_TIMER_DELAY_MS);
         this.timer = setTimeout(() => {
@@ -311,7 +313,7 @@ export class RuntimeJobs {
     const validated = this.validateArgs(definition, name, args);
     const argsJson = stableEncode(validated);
     const argsHash = hashJobArgs(argsJson);
-    const now = this.options.now();
+    const now = this.now();
     if (definition.dedupe !== null) {
       const existing = this.dedupeJob(store, definition, name, argsHash, now);
       if (existing !== null) return { id: existing.id, deduped: true };
@@ -462,7 +464,7 @@ export class RuntimeJobs {
       readonly stepsJson?: string;
     },
   ): Promise<void> {
-    const now = this.options.now();
+    const now = this.now();
     const previous = job.runCount === 0 ? null : surface.runs.byNumber(job.id, job.runCount);
     if (previous !== null && previous.settledAt !== null) {
       const definition = this.definitions.get(job.name);
@@ -569,7 +571,7 @@ export class RuntimeJobs {
    * `step.sleep` holds no lease, so it is never mistaken for a crash.
    */
   private async recoverExpiredLeases(signal: AbortSignal): Promise<void> {
-    const now = this.options.now();
+    const now = this.now();
     const notifications = await this.options.executor.jobsWrite(signal, async (surface) => {
       const delivered: Notification[] = [];
       for (const run of surface.runs.expiredLeases(now, this.options.limits.claimBatchSize)) {
@@ -609,7 +611,7 @@ export class RuntimeJobs {
       | { readonly claimed: ClaimedRun; readonly page: Page }
       | null;
     const result = await this.options.executor.jobsWrite<ClaimTxResult>(signal, async (surface) => {
-      const now = this.options.now();
+      const now = this.now();
       const runningByGate = new Map<string, number>();
       for (const job of surface.jobs.running()) {
         const gate = `${job.name}\u0000${job.key ?? ""}`;
@@ -771,7 +773,7 @@ export class RuntimeJobs {
       executor: this.options.executor,
       registry: this.options.registry,
       signal: controller.signal,
-      now: this.options.now,
+      now: this.now,
       // The suspend itself committed inside step.sleep's own transaction;
       // this is the post-commit notification to waiters.
       onSlept: (wakeAt) =>
@@ -875,7 +877,7 @@ export class RuntimeJobs {
     run: JobRunRow | null,
     outcome: TerminalOutcome,
   ): Promise<void> {
-    const now = this.options.now();
+    const now = this.now();
     const deleteAfter = this.retentionStamp(this.definitions.get(job.name), outcome.state, now);
     // A Job with no run, or whose latest run already settled, records only its
     // own end: cancel before the claim invents no run.
@@ -924,7 +926,7 @@ export class RuntimeJobs {
     error: unknown,
   ): Promise<Notification> {
     const definition = this.definitions.get(job.name);
-    const now = this.options.now();
+    const now = this.now();
     let delay: number | null = null;
     // A step refusal — journal/code mismatch, corrupt journal, or exhausted
     // journal bounds — fails without consulting the retry policy: retrying
@@ -1013,7 +1015,7 @@ export class RuntimeJobs {
    * is gone.
    */
   private async reap(signal: AbortSignal): Promise<boolean> {
-    const now = this.options.now();
+    const now = this.now();
     if (now - this.lastReapAt < REAP_INTERVAL_MS) return false;
     this.lastReapAt = now;
     const limit = this.options.limits.claimBatchSize;

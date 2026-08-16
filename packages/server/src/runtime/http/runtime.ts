@@ -55,7 +55,7 @@ import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.t
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { validatedSseSource } from "../sse/source.ts";
 import { digestOfWire } from "../../shared/digest.ts";
-import { finiteMillis } from "../../shared/clock.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
@@ -91,8 +91,10 @@ export class RuntimeHttp {
   readonly sseBudget: OutboundBudget;
   readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly responses: RuntimeHttpResponses;
+  private readonly now: () => number;
 
   constructor(private readonly options: RuntimeHttpOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
     this.responses = new RuntimeHttpResponses(options.limits.maxFrameBytes);
     const controlReserve = Math.min(
       options.limits.maxFrameBytes,
@@ -179,7 +181,7 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        finiteMillis(this.options.now(), "runtime clock"),
+        this.now(),
         invalidations.publish,
       );
       return await invokeSideEffectingHandler(
@@ -219,7 +221,7 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        finiteMillis(this.options.now(), "runtime clock"),
+        this.now(),
         () => {},
         "http",
       );
@@ -294,7 +296,7 @@ export class RuntimeHttp {
           fairnessKey,
           producer.signal,
           requestBytes,
-          finiteMillis(this.options.now(), "runtime clock"),
+          this.now(),
           invalidations.publish,
         );
         const handler = invokeFunction(fn, procedure as SseCtx, request.args, {

@@ -10,7 +10,7 @@ import {
   SHA256,
   type LiveFile,
 } from "./metadata.ts";
-import { fsyncPath } from "../shared/durability.ts";
+import { fsyncPath, runWithCleanupAsync } from "../shared/fsync.ts";
 import { exactFields } from "../shared/json.ts";
 
 const MAX_JOURNAL_LINE_BYTES = 16 * 1_024;
@@ -340,12 +340,14 @@ export async function prepareMigrationJournal(
   const parsed = await parseJournal(engine, context);
   if (parsed.durableBytes !== parsed.fileBytes) {
     const repair = await fs.open(context.journalPath, "r+");
-    try {
-      await repair.truncate(parsed.durableBytes);
-      await repair.sync();
-    } finally {
-      await repair.close();
-    }
+    await runWithCleanupAsync(
+      async () => {
+        await repair.truncate(parsed.durableBytes);
+        await repair.sync();
+      },
+      () => repair.close(),
+      `journal repair and descriptor close both failed: ${context.journalPath}`,
+    );
   }
   return parsed.complete
     ? parsed

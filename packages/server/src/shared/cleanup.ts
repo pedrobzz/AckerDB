@@ -3,27 +3,21 @@
  * alone; two failures travel together so neither is masked by the other.
  */
 
-type CleanupMessage = string | (() => string);
-
-function messageText(message: CleanupMessage): string {
-  return typeof message === "string" ? message : message();
-}
-
 /** Combine a primary failure with whatever the cleanup that followed it added. */
 export function combinedFailure(
   primary: unknown,
   cleanupFailures: readonly unknown[],
-  message: CleanupMessage,
+  message: string,
 ): unknown {
   if (cleanupFailures.length === 0) return primary;
-  return new AggregateError([primary, ...cleanupFailures], messageText(message));
+  return new AggregateError([primary, ...cleanupFailures], message);
 }
 
 /** Run work, then cleanup whatever happened; both failures survive together. */
 export function runWithCleanup<T>(
   work: () => T,
   cleanup: () => void,
-  message: CleanupMessage,
+  message: string,
 ): T {
   let failed = false;
   let failure: unknown;
@@ -48,7 +42,7 @@ export function runWithCleanup<T>(
 export async function runWithCleanupAsync<T>(
   work: () => T | Promise<T>,
   cleanup: () => void | Promise<void>,
-  message: CleanupMessage,
+  message: string,
 ): Promise<T> {
   let failed = false;
   let failure: unknown;
@@ -76,7 +70,7 @@ export async function runWithCleanupAsync<T>(
 export function cleanupOnFailure<T>(
   work: () => T,
   cleanup: () => void,
-  message: CleanupMessage,
+  message: string,
 ): T {
   try {
     return work();

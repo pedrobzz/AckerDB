@@ -8,8 +8,10 @@ import {
 import { dirname, resolve, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { UUID_V4 } from "../../database/artifacts.ts";
-import { fsyncPath } from "../../shared/durability.ts";
+import { UUID_V4 } from "../../shared/identity.ts";
+import { fsyncPath } from "../../shared/fsync.ts";
+import { sha256Hex } from "../../shared/digest.ts";
+import { runWithCleanupAsync } from "../../shared/cleanup.ts";
 import {
   assertRange,
   classifiedReadableStream,
@@ -117,12 +119,14 @@ export class LocalFileStore implements FileStore {
     try {
       await ensureDurableDirectory(this.#root);
       const handle = await fs.open(marker, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-      try {
-        await handle.writeFile(`${randomUUID()}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await runWithCleanupAsync(
+        async () => {
+          await handle.writeFile(`${randomUUID()}\n`, "utf8");
+          await handle.sync();
+        },
+        () => handle.close(),
+        `FileStore identity write and descriptor close both failed: ${marker}`,
+      );
       await fsyncPath(this.#root);
     } catch (error) {
       if (nodeErrorCode(error) !== "EEXIST") throw this.#classify(error, operation);
@@ -288,7 +292,7 @@ export class LocalFileStore implements FileStore {
   }
 
   #objectPath(key: string): { path: string; shard: string } {
-    const encoded = createHash("sha256").update(key).digest("hex");
+    const encoded = sha256Hex(key);
     const shard = encoded.slice(0, 2);
     return { shard, path: join(this.#objects, shard, encoded.slice(2)) };
   }

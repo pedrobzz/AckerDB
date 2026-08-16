@@ -1,6 +1,6 @@
 import { AckerDBError, drainingError } from "../shared/errors.ts";
 import { validateCapacityLimits, type CapacityLimits } from "../runtime/limits.ts";
-import { finiteMillis } from "../shared/clock.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 export interface Publication<T> {
   readonly version: bigint;
@@ -126,7 +126,7 @@ export class OrderedPublication<T> {
     this.settledHighWater = initialVersion;
     this.startedHighWater = initialVersion;
     this.processPublication = options.process;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "publication clock");
   }
 
   reserve(reservedBytes: number): PublicationReservation<T> {
@@ -141,7 +141,7 @@ export class OrderedPublication<T> {
       throw unavailable("unavailable", "A writer publication reservation is already open");
     }
 
-    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, finiteMillis(this.now(), "publication clock"));
+    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, this.now());
     this.openReservation = slot;
     this.items++;
     this.bytes += reservedBytes;
@@ -177,7 +177,7 @@ export class OrderedPublication<T> {
   }
 
   snapshot(): PublicationSnapshot {
-    const now = finiteMillis(this.now(), "publication clock");
+    const now = this.now();
     return Object.freeze({
       items: this.items,
       bytes: this.bytes,

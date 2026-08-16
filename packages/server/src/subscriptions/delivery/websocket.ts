@@ -13,7 +13,7 @@ import {
   type SessionSink,
 } from "../session/contract.ts";
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
-import { SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
+import { finiteClock, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 import { utf8ByteLength } from "../../shared/bytes.ts";
 
@@ -75,6 +75,7 @@ export class WebSocketSessionSink implements SessionSink {
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
   private readonly clock: Clock;
+  private readonly now: () => number;
   private readonly queue: PendingFrame[] = [];
   private readonly buffered: BufferedFrame[] = [];
   private applicationBytes = 0;
@@ -96,6 +97,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.budget = options.budget;
     this.limits = options.limits;
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.now = finiteClock(() => this.clock.now(), "delivery clock");
     this.controlReserveBytes = options.limits.maxFrameBytes;
   }
 
@@ -318,9 +320,9 @@ export class WebSocketSessionSink implements SessionSink {
   }
 
   private armStall(): void {
-    if (this.stallSince === null) this.stallSince = this.clock.now();
+    if (this.stallSince === null) this.stallSince = this.now();
     if (this.stallTimer !== undefined) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     this.stallTimer = this.clock.setTimeout(
       () => this.onStallTimer(),
       Math.max(1, this.limits.webSocket.maxStallMs - elapsed),
@@ -330,7 +332,7 @@ export class WebSocketSessionSink implements SessionSink {
   private restartStall(): void {
     if (this.stallTimer !== undefined) this.clock.clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
-    this.stallSince = this.clock.now();
+    this.stallSince = this.now();
     this.armStall();
   }
 
@@ -351,7 +353,7 @@ export class WebSocketSessionSink implements SessionSink {
       return;
     }
     if (this.bufferedBytes < before) {
-      this.stallSince = this.clock.now();
+      this.stallSince = this.now();
       this.armStall();
       return;
     }
@@ -359,7 +361,7 @@ export class WebSocketSessionSink implements SessionSink {
       this.clearStall();
       return;
     }
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     if (elapsed < this.limits.webSocket.maxStallMs) {
       this.armStall();
       return;

@@ -47,7 +47,7 @@ import {
   unavailable,
 } from "./outcome.ts";
 import { outcomeFromError } from "../../runtime/outcome.ts";
-import { finiteMillis } from "../../shared/clock.ts";
+import { finiteClock, finiteMillis } from "../../shared/clock.ts";
 
 interface InstalledEvaluation<C> {
   readonly entry: QueryEntry<C>;
@@ -87,7 +87,7 @@ export class OrderedReactive<C = unknown> {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
     this.history = new TransitionHistory(this.limits.resume);
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "reactive clock");
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
     this.revalidation = new BoundedExecutor({
       concurrency: this.limits.revalidationConcurrency,
@@ -328,7 +328,7 @@ export class OrderedReactive<C = unknown> {
     return Object.freeze(failures);
   }
 
-  prune(now = finiteMillis(this.now(), "reactive clock")): number {
+  prune(now = this.now()): number {
     finiteMillis(now, "prune time");
     this.history.prune(now);
     let removed = 0;
@@ -439,7 +439,7 @@ export class OrderedReactive<C = unknown> {
         this.evaluatingEntries--;
       }
       if (entry.listeners.size === 0 && entry.initialized && entry.dormantAtMs === undefined) {
-        entry.dormantAtMs = finiteMillis(this.now(), "reactive clock");
+        entry.dormantAtMs = this.now();
         this.dormantEntries++;
       }
     };
@@ -571,7 +571,7 @@ export class OrderedReactive<C = unknown> {
             ? { value: evaluated.value }
             : {}),
         bytes: changed ? resultBytes : 32,
-        createdAtMs: finiteMillis(this.now(), "reactive clock"),
+        createdAtMs: this.now(),
         active: true,
       });
       if (forceReset) entry.generation = this.generation();
@@ -800,7 +800,7 @@ export class OrderedReactive<C = unknown> {
       if (oldest !== undefined) binding.entry.ownerFairnessKey = oldest.fairnessKey;
       if (binding.entry.listeners.size === 0 && !binding.entry.removed) {
         if (binding.entry.dormantAtMs === undefined) {
-          binding.entry.dormantAtMs = finiteMillis(this.now(), "reactive clock");
+          binding.entry.dormantAtMs = this.now();
           this.dormantEntries++;
         }
       }

@@ -3,17 +3,25 @@ export interface RetryPolicy {
   readonly maxDelayMs: number;
 }
 
-/** Full-jitter retry delay, floored by an authoritative server hint. */
+/**
+ * Full-jitter retry delay, floored by an authoritative server hint.
+ *
+ * `backoffStep` is the power of two the base delay is doubled by, and nothing
+ * else: step 0 draws from one base delay, step 1 from two, step 2 from four, up
+ * to a clamp of 30 so the shift cannot run away. Every caller keeps its own
+ * counter already at that meaning, so no call site converts an attempt number
+ * here — which is what let two of them drift a step apart unnoticed.
+ */
 export function retryDelay(
   policy: RetryPolicy,
-  attempt: number,
+  backoffStep: number,
   floorMs: number,
   random: () => number,
   maximumFloorMs: number,
 ): number {
   const windowMs = Math.min(
     policy.maxDelayMs,
-    policy.baseDelayMs * 2 ** Math.min(attempt + 1, 30),
+    policy.baseDelayMs * 2 ** Math.min(backoffStep, 30),
   );
   const value = random();
   if (!Number.isFinite(value) || value < 0 || value >= 1) {

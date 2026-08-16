@@ -35,6 +35,7 @@ import {
 } from "./tables.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
 import { sha256Base64Url } from "../shared/digest.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 export interface FileRequestAuthentication {
   readonly principal: Principal;
@@ -149,7 +150,7 @@ function uploadError(
       resource: options.resource ?? "operation",
     },
     status,
-    { "cache-control": "no-store", ...options.headers },
+    { ...NO_STORE, ...options.headers },
   );
 }
 
@@ -273,7 +274,11 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
 
 /** Owns the streaming File routes; table mutation remains in Runtime's one writer. */
 export class FileHttpRuntime {
-  constructor(private readonly options: FileHttpRuntimeOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: FileHttpRuntimeOptions) {
+    this.now = finiteClock(options.now, "files clock");
+  }
 
   async handle(input: RuntimeFileRequest): Promise<Response> {
     const route = parseRoute(input.request);
@@ -303,14 +308,14 @@ export class FileHttpRuntime {
   ): Promise<Response> {
     const store = this.options.files.store;
     if (store === undefined) return uploadError(503, "unavailable", "file storage is not configured", { retryable: true });
-    const startedAt = this.options.now();
+    const startedAt = this.now();
     const attemptToken = randomUUID();
     let start: UploadStart | null;
     try {
       start = await this.acquireUpload(request.signal, id, secret, attemptToken, startedAt);
       let delayMs = 10;
       const waitUntil = startedAt + MAX_UPLOAD_RECOVERY_WAIT_MS;
-      while (start?.kind === "busy" && this.options.now() < waitUntil) {
+      while (start?.kind === "busy" && this.now() < waitUntil) {
         await waitForRetry(delayMs, request.signal);
         delayMs = Math.min(250, delayMs * 2);
         start = await this.acquireUpload(request.signal, id, secret, attemptToken, startedAt);
@@ -393,7 +398,7 @@ export class FileHttpRuntime {
         if (row?.state !== "uploading" || row.attemptToken !== start.token) {
           throw new Error("Upload Session attempt no longer owns completion");
         }
-        const completedAt = this.options.now();
+        const completedAt = this.now();
         const fileId = await files.insert({
           state: "pending",
           objectKey: start.objectKey,
@@ -412,14 +417,16 @@ export class FileHttpRuntime {
         });
         return fileId;
       });
-      this.options.files.scheduleCleanupAt(this.options.now() + PENDING_FILE_LIFETIME_MS);
+      this.options.files.scheduleCleanupAt(this.now() + PENDING_FILE_LIFETIME_MS);
       return this.uploaded(fileId, 201);
     } catch {
       let proof: { readonly kind: "committed"; readonly fileId: FileId } | { readonly kind: "owned" };
       try {
         proof = await this.uploadCommitProof(start, secret, this.options.lifecycleSignal());
       } catch {
-        return uploadError(503, "indeterminate", "file upload completion could not be proven");
+        return uploadError(503, "indeterminate", "file upload completion could not be proven", {
+          resource: "idempotency",
+        });
       }
       if (proof.kind === "committed") return this.uploaded(proof.fileId, 200);
       if (await this.cleanupObject(store, start.objectKey)) await this.releaseUpload(start);
@@ -539,7 +546,7 @@ export class FileHttpRuntime {
       return true;
     } catch (error) {
       try {
-        const now = this.options.now();
+        const now = this.now();
         await this.options.write(this.options.lifecycleSignal(), async (value) => {
           await (fileDatabase(value))[FILE_CLEANUP_TABLE].insert(pendingCleanupRow({
             objectKey,
@@ -569,7 +576,7 @@ export class FileHttpRuntime {
   ): Promise<Response> {
     const store = this.options.files.store;
     if (store === undefined) return notFound();
-    const startedAt = this.options.now();
+    const startedAt = this.now();
     let grant: DownloadGrant | null;
     grant = await this.options.read(input.request.signal, async (value) => {
       const db = fileDatabase(value);

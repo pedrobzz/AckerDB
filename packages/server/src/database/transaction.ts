@@ -13,9 +13,7 @@ export function runStatement<T>(work: () => T | Promise<T>): T | Promise<T> {
   };
   try {
     const result = work();
-    return result && typeof (result as PromiseLike<T>).then === "function"
-      ? Promise.resolve(result).catch(failed)
-      : result;
+    return isThenable(result) ? Promise.resolve(result).catch(failed) : result;
   } catch (error) {
     return failed(error);
   }
@@ -24,8 +22,6 @@ export function runStatement<T>(work: () => T | Promise<T>): T | Promise<T> {
 export interface TransactionOptions {
   /** `immediate` takes the write lock at BEGIN; `deferred` reads a snapshot. */
   readonly begin?: "immediate" | "deferred";
-  /** Replace the aggregate a failed ROLLBACK would otherwise throw. */
-  readonly onRollbackFailure?: (primary: unknown, rollbackError: unknown) => never;
 }
 
 const ROLLBACK_FAILED = "transaction failed and its rollback failed too";
@@ -46,12 +42,11 @@ function begin(connection: Database, options: TransactionOptions): void {
  * One rollback policy: the failure that required the rollback is the failure the
  * caller sees, and a rollback that fails too rides along instead of replacing it.
  */
-function rollback(connection: Database, primary: unknown, options: TransactionOptions): never {
+function rollback(connection: Database, primary: unknown): never {
   if (!connection.inTransaction) throw primary;
   try {
     connection.exec("ROLLBACK");
   } catch (rollbackError) {
-    options.onRollbackFailure?.(primary, rollbackError);
     throw new AggregateError([primary, rollbackError], ROLLBACK_FAILED);
   }
   throw primary;
@@ -76,7 +71,7 @@ export function transaction<T>(
     }
     connection.exec("COMMIT");
   } catch (error) {
-    rollback(connection, error, options);
+    rollback(connection, error);
   }
   return value;
 }
@@ -96,7 +91,7 @@ export async function transactionAsync<T>(
     value = await work();
     connection.exec("COMMIT");
   } catch (error) {
-    rollback(connection, error, options);
+    rollback(connection, error);
   }
   return value;
 }

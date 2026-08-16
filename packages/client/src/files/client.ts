@@ -181,11 +181,9 @@ async function waitForSession<Error extends ApplicationError>(
 ): Promise<ClientResult<FileUploadSession, Error> | typeof SESSION_ABORTED> {
   if (signal === undefined) return request;
   if (signal.aborted) return SESSION_ABORTED;
-  let resolveAborted!: () => void;
-  const aborted = new Promise<typeof SESSION_ABORTED>((resolve) => {
-    resolveAborted = () => resolve(SESSION_ABORTED);
-  });
-  const onAbort = (): void => resolveAborted();
+  const { promise: aborted, resolve: resolveAborted } =
+    Promise.withResolvers<typeof SESSION_ABORTED>();
+  const onAbort = (): void => resolveAborted(SESSION_ABORTED);
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     // The durable mutation is not canceled: if it commits after the caller
@@ -223,13 +221,13 @@ const UPLOAD_RETRY_POLICY: RetryPolicy = Object.freeze({
  * caller's deadline.
  */
 function uploadRetryDelay(
-  failures: number,
+  backoffStep: number,
   remainingMs: number,
   retryAfterMs: number,
   random: () => number,
 ): number {
   return Math.min(
-    retryDelay(UPLOAD_RETRY_POLICY, failures - 2, retryAfterMs, random, MAX_RETRY_AFTER_MS),
+    retryDelay(UPLOAD_RETRY_POLICY, backoffStep, retryAfterMs, random, MAX_RETRY_AFTER_MS),
     remainingMs,
   );
 }
@@ -415,7 +413,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
     let attempted = false;
     try {
       const headers = uploadHeaders(file, options);
-      let failures = 0;
+      let backoffStep = 0;
       for (;;) {
         if (this.port.scheduler.now() >= session.data.expiresAt) {
           return uploadFailure<Error>(this.port.clientError({
@@ -484,14 +482,11 @@ export class AckerDBFilesClient implements AckerDBFiles {
             ));
           }
         }
-        failures++;
         const remaining = session.data.expiresAt - this.port.scheduler.now();
         if (!(remaining > 0)) continue;
-        await waitForRetry(
-          this.port.scheduler,
-          uploadRetryDelay(failures, remaining, retryAfterMs, this.port.random),
-          control.signal,
-        );
+        const delayMs = uploadRetryDelay(backoffStep, remaining, retryAfterMs, this.port.random);
+        backoffStep++;
+        await waitForRetry(this.port.scheduler, delayMs, control.signal);
       }
     } catch {
       return uploadFailure<Error>(this.port.clientError({

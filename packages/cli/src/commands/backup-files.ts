@@ -21,7 +21,7 @@ import {
 } from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 import { createFileStore } from "../files/store.ts";
-import { fsyncPathSync, runWithCleanupAsync } from "../shared/durability.ts";
+import { fsyncPathSync, runWithCleanupAsync } from "../shared/fsync.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const FILE_SCAN_BATCH = 128;
