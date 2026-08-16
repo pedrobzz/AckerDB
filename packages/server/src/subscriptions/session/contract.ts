@@ -35,6 +35,8 @@ import type {
 import type { AuthInvalidationScope } from "../../auth/invalidation.ts";
 import type { TransportSource } from "../../runtime/caller.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
+import type { Clock } from "../../shared/clock.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
@@ -63,7 +65,7 @@ export function prepareRuntimePublication(message: SessionApplicationMessage): R
   const publication = Object.freeze({
     message,
     text,
-    bytes: Buffer.byteLength(text),
+    bytes: utf8ByteLength(text),
     [RUNTIME_PUBLICATION_BRAND]: true as const,
   });
   runtimePublications.add(publication);
@@ -97,12 +99,6 @@ export interface SessionSink {
   sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void>;
   dropApplicationFramesBefore(authEpoch: number): Promise<void>;
   close(outcome: Outcome): Promise<void>;
-}
-
-export interface SessionClock {
-  now(): number;
-  setTimeout(callback: () => void, delayMs: number): unknown;
-  clearTimeout(handle: unknown): void;
 }
 
 export interface SessionRuntimeContext {
@@ -204,7 +200,7 @@ export interface SessionOptions {
   readonly sink: SessionSink;
   /** Actual peer address captured by the transport; forwarded headers are not trusted. */
   readonly source: TransportSource;
-  readonly clock?: SessionClock;
+  readonly clock?: Clock;
   readonly revocationDeadlineMs?: number;
   /** Per-session request and transport-frame limits. */
   readonly limits?: SessionLimits;

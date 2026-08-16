@@ -2,8 +2,7 @@ import type { ColumnPlan } from "../engine.ts";
 import type { TableDef } from "../../schema/definition.ts";
 import { ValidationError } from "../../validation/error.ts";
 import { baseValidator } from "../../validation/validator.ts";
-
-const quote = (name: string): string => `"${name}"`;
+import { quoteIdentifier } from "../../shared/sql.ts";
 
 export type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
 
@@ -374,7 +373,7 @@ function compilePredicateSql(
         gt: ">",
         gte: ">=",
       }[node.op];
-      return `${quote(node.column)} ${operator} ?`;
+      return `${quoteIdentifier(node.column)} ${operator} ?`;
     }
     case "in": {
       if (node.values.length === 0) return "0";
@@ -389,13 +388,13 @@ function compilePredicateSql(
         placeholders += "?";
         params.push(value);
       }
-      return `${quote(node.column)} IN (${placeholders})`;
+      return `${quoteIdentifier(node.column)} IN (${placeholders})`;
     }
     case "between":
       params.push(node.lower, node.upper);
-      return `${quote(node.column)} BETWEEN ? AND ?`;
+      return `${quoteIdentifier(node.column)} BETWEEN ? AND ?`;
     case "null":
-      return `${quote(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`;
+      return `${quoteIdentifier(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`;
     case "not":
       return `NOT (${compilePredicateSql(node.expression, params, parameterLimit, path)})`;
     case "and":

@@ -45,10 +45,7 @@ const CLI_PATH = fileURLToPath(import.meta.url);
 
 async function runServerCommand(config: AppConfig, options: StartAppOptions = {}): Promise<void> {
   const startup = new AbortController();
-  let requestShutdown!: () => void;
-  const shutdownRequested = new Promise<void>((resolve) => {
-    requestShutdown = resolve;
-  });
+  const { promise: shutdownRequested, resolve: requestShutdown } = Promise.withResolvers<void>();
   const onSignal = () => {
     startup.abort();
     requestShutdown();

@@ -50,11 +50,6 @@ export function defineApp<
   ) {
     throw new TypeError("application definition must be a plain object");
   }
-  for (const option of Object.keys(definition)) {
-    if (option !== "schema" && option !== "scopes") {
-      throw new TypeError(`unknown application option "${option}"`);
-    }
-  }
   if (!Object.hasOwn(definition, "schema") || !isSchema(definition.schema)) {
     throw new TypeError("application schema must be created with defineSchema(...)");
   }

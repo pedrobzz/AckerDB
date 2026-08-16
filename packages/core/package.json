@@ -17,8 +17,5 @@
   ],
   "exports": {
     ".": "./src/index.ts"
-  },
-  "dependencies": {
-    "msgpackr": "2.0.5"
   }
 }

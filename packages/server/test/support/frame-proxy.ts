@@ -74,7 +74,7 @@ function readWebSocketFrame(buffer: Buffer): WebSocketFrame | undefined {
   };
 }
 
-export interface ProxiedClientFrame {
+interface ProxiedClientFrame {
   readonly sequence: number;
   readonly connectionId: number;
   readonly message: ClientMessage;
@@ -82,7 +82,7 @@ export interface ProxiedClientFrame {
   forwardedBytes?: Buffer;
 }
 
-export interface ProxiedServerFrame {
+interface ProxiedServerFrame {
   readonly sequence: number;
   readonly connectionId: number;
   readonly message: ServerMessage;
@@ -90,13 +90,13 @@ export interface ProxiedServerFrame {
   forwardedBytes?: Buffer;
 }
 
-export interface HeldServerFrame {
+interface HeldServerFrame {
   readonly frame: ProxiedServerFrame;
   forward(): void;
   drop(): void;
 }
 
-export interface HeldClientFrame {
+interface HeldClientFrame {
   readonly frame: ProxiedClientFrame;
   forward(): void;
   drop(): void;

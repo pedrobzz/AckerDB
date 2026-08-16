@@ -10,6 +10,7 @@ import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { isScopeGrant } from "./scopes.ts";
+import { utf8ByteLength } from "../shared/bytes.ts";
 import {
   hasCredentialTokenPrefix,
   CREDENTIAL_AUTHORITY,
@@ -448,13 +449,6 @@ function boundedStrings<T extends string>(
   return Object.freeze([...values]);
 }
 
-function authUnavailable(cause: unknown): AckerDBError {
-  return new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
-    retryable: true,
-    cause,
-  });
-}
-
 /**
  * The rejection a `credentialVerifier` must throw for an invalid credential.
  * Anything else is treated as verifier unavailability and retried as
@@ -462,6 +456,31 @@ function authUnavailable(cause: unknown): AckerDBError {
  */
 export function unauthenticated(cause?: unknown): AckerDBError {
   return new AckerDBError("unauthenticated", "invalid credential", { cause });
+}
+
+/** A credential the authority has revoked: the session may not continue on it. */
+export function credentialRevoked(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential revoked");
+}
+
+/** A credential past its own deadline: the caller must present a fresh one. */
+export function credentialExpired(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential expired");
+}
+
+/**
+ * Any step of authentication that could not answer — the verifier, the JWKS
+ * fetch, the identity or scope resolver. A framework failure travels unchanged,
+ * so a resolver may still reject a credential; any other cause becomes the
+ * retryable `auth_unavailable` the contract promises.
+ */
+export function authenticationUnavailable(cause: unknown): AckerDBError {
+  return isAckerDBError(cause)
+    ? cause
+    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
+        retryable: true,
+        cause,
+      });
 }
 
 async function boundedJwksResponse(
@@ -472,9 +491,9 @@ async function boundedJwksResponse(
   if (response.status !== 200) return response;
   const declared = response.headers.get("content-length");
   if (declared !== null && Number(declared) > maxBytes) {
-    throw authUnavailable(new Error("JWKS response exceeds its byte limit"));
+    throw authenticationUnavailable(new Error("JWKS response exceeds its byte limit"));
   }
-  if (response.body === null) throw authUnavailable(new Error("JWKS response has no body"));
+  if (response.body === null) throw authenticationUnavailable(new Error("JWKS response has no body"));
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -485,7 +504,7 @@ async function boundedJwksResponse(
     size += value.byteLength;
     if (size > maxBytes) {
       await reader.cancel();
-      throw authUnavailable(new Error("JWKS response exceeds its byte limit"));
+      throw authenticationUnavailable(new Error("JWKS response exceeds its byte limit"));
     }
     chunks.push(value);
   }
@@ -501,7 +520,7 @@ async function boundedJwksResponse(
   try {
     body = JSON.parse(new TextDecoder().decode(bytes));
   } catch (error) {
-    throw authUnavailable(error);
+    throw authenticationUnavailable(error);
   }
   if (
     typeof body !== "object" ||
@@ -510,7 +529,7 @@ async function boundedJwksResponse(
     !Array.isArray(body.keys) ||
     body.keys.length > maxKeys
   ) {
-    throw authUnavailable(new Error("JWKS response has an invalid or oversized key set"));
+    throw authenticationUnavailable(new Error("JWKS response has an invalid or oversized key set"));
   }
   return new Response(bytes, {
     status: response.status,
@@ -567,11 +586,10 @@ export async function verifyBearerCredential(
   try {
     candidate = await verifier.verify(credential.token);
   } catch (error) {
-    if (isAckerDBError(error)) throw error;
-    throw authUnavailable(error);
+    throw authenticationUnavailable(error);
   }
   if (!isVerifiedCredential(candidate)) {
-    throw authUnavailable(new Error("credential verifier returned invalid credential evidence"));
+    throw authenticationUnavailable(new Error("credential verifier returned invalid credential evidence"));
   }
   const { kind, issuer, subject, claims, expiresAt, tokenId } = candidate;
   const verified: VerifiedCredential = Object.freeze({
@@ -583,7 +601,6 @@ export async function verifyBearerCredential(
     tokenId,
   });
   const timestamp = now();
-  if (!Number.isFinite(timestamp)) throw new RangeError("credential clock must return finite milliseconds");
   if (verified.expiresAt <= timestamp) throw unauthenticated();
   return verified;
 }
@@ -648,11 +665,10 @@ export async function verifyClientCredential(
   try {
     identity = await resolveIdentity(account);
   } catch (error) {
-    if (isAckerDBError(error)) throw error;
-    throw authUnavailable(error);
+    throw authenticationUnavailable(error);
   }
   if (typeof identity !== "bigint" || identity <= 0n) {
-    throw authUnavailable(new Error("identity resolver returned an invalid Identity"));
+    throw authenticationUnavailable(new Error("identity resolver returned an invalid Identity"));
   }
   let scopes: readonly string[] = EMPTY_SCOPE_GRANT;
   let derivedFrom: readonly ExternalAccount[] = EMPTY_DERIVED_FROM;
@@ -661,12 +677,11 @@ export async function verifyClientCredential(
     try {
       resolved = await resolveScopes(identity, account);
     } catch (error) {
-      if (isAckerDBError(error)) throw error;
-      throw authUnavailable(error);
+      throw authenticationUnavailable(error);
     }
     const grant = resolvedGrant(resolved);
     if (!isScopeGrant(grant.scopes)) {
-      throw authUnavailable(new Error("scope resolver returned an invalid scope grant"));
+      throw authenticationUnavailable(new Error("scope resolver returned an invalid scope grant"));
     }
     scopes = Object.freeze([...grant.scopes]);
     // Only the framework's own resolution reports a lineage, and it reports the
@@ -676,9 +691,6 @@ export async function verifyClientCredential(
     derivedFrom = grant.derivedFrom;
   }
   const resolvedAt = now();
-  if (!Number.isFinite(resolvedAt)) {
-    throw new RangeError("credential clock must return finite milliseconds");
-  }
   if (verified.expiresAt <= resolvedAt) throw unauthenticated();
   return Object.freeze({
     kind: "user",
@@ -820,7 +832,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       [customFetch]: async (input: string | URL | Request, init?: RequestInit) => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (url !== jwksUri.href) throw authUnavailable(new Error("unconfigured JWKS destination"));
+        if (url !== jwksUri.href) throw authenticationUnavailable(new Error("unconfigured JWKS destination"));
         const response = await fetcher(url, { ...init, redirect: "manual" });
         return boundedJwksResponse(response, jwksMaxBytes, maxJwksKeys);
       },
@@ -850,7 +862,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
         typeof credential !== "string" ||
         credential.length === 0 ||
         credential.length > maxTokenBytes ||
-        new TextEncoder().encode(credential).byteLength > maxTokenBytes
+        utf8ByteLength(credential) > maxTokenBytes
       ) {
         throw unauthenticated();
       }
@@ -886,7 +898,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
       } catch (error) {
         if (isAckerDBError(error)) throw error;
         if (invalidJoseCredential(error)) throw unauthenticated(error);
-        throw authUnavailable(error);
+        throw authenticationUnavailable(error);
       }
     },
   });

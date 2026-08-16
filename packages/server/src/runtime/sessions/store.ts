@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
 import {
   EVENTS_ADDRESS_PREFIX,
   ACKERDB_VERSION,
   decode,
   encode,
-  stableEncode,
   type ChannelEventMessage,
   type ChannelReadyMessage,
   type ChannelRejectedMessage,
@@ -41,6 +39,8 @@ import {
 } from "../../subscriptions/session/contract.ts";
 import type { ServiceLimits } from "../limits.ts";
 import { outcomeFromError } from "../outcome.ts";
+import { digestOfWire } from "../../shared/digest.ts";
+import { wireByteLength } from "../../shared/bytes.ts";
 import {
   RuntimeOperationRunner,
   transportError,
@@ -58,16 +58,6 @@ export interface AuthTransitionCapture {
   active: boolean;
 }
 
-interface SessionCloseDrain {
-  readonly promise: Promise<void>;
-  resolve(): void;
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
 export interface RuntimeReactiveContext {
   readonly principal: Principal;
 }
@@ -83,7 +73,7 @@ export interface RuntimeSession {
   pendingSubscriptionControls: number;
   capture: AuthTransitionCapture | null;
   phase: "open" | "closing" | "removed";
-  closeDrain: SessionCloseDrain | null;
+  closeDrain: PromiseWithResolvers<void> | null;
   activeOperations: number;
 }
 
@@ -220,7 +210,7 @@ export class RuntimeSessionStore {
     options: RuntimeSessionOperationOptions<T> = {},
   ): Promise<T> {
     const { message } = request;
-    const requestBytes = claimRuntimeRequestBytes(request) ?? byteLength(message);
+    const requestBytes = claimRuntimeRequestBytes(request) ?? wireByteLength(message);
     const state = this.matching(context);
     const execute = () => {
       if (state === null) {
@@ -330,7 +320,7 @@ export class RuntimeSessionStore {
               definition.args,
               definition.hasRoom,
               definition.room,
-              byteLength(definition),
+              wireByteLength(definition),
             );
             this.captureFrame(captured, publication);
           } catch (error) {
@@ -496,11 +486,11 @@ export class RuntimeSessionStore {
     let predecessor: Promise<void> | undefined;
     let control: {
       readonly id: number;
-      readonly completion: Deferred<void>;
+      readonly completion: PromiseWithResolvers<void>;
     } | undefined;
     if (order?.kind === "subscription-control") {
       predecessor = state.subscriptionControlTails.get(order.id);
-      const completion = deferred<void>();
+      const completion = Promise.withResolvers<void>();
       control = { id: order.id, completion };
       state.pendingSubscriptionControls++;
       state.subscriptionControlTails.set(order.id, completion.promise);
@@ -526,7 +516,7 @@ export class RuntimeSessionStore {
           if (state.subscriptionControlTails.get(control.id) === control.completion.promise) {
             state.subscriptionControlTails.delete(control.id);
           }
-          control.completion.resolve(undefined);
+          control.completion.resolve();
           if (state.pendingSubscriptionControls === 0) {
             state.subscriptionControlFrontier = Promise.resolve();
           }
@@ -551,7 +541,7 @@ export class RuntimeSessionStore {
       return state.closeDrain?.promise ?? Promise.resolve();
     }
     state.phase = "closing";
-    const drain = sessionCloseDrain();
+    const drain = Promise.withResolvers<void>();
     state.closeDrain = drain;
     void this.options.channels.disconnect(state.channelAdapter, "disconnect").catch(() => {});
     this.tryRemove(state);
@@ -855,7 +845,7 @@ export class RuntimeSessionStore {
       id,
       address,
       args,
-      policyScopeFingerprint: digest(policyScope(state.context.principal)),
+      policyScopeFingerprint: digestOfWire(policyScope(state.context.principal)),
       fairnessKey: state.context.fairnessKey,
       context: { principal: state.context.principal },
       authEpoch: state.context.authEpoch,
@@ -945,22 +935,6 @@ export class RuntimeSessionStore {
   }
 }
 
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
-
-function sessionCloseDrain(): SessionCloseDrain {
-  let resolve!: () => void;
-  const promise = new Promise<void>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
-
 function subscriptionOverload(message: string): AckerDBError {
   return new AckerDBError("overloaded", message, {
     retryable: true,
@@ -969,14 +943,6 @@ function subscriptionOverload(message: string): AckerDBError {
   });
 }
 
-function byteLength(value: unknown): number {
-  return Buffer.byteLength(encode(value));
-}
-
 function snapshotValue(value: unknown): unknown {
   return decode(encode(value));
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }

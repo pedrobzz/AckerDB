@@ -222,8 +222,7 @@ export const purge = mutation({
   function's config, "in OpenAPI but not callable" is unrepresentable at the
   type level; registration validates the same shape for untyped callers.
 - `description` (optional, all four kinds) feeds the OpenAPI operation
-  description now and MCP tool derivation later. `title` likewise (OpenAPI
-  summary).
+  description. `title` likewise (OpenAPI summary).
 - The flags govern only this surface. WebSocket reachability is unchanged
   and unconditional; hiding a function from HTTP does not hide it from
   Protocol-2, and access control remains auth + function policy on both
@@ -300,9 +299,8 @@ mirroring `ApplicationErrorMessage.receipt`.
 
 Unchanged from the existing HTTP routes: `Authorization: Bearer` resolved
 through the credential verifier into an auth lease; anonymous principals
-where the function's policy allows; MCP credentials remain forbidden on
-application functions. Admission, fairness keys, and body limits reuse the
-existing HTTP ingress machinery.
+where the function's policy allows. Admission, fairness keys, and body limits
+reuse the existing HTTP ingress machinery.
 
 ## OpenAPI
 
@@ -356,17 +354,12 @@ operation per exposed function with `openapi` not disabled.
 
 ### Shared schema module
 
-MCP's input codec and the OpenAPI generator must emit JSON Schema from the
-same code. The contract→JSON Schema emission that lived inside the MCP codec
-path is extracted into `validation/json-schema.ts`, which owns every schema
-AckerDB publishes: `argsJsonSchema(args)` for an `ObjectShape` and
-`validatorJsonSchema(validator, options)` for a `returns`, `yields`, or tool
-output. The standard-JSON codec keeps only decode/encode. This is the only MCP
-change in this feature. Tool-from-function derivation — registering an app
-function directly as an MCP tool — has since shipped; see
-[MCP exposure](mcp-exposure.md) for the endpoint and
-[Scopes](scopes.md) for how a tool's scopes sit alongside the function's own
-access policy.
+`validation/json-schema.ts` owns every schema AckerDB publishes:
+`argsJsonSchema(args)` for an `ObjectShape` and
+`validatorJsonSchema(validator, options)` for a `returns` or `yields`. The
+OpenAPI generator is its only consumer, and the standard-JSON codec keeps only
+decode/encode. See [Scopes](scopes.md) for how a function's scopes sit
+alongside its access policy.
 
 ## Registration-time validation
 
@@ -383,11 +376,6 @@ access policy.
   name, so this is one check rather than a rule per shape.
 - An HTTP-exposed function whose contract cannot cross the standard-JSON
   boundary is a registration error (see *Wire format*).
-- MCP endpoint paths must not collide with built-in routes, carry a `_`-marked
-  name in either of their first two segments, or collide with any exposed
-  function path; exposed function paths must not collide with a declared MCP
-  path. One predicate owns the marker rule for every claiming site, so it
-  cannot hold for functions while lapsing for the paths MCP picks by hand.
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
 - A field no declaration consumes is a registration error naming it, exactly as
@@ -424,12 +412,10 @@ change, tracked as a follow-up rather than smuggled into the transport.
 
 Everything lands in `@ackerdb/server` (plus the CLI command in
 `@ackerdb/cli`). No new publish unit, no new seam: the route surface shares
-the listener, auth, and admission that `/api/call` used, and MCP — a whole
-protocol adapter — already lives in-core.
+the listener, auth, and admission that `/api/call` used.
 
 ## Out of scope
 
-- Tool-from-function MCP derivation (own feature; auth-bridge design).
 - Client procedures over HTTP.
 - Channels and subscriptions over HTTP (WS-owned).
 - GET/`EventSource` SSE variant.
@@ -454,8 +440,7 @@ schema module extraction, the OpenAPI walk, the CLI export, the `_` route
 renames, and deleting the envelope routes plus their core types and tests.
 
 The wire format reuses `compileStandardJsonCodec`
-(`validation/standard-schema.ts`), the codec MCP already runs in production —
-there is no second codec. `transport/http-codec.ts` compiles one per exposed
+(`validation/standard-schema.ts`) — there is no second codec. `transport/http-codec.ts` compiles one per exposed
 function and the registry hangs it on `ExposedFunction`; the listener decodes
 args through it and the Runtime encodes the return value, every sse chunk, and
 a declared error body through it. The structural mapping for values no

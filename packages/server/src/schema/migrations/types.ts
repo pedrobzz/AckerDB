@@ -13,7 +13,7 @@
  * and file bytes) — while `migrationFingerprint` is the narrower target-only
  * digest the meta sidecar recomputes at load time.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../shared/digest.ts";
 import type { SchemaSnapshot } from "../snapshot.ts";
 
 export type MigrationRow = Record<string, unknown>;
@@ -126,7 +126,7 @@ function checkRenamesShape(renames: Renames | undefined): void {
  * target snapshot before the database opens — a narrower job than identity.
  */
 export function migrationFingerprint(target: SchemaSnapshot): string {
-  return createHash("sha256").update(JSON.stringify(target)).digest("hex");
+  return sha256Hex(JSON.stringify(target));
 }
 
 /**
@@ -147,7 +147,7 @@ export function migrationIdentity(step: MigrationStep): string {
     part(JSON.stringify(step.pre)) +
     part(JSON.stringify(step.target)) +
     part(step.code);
-  return createHash("sha256").update(canonical).digest("hex");
+  return sha256Hex(canonical);
 }
 
 /** The zero-padded label a step is logged and named under, e.g. `0003_split_users`. */

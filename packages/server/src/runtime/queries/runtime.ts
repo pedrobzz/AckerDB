@@ -14,6 +14,7 @@ import type {
 import type { RuntimeReactiveContext } from "../sessions/store.ts";
 import type { RuntimeFunctionExecutor } from "../execution/functions.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
+import { wireByteLength } from "../../shared/bytes.ts";
 
 interface QueryExecution {
   readonly value: unknown;
@@ -58,7 +59,7 @@ export class RuntimeQueries {
       return this.options.reads.execute(
         input.fairnessKey,
         this.options.shutdownSignal(),
-        byteLength(input.args),
+        wireByteLength(input.args),
         reads,
         async (execution, commitVersion) => {
           const value = await this.options.functions.invokeQuery(
@@ -106,8 +107,4 @@ function applicationError(value: unknown) {
     throw new AckerDBError("internal", "registered Err contains no application error");
   }
   return value;
-}
-
-function byteLength(value: unknown): number {
-  return Buffer.byteLength(encode(value));
 }

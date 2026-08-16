@@ -1,4 +1,4 @@
-import { constants, createReadStream, promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Engine } from "@ackerdb/server";
@@ -10,6 +10,8 @@ import {
   SHA256,
   type LiveFile,
 } from "./metadata.ts";
+import { fsyncPath, runWithCleanupAsync } from "../shared/fsync.ts";
+import { exactFields } from "../shared/json.ts";
 
 const MAX_JOURNAL_LINE_BYTES = 16 * 1_024;
 
@@ -88,15 +90,6 @@ function recordProgress(
   }
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await fs.open(path, constants.O_RDONLY);
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
 async function createJournal(context: MigrationJournalContext): Promise<FileHandle> {
   const directory = dirname(context.journalPath);
   await fs.mkdir(directory, { recursive: true });
@@ -113,7 +106,7 @@ async function createJournal(context: MigrationJournalContext): Promise<FileHand
       target: context.target,
     })}\n`, "utf8");
     await handle.sync();
-    await syncDirectory(directory);
+    await fsyncPath(directory);
     return handle;
   } catch (error) {
     await handle.close().catch(() => undefined);
@@ -129,16 +122,9 @@ function journalRecord(value: unknown, line: number): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactFields(
-  record: Record<string, unknown>,
-  fields: readonly string[],
-  line: number,
-): void {
-  const actual = Object.keys(record).sort();
-  const expected = [...fields].sort();
-  if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
-    throw new Error(`FileStore migration journal line ${line} has an unsupported shape`);
-  }
+/** One journal line's own subject, so every refusal names the same place. */
+function journalLine(line: number): string {
+  return `FileStore migration journal line ${line}`;
 }
 
 function canonicalId(value: unknown, line: number): bigint {
@@ -162,7 +148,7 @@ function parseHeader(
     "manifestFingerprint",
     "source",
     "target",
-  ], line);
+  ], journalLine(line));
   if (record.type !== "header" || record.format !== 1) {
     throw new Error(`FileStore migration journal line ${line} is not a format 1 header`);
   }
@@ -194,7 +180,7 @@ function parseObject(
     "sha256",
     "outcome",
     "verifiedAt",
-  ], line);
+  ], journalLine(line));
   const parsedId = canonicalId(record.id, line);
   if (parsedId <= afterId) {
     throw new Error(`FileStore migration journal line ${line} does not advance by File id`);
@@ -272,7 +258,7 @@ async function parseJournal(
       return;
     }
     if (record.type === "complete") {
-      exactFields(record, ["type", "objects", "bytes", "finishedAt"], lineNumber);
+      exactFields(record, ["type", "objects", "bytes", "finishedAt"], journalLine(lineNumber));
       const objects = safeNumber(record.objects, `FileStore migration journal line ${lineNumber} objects`);
       const bytes = safeNumber(record.bytes, `FileStore migration journal line ${lineNumber} bytes`);
       safeNumber(record.finishedAt, `FileStore migration journal line ${lineNumber} finish time`);
@@ -354,12 +340,14 @@ export async function prepareMigrationJournal(
   const parsed = await parseJournal(engine, context);
   if (parsed.durableBytes !== parsed.fileBytes) {
     const repair = await fs.open(context.journalPath, "r+");
-    try {
-      await repair.truncate(parsed.durableBytes);
-      await repair.sync();
-    } finally {
-      await repair.close();
-    }
+    await runWithCleanupAsync(
+      async () => {
+        await repair.truncate(parsed.durableBytes);
+        await repair.sync();
+      },
+      () => repair.close(),
+      `journal repair and descriptor close both failed: ${context.journalPath}`,
+    );
   }
   return parsed.complete
     ? parsed

@@ -2,7 +2,7 @@
 
 AckerDB has one validator DSL: `v` from `@ackerdb/server`. The same validator value
 drives TypeScript inference, runtime checks, stored schema snapshots, and the
-Standard JSON Schema exposed by MCP tools.
+Standard JSON Schema published for the exposed HTTP surface.
 
 ## Numeric types
 
@@ -60,8 +60,8 @@ export const products = defineTable({
   must be finite numbers; bigint bounds must be signed 64-bit `bigint` values.
 - `regex` accepts one flagless `RegExp` on strings. Its source is stored in the
   schema descriptor and compiled once for validation.
-- `describe` attaches documentation without changing schema identity. MCP input
-  and output schemas use these descriptions.
+- `describe` attaches documentation without changing schema identity. Published
+  input and output schemas carry these descriptions.
 
 Validators do not accept arbitrary refinement callbacks. Constraints are
 declarative and serializable so runtime checks, generated schemas, stored
@@ -108,6 +108,28 @@ export const updateProfile = mutation({
 Apply `min`, `max`, or `regex` before `nullable`, `optional`, or `nullish`.
 Presence modifiers are terminal; use `nullish()` directly instead of combining
 `nullable()` and `optional()`.
+
+## Presence in published JSON Schema contracts
+
+AckerDB keeps omission and null explicit in the JSON Schema it publishes. Use
+`v.boolean().optional()` when a property may be omitted,
+`v.boolean().nullable()` when it is required but may be `null`, and
+`v.boolean().nullish()` when both forms are accepted. Optional properties are
+omitted from JSON Schema's `required` list. Nullable properties emit type
+arrays (`{"type": ["boolean", "null"]}`) rather than `anyOf` unions, because a
+consumer that ignores `anyOf` member types degrades every scalar to a string.
+With these schemas, no caller-side coercion or repair is needed; arguments
+validate as declared.
+
+The same principle governs int64 ids. `v.bigint()` / `v.identity()` args follow
+proto3's JSON mapping since 0.3.2: they *serialize* as canonical decimal
+strings (wire-safe past 2^53), but *accept* either a JSON integer or the
+decimal string. A caller's natural spelling for an id is the number `9`;
+forcing it through a string type is what produced double-encoded values like
+`"\"9\""`. Numbers are accepted only within safe-integer range — any JSON
+integer literal beyond 2^53−1 parses to a float that fails
+`Number.isSafeInteger`, so silent precision loss cannot pass validation, and
+large ids still travel as strings.
 
 ## Stored constraints and migrations
 

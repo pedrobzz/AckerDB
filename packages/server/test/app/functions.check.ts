@@ -286,3 +286,56 @@ typedSse({
   // @ts-expect-error SSE handlers must return a chunk source, not a bare value
   handler: () => 1,
 });
+
+// A declaration carries exactly its own fields. The builder parameter is an
+// intersection with an inferred generic, which would otherwise switch off the
+// excess-property check — so a misspelled field must still fail the build.
+typedQuery({
+  args: {},
+  access: "public",
+  handler: () => null,
+  // @ts-expect-error unknown declaration fields are refused by the type
+  retries: 3,
+});
+
+typedMutation({
+  args: {},
+  access: "public",
+  handler: () => null,
+  // @ts-expect-error unknown declaration fields are refused by the type
+  descripton: "typo",
+});
+
+typedProcedure({
+  args: {},
+  access: "public",
+  handler: () => null,
+  // @ts-expect-error unknown declaration fields are refused by the type
+  scope: "orders.read",
+});
+
+query({
+  args: {},
+  access: "public",
+  handler: () => null,
+  // @ts-expect-error unknown declaration fields are refused by the type
+  retries: 3,
+});
+
+typedSse({
+  args: {},
+  yields: v.float(),
+  access: "public",
+  handler: () => new ReadableStream<number>(),
+  // @ts-expect-error unknown declaration fields are refused by the type
+  retries: 3,
+});
+
+sseProcedure({
+  args: {},
+  yields: v.float(),
+  access: "public",
+  handler: () => new ReadableStream<number>(),
+  // @ts-expect-error unknown declaration fields are refused by the type
+  retries: 3,
+});

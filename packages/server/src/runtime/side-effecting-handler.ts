@@ -4,13 +4,12 @@ import {
   throwIfAborted,
 } from "../shared/errors.ts";
 
-export type SideEffectingHandlerKind =
+type SideEffectingHandlerKind =
   | "procedure"
   | "http handler"
-  | "MCP tool"
   | "system callback";
 
-export function canceledHandlerOutcome(
+function canceledHandlerOutcome(
   signal: AbortSignal,
   kind: SideEffectingHandlerKind,
   cause: unknown,

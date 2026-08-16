@@ -19,6 +19,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { Engine } from "../../database/engine.ts";
+import { transaction } from "../../database/transaction.ts";
 import { canonicalSnapshotJson, snapshotOf } from "../snapshot.ts";
 import { planAndReconcile } from "../planner.ts";
 import { applyStep } from "./apply.ts";
@@ -93,14 +94,9 @@ export function recordChain(engine: Engine, steps: MigrationStep[]): void {
     "INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
   );
   const now = Date.now();
-  writer.exec("BEGIN IMMEDIATE");
-  try {
+  transaction(writer, () => {
     for (const step of steps) insert.run(step.number, step.name, migrationIdentity(step), now);
-    writer.exec("COMMIT");
-  } catch (error) {
-    writer.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 /**

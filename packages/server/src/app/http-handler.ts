@@ -8,7 +8,6 @@
  */
 import type { Schema } from "../schema/definition.ts";
 import {
-  refuseUnknownFields,
   type FunctionResult,
   type TxCtx,
 } from "./functions.ts";
@@ -44,11 +43,6 @@ export type HttpHandlerCtx<S extends Schema = Schema> = {
     fn: (tx: TxCtx<S>) => R,
   ): Promise<FunctionResult<R>>;
 };
-
-export interface OwnedHttpHandlerContext {
-  readonly value: HttpHandlerCtx;
-  release(): void;
-}
 
 export interface RegisteredHttpHandler<S extends Schema = Schema> {
   readonly isAckerDB: true;
@@ -112,6 +106,22 @@ const DEFINITION_KEYS = Object.freeze(Object.keys(DEFINITION_FIELDS));
 const REGISTERED_KEYS = Object.freeze(
   [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"],
 );
+
+/**
+ * Untyped module exports reach this interpreter without a compiler in front of
+ * them, so every own key — enumerable or not, string or symbol — is checked
+ * against the fields the surface consumes; anything else is a registration
+ * error, never a silently ignored expectation.
+ */
+function refuseUnknownFields(def: object, allowed: readonly string[], where: string): void {
+  for (const key of Reflect.ownKeys(def)) {
+    if (typeof key === "symbol" || !allowed.includes(key)) {
+      throw new TypeError(
+        `${where} must not declare "${String(key)}" — it carries exactly ${allowed.join(", ")}`,
+      );
+    }
+  }
+}
 
 /** A raw handler's surface, read once from the declaration it was written on. */
 interface HttpHandlerSurface {

@@ -119,6 +119,12 @@ export type ProcedureCtx<
   ): Promise<FunctionResult<R>>;
 };
 
+/**
+ * One channel invocation's context together with the auth-invalidation
+ * publisher opened for it. A channel handler runs outside any single request,
+ * so the publisher it may revoke through is finished by the owner rather than
+ * by a response handoff.
+ */
 export interface OwnedProcedureContext {
   readonly value: ProcedureCtx;
   release(): void;
@@ -177,7 +183,7 @@ export interface ErrorDeclaration {
   readonly status: ErrorHttpStatus;
 }
 
-export type ErrorDeclarations = Readonly<Record<string, ErrorDeclaration>>;
+type ErrorDeclarations = Readonly<Record<string, ErrorDeclaration>>;
 
 type DeclaredErrors<Declarations extends ErrorDeclarations> = {
   readonly [Code in Extract<keyof Declarations, string>]: ApplicationError<
@@ -537,63 +543,15 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
 }
 
 /**
- * The declaration's own fields, listed once for the refusal below. `satisfies`
- * makes the type the source of truth in both directions: adding a field to the
- * definition without listing it here, or listing one the definition dropped,
- * fails this build rather than a caller's declaration.
+ * A declaration parameter is an intersection with an inferred generic, which
+ * turns off TypeScript's excess-property check. Restating the allowed keys as
+ * a type restores it: every key outside the definition maps to `never`, so a
+ * misspelled field fails the caller's build instead of being dropped in
+ * silence. The definition type is the only list.
  */
-const FUNCTION_FIELDS = {
-  http: true,
-  description: true,
-  title: true,
-  args: true,
-  returns: true,
-  errors: true,
-  access: true,
-  scopes: true,
-  handler: true,
-} satisfies Record<keyof FunctionDef<ObjectShape, InvocationContext>, true>;
-
-const SSE_FIELDS = {
-  http: true,
-  description: true,
-  title: true,
-  args: true,
-  yields: true,
-  access: true,
-  scopes: true,
-  handler: true,
-} satisfies Record<
-  keyof SseDef<ObjectShape, Validator<unknown, string>, InvocationContext>,
-  true
->;
-
-const FUNCTION_KEYS = Object.freeze(Object.keys(FUNCTION_FIELDS));
-const SSE_KEYS = Object.freeze(Object.keys(SSE_FIELDS));
-
-/**
- * Every field a declaration may carry, refused by name otherwise. An
- * intersection parameter turns off TypeScript's excess-property check, so a
- * misspelled key would otherwise be dropped in silence and read as an
- * expectation nothing meets.
- *
- * Every own key, enumerable or not, string or symbol: a field hidden behind
- * `enumerable: false` is still a field the author expected something to
- * consume, and nothing here consumes any of them.
- */
-export function refuseUnknownFields(
-  def: object,
-  allowed: readonly string[],
-  where: string,
-): void {
-  for (const key of Reflect.ownKeys(def)) {
-    if (typeof key === "symbol" || !allowed.includes(key)) {
-      throw new TypeError(
-        `${where} must not declare "${String(key)}" — it carries exactly ${allowed.join(", ")}`,
-      );
-    }
-  }
-}
+type ExactKeys<Definition, Allowed> = {
+  readonly [K in Exclude<keyof Definition, keyof Allowed>]: never;
+};
 
 function register<K extends string>(kind: K) {
   return <
@@ -603,7 +561,8 @@ function register<K extends string>(kind: K) {
   >(
     def: { readonly args: A } &
       Definition &
-      DefinitionConstraint<NoInfer<Definition>>,
+      DefinitionConstraint<NoInfer<Definition>> &
+      ExactKeys<NoInfer<Definition>, FunctionDef<A, Ctx>>,
   ): Registered<
     K,
     A,
@@ -611,7 +570,6 @@ function register<K extends string>(kind: K) {
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
   > => {
-    refuseUnknownFields(def, FUNCTION_KEYS, kind);
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
@@ -663,7 +621,8 @@ function registerCallable<K extends string>(kind: K) {
   >(
     def: { readonly args: A } &
       Definition &
-      DefinitionConstraint<NoInfer<Definition>>,
+      DefinitionConstraint<NoInfer<Definition>> &
+      ExactKeys<NoInfer<Definition>, FunctionDef<A, Ctx>>,
   ) => Registered<
     K,
     A,
@@ -706,11 +665,9 @@ export function sseProcedure<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
-  const Definition extends SseDef<A, Y, Ctx>,
 >(
-  def: SseDef<A, Y, Ctx> & Definition,
+  def: SseDef<A, Y, Ctx>,
 ): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> {
-  refuseUnknownFields(def, SSE_KEYS, "sse");
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
@@ -753,7 +710,8 @@ export type QueryBuilder<
 >(
   def: { readonly args: A } &
     Definition &
-    DefinitionConstraint<NoInfer<Definition>>,
+    DefinitionConstraint<NoInfer<Definition>> &
+      ExactKeys<NoInfer<Definition>, FunctionDef<A, QueryCtx<S, Jobs>, Scope>>,
 ) => RegisteredQuery<
   A,
   ResultOfDefinition<Definition>,
@@ -775,7 +733,8 @@ export type MutationBuilder<
 >(
   def: { readonly args: A } &
     Definition &
-    DefinitionConstraint<NoInfer<Definition>>,
+    DefinitionConstraint<NoInfer<Definition>> &
+      ExactKeys<NoInfer<Definition>, FunctionDef<A, MutationCtx<S, Jobs>, Scope>>,
 ) => RegisteredMutation<
   A,
   ResultOfDefinition<Definition>,
@@ -802,7 +761,12 @@ export type ProcedureBuilder<
 >(
   def: { readonly args: A } &
     Definition &
-    DefinitionConstraint<NoInfer<Definition>>,
+    DefinitionConstraint<NoInfer<Definition>> &
+      ExactKeys<NoInfer<Definition>, FunctionDef<
+    A,
+    ProcedureCtx<S, Jobs, TxJobs>,
+    Scope
+  >>,
 ) => RegisteredProcedure<
   A,
   ResultOfDefinition<Definition>,
@@ -822,19 +786,13 @@ export type SseBuilder<
 > = <
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
-  const Definition extends SseDef<
-    A,
-    Y,
-    SseCtx<S, Jobs, TxJobs>,
-    Scope
-  >,
 >(
   def: SseDef<
     A,
     Y,
     SseCtx<S, Jobs, TxJobs>,
     Scope
-  > & Definition,
+  >,
 ) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;
 
 // Runtime registries deliberately erase each function's concrete context.

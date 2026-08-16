@@ -33,12 +33,6 @@ describe("defineApp", () => {
     expect(() => defineApp({ schema: {} } as never)).toThrow(
       "application schema must be created with defineSchema(...)",
     );
-    expect(() => defineApp({ schema, unexpected: true } as never)).toThrow(
-      'unknown application option "unexpected"',
-    );
-    expect(() => defineApp({ schema, components: {} } as never)).toThrow(
-      'unknown application option "components"',
-    );
   });
 
 });

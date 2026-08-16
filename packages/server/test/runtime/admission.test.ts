@@ -203,7 +203,13 @@ describe("AdmissionQueue", () => {
     });
     const queued = settled(queue.enqueue("queued", { bytes: 1 }));
     queue.close();
-    expect(await queued).toMatchObject({ reason: "closed", code: "draining" });
+    // A drain-time refusal always tells the caller when to come back.
+    expect(await queued).toMatchObject({
+      reason: "closed",
+      code: "draining",
+      retryable: true,
+      retryAfterMs: 1_000,
+    });
     expect(await settled(queue.enqueue("late", { bytes: 1 }))).toMatchObject({
       reason: "closed",
     });

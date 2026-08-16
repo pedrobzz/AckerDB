@@ -1,15 +1,15 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   decode,
   isResult,
   type FileId,
   type Identity,
-  type Outcome,
   type OutcomeCode,
+  type ResourceClass,
 } from "@ackerdb/core";
 import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
+import { methodNotAllowed, outcomeResponse } from "../transport/response.ts";
 import type { Principal } from "../auth/credentials.ts";
-import { outcomeFromError } from "../runtime/outcome.ts";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import {
   fileDatabase,
@@ -34,6 +34,8 @@ import {
   FILES_TABLE,
 } from "./tables.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
+import { sha256Base64Url } from "../shared/digest.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 export interface FileRequestAuthentication {
   readonly principal: Principal;
@@ -84,12 +86,12 @@ interface DownloadGrant {
   readonly file: FileRow;
 }
 
-const utf8 = new TextEncoder();
 /** Derived from the canonical surface, so the route cannot drift from it. */
 const FILE_ROUTE = new RegExp(
   `^${ACKERDB_HTTP_ROUTES.files}/(uploads|grants)/([1-9]\\d*)\\.([A-Za-z0-9_-]{20,})$`,
 );
 const MAX_UPLOAD_RECOVERY_WAIT_MS = 30_000;
+const NO_STORE = Object.freeze({ "cache-control": "no-store" });
 
 function notFound(): Response {
   return new Response(null, { status: 404, headers: { "cache-control": "no-store" } });
@@ -101,6 +103,14 @@ function concealedAuthenticationFailure(error: unknown): boolean {
     error.code === "auth_stale" ||
     error.code === "unauthorized"
   );
+}
+
+/** The object a File names is not readable right now; the File itself is intact. */
+function fileStorageUnavailable(): AckerDBError {
+  return new AckerDBError("unavailable", "file storage is unavailable", {
+    resource: "operation",
+    retryable: true,
+  });
 }
 
 function fileStoreDownloadFailure(error: unknown): never {
@@ -116,50 +126,37 @@ function fileStoreDownloadFailure(error: unknown): never {
   );
 }
 
-function methodNotAllowed(allow: string): Response {
-  return new Response(null, {
-    status: 405,
-    headers: { allow, "cache-control": "no-store" },
-  });
-}
-
+/**
+ * The File routes answer the exposed surface's bare `Outcome`, at the status the
+ * upload protocol names. The status is explicit because no outcome code
+ * distinguishes 411 from 413 from 422, and the resource names what actually ran
+ * out — only a still-completing Upload Session is an idempotency conflict.
+ */
 function uploadError(
   status: number,
+  code: OutcomeCode,
   message: string,
-  headers?: Record<string, string>,
-  codeOverride?: OutcomeCode,
-  retryableOverride?: boolean,
+  options: {
+    readonly retryable?: boolean;
+    readonly resource?: ResourceClass;
+    readonly headers?: Record<string, string>;
+  } = {},
 ): Response {
-  const code: OutcomeCode = codeOverride ?? (status === 400 || status === 411
-    ? "malformed"
-    : status === 404
-    ? "not_found"
-    : status === 413 || status === 415 || status === 422
-    ? "validation"
-    : status === 499
-    ? "indeterminate"
-    : status === 503
-    ? "unavailable"
-    : "internal");
-  const outcome: Outcome = {
-    code,
-    message,
-    retryable: retryableOverride ?? status === 503,
-    resource: "idempotency",
-  };
-  return Response.json(outcome, {
+  return outcomeResponse(
+    {
+      code,
+      message,
+      retryable: options.retryable ?? false,
+      resource: options.resource ?? "operation",
+    },
     status,
-    headers: { "cache-control": "no-store", ...headers },
-  });
-}
-
-function hashSecret(value: string): string {
-  return createHash("sha256").update(value).digest("base64url");
+    { ...NO_STORE, ...options.headers },
+  );
 }
 
 function sameSecret(expected: unknown, plain: string): boolean {
   if (typeof expected !== "string") return false;
-  const actual = hashSecret(plain);
+  const actual = sha256Base64Url(plain);
   const left = Buffer.from(expected);
   const right = Buffer.from(actual);
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
@@ -277,17 +274,21 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
 
 /** Owns the streaming File routes; table mutation remains in Runtime's one writer. */
 export class FileHttpRuntime {
-  constructor(private readonly options: FileHttpRuntimeOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: FileHttpRuntimeOptions) {
+    this.now = finiteClock(options.now, "files clock");
+  }
 
   async handle(input: RuntimeFileRequest): Promise<Response> {
     const route = parseRoute(input.request);
     if (route === null) return notFound();
     if (route.kind === "uploads") {
-      if (input.request.method !== "PUT") return methodNotAllowed("PUT");
+      if (input.request.method !== "PUT") return methodNotAllowed("PUT", NO_STORE);
       return this.upload(input.request, route.id, route.secret);
     }
     if (input.request.method !== "GET" && input.request.method !== "HEAD") {
-      return methodNotAllowed("GET, HEAD");
+      return methodNotAllowed("GET, HEAD", NO_STORE);
     }
     return this.download(input, route.id, route.secret);
   }
@@ -296,7 +297,7 @@ export class FileHttpRuntime {
     try {
       return await this.executeUpload(request, id, secret);
     } catch {
-      return uploadError(503, "file upload is temporarily unavailable");
+      return uploadError(503, "unavailable", "file upload is temporarily unavailable", { retryable: true });
     }
   }
 
@@ -306,55 +307,53 @@ export class FileHttpRuntime {
     secret: string,
   ): Promise<Response> {
     const store = this.options.files.store;
-    if (store === undefined) return uploadError(503, "file storage is not configured");
-    const startedAt = this.options.now();
+    if (store === undefined) return uploadError(503, "unavailable", "file storage is not configured", { retryable: true });
+    const startedAt = this.now();
     const attemptToken = randomUUID();
     let start: UploadStart | null;
     try {
       start = await this.acquireUpload(request.signal, id, secret, attemptToken, startedAt);
       let delayMs = 10;
       const waitUntil = startedAt + MAX_UPLOAD_RECOVERY_WAIT_MS;
-      while (start?.kind === "busy" && this.options.now() < waitUntil) {
+      while (start?.kind === "busy" && this.now() < waitUntil) {
         await waitForRetry(delayMs, request.signal);
         delayMs = Math.min(250, delayMs * 2);
         start = await this.acquireUpload(request.signal, id, secret, attemptToken, startedAt);
       }
     } catch {
-      return uploadError(503, "file upload is temporarily unavailable");
+      return uploadError(503, "unavailable", "file upload is temporarily unavailable", { retryable: true });
     }
-    if (start === null) return uploadError(404, "Upload Session was not found");
+    if (start === null) return uploadError(404, "not_found", "Upload Session was not found");
     if (start.kind === "committed") return this.uploaded(start.fileId, 200);
     if (start.kind === "busy") {
-      return uploadError(
-        409,
-        "File upload is still completing; retry this Upload Session",
-        { "retry-after": "1" },
-        "conflict",
-        true,
-      );
+      return uploadError(409, "conflict", "File upload is still completing; retry this Upload Session", {
+        retryable: true,
+        resource: "idempotency",
+        headers: { "retry-after": "1" },
+      });
     }
 
     const length = contentLength(request);
     if (Number.isNaN(length)) {
       await this.releaseUpload(start);
-      return uploadError(400, "invalid Content-Length");
+      return uploadError(400, "malformed", "invalid Content-Length");
     }
     if (length === null) {
       await this.releaseUpload(start);
-      return uploadError(411, "Content-Length is required for streaming file uploads");
+      return uploadError(411, "malformed", "Content-Length is required for streaming file uploads");
     }
     if (length > start.maxBytes) {
       await this.releaseUpload(start);
-      return uploadError(413, "file exceeds Upload Session maxBytes");
+      return uploadError(413, "validation", "file exceeds Upload Session maxBytes");
     }
     const contentType = request.headers.get("content-type");
     if (contentType !== null && contentType.length > 255) {
       await this.releaseUpload(start);
-      return uploadError(400, "Content-Type is too long");
+      return uploadError(400, "malformed", "Content-Type is too long");
     }
     if (start.contentTypes !== null && (contentType === null || !start.contentTypes.includes(contentType))) {
       await this.releaseUpload(start);
-      return uploadError(415, "Content-Type is not allowed by this Upload Session");
+      return uploadError(415, "validation", "Content-Type is not allowed by this Upload Session");
     }
 
     let stored: { readonly size: number; readonly sha256: string };
@@ -366,22 +365,22 @@ export class FileHttpRuntime {
       });
       if (start.expectedSha256 !== null && stored.sha256 !== start.expectedSha256) {
         if (await this.cleanupObject(store, start.objectKey)) await this.releaseUpload(start);
-        return uploadError(422, "uploaded bytes do not match expectedSha256");
+        return uploadError(422, "validation", "uploaded bytes do not match expectedSha256");
       }
     } catch (error) {
       if (await this.cleanupObject(store, start.objectKey)) await this.releaseUpload(start);
       if (causedByPayloadTooLarge(error)) {
-        return uploadError(413, "file exceeds Upload Session maxBytes");
+        return uploadError(413, "validation", "file exceeds Upload Session maxBytes");
       }
       if (error instanceof FileStoreError) {
         if (error.code === "invalid_size") {
-          return uploadError(400, "uploaded bytes do not match Content-Length");
+          return uploadError(400, "malformed", "uploaded bytes do not match Content-Length");
         }
         if (error.code === "cancelled") {
-          return uploadError(499, "file upload was canceled");
+          return uploadError(499, "indeterminate", "file upload was canceled");
         }
       }
-      return uploadError(503, "file storage is temporarily unavailable");
+      return uploadError(503, "unavailable", "file storage is temporarily unavailable", { retryable: true });
     }
 
     try {
@@ -399,7 +398,7 @@ export class FileHttpRuntime {
         if (row?.state !== "uploading" || row.attemptToken !== start.token) {
           throw new Error("Upload Session attempt no longer owns completion");
         }
-        const completedAt = this.options.now();
+        const completedAt = this.now();
         const fileId = await files.insert({
           state: "pending",
           objectKey: start.objectKey,
@@ -418,24 +417,20 @@ export class FileHttpRuntime {
         });
         return fileId;
       });
-      this.options.files.scheduleCleanupAt(this.options.now() + PENDING_FILE_LIFETIME_MS);
+      this.options.files.scheduleCleanupAt(this.now() + PENDING_FILE_LIFETIME_MS);
       return this.uploaded(fileId, 201);
     } catch {
       let proof: { readonly kind: "committed"; readonly fileId: FileId } | { readonly kind: "owned" };
       try {
         proof = await this.uploadCommitProof(start, secret, this.options.lifecycleSignal());
       } catch {
-        return uploadError(
-          503,
-          "file upload completion could not be proven",
-          undefined,
-          "indeterminate",
-          false,
-        );
+        return uploadError(503, "indeterminate", "file upload completion could not be proven", {
+          resource: "idempotency",
+        });
       }
       if (proof.kind === "committed") return this.uploaded(proof.fileId, 200);
       if (await this.cleanupObject(store, start.objectKey)) await this.releaseUpload(start);
-      return uploadError(503, "file metadata could not be committed");
+      return uploadError(503, "unavailable", "file metadata could not be committed", { retryable: true });
     }
   }
 
@@ -551,7 +546,7 @@ export class FileHttpRuntime {
       return true;
     } catch (error) {
       try {
-        const now = this.options.now();
+        const now = this.now();
         await this.options.write(this.options.lifecycleSignal(), async (value) => {
           await (fileDatabase(value))[FILE_CLEANUP_TABLE].insert(pendingCleanupRow({
             objectKey,
@@ -581,7 +576,7 @@ export class FileHttpRuntime {
   ): Promise<Response> {
     const store = this.options.files.store;
     if (store === undefined) return notFound();
-    const startedAt = this.options.now();
+    const startedAt = this.now();
     let grant: DownloadGrant | null;
     grant = await this.options.read(input.request.signal, async (value) => {
       const db = fileDatabase(value);
@@ -684,10 +679,7 @@ export class FileHttpRuntime {
           signal: input.request.signal,
         });
         if (attributes.size !== size) {
-          throw new AckerDBError("unavailable", "file storage is unavailable", {
-            resource: "operation",
-            retryable: true,
-          });
+          throw fileStorageUnavailable();
         }
         return new Response(null, { status: range === null ? 200 : 206, headers });
       }
@@ -697,10 +689,7 @@ export class FileHttpRuntime {
       });
       if (opened.attributes.size !== size) {
         await opened.body.cancel("File Store object size does not match immutable File metadata").catch(() => {});
-        throw new AckerDBError("unavailable", "file storage is unavailable", {
-          resource: "operation",
-          retryable: true,
-        });
+        throw fileStorageUnavailable();
       }
       return new Response(opened.body, { status: range === null ? 200 : 206, headers });
     } catch (error) {

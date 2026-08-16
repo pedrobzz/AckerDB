@@ -14,14 +14,13 @@ import type { Database } from "bun:sqlite";
 import { makeFrameworkTableWriter, type WriteCollector } from "../../database/access.ts";
 import type { Engine, TablePlan } from "../../database/engine.ts";
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../jobs/table.ts";
+import { quoteIdentifier } from "../../shared/sql.ts";
 import type {
   JobRunState,
   JobRunTrigger,
   JobState,
   JobTrigger,
 } from "../../jobs/definition.ts";
-
-const quote = (name: string): string => `"${name}"`;
 
 /** The states a Job can be claimed from; each is its own keyset range. */
 const DUE_JOB_STATES: readonly JobState[] = ["pending", "retrying"];
@@ -98,14 +97,14 @@ class TableStore<Row> {
     const raws = this.engine
       .statement(
         this.engine.writer,
-        `SELECT ${this.plan.readProjection} FROM ${quote(this.plan.name)} WHERE ${where}${order} LIMIT ${limit}`,
+        `SELECT ${this.plan.readProjection} FROM ${quoteIdentifier(this.plan.name)} WHERE ${where}${order} LIMIT ${limit}`,
       )
       .all(...(params as never[])) as Record<string, unknown>[];
     return raws.map((raw) => this.engine.rowFromSql(this.plan, raw) as unknown as Row);
   }
 
   byId(id: bigint): Row | null {
-    return this.select(`${quote("id")} = ?`, "", 1, [id])[0] ?? null;
+    return this.select(`${quoteIdentifier("id")} = ?`, "", 1, [id])[0] ?? null;
   }
 }
 
@@ -118,7 +117,7 @@ export class JobsStore extends TableStore<JobRow> {
   /** The live (non-terminal) Job of one identity, if any. */
   liveFor(name: string, argsHash: string): JobRow | null {
     return this.select(
-      `${quote("name")} = ? AND ${quote("argsHash")} = ? AND ${quote("state")} IN ('pending', 'running', 'retrying')`,
+      `${quoteIdentifier("name")} = ? AND ${quoteIdentifier("argsHash")} = ? AND ${quoteIdentifier("state")} IN ('pending', 'running', 'retrying')`,
       "",
       1,
       [name, argsHash],
@@ -133,8 +132,8 @@ export class JobsStore extends TableStore<JobRow> {
    */
   newestSettledFor(name: string, argsHash: string, state: JobState): JobRow | null {
     return this.select(
-      `${quote("name")} = ? AND ${quote("argsHash")} = ? AND ${quote("state")} = ?`,
-      ` ORDER BY ${quote("settledAt")} DESC, ${quote("id")} DESC`,
+      `${quoteIdentifier("name")} = ? AND ${quoteIdentifier("argsHash")} = ? AND ${quoteIdentifier("state")} = ?`,
+      ` ORDER BY ${quoteIdentifier("settledAt")} DESC, ${quoteIdentifier("id")} DESC`,
       1,
       [name, argsHash, state],
     )[0] ?? null;
@@ -152,13 +151,13 @@ export class JobsStore extends TableStore<JobRow> {
    */
   due(now: number, limit: number, after?: JobCursor): JobRow[] {
     const where = after === undefined
-      ? `${quote("state")} = ? AND ${quote("nextRunAt")} <= ?`
-      : `${quote("state")} = ? AND ${quote("nextRunAt")} <= ? AND (${quote("nextRunAt")} > ? OR (${quote("nextRunAt")} = ? AND ${quote("id")} > ?))`;
+      ? `${quoteIdentifier("state")} = ? AND ${quoteIdentifier("nextRunAt")} <= ?`
+      : `${quoteIdentifier("state")} = ? AND ${quoteIdentifier("nextRunAt")} <= ? AND (${quoteIdentifier("nextRunAt")} > ? OR (${quoteIdentifier("nextRunAt")} = ? AND ${quoteIdentifier("id")} > ?))`;
     return DUE_JOB_STATES
       .flatMap((state) =>
         this.select(
           where,
-          ` ORDER BY ${quote("nextRunAt")}, ${quote("id")}`,
+          ` ORDER BY ${quoteIdentifier("nextRunAt")}, ${quoteIdentifier("id")}`,
           limit,
           after === undefined
             ? [state, now]
@@ -170,14 +169,14 @@ export class JobsStore extends TableStore<JobRow> {
 
   /** Running Jobs: bounded by the global cap. */
   running(): JobRow[] {
-    return this.select(`${quote("state")} = 'running'`, "", 4096, []);
+    return this.select(`${quoteIdentifier("state")} = 'running'`, "", 4096, []);
   }
 
   /** Jobs whose retention has expired, oldest first. */
   expired(now: number, limit: number): JobRow[] {
     return this.select(
-      `${quote("deleteAfter")} IS NOT NULL AND ${quote("deleteAfter")} <= ?`,
-      ` ORDER BY ${quote("deleteAfter")}`,
+      `${quoteIdentifier("deleteAfter")} IS NOT NULL AND ${quoteIdentifier("deleteAfter")} <= ?`,
+      ` ORDER BY ${quoteIdentifier("deleteAfter")}`,
       limit,
       [now],
     );
@@ -193,7 +192,7 @@ export class JobRunsStore extends TableStore<JobRunRow> {
   /** One run of one Job, by its position. */
   byNumber(jobId: bigint, number: number): JobRunRow | null {
     return this.select(
-      `${quote("jobId")} = ? AND ${quote("number")} = ?`,
+      `${quoteIdentifier("jobId")} = ? AND ${quoteIdentifier("number")} = ?`,
       "",
       1,
       [jobId, number],
@@ -202,13 +201,13 @@ export class JobRunsStore extends TableStore<JobRunRow> {
 
   /** Every run of one Job, oldest first; the cascade a deleted Job performs. */
   ofJob(jobId: bigint, limit: number): JobRunRow[] {
-    return this.select(`${quote("jobId")} = ?`, ` ORDER BY ${quote("number")}`, limit, [jobId]);
+    return this.select(`${quoteIdentifier("jobId")} = ?`, ` ORDER BY ${quoteIdentifier("number")}`, limit, [jobId]);
   }
 
   /** Running runs whose lease expired: crashed runs to recover. */
   expiredLeases(now: number, limit: number): JobRunRow[] {
     return this.select(
-      `${quote("state")} = 'running' AND ${quote("leaseUntil")} IS NOT NULL AND ${quote("leaseUntil")} <= ?`,
+      `${quoteIdentifier("state")} = 'running' AND ${quoteIdentifier("leaseUntil")} IS NOT NULL AND ${quoteIdentifier("leaseUntil")} <= ?`,
       "",
       limit,
       [now],
@@ -218,8 +217,8 @@ export class JobRunsStore extends TableStore<JobRunRow> {
   /** Settled runs whose retention has expired, oldest first. */
   expired(now: number, limit: number): JobRunRow[] {
     return this.select(
-      `${quote("deleteAfter")} IS NOT NULL AND ${quote("deleteAfter")} <= ?`,
-      ` ORDER BY ${quote("deleteAfter")}`,
+      `${quoteIdentifier("deleteAfter")} IS NOT NULL AND ${quoteIdentifier("deleteAfter")} <= ?`,
+      ` ORDER BY ${quoteIdentifier("deleteAfter")}`,
       limit,
       [now],
     );
@@ -228,7 +227,7 @@ export class JobRunsStore extends TableStore<JobRunRow> {
 
 /** Off-writer reads used by arming and waiting; safe on any reader connection. */
 export function readJobRow(engine: Engine, connection: Database, id: bigint): JobRow | null {
-  return readOne<JobRow>(engine, connection, JOBS_TABLE, `${quote("id")} = ?`, [id]);
+  return readOne<JobRow>(engine, connection, JOBS_TABLE, `${quoteIdentifier("id")} = ?`, [id]);
 }
 
 /** The run a Job's outcome is read from: its latest, `(id, runCount)`. */
@@ -242,7 +241,7 @@ export function readJobRunRow(
     engine,
     connection,
     JOB_RUNS_TABLE,
-    `${quote("jobId")} = ? AND ${quote("number")} = ?`,
+    `${quoteIdentifier("jobId")} = ? AND ${quoteIdentifier("number")} = ?`,
     [jobId, number],
   );
 }
@@ -256,7 +255,7 @@ function readOne<Row>(
 ): Row | null {
   const plan = engine.plan(table);
   const raw = connection
-    .query(`SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${where} LIMIT 1`)
+    .query(`SELECT ${plan.readProjection} FROM ${quoteIdentifier(plan.name)} WHERE ${where} LIMIT 1`)
     .get(...(params as never[])) as Record<string, unknown> | null;
   return raw === null ? null : (engine.rowFromSql(plan, raw) as unknown as Row);
 }
@@ -282,15 +281,15 @@ export function nextDueJobAt(
   const due = DUE_JOB_STATES.map((state) =>
     connection
       .query(
-        `SELECT MIN(${quote("nextRunAt")}) AS at FROM ${quote(jobs.name)} WHERE ${quote("state")} = ?`,
+        `SELECT MIN(${quoteIdentifier("nextRunAt")}) AS at FROM ${quoteIdentifier(jobs.name)} WHERE ${quoteIdentifier("state")} = ?`,
       )
       .get(state as never) as { at: number | bigint | null });
   const exclusion = inProcessIds.length === 0
     ? ""
-    : ` AND ${quote("jobId")} NOT IN (${inProcessIds.map(() => "?").join(", ")})`;
+    : ` AND ${quoteIdentifier("jobId")} NOT IN (${inProcessIds.map(() => "?").join(", ")})`;
   const abandoned = connection
     .query(
-      `SELECT MIN(${quote("leaseUntil")}) AS at FROM ${quote(runs.name)} WHERE ${quote("state")} = 'running' AND ${quote("leaseUntil")} IS NOT NULL${exclusion}`,
+      `SELECT MIN(${quoteIdentifier("leaseUntil")}) AS at FROM ${quoteIdentifier(runs.name)} WHERE ${quoteIdentifier("state")} = 'running' AND ${quoteIdentifier("leaseUntil")} IS NOT NULL${exclusion}`,
     )
     .get(...(inProcessIds as never[])) as { at: number | bigint | null };
   const candidates = [...due.map((row) => row.at), abandoned.at]
@@ -301,7 +300,7 @@ export function nextDueJobAt(
   const expiring = [jobs, runs]
     .map((plan) =>
       (connection
-        .query(`SELECT MIN(${quote("deleteAfter")}) AS at FROM ${quote(plan.name)}`)
+        .query(`SELECT MIN(${quoteIdentifier("deleteAfter")}) AS at FROM ${quoteIdentifier(plan.name)}`)
         .get() as { at: number | bigint | null }).at)
     .filter((value): value is number | bigint => value !== null)
     .map((value) => Math.max(Number(value), notBefore));

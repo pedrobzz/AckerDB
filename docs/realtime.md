@@ -192,7 +192,8 @@ generator resumes after yielding it. It acknowledges `sse_done` before
 returning and `sse_error` before throwing its typed outcome. Acknowledgements
 use the capability and proof rather than the bearer credential, have a simple
 `text/plain;charset=UTF-8` request content type, and retry network or retryable
-pressure failures with bounded full jitter and `Retry-After`. The deadline is
+pressure failures on the same jittered exponential schedule reconnect uses,
+floored by `Retry-After`. The deadline is
 the smaller of the advertised server stall window and the client's 5-second
 default `maxSseAckAgeMs`, with at most eight attempts. Missing or malformed
 credit headers are protocol failures; there is no legacy `[DONE]` mode.

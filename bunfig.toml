@@ -3,4 +3,4 @@ ignoreScripts = true
 minimumReleaseAge = 604800
 # Advisory-driven exact floors (see package.json overrides); each is an audited,
 # pinned refresh — the age gate is waived only for these advisory fixes.
-minimumReleaseAgeExcludes = ["hono", "ip-address", "postcss"]
+minimumReleaseAgeExcludes = ["hono", "postcss"]

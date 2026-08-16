@@ -14,7 +14,6 @@ owns its invariants; do not add new files to this root.
 | `credentials/` | Identity credentials: the table, the policy module, and the invocation capability |
 | `database/` | SQLite access, engine, durability artifacts, ownership, restore, and reset |
 | `files/` | File identity, durable store binding, lifecycle, transfer, and physical-store adapters |
-| `mcp/` | MCP declarations, scopes, tokens, HTTP handling, content, and wire behavior |
 | `subscriptions/` | Publications, reactive subscriptions, delivery, and sessions |
 | `runtime/` | Admission, execution, mutation coordination, request outcomes, and orchestration |
 | `schema/` | Schema definitions, snapshots, planning, reconciliation, and migrations |

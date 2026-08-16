@@ -8,8 +8,7 @@ import { decode } from "@ackerdb/core";
 import type { Descriptor } from "../validation/validator.ts";
 import type { TableSnapshot } from "./snapshot.ts";
 import { scalarDecoder } from "./descriptor-kinds.ts";
-
-const quote = (name: string) => `"${name}"`;
+import { quoteIdentifier } from "../shared/sql.ts";
 
 /** Fixed paging ownership: heap use is bounded independently of table size. */
 export const STORED_ROW_BATCH = 1000;
@@ -155,13 +154,13 @@ export function* pageStoredRows(
 ): IterableIterator<StoredRow> {
   const projected = projection === undefined
     ? "*"
-    : [...new Set([pk, ...projection])].map(quote).join(", ");
+    : [...new Set([pk, ...projection])].map(quoteIdentifier).join(", ");
   let last: bigint | undefined;
   for (;;) {
-    const where = last === undefined ? "" : `WHERE ${quote(pk)} > ? `;
+    const where = last === undefined ? "" : `WHERE ${quoteIdentifier(pk)} > ? `;
     const params = last === undefined ? [] : [last as never];
     const rows = writer
-      .query(`SELECT ${projected} FROM ${quote(table)} ${where}ORDER BY ${quote(pk)} ASC LIMIT ${STORED_ROW_BATCH}`)
+      .query(`SELECT ${projected} FROM ${quoteIdentifier(table)} ${where}ORDER BY ${quoteIdentifier(pk)} ASC LIMIT ${STORED_ROW_BATCH}`)
       .all(...params) as StoredRow[];
     for (const raw of rows) yield raw;
     if (rows.length < STORED_ROW_BATCH) return;

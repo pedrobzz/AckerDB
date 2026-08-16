@@ -8,6 +8,10 @@ import {
 import { dirname, resolve, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { UUID_V4 } from "../../shared/identity.ts";
+import { fsyncPath } from "../../shared/fsync.ts";
+import { sha256Hex } from "../../shared/digest.ts";
+import { runWithCleanupAsync } from "../../shared/cleanup.ts";
 import {
   assertRange,
   classifiedReadableStream,
@@ -30,21 +34,11 @@ export interface LocalFileStoreConfig {
 }
 
 const FILE_STORE_ID = ".ackerdb-store-id";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function nodeErrorCode(error: unknown): string | undefined {
   return error instanceof Error && "code" in error && typeof error.code === "string"
     ? error.code
     : undefined;
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const directory = await fs.open(path, constants.O_RDONLY);
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
 }
 
 async function ensureDurableDirectory(path: string): Promise<void> {
@@ -53,7 +47,7 @@ async function ensureDurableDirectory(path: string): Promise<void> {
   const durableParent = resolve(dirname(created));
   let current = resolve(path);
   for (;;) {
-    await syncDirectory(current);
+    await fsyncPath(current);
     if (current === durableParent) return;
     current = dirname(current);
   }
@@ -125,13 +119,15 @@ export class LocalFileStore implements FileStore {
     try {
       await ensureDurableDirectory(this.#root);
       const handle = await fs.open(marker, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-      try {
-        await handle.writeFile(`${randomUUID()}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await syncDirectory(this.#root);
+      await runWithCleanupAsync(
+        async () => {
+          await handle.writeFile(`${randomUUID()}\n`, "utf8");
+          await handle.sync();
+        },
+        () => handle.close(),
+        `FileStore identity write and descriptor close both failed: ${marker}`,
+      );
+      await fsyncPath(this.#root);
     } catch (error) {
       if (nodeErrorCode(error) !== "EEXIST") throw this.#classify(error, operation);
     }
@@ -144,7 +140,7 @@ export class LocalFileStore implements FileStore {
       );
     }
     const id = (await fs.readFile(marker, "utf8")).trim();
-    if (!UUID.test(id)) {
+    if (!UUID_V4.test(id)) {
       throw new FileStoreError("invalid_configuration", operation, `filesystem FileStore marker is invalid: ${marker}`);
     }
     return `filesystem:${id}`;
@@ -210,10 +206,10 @@ export class LocalFileStore implements FileStore {
       const objectPath = this.#objectPath(key);
       const shard = join(this.#objects, objectPath.shard);
       const created = await fs.mkdir(shard, { recursive: true });
-      if (created !== undefined) await syncDirectory(this.#objects);
+      if (created !== undefined) await fsyncPath(this.#objects);
       await fs.rename(stagingPath, objectPath.path);
-      await syncDirectory(shard);
-      await syncDirectory(this.#staging);
+      await fsyncPath(shard);
+      await fsyncPath(this.#staging);
       stagingPath = undefined;
       return { size, sha256: digest.digest("hex") };
     } catch (error) {
@@ -270,7 +266,7 @@ export class LocalFileStore implements FileStore {
       throwIfFileStoreAborted(options.signal, operation);
       const { path, shard } = this.#objectPath(key);
       await fs.unlink(path);
-      await syncDirectory(join(this.#objects, shard));
+      await fsyncPath(join(this.#objects, shard));
     } catch (error) {
       if (nodeErrorCode(error) === "ENOENT") return;
       throw this.#classify(error, operation);
@@ -296,7 +292,7 @@ export class LocalFileStore implements FileStore {
   }
 
   #objectPath(key: string): { path: string; shard: string } {
-    const encoded = createHash("sha256").update(key).digest("hex");
+    const encoded = sha256Hex(key);
     const shard = encoded.slice(0, 2);
     return { shard, path: join(this.#objects, shard, encoded.slice(2)) };
   }
@@ -320,7 +316,7 @@ export class LocalFileStore implements FileStore {
       }
       await fs.unlink(join(this.#staging, entry.name));
     }
-    if (entries.length > 0) await syncDirectory(this.#staging);
+    if (entries.length > 0) await fsyncPath(this.#staging);
   }
 
   #validateConfiguration(operation: FileStoreOperation): void {

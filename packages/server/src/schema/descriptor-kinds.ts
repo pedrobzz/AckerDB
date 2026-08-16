@@ -11,7 +11,11 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@ackerdb/core";
-import { ValidationError } from "../validation/error.ts";
+import {
+  refuseUnknownKeys,
+  refuseUnknownUnionKeys,
+  ValidationError,
+} from "../validation/error.ts";
 import type { Descriptor } from "../validation/validator.ts";
 import {
   checkArrayConstraints,
@@ -190,9 +194,7 @@ const KINDS: Record<string, DescriptorKind> = {
       expect(value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Uint8Array), "object");
       const shape = desc["shape"] as Record<string, Descriptor>;
       const input = value as Record<string, unknown>;
-      for (const key of Object.keys(input)) {
-        if (!Object.hasOwn(shape, key) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
-      }
+      refuseUnknownKeys(input, (key) => Object.hasOwn(shape, key), path);
       const out = Object.create(null) as Record<string, unknown>;
       for (const key of Object.keys(shape)) {
         const field = shape[key]!;
@@ -216,11 +218,7 @@ const KINDS: Record<string, DescriptorKind> = {
       if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
         throw new ValidationError(`${path}.tag: expected one of ${Object.keys(members).map((v) => JSON.stringify(v)).join(" | ")}`);
       }
-      for (const key of Object.keys(input)) {
-        if (key !== "tag" && key !== "value" && input[key] !== undefined) {
-          throw new ValidationError(`${path}: unknown field "${key}" on union value`);
-        }
-      }
+      refuseUnknownUnionKeys(input, path);
       const member = members[variant]!;
       if (
         !Object.hasOwn(input, "value") &&

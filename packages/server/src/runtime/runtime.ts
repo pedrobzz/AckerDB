@@ -15,6 +15,7 @@ import {
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
+  unauthenticated,
   type CredentialVerifier,
   type ExternalAccount,
   type Principal,
@@ -23,12 +24,8 @@ import {
 import {
   CREDENTIAL_ISSUER,
   parseCredentialToken,
-  type ParsedCredentialToken,
 } from "../auth/credential-token.ts";
-import {
-  RuntimeCredentials,
-  type CredentialLease,
-} from "./credentials/runtime.ts";
+import { RuntimeCredentials } from "./credentials/runtime.ts";
 import {
   AuthInvalidationBoundary,
   type AuthInvalidationPublisher,
@@ -38,10 +35,8 @@ import { externalAccountFairnessKey } from "./caller.ts";
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
-import type { McpCallToolResult } from "../mcp/content.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { OrderedReactive } from "../subscriptions/reactive/ordered.ts";
 import type { Registry } from "../app/registry.ts";
@@ -61,7 +56,6 @@ import type { RuntimeOptions } from "./contracts/options.ts";
 import type {
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
-  RuntimeMcpToolRequest,
   RuntimeHttpHandlerRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
@@ -72,10 +66,6 @@ import { RuntimeReadExecutor } from "./execution/read.ts";
 import {
   RuntimeFunctionExecutor,
 } from "./execution/functions.ts";
-import { RuntimeMcp } from "./mcp/runtime.ts";
-import {
-  type RuntimeMcpToolAuthorization,
-} from "./mcp/authorization.ts";
 import { RuntimeHttp } from "./http/runtime.ts";
 import {
   RuntimeSessionStore,
@@ -93,6 +83,7 @@ import {
   type RuntimeFileRequest,
 } from "../files/http.ts";
 import { FileCleanupRuntime } from "../files/cleanup.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
@@ -126,7 +117,6 @@ export class Runtime implements RuntimePort {
   private readonly reads: RuntimeReadExecutor;
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   private readonly queries: RuntimeQueries;
-  private readonly mcp: RuntimeMcp;
   readonly jobs: RuntimeJobs;
   private readonly sessionStore: RuntimeSessionStore;
   private readonly sessionApplication: RuntimeSessionApplication;
@@ -138,10 +128,9 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "runtime clock");
     this.files = new RuntimeFiles(options.files);
     this.fileMaxBytes = this.files.maxBytes;
-    const hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
     this.channels = new ChannelHub({
       registry: this.registry,
@@ -149,16 +138,6 @@ export class Runtime implements RuntimePort {
       maxMembersPerSession: this.limits.maxSubscriptionsPerConnection,
       disconnectTimeoutMs: Math.min(5_000, this.limits.gracefulShutdownMs),
     });
-    const mcpToolCounts = new Map<string, number>();
-    for (const tool of this.registry.mcpTools.values()) {
-      const count = (mcpToolCounts.get(tool.mcp.name) ?? 0) + 1;
-      if (count > this.limits.mcp.maxToolsPerEndpoint) {
-        throw new RangeError(
-          `MCP "${tool.mcp.name}" exceeds mcp.maxToolsPerEndpoint`,
-        );
-      }
-      mcpToolCounts.set(tool.mcp.name, count);
-    }
     if (options.verifier !== undefined) {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
@@ -171,7 +150,6 @@ export class Runtime implements RuntimePort {
     this.credentials = new RuntimeCredentials({
       engine: this.engine,
       reads: () => this.reads,
-      now: this.now,
       assertReady: () => this.control.assertReady(),
       operationSignal: (signal) => this.control.operationSignal(signal),
       ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
@@ -211,14 +189,6 @@ export class Runtime implements RuntimePort {
       resolveIdentityGrant: this.credentials.resolveIdentityGrant,
       publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
       files: this.files,
-      ...(hasMcpCapabilities
-        ? {
-            mcp: {
-              bindAiContext: (context, fairnessKey, requestBytes) =>
-                this.mcp.bindAiContext(context, fairnessKey, requestBytes),
-            },
-          }
-        : {}),
       armJobs: () => this.jobs.arm(),
       jobs: () => this.jobs,
       fileLifecycleSignal: () => this.control.shutdownSignal,
@@ -258,18 +228,6 @@ export class Runtime implements RuntimePort {
       operationSignal: (signal) => this.control.operationSignal(signal),
       admit: (fairnessKey) => this.control.admit(null, fairnessKey),
       now: this.now,
-    });
-    this.mcp = new RuntimeMcp({
-      registry: this.registry,
-      vocabulary: this.vocabulary,
-      reads: this.reads,
-      functions: this.functions,
-      operations: this.operations,
-      now: this.now,
-      operationSignal: (signal) => this.control.operationSignal(signal),
-      admittedRequestBytes: (request, receivedBytes) =>
-        this.control.admittedRequestBytes(request, receivedBytes),
-      immediateInvalidations: this.immediateProcedureInvalidations,
     });
     const authCaptureControlReserve = Math.min(
       this.limits.maxFrameBytes,
@@ -389,18 +347,9 @@ export class Runtime implements RuntimePort {
   ): Promise<Principal> {
     const parsed = parseCredentialToken(rawToken);
     if (parsed === null) {
-      throw new AckerDBError("unauthenticated", "invalid credential");
+      throw unauthenticated();
     }
     return this.credentials.authenticate(parsed, fairnessKey, signal);
-  }
-
-  /** Own one exact non-expiring identity credential from verification through HTTP completion. */
-  async acquireCredentialLease(
-    parsed: ParsedCredentialToken,
-    fairnessKey: string,
-    signal?: AbortSignal,
-  ): Promise<CredentialLease> {
-    return this.credentials.acquireLease(parsed, fairnessKey, signal);
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
@@ -490,20 +439,6 @@ export class Runtime implements RuntimePort {
     return this.fileHttp.handle(input);
   }
 
-  /** The single deep MCP execution path used by every present and future adapter. */
-  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
-    return this.mcp.runTool(request);
-  }
-
-  /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
-  authorizeMcpTool(
-    mcp: string,
-    name: string,
-    principal: Principal,
-  ): RuntimeMcpToolAuthorization {
-    return this.mcp.authorizeTool(mcp, name, principal);
-  }
-
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
     return this.http.runSse(request);
   }
@@ -540,32 +475,23 @@ export class Runtime implements RuntimePort {
       state.context.principal,
       state.context.invalidationScope,
     );
-    const procedure = this.functions.createProcedureContext(
+    const value = this.functions.createProcedureContext(
       state.context.principal,
       state.context.fairnessKey,
       signal,
       requestBytes,
-      this.readNow(),
+      this.now(),
       invalidations.publish,
     );
     let active = true;
     return Object.freeze({
-      value: procedure.value,
+      value,
       release: () => {
         if (!active) return;
         active = false;
-        try {
-          procedure.release();
-        } finally {
-          invalidations.finish();
-        }
+        invalidations.finish();
       },
     });
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
 }

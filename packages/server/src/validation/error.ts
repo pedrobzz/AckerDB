@@ -12,3 +12,27 @@ export class ValidationError extends Error {
 export function isValidationError(value: unknown): value is ValidationError {
   return hasBrand(value, VALIDATION_ERROR_IDENTITY);
 }
+
+/**
+ * The two refusals every untyped object boundary spells the same way. A key
+ * whose value is `undefined` is an absence, not a field, so it is not refused.
+ */
+export function refuseUnknownKeys(
+  input: Record<string, unknown>,
+  declares: (key: string) => boolean,
+  path: string,
+): void {
+  for (const key of Object.keys(input)) {
+    if (!declares(key) && input[key] !== undefined) {
+      throw new ValidationError(`${path}: unknown field "${key}"`);
+    }
+  }
+}
+
+export function refuseUnknownUnionKeys(input: Record<string, unknown>, path: string): void {
+  for (const key of Object.keys(input)) {
+    if (key !== "tag" && key !== "value" && input[key] !== undefined) {
+      throw new ValidationError(`${path}: unknown field "${key}" on union value`);
+    }
+  }
+}

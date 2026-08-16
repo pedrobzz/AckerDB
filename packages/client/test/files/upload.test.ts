@@ -398,6 +398,57 @@ describe("AckerDBClient files", () => {
     harness.client.close();
   });
 
+  /**
+   * The retry is armed at the exact millisecond the full-jitter formula names,
+   * not merely somewhere inside the window the outage test advances through:
+   * one millisecond short of the delay, nothing has been retried yet.
+   */
+  test("arms each upload retry at exactly the delay the jitter formula names", async () => {
+    const armedDelays = async (
+      random: () => number,
+      session: string,
+      expected: readonly number[],
+    ): Promise<void> => {
+      const attempts: number[] = [];
+      let harness!: ClientHarness;
+      harness = createHarness({
+        random,
+        fetch: async () => {
+          attempts.push(harness.clock.now());
+          if (attempts.length > expected.length) return Response.json({ fileId: "45" });
+          throw new Error("upload network is unavailable");
+        },
+      });
+      const uploaded = harness.client.files.upload({
+        createSession: createUpload,
+        args: { folder: "jitter" },
+        file: new Uint8Array([1, 2]),
+      });
+      const mutation = dispatchSession(harness.client, harness.sockets[0]!);
+      acceptSession(harness.sockets[0]!, mutation, advertisedUploadUrl(session));
+      await eventually(() => attempts.length === 1, "the first upload attempt");
+      for (const [index, delay] of expected.entries()) {
+        await advanceClock(harness, delay - 1);
+        expect(attempts).toHaveLength(index + 1);
+        await advanceClock(harness, 1);
+        await eventually(() => attempts.length === index + 2, `upload attempt ${index + 2}`);
+      }
+      expect(mustOk(await uploaded)).toBe(45n as FileId);
+      harness.client.close();
+    };
+
+    // Zero jitter draws the window's floor, which is one base delay at every
+    // step: the exponent widens what may be drawn, never the minimum wait.
+    await armedDelays(() => 0, "20.zero-jitter-session", [250, 250, 250, 250]);
+    // Full jitter draws the window's ceiling, so the doubling is observable —
+    // and the policy's 5s cap holds it there.
+    await armedDelays(
+      () => 1 - Number.EPSILON,
+      "21.full-jitter-session",
+      [250, 500, 1_000, 2_000, 4_000, 5_000, 5_000],
+    );
+  });
+
   test("allows an admitted PUT to finish after its session expires", async () => {
     let resolveUpload!: (response: Response) => void;
     let uploadSignal: AbortSignal | undefined;

@@ -1,3 +1,4 @@
+import type { Clock } from "../../src/shared/clock.ts";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,7 +36,6 @@ import { defineEventTable, defineSchema, defineTable } from "../../src/schema/de
 import {
   type RuntimePublication,
   type SessionApplicationMessage,
-  type SessionClock,
   type SessionControlMessage,
   type SessionSink,
 } from "../../src/subscriptions/session/contract.ts";
@@ -67,7 +67,7 @@ function handle(session: Session, frame: unknown): Promise<void> {
   return session.handle(encode(frame));
 }
 
-class FixedClock implements SessionClock, AckerDBClientClock {
+class FixedClock implements Clock, AckerDBClientClock {
   now = (): number => NOW;
   setTimeout = (_callback: () => void, _delayMs: number): number => 1;
   clearTimeout = (_handle: unknown): void => {};

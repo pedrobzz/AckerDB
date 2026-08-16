@@ -15,7 +15,6 @@
     "paths": {
       "@ackerdb/core": ["./packages/core/src/index.ts"],
       "@ackerdb/server": ["./packages/server/src/index.ts"],
-      "@ackerdb/server/mcp": ["./packages/server/src/mcp/index.ts"],
       "@ackerdb/client": ["./packages/client/src/index.ts"],
       "@ackerdb/client-react": ["./packages/client-react/src/index.ts"]
     }

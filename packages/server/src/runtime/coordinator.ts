@@ -20,14 +20,17 @@ import {
   type StoredMutation,
 } from "../database/mutation-replay.ts";
 import { isOneTimeResult } from "./one-time-result.ts";
+import type { RuntimeOperationOutcome } from "./execution/operation-runner.ts";
 import type { PublicationReservation } from "../subscriptions/publication.ts";
 import type { Schema } from "../schema/definition.ts";
+import { utf8ByteLength, wireByteLength } from "../shared/bytes.ts";
 import {
   assertTransactionHealthy,
   inTransaction,
   poisonTransaction,
   runInTransaction,
 } from "./transaction-context.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
@@ -122,13 +125,9 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly wait?: CommitWaitHook;
 }
 
-type PublicationCompletion =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly cause: unknown };
-
 interface CommitHandoff<T, Publication> {
   readonly result: CommitResult<T, Publication>;
-  readonly completion?: Promise<PublicationCompletion>;
+  readonly completion?: Promise<RuntimeOperationOutcome<void>>;
 }
 
 function conflict(message: string): AckerDBError {
@@ -154,7 +153,6 @@ export class CommitCoordinator<Publication> {
   private readonly now: () => number;
   private readonly wait: CommitWaitHook | undefined;
   private readonly eventSequences = new Map<string, bigint>();
-  private readonly encoder = new TextEncoder();
   private nextPruneAtMs = 0;
 
   constructor(options: CommitCoordinatorOptions<Publication>) {
@@ -163,7 +161,7 @@ export class CommitCoordinator<Publication> {
     this.limits = options.limits;
     this.reservePublication = options.reservePublication;
     this.afterCommit = options.afterCommit;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "coordinator clock");
     this.wait = options.wait;
     this.writer = new BoundedExecutor({
       concurrency: 1,
@@ -201,7 +199,7 @@ export class CommitCoordinator<Publication> {
         throw new AckerDBError(
           "convergence_unavailable",
           "the transaction committed but ordered publication failed",
-          { committed: true, cause: completion.cause },
+          { committed: true, cause: completion.error },
         );
       }
     }
@@ -251,7 +249,7 @@ export class CommitCoordinator<Publication> {
           },
         };
       }
-      const now = this.readNow();
+      const now = this.now();
       const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
       if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
         throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
@@ -282,6 +280,9 @@ export class CommitCoordinator<Publication> {
     let publication: Publication | undefined;
     try {
       throwIfAborted(request.transactionSignal);
+      // Not a `transaction()` site: the publication reservation strictly contains
+      // this transaction, and the rollback path continues with more work inside
+      // the same frame. Bracketing it is a coordinator redesign, not a dedupe.
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
       let value: T;
@@ -303,7 +304,7 @@ export class CommitCoordinator<Publication> {
           const result = resultDisposition === "replayable" ? encode(value) : undefined;
             const resultBytes = result === undefined
               ? 0
-              : this.encoder.encode(result).byteLength;
+              : utf8ByteLength(result);
             if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
               throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
                 retryable: false,
@@ -321,6 +322,8 @@ export class CommitCoordinator<Publication> {
             }
             let staged: StagedMutation;
             try {
+              // Not a `transaction()` site: `transactionOpen` is the frame-wide
+              // flag the surrounding coordinator path also reads.
               this.engine.writer.exec("BEGIN IMMEDIATE");
               transactionOpen = true;
               staged = this.engine[mutationReplayOwner].stage({
@@ -329,7 +332,7 @@ export class CommitCoordinator<Publication> {
                 result: result ?? null,
                 resultBytes,
                 durability: this.engine.durability,
-              }, this.readNow(), "replay");
+              }, this.now(), "replay");
               this.engine.writer.exec("COMMIT");
               transactionOpen = false;
               this.engine[mutationReplayOwner].committed(staged);
@@ -358,7 +361,7 @@ export class CommitCoordinator<Publication> {
       if (idempotency && resultDisposition === "replayable") {
         result = encode(value);
       }
-      const resultBytes = result === undefined ? 0 : this.encoder.encode(result).byteLength;
+      const resultBytes = result === undefined ? 0 : utf8ByteLength(result);
       if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
         throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
           retryable: false,
@@ -385,7 +388,7 @@ export class CommitCoordinator<Publication> {
           result: result ?? null,
           resultBytes,
           durability: this.engine.durability,
-        }, this.readNow());
+        }, this.now());
         commitVersion = stagedMutation.commitVersion;
       } else {
         commitVersion = this.engine.allocateCommitVersion();
@@ -424,8 +427,8 @@ export class CommitCoordinator<Publication> {
           publication,
         },
         completion: reservation.completion.then(
-          (): PublicationCompletion => ({ ok: true }),
-          (cause): PublicationCompletion => ({ ok: false, cause }),
+          (): RuntimeOperationOutcome<void> => ({ ok: true, value: undefined }),
+          (error): RuntimeOperationOutcome<void> => ({ ok: false, error }),
         ),
       };
     } catch (error) {
@@ -451,7 +454,7 @@ export class CommitCoordinator<Publication> {
   }
 
   private pruneExpiredMutations(): void {
-    const now = this.readNow();
+    const now = this.now();
     if (now < this.nextPruneAtMs) return;
     this.nextPruneAtMs = now + 60_000;
     const before = now - this.limits.mutationReplay.maxAgeMs;
@@ -462,10 +465,10 @@ export class CommitCoordinator<Publication> {
   }
 
   private publicationBytes(writes: WriteCollector): number {
-    return this.encoder.encode(encode({
+    return wireByteLength({
       keys: [...writes.keys],
       events: writes.events,
-    })).byteLength;
+    });
   }
 
   private nextEventSequence(table: string): bigint {
@@ -474,9 +477,4 @@ export class CommitCoordinator<Publication> {
     return sequence;
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("coordinator clock must return finite milliseconds");
-    return now;
-  }
 }

@@ -17,6 +17,7 @@ import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
 import { FILE_CLEANUP_TABLE, FILES_TABLE } from "./tables.ts";
 import { FileStoreError, type FileStoreRange } from "./store/contract.ts";
 import { checkedFileText } from "./text.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 export interface FileProcedureRuntimeOptions {
   readonly files: RuntimeFiles;
@@ -82,7 +83,11 @@ function storeRange(range: FileRange | undefined, size: number): FileStoreRange 
 
 /** Trusted procedure/system byte operations over the same immutable File identity. */
 export class FileProcedureRuntime {
-  constructor(private readonly options: FileProcedureRuntimeOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: FileProcedureRuntimeOptions) {
+    this.now = finiteClock(options.now, "files clock");
+  }
 
   capability(principal: Principal, signal: AbortSignal): FileProcedureCapability {
     const capability: FileProcedureCapability = {
@@ -113,7 +118,7 @@ export class FileProcedureRuntime {
     const name = checkedFileText(options.name, "files.store.name", 1_024);
     const contentType = checkedFileText(options.contentType, "files.store.contentType", 255);
     const objectKey = `files/${randomUUID()}`;
-    const stagedAt = this.options.now();
+    const stagedAt = this.now();
     const stagingId = await this.options.write(signal, async (value) =>
       await (fileDatabase(value))[FILE_CLEANUP_TABLE]!.insert({
         objectKey,
@@ -143,7 +148,7 @@ export class FileProcedureRuntime {
       throw error;
     }
     try {
-      const completedAt = this.options.now();
+      const completedAt = this.now();
       const fileId = await this.options.write(this.options.lifecycleSignal(), async (value) => {
         const db = fileDatabase(value);
         const staging = await db[FILE_CLEANUP_TABLE]!.get(stagingId);
@@ -266,7 +271,7 @@ export class FileProcedureRuntime {
 
   private async abandonStaging(stagingId: bigint, error: unknown): Promise<void> {
     try {
-      const now = this.options.now();
+      const now = this.now();
       const abandoned = await this.options.write(this.options.lifecycleSignal(), async (value) => {
         const cleanup = (fileDatabase(value))[FILE_CLEANUP_TABLE]!;
         const staging = await cleanup.get(stagingId);

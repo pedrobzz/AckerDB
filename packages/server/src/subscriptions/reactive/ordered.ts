@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
 import {
   EVENTS_ADDRESS_PREFIX,
   decode,
@@ -38,14 +37,17 @@ import {
   type QueryListener,
 } from "./entry.ts";
 import { TransitionHistory } from "./history.ts";
+import { sha256Base64Url } from "../../shared/digest.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 import {
   authOutcome,
-  errorOutcome,
   isAuthFailure,
   overloadOutcome,
   overloaded,
   unavailable,
 } from "./outcome.ts";
+import { outcomeFromError } from "../../runtime/outcome.ts";
+import { finiteClock, finiteMillis } from "../../shared/clock.ts";
 
 interface InstalledEvaluation<C> {
   readonly entry: QueryEntry<C>;
@@ -56,7 +58,6 @@ interface InstalledEvaluation<C> {
   readonly overloadMessage?: string;
 }
 
-const utf8 = new TextEncoder();
 
 export class OrderedReactive<C = unknown> {
   readonly publication: OrderedPublication<ReactiveCommit>;
@@ -86,7 +87,7 @@ export class OrderedReactive<C = unknown> {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
     this.history = new TransitionHistory(this.limits.resume);
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "reactive clock");
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
     this.revalidation = new BoundedExecutor({
       concurrency: this.limits.revalidationConcurrency,
@@ -327,8 +328,8 @@ export class OrderedReactive<C = unknown> {
     return Object.freeze(failures);
   }
 
-  prune(now = this.readNow()): number {
-    if (!Number.isFinite(now)) throw new RangeError("now must be finite");
+  prune(now = this.now()): number {
+    finiteMillis(now, "prune time");
     this.history.prune(now);
     let removed = 0;
     for (const entry of [...this.entries.values()]) {
@@ -377,15 +378,15 @@ export class OrderedReactive<C = unknown> {
     this.makeEntryCapacity();
     const entry: QueryEntry<C> = {
       key,
-      identity: createHash("sha256").update(key).digest("base64url"),
+      identity: sha256Base64Url(key),
       address: input.address,
       args: Object.freeze({
         decoded: deepFreeze(decode(encodedArgs)),
         encoded: encodedArgs,
-        bytes: byteLength(encodedArgs),
+        bytes: utf8ByteLength(encodedArgs),
       }),
       policyScopeFingerprint: input.policyScopeFingerprint,
-      revalidationBytes: byteLength(key),
+      revalidationBytes: utf8ByteLength(key),
       ownerFairnessKey: input.fairnessKey,
       context: input.context,
       generation: this.generation(),
@@ -438,7 +439,7 @@ export class OrderedReactive<C = unknown> {
         this.evaluatingEntries--;
       }
       if (entry.listeners.size === 0 && entry.initialized && entry.dormantAtMs === undefined) {
-        entry.dormantAtMs = this.readNow();
+        entry.dormantAtMs = this.now();
         this.dormantEntries++;
       }
     };
@@ -526,7 +527,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   private installEvaluation(entry: QueryEntry<C>, evaluated: QueryEvaluation): InstalledEvaluation<C> {
-    const resultBytes = byteLength(evaluated.encoded);
+    const resultBytes = utf8ByteLength(evaluated.encoded);
     const overloadMessage = this.makeResultCapacity(entry, resultBytes);
     if (overloadMessage) {
       if (entry.listeners.size === 0) {
@@ -570,7 +571,7 @@ export class OrderedReactive<C = unknown> {
             ? { value: evaluated.value }
             : {}),
         bytes: changed ? resultBytes : 32,
-        createdAtMs: this.readNow(),
+        createdAtMs: this.now(),
         active: true,
       });
       if (forceReset) entry.generation = this.generation();
@@ -704,7 +705,7 @@ export class OrderedReactive<C = unknown> {
     if (entry.removed) return [];
     const listeners = [...entry.listeners];
     this.removeEntry(entry);
-    const outcome = errorOutcome(error);
+    const outcome = outcomeFromError(error);
     const failures: DeliveryFailure[] = [];
     for (const listener of listeners) {
       failures.push(failure(listener, error, "convergence"));
@@ -799,7 +800,7 @@ export class OrderedReactive<C = unknown> {
       if (oldest !== undefined) binding.entry.ownerFairnessKey = oldest.fairnessKey;
       if (binding.entry.listeners.size === 0 && !binding.entry.removed) {
         if (binding.entry.dormantAtMs === undefined) {
-          binding.entry.dormantAtMs = this.readNow();
+          binding.entry.dormantAtMs = this.now();
           this.dormantEntries++;
         }
       }
@@ -939,11 +940,6 @@ export class OrderedReactive<C = unknown> {
     return generation;
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("now must return a finite number");
-    return now;
-  }
 }
 
 function cursorEquals(left: SubscriptionCursor, right: SubscriptionCursor): boolean {
@@ -951,8 +947,4 @@ function cursorEquals(left: SubscriptionCursor, right: SubscriptionCursor): bool
     left.commitVersion === right.commitVersion &&
     left.authEpoch === right.authEpoch &&
     left.identity === right.identity;
-}
-
-function byteLength(value: string): number {
-  return utf8.encode(value).byteLength;
 }

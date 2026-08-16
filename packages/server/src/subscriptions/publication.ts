@@ -1,5 +1,6 @@
-import { AckerDBError } from "../shared/errors.ts";
+import { AckerDBError, drainingError } from "../shared/errors.ts";
 import { validateCapacityLimits, type CapacityLimits } from "../runtime/limits.ts";
+import { finiteClock } from "../shared/clock.ts";
 
 export interface Publication<T> {
   readonly version: bigint;
@@ -59,12 +60,13 @@ interface MutablePublication<T> {
 
 class Slot<T> implements PublicationReservation<T> {
   readonly publication: MutablePublication<T>;
-  readonly completion: Promise<void>;
+  private readonly settlement = Promise.withResolvers<void>();
+  readonly completion = this.settlement.promise;
+  readonly resolve = this.settlement.resolve;
+  readonly reject = this.settlement.reject;
   state: SlotState = "reserved";
   previous?: Slot<T>;
   next?: Slot<T>;
-  resolve!: () => void;
-  reject!: (error: unknown) => void;
 
   constructor(
     readonly owner: OrderedPublication<T>,
@@ -73,10 +75,6 @@ class Slot<T> implements PublicationReservation<T> {
     reservedAtMs: number,
   ) {
     this.publication = { version, reservedBytes, reservedAtMs };
-    this.completion = new Promise<void>((resolve, reject) => {
-      this.resolve = resolve;
-      this.reject = reject;
-    });
   }
 
   commit(value: T): void {
@@ -116,8 +114,7 @@ export class OrderedPublication<T> {
   private startedHighWater: bigint;
   private readonly unsettledVersions = new Set<bigint>();
   private closed = false;
-  private closePromise?: Promise<void>;
-  private resolveClose?: () => void;
+  private closing?: PromiseWithResolvers<void>;
 
   constructor(options: OrderedPublicationOptions<T>) {
     this.limits = validateCapacityLimits(options.limits, "publication");
@@ -129,14 +126,14 @@ export class OrderedPublication<T> {
     this.settledHighWater = initialVersion;
     this.startedHighWater = initialVersion;
     this.processPublication = options.process;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "publication clock");
   }
 
   reserve(reservedBytes: number): PublicationReservation<T> {
     if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) {
       throw new RangeError("reservedBytes must be a non-negative safe integer");
     }
-    if (this.closed) throw unavailable("draining", "Publication coordinator is closed");
+    if (this.closed) throw drainingError("Publication coordinator is closed", "publication");
     if (this.items >= this.limits.maxItems || reservedBytes > this.limits.maxBytes - this.bytes) {
       throw unavailable("overloaded", "Publication capacity is full", true);
     }
@@ -144,7 +141,7 @@ export class OrderedPublication<T> {
       throw unavailable("unavailable", "A writer publication reservation is already open");
     }
 
-    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, this.readNow());
+    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, this.now());
     this.openReservation = slot;
     this.items++;
     this.bytes += reservedBytes;
@@ -166,7 +163,7 @@ export class OrderedPublication<T> {
     if (typeof evaluationVersion !== "bigint" || evaluationVersion < 0n) {
       throw new RangeError("evaluationVersion must be a non-negative bigint");
     }
-    if (this.closed) throw unavailable("draining", "Publication coordinator is closed");
+    if (this.closed) throw drainingError("Publication coordinator is closed", "publication");
     if (evaluationVersion !== this.committedHighWater) return false;
     const installed = install();
     if (
@@ -180,7 +177,7 @@ export class OrderedPublication<T> {
   }
 
   snapshot(): PublicationSnapshot {
-    const now = this.readNow();
+    const now = this.now();
     return Object.freeze({
       items: this.items,
       bytes: this.bytes,
@@ -196,14 +193,12 @@ export class OrderedPublication<T> {
 
   /** Rejects future reservations and resolves after every existing slot settles. */
   close(): Promise<void> {
-    if (!this.closePromise) {
+    if (!this.closing) {
       this.closed = true;
-      this.closePromise = new Promise<void>((resolve) => {
-        this.resolveClose = resolve;
-      });
+      this.closing = Promise.withResolvers<void>();
       this.resolveCloseIfDrained();
     }
-    return this.closePromise;
+    return this.closing.promise;
   }
 
   [commitSlot](slot: Slot<T>, value: T): void {
@@ -321,19 +316,13 @@ export class OrderedPublication<T> {
 
   private resolveCloseIfDrained(): void {
     if (!this.closed || this.items !== 0) return;
-    this.resolveClose?.();
-    this.resolveClose = undefined;
+    this.closing?.resolve();
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("now must return a finite number");
-    return now;
-  }
 }
 
 function unavailable(
-  code: "overloaded" | "draining" | "unavailable",
+  code: "overloaded" | "unavailable",
   message: string,
   retryable = false,
 ): AckerDBError {

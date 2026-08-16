@@ -43,16 +43,8 @@ anonymous fairness identity from the peer socket and ignores `Forwarded` and
 `X-Forwarded-For`, so callers behind one reverse proxy share the proxy's source
 group rather than trusting a spoofable header.
 
-An MCP-exporting programmatic server may bind outside loopback only with an
-exact `mcpHttp.allowedHosts` list and
-`mcpHttp.transport: "trusted-https-proxy"`. That setting is an operator
-assertion, not a proxy implementation: AckerDB still listens on a private
-plaintext hop, validates the actual `Host` header, and ignores every
-`Forwarded`/`X-Forwarded-*` header. The trusted terminator must expose HTTPS and
-must not make the private AckerDB listener directly reachable. Browser Origins are
-denied unless listed explicitly; native MCP clients remain usable without an
-`Origin` header after Host validation. CLI-created servers stay on loopback and
-derive their safe local Host and same-origin policy automatically.
+CLI-created servers stay on loopback; a programmatic server binds wherever its
+`hostname` option names.
 
 `CredentialVerifier` is the extension boundary. A custom verifier—not AckerDB—is
 responsible for authenticating the credential, validating issuer/audience and

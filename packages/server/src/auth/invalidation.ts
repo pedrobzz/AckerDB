@@ -147,9 +147,9 @@ export class AuthInvalidationBoundary {
    *
    * It differs from the verifier-facing door in one thing only: it exists
    * without a provider. It is otherwise the same subscription, with the same
-   * scope, because the MCP endpoint reaches the runtime through here and a
-   * revocation it performs itself must be excludable exactly as any other
-   * caller's is.
+   * scope, because a caller that reaches the runtime through here must have the
+   * revocation it performs itself be excludable exactly as any other caller's
+   * is.
    */
   subscribeDirect(listener: InvalidationListener): AuthInvalidationSubscription & {
     readonly scope: AuthInvalidationScope;
@@ -169,9 +169,10 @@ export class AuthInvalidationBoundary {
    * Defer the originating credential's self-invalidation until response handoff.
    *
    * The exclusion names a *subscription*, and a subscription can be shared: one
-   * WebSocket session subscribes once for every operation on it, and one MCP
-   * POST holds one lease for its whole batch. So a concurrent operation on that
-   * same connection keeps the revoked authority until this one's answer lands.
+   * WebSocket session subscribes once for every operation on it, and one
+   * connection-level lease covers every operation it carries. So a concurrent
+   * operation on that same connection keeps the revoked authority until this
+   * one's answer lands.
    * That is the exception's exact width, and it is deliberate. The sharer is by
    * construction the same principal — one connection, one credential — so what
    * it buys is a moment more use of an authority the caller already held and is

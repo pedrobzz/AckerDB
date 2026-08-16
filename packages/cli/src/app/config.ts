@@ -63,8 +63,8 @@ export interface AppConfig {
   authentication?: AuthenticationConfig;
   /** Module whose default export resolves an Identity's scope grant. Every grant is empty when omitted. */
   scopeResolver?: string;
-  /** Workload-principal OAuth scope required by the operational status endpoint. */
-  statusScope: string;
+  /** Workload-principal OAuth scope the status endpoint requires; the listener validates and defaults it. */
+  statusScope?: string;
   /** One active immutable File byte backend. */
   files: FilesConfig;
   /** What the application calls itself, from its package manifest: the OpenAPI document's identity. */
@@ -113,25 +113,9 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "statusScope",
   "files",
 ]);
-const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 
 function parseRawConfig(value: unknown): RawConfig {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("application configuration must be a JSON object");
-  }
-  const unknown = Object.keys(value).filter((field) => !RAW_CONFIG_FIELDS.has(field));
-  if (unknown.length > 0) {
-    throw new Error(`unknown configuration field: ${unknown.join(", ")}`);
-  }
-  return value as RawConfig;
-}
-
-function statusScope(value: unknown): string {
-  const scope = value ?? "ackerdb:status";
-  if (typeof scope !== "string" || !OAUTH_SCOPE_TOKEN.test(scope)) {
-    throw new Error("statusScope must be one OAuth scope token of at most 128 characters");
-  }
-  return scope;
+  return exactObject(value, [...RAW_CONFIG_FIELDS], "configuration") as RawConfig;
 }
 
 function listenerPort(value: unknown): number {
@@ -388,7 +372,7 @@ export function loadConfig(
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
     ...(authentication === undefined ? {} : { authentication }),
     ...(scopeResolver === undefined ? {} : { scopeResolver: abs(scopeResolver) }),
-    statusScope: statusScope(raw.statusScope),
+    ...(raw.statusScope === undefined ? {} : { statusScope: raw.statusScope }),
     files: resolveFilesConfig(raw.files, {
       appDir: dir,
       dbDir,

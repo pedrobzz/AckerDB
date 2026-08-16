@@ -1,4 +1,5 @@
 import { positiveSafeInteger } from "../shared/numbers.ts";
+import { MAX_TIMER_DELAY_MS } from "../shared/clock.ts";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -69,12 +70,6 @@ export interface ServiceLimits {
     readonly maxNameBytes: number;
     readonly maxMetadataBytes: number;
   };
-  readonly mcp: {
-    /** Maximum normalized request-header bytes accepted by an MCP route. */
-    readonly maxHeaderBytes: number;
-    /** Maximum explicitly registered tools on one named MCP endpoint. */
-    readonly maxToolsPerEndpoint: number;
-  };
   readonly gracefulShutdownMs: number;
 }
 
@@ -129,8 +124,6 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["credentials.maxPerIdentity", limits.credentials.maxPerIdentity],
     ["credentials.maxNameBytes", limits.credentials.maxNameBytes],
     ["credentials.maxMetadataBytes", limits.credentials.maxMetadataBytes],
-    ["mcp.maxHeaderBytes", limits.mcp.maxHeaderBytes],
-    ["mcp.maxToolsPerEndpoint", limits.mcp.maxToolsPerEndpoint],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
   ];
   for (const [path, value] of scalarLimits) positiveSafeInteger(value, path);
@@ -159,7 +152,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   if (limits.resume.maxBytesPerStream > limits.resume.maxBytes) {
     throw new RangeError("resume.maxBytesPerStream cannot exceed resume.maxBytes");
   }
-  if (limits.gracefulShutdownMs > 0x7fff_ffff) {
+  if (limits.gracefulShutdownMs > MAX_TIMER_DELAY_MS) {
     throw new RangeError("gracefulShutdownMs cannot exceed the platform timer limit");
   }
 
@@ -175,7 +168,6 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     mutationReplay: Object.freeze({ ...limits.mutationReplay }),
     auth: Object.freeze({ ...limits.auth }),
     credentials: Object.freeze({ ...limits.credentials }),
-    mcp: Object.freeze({ ...limits.mcp }),
     jobs: Object.freeze({ ...limits.jobs }),
   });
 }
@@ -216,10 +208,6 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     maxPerIdentity: 64,
     maxNameBytes: 128,
     maxMetadataBytes: 16 * KiB,
-  },
-  mcp: {
-    maxHeaderBytes: 32 * KiB,
-    maxToolsPerEndpoint: 256,
   },
   gracefulShutdownMs: 10_000,
 });

@@ -1,3 +1,4 @@
+import type { Clock } from "../../src/shared/clock.ts";
 import { describe, expect, test } from "bun:test";
 import { ACKERDB_VERSION } from "../../../core/src/version.ts";
 import {
@@ -38,7 +39,6 @@ import {
   type RuntimePublicationBatch,
   type RuntimeRequest,
   type SessionApplicationMessage,
-  type SessionClock,
   type SessionControlMessage,
   type SessionLimits,
   type SessionRuntimeContext,
@@ -53,7 +53,7 @@ async function settle(): Promise<void> {
   for (let turn = 0; turn < 24; turn++) await Promise.resolve();
 }
 
-class ManualClock implements SessionClock {
+class ManualClock implements Clock {
   nowMs: number;
   private nextId = 0;
   private readonly timers = new Map<number, { readonly at: number; readonly callback: () => void }>();

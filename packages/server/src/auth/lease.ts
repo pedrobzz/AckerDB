@@ -1,6 +1,9 @@
 import type { Credential } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
+  credentialExpired,
+  credentialRevoked,
+  authenticationUnavailable,
   verifyClientCredential,
   type AuthenticatedPrincipal,
   type ClientPrincipal,
@@ -14,13 +17,8 @@ import {
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "./invalidation.ts";
-import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
-
-export interface AuthLeaseClock {
-  now(): number;
-  setTimeout(callback: () => void, delayMs: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
+import { cancellation, throwIfAborted, type AckerDBError } from "../shared/errors.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS, SYSTEM_CLOCK, type Clock } from "../shared/clock.ts";
 
 export interface AuthLease {
   readonly principal: ClientPrincipal;
@@ -37,44 +35,11 @@ export interface AcquireAuthLeaseOptions {
   readonly resolveScopes?: ScopeResolver;
   readonly signal?: AbortSignal;
   readonly revocationDeadlineMs: number;
-  readonly clock?: AuthLeaseClock;
+  readonly clock?: Clock;
 }
 
-const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
 export const MAX_REVOCATION_DEADLINE_MS = 5_000;
 const NEVER_ABORTED = new AbortController().signal;
-const SYSTEM_CLOCK: AuthLeaseClock = Object.freeze({
-  now: Date.now,
-  setTimeout: (callback: () => void, delayMs: number) => {
-    const handle = setTimeout(callback, delayMs);
-    handle.unref?.();
-    return handle;
-  },
-  clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-});
-
-function verifierUnavailable(cause: unknown): AckerDBError {
-  return isAckerDBError(cause)
-    ? cause
-    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
-        retryable: true,
-        cause,
-      });
-}
-
-function canceled(reason: unknown): AckerDBError {
-  return isAckerDBError(reason)
-    ? reason
-    : new AckerDBError("unavailable", "operation was canceled", { resource: "operation" });
-}
-
-function revoked(): AckerDBError {
-  return new AckerDBError("unauthenticated", "credential revoked");
-}
-
-function expired(): AckerDBError {
-  return new AckerDBError("unauthenticated", "credential expired");
-}
 
 export function validateCredentialVerifierRevocation(
   verifier: CredentialVerifier | undefined,
@@ -137,6 +102,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   }
 
   const clock = options.clock ?? SYSTEM_CLOCK;
+  const now = finiteClock(() => clock.now(), "auth lease clock");
   const verifier = options.verifier;
   validateCredentialVerifierRevocation(verifier, options.revocationDeadlineMs);
   if (verifier === undefined) {
@@ -144,7 +110,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
       options.credential,
       undefined,
       options.resolveIdentity,
-      () => clock.now(),
+      now,
       options.resolveScopes,
     );
     throw new Error("unreachable credential verification result");
@@ -159,10 +125,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   let callerListening = false;
   let ended = false;
   let acquiring = true;
-  let interrupt!: (error: AckerDBError) => void;
-  const interrupted = new Promise<never>((_resolve, reject) => {
-    interrupt = reject;
-  });
+  const { promise: interrupted, reject: interrupt } = Promise.withResolvers<never>();
 
   const release = (): void => {
     if (!ended) {
@@ -204,22 +167,20 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   };
 
   function onCallerAbort(): void {
-    abort(canceled(callerSignal?.reason));
+    abort(cancellation(callerSignal?.reason));
   }
 
   const onInvalidation = (invalidation: PrincipalInvalidation): void => {
-    if (principal === undefined || invalidationReaches(principal, invalidation)) abort(revoked());
+    if (principal === undefined || invalidationReaches(principal, invalidation)) abort(credentialRevoked());
   };
 
   const scheduleExpiry = (verified: AuthenticatedPrincipal): void => {
     // AckerDB credentials never expire; invalidation revokes them instead.
     if (!Number.isFinite(verified.expiresAt)) return;
     try {
-      const now = clock.now();
-      if (!Number.isFinite(now)) throw new RangeError("auth lease clock must return finite milliseconds");
-      const remaining = verified.expiresAt - now;
+      const remaining = verified.expiresAt - now();
       if (remaining <= 0) {
-        abort(expired());
+        abort(credentialExpired());
         return;
       }
       expiryTimer = {
@@ -229,13 +190,13 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         }, Math.min(remaining, MAX_TIMER_DELAY_MS)),
       };
     } catch (error) {
-      abort(verifierUnavailable(error));
+      abort(authenticationUnavailable(error));
     }
   };
 
   try {
     if (callerSignal !== undefined) {
-      if (callerSignal.aborted) throw canceled(callerSignal.reason);
+      throwIfAborted(callerSignal);
       callerSignal.addEventListener("abort", onCallerAbort, { once: true });
       callerListening = true;
       if (callerSignal.aborted) onCallerAbort();
@@ -250,7 +211,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     } catch (error) {
       subscriptionSettled = true;
       if (ended) throw controller.signal.reason;
-      throw verifierUnavailable(error);
+      throw authenticationUnavailable(error);
     }
     if (ended) {
       release();
@@ -262,14 +223,14 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         options.credential,
         verifier,
         (account) => options.resolveIdentity(account, controller.signal),
-        () => clock.now(),
+        now,
         options.resolveScopes,
       ),
       interrupted,
     ]);
     acquiring = false;
     if (verified.kind === "anonymous") {
-      throw verifierUnavailable(new Error("remote credential resolved to an anonymous principal"));
+      throw authenticationUnavailable(new Error("remote credential resolved to an anonymous principal"));
     }
     if (ended) throw controller.signal.reason;
     principal = verified;

@@ -203,44 +203,6 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     expect(typecheckFixture(dir)).toBe("");
   });
 
-  test("binds MCP declarations to the schema while keeping them server-only", async () => {
-    const dir = makeFixture({
-      "app.ts": FIXTURE_APP,
-      "functions/agent.ts": `
-import { v } from "@ackerdb/server";
-import { mcp, query } from "../_generated/server.ts";
-
-export const echo = query({
-  description: "Echo text.",
-  access: "public",
-  args: { text: v.string() },
-  returns: v.object({ text: v.string() }),
-  handler: (_ctx, args) => ({ text: args.text }),
-});
-export const agentMcp = mcp({
-  name: "agent",
-  tools: { echo_text: { fn: echo, access: "public" } },
-});
-`,
-    });
-    dirs.push(dir);
-    const config = loadConfig(dir);
-    await runCodegen(config);
-
-    const generatedServer = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
-    expect(generatedServer).toContain('import type app from "../app.ts";');
-    expect(generatedServer).toContain("export type Schema = AppSchema<typeof app>;");
-    expect(generatedServer).toContain("mcp as mcpGeneric");
-    expect(generatedServer).toContain("export type Scope = AppScope<typeof app>;");
-    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;");
-
-    const registry = new Registry(await importFunctionModules(config));
-    // The tool is an ordinary function and keeps its address; the endpoint is
-    // the only server-only export.
-    expect(applicationAddresses(registry)).toEqual(["api.agent.echo"]);
-    expect([...registry.serverOnly.keys()]).toEqual(["api.agent.agentMcp"]);
-  });
-
   test("types.ts carries enum namespaces, union constructors and row types", async () => {
     const dir = fixture();
     const config = loadConfig(dir);

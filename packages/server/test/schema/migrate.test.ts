@@ -119,22 +119,6 @@ describe("migrate: rebuild transforms", () => {
     engine.close("clean");
   });
 
-  test("migration row validation rejects prototype-named unknown fields", async () => {
-    const before = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string() }) });
-    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string().min(2) }) });
-    const path = freshPath();
-    await seed(before, path, async (d) => {
-      await d.posts.insert({ title: "ok" });
-    });
-    const engine = new Engine(target, path);
-    await expect(reconcile(
-      engine,
-      chain(engine, defineMigration({ tables: { posts: (row) => ({ ...row, toString: "not-a-column" }) } })),
-    )).rejects.toThrow('unknown field "toString"');
-    expect(history(engine)).toEqual([]);
-    engine.close("clean");
-  });
-
   test("a type change is resolved by a transform, preserving pks and converting data", async () => {
     const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
     const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });

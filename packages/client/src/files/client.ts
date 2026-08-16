@@ -14,6 +14,8 @@ import type {
   AckerDBClientScheduler,
   ClientResult,
 } from "../client.ts";
+import { raceWithAbort } from "../abort.ts";
+import { retryDelay, type RetryPolicy } from "../connection/retry-policy.ts";
 
 /** Reusable byte bodies keep an ambiguous upload safe to retry against its session. */
 export type AckerDBFileUploadBody = Blob | BufferSource;
@@ -62,6 +64,7 @@ export interface AckerDBFilesClientPort {
   authorizationHeaders(): HeadersInit;
   readonly httpOrigin: string;
   readonly scheduler: AckerDBClientScheduler;
+  readonly random: () => number;
   readResponse(response: Response, signal: AbortSignal): Promise<string>;
   clientError(outcome: Outcome, interruption?: "suspension"): AckerDBClientError;
 }
@@ -172,43 +175,15 @@ function lifecycleInterruption(signal: AbortSignal): "suspension" | undefined {
     : undefined;
 }
 
-async function waitForFetch(
-  request: Promise<Response>,
-  signal: AbortSignal,
-): Promise<Response> {
-  const observed = request.then((response) => {
-    if (!signal.aborted) return response;
-    cancelResponse(response, signal.reason);
-    throw signal.reason;
-  });
-  if (signal.aborted) {
-    void observed.catch(() => {});
-    throw signal.reason;
-  }
-  let rejectAborted!: () => void;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    rejectAborted = () => reject(signal.reason);
-  });
-  const onAbort = (): void => rejectAborted();
-  signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    return await Promise.race([observed, aborted]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
 async function waitForSession<Error extends ApplicationError>(
   request: Promise<ClientResult<FileUploadSession, Error>>,
   signal: AbortSignal | undefined,
 ): Promise<ClientResult<FileUploadSession, Error> | typeof SESSION_ABORTED> {
   if (signal === undefined) return request;
   if (signal.aborted) return SESSION_ABORTED;
-  let resolveAborted!: () => void;
-  const aborted = new Promise<typeof SESSION_ABORTED>((resolve) => {
-    resolveAborted = () => resolve(SESSION_ABORTED);
-  });
-  const onAbort = (): void => resolveAborted();
+  const { promise: aborted, resolve: resolveAborted } =
+    Promise.withResolvers<typeof SESSION_ABORTED>();
+  const onAbort = (): void => resolveAborted(SESSION_ABORTED);
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     // The durable mutation is not canceled: if it commits after the caller
@@ -235,14 +210,26 @@ function responseRetryAfterMs(response: Response, now: number): number {
   return Math.min(Number.isFinite(delayMs) ? delayMs : MAX_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS);
 }
 
+const UPLOAD_RETRY_POLICY: RetryPolicy = Object.freeze({
+  baseDelayMs: UPLOAD_RETRY_BASE_MS,
+  maxDelayMs: UPLOAD_RETRY_MAX_MS,
+});
+
+/**
+ * The same full-jitter schedule reconnect uses, over the upload's own base and
+ * cap, floored by the server's `Retry-After` and capped by what is left of the
+ * caller's deadline.
+ */
 function uploadRetryDelay(
-  failures: number,
+  backoffStep: number,
   remainingMs: number,
   retryAfterMs: number,
+  random: () => number,
 ): number {
-  const exponent = Math.min(Math.max(0, failures - 1), 30);
-  const backoff = Math.min(UPLOAD_RETRY_BASE_MS * 2 ** exponent, UPLOAD_RETRY_MAX_MS);
-  return Math.min(Math.max(backoff, retryAfterMs), remainingMs);
+  return Math.min(
+    retryDelay(UPLOAD_RETRY_POLICY, backoffStep, retryAfterMs, random, MAX_RETRY_AFTER_MS),
+    remainingMs,
+  );
 }
 
 function waitForRetry(
@@ -349,7 +336,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
       const authorization = new Headers(this.port.authorizationHeaders()).get("authorization");
       if (authorization === null) headers.delete("authorization");
       else headers.set("authorization", authorization);
-      const response = await waitForFetch(
+      const response = await raceWithAbort(
         Promise.resolve().then(() => this.port.fetch(grantUrl, {
           method,
           headers,
@@ -358,6 +345,8 @@ export class AckerDBFilesClient implements AckerDBFiles {
           redirect: "error",
         })),
         control.signal,
+        () => control.signal.reason,
+        (late) => cancelResponse(late, control.signal.reason),
       );
       return managedStreamingResponse(response, control);
     } catch (error) {
@@ -424,7 +413,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
     let attempted = false;
     try {
       const headers = uploadHeaders(file, options);
-      let failures = 0;
+      let backoffStep = 0;
       for (;;) {
         if (this.port.scheduler.now() >= session.data.expiresAt) {
           return uploadFailure<Error>(this.port.clientError({
@@ -439,7 +428,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
         attempted = true;
         let retryAfterMs = 0;
         try {
-          const response = await waitForFetch(
+          const response = await raceWithAbort(
             Promise.resolve().then(() => this.port.fetch(uploadUrl, {
               method: "PUT",
               headers,
@@ -447,6 +436,8 @@ export class AckerDBFilesClient implements AckerDBFiles {
               signal: control.signal,
             })),
             control.signal,
+            () => control.signal.reason,
+            (late) => cancelResponse(late, control.signal.reason),
           );
           if (!response.ok) {
             let outcome: Outcome;
@@ -491,14 +482,11 @@ export class AckerDBFilesClient implements AckerDBFiles {
             ));
           }
         }
-        failures++;
         const remaining = session.data.expiresAt - this.port.scheduler.now();
         if (!(remaining > 0)) continue;
-        await waitForRetry(
-          this.port.scheduler,
-          uploadRetryDelay(failures, remaining, retryAfterMs),
-          control.signal,
-        );
+        const delayMs = uploadRetryDelay(backoffStep, remaining, retryAfterMs, this.port.random);
+        backoffStep++;
+        await waitForRetry(this.port.scheduler, delayMs, control.signal);
       }
     } catch {
       return uploadFailure<Error>(this.port.clientError({

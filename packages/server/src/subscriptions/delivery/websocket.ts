@@ -13,8 +13,9 @@ import {
   type SessionSink,
 } from "../session/contract.ts";
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
-import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
+import { finiteClock, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 export interface WebSocketDeliverySocket {
   send(data: string): number;
@@ -26,7 +27,7 @@ export interface WebSocketSessionSinkOptions {
   readonly socket: WebSocketDeliverySocket;
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
-  readonly clock?: DeliveryClock;
+  readonly clock?: Clock;
 }
 
 export interface WebSocketDeliverySnapshot {
@@ -53,8 +54,6 @@ interface BufferedFrame {
   readonly reservation: OutboundReservation;
 }
 
-const utf8 = new TextEncoder();
-
 function webSocketErrorText(error: AckerDBError, maxBytes: number): string | null {
   const outcome = outcomeFromError(error);
   return fitOutcome(outcome, maxBytes, (candidate) => {
@@ -64,7 +63,7 @@ function webSocketErrorText(error: AckerDBError, maxBytes: number): string | nul
       id: null,
       outcome: candidate,
     } satisfies SessionControlMessage);
-    return { value, bytes: utf8.encode(value).byteLength };
+    return { value, bytes: utf8ByteLength(value) };
   })?.value ?? null;
 }
 
@@ -75,7 +74,8 @@ export class WebSocketSessionSink implements SessionSink {
   private readonly socket: WebSocketDeliverySocket;
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
-  private readonly clock: DeliveryClock;
+  private readonly clock: Clock;
+  private readonly now: () => number;
   private readonly queue: PendingFrame[] = [];
   private readonly buffered: BufferedFrame[] = [];
   private applicationBytes = 0;
@@ -96,7 +96,8 @@ export class WebSocketSessionSink implements SessionSink {
     this.socket = options.socket;
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
+    this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.now = finiteClock(() => this.clock.now(), "delivery clock");
     this.controlReserveBytes = options.limits.maxFrameBytes;
   }
 
@@ -185,7 +186,7 @@ export class WebSocketSessionSink implements SessionSink {
       } catch (error) {
         return Promise.reject(error);
       }
-      bytes = utf8.encode(text).byteLength;
+      bytes = utf8ByteLength(text);
     }
     if (bytes > this.limits.maxFrameBytes) {
       const error = overloaded("outbound", "WebSocket frame exceeds maxFrameBytes");
@@ -319,9 +320,9 @@ export class WebSocketSessionSink implements SessionSink {
   }
 
   private armStall(): void {
-    if (this.stallSince === null) this.stallSince = this.clock.now();
+    if (this.stallSince === null) this.stallSince = this.now();
     if (this.stallTimer !== undefined) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     this.stallTimer = this.clock.setTimeout(
       () => this.onStallTimer(),
       Math.max(1, this.limits.webSocket.maxStallMs - elapsed),
@@ -331,7 +332,7 @@ export class WebSocketSessionSink implements SessionSink {
   private restartStall(): void {
     if (this.stallTimer !== undefined) this.clock.clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
-    this.stallSince = this.clock.now();
+    this.stallSince = this.now();
     this.armStall();
   }
 
@@ -352,7 +353,7 @@ export class WebSocketSessionSink implements SessionSink {
       return;
     }
     if (this.bufferedBytes < before) {
-      this.stallSince = this.clock.now();
+      this.stallSince = this.now();
       this.armStall();
       return;
     }
@@ -360,7 +361,7 @@ export class WebSocketSessionSink implements SessionSink {
       this.clearStall();
       return;
     }
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     if (elapsed < this.limits.webSocket.maxStallMs) {
       this.armStall();
       return;
@@ -385,7 +386,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.releaseBuffered(this.bufferedBytes);
 
     const text = webSocketErrorText(terminal, this.limits.maxFrameBytes);
-    const bytes = text === null ? 0 : utf8.encode(text).byteLength;
+    const bytes = text === null ? 0 : utf8ByteLength(text);
     const reservation = text === null ? null : this.budget.reserve(bytes, "control");
     try {
       if (reservation !== null && text !== null) {

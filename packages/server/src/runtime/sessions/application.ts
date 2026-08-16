@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
 import {
-  ACKERDB_VERSION,
   isApplicationError,
   isResult,
-  stableEncode,
   type ApplicationErrorMessage,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
@@ -44,6 +41,8 @@ import {
 import type { RuntimeQueries } from "../queries/runtime.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "./store.ts";
 import { RuntimeSessionStore } from "./store.ts";
+import { digestOfWire } from "../../shared/digest.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
@@ -64,7 +63,11 @@ export interface RuntimeSessionApplicationOptions {
 
 /** Owns the client-session protocol operations layered over RuntimeSessionStore. */
 export class RuntimeSessionApplication {
-  constructor(private readonly options: RuntimeSessionApplicationOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: RuntimeSessionApplicationOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
+  }
 
   subscribe(
     context: SessionRuntimeContext,
@@ -217,38 +220,34 @@ export class RuntimeSessionApplication {
             context.fairnessKey,
             signal,
             requestBytes,
-            this.readNow(),
+            this.now(),
             invalidations.publish,
           );
-          try {
-            const result = await invokeSideEffectingHandler(
-              signal,
-              "procedure",
-              (onAuthorized) => invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
-            );
-            if (!isResult(result)) {
-              throw new AckerDBError("internal", "procedure boundary returned no Result");
-            }
-            publication = this.options.store.prepare(
-              result.ok
-                ? {
-                    t: "ok",
-                    id: message.id,
-                    kind: "procedure",
-                    value: result.data,
-                  } satisfies ProcedureOkMessage
-                : {
-                    t: "app_err",
-                    id: message.id,
-                    kind: "procedure",
-                    error: applicationError(result.error),
-                  } satisfies ApplicationErrorMessage,
-              "procedure result",
-            );
-            return result.ok ? result.data : result;
-          } finally {
-            procedure.release();
+          const result = await invokeSideEffectingHandler(
+            signal,
+            "procedure",
+            (onAuthorized) => invokeFunction(fn, procedure, message.args, { onAuthorized }),
+          );
+          if (!isResult(result)) {
+            throw new AckerDBError("internal", "procedure boundary returned no Result");
           }
+          publication = this.options.store.prepare(
+            result.ok
+              ? {
+                  t: "ok",
+                  id: message.id,
+                  kind: "procedure",
+                  value: result.data,
+                } satisfies ProcedureOkMessage
+              : {
+                  t: "app_err",
+                  id: message.id,
+                  kind: "procedure",
+                  error: applicationError(result.error),
+                } satisfies ApplicationErrorMessage,
+            "procedure result",
+          );
+          return result.ok ? result.data : result;
         },
         {
           successPublication: () => requiredPublication(publication, "procedure"),
@@ -299,7 +298,7 @@ export class RuntimeSessionApplication {
               // encodable — look like a different caller.
               principalFingerprint: context.fairnessKey,
               functionRef: message.ref,
-              argsFingerprint: digest(message.args),
+              argsFingerprint: digestOfWire(message.args),
             },
             fn,
             principal: context.principal,
@@ -460,11 +459,6 @@ export class RuntimeSessionApplication {
     return fn;
   }
 
-  private readNow(): number {
-    const now = this.options.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
 }
 
 function applicationError(value: unknown) {
@@ -480,10 +474,6 @@ function requiredPublication(
 ): RuntimePublication {
   if (publication === undefined) throw new Error(`${operation} publication was not prepared`);
   return publication;
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }
 
 function convergenceError(message: string): AckerDBError {

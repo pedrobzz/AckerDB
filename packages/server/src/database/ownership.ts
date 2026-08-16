@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
-  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -14,17 +13,20 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { fsyncPathSync } from "../shared/fsync.ts";
+import { combinedFailure } from "../shared/cleanup.ts";
 import { Database } from "bun:sqlite";
+import { transaction } from "./transaction.ts";
 import {
   databasePublicationArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
 } from "./artifacts.ts";
+import { UUID_V4 } from "../shared/identity.ts";
 
 /** ASCII `AckerDB`, persisted in SQLite's application_id header field. */
 const ACKERDB_COORDINATION_APPLICATION_ID = 0x44425a5a;
 const COORDINATION_SUFFIX = ".ackerdb-coordination";
 const COORDINATION_STAGE_MARKER = ".ackerdb-bootstrap-";
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function sqliteCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
@@ -73,33 +75,6 @@ export function canonicalizeDatabasePath(path: string): string {
   return resolveCanonicalDatabasePath(path, new Set());
 }
 
-function combinedFailure(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
-  if (cleanup.length === 0) return primary;
-  return new AggregateError([primary, ...cleanup], message);
-}
-
-function fsyncPath(path: string): void {
-  const descriptor = openSync(path, "r");
-  let failure: unknown;
-  try {
-    fsyncSync(descriptor);
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    closeSync(descriptor);
-  } catch (closeError) {
-    if (failure !== undefined) {
-      throw new AggregateError(
-        [failure, closeError],
-        `coordination sync and descriptor close both failed: ${path}`,
-      );
-    }
-    throw closeError;
-  }
-  if (failure !== undefined) throw failure;
-}
-
 function exactCoordinationStageName(path: string, name: string): boolean {
   const prefix = `${basename(path)}${COORDINATION_STAGE_MARKER}`;
   if (!name.startsWith(prefix)) return false;
@@ -125,7 +100,6 @@ function stageCoordinationDatabase(coordinationPath: string): string {
   const stagingPath = `${coordinationPath}${COORDINATION_STAGE_MARKER}${randomUUID()}`;
   let database: Database | undefined;
   let created = false;
-  let transactionOpen = false;
   let failure: unknown;
   try {
     const descriptor = openSync(stagingPath, "wx", 0o600);
@@ -137,22 +111,14 @@ function stageCoordinationDatabase(coordinationPath: string): string {
     if (String(Object.values(journal)[0]).toLowerCase() !== "delete") {
       throw new Error(`coordination staging file did not enter DELETE journal mode: ${stagingPath}`);
     }
-    database.exec("BEGIN IMMEDIATE");
-    transactionOpen = true;
-    database.exec(`PRAGMA application_id = ${ACKERDB_COORDINATION_APPLICATION_ID}`);
-    database.exec("COMMIT");
-    transactionOpen = false;
+    const staged = database;
+    transaction(staged, () => {
+      staged.exec(`PRAGMA application_id = ${ACKERDB_COORDINATION_APPLICATION_ID}`);
+    });
   } catch (error) {
     failure = error;
   }
   const cleanup: unknown[] = [];
-  if (transactionOpen && database !== undefined) {
-    try {
-      database.exec("ROLLBACK");
-    } catch (error) {
-      cleanup.push(error);
-    }
-  }
   if (database !== undefined) {
     try {
       database.close(false);
@@ -162,7 +128,7 @@ function stageCoordinationDatabase(coordinationPath: string): string {
   }
   if (failure === undefined && cleanup.length === 0) {
     try {
-      fsyncPath(stagingPath);
+      fsyncPathSync(stagingPath);
       return stagingPath;
     } catch (error) {
       failure = error;
@@ -178,7 +144,7 @@ function stageCoordinationDatabase(coordinationPath: string): string {
       cleanup.push(error);
     }
     try {
-      fsyncPath(dirname(stagingPath));
+      fsyncPathSync(dirname(stagingPath));
     } catch (error) {
       cleanup.push(error);
     }
@@ -234,7 +200,7 @@ function publishMissingCoordinationDatabase(coordinationPath: string): void {
   }
   if (stagingPath !== undefined && (failure !== undefined || cleanup.length > 0)) {
     try {
-      fsyncPath(directory);
+      fsyncPathSync(directory);
     } catch (error) {
       cleanup.push(error);
     }
@@ -260,7 +226,7 @@ function publishMissingCoordinationDatabase(coordinationPath: string): void {
 function convergeCoordinationPublication(path: string, coordinationPath: string): void {
   const canonical = statSync(coordinationPath, { bigint: true });
   if (canonical.nlink === 1n) {
-    fsyncPath(dirname(coordinationPath));
+    fsyncPathSync(dirname(coordinationPath));
     return;
   }
   for (const candidatePath of coordinationStagingArtifactPaths(path)) {
@@ -279,7 +245,7 @@ function convergeCoordinationPublication(path: string, coordinationPath: string)
       `database coordination file has ${links} hard links; expected exactly one: ${coordinationPath}`,
     );
   }
-  fsyncPath(dirname(coordinationPath));
+  fsyncPathSync(dirname(coordinationPath));
 }
 
 /**
@@ -308,7 +274,7 @@ function convergeDatabasePublication(path: string): void {
       throw error;
     }
   }
-  if (removed) fsyncPath(dirname(path));
+  if (removed) fsyncPathSync(dirname(path));
   const converged = statSync(path, { bigint: true });
   if (converged.dev !== canonical.dev || converged.ino !== canonical.ino) {
     throw new Error(`database main file changed during ownership acquisition: ${path}`);
@@ -398,6 +364,9 @@ export class DatabaseOwnership {
     try {
       database.exec("PRAGMA busy_timeout = 0");
       try {
+        // Not a `transaction()` site: this BEGIN IMMEDIATE is the ownership LOCK
+        // (ADR-0007). It is held for the whole process lifetime and released by
+        // `release()`, so it has no bracketed body to commit.
         database.exec("BEGIN IMMEDIATE");
         transactionOpen = true;
       } catch (error) {

@@ -52,9 +52,9 @@ protocols, serialization—is commodity, so adopting a proven implementation is
 the default here rather than the fallback.
 
 AckerDB's policy merges into one definition what is normally several systems: a
-procedure is observed reactively, served over exposed HTTP, offered as an MCP
-tool, and memoized as a durable step, under one authorization vocabulary, one
-result contract, and one version contract. That convergence is policy and is
+procedure is observed reactively, served over exposed HTTP, and memoized as a
+durable step, under one authorization vocabulary, one result contract, and one
+version contract. That convergence is policy and is
 where AckerDB may invent. It says nothing about whether a full-text index or a
 JWKS client should be written here.
 

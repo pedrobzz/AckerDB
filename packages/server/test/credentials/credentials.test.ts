@@ -1,8 +1,7 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { encode } from "@ackerdb/core";
 import {
-  ANONYMOUS_PRINCIPAL,
   verifyBearerCredential,
   type CredentialVerifier,
   type PrincipalInvalidation,
@@ -10,12 +9,8 @@ import {
 } from "../../src/auth/credentials.ts";
 import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { mcp as mcpDeclaration } from "../../src/mcp/index.ts";
-import { query } from "../../src/app/functions.ts";
-import { v } from "../../src/validation/v.ts";
 import type { SessionApplicationMessage } from "../../src/subscriptions/session/contract.ts";
 import {
-  agentMcp,
   cleanupCredentialFixtures,
   databasePath,
   fixture,
@@ -23,7 +18,6 @@ import {
   mutationMessage,
   queryMessage,
   request,
-  scopedMcp,
   session,
   subscribeMessage,
   trackCleanup,
@@ -33,29 +27,20 @@ import { listen } from "ackerdb-test-support/listen";
 
 afterEach(cleanupCredentialFixtures);
 
-function mcpHeaders(token?: string): Record<string, string> {
-  return {
-    accept: "application/json, text/event-stream",
-    "content-type": "application/json",
-    "mcp-protocol-version": "2025-11-25",
-    ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-  };
-}
-
-function rpc(base: string, path: string, method: string, params: unknown, token?: string): Promise<Response> {
-  return fetch(`${base}${path}`, {
+/** One exposed-HTTP call, optionally bearing an AckerDB credential. */
+function call(
+  base: string,
+  address: string,
+  options: { readonly token?: string; readonly args?: unknown } = {},
+): Promise<Response> {
+  const headers = options.token === undefined
+    ? undefined
+    : { authorization: `Bearer ${options.token}` };
+  return fetch(`${base}/${address.replaceAll(".", "/")}`, {
     method: "POST",
-    headers: mcpHeaders(token),
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    ...(headers === undefined ? {} : { headers }),
+    body: JSON.stringify(options.args ?? {}),
   });
-}
-
-async function listedToolNames(response: Response): Promise<readonly string[]> {
-  expect(response.status).toBe(200);
-  const body = await response.json() as {
-    readonly result: { readonly tools: readonly { readonly name: string }[] };
-  };
-  return body.result.tools.map(({ name }) => name).sort();
 }
 
 interface CreatedValue {
@@ -227,13 +212,15 @@ describe("Identity credentials", () => {
     expect(after.scopesJson).toBe(before.scopesJson);
     expect(await runtime.authenticateCredential(created.token, "after-edit"))
       .toMatchObject({ identity: created.identity, tokenId: created.id });
-    const activeResult = await runtime.runMcpTool({
-      id: "active-through-descriptor-edit",
-      authorization: runtime.authorizeMcpTool("agent", "write_owned_record", active),
+    const activeResult = await runtime.runProcedure({
+      id: 1,
+      address: "api.records.writeOwnedRecord",
       args: { value: "still-active" },
       principal: active,
+      respond: ({ body, status }) => new Response(body, { status }),
     });
-    expect(activeResult.structuredContent).toMatchObject({
+    expect(activeResult.status).toBe(200);
+    expect(await activeResult.json()).toMatchObject({
       principal: `user:${created.identity}`,
     });
 
@@ -285,12 +272,10 @@ describe("Identity credentials", () => {
 
     const server = listen(runtime);
     trackCleanup(async () => server.drain());
-    const response = await rpc(
+    const response = await call(
       `http://127.0.0.1:${server.port}`,
-      "/agent/mcp",
-      "ping",
-      {},
-      created.token,
+      "api.records.writeOwnedRecord",
+      { token: created.token, args: { value: "revoked" } },
     );
     expect(response.status).toBe(401);
   });
@@ -300,27 +285,6 @@ describe("Identity credentials", () => {
     const alice = await user(runtime, "scoped-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
-
-    // Tool access requirements share the one structural shape every
-    // function's `scopes` uses; malformed policies fail at declaration.
-    const policyProbe = query({
-      description: "Runtime validation cannot be bypassed by a cast.",
-      access: "public",
-      args: {},
-      returns: v.object({}),
-      handler: () => ({}),
-    });
-    const invalidEndpoint = (name: string, access: unknown) => mcpDeclaration({
-      name,
-      path: `/${name}`,
-      tools: { runtime_policy: { fn: policyProbe, access } },
-    } as never);
-    expect(() => invalidEndpoint("runtime_ambiguous_scope", ["orders.get"]))
-      .toThrow("must be public, authenticated");
-    expect(() => invalidEndpoint("runtime_empty_scope_policy", { allOf: [] }))
-      .toThrow("non-empty array of unique concrete scopes");
-    expect(() => invalidEndpoint("runtime_two_kinds", { anyOf: ["a"], allOf: ["b"] }))
-      .toThrow("exactly one of anyOf or allOf");
 
     await expect(runtime.mutation(aliceSession, request(mutationMessage(
       19,
@@ -345,51 +309,27 @@ describe("Identity credentials", () => {
     expect(principal.issuer).toBe(CREDENTIAL_ISSUER);
     expect(principal.subject).toBe(created.id);
 
-    const invoke = (tool: string, current = principal) => runtime.runMcpTool({
-      id: `scope-${tool}`,
-      authorization: runtime.authorizeMcpTool("scoped", tool, current),
-      args: {},
-      principal: current,
-    });
-    expect(await runtime.runMcpTool({
-      id: "scope-public",
-      authorization: runtime.authorizeMcpTool(
-        "scoped",
-        "public_status",
-        ANONYMOUS_PRINCIPAL,
-      ),
-      args: {},
-      principal: ANONYMOUS_PRINCIPAL,
-    })).toMatchObject({ structuredContent: { status: "public" } });
-    await expect(runtime.runMcpTool({
-      id: "scope-authenticated-anonymous",
-      authorization: runtime.authorizeMcpTool(
-        "scoped",
-        "authenticated_status",
-        ANONYMOUS_PRINCIPAL,
-      ),
-      args: {},
-      principal: ANONYMOUS_PRINCIPAL,
-    })).rejects.toMatchObject({ code: "unauthenticated" });
-    await expect(runtime.runMcpTool({
-      id: "scope-unknown-anonymous",
-      authorization: runtime.authorizeMcpTool(
-        "scoped",
-        "private_or_unknown",
-        ANONYMOUS_PRINCIPAL,
-      ),
-      args: {},
-      principal: ANONYMOUS_PRINCIPAL,
-    })).rejects.toMatchObject({
-      code: "unauthenticated",
-      message: "authentication required",
-    });
-    expect(await invoke("authenticated_status")).toMatchObject({
-      structuredContent: { status: "authenticated" },
-    });
-    expect(await invoke("read_orders")).toMatchObject({ structuredContent: { status: "orders" } });
-    await expect(invoke("read_reports")).rejects.toMatchObject({ code: "unauthorized" });
-    await expect(invoke("admin_orders")).rejects.toMatchObject({ code: "unauthorized" });
+    // Every scope decision is re-taken on the exposed HTTP surface, against
+    // the credential the request bears rather than a cached authorization.
+    const server = listen(runtime);
+    trackCleanup(async () => server.drain());
+    const base = `http://127.0.0.1:${server.port}`;
+    const invoke = (address: string, token = created.token) =>
+      call(base, address, { token });
+
+    const anonymousPublic = await call(base, "api.records.publicScopedTool");
+    expect(anonymousPublic.status).toBe(200);
+    expect(await anonymousPublic.json()).toEqual({ status: "public" });
+    expect((await call(base, "api.records.authenticatedScopedTool")).status).toBe(401);
+
+    const authenticated = await invoke("api.records.authenticatedScopedTool");
+    expect(authenticated.status).toBe(200);
+    expect(await authenticated.json()).toEqual({ status: "authenticated" });
+    const anyOfBefore = await invoke("api.records.anyScopedTool");
+    expect(anyOfBefore.status).toBe(200);
+    expect(await anyOfBefore.json()).toEqual({ status: "orders" });
+    expect((await invoke("api.records.allScopedTool")).status).toBe(403);
+    expect((await invoke("api.records.exactAllTool")).status).toBe(403);
 
     await runtime.mutation(aliceSession, request(mutationMessage(
       21,
@@ -408,12 +348,11 @@ describe("Identity credentials", () => {
       created.token,
       "scope-auth-expanded",
     ) as UserPrincipal;
-    expect(await invoke("read_reports", expanded)).toMatchObject({
-      structuredContent: { status: "reports" },
-    });
-    await expect(invoke("admin_orders", expanded)).rejects.toMatchObject({
-      code: "unauthorized",
-    });
+    expect(expanded.scopes).toEqual(["orders.get", "reports.all"]);
+    const allOf = await invoke("api.records.allScopedTool");
+    expect(allOf.status).toBe(200);
+    expect(await allOf.json()).toEqual({ status: "reports" });
+    expect((await invoke("api.records.exactAllTool")).status).toBe(403);
 
     for (const [id, scopes] of [
       [23, ["orders.create"]],
@@ -446,12 +385,10 @@ describe("Identity credentials", () => {
       "scope-auth-empty",
     ) as UserPrincipal;
     expect(emptyPrincipal.scopes).toEqual([]);
-    expect(await invoke("authenticated_status", emptyPrincipal)).toMatchObject({
-      structuredContent: { status: "authenticated" },
-    });
-    await expect(invoke("read_orders", emptyPrincipal)).rejects.toMatchObject({
-      code: "unauthorized",
-    });
+    // The narrowed grant takes effect on the very next call: nothing caches an
+    // earlier authorization for the same credential.
+    expect((await invoke("api.records.authenticatedScopedTool")).status).toBe(200);
+    expect((await invoke("api.records.anyScopedTool")).status).toBe(403);
     expect(engine.reader.query(
       "SELECT scopesJson FROM _ackerdb_credentials WHERE tokenId = ?",
     ).get(created.id)).toEqual({ scopesJson: "[]" });
@@ -465,173 +402,6 @@ describe("Identity credentials", () => {
       "scope-auth-undeclared-persisted",
     ) as UserPrincipal;
     expect(undeclared.scopes).toEqual([]);
-  });
-
-  test("filters discovery and reauthorizes every HTTP call against the current exact grant", async () => {
-    const { runtime } = await fixture(databasePath("ackerdb-credential-discovery-"));
-    const alice = await user(runtime, "discovery-alice", FIXTURE_SCOPES);
-    const aliceSession = session(alice, "discovery-alice-session");
-    await runtime.openSession(aliceSession);
-    const created = (await runtime.mutation(aliceSession, request(mutationMessage(
-      30,
-      "30",
-      { name: "Least privilege", scopes: ["orders.get"] },
-      "api.tokens.createScopedToken",
-    )))).value as CreatedValue;
-
-    const server = listen(runtime);
-    trackCleanup(async () => server.drain());
-    const base = `http://127.0.0.1:${server.port}`;
-    const authorizeMcpTool = spyOn(runtime, "authorizeMcpTool");
-
-    expect(await listedToolNames(await rpc(base, scopedMcp.path, "tools/list", {}))).toEqual([
-      "public_status",
-    ]);
-    const publicCall = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "public_status",
-      arguments: {},
-    });
-    expect(publicCall.status).toBe(200);
-    expect(authorizeMcpTool).toHaveBeenCalledTimes(1);
-
-    const protectedCall = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_reports",
-      arguments: {},
-    });
-    expect(protectedCall.status).toBe(401);
-    expect(protectedCall.headers.get("www-authenticate")).toBe('Bearer realm="scoped"');
-    expect(protectedCall.headers.get("access-control-expose-headers"))
-      .toContain("www-authenticate");
-    const protectedBody = await protectedCall.json();
-    expect(protectedBody).toEqual({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "authentication required" },
-      id: null,
-    });
-    const unknownCall = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "private_or_unknown",
-      arguments: {},
-    });
-    expect(unknownCall.status).toBe(protectedCall.status);
-    expect(unknownCall.headers.get("www-authenticate")).toBe(
-      protectedCall.headers.get("www-authenticate"),
-    );
-    expect(await unknownCall.json()).toEqual(protectedBody);
-    const malformedProtectedCall = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_reports",
-      arguments: "invalid",
-    });
-    expect(malformedProtectedCall.status).toBe(401);
-    expect(await malformedProtectedCall.json()).toEqual(protectedBody);
-
-    const notification = await fetch(`${base}${scopedMcp.path}`, {
-      method: "POST",
-      headers: mcpHeaders(),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: { name: "read_reports", arguments: {} },
-      }),
-    });
-    expect(notification.status).toBe(202);
-    const batchedCall = await fetch(`${base}${scopedMcp.path}`, {
-      method: "POST",
-      headers: mcpHeaders(),
-      body: JSON.stringify([{
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/list",
-        params: {},
-      }, {
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "read_reports", arguments: {} },
-      }]),
-    });
-    expect(batchedCall.status).toBe(401);
-    expect(await batchedCall.json()).toEqual(protectedBody);
-    const malformedBatch = await fetch(`${base}${scopedMcp.path}`, {
-      method: "POST",
-      headers: mcpHeaders(),
-      body: JSON.stringify([{
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name: "read_reports", arguments: {} },
-      }, { invalid: true }]),
-    });
-    expect(malformedBatch.status).toBe(400);
-
-    const invalidToken = `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`;
-    const invalid = await rpc(base, scopedMcp.path, "tools/list", {}, invalidToken);
-    expect(invalid.status).toBe(401);
-    expect(invalid.headers.get("www-authenticate")).toBe(
-      'Bearer realm="scoped", error="invalid_token"',
-    );
-    expect(JSON.stringify(await invalid.json())).not.toContain("read_reports");
-
-    expect(await listedToolNames(
-      await rpc(base, scopedMcp.path, "tools/list", {}, created.token),
-    )).toEqual(["authenticated_status", "public_status", "read_orders"]);
-    const anyOf = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_orders",
-      arguments: {},
-    }, created.token);
-    expect(anyOf.status).toBe(200);
-    const insufficient = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_reports",
-      arguments: {},
-    }, created.token);
-    expect(insufficient.status).toBe(403);
-    expect(insufficient.headers.get("www-authenticate")).toBe(
-      'Bearer realm="scoped", error="insufficient_scope"',
-    );
-    const insufficientBody = await insufficient.json();
-    expect(insufficientBody).toEqual({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "access denied" },
-      id: null,
-    });
-    expect(JSON.stringify(insufficientBody)).not.toContain("reports.all");
-
-    await runtime.mutation(aliceSession, request(mutationMessage(
-      31,
-      "31",
-      { id: created.id, scopes: ["reports.all", "orders.get"] },
-      "api.tokens.updateScopedToken",
-    )));
-    const cachedNames = await listedToolNames(
-      await rpc(base, scopedMcp.path, "tools/list", {}, created.token),
-    );
-    expect(cachedNames).toEqual([
-      "authenticated_status",
-      "public_status",
-      "read_orders",
-      "read_reports",
-    ]);
-    const allOf = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_reports",
-      arguments: {},
-    }, created.token);
-    expect(allOf.status).toBe(200);
-
-    await runtime.mutation(aliceSession, request(mutationMessage(
-      32,
-      "32",
-      { id: created.id, scopes: [] },
-      "api.tokens.updateScopedToken",
-    )));
-    expect(cachedNames).toContain("read_reports");
-    const cachedCall = await rpc(base, scopedMcp.path, "tools/call", {
-      name: "read_reports",
-      arguments: {},
-    }, created.token);
-    expect(cachedCall.status).toBe(403);
-    expect(await cachedCall.json()).toEqual(insufficientBody);
-    expect(await listedToolNames(
-      await rpc(base, scopedMcp.path, "tools/list", {}, created.token),
-    )).toEqual(["authenticated_status", "public_status"]);
   });
 
   test("preserves same-timestamp creation order across restart", async () => {
@@ -741,18 +511,6 @@ describe("Identity credentials", () => {
       tokenId: secondCreated.id,
       scopes: [],
     });
-    // Credentials are not endpoint-bound: an unknown tool on another endpoint
-    // is a not-found, not a provider mismatch.
-    await expect(second.runtime.runMcpTool({
-      id: "wrong-endpoint",
-      authorization: second.runtime.authorizeMcpTool(
-        "operations",
-        "write_owned_record",
-        principal,
-      ),
-      args: { value: "forbidden" },
-      principal,
-    })).rejects.toMatchObject({ code: "not_found" });
     // Agents are first-class users: the client API and ordinary
     // authenticated functions serve them like any other identity.
     const agentSession = session(principal as UserPrincipal, "agent-session");
@@ -781,58 +539,51 @@ describe("Identity credentials", () => {
     const server = listen(second.runtime);
     trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
-    const called = await rpc(base, "/agent/mcp", "tools/call", {
-      name: "write_owned_record",
-      arguments: { value: "delegated-codex" },
-    }, created.token);
+    const called = await call(base, "api.records.writeOwnedRecord", {
+      token: created.token,
+      args: { value: "delegated-codex" },
+    });
     expect(called.status).toBe(200);
     expect(await called.json()).toMatchObject({
-      result: {
-        structuredContent: {
-          principal: `user:${created.identity}`,
-          record: "ackerdb://records/1",
-          tokenId: created.id,
-        },
-      },
+      principal: `user:${created.identity}`,
+      record: "ackerdb://records/1",
+      tokenId: created.id,
     });
-    const secondCalled = await rpc(base, "/agent/mcp", "tools/call", {
-      name: "write_owned_record",
-      arguments: { value: "delegated-claude" },
-    }, secondCreated.token);
+    const secondCalled = await call(base, "api.records.writeOwnedRecord", {
+      token: secondCreated.token,
+      args: { value: "delegated-claude" },
+    });
     expect(secondCalled.status).toBe(200);
     expect(second.engine.reader.query("SELECT owner, value FROM records ORDER BY id").all()).toEqual([
       { owner: created.identity, value: "delegated-codex" },
       { owner: secondCreated.identity, value: "delegated-claude" },
     ]);
 
-    // The same credential works on every endpoint; only tools gate access.
-    const crossEndpoint = await rpc(base, "/operations/mcp", "ping", {}, created.token);
-    expect(crossEndpoint.status).toBe(200);
+    // The vault owns its prefix outright: an unknown or malformed bearer under
+    // it is unauthenticated and never falls through to the application verifier.
     for (const token of [
       `ackerdb_credential.${"A".repeat(22)}.${"B".repeat(43)}`,
       "ackerdb_credential.bad",
-      "external-provider-token",
     ] as const) {
-      const rejected = await rpc(base, "/agent/mcp", "ping", {}, token);
+      const rejected = await call(base, "api.records.writeOwnedRecord", {
+        token,
+        args: { value: "forbidden" },
+      });
       expect(rejected.status).toBe(401);
     }
     expect(verifierCalls).toEqual([]);
 
-    const selfAdmin = await rpc(base, "/agent/mcp", "tools/call", {
-      name: "attempt_self_administration",
-      arguments: {},
-    }, created.token);
-    expect(await selfAdmin.json()).toMatchObject({ result: { isError: true } });
+    // Delegation is bounded: a credential cannot mint a grant wider than its own.
+    const selfAdmin = await call(base, "api.security.attemptSelfAdministration", {
+      token: created.token,
+    });
+    expect(selfAdmin.status).toBe(403);
     expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 2n });
 
-    const anonymous = await rpc(base, "/agent/mcp", "tools/call", {
-      name: "write_owned_record",
-      arguments: { value: "forbidden" },
+    const anonymous = await call(base, "api.records.writeOwnedRecord", {
+      args: { value: "forbidden" },
     });
     expect(anonymous.status).toBe(401);
-    expect(await anonymous.json()).toMatchObject({
-      error: { message: "authentication required" },
-    });
   });
 });

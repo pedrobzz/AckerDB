@@ -5,17 +5,14 @@
  * would be an authority it kept forever.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { ACKERDB_VERSION } from "@ackerdb/core";
 import {
   verifyClientCredential,
   type PrincipalInvalidation,
   type UserPrincipal,
 } from "../../src/auth/credentials.ts";
 import { invalidationReaches } from "../../src/auth/invalidation.ts";
-import {
-  CREDENTIAL_ISSUER,
-  parseCredentialToken,
-} from "../../src/auth/credential-token.ts";
+import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
+import { acquireAuthLease, type AuthLease } from "../../src/auth/lease.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import {
   cleanupCredentialFixtures,
@@ -33,6 +30,20 @@ import {
 interface CreatedToken {
   readonly id: string;
   readonly token: string;
+}
+
+/**
+ * The one door an in-flight credential holds: the generic auth lease every
+ * HTTP call, WebSocket handshake, and SSE stream acquires for its bearer.
+ */
+function credentialLease(runtime: Runtime, token: string): Promise<AuthLease> {
+  return acquireAuthLease({
+    credential: { kind: "bearer", token },
+    verifier: runtime.credentialVerifier,
+    resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
+    resolveScopes: runtime.resolveScopes,
+    revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
+  });
 }
 
 afterEach(async () => {
@@ -174,12 +185,12 @@ describe("credential delegation lineage", () => {
   });
 
   test("both authentication doors hand back the same lineage", async () => {
-    // A vault token reaches the server two ways: the MCP door authenticates it
-    // directly, and every ordinary HTTP call and WebSocket handshake goes
-    // through the generic verifier contract, which resolves identity and scopes
-    // as separate steps. Two doors that build the principal differently are two
-    // chances to drop the lineage, and a principal that drops it is one an
-    // upstream invalidation cannot reach. They must agree.
+    // A vault token reaches the server two ways: `authenticateCredential`
+    // resolves it directly, and every ordinary HTTP call and WebSocket
+    // handshake goes through the generic verifier contract, which resolves
+    // identity and scopes as separate steps. Two doors that build the principal
+    // differently are two chances to drop the lineage, and a principal that
+    // drops it is one an upstream invalidation cannot reach. They must agree.
     const { runtime } = await start();
     const alice = await user(runtime, "two-doors", FIXTURE_SCOPES);
     const aliceSession = session(alice, "two-doors");
@@ -225,12 +236,9 @@ describe("credential delegation lineage", () => {
     await runtime.openSession(aliceSession);
     const child = await issue(runtime, aliceSession, 1, "Agent", ["orders.all"]);
 
-    const lease = await runtime.acquireCredentialLease(
-      parseCredentialToken(child.token)!,
-      "upstream",
-    );
+    const lease = await credentialLease(runtime, child.token);
     expect(lease.signal.aborted).toBe(false);
-    expect(lease.principal.derivedFrom)
+    expect((lease.principal as UserPrincipal).derivedFrom)
       .toEqual([{ issuer: "https://issuer.test/", subject: "upstream-parent" }]);
 
     // The provider revokes the parent account, not the credential.
@@ -247,10 +255,7 @@ describe("credential delegation lineage", () => {
     await runtime.openSession(aliceSession);
     const child = await issue(runtime, aliceSession, 1, "Child", ["orders.all"]);
 
-    const lease = await runtime.acquireCredentialLease(
-      parseCredentialToken(child.token)!,
-      "rollback-lease",
-    );
+    const lease = await credentialLease(runtime, child.token);
     try {
       const attempt = await runtime.procedure(aliceSession, request({
         t: "p" as const,

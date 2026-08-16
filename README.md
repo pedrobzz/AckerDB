@@ -139,13 +139,6 @@ client.close();
 - [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
   to `@ackerdb/client-react`: supported versions, provider lifetime, every hook,
   durable Identity, native recovery, and current platform limitations.
-- [MCP release gates](docs/mcp-conformance.md) documents the pinned official
-  conformance scenarios, retained raw protocol/security cases, clean packed
-  consumer, real Codex and Claude Code host acceptance, unsupported optional
-  capabilities, and package boundaries.
-- [MCP and AI integration](docs/ai-integration.md) documents endpoint-owned
-  tool blueprints, exact generated tool types, and the in-process AI SDK
-  adapter.
 - [Releases and protected branches](docs/releases.md) documents the
   `topic → canary → main` topology, fast affected CI, reviewer-gated public npm
   delivery, trusted publishing, and local Verdaccio betas.
@@ -194,10 +187,7 @@ acker files migrate <target.json> [app-dir]
 ```sh
 bun install
 bun run test
-bun run test:mcp:conformance
 bun run test:packages
-# Requires locally installed and authenticated Codex and Claude Code hosts:
-bun run test:mcp:hosts
 bun run typecheck
 bun run typecheck:tooling
 ```

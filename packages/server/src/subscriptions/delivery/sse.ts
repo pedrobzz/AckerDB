@@ -10,14 +10,14 @@ import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
 import { PUBLIC_ERROR_FALLBACK, fitOutcome, outcomeFromError } from "../../runtime/outcome.ts";
 import type { OutboundBudget, OutboundReservation } from "./budget.ts";
-import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
+import { finiteClock, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 
 export interface BoundedSseProducerOptions {
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
   readonly signal?: AbortSignal;
-  readonly clock?: DeliveryClock;
+  readonly clock?: Clock;
 }
 
 export interface SseDeliverySnapshot {
@@ -43,22 +43,6 @@ interface PreparedSseChunk {
   readonly seq: number;
   readonly proof: string;
   readonly bytes: Uint8Array;
-}
-
-interface Waiter {
-  readonly promise: Promise<void>;
-  readonly resolve: () => void;
-  readonly reject: (error: unknown) => void;
-}
-
-function waiter(): Waiter {
-  let resolve!: () => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<void>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
 }
 
 const SSE_PROOF_LENGTH = 22;
@@ -145,12 +129,13 @@ export class BoundedSseProducer {
   readonly stream: ReadableStream<Uint8Array>;
   readonly signal: AbortSignal;
   readonly controlReserveBytes: number;
-  private readonly finishedWaiter = waiter();
+  private readonly finishedWaiter = Promise.withResolvers<void>();
   readonly finished = this.finishedWaiter.promise;
 
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
-  private readonly clock: DeliveryClock;
+  private readonly clock: Clock;
+  private readonly now: () => number;
   private readonly controller: ReadableStreamDefaultController<Uint8Array>;
   private readonly abortController = new AbortController();
   private readonly reservations = new Map<number, StreamReservation>();
@@ -165,8 +150,8 @@ export class BoundedSseProducer {
   private closureError: AckerDBError | null = null;
   private activeMerge: Promise<void> | null = null;
   private activeReader: SseSourceReader | null = null;
-  private emptyWaiter: Waiter | null = null;
-  private closedWaiter: Waiter | null = null;
+  private emptyWaiter: PromiseWithResolvers<void> | null = null;
+  private closedWaiter: PromiseWithResolvers<void> | null = null;
   private completion: Promise<void> | null = null;
   private stallSince: number | null = null;
   private stallTimer: unknown;
@@ -185,7 +170,8 @@ export class BoundedSseProducer {
     }
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
+    this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.now = finiteClock(() => this.clock.now(), "delivery clock");
     this.externalSignal = options.signal;
     this.signal = this.abortController.signal;
 
@@ -477,7 +463,7 @@ export class BoundedSseProducer {
 
   private waitForEmpty(): Promise<void> {
     if (this.unackedBytes === 0) return Promise.resolve();
-    if (this.emptyWaiter === null) this.emptyWaiter = waiter();
+    if (this.emptyWaiter === null) this.emptyWaiter = Promise.withResolvers<void>();
     return this.emptyWaiter.promise;
   }
 
@@ -485,7 +471,7 @@ export class BoundedSseProducer {
     if (this.state === "closed") {
       return this.closureError === null ? Promise.resolve() : Promise.reject(this.closureError);
     }
-    if (this.closedWaiter === null) this.closedWaiter = waiter();
+    if (this.closedWaiter === null) this.closedWaiter = Promise.withResolvers<void>();
     return this.closedWaiter.promise;
   }
 
@@ -636,9 +622,9 @@ export class BoundedSseProducer {
 
   private armStall(): void {
     if (this.state === "closed" || this.unackedBytes === 0) return;
-    if (this.stallSince === null) this.stallSince = this.clock.now();
+    if (this.stallSince === null) this.stallSince = this.now();
     if (this.stallTimer !== undefined) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     this.stallTimer = this.clock.setTimeout(
       () => this.onStallTimer(),
       Math.max(1, this.limits.sse.maxStallMs - elapsed),
@@ -648,7 +634,7 @@ export class BoundedSseProducer {
   private restartStall(): void {
     if (this.stallTimer !== undefined) this.clock.clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
-    this.stallSince = this.clock.now();
+    this.stallSince = this.now();
     this.armStall();
   }
 
@@ -661,7 +647,7 @@ export class BoundedSseProducer {
   private onStallTimer(): void {
     this.stallTimer = undefined;
     if (this.state === "closed" || this.stallSince === null || this.unackedBytes === 0) return;
-    const elapsed = Math.max(0, this.clock.now() - this.stallSince);
+    const elapsed = Math.max(0, this.now() - this.stallSince);
     if (elapsed < this.limits.sse.maxStallMs) {
       this.armStall();
       return;

@@ -5,19 +5,11 @@ import type {
   ClientResult,
   FileId,
 } from "@ackerdb/client";
-import { decode, encode, type ApplicationError } from "@ackerdb/core";
-import { callResultThroughCell, useLifetimeCall } from "./lifetime-call.ts";
+import type { ApplicationError } from "@ackerdb/core";
+import { callResultThroughCell, snapshotWireValue, useLifetimeCall } from "./lifetime-call.ts";
 
 /** Stable, fully typed File upload capability returned by {@link useFileUpload}. */
 export type AckerDBFileUpload = AckerDBFiles["upload"];
-
-function snapshotValue<T>(value: T): T {
-  try {
-    return decode(encode(value)) as T;
-  } catch {
-    return value;
-  }
-}
 
 function isBlob(body: AckerDBFileUploadBody): body is Blob {
   return typeof Blob !== "undefined" && body instanceof Blob;
@@ -36,7 +28,7 @@ function snapshotOptions<Args, Error extends ApplicationError>(
 ): AckerDBFileUploadOptions<Args, Error> {
   return {
     createSession: options.createSession,
-    args: snapshotValue(options.args),
+    args: snapshotWireValue(options.args),
     file: snapshotBody(options.file),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.name === undefined ? {} : { name: options.name }),

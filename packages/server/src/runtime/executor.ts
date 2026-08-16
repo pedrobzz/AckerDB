@@ -6,6 +6,7 @@ import {
 import type { QueueLimits } from "./limits.ts";
 import type { AdmissionResource } from "./admission.ts";
 import { positiveSafeInteger } from "../shared/numbers.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS } from "../shared/clock.ts";
 
 export interface ExecutorTaskOptions {
   readonly bytes: number;
@@ -60,17 +61,12 @@ export class BoundedExecutor {
       retryAfterMs: options.retryAfterMs,
       now: options.now,
     });
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "executor clock");
   }
 
   submit<T>(work: () => T | Promise<T>, options: ExecutorTaskOptions): Promise<T> {
     if (typeof work !== "function") throw new TypeError("work must be a function");
-    let resolve!: (value: T | PromiseLike<T>) => void;
-    let reject!: (error: unknown) => void;
-    const result = new Promise<T>((accept, decline) => {
-      resolve = accept;
-      reject = decline;
-    });
+    const { promise: result, resolve, reject } = Promise.withResolvers<T>();
     const task: Task<T> = { work, resolve, reject };
     const request: AdmissionRequestOptions = {
       bytes: options.bytes,
@@ -157,8 +153,7 @@ export class BoundedExecutor {
     this.clearExpiryTimer();
     if (snapshot.closed || snapshot.nextExpiryAtMs === undefined) return;
     const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("executor clock must return finite milliseconds");
-    const delay = Math.min(Math.max(0, snapshot.nextExpiryAtMs - now), 0x7fff_ffff);
+    const delay = Math.min(Math.max(0, snapshot.nextExpiryAtMs - now), MAX_TIMER_DELAY_MS);
     this.expiryTimer = setTimeout(() => {
       this.expiryTimer = undefined;
       this.queue.expire();

@@ -31,7 +31,6 @@ import {
   type ChannelServerEvents,
   type ChannelClientEvents,
   type ChannelError,
-  type ClientMessage,
   type Credential,
   type EventRef,
   type LiveEventCursor,
@@ -65,6 +64,7 @@ import {
   type AckerDBFiles,
 } from "./files/client.ts";
 import { SseEventDecoder } from "./sse/event-decoder.ts";
+import { raceWithAbort } from "./abort.ts";
 import {
   SubscriptionRetryScheduler,
   createSubscriptionRetryState,
@@ -486,39 +486,6 @@ function releaseReaderLock(reader: SseResponseReader): void {
   }
 }
 
-async function raceWithAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal,
-  error: AckerDBClientError,
-  onLate?: (value: T) => void,
-): Promise<T> {
-  const discard = (value: T): never => {
-    try {
-      onLate?.(value);
-    } catch {
-      // Late external values cannot regain ownership or replace the cancellation outcome.
-    }
-    throw error;
-  };
-  const observed = promise.then((value) => (signal.aborted ? discard(value) : value));
-  if (signal.aborted) {
-    void observed.catch(() => {});
-    throw error;
-  }
-  let rejectInterrupted!: () => void;
-  const interrupted = new Promise<never>((_resolve, reject) => {
-    rejectInterrupted = () => reject(error);
-  });
-  const onAbort = (): void => rejectInterrupted();
-  signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    const value = await Promise.race([observed, interrupted]);
-    return signal.aborted ? discard(value) : value;
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
 function freezeCredential(credential: Credential): Credential {
   const parsed = parseCredential(credential);
   return parsed.kind === "anonymous"
@@ -700,7 +667,8 @@ export class AckerDBClient {
   private sourcePull: Promise<AckerDBAuthentication> | null = null;
   /** One queued fresh pull for explicit refreshes that arrive mid-flight. */
   private sourceFollowUp: Promise<AckerDBAuthentication> | null = null;
-  private sourceRetryAttempt = 0;
+  /** The next credential-source retry's backoff step; 1 is the first retry. */
+  private sourceBackoffStep = 1;
   private sourceRetryHandle?: unknown;
   private sourceRefreshHandle?: unknown;
   /** When the accepted credential dies, in clock time; undefined while anonymous. */
@@ -729,7 +697,8 @@ export class AckerDBClient {
    */
   private connectionGeneration = 0;
   private nextId = 1;
-  private reconnectAttempt = 0;
+  /** The next reconnect's backoff step; 1 is the first retry after a live connection. */
+  private reconnectBackoffStep = 1;
   /**
    * Absolute clock time before which the server asked this client not to
    * reconnect (a retryable session error's Retry-After hint). An admission
@@ -827,6 +796,7 @@ export class AckerDBClient {
       },
       httpOrigin: new URL(this.httpUrl).origin,
       scheduler: this.scheduler,
+      random: this.random,
       readResponse: (response, signal) =>
         this.readBoundedResponse(response, this.limits.maxFrameBytes, signal, "idempotency"),
       clientError: (outcome, interruption) => new AckerDBClientError(outcome, interruption),
@@ -907,7 +877,7 @@ export class AckerDBClient {
           "a credential-source client owns its credential; refreshCredential() re-invokes the source",
         );
       }
-      this.sourceRetryAttempt = 0;
+      this.sourceBackoffStep = 1;
       this.clearSourceRetryTimer();
       return this.demandFreshPull();
     }
@@ -946,12 +916,7 @@ export class AckerDBClient {
     this.credentialExpiresAtMs = undefined;
     this.authBlocked = false;
     this.blockingError = undefined;
-    let resolve!: (authentication: AckerDBAuthentication) => void;
-    let reject!: (error: AckerDBClientError) => void;
-    const result = new Promise<AckerDBAuthentication>((promiseResolve, promiseReject) => {
-      resolve = promiseResolve;
-      reject = promiseReject;
-    });
+    const { promise: result, resolve, reject } = Promise.withResolvers<AckerDBAuthentication>();
     const attempt: AuthAttempt = {
       id,
       credential: nextCredential,
@@ -1012,7 +977,7 @@ export class AckerDBClient {
     const tracked: Promise<AckerDBAuthentication> = this.runSourcePull().then(
       (authentication) => {
         if (this.sourcePull === tracked) this.sourcePull = null;
-        this.sourceRetryAttempt = 0;
+        this.sourceBackoffStep = 1;
         return authentication;
       },
       (error: unknown) => {
@@ -1084,12 +1049,12 @@ export class AckerDBClient {
     }
     let delay: number;
     try {
-      delay = retryDelay(this.reconnect, this.sourceRetryAttempt, 0, this.random, MAX_RETRY_AFTER_MS);
+      delay = retryDelay(this.reconnect, this.sourceBackoffStep, 0, this.random, MAX_RETRY_AFTER_MS);
     } catch {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    this.sourceRetryAttempt++;
+    this.sourceBackoffStep++;
     this.sourceRetryHandle = this.clock.setTimeout(() => {
       this.sourceRetryHandle = undefined;
       void this.pullCredentialSource().catch(() => {});
@@ -1343,13 +1308,11 @@ export class AckerDBClient {
         void promise.catch(() => {});
         throw cancellationError;
       }
-      let rejectInterrupted!: () => void;
-      const interrupted = new Promise<never>((_resolve, reject) => {
-        rejectInterrupted = () => reject(cancellationError);
-      });
+      const interrupted = Promise.withResolvers<never>();
+      const rejectInterrupted = (): void => interrupted.reject(cancellationError);
       interruptWait = rejectInterrupted;
       try {
-        const value = await Promise.race([promise, interrupted]);
+        const value = await Promise.race([promise, interrupted.promise]);
         if (cleanupStarted) throw cancellationError;
         return value;
       } finally {
@@ -1793,12 +1756,7 @@ export class AckerDBClient {
       const bytes = this.reservePersistent(frame, "operation");
       unownedReservation = bytes;
       const maxAge = kind === "mutation" ? this.limits.maxMutationAgeMs : this.limits.maxQueryAgeMs;
-      let resolve!: (value: unknown) => void;
-      let reject!: (error: AckerDBClientError) => void;
-      const result = new Promise<unknown>((promiseResolve, promiseReject) => {
-        resolve = promiseResolve;
-        reject = promiseReject;
-      });
+      const { promise: result, resolve, reject } = Promise.withResolvers<unknown>();
       const pending: PendingRequest = {
         id,
         kind,
@@ -2598,7 +2556,7 @@ export class AckerDBClient {
     try {
       delay = retryDelay(
         this.reconnect,
-        this.reconnectAttempt,
+        this.reconnectBackoffStep,
         floor,
         this.random,
         MAX_RETRY_AFTER_MS,
@@ -2607,7 +2565,7 @@ export class AckerDBClient {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    this.reconnectAttempt++;
+    this.reconnectBackoffStep++;
     this.reconnectHandle = this.clock.setTimeout(() => {
       this.reconnectHandle = undefined;
       this.ensureConnected();
@@ -2618,7 +2576,7 @@ export class AckerDBClient {
     this.clearConnectionTimers();
     const generation = this.connectionGeneration;
     this.stableHandle = this.clock.setTimeout(() => {
-      if (this.ready && this.connectionGeneration === generation) this.reconnectAttempt = 0;
+      if (this.ready && this.connectionGeneration === generation) this.reconnectBackoffStep = 1;
     }, this.reconnect.stableOpenMs);
     this.pingHandle = this.clock.setInterval(() => {
       if (this.ready && this.connectionGeneration === generation) {
@@ -2837,6 +2795,7 @@ export class AckerDBClient {
     const startedAt = this.now();
     const deadlineAt = Math.min(Number.MAX_SAFE_INTEGER, startedAt + maxAgeMs);
     let attempts = 0;
+    let backoffStep = 0;
 
     for (;;) {
       attempts++;
@@ -2853,7 +2812,7 @@ export class AckerDBClient {
                 signal: attemptSignal,
               }))(),
             attemptSignal,
-            cancellationError,
+            () => cancellationError,
             (late) => {
               if (late.body) cancelWithoutWaiting(late.body, attemptSignal.reason);
             },
@@ -2874,7 +2833,7 @@ export class AckerDBClient {
               const part = await raceWithAbort(
                 (async () => reader.read())(),
                 attemptSignal,
-                cancellationError,
+                () => cancellationError,
               );
               if (!part.done) {
                 throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
@@ -2926,18 +2885,21 @@ export class AckerDBClient {
       if (remainingMs <= 0) {
         throw localError("deadline_exceeded", "SSE acknowledgment deadline exceeded", "sse");
       }
-      const random = this.random();
-      if (!Number.isFinite(random) || random < 0 || random >= 1) {
+      // The same jittered exponential schedule reconnect uses, so a thousand
+      // clients failing together do not acknowledge in the same millisecond.
+      let delayMs: number;
+      try {
+        delayMs = retryDelay(
+          this.reconnect,
+          backoffStep,
+          retryAfterMs,
+          this.random,
+          MAX_RETRY_AFTER_MS,
+        );
+      } catch {
         throw localError("internal", "client random source is invalid", "sse");
       }
-      const jitterCeiling = Math.min(
-        this.reconnect.maxDelayMs,
-        this.reconnect.baseDelayMs * 2 ** Math.min(attempts - 1, 30),
-      );
-      const delayMs = Math.max(
-        retryAfterMs,
-        Math.floor(random * (jitterCeiling + 1)),
-      );
+      backoffStep++;
       if (delayMs >= remainingMs) {
         throw localError("deadline_exceeded", "SSE acknowledgment cannot retry before its deadline", "sse");
       }
@@ -2957,10 +2919,7 @@ export class AckerDBClient {
     }
     const controller = new AbortController();
     let timeoutHandle: unknown;
-    let rejectInterrupted!: (error: AckerDBClientError) => void;
-    const interrupted = new Promise<never>((_resolve, reject) => {
-      rejectInterrupted = reject;
-    });
+    const { promise: interrupted, reject: rejectInterrupted } = Promise.withResolvers<never>();
     const onAbort = () => {
       controller.abort(signal.reason);
       rejectInterrupted(localError("unavailable", "SSE acknowledgment was canceled", "sse"));
@@ -3070,13 +3029,11 @@ export class AckerDBClient {
     try {
       for (;;) {
         let part: Awaited<ReturnType<SseResponseReader["read"]>>;
-        let rejectInterrupted!: () => void;
-        const interrupted = new Promise<never>((_resolve, reject) => {
-          rejectInterrupted = () => reject(cancellationError);
-        });
+        const interrupted = Promise.withResolvers<never>();
+        const rejectInterrupted = (): void => interrupted.reject(cancellationError);
         interruptRead = rejectInterrupted;
         try {
-          part = await Promise.race([(async () => reader.read())(), interrupted]);
+          part = await Promise.race([(async () => reader.read())(), interrupted.promise]);
         } catch (error) {
           if (signal.aborted) throw cancellationError;
           throw error;

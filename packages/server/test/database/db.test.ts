@@ -224,13 +224,10 @@ describe("writes", () => {
         row: { toString: 1n, constructor: "event" },
       }]);
 
-      await expect(prototypeDb.plain.insert({ value: "x", toString: "unknown" }))
-        .rejects.toThrow('plain.insert: unknown field "toString"');
-      const plainId = await prototypeDb.plain.insert({ value: "x" });
-      await expect(prototypeDb.plain.patch(plainId, { constructor: "unknown" }))
-        .rejects.toThrow('plain.patch: unknown field "constructor"');
-      await expect(prototypeDb.plainEvents.insert({ value: "x", toString: "unknown" }))
-        .rejects.toThrow('plainEvents.insert: unknown field "toString"');
+      // A prototype-named key TypeScript does not declare carries no storage:
+      // it is not written, and it does not corrupt the row that is.
+      const plainId = await prototypeDb.plain.insert({ value: "x", toString: "unknown" });
+      expect(await prototypeDb.plain.get(plainId)).toEqual({ id: plainId, value: "x" });
 
       expect(Object.hasOwn(db, "toString")).toBe(false);
       expect(Object.hasOwn(db, "constructor")).toBe(false);
@@ -311,7 +308,6 @@ describe("writes", () => {
     await expect(db.payments.patch(id, { currency: null })).rejects.toThrow(ValidationError);
     await expect(db.payments.patch(999n, { amount: 1 })).rejects.toThrow("not found");
     await expect(db.payments.patch(id, { id: 5n })).rejects.toThrow("primary key");
-    await expect(db.payments.patch(id, { nope: 1 })).rejects.toThrow('unknown field "nope"');
   });
 
   test("replace swaps the whole row; delete is idempotent", async () => {

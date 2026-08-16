@@ -1,4 +1,5 @@
 import type { Engine } from "../database/engine.ts";
+import { transaction } from "../database/transaction.ts";
 import {
   CorruptDatabaseError,
   IncompatibleDatabaseError,
@@ -106,29 +107,12 @@ function readBinding(engine: Engine): FileStoreBinding | null {
 }
 
 function writeBinding(engine: Engine, binding: FileStoreBinding): void {
-  let transactionOpen = false;
-  try {
-    engine.writer.exec("BEGIN IMMEDIATE");
-    transactionOpen = true;
+  transaction(engine.writer, () => {
     engine.writer.query(
       "INSERT INTO _ackerdb_meta (key, value) VALUES (?, ?) " +
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     ).run(BINDING_KEY, JSON.stringify(binding));
-    engine.writer.exec("COMMIT");
-    transactionOpen = false;
-  } catch (error) {
-    if (transactionOpen) {
-      try {
-        engine.writer.exec("ROLLBACK");
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          "FileStore binding write and rollback both failed",
-        );
-      }
-    }
-    throw error;
-  }
+  });
 }
 
 function stable(identityValue: string): FileStoreBinding {

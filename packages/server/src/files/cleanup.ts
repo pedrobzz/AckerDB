@@ -13,7 +13,7 @@ import {
   FILE_UPLOADS_TABLE,
   FILES_TABLE,
 } from "./tables.ts";
-import { FileStoreError } from "./store/contract.ts";
+import { finiteClock, MAX_TIMER_DELAY_MS } from "../shared/clock.ts";
 
 export interface FileCleanupRuntimeOptions {
   readonly files: RuntimeFiles;
@@ -32,7 +32,6 @@ interface CleanupTask {
 
 const BATCH_SIZE = 32;
 const LEASE_MS = 60_000;
-const MAX_TIMER_MS = 2_147_483_647;
 
 function stateAndTime<Row>(
   query: ManagedQuery<Row>,
@@ -108,28 +107,26 @@ async function nextCleanupAt(db: FileDatabase): Promise<number | null> {
 /** Durable, idle-until-armed cleanup for pending uploads, Files, and object deletion. */
 export class FileCleanupRuntime {
   private readonly controller = new AbortController();
-  private readonly recoveryReady: Promise<void>;
-  private resolveRecoveryReady!: () => void;
+  private readonly recovery = Promise.withResolvers<void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
   private recovering = true;
   private armedAt: number | null = null;
   private rerun = false;
-  private recoveryReadyResolved = false;
   lastFailure: unknown = null;
 
+  private readonly now: () => number;
+
   constructor(private readonly options: FileCleanupRuntimeOptions) {
-    this.recoveryReady = new Promise((resolve) => {
-      this.resolveRecoveryReady = resolve;
-    });
+    this.now = finiteClock(options.now, "files clock");
     options.files.bindCleanupScheduler((at) => this.arm(at));
   }
 
   /** Starts with a read-only inspection and resolves once restart recovery commits. */
   activate(): Promise<void> {
     this.run();
-    return this.recoveryReady;
+    return this.recovery.promise;
   }
 
   arm(at: number): void {
@@ -137,7 +134,7 @@ export class FileCleanupRuntime {
     if (this.armedAt !== null && this.armedAt <= at) return;
     if (this.timer !== null) clearTimeout(this.timer);
     this.armedAt = at;
-    const delay = Math.min(MAX_TIMER_MS, Math.max(0, at - this.options.now()));
+    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, at - this.now()));
     this.timer = setTimeout(() => {
       this.timer = null;
       this.armedAt = null;
@@ -169,18 +166,18 @@ export class FileCleanupRuntime {
       this.lastFailure = null;
     }).catch((error) => {
       this.lastFailure = error;
-      if (!this.stopped) this.arm(this.options.now() + 1_000);
+      if (!this.stopped) this.arm(this.now() + 1_000);
     }).finally(() => {
       this.running = null;
       if (this.rerun && !this.stopped) {
         this.rerun = false;
-        this.arm(this.options.now());
+        this.arm(this.now());
       }
     });
   }
 
   private async cycle(): Promise<void> {
-    const now = this.options.now();
+    const now = this.now();
     const recovering = this.recovering;
     const inspection = await this.options.read(this.controller.signal, async (value) => {
       const db = fileDatabase(value);
@@ -361,7 +358,7 @@ export class FileCleanupRuntime {
   private async retry(task: CleanupTask, error: unknown): Promise<void> {
     const attempt = task.attempt + 1;
     const delay = Math.min(60 * 60_000, 1_000 * 2 ** Math.min(attempt, 12));
-    const runAt = this.options.now() + delay;
+    const runAt = this.now() + delay;
     await this.options.write(this.controller.signal, async (value) => {
       const table = (fileDatabase(value))[FILE_CLEANUP_TABLE]!;
       const row = await table.get(task.id);
@@ -380,7 +377,7 @@ export class FileCleanupRuntime {
 
   private async scheduleNext(immediate: boolean): Promise<void> {
     if (immediate) {
-      this.arm(this.options.now());
+      this.arm(this.now());
       return;
     }
     const next = await this.options.read(this.controller.signal, (value) =>
@@ -389,8 +386,6 @@ export class FileCleanupRuntime {
   }
 
   private completeRecovery(): void {
-    if (this.recoveryReadyResolved) return;
-    this.recoveryReadyResolved = true;
-    this.resolveRecoveryReady();
+    this.recovery.resolve();
   }
 }

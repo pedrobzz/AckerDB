@@ -27,6 +27,7 @@
  */
 import type { Principal } from "./credentials.ts";
 import { AckerDBError } from "../shared/errors.ts";
+import { utf8ByteLength } from "../shared/bytes.ts";
 
 export const MAX_APP_SCOPES = 128;
 export const MAX_SCOPE_BYTES = 256;
@@ -50,14 +51,13 @@ export type NormalizedScopeRequirement =
   | Readonly<{ kind: "anyOf"; scopes: readonly string[] }>
   | Readonly<{ kind: "allOf"; scopes: readonly string[] }>;
 
-const utf8 = new TextEncoder();
 const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
 
 function boundedName(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.trim() !== "" &&
-    utf8.encode(value).byteLength <= MAX_SCOPE_BYTES
+    utf8ByteLength(value) <= MAX_SCOPE_BYTES
   );
 }
 

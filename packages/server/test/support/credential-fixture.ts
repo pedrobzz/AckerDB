@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   Err,
-  ACKERDB_VERSION,
   Status,
   encode,
   type MutationMessage,
@@ -23,10 +22,6 @@ import {
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
-import {
-  mcp as mcpDeclaration,
-  type McpBuilder,
-} from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -53,13 +48,13 @@ export const FIXTURE_SCOPES = ["orders.all", "orders.get", "reports.all"] as con
 export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
 export const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-export const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
 
 const invalidUpdateKind = v.enum("InvalidCredentialUpdateKind", ["empty", "undefined"]);
 
 const writeOwnedRecord = typedProcedure({
   description: "Write a row owned by the delegated Identity.",
   access: "authenticated",
+  http: true,
   args: { value: v.string() },
   returns: v.object({ principal: v.string(), record: v.string(), tokenId: v.string() }),
   handler: async (ctx, args) => {
@@ -81,6 +76,7 @@ const writeOwnedRecord = typedProcedure({
 const attemptSelfAdministration = typedProcedure({
   description: "Exercise the delegated-credential administration boundary.",
   access: "authenticated",
+  http: true,
   args: {},
   returns: v.object({ status: v.string() }),
   handler: async (ctx) => {
@@ -101,6 +97,7 @@ const statusReturns = v.object({ status: v.string() });
 const publicScopedTool = typedQuery({
   description: "Public scope fixture.",
   access: "public",
+  http: true,
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "public" }),
@@ -109,6 +106,7 @@ const publicScopedTool = typedQuery({
 const authenticatedScopedTool = typedQuery({
   description: "Authenticated scope fixture.",
   access: "authenticated",
+  http: true,
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "authenticated" }),
@@ -117,6 +115,8 @@ const authenticatedScopedTool = typedQuery({
 const anyScopedTool = typedQuery({
   description: "Any-of scope fixture.",
   access: "authenticated",
+  scopes: { anyOf: ["orders.all", "orders.get"] },
+  http: true,
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "orders" }),
@@ -125,6 +125,8 @@ const anyScopedTool = typedQuery({
 const allScopedTool = typedQuery({
   description: "All-of scope fixture.",
   access: "authenticated",
+  scopes: { allOf: ["orders.get", "reports.all"] },
+  http: true,
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "reports" }),
@@ -133,35 +135,13 @@ const allScopedTool = typedQuery({
 const exactAllTool = typedQuery({
   description: "Prove .all is an opaque exact value.",
   access: "authenticated",
+  scopes: { anyOf: ["orders.all"] },
+  http: true,
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "admin" }),
 });
 
-export const agentMcp = typedMcp({
-  name: "agent",
-  path: "/agent/mcp",
-  tools: {
-    attempt_self_administration: { fn: attemptSelfAdministration },
-    write_owned_record: { fn: writeOwnedRecord },
-  },
-});
-const operationsMcp = typedMcp({
-  name: "operations",
-  path: "/operations/mcp",
-  tools: {},
-});
-export const scopedMcp = typedMcp({
-  name: "scoped",
-  path: "/scoped/mcp",
-  tools: {
-    admin_orders: { fn: exactAllTool, access: { anyOf: ["orders.all"] } },
-    authenticated_status: { fn: authenticatedScopedTool, access: "authenticated" },
-    public_status: { fn: publicScopedTool, access: "public" },
-    read_orders: { fn: anyScopedTool, access: { anyOf: ["orders.all", "orders.get"] } },
-    read_reports: { fn: allScopedTool, access: { allOf: ["orders.get", "reports.all"] } },
-  },
-});
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: {
@@ -253,7 +233,6 @@ const normalProcedure = typedProcedure({
 });
 
 const modules = {
-  mcp: { agentMcp, operationsMcp, scopedMcp },
   records: {
     allScopedTool,
     anyScopedTool,

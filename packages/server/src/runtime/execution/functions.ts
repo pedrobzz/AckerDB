@@ -10,6 +10,7 @@ import {
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
+  unauthenticated,
   verifyUserBearerCredential,
   type CredentialVerifier,
   type ExternalAccount,
@@ -29,14 +30,12 @@ import {
 import type {
   AnyRegistered,
   MutationCtx,
-  OwnedProcedureContext,
   ProcedureCtx,
   QueryCtx,
   TxCtx,
 } from "../../app/functions.ts";
-import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
+import type { HttpHandlerCtx } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
-import type { McpAiContext } from "../../mcp/ai.ts";
 import { Identities } from "../../auth/identities.ts";
 import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
 import type { IdentityDatabase } from "../../auth/tables.ts";
@@ -92,8 +91,7 @@ import { RuntimeFiles } from "../../files/namespace.ts";
 import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
 import { settleOnAbort } from "../abort.ts";
-
-const releaseNothing = (): void => {};
+import { finiteClock } from "../../shared/clock.ts";
 
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
@@ -142,14 +140,6 @@ export interface RuntimeMutationCommitRequest {
   readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
-export interface RuntimeFunctionMcpCapabilities {
-  bindAiContext(
-    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
-    fairnessKey: string,
-    requestBytes: number,
-  ): () => void;
-}
-
 interface RuntimeCommitRequest<T> {
   readonly operation: "mutation" | "transaction";
   readonly fairnessKey: string;
@@ -189,7 +179,6 @@ export interface RuntimeFunctionExecutorOptions<C> {
    * path, for a commit whose origin holds no response of its own.
    */
   readonly publishAuthInvalidation: (account: ExternalAccount) => void;
-  readonly mcp?: RuntimeFunctionMcpCapabilities;
   /** Commit-wake: fired when a transaction touched the jobs table. */
   readonly armJobs: () => void;
   /** Lazy: the jobs runner is constructed after this executor. */
@@ -216,8 +205,10 @@ export class RuntimeFunctionExecutor<C> {
   private readonly authInvalidationByWrites =
     new WeakMap<WriteCollector, (account: ExternalAccount) => void>();
   private fileRecoveryBarrier: Promise<void> = Promise.resolve();
+  private readonly now: () => number;
 
   constructor(private readonly options: RuntimeFunctionExecutorOptions<C>) {
+    this.now = finiteClock(options.now, "runtime clock");
     this.coordinator = new CommitCoordinator({
       engine: options.engine,
       limits: options.limits,
@@ -232,11 +223,11 @@ export class RuntimeFunctionExecutor<C> {
         }
       },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
-      now: options.now,
+      now: this.now,
     });
     this.fileProcedures = new FileProcedureRuntime({
       files: options.files,
-      now: options.now,
+      now: this.now,
       lifecycleSignal: options.fileLifecycleSignal,
       read: (signal, work) => this.filesRead(signal, work),
       write: (signal, work) => this.filesWrite(signal, work),
@@ -265,7 +256,7 @@ export class RuntimeFunctionExecutor<C> {
       writes: writes === null ? null : {
         collector: writes,
         limits: this.options.limits.credentials,
-        now: this.options.now,
+        now: this.now,
       },
     });
   }
@@ -389,7 +380,7 @@ export class RuntimeFunctionExecutor<C> {
       execution.connection,
       execution.reads,
     );
-    const timestamp = this.readNow();
+    const timestamp = this.now();
     return invokeFunction(fn, this.hostQueryContext(db, principal, timestamp), args);
   }
 
@@ -412,35 +403,6 @@ export class RuntimeFunctionExecutor<C> {
     });
   }
 
-  createMcpTransactionContext(
-    principal: Principal,
-    fairnessKey: string,
-    signal: AbortSignal,
-    requestBytes: number,
-    timestamp: number,
-  ): McpAiContext & Pick<ProcedureCtx, "timestamp"> {
-    return Object.freeze({
-      auth: principal,
-      abortSignal: signal,
-      timestamp,
-      tx: async <R>(work: (ctx: TxCtx) => R): Promise<Awaited<R>> =>
-        await this.executeWrite(
-          "transaction",
-          fairnessKey,
-          signal,
-          requestBytes,
-          async (db, writes) => {
-            const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
-            try {
-              return await work(context);
-            } catch (error) {
-              return poisonCurrentInvocation(error);
-            }
-          },
-        ) as Awaited<R>,
-    });
-  }
-
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -449,7 +411,7 @@ export class RuntimeFunctionExecutor<C> {
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
     surface?: "procedure",
-  ): OwnedProcedureContext;
+  ): ProcedureCtx;
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -458,7 +420,7 @@ export class RuntimeFunctionExecutor<C> {
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
     surface: "http",
-  ): OwnedHttpHandlerContext;
+  ): HttpHandlerCtx;
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -468,7 +430,7 @@ export class RuntimeFunctionExecutor<C> {
     accountUnlinked: (account: ExternalAccount) => void,
     /** "http" omits the auth members: raw routes resolve no credential. */
     surface: "procedure" | "http" = "procedure",
-  ): OwnedProcedureContext | OwnedHttpHandlerContext {
+  ): ProcedureCtx | HttpHandlerCtx {
     const currentTimestamp = typeof timestamp === "function"
       ? timestamp
       : () => timestamp;
@@ -523,12 +485,7 @@ export class RuntimeFunctionExecutor<C> {
         ),
       }),
     }) as ProcedureCtx;
-    // The MCP AI capability authenticates as the calling principal; the http
-    // surface has none, so binding it there would carry an absent identity.
-    const release = surface !== "http"
-      ? this.options.mcp?.bindAiContext(value, fairnessKey, requestBytes) ?? releaseNothing
-      : releaseNothing;
-    return Object.freeze({ value, release });
+    return value;
   }
 
   /**
@@ -593,7 +550,7 @@ export class RuntimeFunctionExecutor<C> {
     args: unknown,
   ): (db: MutationCtx["db"], writes: WriteCollector) => unknown {
     return (db, writes) => {
-      const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
+      const invocation = this.hostMutationContext(db, principal, this.now(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
         invokeFunction(fn, invocation, args, { mutationAccess }));
@@ -700,7 +657,7 @@ export class RuntimeFunctionExecutor<C> {
             const context = this.hostMutationContext(
               db,
               SYSTEM_PRINCIPAL,
-              this.readNow(),
+              this.now(),
               writes,
               { runNumber },
             ) as MutationCtx & { readonly runNumber: number };
@@ -743,7 +700,7 @@ export class RuntimeFunctionExecutor<C> {
     const account = await verifyUserBearerCredential(
       rawBearerToken,
       this.options.credentialVerifier,
-      this.options.now,
+      this.now,
     );
     if (account.issuer === CREDENTIAL_ISSUER) {
       // An AckerDB credential is already a first-class Identity; aliasing it
@@ -755,8 +712,8 @@ export class RuntimeFunctionExecutor<C> {
     }
     throwIfAborted(signal);
     await this.identityWrite(fairnessKey, signal, requestBytes, async (identities) => {
-      if (account.expiresAt <= this.readNow()) {
-        throw new AckerDBError("unauthenticated", "invalid credential");
+      if (account.expiresAt <= this.now()) {
+        throw unauthenticated();
       }
       if (!await identities.attach(principal.identity, account.issuer, account.subject)) {
         throw new AckerDBError("conflict", "external account is already linked");
@@ -814,7 +771,4 @@ export class RuntimeFunctionExecutor<C> {
     );
   }
 
-  private readNow(): number {
-    return this.options.now();
-  }
 }

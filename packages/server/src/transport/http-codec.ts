@@ -16,7 +16,6 @@
  */
 import { toStandardJson, type ApplicationError } from "@ackerdb/core";
 import type { AnyRegistered, AnyRegisteredSse } from "../app/functions.ts";
-import { isMcpContentValidator } from "../mcp/content.ts";
 import { compileContractCodec } from "../validation/standard-schema.ts";
 import { v } from "../validation/v.ts";
 
@@ -35,11 +34,6 @@ type ValueEncoder = (value: unknown, path?: string) => unknown;
 
 export function compileExposedHttpCodec(address: string, fn: AnyRegistered): ExposedHttpCodec {
   const where = `HTTP-exposed function "${address}"`;
-  if (isMcpContentValidator(fn.returns)) {
-    throw new TypeError(
-      `${where} returns MCP content blocks, which no HTTP response can carry; remove \`http\``,
-    );
-  }
   const codec = (validator: Parameters<typeof compileContractCodec>[0], at: string) =>
     compileContractCodec(validator, at, "HTTP surface");
   const args = codec(v.object(fn.args), `${where} args`);

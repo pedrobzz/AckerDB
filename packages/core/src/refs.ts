@@ -16,8 +16,8 @@ export type FunctionKind = "query" | "mutation" | "procedure" | "sse" | "event";
 
 /**
  * The fixed root of every application address. It lives here because generated
- * references, registry addresses, event references, channels, and MCP exports
- * must agree on it exactly.
+ * references, registry addresses, event references, and channels must agree
+ * on it exactly.
  */
 export const APPLICATION_ADDRESS_ROOT = "api";
 

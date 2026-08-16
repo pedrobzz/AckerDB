@@ -1,15 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   isResult,
-  stableEncode,
   uuidV7Timestamp,
   type SseAckRequest,
 } from "@ackerdb/core";
 import {
   type AnyRegistered,
   type AnyRegisteredSse,
-  type OwnedProcedureContext,
   type SseCtx,
   type SseSource,
 } from "../../app/functions.ts";
@@ -56,6 +54,8 @@ import { claimHttpRequestProvenance } from "../request-provenance.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { validatedSseSource } from "../sse/source.ts";
+import { digestOfWire } from "../../shared/digest.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
@@ -70,11 +70,6 @@ interface ClaimedHttpRequest {
    * back to the Runtime's immediate fan-out.
    */
   readonly invalidations: AuthInvalidationPublisher;
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
 }
 
 export interface RuntimeHttpOptions {
@@ -96,8 +91,10 @@ export class RuntimeHttp {
   readonly sseBudget: OutboundBudget;
   readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly responses: RuntimeHttpResponses;
+  private readonly now: () => number;
 
   constructor(private readonly options: RuntimeHttpOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
     this.responses = new RuntimeHttpResponses(options.limits.maxFrameBytes);
     const controlReserve = Math.min(
       options.limits.maxFrameBytes,
@@ -184,18 +181,14 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        this.readNow(),
+        this.now(),
         invalidations.publish,
       );
-      try {
-        return await invokeSideEffectingHandler(
-          signal,
-          "procedure",
-          (onAuthorized) => invokeFunction(fn, context.value, request.args, { onAuthorized }),
-        );
-      } finally {
-        context.release();
-      }
+      return await invokeSideEffectingHandler(
+        signal,
+        "procedure",
+        (onAuthorized) => invokeFunction(fn, context, request.args, { onAuthorized }),
+      );
     }, {
       finalize: (outcome) => this.responses.respond(request, codec, "procedure", outcome),
       fairnessKey,
@@ -228,46 +221,42 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        this.readNow(),
+        this.now(),
         () => {},
         "http",
       );
-      try {
-        return await invokeSideEffectingHandler(
-          signal,
-          "http handler",
-          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
-            onAuthorized();
-            try {
-              const response = await registered.handler(context.value, input.request);
-              if (!(response instanceof Response)) {
-                throw new Error("http handler returned a non-Response value");
-              }
-              return response;
-            } catch (cause) {
-              // Every uncaught throw — an AckerDBError, a validation error,
-              // anything — crosses as the one sanitized `internal` outcome:
-              // the handler authors its failures as Responses, so a thrown
-              // message is never the handler speaking to the caller. The
-              let described: string;
-              try {
-                described = cause instanceof Error
-                  ? cause.stack ?? cause.message
-                  : String(cause);
-              } catch {
-                described = "<unreadable handler error>";
-              }
-              console.log(`http handler "${input.address}" failed`, {
-                error: described,
-              });
-              // Rethrowing a plain Error keeps the abort conversion above intact.
-              throw new Error(`http handler "${input.address}" failed`);
+      return await invokeSideEffectingHandler(
+        signal,
+        "http handler",
+        (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
+          onAuthorized();
+          try {
+            const response = await registered.handler(context, input.request);
+            if (!(response instanceof Response)) {
+              throw new Error("http handler returned a non-Response value");
             }
-          }),
-        );
-      } finally {
-        context.release();
-      }
+            return response;
+          } catch (cause) {
+            // Every uncaught throw — an AckerDBError, a validation error,
+            // anything — crosses as the one sanitized `internal` outcome:
+            // the handler authors its failures as Responses, so a thrown
+            // message is never the handler speaking to the caller. The
+            let described: string;
+            try {
+              described = cause instanceof Error
+                ? cause.stack ?? cause.message
+                : String(cause);
+            } catch {
+              described = "<unreadable handler error>";
+            }
+            console.log(`http handler "${input.address}" failed`, {
+              error: described,
+            });
+            // Rethrowing a plain Error keeps the abort conversion above intact.
+            throw new Error(`http handler "${input.address}" failed`);
+          }
+        }),
+      );
     }, {
       fairnessKey,
     });
@@ -286,7 +275,6 @@ export class RuntimeHttp {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
       let lifecycle: Promise<void> | null = null;
-      let procedure: OwnedProcedureContext | null = null;
       try {
         const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
         if (fn.yields === undefined) {
@@ -301,17 +289,17 @@ export class RuntimeHttp {
         });
         streamId = this.register(producer);
         void producer.finished.then(() => this.remove(streamId!, producer!));
-        const authorized = deferred<void>();
+        const authorized = Promise.withResolvers<void>();
         let handlerContext: <T>(work: () => T) => T = (work) => work();
-        procedure = this.options.functions.createProcedureContext(
+        const procedure = this.options.functions.createProcedureContext(
           request.principal,
           fairnessKey,
           producer.signal,
           requestBytes,
-          this.readNow(),
+          this.now(),
           invalidations.publish,
         );
-        const handler = invokeFunction(fn, procedure.value as SseCtx, request.args, {
+        const handler = invokeFunction(fn, procedure as SseCtx, request.args, {
           onAuthorized: () => {
             handlerContext = AsyncLocalStorage.snapshot();
             authorized.resolve();
@@ -335,11 +323,7 @@ export class RuntimeHttp {
           }
           throw error;
         });
-        lifecycle = completion.finally(() => {
-          procedure!.release();
-          procedure = null;
-          release();
-        });
+        lifecycle = completion.finally(release);
         void lifecycle.catch(() => {});
         await Promise.race([
           authorized.promise,
@@ -358,10 +342,7 @@ export class RuntimeHttp {
           }
         }
         if (lifecycle !== null) await lifecycle.catch(() => {});
-        else {
-          procedure?.release();
-          release();
-        }
+        else release();
         throw transportError(error);
       }
     };
@@ -410,7 +391,7 @@ export class RuntimeHttp {
       issuedAt,
       principalFingerprint: fairnessKey,
       functionRef: request.address,
-      argsFingerprint: digest(request.args),
+      argsFingerprint: digestOfWire(request.args),
     };
   }
 
@@ -446,19 +427,4 @@ export class RuntimeHttp {
     if (this.sseProducers.get(streamId) === producer) this.sseProducers.delete(streamId);
   }
 
-  private readNow(): number {
-    const now = this.options.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => { resolve = accept; });
-  return { promise, resolve };
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }

@@ -14,8 +14,7 @@ import type {
   RuntimeHttpResponse,
 } from "../contracts/requests.ts";
 import type { RuntimeOperationOutcome } from "../execution/operation-runner.ts";
-
-const utf8 = new TextEncoder();
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 export type HttpValueOperation = "query" | "mutation" | "procedure";
 
@@ -107,7 +106,7 @@ export class RuntimeHttpResponses {
     let bytes: number | undefined;
     try {
       const body = standardJsonText(toJson(value));
-      bytes = utf8.encode(body).byteLength;
+      bytes = utf8ByteLength(body);
       let encoded = { body, bytes };
       if (bytes > this.maxFrameBytes) {
         if (failure === null) {
@@ -139,7 +138,7 @@ export class RuntimeHttpResponses {
   ): EncodedHttpBody {
     const fitted = fitOutcome(failure, this.maxFrameBytes, (outcome) => {
       const value = standardJsonText(outcome);
-      return { value, bytes: utf8.encode(value).byteLength };
+      return { value, bytes: utf8ByteLength(value) };
     });
     if (fitted === null) {
       throw new AckerDBError(

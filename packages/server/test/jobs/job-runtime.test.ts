@@ -20,6 +20,7 @@ import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
+import { outcomeFromError } from "../../src/runtime/outcome.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1273,5 +1274,58 @@ describe("administration transitions", () => {
     await Bun.sleep(10);
     expect(runRows()).toHaveLength(1);
     expect(ran).toBe(0);
+  });
+});
+
+describe("the injected clock", () => {
+  /**
+   * The clock is checked once, where it is injected, so the jobs runner never
+   * has to remember to check its own reads. Breaking the clock inside the
+   * mutation puts the failure at the jobs seam — past admission, inside the
+   * writer transaction — which is the one place a bad millisecond could have
+   * reached a durable column. Whichever injected wrapper reads first refuses;
+   * they all wrap the one clock the Runtime was given.
+   */
+  test("refuses to enqueue on a clock that stopped returning milliseconds", async () => {
+    clock = 15_000_000;
+    let thrown: unknown;
+    const enqueue = mutation({
+      access: "public",
+      http: true,
+      args: {},
+      handler: async (ctx: Ctx) => {
+        clock = Number.NaN;
+        try {
+          return await ctx.jobs.work.steady.enqueue({}, { delayMs: 60_000 });
+        } catch (error) {
+          thrown = error;
+          throw error;
+        } finally {
+          clock = 15_000_000;
+        }
+      },
+    });
+    await start(
+      declareJobs({ work: { steady: job({ args: {}, handler: async () => null }) } }),
+      limits(),
+      { admin: { enqueue } },
+    );
+    const keysBefore = jobKeysIssued();
+
+    const response = await runtime.runMutation({
+      id: 1,
+      address: "api.admin.enqueue",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: Ctx) => new Response(body, { status }),
+    });
+    expect(thrown).toBeInstanceOf(RangeError);
+    expect((thrown as Error).message).toContain("must be finite milliseconds");
+    expect(response.status).toBe(500);
+    expect(JSON.parse(await response.text())).toMatchObject({ code: "internal" });
+    // The transaction rolled back, so no Job row exists and no key was spent.
+    expect(jobRows()).toHaveLength(0);
+    expect(runRows()).toHaveLength(0);
+    expect(jobKeysIssued()).toBe(keysBefore);
   });
 });

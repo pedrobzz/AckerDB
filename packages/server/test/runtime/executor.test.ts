@@ -123,7 +123,8 @@ describe("BoundedExecutor", () => {
     expect(draining).toBeInstanceOf(AdmissionRejected);
     expect(outcomeFromError(draining)).toEqual({
       code: "draining",
-      retryable: false,
+      retryable: true,
+      retryAfterMs: 1_000,
       resource: "writer",
       message: "Admission rejected: closed",
     });

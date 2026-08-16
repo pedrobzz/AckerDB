@@ -3,7 +3,7 @@ import { MAX_PAGE_BYTES, MAX_PAGE_SIZE } from "@ackerdb/core";
 import { isValidationError, ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
-import { runStatement } from "../transaction-statement.ts";
+import { runStatement } from "../transaction.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { markTransactionPoisoned } from "../../runtime/transaction-context.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
@@ -18,8 +18,8 @@ import {
   type QueryOrder,
 } from "./predicate.ts";
 import { filterPredicate, tableFilterMeta } from "./filter.ts";
-
-const quote = (name: string): string => `"${name}"`;
+import { quoteIdentifier } from "../../shared/sql.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 // Wire costs the page budget charges per cell, from the JSON wire format:
 // `null`, a number's worst-case JSON form, and the escape envelopes bigints
@@ -47,7 +47,7 @@ function pageRowBytes(raw: Record<string, unknown>): number {
     const value = raw[key];
     bytes += key.length + 3;
     if (value === null) bytes += NULL_CELL_BYTES;
-    else if (typeof value === "string") bytes += Buffer.byteLength(value) + 2;
+    else if (typeof value === "string") bytes += utf8ByteLength(value) + 2;
     else if (typeof value === "bigint") bytes += BIGINT_CELL_BYTES;
     else if (ArrayBuffer.isView(value)) {
       bytes += Math.ceil(value.byteLength / 3) * 4 + BYTES_CELL_ENVELOPE;
@@ -191,7 +191,7 @@ function cursorPredicate(
   for (let position = 0; position < order.length; position++) {
     const prefix: string[] = [];
     for (let prior = 0; prior < position; prior++) {
-      const column = quote(order[prior]!.column);
+      const column = quoteIdentifier(order[prior]!.column);
       const value = values[prior];
       if (value === null) {
         prefix.push(`${column} IS NULL`);
@@ -201,7 +201,7 @@ function cursorPredicate(
       }
     }
     const current = order[position]!;
-    const column = quote(current.column);
+    const column = quoteIdentifier(current.column);
     const value = values[position];
     let after: string;
     if (current.direction === "asc") {
@@ -288,17 +288,17 @@ class TableQueryRuntime {
   }
 
   private orderSql(): string {
-    const prefix = `${quote(this.plan.name)}.`;
-    if (this.state.order.length === 0) return `${prefix}${quote(this.plan.pk)} ASC`;
+    const prefix = `${quoteIdentifier(this.plan.name)}.`;
+    if (this.state.order.length === 0) return `${prefix}${quoteIdentifier(this.plan.pk)} ASC`;
     let sql = "";
     let includesPrimaryKey = false;
     for (const { column, direction } of this.state.order) {
       if (sql !== "") sql += ", ";
-      sql += `${prefix}${quote(column)} ${direction.toUpperCase()}`;
+      sql += `${prefix}${quoteIdentifier(column)} ${direction.toUpperCase()}`;
       if (column === this.plan.pk) includesPrimaryKey = true;
     }
     if (!includesPrimaryKey) {
-      sql += `, ${prefix}${quote(this.plan.pk)} ASC`;
+      sql += `, ${prefix}${quoteIdentifier(this.plan.pk)} ASC`;
     }
     return sql;
   }
@@ -339,7 +339,7 @@ class TableQueryRuntime {
     }
     const orderSql = this.orderSql();
     return {
-      sql: `SELECT ${this.plan.readProjection} FROM ${quote(this.plan.name)}${where} ORDER BY ${orderSql}${limit >= 0 ? ` LIMIT ${limit}` : ""}`,
+      sql: `SELECT ${this.plan.readProjection} FROM ${quoteIdentifier(this.plan.name)}${where} ORDER BY ${orderSql}${limit >= 0 ? ` LIMIT ${limit}` : ""}`,
       params,
     };
   }
@@ -411,7 +411,7 @@ class TableQueryRuntime {
     );
     const where = predicate.sql === "" ? "" : ` WHERE ${predicate.sql}`;
     const row = this.engine
-      .statement(this.conn, `SELECT ${select} AS v FROM ${quote(this.plan.name)}${where}`)
+      .statement(this.conn, `SELECT ${select} AS v FROM ${quoteIdentifier(this.plan.name)}${where}`)
       .get(...(predicate.params as never[])) as { v: unknown };
     return row.v;
   }
@@ -424,7 +424,7 @@ class TableQueryRuntime {
     const path = `${this.plan.displayName}.query.sum`;
     let raw: unknown;
     try {
-      raw = this.aggregateRaw(`SUM(${quote(column)})`);
+      raw = this.aggregateRaw(`SUM(${quoteIdentifier(column)})`);
     } catch (error) {
       if (error instanceof Error && error.message.includes("integer overflow")) {
         throw new Error(
@@ -462,13 +462,13 @@ class TableQueryRuntime {
       SUMMABLE_KINDS,
     );
     return await runStatement(() => {
-        const raw = this.aggregateRaw(`AVG(${quote(column)})`);
+        const raw = this.aggregateRaw(`AVG(${quoteIdentifier(column)})`);
         return raw === null ? null : typeof raw === "bigint" ? Number(raw) : (raw as number);
       });
   }
 
   private extremeValue(fn: "MIN" | "MAX", column: string): unknown {
-    const raw = this.aggregateRaw(`${fn}(${quote(column)})`);
+    const raw = this.aggregateRaw(`${fn}(${quoteIdentifier(column)})`);
     return raw === null ? null : this.plan.columns.get(column)!.fromSql([raw]);
   }
 

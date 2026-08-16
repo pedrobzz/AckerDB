@@ -1,5 +1,6 @@
 import { validateQueueLimits, type QueueLimits } from "./limits.ts";
-import { AckerDBError } from "../shared/errors.ts";
+import { AckerDBError, DRAIN_RETRY_AFTER_MS } from "../shared/errors.ts";
+import { finiteClock, finiteMillis } from "../shared/clock.ts";
 
 export type AdmissionResource =
   | "reader"
@@ -77,17 +78,21 @@ export class AdmissionRejected extends AckerDBError {
     retryAfterMs: number,
   ) {
     const capacity = reason === "items" || reason === "bytes";
+    const draining = reason === "closed";
     const code: AdmissionOutcomeCode = capacity
       ? "overloaded"
       : reason === "age" || reason === "deadline"
         ? "deadline_exceeded"
-        : reason === "closed"
+        : draining
           ? "draining"
           : "unavailable";
+    // A drain-time refusal is always retryable and always bounded: the caller
+    // is told when this process expects to be back.
     super(code, `Admission rejected: ${reason}`, {
-      retryable: capacity,
+      retryable: capacity || draining,
       resource,
       ...(capacity ? { retryAfterMs } : {}),
+      ...(draining ? { retryAfterMs: DRAIN_RETRY_AFTER_MS } : {}),
     });
     this.name = "AdmissionRejected";
   }
@@ -161,7 +166,7 @@ export class AdmissionQueue<T> {
     this.limits = validateQueueLimits(options.limits);
     this.resource = options.resource;
     this.retryAfterMs = retryAfterMs;
-    this.now = options.now ?? Date.now;
+    this.now = finiteClock(options.now ?? Date.now, "admission clock");
   }
 
   enqueue(value: T, options: AdmissionRequestOptions): Promise<AdmissionLease<T>> {
@@ -174,11 +179,9 @@ export class AdmissionQueue<T> {
     ) {
       throw new TypeError("round-robin admission requires a non-empty fairnessKey");
     }
-    if (options.deadlineMs !== undefined && !Number.isFinite(options.deadlineMs)) {
-      throw new RangeError("deadlineMs must be finite");
-    }
+    if (options.deadlineMs !== undefined) finiteMillis(options.deadlineMs, "deadlineMs");
 
-    const now = this.readNow();
+    const now = this.now();
     if (this.isClosed) return this.rejectImmediately("closed");
     if (options.signal?.aborted) return this.rejectImmediately("canceled");
     if (options.deadlineMs !== undefined && options.deadlineMs <= now) {
@@ -194,12 +197,7 @@ export class AdmissionQueue<T> {
       ? "deadline"
       : "age";
     const expiresAtMs = expiresBy === "deadline" ? options.deadlineMs! : ageExpiry;
-    let resolve!: (lease: AdmissionLease<T>) => void;
-    let reject!: (error: AdmissionRejected) => void;
-    const ticket = new Promise<AdmissionLease<T>>((ticketResolve, ticketReject) => {
-      resolve = ticketResolve;
-      reject = ticketReject;
-    });
+    const { promise: ticket, resolve, reject } = Promise.withResolvers<AdmissionLease<T>>();
     const entry: PendingAdmission<T> = {
       sequence: ++this.sequence,
       value,
@@ -225,7 +223,7 @@ export class AdmissionQueue<T> {
   }
 
   take(): AdmissionLease<T> | undefined {
-    const now = this.readNow();
+    const now = this.now();
     this.expire(now);
     let entry: PendingAdmission<T> | undefined;
     let servedGroup: FairnessGroup<T> | undefined;
@@ -264,8 +262,8 @@ export class AdmissionQueue<T> {
     return lease;
   }
 
-  expire(now = this.readNow()): number {
-    if (!Number.isFinite(now)) throw new RangeError("now must be finite");
+  expire(now = this.now()): number {
+    finiteMillis(now, "expiry time");
     let expired = 0;
     this.discardInactiveExpiryHeads();
     while (this.expiryHeap[0] && this.expiryHeap[0].expiresAtMs <= now) {
@@ -286,7 +284,7 @@ export class AdmissionQueue<T> {
   }
 
   snapshot(): AdmissionQueueSnapshot {
-    const now = this.readNow();
+    const now = this.now();
     this.expire(now);
     this.discardInactiveExpiryHeads();
     return Object.freeze({
@@ -304,11 +302,6 @@ export class AdmissionQueue<T> {
     });
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("clock must return a finite millisecond value");
-    return now;
-  }
 
   private rejectImmediately(reason: AdmissionRejectionReason): Promise<never> {
     this.rejectionTotals[reason]++;

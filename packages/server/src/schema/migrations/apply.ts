@@ -38,6 +38,7 @@ import { checkDescriptor } from "../descriptor-kinds.ts";
 import {
   columnPlan,
   compileReadProjection,
+  persistTagMaps,
   physicalColumnDdl,
   type ColumnPlan,
   type Engine,
@@ -45,6 +46,7 @@ import {
   type TagMap,
   type TagsOf,
 } from "../../database/engine.ts";
+import { transactionAsync } from "../../database/transaction.ts";
 import { fullTextTargetPlan } from "../../database/full-text.ts";
 import { isFrameworkTable } from "../../database/framework-schema.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
@@ -71,8 +73,7 @@ import {
   type MigrationStep,
   type RowTransform,
 } from "./types.ts";
-
-const quote = (name: string) => `"${name}"`;
+import { quoteIdentifier } from "../../shared/sql.ts";
 
 /**
  * Which tables a step owns — and therefore both what it may move and whether it
@@ -217,8 +218,7 @@ export async function applyStep(
   }
   const saved = augmentSnapshot(target, driftOf);
 
-  writer.exec("BEGIN IMMEDIATE");
-  try {
+  await transactionAsync(writer, async () => {
     // The CLI/read-only plan is advisory. Re-run every data-dependent guard
     // under the writer lock before tags, rows, snapshots, or history can move.
     verifyPlanProbes(plan);
@@ -240,8 +240,8 @@ export async function applyStep(
       if (oldSnapshot?.kind === "table") {
         engine.dropStoredFullTextPhysical(oldName, oldSnapshot);
       }
-      writer.exec(`DROP TABLE IF EXISTS ${quote(oldName)}`);
-      writer.exec(`ALTER TABLE ${quote(tmpOf.get(name)!)} RENAME TO ${quote(name)}`);
+      writer.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(oldName)}`);
+      writer.exec(`ALTER TABLE ${quoteIdentifier(tmpOf.get(name)!)} RENAME TO ${quoteIdentifier(name)}`);
       engine.createIndexesPhysical(planOf(name)); // a unique index over bad output fails here
       engine.createFullTextPhysical(planOf(name));
       applied.push(`migrated table ${name}`);
@@ -254,7 +254,7 @@ export async function applyStep(
       if (oldSnapshot?.kind === "table") {
         engine.dropStoredFullTextPhysical(name, oldSnapshot);
       }
-      writer.exec(`DROP TABLE ${quote(name)}`);
+      writer.exec(`DROP TABLE ${quoteIdentifier(name)}`);
       applied.push(`dropped table ${name}`);
     }
     engine.saveSnapshot(saved);
@@ -263,11 +263,7 @@ export async function applyStep(
         .query("INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
         .run(step.number, step.name, migrationIdentity(step), Date.now());
     }
-    writer.exec("COMMIT");
-  } catch (error) {
-    writer.exec("ROLLBACK");
-    throw error;
-  }
+  });
   return { applied, saved };
 }
 
@@ -297,9 +293,9 @@ function applyPureRename(
       reverse?.get(target.column) ?? target.column,
     );
   }
-  if (oldTable !== undefined) writer.exec(`ALTER TABLE ${quote(oldTable)} RENAME TO ${quote(newTable)}`);
+  if (oldTable !== undefined) writer.exec(`ALTER TABLE ${quoteIdentifier(oldTable)} RENAME TO ${quoteIdentifier(newTable)}`);
   for (const [oldPhys, newPhys] of renames.columnPhys.get(newTable) ?? []) {
-    writer.exec(`ALTER TABLE ${quote(newTable)} RENAME COLUMN ${quote(oldPhys)} TO ${quote(newPhys)}`);
+    writer.exec(`ALTER TABLE ${quoteIdentifier(newTable)} RENAME COLUMN ${quoteIdentifier(oldPhys)} TO ${quoteIdentifier(newPhys)}`);
   }
   if (oldTable === undefined) {
     engine.createFullTextPhysical(plan);
@@ -309,7 +305,7 @@ function applyPureRename(
   const stale = writer
     .query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name NOT LIKE 'sqlite_%'")
     .all(newTable) as { name: string }[];
-  for (const ix of stale) writer.exec(`DROP INDEX ${quote(ix.name)}`);
+  for (const ix of stale) writer.exec(`DROP INDEX ${quoteIdentifier(ix.name)}`);
   engine.createIndexesPhysical(plan);
   engine.createFullTextPhysical(plan);
   applied.push(`renamed table ${oldTable} to ${newTable}`);
@@ -425,7 +421,7 @@ function physicalInsert(
     names.push(c.name);
     params.push(c.value);
   }
-  const sql = `INSERT INTO ${quote(target.name)} (${names.map(quote).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`;
+  const sql = `INSERT INTO ${quoteIdentifier(target.name)} (${names.map(quoteIdentifier).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`;
   engine.writer.query(sql).run(...(params as never[]));
 }
 
@@ -448,11 +444,6 @@ function checkRow(table: string, snap: TableSnapshot, row: unknown, op: string):
       ? null
       : input[name];
     out[name] = checkDescriptor(desc, value, `${table}.${op}.${name}`);
-  }
-  for (const key of Object.keys(input)) {
-    if (key !== pk && !Object.hasOwn(snap.columns, key) && input[key] !== undefined) {
-      throw new ValidationError(`${table}.${op}: unknown field "${key}"`);
-    }
   }
   return out;
 }
@@ -480,7 +471,7 @@ function buildBefore(engine: Engine, pre: SchemaSnapshot, stored: SchemaSnapshot
     const old = buildOldTable(snap, physColsOf(physical), oldTags);
     before[name] = {
       async get(id) {
-        const raw = writer.query(`SELECT * FROM ${quote(name)} WHERE ${quote(old.pk)} = ?`).get(id as never) as MigrationRow | null;
+        const raw = writer.query(`SELECT * FROM ${quoteIdentifier(name)} WHERE ${quoteIdentifier(old.pk)} = ?`).get(id as never) as MigrationRow | null;
         return raw === null ? null : decodeOldRow(old, raw);
       },
       async *scan() {
@@ -679,8 +670,8 @@ async function runTransforms(
     const insertCols = [...pairs.map(([, c]) => c), ...carriedPhys];
     const selectCols = [...pairs.map(([old]) => old), ...carriedPhys];
     writer.exec(
-      `INSERT INTO ${quote(tmpOf.get(name)!)} (${insertCols.map(quote).join(", ")}) ` +
-        `SELECT ${selectCols.map(quote).join(", ")} FROM ${quote(oldPhysName)}`,
+      `INSERT INTO ${quoteIdentifier(tmpOf.get(name)!)} (${insertCols.map(quoteIdentifier).join(", ")}) ` +
+        `SELECT ${selectCols.map(quoteIdentifier).join(", ")} FROM ${quoteIdentifier(oldPhysName)}`,
     );
   }
 
@@ -829,14 +820,4 @@ function internStepTags(writer: Database, target: SchemaSnapshot, variants: Rena
     }
   }
   return maps;
-}
-
-/** Persist a step's tag maps (insert-only). The caller owns the transaction. */
-function persistTagMaps(writer: Database, maps: Map<string, TagMap>): void {
-  const insert = writer.query(
-    "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
-  );
-  for (const [type, map] of maps) {
-    for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);
-  }
 }

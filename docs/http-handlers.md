@@ -63,7 +63,7 @@ export const stripe = httpHandler({
   segment — `hooks.stripe` is addressed `api.hooks.stripe` and serves
   `/api/hooks/stripe`. There is no router and no path field; a webhook URL is a
   thing pasted into a provider's dashboard, and the reserved `_` marker plus
-  the MCP-path collision checks apply at registration exactly as they do for
+  the path-collision checks apply at registration exactly as they do for
   exposed functions.
 - `methods` is an explicit non-empty list drawn from GET, HEAD, POST, PUT,
   PATCH, DELETE, OPTIONS — no wildcard. An empty list, an unknown method, a

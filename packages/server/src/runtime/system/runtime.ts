@@ -14,6 +14,7 @@ import { runInInvocationRoot } from "../invocation-state.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { inTransaction } from "../transaction-context.ts";
+import { finiteClock } from "../../shared/clock.ts";
 
 const SYSTEM_FAIRNESS_KEY = callerFairnessKey(
   SYSTEM_PRINCIPAL,
@@ -32,7 +33,11 @@ export interface RuntimeSystemOptions {
 export class RuntimeSystem {
   private readonly root = AsyncLocalStorage.snapshot();
 
-  constructor(private readonly options: RuntimeSystemOptions) {}
+  private readonly now: () => number;
+
+  constructor(private readonly options: RuntimeSystemOptions) {
+    this.now = finiteClock(options.now, "runtime clock");
+  }
 
   run<R>(
     name: string,
@@ -60,33 +65,24 @@ export class RuntimeSystem {
           SYSTEM_FAIRNESS_KEY,
           signal,
           1,
-          readNow(this.options.now),
+          this.now(),
           this.options.invalidations.publish,
         );
-        try {
-          return await invokeSideEffectingHandler(
-            signal,
-            "system callback",
-            (onAuthorized) => runInInvocationRoot(
-              SYSTEM_PRINCIPAL,
-              () => {
-                onAuthorized();
-                return work(context.value as SystemCtx);
-              },
-              writerOwnedByCaller,
-            ),
-          );
-        } finally {
-          context.release();
-        }
+        return await invokeSideEffectingHandler(
+          signal,
+          "system callback",
+          (onAuthorized) => runInInvocationRoot(
+            SYSTEM_PRINCIPAL,
+            () => {
+              onAuthorized();
+              return work(context as SystemCtx);
+            },
+            writerOwnedByCaller,
+          ),
+        );
       },
       { fairnessKey: SYSTEM_FAIRNESS_KEY },
     ));
   }
 }
 
-function readNow(now: () => number): number {
-  const value = now();
-  if (!Number.isFinite(value)) throw new RangeError("runtime clock must return finite milliseconds");
-  return value;
-}
