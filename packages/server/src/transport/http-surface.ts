@@ -21,6 +21,7 @@ import {
   type SseAckRequest,
   type SseMessage,
 } from "@ackerdb/core";
+import type { HttpMethod } from "./routing/path.ts";
 
 /** The root of the File byte routes; the segments below it name one handle. */
 const FILES_ROOT = "/_files";
@@ -89,7 +90,7 @@ export function exposedHttpKind(kind: string): ExposedHttpKind | undefined {
  * receives. GET exists for queries alone: it is the cacheable, curl-able read;
  * an SSE `EventSource` variant cannot carry `Authorization`, so it has none.
  */
-export const EXPOSED_HTTP_METHODS: Readonly<Record<ExposedHttpKind, readonly string[]>> =
+export const EXPOSED_HTTP_METHODS: Readonly<Record<ExposedHttpKind, readonly HttpMethod[]>> =
   Object.freeze({
     query: ["GET", "POST"],
     mutation: ["POST"],

@@ -478,6 +478,9 @@ describe("File HTTP flow", () => {
     // The registry owns method selection, so the Allow header names every
     // method the route registered — the preflight included.
     expect(response.headers.get("allow")).toBe("PUT, OPTIONS");
+    // 405 is cacheable by default, and a route's method set changes with a
+    // deploy; the registry never lets one be stored.
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(parseOutcome(await response.json())).toEqual({
       code: "malformed",
       message: "method not allowed; allow: PUT, OPTIONS",

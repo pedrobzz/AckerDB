@@ -22,15 +22,20 @@
 import { addRoute, createRouter, findRoute, type RouterContext } from "rou3";
 import { AckerDBError } from "../../shared/errors.ts";
 import { methodNotAllowed, outcomeError } from "../response.ts";
-import { matcherPattern, HTTP_METHODS, type HttpMethod, type HttpParams } from "./path.ts";
-import type {
-  HttpRequest,
-  HttpRoute,
-  HttpRouteHandler,
-  HttpRouteResult,
-} from "./route.ts";
+import {
+  matcherPattern,
+  routeSignature,
+  HTTP_METHODS,
+  NO_PARAMS,
+  type HttpParams,
+} from "./path.ts";
+import { handlerFor, type HttpRequest, type HttpRoute } from "./route.ts";
 
-const NO_PARAMS: HttpParams = Object.freeze({});
+/** One route and the export that answers for it if its claim is refused. */
+export interface ClaimedRoute {
+  readonly route: HttpRoute;
+  readonly owner: string;
+}
 
 interface RegisteredRoute {
   readonly route: HttpRoute;
@@ -67,33 +72,39 @@ export class HttpRegistry {
    * after. Keeping it here rather than in `fetch` is what stops "no route" from
    * becoming another dispatch branch.
    */
-  constructor(private readonly unmatched: (request: Request) => Response) {}
+  constructor(private readonly unmatched: () => Response) {}
 
   /**
-   * The sole registration operation. Ownership is checked before the matcher is
-   * touched, so a refused route leaves the live table exactly as it was.
+   * The sole registration operation, and a whole batch at a time: every claim
+   * in the batch is checked before the matcher is touched at all, so a refused
+   * route leaves the live table exactly as it was rather than half-installed.
+   * Ownership is by pattern, not by written path — two routes whose parameters
+   * differ only in name claim the same URLs.
    */
-  add(route: HttpRoute, owner: string): void {
-    const existing = this.owners.get(route.path);
-    if (existing !== undefined) {
-      throw new Error(`${owner} and ${existing} both claim the HTTP route "${route.path}"`);
+  add(routes: readonly ClaimedRoute[]): void {
+    const claimed = new Map<string, string>();
+    for (const { route, owner } of routes) {
+      const signature = routeSignature(route.path);
+      const existing = this.owners.get(signature) ?? claimed.get(signature);
+      if (existing !== undefined) {
+        throw new Error(`${owner} and ${existing} both claim the HTTP route "${route.path}"`);
+      }
+      claimed.set(signature, owner);
     }
-    this.owners.set(route.path, owner);
-    addRoute(this.matcher, "", matcherPattern(route.path), {
-      route,
-      allow: HTTP_METHODS.filter((method) => route.handlers[method] !== undefined).join(", "),
-    });
+    for (const [signature, owner] of claimed) this.owners.set(signature, owner);
+    for (const { route } of routes) {
+      addRoute(this.matcher, "", matcherPattern(route.path), {
+        route,
+        allow: HTTP_METHODS.filter((method) => route.handlers[method] !== undefined).join(", "),
+      });
+    }
   }
 
-  dispatch(pathname: string, request: Request): HttpRouteResult | Promise<HttpRouteResult> {
+  dispatch(pathname: string, request: Request): Response | undefined | Promise<Response | undefined> {
     const matched = findRoute(this.matcher, "", pathname);
-    if (matched === undefined) return this.unmatched(request);
+    if (matched === undefined) return this.unmatched();
     const { route, allow } = matched.data;
-    // The map's value type is a union of method-narrowed handlers; the method
-    // that selected it is the one it was declared for.
-    const handler = route.handlers[request.method as HttpMethod] as
-      | HttpRouteHandler
-      | undefined;
+    const handler = handlerFor(route, request.method);
     if (handler === undefined) return methodNotAllowed(allow);
     const params = decodedParams(matched.params);
     if (params === null) {

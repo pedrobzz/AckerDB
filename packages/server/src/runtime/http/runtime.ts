@@ -33,11 +33,12 @@ import type {
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
-import type { HttpMethod, HttpParams } from "../../transport/routing/path.ts";
-import type {
-  AnyHttpHandler,
-  HttpHandlerCtx,
-  HttpRequest,
+import { NO_PARAMS } from "../../transport/routing/path.ts";
+import {
+  handlerFor,
+  type AnyHttpHandler,
+  type HttpHandlerCtx,
+  type HttpRequest,
 } from "../../transport/routing/route.ts";
 import { runInInvocationRoot } from "../invocation-state.ts";
 import type { IdempotencyIdentity } from "../coordinator.ts";
@@ -65,7 +66,6 @@ import { finiteClock } from "../../shared/clock.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
-const NO_PARAMS: HttpParams = Object.freeze({});
 
 interface ClaimedHttpRequest {
   readonly requestBytes: number;
@@ -211,7 +211,7 @@ export class RuntimeHttp {
    */
   runHttpRoute(input: RuntimeHttpRouteRequest): Promise<Response> {
     const { route, request } = input;
-    const handler = route.handlers[request.method as HttpMethod] as AnyHttpHandler | undefined;
+    const handler = handlerFor(route, request.method) as AnyHttpHandler | undefined;
     if (handler === undefined) {
       return Promise.reject(new AckerDBError(
         "not_found",

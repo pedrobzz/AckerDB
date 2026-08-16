@@ -95,9 +95,17 @@ export const asset = http("/orgs/:org/assets/*", {
   compile error rather than `undefined`.
 - **A malformed path fails to compile before it fails to load.** A path not
   starting with `/`, an empty segment, a `*` that is not last, a repeated
-  parameter name, a `:` naming nothing, a segment mixing literal text with `:`
-  or `*` — each is refused by the argument type, and refused again by the
-  loader for values that reach it untyped.
+  parameter name, and a `:` naming nothing are each refused by the argument
+  type, and refused again by the loader for values that reach it untyped.
+- **Static text is static.** A segment may not carry `: * ( ) { } \ ? #`. The
+  first two are AckerDB's own syntax; the rest are syntax to the matcher
+  underneath, so a segment carrying one would quietly become a pattern in a
+  language AckerDB does not publish rather than the literal text it looks like.
+  A parameter name is letters, digits, `_`, and `-`, for the same reason: that
+  is exactly what the matcher treats as a plain named parameter.
+- **Two routes claiming the same URLs are refused**, whether or not they are
+  spelled alike: `/users/:id` and `/users/:slug` match the same requests, and
+  the parameter name is the author's vocabulary rather than the URL's.
 - **Precedence is the established one**: an exact path outranks a named
   parameter, and a named parameter outranks the terminal wildcard. Matching is
   case-sensitive. A trailing slash matches the route without it.
@@ -208,8 +216,8 @@ headers, body, signal. `params` is on the context rather than on a framework
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
 - Application routes enter the live table as one validated batch during
-  activation, and readiness flips only after the last insertion, so no request
-  observes half an application. Before that, and while draining, they answer
+  activation — every claim is checked before the first insertion, and readiness
+  flips only after the last, so no request observes half an application. Before that, and while draining, they answer
   the established unavailable outcome rather than a 404: unreachable and
   absent are different statements. `/live` and `/ready` are registered before
   the port is bound and answer throughout Boot.

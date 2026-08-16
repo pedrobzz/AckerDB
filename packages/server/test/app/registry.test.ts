@@ -262,6 +262,32 @@ describe("the http factory", () => {
     expect(() => http("/a/**" as never, handlers)).toThrow(
       'http path "/a/**" segment "**" is neither static text, ":name", nor the terminal "*"',
     );
+    // The matcher reads these as syntax, so static text carrying one would
+    // silently become a pattern in a language AckerDB does not publish.
+    for (const path of ["/v(1)/x", "/a{b,c}", "/a\\b", "/a?b", "/a#b"]) {
+      expect(() => http(path as never, handlers)).toThrow("is neither static text");
+    }
+    expect(() => http("/x/:a.b" as never, handlers)).toThrow(
+      'http path "/x/:a.b" parameter name "a.b" must be letters, digits, "_", and "-"',
+    );
+  });
+
+  test("refuses two patterns that claim the same URLs", () => {
+    // The parameter name is the author's vocabulary, not the URL's: these two
+    // routes match exactly the same requests, and the matcher would serve one.
+    const byId = { ...hook, path: "/users/:id" } as never;
+    const bySlug = { ...hook, path: "/users/:slug" } as never;
+    expect(() => new Registry({ hooks: { byId, bySlug } })).toThrow(
+      'http route "api.hooks.bySlug" and "api.hooks.byId" both claim path "/users/:slug"',
+    );
+  });
+
+  test("refuses a derived path the route grammar does not admit", () => {
+    // An export named through a string literal can project a path carrying
+    // matcher syntax; it is checked exactly like an explicit one.
+    expect(() => new Registry({ notes: { ["echo(1)"]: exposed } })).toThrow(
+      'HTTP-exposed function "api.notes.echo(1)" path "/api/notes/echo(1)" segment "echo(1)" is neither static text',
+    );
   });
 
   test("refuses a malformed method map", () => {

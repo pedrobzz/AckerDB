@@ -97,11 +97,17 @@ export function outcomeError(error: unknown): Response {
  * is built rather than mapped. Every route answers it in the one bare shape:
  * method selection belongs to the route table, not to the route.
  */
+/**
+ * `no-store` because 405 is one of the few statuses HTTP caches by default
+ * (RFC 9111 §4.2.2), and a route's method set changes with a deploy — a stored
+ * refusal would outlive the deploy that fixed it, on File paths whose URL is
+ * itself a secret as much as anywhere else.
+ */
 export function methodNotAllowed(allow: string): Response {
   return outcomeResponse(
     { code: "malformed", retryable: false, message: `method not allowed; allow: ${allow}` },
     405,
-    { allow },
+    { allow, "cache-control": "no-store" },
   );
 }
 

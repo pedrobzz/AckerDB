@@ -238,12 +238,13 @@ once and handed to the handler as `ctx.params`. Every capture is a string:
 nothing coerces or validates it, and a static pattern captures nothing at all.
 _Avoid_: Path variable, route argument, URL parameter
 
-**Route table** — The listener's one live collection of HTTP routes, owning
+**HTTP registry** — The listener's one live collection of HTTP routes, owning
 path matching, precedence, method selection, and the generic refusals — 405
 with its complete `Allow`, and the fallback for a path no route claims. It
 never learns what kind of thing a route serves; reachability, authority, cost,
-and shape stay with the handler.
-_Avoid_: Router, dispatcher, route map
+and shape stay with the handler. Distinct from the *Registry* of registered
+functions, which is the application's address space.
+_Avoid_: Router, dispatcher, route table, route map
 
 ## Application channels
 

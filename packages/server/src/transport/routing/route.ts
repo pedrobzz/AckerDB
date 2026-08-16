@@ -220,22 +220,36 @@ function validateHttpShape(
 /**
  * Declare one route. The path is explicit and literal: it types the handlers
  * it is given, and a path the grammar does not admit fails to compile before
- * it fails to load.
+ * it fails to load. The context and the result are fixed here to what an
+ * application may hold and answer; the framework's own binding below is the
+ * only thing that narrows the first or widens the second.
  */
-export function http<
-  const Path extends string,
-  Ctx = HttpHandlerCtx<Path>,
-  Result extends HttpRouteResult = Response,
->(
+export function http<const Path extends string>(
   path: Path & ValidHttpPath<Path>,
-  handlers: HttpHandlers<Ctx, Result>,
-): Http<Path, Ctx, Result> {
+  handlers: HttpHandlers<HttpHandlerCtx<Path>, Response>,
+): Http<Path, HttpHandlerCtx<Path>, Response> {
   return Object.freeze({
     isAckerDB: true as const,
     isAckerDBServerOnly: true as const,
     kind: "http" as const,
     ...validateHttpShape({ path, handlers }, "http", DEFINITION_KEYS),
-  }) as unknown as Http<Path, Ctx, Result>;
+  }) as unknown as Http<Path, HttpHandlerCtx<Path>, Response>;
+}
+
+/**
+ * Which handler answers one method — one rule, so the table that selects to
+ * refuse a wrong method and the Runtime that selects to invoke cannot disagree
+ * about what a route serves.
+ */
+export function handlerFor<Ctx, Result extends HttpRouteResult>(
+  route: Http<string, Ctx, Result>,
+  method: string,
+): HttpHandlerOf<HttpMethod, Ctx, Result> | undefined {
+  // The map's value type is a union of method-narrowed handlers; the method
+  // that selected one is the method it was declared for.
+  return route.handlers[method as HttpMethod] as
+    | HttpHandlerOf<HttpMethod, Ctx, Result>
+    | undefined;
 }
 
 /**
@@ -260,13 +274,6 @@ export function validateRegisteredHttp(value: object, where: string): AnyHttp {
   }) as AnyHttp;
 }
 
-/**
- * The same factory, as the framework holds it: the route context alone, and
- * the upgrade result. It narrows the context rather than introducing a second
- * model — one function, one validator, one value shape, one `add` — because a
- * built-in route has no application capabilities to be given and no Runtime
- * frame to be given them in.
- */
 export const frameworkHttp = http as unknown as FrameworkHttpBuilder;
 
 /** Detects intent only; the loader validates the full shape afterward. */

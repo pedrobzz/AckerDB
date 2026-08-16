@@ -41,6 +41,7 @@ import {
   compileExposedHttpCodec,
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
+import { routeSignature, validateRoutePath } from "../transport/routing/path.ts";
 
 interface ModuleExport {
   /** Module path joined to export name, without the fixed `api.` root. */
@@ -81,7 +82,7 @@ export class Registry {
   /** Application-owned raw routes, in the loader's fixed export order. */
   readonly httpRoutes: readonly HttpRouteDefinition[];
   private readonly httpByAddress = new Map<string, AnyHttp>();
-  /** Every application-claimed HTTP path, so two exports cannot own one URL. */
+  /** Every application-claimed route pattern, so two exports cannot own one URL. */
   private readonly claimedPaths = new Map<string, string>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
@@ -206,8 +207,11 @@ export class Registry {
     }
   }
 
-  /** One owner for the application-path invariants: the `_` reserve and every path collision. */
+  /** One owner for the application-path invariants: the grammar, the `_` reserve, every collision. */
   private claimApplicationHttpPath(path: string, address: string, label: string): string {
+    // A derived path is a path like any other: an export named through a
+    // string literal can project one the route grammar does not admit.
+    validateRoutePath(path, `${label} "${address}"`);
     // Every application route obeys the reserved-name rule, derived or explicit.
     if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
       throw new Error(
@@ -220,11 +224,13 @@ export class Registry {
     // named through a string literal may contain either. `api.notes.a/b` and
     // `api.notes.a.b` are two functions with two access policies at one URL,
     // and the second insertion would otherwise replace the first in silence.
-    const owner = this.claimedPaths.get(path);
+    // The claim is by pattern, so `/u/:id` and `/u/:slug` collide as they must.
+    const signature = routeSignature(path);
+    const owner = this.claimedPaths.get(signature);
     if (owner !== undefined) {
       throw new Error(`${label} "${address}" and "${owner}" both claim path "${path}"`);
     }
-    this.claimedPaths.set(path, address);
+    this.claimedPaths.set(signature, address);
     return path;
   }
 

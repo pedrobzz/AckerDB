@@ -64,6 +64,19 @@ shapes at load for values that arrive untyped; `HttpParams<P>` extracts the
 names the matcher will capture. A pattern the compiler accepts is a pattern the
 router matches, because there is one set of rules and one file.
 
+The grammar is closed rather than merely restricted. A static segment may not
+carry any character the matcher reads as syntax — `( ) { } \` as well as
+AckerDB's own `: *`, plus `? #`, which a pathname cannot contain — and a
+parameter name is exactly the character set the matcher treats as a *plain*
+named parameter. Without that, `/v(1)/x` would type as a static, zero-parameter
+path and register as a pattern-constrained one: the underlying language
+leaking through a hole in the published one, which is the failure mode the
+seam exists to prevent.
+
+Ownership is by pattern, not by written path. `/users/:id` and `/users/:slug`
+are one claim on one set of URLs; keying by the literal string would accept
+both and serve whichever the tree happened to answer with.
+
 The result type carries the same discipline. Application handlers answer
 `Response`. Bun's contract for an accepted WebSocket upgrade is `undefined`,
 which is a real outcome of an HTTP route — the socket has left HTTP — so the
@@ -137,6 +150,10 @@ answers both "which route" and "which methods does it serve".
   `/_ws` answers the bare `Outcome` the registry authors rather than a
   Protocol-2 frame, and `frameMethodNotAllowed` is deleted. An unmatched path
   before readiness answers the bare unavailable `Outcome` rather than a frame.
+- **Every 405 carries `cache-control: no-store`.** 405 is one of the few
+  statuses HTTP caches by default, and a route's method set changes with a
+  deploy. The File routes used to set it themselves; now one answer sets it for
+  every route, which is both simpler and strictly safer.
 - The File byte routes are two registered patterns
   (`/_files/uploads/:handle`, `/_files/grants/:handle`) instead of one regular
   expression inside the File runtime, which now receives the matched route and

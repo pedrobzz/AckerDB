@@ -40,7 +40,34 @@ export function isHttpMethod(value: unknown): value is HttpMethod {
  */
 export const WILDCARD = "*";
 
+/** What a static route's handler is given: no captures, and no way to add one. */
+export const NO_PARAMS: HttpParams = Object.freeze({});
+
 /* ---------------------------------------------------------------- types -- */
+
+/**
+ * The characters the matcher reads as syntax. Static text containing one would
+ * silently become a pattern of the matcher's own language rather than the
+ * literal segment it looks like, so a segment carrying any of them is refused.
+ * `?` and `#` are here because a pathname cannot contain them at all.
+ */
+type SyntaxChar = ":" | "*" | "(" | ")" | "{" | "}" | "\\" | "?" | "#";
+const SYNTAX_CHARS = /[:*(){}\\?#]/;
+
+/**
+ * What a parameter name may be made of. This is exactly the set the matcher
+ * treats as a plain named parameter; a name outside it becomes a
+ * pattern-constrained parameter there, which is not a language AckerDB
+ * publishes and which would match nothing.
+ */
+type NameChar =
+  | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
+  | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+  | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+  | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+  | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+  | "_" | "-";
+const NAME_CHARS = /^[A-Za-z0-9_-]+$/;
 
 /** `"/a/b/c"` without its leading slash becomes `["a", "b", "c"]`. */
 type SegmentsOf<Rest extends string> = Rest extends `${infer Head}/${infer Tail}`
@@ -52,6 +79,10 @@ type NameOf<Segment extends string> = Segment extends `:${infer Name}` ? Name
   : Segment extends typeof WILDCARD ? typeof WILDCARD
   : never;
 
+type IsName<Name extends string> = Name extends `${infer Head}${infer Rest}`
+  ? Head extends NameChar ? IsName<Rest> : false
+  : true;
+
 /** Why one segment is not a legal pattern segment; `never` when it is. */
 type SegmentIssue<
   Segment extends string,
@@ -62,11 +93,11 @@ type SegmentIssue<
     ? Terminal extends true ? never : 'a "*" may only be the last segment'
   : Segment extends `:${infer Name}`
     ? Name extends "" ? 'a ":" must name a parameter'
-    : Name extends `${string}${":" | typeof WILDCARD}${string}`
-      ? 'a parameter name may not contain ":" or "*"'
+    : IsName<Name> extends false
+      ? 'a parameter name is letters, digits, "_", and "-"'
     : Name extends Seen ? `a path may not name ":${Name}" twice`
     : never
-  : Segment extends `${string}${":" | typeof WILDCARD}${string}`
+  : Segment extends `${string}${SyntaxChar}${string}`
     ? 'a segment is static text, ":name", or the terminal "*"'
   : never;
 
@@ -127,34 +158,49 @@ export function validateRoutePath(value: unknown, where: string): string {
   if (value === "/") return value;
   const segments = value.slice(1).split("/");
   const named = new Set<string>();
+  const at = `${where} path "${value}"`;
   for (const [index, segment] of segments.entries()) {
-    const where2 = `${where} path "${value}"`;
     if (segment === "") {
-      throw new TypeError(`${where2} may not contain an empty segment`);
+      throw new TypeError(`${at} may not contain an empty segment`);
     }
     if (segment === WILDCARD) {
       if (index !== segments.length - 1) {
-        throw new TypeError(`${where2} may only use "*" as the last segment`);
+        throw new TypeError(`${at} may only use "*" as the last segment`);
       }
       continue;
     }
     if (segment.startsWith(":")) {
       const name = segment.slice(1);
-      if (name === "") throw new TypeError(`${where2} has a ":" that names no parameter`);
-      if (name.includes(":") || name.includes(WILDCARD)) {
-        throw new TypeError(`${where2} has a parameter name containing ":" or "*"`);
+      if (name === "") throw new TypeError(`${at} has a ":" that names no parameter`);
+      if (!NAME_CHARS.test(name)) {
+        throw new TypeError(
+          `${at} parameter name "${name}" must be letters, digits, "_", and "-"`,
+        );
       }
-      if (named.has(name)) throw new TypeError(`${where2} names ":${name}" twice`);
+      if (named.has(name)) throw new TypeError(`${at} names ":${name}" twice`);
       named.add(name);
       continue;
     }
-    if (segment.includes(":") || segment.includes(WILDCARD)) {
+    if (SYNTAX_CHARS.test(segment)) {
       throw new TypeError(
-        `${where2} segment "${segment}" is neither static text, ":name", nor the terminal "*"`,
+        `${at} segment "${segment}" is neither static text, ":name", nor the terminal "*"`,
       );
     }
   }
   return value;
+}
+
+/**
+ * What two patterns must differ in to be two routes. Parameter names are the
+ * caller's vocabulary, not the URL's: `/u/:id` and `/u/:slug` claim the same
+ * URLs, so ownership is keyed by this rather than by the written path — the
+ * matcher would otherwise accept both and serve only one.
+ */
+export function routeSignature(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => (segment.startsWith(":") ? ":" : segment))
+    .join("/");
 }
 
 /**

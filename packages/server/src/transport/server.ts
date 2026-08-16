@@ -44,7 +44,7 @@ import {
 } from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import { HttpRegistry } from "./routing/registry.ts";
-import type { HttpParams } from "./routing/path.ts";
+import { HTTP_METHODS, type HttpMethod, type HttpParams } from "./routing/path.ts";
 import {
   frameworkHttp,
   type AnyHttp,
@@ -145,7 +145,7 @@ const preflight = (): Response => new Response(null, { status: 204, headers: COR
  * reads it from the request.
  */
 function everyMethod(
-  methods: readonly string[],
+  methods: readonly HttpMethod[],
   handler: HttpRouteHandler,
 ): HttpHandlers<HttpRouteCtx, HttpRouteResult> {
   const handlers: Record<string, HttpRouteHandler> = {};
@@ -632,7 +632,7 @@ export class AckerDBServer {
     // arrives on the first tick of Boot meets a registered route rather than a
     // lifecycle branch. Application routes join it at activation.
     this.routes = new HttpRegistry(() => this.unmatched());
-    for (const route of this.frameworkRoutes()) this.routes.add(route, "AckerDB");
+    this.routes.add(this.frameworkRoutes().map((route) => ({ route, owner: "AckerDB" })));
     try {
       this.listener = Bun.serve<WsData, never>({
         port: options.port,
@@ -744,32 +744,31 @@ export class AckerDBServer {
       // The whole application is compiled and validated before the first
       // insertion, and readiness flips only after the last one — with no await
       // anywhere between, so no request can observe half an application.
-      const application: readonly (readonly [HttpRoute, string])[] = [
+      this.routes.add([
         // An exposed function answers the methods its kind declares — the very
         // table OpenAPI documents from, so served and published cannot drift —
         // plus framework CORS. Its closure is the whole of `call`.
-        ...[...runtime.registry.exposed.values()].map((exposed) => [
-          frameworkHttp(exposed.path, {
+        ...[...runtime.registry.exposed.values()].map((exposed) => ({
+          route: frameworkHttp(exposed.path, {
             ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
               this.call(request, new URL(request.url), exposed, this.requestSource(request))),
             OPTIONS: preflight,
           }),
-          exposed.address,
-        ] as const),
+          owner: exposed.address,
+        })),
         // A raw route answers exactly what it declared, preflight included or
         // not: its OPTIONS is its author's, or it has none.
-        ...runtime.registry.httpRoutes.map(({ address, http }) => [
-          frameworkHttp(
+        ...runtime.registry.httpRoutes.map(({ address, http }) => ({
+          route: frameworkHttp(
             http.path,
             everyMethod(
-              Object.keys(http.handlers),
+              HTTP_METHODS.filter((method) => http.handlers[method] !== undefined),
               (ctx, request) => this.applicationRouteCall(request, http, ctx.params),
             ),
           ),
-          address,
-        ] as const),
-      ];
-      for (const [route, owner] of application) this.routes.add(route, owner);
+          owner: address,
+        })),
+      ]);
     } catch (error) {
       this.startup = null;
       this.lifecycle = "stopped";
