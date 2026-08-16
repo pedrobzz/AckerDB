@@ -78,7 +78,6 @@ export type AckerDBStartupPhase =
   | "opening-storage"
   | "migrating"
   | "reconciling"
-  | "issuing-credential"
   | "loading-runtime"
   | "starting-runtime";
 
@@ -179,9 +178,8 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   "opening-storage": 3,
   migrating: 4,
   reconciling: 5,
-  "issuing-credential": 6,
-  "loading-runtime": 7,
-  "starting-runtime": 8,
+  "loading-runtime": 6,
+  "starting-runtime": 7,
 });
 
 function json(value: unknown, status = 200): Response {

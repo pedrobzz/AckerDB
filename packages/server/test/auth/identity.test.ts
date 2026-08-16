@@ -23,6 +23,7 @@ import type {
   RuntimeRequest,
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
+import { storedIdentityForAccount } from "../support/identities.ts";
 
 const directories: string[] = [];
 const instances = new Map<Runtime, Engine>();
@@ -176,13 +177,16 @@ describe("durable provider-neutral Identity", () => {
       "_ackerdb_file_uploads",
       "_ackerdb_file_grants",
       "_ackerdb_file_cleanup",
+      "_ackerdb_identities",
+      "_ackerdb_identity_accounts",
+      "_ackerdb_credentials",
     ]);
     expect(runtime.kindOf("_ackerdb_identities")).toBeNull();
     expect(runtime.kindOf("_ackerdb_identity_accounts")).toBeNull();
     expect(
       (engine.writer.query("PRAGMA table_info('_ackerdb_identity_accounts')").all() as { name: string }[])
         .map(({ name }) => name),
-    ).toEqual(["issuer", "subject", "identity"]);
+    ).toEqual(["id", "issuer", "subject", "identity"]);
   });
 
   test("an authenticated mutation owns rows by Identity across reconnect and restart", async () => {
@@ -242,8 +246,7 @@ describe("durable provider-neutral Identity", () => {
       subject: "next-user",
     });
     expect((next as bigint) > (firstPrincipal.identity as bigint)).toBe(true);
-    expect(second.engine.identityForAccount(
-      second.engine.reader,
+    expect(storedIdentityForAccount(second.engine,
       "https://issuer.example/",
       "alice",
     )).toBe(firstPrincipal.identity);
@@ -253,7 +256,7 @@ describe("durable provider-neutral Identity", () => {
       .query("DELETE FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .run("https://issuer.example/", "next-user");
     second.engine.writer
-      .query("DELETE FROM _ackerdb_identities WHERE identity = ?")
+      .query("DELETE FROM _ackerdb_identities WHERE id = ?")
       .run(next);
     second.engine.writer.exec("COMMIT");
     const reprovisioned = await second.runtime.resolveIdentity({

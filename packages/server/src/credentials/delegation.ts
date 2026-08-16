@@ -2,7 +2,7 @@
  * Child credentials: agents as first-class identities.
  *
  * An issued credential is an Identity like any user, in one of two shapes: a
- * standalone identity with no parent, whose grant comes straight from the
+ * root credential with no parent, whose grant comes straight from the
  * vocabulary, or a child issued *by* a parent Identity — the "mint a token for
  * my agent" flow. The child invariant is that a child's authority is a subset
  * of its parent's, never more, and it is enforced at BOTH ends:
@@ -23,7 +23,7 @@
  * at use by the parent's own expansion of the same day.
  */
 import { AckerDBError } from "../shared/errors.ts";
-import { expandScopeGrant, isScopeGrant } from "./scopes.ts";
+import { expandScopeGrant, isScopeGrant } from "../auth/scopes.ts";
 
 /** Issuance-time subset enforcement: a parent can only delegate what it holds. */
 export function issueChildScopes(
@@ -49,7 +49,7 @@ export function issueChildScopes(
 /**
  * Use-time narrowing: the child's live grant is its expanded scopes ∩ the
  * parent's current expanded scopes. Both arguments are already expanded, so
- * this is a plain intersection — a standalone identity passes its own grant as
+ * this is a plain intersection — a root credential passes its own grant as
  * both, where the intersection is the identity function.
  */
 export function effectiveChildScopes(

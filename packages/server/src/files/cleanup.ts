@@ -5,8 +5,8 @@ import {
   pendingCleanupRow,
   storedFileError,
   type FileDatabase,
-  type FileDatabaseQuery,
 } from "./database.ts";
+import type { ManagedQuery } from "../database/managed.ts";
 import {
   FILE_CLEANUP_TABLE,
   FILE_GRANTS_TABLE,
@@ -35,18 +35,18 @@ const LEASE_MS = 60_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
 function stateAndTime<Row>(
-  query: FileDatabaseQuery<Row>,
+  query: ManagedQuery<Row>,
   state: string,
   field: "expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil",
   time: number,
-): FileDatabaseQuery<Row> {
+): ManagedQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { eq(value: string): unknown; lte(value: number): unknown }>;
     return (row.state!.eq(state) as { and(value: unknown): unknown }).and(row[field]!.lte(time));
   });
 }
 
-function stateOnly<Row>(query: FileDatabaseQuery<Row>, state: string): FileDatabaseQuery<Row> {
+function stateOnly<Row>(query: ManagedQuery<Row>, state: string): ManagedQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as { state: { eq(value: string): unknown } };
     return row.state.eq(state);
@@ -54,17 +54,17 @@ function stateOnly<Row>(query: FileDatabaseQuery<Row>, state: string): FileDatab
 }
 
 function timeAtMost<Row>(
-  query: FileDatabaseQuery<Row>,
+  query: ManagedQuery<Row>,
   field: "expiresAt",
   time: number,
-): FileDatabaseQuery<Row> {
+): ManagedQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { lte(value: number): unknown }>;
     return row[field]!.lte(time);
   });
 }
 
-function notNull<Row>(query: FileDatabaseQuery<Row>, field: "expiresAt"): FileDatabaseQuery<Row> {
+function notNull<Row>(query: ManagedQuery<Row>, field: "expiresAt"): ManagedQuery<Row> {
   return query.where((value) => {
     const row = value as unknown as Record<string, { isNotNull(): unknown }>;
     return row[field]!.isNotNull();
@@ -72,7 +72,7 @@ function notNull<Row>(query: FileDatabaseQuery<Row>, field: "expiresAt"): FileDa
 }
 
 function orderedFirst<Row>(
-  query: FileDatabaseQuery<Row>,
+  query: ManagedQuery<Row>,
   field: "expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil",
 ): Promise<Row | null> {
   return query.orderBy((value) => {
@@ -82,7 +82,7 @@ function orderedFirst<Row>(
 }
 
 async function firstTime<Row extends object, Field extends keyof Row>(
-  query: FileDatabaseQuery<Row>,
+  query: ManagedQuery<Row>,
   field: Field & ("expiresAt" | "pendingExpiresAt" | "runAt" | "leaseUntil"),
 ): Promise<number | null> {
   const row = await orderedFirst(query, field);

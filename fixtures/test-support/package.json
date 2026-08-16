@@ -7,7 +7,6 @@
     "./async": "./src/async.ts",
     "./client-transport": "./src/client-transport.ts",
     "./dom": "./src/dom.ts",
-    "./framework-functions": "./src/framework-functions.ts",
     "./listen": "./src/listen.ts"
   },
   "devDependencies": {

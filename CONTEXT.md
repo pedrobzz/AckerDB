@@ -72,9 +72,10 @@ declaring its root schema. Operational settings remain outside the manifest.
 
 **Boot** — The server-owned startup sequence from a bound listener to an
 activated application: listening, codegen, loading, opening storage,
-migrating or reconciling, issuing the Admin Credential, loading the runtime
-modules, starting the Runtime, activation. `boot()` in `@ackerdb/server` is
-its one home; `acker start` and every programmatic host are a `main` around it.
+migrating or reconciling, loading the runtime modules, starting the Runtime,
+activation. It mints nothing: an application with no credentials is a valid
+application. `boot()` in `@ackerdb/server` is its one home; `acker start` and
+every programmatic host are a `main` around it.
 _Avoid_: startup orchestration, serve path, composition root (in the CLI)
 
 **Started runtime** — A Runtime after `start()`: File-cleanup recovery begun,
@@ -641,48 +642,26 @@ and the state releases when the ledger changes — a rescued schema starts the
 server silently, a different ledger asks again, and generation stays available
 on demand.
 
-## Administration
-
-**Admin API** — The built-in administration surface every application carries:
-framework-declared functions that observe the application and administer it.
-It is the server side of administration, named for what it does rather than for
-any client that consumes it.
-_Avoid_: Client-specific surface, system UDFs, dashboard API
-
-**Framework-declared function** — A function AckerDB declares on every
-application's behalf, contributed to the registry beside the application's own
-rather than injected into them. It is an ordinary registered function in every
-other respect: one address, one route, one access policy, one scope
-requirement, dispatched through the one funnel. Only a framework-declared
-function may require an admin scope.
-_Avoid_: Built-in function, system UDF, internal endpoint
-
-**Admin configuration** — The one object holding everything administrative,
-because an operator reasons about administration as one thing rather than as a
-setting beside each subsystem it touches. It is where the surface is
-configured, never where authority is decided — that is the grant a credential
-holds.
-_Avoid_: Client config, dashboard settings
+## Authorization and credentials
 
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
-across every namespace an application shares with it: API paths, HTTP roots, and
-scopes. An application may never declare a name carrying it, so the two
-vocabularies cannot collide. Framework *tables* are the one exception: they
-carry the older `_ackerdb_` prefix (`_ackerdb_jobs`, `_ackerdb_credentials`,
-`_ackerdb_meta`, …), which is in released 0.16.0 data and cannot be unified
-without rewriting every existing database.
+across the two namespaces an application shares with it: API paths and HTTP
+roots. An application may never declare a name carrying it, so the framework's
+protocol surface cannot be squatted. Scopes are not one of those namespaces —
+the whole vocabulary is the application's. Framework *tables* are the one
+exception: they carry the older `_ackerdb_` prefix (`_ackerdb_jobs`,
+`_ackerdb_credentials`, `_ackerdb_meta`, …), which is in released 0.16.0 data.
 _Avoid_: Private prefix, system namespace, underscore convention
 
 **Scope** — One named unit of authority in the single authorization vocabulary,
-opaque to the framework. A scope is the currency of both halves of that
-vocabulary: an application's own names, and the framework's `_`-marked ones.
+opaque to the framework and declared by the application.
 _Avoid_: Permission, role, claim
 
 **Scope vocabulary** — The complete set of scopes that exist: the application's,
-declared once in the manifest, plus the framework's, which AckerDB pre-declares.
-Nothing outside it can be granted or required, so every check is a membership
-test against a known set rather than string comparison against a guess.
-_Avoid_: Permission list, ACL
+declared once in the manifest. AckerDB declares none of its own. Nothing outside
+it can be granted or required, so every check is a membership test against a
+known set rather than string comparison against a guess.
+_Avoid_: Permission list, ACL, framework scope
 
 **Scope grant** — What an Identity holds, written as patterns and resolved by
 expansion against the vocabulary known at the moment of the check. A grant may
@@ -695,6 +674,30 @@ always concrete: `anyOf` passes on one held scope, `allOf` on every one. A
 requirement never carries a wildcard — it names exactly what it needs, so it can
 be read and audited without knowing the vocabulary.
 _Avoid_: Guard, permission check
+
+**Scope wildcard** — A pattern in a grant standing for every declared scope it
+matches, resolved at the moment of the check. It is a plain trailing-prefix
+glob with no carve-outs: `*` is the empty prefix and covers the whole
+vocabulary, `_*` covers the declared names beginning with `_`.
+_Avoid_: Role, superuser flag, permission group
+
+**API path** — The named group a function is published in, and the first
+segment of its function address. It decides the generated binding and the HTTP
+root together, because both are read off that one address. It is a namespacing
+choice and never an access rule: who may call a function is decided by its
+access policy alone. No group's name may carry the reserved marker — the
+framework's protocol endpoints live at the reserved root, outside every group.
+`api` is the only group every application publishes, so a manifest lists every
+other one it uses.
+_Avoid_: Internal flag, private function, route prefix
+
+**Function address** — The one dotted name every registered function answers
+to, in process and over every transport: its API path, then the directory
+segments of the module declaring it, then the export name. The HTTP route is
+that address segment for segment. A file named `index.ts` contributes its
+directory's name rather than its own, so a directory may hold a module of its
+own name beside its siblings.
+_Avoid_: Function name, ref string, route
 
 **Identity credential** — An opaque bearer credential that *is* an Identity:
 issuing one mints an Identity, so its holder is a first-class user at every
@@ -709,59 +712,42 @@ issuer's current grant on every use. A parent losing a scope narrows every
 descendant immediately, with no revocation sweep.
 _Avoid_: Sub-token, delegated key
 
-**API path** — The named group a function is published in, and the first
-segment of its function address. It decides the generated binding and the HTTP
-root together, because both are read off that one address. It is a namespacing
-choice and never an access rule: who may call a function is decided by its
-access policy alone. No group's name may carry the reserved marker: the
-framework's protocol endpoints live at the reserved root, outside every group,
-and its administration functions live in the shared `admin` group, whose members
-are distinguished by the scopes they require rather than by any marking on the
-path. `api` and `admin` are the two groups every application publishes, so a
-manifest lists neither.
-_Avoid_: Internal flag, private function, route prefix
+**Root credential** — An identity credential with no parent, so nothing narrows
+it at use and its grant expands straight from the vocabulary. AckerDB never
+mints one; an application decides whether any should exist.
+_Avoid_: Admin Credential, master key, superuser
 
-**Function address** — The one dotted name every registered function answers
-to, in process and over every transport: its API path, then the directory
-segments of the module declaring it, then the export name. The HTTP route is
-that address segment for segment. A file named `index.ts` contributes its
-directory's name rather than its own, so a directory may hold a module of its
-own name beside its siblings.
-_Avoid_: Function name, ref string, route
+**Safe credential descriptor** — The only shape a stored credential leaves the
+Credentials module in: id, Identity, parent Identity, name, metadata, stored
+scope patterns, and the two timestamps. The secret digest is absent by
+construction, so no query, projection, or aggregate can reach it.
+_Avoid_: Credential row, token record
 
-**Admin scope** — A scope in the framework's own reserved vocabulary, naming one
-verb on one administrative domain, written `_admin:<domain>:<verb>`. AckerDB
-defines the whole vocabulary and an application never declares one.
-_Avoid_: Client scope, system permission
+**Owner-scoped credential operation** — One addressing exactly the credentials
+whose parent is the calling user Identity. It requires a user Identity;
+anonymous and system callers fail as unauthenticated. It never enumerates
+deeper descendants — a revocation reaches them because authority cascades, not
+because the selector does.
+_Avoid_: My tokens, self-service admin
 
-**Scope wildcard** — A pattern in a grant that stands for every scope it
-matches, resolved against the vocabulary known at the moment of the check. The
-pattern `*` deliberately excludes everything carrying the reserved marker, so
-the two vocabularies are only ever granted on purpose — an administrative
-identity holds both `*` and `_*`.
-_Avoid_: Role, superuser flag, permission group
+**Global credential administration** — `ctx.credentials.manage`: every
+credential, with no framework authorization of its own. The containing
+registered function's access policy and declared scopes are the whole admission
+decision, so bootstrap and recovery are the application's model rather than
+AckerDB's.
+_Avoid_: Admin API, superuser capability, framework administration
 
-**Admin Credential** — The opaque credential that authenticates an
-administrative identity, distinct from any application user and from the system
-principal. Its authority is nothing more than the grant it holds: the patterns
-covering both the application vocabulary and the framework's reserved one. It is
-a root credential — one with no parent — because nothing may narrow
-administrative authority at use; a child holding the same patterns is a delegate,
-not a master. An application manages a single master Admin Credential by default,
-though the model admits more.
-_Avoid_: admin token, API key, master key
+**Framework schema contribution** — One domain module's declaration of the
+tables it owns, composed with the others at one seam that refuses a duplicate
+table name or a conflicting named type. The framework-table set is derived from
+the composition, never maintained beside it.
+_Avoid_: Schema transformer, table injection
 
-**Credential rotation** — Replacing an Admin Credential with a newly issued one
-and revoking what it replaced, as a single change. The credential's Identity
-changes with it, because a credential is an Identity: rotation issues, it does
-not re-key.
-_Avoid_: key rotation, re-issue, refresh
-
-**Agent Credential** — A credential issued for one external agent host, holding
-a chosen subset of an Admin Credential's authority. It is an ordinary child
-credential: an agent is a first-class identity, and its grant never exceeds its
-parent's, at issuance or afterwards.
-_Avoid_: MCP token, API key, service account
+**Internal database capability** — `ctx.internal.db`: the framework's own
+managed tables, built from the ordinary managed reader or writer the invocation
+already carries. It changes no principal and is absent from application handler
+types; Engine bookkeeping is not in it, because that was never a managed table.
+_Avoid_: System database, privileged db, raw access
 
 ## Demo app (Savoria restaurant)
 

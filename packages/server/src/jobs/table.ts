@@ -139,19 +139,16 @@ export function buildJobRunsTable(): TableDef {
 }
 
 /**
- * The jobs facet consumed by `withFrameworkTables`, the sole root-schema
- * composition point. Adding it to a database that has neither table is an
- * additive, shape-safe change that reconciliation applies on upgrade; moving a
- * database off the pre-split shape is a framework migration (`migration.ts`).
+ * The Jobs tables, as one framework schema contribution. Adding them to a
+ * database that has neither is an additive, shape-safe change reconciliation
+ * applies on upgrade.
  */
-export function withJobsTables(schema: Schema): Schema {
-  if (Object.hasOwn(schema.tables, JOBS_TABLE)) return schema;
+export function jobsSchema(): Schema {
   return new Schema(
     {
-      ...schema.tables,
       [JOBS_TABLE]: buildJobsTable(),
       [JOB_RUNS_TABLE]: buildJobRunsTable(),
     },
-    new Map(schema.namedTypes),
+    new Map(),
   );
 }

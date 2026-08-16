@@ -12,7 +12,7 @@ import { deepFreeze } from "../shared/immutable.ts";
 import { isScopeGrant } from "./scopes.ts";
 import {
   hasCredentialTokenPrefix,
-  VAULT_CREDENTIAL_AUTHORITY,
+  CREDENTIAL_AUTHORITY,
 } from "./credential-token.ts";
 
 export interface AnonymousPrincipal {
@@ -117,7 +117,7 @@ function isExternalPrincipal(value: unknown): value is ExternalPrincipal & { kin
     typeof principal.subject === "string" &&
     principal.subject.length > 0 &&
     typeof principal.expiresAt === "number" &&
-    // Vault-issued credentials never expire: POSITIVE_INFINITY is the one
+    // AckerDB-issued credentials never expire: POSITIVE_INFINITY is the one
     // sanctioned non-finite expiry, revoked by invalidation instead of time.
     (Number.isFinite(principal.expiresAt) ||
       principal.expiresAt === Number.POSITIVE_INFINITY) &&
@@ -157,7 +157,7 @@ export function isVerifiedCredential(value: unknown): value is VerifiedCredentia
  * safe direction here is "everything".
  *
  * That leaves one field needing a representation rather than a decision.
- * A vault-issued identity credential never expires, and the sanctioned way to
+ * An AckerDB-issued identity credential never expires, and the sanctioned way to
  * say never is `POSITIVE_INFINITY` — the one value {@link stableEncode}
  * refuses, because a non-finite number has no wire form. Digesting a principal
  * directly therefore *threw* for every credential of that kind, and the failure
@@ -546,12 +546,12 @@ export async function verifyBearerCredential(
   verifier: CredentialVerifier | undefined,
   now: () => number = Date.now,
 ): Promise<VerifiedCredential> {
-  // Vault credentials are Engine-backed authority: only the Runtime's composed
+  // AckerDB credentials are database-backed authority: only the Runtime's composed
   // verifier may answer them, never a custom application verifier.
   if (
     hasCredentialTokenPrefix(rawBearerToken) &&
-    (verifier as { [VAULT_CREDENTIAL_AUTHORITY]?: boolean } | undefined)
-      ?.[VAULT_CREDENTIAL_AUTHORITY] !== true
+    (verifier as { [CREDENTIAL_AUTHORITY]?: boolean } | undefined)
+      ?.[CREDENTIAL_AUTHORITY] !== true
   ) {
     throw unauthenticated();
   }
@@ -618,7 +618,7 @@ export function resolvedGrant(value: ResolvedGrant): {
  * One fail-closed credential path shared by WebSocket, HTTP, and SSE.
  *
  * `resolveScopes` is the Runtime's own resolver, which composes the
- * application's with the vault and expands the result against the vocabulary,
+ * application's with AckerDB's own and expands the result against the vocabulary,
  * so what lands on the principal is always concrete scopes.
  */
 export async function verifyClientCredential(

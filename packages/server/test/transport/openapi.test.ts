@@ -408,10 +408,8 @@ describe("openapi document", () => {
         }),
       },
     });
-    // The framework's own exposed functions are here too; they are
-    // undocumented, so only the two application routes reach the walk that
-    // collides.
-    expect(registry.exposed.size).toBe(5);
+    // Only the application's routes exist: the framework contributes none.
+    expect(registry.exposed.size).toBe(2);
     expect(() => openApiDocument(registry, info)).toThrow(
       'functions "api.notes.list" and "api.notes.list.get" both document operationId "api.notes.list.get"',
     );

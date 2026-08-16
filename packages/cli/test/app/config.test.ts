@@ -241,13 +241,13 @@ describe("production profile configuration", () => {
   });
 });
 
-describe("the admin object", () => {
+describe("application identity", () => {
   test("names the application from its own package, and the directory otherwise", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
       // Nothing to read: the directory names itself, which is also what the
       // OpenAPI document has always fallen back to.
-      expect(loadConfig(dir, {}).admin.application).toEqual({
+      expect(loadConfig(dir, {}).application).toEqual({
         name: basename(dir),
         version: "0.0.0",
       });
@@ -256,18 +256,8 @@ describe("the admin object", () => {
         join(dir, "package.json"),
         JSON.stringify({ name: "savoria", version: "2.1.0" }),
       );
-      expect(loadConfig(dir, {}).admin.application).toEqual({
+      expect(loadConfig(dir, {}).application).toEqual({
         name: "savoria",
-        version: "2.1.0",
-      });
-
-      // An operator naming the deployment overrides the package.
-      writeFileSync(
-        join(dir, ".ackerdb.config.json"),
-        JSON.stringify({ admin: { application: { name: "savoria-eu" } } }),
-      );
-      expect(loadConfig(dir, {}).admin.application).toEqual({
-        name: "savoria-eu",
         version: "2.1.0",
       });
     } finally {
@@ -275,22 +265,14 @@ describe("the admin object", () => {
     }
   });
 
-  test("rejects an unknown field and a malformed value", () => {
+  test("refuses the removed admin configuration block outright", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      const write = (admin: unknown) =>
-        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ admin }));
-
-      write({ dashboard: {} });
-      expect(() => loadConfig(dir, {})).toThrow("unknown admin field: dashboard");
-      write({ application: { title: "savoria" } });
-      expect(() => loadConfig(dir, {})).toThrow("unknown admin.application field: title");
-      write({ application: { name: 7 } });
-      expect(() => loadConfig(dir, {})).toThrow(
-        "admin.application.name must be a trimmed non-empty string",
+      writeFileSync(
+        join(dir, ".ackerdb.config.json"),
+        JSON.stringify({ admin: { application: { name: "savoria-eu" } } }),
       );
-      write("savoria");
-      expect(() => loadConfig(dir, {})).toThrow("admin must be a JSON object");
+      expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: admin");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

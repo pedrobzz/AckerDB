@@ -1,38 +1,30 @@
 /**
- * Scopes: the one authorization vocabulary.
+ * Scopes: the one authorization vocabulary, and it is the application's.
  *
  * An application declares its vocabulary once, in `defineApp({ scopes })`.
  * Every Identity carries a grant drawn from it, any function may declare a
  * requirement against it, and the single dispatch choke point (`compileAccess`
  * in `app/invocation.ts`) enforces that requirement.
  *
- * **Two vocabularies, one namespace, separated by the reserved marker.**
- * Application scopes carry no `_`; framework scopes are pre-declared under it
- * and an application may never declare one. That is why `*` and `_*` can mean
- * "every application scope" and "every framework scope" without either side
- * having to know what the other declared.
+ * **One vocabulary, no framework half.** AckerDB declares no scopes of its own
+ * and reserves no names inside this namespace, so `_` carries no meaning here:
+ * `_internal:purge` is an ordinary scope an application may declare, `*` covers
+ * every declared scope including that one, and `_*` is an ordinary prefix
+ * pattern covering the ones beginning with `_`.
  *
  * **Grants carry wildcards; requirements stay concrete.** A wildcard is a
- * simple glob — `ad*` matches every known scope starting with `ad` — with one
- * carve-out: a bare `*` does not match scopes beginning with the reserved
- * marker. Every other pattern already excludes them, because a prefix that
- * does not start with `_` can never match a name that does.
+ * simple glob — `ad*` matches every declared scope starting with `ad`, and a
+ * bare `*` matches all of them.
  *
  * **Checking is expansion, then membership.** A pattern set is expanded
- * against the known vocabulary, then tested. It is the same operation at
+ * against the declared vocabulary, then tested. It is the same operation at
  * issuance (a child's expansion must sit inside its parent's) and at use (the
  * requirement's scopes must sit inside the caller's expansion), which is what
  * keeps the subset ∩ intersection invariant of child credentials intact once
  * patterns enter the picture. Expanding against the *current* vocabulary is
- * also what lets a wildcard cover a domain that did not exist when the
+ * also what lets a wildcard cover a scope that did not exist when the
  * credential was minted.
- *
- * There is no administrative flag. An administrative identity is one holding
- * `["*", "_*"]`, and creating another is creating another identity with those
- * two patterns.
  */
-import { RESERVED_MARKER } from "@ackerdb/core";
-import { ADMIN_SCOPES } from "../admin/scopes.ts";
 import type { Principal } from "./credentials.ts";
 import { AckerDBError } from "../shared/errors.ts";
 
@@ -43,39 +35,6 @@ export const MAX_SCOPE_PATTERNS = 128;
 
 /** The trailing character that turns a concrete scope into a prefix match. */
 export const SCOPE_WILDCARD = "*";
-
-/**
- * Administrative authority, written out: every application scope and every
- * framework scope, which is what `*` and `_*` mean together and what no other
- * pattern set can say. There is no flag behind it — this array *is* the
- * definition, and holding it is what makes an identity administrative.
- */
-export const ADMINISTRATIVE_GRANT: readonly string[] = Object.freeze([
-  SCOPE_WILDCARD,
-  `${RESERVED_MARKER}${SCOPE_WILDCARD}`,
-]);
-
-/**
- * Whether one stored grant is the administrative one. The test is on the
- * patterns as written, not on what they expand to: an expansion that happens to
- * cover today's vocabulary stops covering it the moment a scope is added, so a
- * credential's kind would change under it without anyone touching the
- * credential. Order is not part of the claim.
- */
-export function isAdministrativeGrant(patterns: readonly string[]): boolean {
-  return (
-    patterns.length === ADMINISTRATIVE_GRANT.length &&
-    ADMINISTRATIVE_GRANT.every((pattern) => patterns.includes(pattern))
-  );
-}
-
-/**
- * The framework's own vocabulary, pre-declared under the reserved marker: the
- * Admin API's `_admin:<domain>:<verb>` names, declared beside the surface that
- * requires them. It is named here because this is where a grant meets it —
- * `_*` expands to exactly this list, and to nothing else.
- */
-export const FRAMEWORK_SCOPES: readonly string[] = ADMIN_SCOPES;
 
 export type ScopeValues = readonly [string, ...string[]];
 
@@ -128,15 +87,12 @@ export function isScopeGrant(value: unknown): value is readonly string[] {
   );
 }
 
-export function isReservedScope(value: string): boolean {
-  return value.startsWith(RESERVED_MARKER);
-}
-
 /**
  * Validate the application vocabulary declared in `defineApp({ scopes })`. The
- * reserved marker is refused here, once, at the only declaration site, and so
- * is the wildcard: a vocabulary entry that reads as a pattern would make
- * "concrete scope" and "grant pattern" the same string.
+ * wildcard is refused here, once, at the only declaration site: a vocabulary
+ * entry that reads as a pattern would make "concrete scope" and "grant pattern"
+ * the same string. Nothing else about a name is reserved — the vocabulary is
+ * the application's alone.
  */
 export function validateScopeVocabulary(value: unknown): ScopeValues {
   if (!Array.isArray(value) || value.length === 0) {
@@ -157,12 +113,6 @@ export function validateScopeVocabulary(value: unknown): ScopeValues {
           " — the wildcard belongs to grants, never to the vocabulary",
       );
     }
-    if (isReservedScope(scope)) {
-      throw new TypeError(
-        `application scope ${JSON.stringify(scope)} begins with "${RESERVED_MARKER}",` +
-          " which marks the framework's own vocabulary",
-      );
-    }
   }
   if (new Set(value).size !== value.length) {
     throw new TypeError("application scopes must not contain duplicate values");
@@ -170,32 +120,13 @@ export function validateScopeVocabulary(value: unknown): ScopeValues {
   return Object.freeze([...value]) as unknown as ScopeValues;
 }
 
-/**
- * The vocabulary every grant expands against: the application's own plus the
- * framework's. One list, because a grant is checked against one namespace —
- * the marker is what keeps the halves apart inside it.
- */
-export function knownScopeVocabulary(
-  applicationScopes: readonly string[] | undefined,
-): readonly string[] {
-  if (applicationScopes === undefined || applicationScopes.length === 0) {
-    return FRAMEWORK_SCOPES;
-  }
-  return Object.freeze([...applicationScopes, ...FRAMEWORK_SCOPES]);
-}
-
 function matchesPattern(pattern: string, scope: string): boolean {
   if (!pattern.endsWith(SCOPE_WILDCARD)) return pattern === scope;
-  const prefix = pattern.slice(0, -1);
-  // The one carve-out: a bare `*` is every application scope, never the
-  // framework's. Any other prefix excludes them on its own — a prefix that
-  // does not begin with the marker cannot match a name that does.
-  if (prefix === "") return !isReservedScope(scope);
-  return scope.startsWith(prefix);
+  return scope.startsWith(pattern.slice(0, -1));
 }
 
 /**
- * Expand a grant's patterns against the known vocabulary into the concrete
+ * Expand a grant's patterns against the declared vocabulary into the concrete
  * scopes it authorizes, in vocabulary order so two equivalent grants compare
  * and render identically. A pattern matching nothing contributes nothing:
  * authority is what a grant expands to, never what it says.

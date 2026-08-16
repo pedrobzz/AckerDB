@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { defineApp } from "../src/app/definition.ts";
 import { mutation, procedure } from "../src/app/functions.ts";
-import { resetAdminCredentials } from "../src/auth/credential-reset.ts";
 import { LocalFileStore } from "../src/files/store/local.ts";
 import { declareJobs, job } from "../src/jobs/definition.ts";
 import { JOBS_TABLE } from "../src/jobs/table.ts";
@@ -169,7 +168,6 @@ describe("boot", () => {
       "loading",
       "opening-storage",
       "reconciling",
-      "issuing-credential",
       "loading-runtime",
       "starting-runtime",
     ]);
@@ -185,7 +183,6 @@ describe("boot", () => {
       "loading",
       "opening-storage",
       "reconciling",
-      "issuing-credential",
       "loading-runtime",
       "starting-runtime",
     ]);
@@ -398,92 +395,31 @@ describe("boot", () => {
     expect(fresh.runtime.state).toBe("ready");
   });
 
-  test("reports the Admin Credential exactly once, before any application code runs, and reissues after break-glass", async () => {
+  test("issues no credential, and starts an application that has none", async () => {
     const events: string[] = [];
-    let issued: { id: string; token: string } | undefined;
     const jobs = declareJobsModule(() => events.push("job ran"));
     const app = await start({
       jobs,
-      reporter: {
-        adminCredentialIssued: (credential) => {
-          issued = { ...credential };
-          events.push("credential reported");
-        },
-      },
       loadRuntime: async () => {
         events.push("runtime loaded");
         return { functions, jobs };
       },
     });
-    expect(issued).toBeDefined();
-    expect(events[0]).toBe("credential reported");
-    expect(events[1]).toBe("runtime loaded");
+    expect(events[0]).toBe("runtime loaded");
     // The repeat job was minted at start and can only run after activation.
     expect(app.runtime.status().declaredJobs).toBe(1);
+    // Nothing was written to the credential table, and no administration
+    // surface exists to reach: an application with zero credentials is valid.
+    const credentials = app.engine.reader
+      .query("SELECT COUNT(*) AS count FROM _ackerdb_credentials")
+      .get() as { count: number | bigint };
+    expect(Number(credentials.count)).toBe(0);
     const base = `http://127.0.0.1:${app.server.port}`;
-    const authorized = await fetch(`${base}/admin/credentials/list`, {
+    expect((await fetch(`${base}/admin/credentials/list`, {
       method: "POST",
-      headers: { authorization: `Bearer ${issued!.token}` },
       body: JSON.stringify({}),
-    });
-    expect(authorized.status).toBe(200);
+    })).status).toBe(404);
     await app.drain();
-
-    // A restart finds the master and reports nothing.
-    let reportedAgain = 0;
-    const second = await start({ dir: app.dir, reporter: { adminCredentialIssued: () => reportedAgain++ } });
-    expect(reportedAgain).toBe(0);
-    await second.drain();
-
-    // Break-glass needs no application, only the stopped database file.
-    const cleared = resetAdminCredentials(join(app.dir, ".ackerdb", "data.db"));
-    expect(cleared.cleared).toHaveLength(1);
-    let reissued: string | undefined;
-    const third = await start({ dir: app.dir, reporter: { adminCredentialIssued: (c) => { reissued = c.token; } } });
-    expect(reissued).toBeString();
-    expect(reissued).not.toBe(issued!.token);
-    const stale = await fetch(`http://127.0.0.1:${third.server.port}/admin/credentials/list`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${issued!.token}` },
-      body: JSON.stringify({}),
-    });
-    expect(stale.status).toBe(401);
-  });
-
-  test("a module whose import throws still leaves the reported credential committed and valid", async () => {
-    let issued: string | undefined;
-    const dir = workspace();
-    await expect(boot(parts({
-      dir,
-      reporter: { adminCredentialIssued: (c) => { issued = c.token; } },
-      loadRuntime: async () => {
-        throw new Error("functions/broken.ts: unexpected token");
-      },
-    }))).rejects.toThrow("unexpected token");
-    expect(issued).toBeString();
-
-    const app = await start({ dir });
-    const authorized = await fetch(`http://127.0.0.1:${app.server.port}/admin/credentials/list`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${issued!}` },
-      body: JSON.stringify({}),
-    });
-    expect(authorized.status).toBe(200);
-  });
-
-  test("the credential is reported before the first repeat Job runs", async () => {
-    const order: string[] = [];
-    const jobs = declareJobsModule(() => order.push("job ran"));
-    const app = await start({
-      jobs,
-      reporter: { adminCredentialIssued: () => order.push("credential") },
-    });
-    // The first occurrence is minted at start and due immediately; drive the
-    // runner once and the handler observes a credential that already exists.
-    await app.runtime.runJobs();
-    expect(order).toEqual(["credential", "job ran"]);
-    const rows = app.engine.reader.query(`SELECT COUNT(*) AS count FROM ${JOBS_TABLE}`).get() as { count: number | bigint };
-    expect(Number(rows.count)).toBeGreaterThan(0);
   });
 
   test("system runs are refused after drain", async () => {

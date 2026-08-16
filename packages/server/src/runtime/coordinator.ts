@@ -89,18 +89,6 @@ export interface CommitRequest<T, Publication> {
   ) => void;
 }
 
-export interface FrameworkTransactionRequest<T> {
-  readonly fairnessKey: string;
-  readonly requestBytes: number;
-  /** Cancels this work only while it is waiting for the single writer. */
-  readonly admissionSignal?: AbortSignal;
-  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
-  readonly transactionSignal?: AbortSignal;
-  readonly work: () => T | Promise<T>;
-  /** Synchronous committed-state handoff before the single writer admits its next turn. */
-  readonly afterCommit?: (value: T) => void;
-}
-
 export type CommitOperation = "mutation" | "transaction" | "scheduled";
 
 export type CommitHookStage = "commit";
@@ -218,56 +206,6 @@ export class CommitCoordinator<Publication> {
       }
     }
     return handoff.result;
-  }
-
-  /** Serialize framework-owned storage through the same bounded writer without publishing app state. */
-  async transactFramework<T>(request: FrameworkTransactionRequest<T>): Promise<T> {
-    if (inTransaction()) {
-      throw new AckerDBError("validation", "cannot open a framework transaction inside a transaction");
-    }
-    return this.writer.submit(async () => {
-      let open = false;
-      try {
-        throwIfAborted(request.transactionSignal);
-        this.engine.writer.exec("BEGIN IMMEDIATE");
-        open = true;
-        const value = await runInTransaction(async () => {
-          const settled = await request.work();
-          assertTransactionHealthy();
-          return settled;
-        });
-        throwIfAborted(request.transactionSignal);
-        this.engine.writer.exec("COMMIT");
-        open = false;
-        try {
-          request.afterCommit?.(value);
-        } catch (cause) {
-          throw new AckerDBError(
-            "convergence_unavailable",
-            "framework transaction committed but its post-commit handoff failed",
-            { committed: true, cause },
-          );
-        }
-        return value;
-      } catch (error) {
-        if (open) {
-          try {
-            this.engine.writer.exec("ROLLBACK");
-          } catch (rollbackError) {
-            throw new AckerDBError("indeterminate", "framework transaction outcome could not be determined", {
-              cause: new AggregateError([error, rollbackError]),
-            });
-          }
-        }
-        throw error;
-      }
-    }, {
-      bytes: request.requestBytes,
-      fairnessKey: request.fairnessKey,
-      ...(request.admissionSignal === undefined
-        ? {}
-        : { signal: request.admissionSignal }),
-    });
   }
 
   close(): void {

@@ -7,13 +7,6 @@ export const FILE_UPLOADS_TABLE = "_ackerdb_file_uploads";
 export const FILE_GRANTS_TABLE = "_ackerdb_file_grants";
 export const FILE_CLEANUP_TABLE = "_ackerdb_file_cleanup";
 
-export const FILE_TABLES = Object.freeze([
-  FILES_TABLE,
-  FILE_UPLOADS_TABLE,
-  FILE_GRANTS_TABLE,
-  FILE_CLEANUP_TABLE,
-] as const);
-
 function filesTable(): TableDef {
   return new TableDef({
     id: v.primaryKey(),
@@ -86,13 +79,12 @@ function cleanupTable(): TableDef {
     .index(["createdAt"]) as TableDef;
 }
 
-export function withFilesTables(schema: Schema): Schema {
-  if (FILE_TABLES.every((name) => Object.hasOwn(schema.tables, name))) return schema;
+/** The Files tables, as one framework schema contribution. */
+export function filesSchema(): Schema {
   return new Schema({
-    ...schema.tables,
     [FILES_TABLE]: filesTable(),
     [FILE_UPLOADS_TABLE]: uploadsTable(),
     [FILE_GRANTS_TABLE]: grantsTable(),
     [FILE_CLEANUP_TABLE]: cleanupTable(),
-  }, new Map(schema.namedTypes));
+  }, new Map());
 }

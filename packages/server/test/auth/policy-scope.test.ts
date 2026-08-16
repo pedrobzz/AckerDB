@@ -10,8 +10,8 @@ import {
 } from "../../src/auth/credentials.ts";
 
 /**
- * A vault-issued Admin Credential: an Identity holding the two wildcard
- * patterns, and the kind of credential whose expiry is "never".
+ * An AckerDB-issued credential holding every declared scope, and the kind of
+ * credential whose expiry is "never".
  */
 const NEVER_EXPIRES: UserPrincipal = {
   kind: "user",
@@ -21,7 +21,7 @@ const NEVER_EXPIRES: UserPrincipal = {
   expiresAt: Number.POSITIVE_INFINITY,
   tokenId: null,
   identity: 1n as Identity,
-  scopes: ["*", "_*"],
+  scopes: ["*"],
 };
 
 /** A workload verified by an external issuer, with a real expiry. */

@@ -11,7 +11,17 @@ import { httpHandler } from "../../src/app/http-handler.ts";
 import { channel } from "../../src/channels/definition.ts";
 import { mcp } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { applicationAddresses, applicationRoutes } from "ackerdb-test-support/framework-functions";
+
+/** Every registered address, sorted. The framework contributes none. */
+function applicationAddresses(registry: Registry): string[] {
+  return [...registry.functions.keys()].sort();
+}
+
+/** Every claimed HTTP route, sorted. */
+function applicationRoutes(registry: Registry): string[] {
+  return [...registry.exposed.values()].map((exposed) => exposed.path).sort();
+}
+
 
 describe("apiPath declarations", () => {
   test("defaults to the api group on every kind that owns an HTTP root", () => {
@@ -132,7 +142,7 @@ describe("the HTTP root a group owns", () => {
   });
 
   test("serves each function under the root its group names", () => {
-    const registry = new Registry({ messages: { list, compact, audit } }, ["internal"]);
+    const registry = new Registry({ messages: { list, compact, audit } }, ["admin", "internal"]);
     expect(applicationRoutes(registry)).toEqual([
       "/admin/messages/audit",
       "/api/messages/list",

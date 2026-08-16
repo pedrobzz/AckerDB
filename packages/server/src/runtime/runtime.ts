@@ -25,7 +25,6 @@ import {
   parseCredentialToken,
   type ParsedCredentialToken,
 } from "../auth/credential-token.ts";
-import { knownScopeVocabulary } from "../auth/scopes.ts";
 import {
   RuntimeCredentials,
   type CredentialLease,
@@ -115,7 +114,7 @@ export class Runtime implements RuntimePort {
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
   private readonly credentials: RuntimeCredentials;
-  /** Application scopes plus the framework's: what every grant expands against. */
+  /** The application's declared scopes: what every grant expands against. */
   private readonly vocabulary: readonly string[];
   /**
    * Package-internal: the transport builds one origin-aware publisher per
@@ -166,9 +165,9 @@ export class Runtime implements RuntimePort {
     if (options.resolveScopes !== undefined && typeof options.resolveScopes !== "function") {
       throw new TypeError("Runtime resolveScopes must be a function");
     }
-    this.vocabulary = knownScopeVocabulary(options.scopes);
-    // The Runtime's one credential authority: vault credentials compose with
-    // the application verifier, and both invalidate through one boundary.
+    this.vocabulary = Object.freeze([...options.scopes ?? []]);
+    // The Runtime's one credential authority: AckerDB's own credentials compose
+    // with the application verifier, and both invalidate through one boundary.
     this.credentials = new RuntimeCredentials({
       engine: this.engine,
       reads: () => this.reads,
@@ -209,6 +208,7 @@ export class Runtime implements RuntimePort {
       reactive: this.reactive,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
+      resolveIdentityGrant: this.credentials.resolveIdentityGrant,
       publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
       files: this.files,
       ...(hasMcpCapabilities
@@ -356,8 +356,8 @@ export class Runtime implements RuntimePort {
     account: ExternalAccount,
     signal?: AbortSignal,
   ): Promise<Identity> {
-    // A vault credential is already an Identity; it is resolved from the
-    // vault, never provisioned as an external account.
+    // An AckerDB credential is already an Identity; it is resolved from the
+    // credential table, never provisioned as an external account.
     if (account.issuer === CREDENTIAL_ISSUER) {
       return this.credentials.identityFor(account, signal);
     }
@@ -381,7 +381,7 @@ export class Runtime implements RuntimePort {
   readonly resolveScopes: ScopeResolver = (identity, account) =>
     this.credentials.resolveScopes(identity, account);
 
-  /** Authenticate one raw vault credential into its full first-class principal. */
+  /** Authenticate one raw AckerDB credential into its full first-class principal. */
   async authenticateCredential(
     rawToken: string,
     fairnessKey: string,

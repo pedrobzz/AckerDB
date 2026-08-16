@@ -5,7 +5,7 @@ import type {
   Principal,
   PrincipalInvalidation,
 } from "./credentials.ts";
-import { VAULT_CREDENTIAL_AUTHORITY } from "./credential-token.ts";
+import { CREDENTIAL_AUTHORITY } from "./credential-token.ts";
 
 /**
  * Whether one invalidation reaches one authenticated principal — the single
@@ -16,7 +16,7 @@ import { VAULT_CREDENTIAL_AUTHORITY } from "./credential-token.ts";
  * derived from: a credential delegated beneath an external identity carries
  * that identity's accounts, so narrowing the grant upstream terminates the
  * delegated session at once rather than at its next authentication — which,
- * for a vault principal that never expires, would be never.
+ * for a credential principal that never expires, would be never.
  *
  * An invalidation naming an exact token is the one that does not travel down
  * the lineage. It names one credential, and a descendant is a different one.
@@ -102,8 +102,8 @@ export class AuthInvalidationBoundary {
     this.verifier = source === undefined
       ? undefined
       : Object.freeze({
-          ...((source as { [VAULT_CREDENTIAL_AUTHORITY]?: boolean })[VAULT_CREDENTIAL_AUTHORITY] === true
-            ? { [VAULT_CREDENTIAL_AUTHORITY]: true }
+          ...((source as { [CREDENTIAL_AUTHORITY]?: boolean })[CREDENTIAL_AUTHORITY] === true
+            ? { [CREDENTIAL_AUTHORITY]: true }
             : {}),
           revocationBound: source.revocationBound,
           verify: (credential: string) => source.verify(credential),
@@ -134,7 +134,7 @@ export class AuthInvalidationBoundary {
   /**
    * Runtime-owned subscription to account invalidations, present even when no
    * application verifier is configured. It is how a credential revocation or
-   * grant change reaches a live lease: the vault has no upstream provider to
+   * grant change reaches a live lease: a credential has no upstream provider to
    * publish through.
    *
    * It subscribes to the provider too. A delegated credential's authority is

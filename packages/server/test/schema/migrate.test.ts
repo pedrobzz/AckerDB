@@ -52,7 +52,7 @@ async function seed(schema: Schema, path: string, fn: (d: ReturnType<typeof db>)
  * was seeded with (its stored snapshot), `target` is the new declared schema.
  */
 function chain(engine: Engine, migration: Migration, number = 1, name = "m"): MigrationStep[] {
-  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(withFrameworkTables(engine.schema)), code: "", migration }];
+  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(engine.schema), code: "", migration }];
 }
 
 /** Reopen `path` under `schema` and run `migration` as a one-step chain. */

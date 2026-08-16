@@ -57,13 +57,6 @@ import {
   scanMutationReplay,
   type MutationReplaySnapshot,
 } from "./mutation-replay.ts";
-import {
-  CREDENTIAL_INTERNAL_OBJECTS,
-  CredentialVault,
-  credentialVaultOwner,
-  verifyCredentialVaultState,
-} from "../auth/credential-vault.ts";
-import type { ExternalAccount } from "../auth/credentials.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 import { isSchema, type IndexDef, type Schema, type TableDef } from "../schema/definition.ts";
 import {
@@ -243,7 +236,14 @@ export interface RestorePublicationHook {
   rollback(): void | Promise<void>;
 }
 
-const ENGINE_SCHEMA_VERSION = 14;
+/**
+ * 15 promoted Identities, Identity Accounts, and Credentials out of the
+ * internal object list and into the managed logical schema. Their physical
+ * tables carry the same names and different shapes, so a database written by an
+ * older build is refused here — cleanly, by version — rather than meeting a
+ * reconcile that would try to create a table it can already see.
+ */
+const ENGINE_SCHEMA_VERSION = 15;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
@@ -326,34 +326,10 @@ const INTERNAL_OBJECTS: StoredObject[] = [
   },
   {
     type: "table",
-    name: "_ackerdb_identities",
-    table: "_ackerdb_identities",
-    sql: "CREATE TABLE _ackerdb_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
-  },
-  {
-    type: "table",
-    name: "_ackerdb_identity_accounts",
-    table: "_ackerdb_identity_accounts",
-    sql: `CREATE TABLE _ackerdb_identity_accounts (
-      issuer TEXT NOT NULL CHECK (length(issuer) > 0),
-      subject TEXT NOT NULL CHECK (length(subject) > 0),
-      identity INTEGER NOT NULL REFERENCES _ackerdb_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
-      PRIMARY KEY (issuer, subject)
-    )`,
-  },
-  {
-    type: "index",
-    name: "ix__ackerdb_identity_accounts_identity",
-    table: "_ackerdb_identity_accounts",
-    sql: "CREATE INDEX ix__ackerdb_identity_accounts_identity ON _ackerdb_identity_accounts (identity)",
-  },
-  {
-    type: "table",
     name: "_ackerdb_migrations",
     table: "_ackerdb_migrations",
     sql: "CREATE TABLE _ackerdb_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
   },
-  ...CREDENTIAL_INTERNAL_OBJECTS,
 ];
 
 const INTERNAL_OBJECT_NAMES = new Set(INTERNAL_OBJECTS.map((object) => object.name));
@@ -1109,7 +1085,6 @@ export class Engine {
   readonly writer: Database;
   readonly reader: Database;
   readonly [mutationReplayOwner]: MutationReplayLedger;
-  readonly [credentialVaultOwner]: CredentialVault;
   readonly path: string;
   readonly durability: DurabilityPolicy;
   /** Maximum bind parameters accepted by one statement in the active SQLite library. */
@@ -1187,7 +1162,6 @@ export class Engine {
       }
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
-      this[credentialVaultOwner] = new CredentialVault(writer);
       this.plans = this.buildPlans();
       if ([...this.plans.values()].some((plan) => plan.fullText.length > 0)) {
         this.enableFullTextSupport();
@@ -1447,26 +1421,12 @@ export class Engine {
     if (invalidTag !== null || invalidTagGroup !== null) {
       throw new CorruptDatabaseError("AckerDB tag assignments are invalid");
     }
-    const invalidIdentity = connection
-      .query(
-        "SELECT 1 FROM _ackerdb_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
-      )
-      .get();
-    const invalidAccount = connection
-      .query(
-        "SELECT 1 FROM _ackerdb_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
-      )
-      .get();
-    if (invalidIdentity !== null || invalidAccount !== null) {
-      throw new CorruptDatabaseError("AckerDB identity directory is invalid");
-    }
     const invalidMigration = connection
       .query(
         "SELECT 1 FROM _ackerdb_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
       )
       .get();
     if (invalidMigration !== null) throw new CorruptDatabaseError("AckerDB migration history is invalid");
-    verifyCredentialVaultState(connection);
   }
 
   commitVersion(connection: Database = this.writer): bigint {
@@ -1482,65 +1442,6 @@ export class Engine {
       .query("UPDATE _ackerdb_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
       .get() as { commit_version: bigint };
     return row.commit_version;
-  }
-
-  /** Look up one exact external account on any Engine-owned connection. */
-  identityForAccount(connection: Database, issuer: string, subject: string): Identity | null {
-    const account = connection
-      .query("SELECT identity FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
-      .get(issuer, subject) as { identity: bigint } | null;
-    return account === null ? null : account.identity as Identity;
-  }
-
-  /**
-   * Every external account one Identity answers to, read through the identity
-   * index. It is the inverse of {@link identityForAccount}, and it is how a
-   * delegated credential learns which upstream accounts bound its authority —
-   * an invalidation names an account, never an Identity.
-   */
-  accountsForIdentity(connection: Database, identity: Identity): readonly ExternalAccount[] {
-    return connection
-      .query("SELECT issuer, subject FROM _ackerdb_identity_accounts WHERE identity = ?")
-      .all(identity) as ExternalAccount[];
-  }
-
-  /** Resolve or provision one exact account. The caller must own the writer transaction. */
-  resolveIdentity(issuer: string, subject: string): Identity {
-    const existing = this.identityForAccount(this.writer, issuer, subject);
-    if (existing !== null) return existing;
-
-    const created = this.writer
-      .query("INSERT INTO _ackerdb_identities DEFAULT VALUES RETURNING identity")
-      .get() as { identity: bigint };
-    this.writer
-      .query("INSERT INTO _ackerdb_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
-      .run(issuer, subject, created.identity);
-    return created.identity as Identity;
-  }
-
-  /** Attach one exact account inside the caller-owned writer transaction. */
-  attachIdentityAccount(identity: Identity, issuer: string, subject: string): boolean {
-    const existing = this.identityForAccount(this.writer, issuer, subject);
-    if (existing !== null) return existing === identity;
-    this.writer
-      .query("INSERT INTO _ackerdb_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
-      .run(issuer, subject, identity);
-    return true;
-  }
-
-  /** Detach one owned account inside the caller-owned writer transaction. */
-  detachIdentityAccount(
-    identity: Identity,
-    issuer: string,
-    subject: string,
-  ): "removed" | "not_owned" | "last_account" {
-    if (this.identityForAccount(this.writer, issuer, subject) !== identity) return "not_owned";
-    const removed = this.writer
-      .query(`DELETE FROM _ackerdb_identity_accounts
-        WHERE issuer = ? AND subject = ? AND identity = ?
-          AND 1 < (SELECT COUNT(*) FROM _ackerdb_identity_accounts WHERE identity = ?)`)
-      .run(issuer, subject, identity, identity);
-    return removed.changes === 1 ? "removed" : "last_account";
   }
 
   schemaFingerprint(): string {
@@ -1834,7 +1735,13 @@ export class Engine {
     const physCols: string[] = [];
     const columns = [...plan.columns.values()].filter((c) => c.kind !== "pk");
     for (const column of columns) for (const phys of column.phys) physCols.push(phys.name);
-    const sql = `INSERT INTO ${quote(plan.name)} (${physCols.map(quote).join(", ")}) VALUES (${physCols.map(() => "?").join(", ")}) RETURNING ${quote(plan.pk)}`;
+    // A table whose only column is its key — `_ackerdb_identities`, where the
+    // Identity *is* the row — has no column list to bind, and SQLite spells
+    // that case differently.
+    const values = physCols.length === 0
+      ? "DEFAULT VALUES"
+      : `(${physCols.map(quote).join(", ")}) VALUES (${physCols.map(() => "?").join(", ")})`;
+    const sql = `INSERT INTO ${quote(plan.name)} ${values} RETURNING ${quote(plan.pk)}`;
     return {
       sql,
       bind: (row) => columns.flatMap((c) => c.toSql(row[c.jsName])),

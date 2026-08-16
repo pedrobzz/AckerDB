@@ -763,7 +763,9 @@ describe("Session + Runtime integration", () => {
         transition: {
           kind: "reset",
           from: null,
-          to: { authEpoch: 0, commitVersion: 0n },
+          // Provisioning Alice's Identity is an ordinary managed write, so the
+          // subscription opens after that commit rather than at version zero.
+          to: { authEpoch: 0, commitVersion: 1n },
           value: [],
         },
       });

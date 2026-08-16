@@ -5,12 +5,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DurabilityPolicy } from "@ackerdb/core";
-import {
-  normalizeAdminOptions,
-  type NormalizedAdminOptions,
-  type OidcVerifierOptions,
-  type S3FileStoreChecksum,
-  type S3FileStoreEncryption,
+import type {
+  OidcVerifierOptions,
+  S3FileStoreChecksum,
+  S3FileStoreEncryption,
 } from "@ackerdb/server";
 
 export type AuthenticationConfig =
@@ -69,8 +67,14 @@ export interface AppConfig {
   statusScope: string;
   /** One active immutable File byte backend. */
   files: FilesConfig;
-  /** Everything administrative, resolved once: the Admin API reads it. */
-  admin: NormalizedAdminOptions;
+  /** What the application calls itself, from its package manifest: the OpenAPI document's identity. */
+  application: ApplicationIdentity;
+}
+
+/** The application's own name and version, as its package manifest declares them. */
+export interface ApplicationIdentity {
+  readonly name: string;
+  readonly version: string;
 }
 
 /** The one database file under the configured data directory. */
@@ -92,7 +96,6 @@ interface RawConfig {
   scopeResolver?: string;
   statusScope?: string;
   files?: unknown;
-  admin?: unknown;
 }
 
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
@@ -109,7 +112,6 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "scopeResolver",
   "statusScope",
   "files",
-  "admin",
 ]);
 const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 
@@ -214,38 +216,20 @@ function exactObject(value: unknown, allowed: readonly string[], path: string): 
 
 /**
  * What the application package says about itself, which is the closest thing
- * to a name this project has. The OpenAPI document's identity and the Admin
- * API's answer are the same fact, so it is read once here and both take it
- * from the resolved configuration.
+ * to a name this project has, and so what the OpenAPI document is titled with.
+ * A manifest field is a default rather than a declaration, so an unusable one
+ * is simply absent: the directory name and `0.0.0` answer instead.
  */
-function applicationPackage(appDir: string): { name?: unknown; version?: unknown } {
+function resolveApplicationIdentity(appDir: string): ApplicationIdentity {
   const manifest = join(appDir, "package.json");
-  if (!existsSync(manifest)) return {};
-  return JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown };
-}
-
-/** A package manifest field is a default, so an unusable one is simply absent. */
-function packagedText(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
-}
-
-/**
- * Validate and resolve the `admin` block. Unknown fields are refused here,
- * where a JSON file can carry one; the values themselves are interpreted by
- * the server's own `normalizeAdminOptions`, so configuration and a programmatic
- * host meet one validator rather than two that can disagree. What an operator
- * wrote is held to that validator; what the package manifest supplies is a
- * default, and a default that cannot be used is one that was not there.
- */
-function resolveAdminConfig(value: unknown, appDir: string): NormalizedAdminOptions {
-  const raw = exactObject(value ?? {}, ["application"], "admin");
-  const declared = exactObject(raw.application ?? {}, ["name", "version"], "admin.application");
-  const packaged = applicationPackage(appDir);
-  return normalizeAdminOptions({
-    application: {
-      name: declared.name ?? packagedText(packaged.name, basename(appDir)),
-      version: declared.version ?? packagedText(packaged.version, "0.0.0"),
-    },
+  const packaged: { name?: unknown; version?: unknown } = existsSync(manifest)
+    ? JSON.parse(readFileSync(manifest, "utf8"))
+    : {};
+  const text = (value: unknown, fallback: string): string =>
+    typeof value === "string" && value.trim().length > 0 ? value : fallback;
+  return Object.freeze({
+    name: text(packaged.name, basename(appDir)),
+    version: text(packaged.version, "0.0.0"),
   });
 }
 
@@ -411,6 +395,6 @@ export function loadConfig(
       hostname,
       port,
     }),
-    admin: resolveAdminConfig(raw.admin, dir),
+    application: resolveApplicationIdentity(dir),
   };
 }

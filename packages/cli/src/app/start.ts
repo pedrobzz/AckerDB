@@ -138,7 +138,6 @@ export async function startApp<const A extends App = App>(
       maxBytes: config.files.maxBytes,
     },
     limits: PRODUCTION_LIMITS,
-    admin: config.admin,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(prepare === undefined ? {} : { prepare: (signal: AbortSignal) => prepare(config, signal) }),
     pendingMigrations: options.holdPendingMigrations === true ? "hold" : "apply",
@@ -168,15 +167,6 @@ export async function startApp<const A extends App = App>(
     reporter: {
       reconciled: (lines) => {
         for (const line of lines) console.log(`[ackerdb] ${line}`);
-      },
-      // Printed once, and nowhere else: only the digest is stored, so no later
-      // command can show this again. It is printed the moment it is reported,
-      // before any shutdown check, because a committed credential the operator
-      // never saw is worse than a line printed by a process that is about to
-      // stop.
-      adminCredentialIssued: ({ id, token }) => {
-        console.log(`[ackerdb] Admin Credential ${id} issued — copy it now, it is shown once:`);
-        console.log(`[ackerdb] ${token}`);
       },
     },
   };

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { v } from "../../src/validation/v.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { credentials } from "../../src/auth/credential-context.ts";
 import {
   cleanupCredentialFixtures,
   databasePath,
@@ -153,8 +152,8 @@ const revocationScopedMcp = typedMcp({
 const rollbackAgentRevoke = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => {
-    credentials.revoke(ctx, args.id);
+  handler: async (ctx, args) => {
+    await ctx.credentials.revoke(args.id);
     throw new Error("roll back agent revoke");
   },
 });
@@ -162,8 +161,8 @@ const rollbackAgentRevoke = typedMutation({
 const rollbackScopeReduction = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => {
-    credentials.updateScopes(ctx, args.id, []);
+  handler: async (ctx, args) => {
+    await ctx.credentials.updateScopes(args.id, []);
     throw new Error("roll back scope reduction");
   },
 });
@@ -175,7 +174,7 @@ const gatedAgentRevoke = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    credentials.revoke(ctx, args.id);
+    await ctx.credentials.revoke(args.id);
   },
 });
 
@@ -186,14 +185,14 @@ const gatedScopeReduction = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    credentials.updateScopes(ctx, args.id, []);
+    await ctx.credentials.updateScopes(args.id, []);
   },
 });
 
 const createRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => credentials.create(ctx, {
+  handler: (ctx, args) => ctx.credentials.issue({
     name: args.name,
     metadata: {},
   }),
@@ -202,7 +201,7 @@ const createRevocationAgentToken = typedMutation({
 const createRevocationScopedToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => credentials.create(ctx, {
+  handler: (ctx, args) => ctx.credentials.issue({
     name: args.name,
     metadata: {},
     scopes: ["orders.get"],
@@ -212,7 +211,7 @@ const createRevocationScopedToken = typedMutation({
 const updateRevocationAgentMetadata = typedMutation({
   access: "authenticated",
   args: { id: v.string(), metadata: v.jsonb<Readonly<Record<string, unknown>>>() },
-  handler: (ctx, args) => credentials.update(ctx, args.id, {
+  handler: (ctx, args) => ctx.credentials.update(args.id, {
     metadata: args.metadata,
   }),
 });
@@ -220,7 +219,7 @@ const updateRevocationAgentMetadata = typedMutation({
 const revokeRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => credentials.revoke(ctx, args.id),
+  handler: (ctx, args) => ctx.credentials.revoke(args.id),
 });
 
 const extraModules = {

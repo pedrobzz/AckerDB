@@ -48,6 +48,10 @@ import type { Schema } from "../schema/definition.ts";
 import { validateArgsShape } from "../validation/declarations.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
 import type {
+  CredentialMutationCapability,
+  CredentialQueryCapability,
+} from "../credentials/api.ts";
+import type {
   FileMutationCapability,
   FileProcedureCapability,
   FileQueryCapability,
@@ -66,6 +70,8 @@ export type QueryCtx<
   readonly jobs: Jobs;
   /** Reactive metadata reads over framework-owned immutable Files. */
   readonly files: FileQueryCapability;
+  /** Reactive reads over the credentials this Identity issued, and over all of them. */
+  readonly credentials: CredentialQueryCapability;
 };
 
 export type MutationCtx<
@@ -79,6 +85,13 @@ export type MutationCtx<
   readonly jobs: Jobs;
   /** Transactional File lifecycle, Upload Session, and File Grant operations. */
   readonly files: FileMutationCapability;
+  /**
+   * Credential issuance and administration. The owner surface is bounded by the
+   * calling Identity's own grant; `credentials.manage` is global and carries no
+   * framework access check, so the containing function's access policy and
+   * declared scopes are the whole admission decision.
+   */
+  readonly credentials: CredentialMutationCapability;
 };
 
 /** The context inside `ctx.tx(...)`: a mutation's powers, structurally. */

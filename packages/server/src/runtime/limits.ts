@@ -64,7 +64,7 @@ export interface ServiceLimits {
     readonly revocationDeadlineMs: number;
   };
   readonly credentials: {
-    /** Credentials one Identity may hold as children, and standalone ones as a set. */
+    /** Credentials one Identity may hold as children, and root ones as a set. */
     readonly maxPerIdentity: number;
     readonly maxNameBytes: number;
     readonly maxMetadataBytes: number;

@@ -41,15 +41,11 @@ describe("defineApp scope vocabulary", () => {
     expect(app.scopes).toBeUndefined();
   });
 
-  test("rejects the framework's marked names at the one declaration site", () => {
-    expect(() => defineApp({
+  test("accepts a marked name: the whole vocabulary is the application's", () => {
+    expect(defineApp({
       schema: defineSchema({}),
-      scopes: ["_admin:jobs:read"] as const,
-    })).toThrow(/framework/);
-    expect(() => defineApp({
-      schema: defineSchema({}),
-      scopes: ["_"] as const,
-    })).toThrow(/framework/);
+      scopes: ["_internal:purge", "_"] as const,
+    }).scopes).toEqual(["_internal:purge", "_"]);
   });
 
   test("rejects a wildcard in the vocabulary: patterns belong to grants", () => {

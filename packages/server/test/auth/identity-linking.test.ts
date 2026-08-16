@@ -20,6 +20,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { storedIdentityForAccount } from "../support/identities.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -253,7 +254,7 @@ describe("explicit provider-neutral account linking", () => {
       { rawBearerToken: "alice-b" },
     )).toMatchObject({ status: 403, body: { code: "unauthorized" } });
     expect(verifier.calls).toHaveLength(callsBeforeAnonymous);
-    expect(engine.identityForAccount(engine.reader, ISSUER_B, "alice")).toBeNull();
+    expect(storedIdentityForAccount(engine, ISSUER_B, "alice")).toBeNull();
 
     for (const [id, rawBearerToken] of [
       [11, "shared@example.test"],
@@ -263,7 +264,7 @@ describe("explicit provider-neutral account linking", () => {
       expect(await invoke(runtime, alice, id, "api.accounts.link", { rawBearerToken }))
         .toMatchObject({ status: 401, body: { code: "unauthenticated" } });
     }
-    expect(engine.identityForAccount(engine.reader, ISSUER_B, "alice")).toBeNull();
+    expect(storedIdentityForAccount(engine, ISSUER_B, "alice")).toBeNull();
 
     const conflict = await invoke(
       runtime,
@@ -278,7 +279,7 @@ describe("explicit provider-neutral account linking", () => {
       retryable: false,
       message: "external account is already linked",
     });
-    expect(engine.identityForAccount(engine.reader, ISSUER_A, "bob")).toBe(bob.identity);
+    expect(storedIdentityForAccount(engine, ISSUER_A, "bob")).toBe(bob.identity);
     expect(directoryCounts(engine)).toEqual({ identities: 2n, accounts: 2n });
     expect(verifier.verifiedInsideWriter.every((inside) => !inside)).toBe(true);
   });
@@ -301,14 +302,14 @@ describe("explicit provider-neutral account linking", () => {
       { rawBearerToken: "rollback" },
     );
     expect(failed.status).toBe(500);
-    expect(engine.identityForAccount(engine.reader, ROLLBACK_ISSUER, "alice")).toBeNull();
+    expect(storedIdentityForAccount(engine, ROLLBACK_ISSUER, "alice")).toBeNull();
     expect(directoryCounts(engine)).toEqual({ identities: 1n, accounts: 1n });
     expect(engine.writer.inTransaction).toBe(false);
 
     engine.writer.exec("DROP TRIGGER fail_identity_link");
     expect(await invoke(runtime, alice, 21, "api.accounts.link", { rawBearerToken: "rollback" }))
       .toEqual({ status: 200, body: true });
-    expect(engine.identityForAccount(engine.reader, ROLLBACK_ISSUER, "alice"))
+    expect(storedIdentityForAccount(engine, ROLLBACK_ISSUER, "alice"))
       .toBe(alice.identity);
     expect(verifier.verifiedInsideWriter.every((inside) => !inside)).toBe(true);
   });

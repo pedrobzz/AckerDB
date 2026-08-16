@@ -12,6 +12,7 @@ import {
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../../src/auth/credentials.ts";
+import { Credentials } from "../../src/credentials/module.ts";
 import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -23,7 +24,6 @@ import {
   type McpAiContext,
 } from "../../src/mcp/index.ts";
 import { handleMcpPost } from "../../src/mcp/http.ts";
-import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -537,7 +537,7 @@ describe("MCP identity-preserving local delegation", () => {
   test("retains the exact external user and grants only the requested declared scopes", async () => {
     const principal = user();
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
+    const authenticate = spyOn(Credentials.prototype, "authenticate");
     try {
       const result = await callProcedure(principal, "scoped") as {
         readonly names: readonly string[];
@@ -664,7 +664,7 @@ describe("MCP identity-preserving local delegation", () => {
   test("intersects a credential parent's request with its effective grant", async () => {
     const principal = credentialPrincipal();
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
+    const authenticate = spyOn(Credentials.prototype, "authenticate");
     try {
       const intersection = await runtime.runMcpTool({
         id: "mcp-local-intersection",

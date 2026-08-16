@@ -19,7 +19,6 @@ import {
   checkpointWriteCollector,
   makeDbReader,
   rollbackWriteCollector,
-  type ReadRecorder,
   type WriteCollector,
 } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
@@ -38,11 +37,23 @@ import type {
 import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
 import type { McpAiContext } from "../../mcp/ai.ts";
-import {
-  takeCredentialInvalidations,
-  withCredentialContext,
-} from "../../auth/credential-context.ts";
+import { Identities } from "../../auth/identities.ts";
 import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
+import type { IdentityDatabase } from "../../auth/tables.ts";
+import {
+  credentialMutationCapability,
+  credentialQueryCapability,
+} from "../../credentials/capability.ts";
+import {
+  Credentials,
+  takeCredentialInvalidations,
+  type IdentityGrantResolver,
+} from "../../credentials/module.ts";
+import type { CredentialDatabase } from "../../credentials/tables.ts";
+import {
+  applicationDatabase,
+  internalDatabase,
+} from "../../database/framework-schema.ts";
 import {
   ReactiveCommit,
   type Subscriber,
@@ -77,7 +88,7 @@ import {
 } from "../jobs/namespace.ts";
 import type { RuntimeJobs } from "../jobs/runtime.ts";
 import { RuntimeReadExecutor, type ReadExecution } from "./read.ts";
-import { applicationDatabase, RuntimeFiles } from "../../files/namespace.ts";
+import { RuntimeFiles } from "../../files/namespace.ts";
 import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
 import { settleOnAbort } from "../abort.ts";
@@ -165,8 +176,14 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
   readonly credentialVerifier?: CredentialVerifier;
-  /** Application scopes plus the framework's: what a credential grant expands against. */
+  /** The application's declared scopes: what a credential grant expands against. */
   readonly vocabulary: readonly string[];
+  /**
+   * The grant patterns an Identity holding no credential carries: what the
+   * lineage walk ends at, and what bounds a delegation the caller is not the
+   * parent of.
+   */
+  readonly resolveIdentityGrant: IdentityGrantResolver;
   /**
    * Committed revocations and grant changes, onto the generic auth-invalidation
    * path, for a commit whose origin holds no response of its own.
@@ -230,25 +247,27 @@ export class RuntimeFunctionExecutor<C> {
     return this.coordinator.snapshot();
   }
 
-  /** Expose `credentials` operations to exactly one active invocation context. */
-  private bindCredentialContext<T extends object, R>(
-    context: T,
-    principal: Principal,
-    connection: Database,
-    reads: ReadRecorder | null,
-    writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>> {
-    return withCredentialContext(context, {
-      engine: this.options.engine,
-      connection,
-      principal,
-      reads,
-      writes,
-      limits: this.options.limits.credentials,
+  /**
+   * The Credentials module bound to one invocation's own database handle.
+   *
+   * It is built from the same managed reader or writer `ctx.db` is, so a
+   * credential read records the invocation's ordinary predicate dependencies
+   * and a credential write emits the ordinary write keys and joins the
+   * transaction. `writes` is the transaction's collector when there is one, and
+   * null on a query, which is the whole of what makes credential writes exist
+   * only on a mutation or transaction context.
+   */
+  private credentialsFor(internal: unknown, writes: WriteCollector | null): Credentials {
+    return new Credentials({
+      db: internal as CredentialDatabase,
       vocabulary: this.options.vocabulary,
-      now: this.options.now,
-    }, work);
+      resolveIdentityGrant: this.options.resolveIdentityGrant,
+      writes: writes === null ? null : {
+        collector: writes,
+        limits: this.options.limits.credentials,
+        now: this.options.now,
+      },
+    });
   }
 
   close(): void {
@@ -301,6 +320,16 @@ export class RuntimeFunctionExecutor<C> {
     ));
   }
 
+  /**
+   * The Identity tables under one snapshot read, with no ReadRecorder: an
+   * account lookup during authentication has no subscription to invalidate.
+   */
+  private identitiesReading(connection: Database): Identities {
+    return new Identities(
+      internalDatabase(makeDbReader(this.options.engine, connection, null)) as IdentityDatabase,
+    );
+  }
+
   async resolveIdentity(
     account: ExternalAccount,
     fairnessKey: string,
@@ -308,11 +337,8 @@ export class RuntimeFunctionExecutor<C> {
     requestBytes: number,
   ): Promise<Identity> {
     const existing = await this.options.reads.submit(
-      (connection) => this.options.engine.identityForAccount(
-        connection,
-        account.issuer,
-        account.subject,
-      ),
+      (connection) => this.identitiesReading(connection)
+        .forAccount(account.issuer, account.subject),
       {
         bytes: requestBytes,
         fairnessKey,
@@ -320,13 +346,36 @@ export class RuntimeFunctionExecutor<C> {
       },
     );
     if (existing !== null) return existing;
-    return this.coordinator.transactFramework({
+    // Provisioning is an ordinary managed write, so it takes the ordinary
+    // coordinated writer: the account row lands with the write keys and the
+    // publication every other insert produces.
+    return this.identityWrite(
       fairnessKey,
+      signal,
       requestBytes,
-      admissionSignal: signal,
-      transactionSignal: signal,
-      work: () => this.options.engine.resolveIdentity(account.issuer, account.subject),
-    });
+      (identities) => identities.resolve(account.issuer, account.subject),
+    );
+  }
+
+  /** One coordinated writer transaction over the framework Identity tables. */
+  private identityWrite<T>(
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    work: (identities: Identities) => Promise<T>,
+  ): Promise<T> {
+    return runInInvocationRoot(SYSTEM_PRINCIPAL, () => this.executeWrite(
+      "transaction",
+      fairnessKey,
+      signal,
+      requestBytes,
+      (db, writes) => {
+        const scope = createMutationInvocationScope(this.options.engine.writer, writes);
+        return scope.runRoot((mutationAccess) =>
+          withMutationAccess(mutationAccess, () =>
+            work(new Identities(internalDatabase(db) as IdentityDatabase))));
+      },
+    ));
   }
 
   invokeQuery(
@@ -341,15 +390,7 @@ export class RuntimeFunctionExecutor<C> {
       execution.reads,
     );
     const timestamp = this.readNow();
-    const context = this.hostQueryContext(db, principal, timestamp);
-    return this.bindCredentialContext(
-      context,
-      principal,
-      execution.connection,
-      execution.reads,
-      null,
-      (ctx) => invokeFunction(fn, ctx, args),
-    );
+    return invokeFunction(fn, this.hostQueryContext(db, principal, timestamp), args);
   }
 
   commitMutation(
@@ -389,20 +430,9 @@ export class RuntimeFunctionExecutor<C> {
           signal,
           requestBytes,
           async (db, writes) => {
-            const context = Object.freeze({
-              db,
-              auth: principal,
-              timestamp,
-            }) as TxCtx;
+            const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
             try {
-              return await this.bindCredentialContext(
-                context,
-                principal,
-                this.options.engine.writer,
-                null,
-                writes,
-                work,
-              );
+              return await work(context);
             } catch (error) {
               return poisonCurrentInvocation(error);
             }
@@ -467,14 +497,7 @@ export class RuntimeFunctionExecutor<C> {
             return scope.runRoot((mutationAccess) =>
               withMutationAccess(mutationAccess, async () => {
                 try {
-                  const value = await this.bindCredentialContext(
-                    context,
-                    principal,
-                    this.options.engine.writer,
-                    null,
-                    writes,
-                    work,
-                  );
+                  const value = await work(context);
                   return isResult(value) ? value : Ok(value);
                 } catch (error) {
                   return poisonCurrentInvocation(error);
@@ -508,17 +531,28 @@ export class RuntimeFunctionExecutor<C> {
     return Object.freeze({ value, release });
   }
 
+  /**
+   * `internal.db` is the framework's half of one invocation's database handle,
+   * narrowed once here. Every framework capability on the context is built from
+   * that same value rather than narrowing the handle again, so what a
+   * capability can reach and what `ctx.internal.db` shows are the same set by
+   * construction. The application-facing types omit it, so a handler that never
+   * casts cannot reach a framework table its capability exists to protect.
+   */
   private hostQueryContext(
     db: unknown,
     principal: Principal,
     timestamp: number,
   ): QueryCtx {
+    const internal = internalDatabase(db);
     return Object.freeze({
       db: applicationDatabase(db),
       auth: principal,
       timestamp,
+      internal: Object.freeze({ db: internal }),
       jobs: queryJobsNamespace(this.options.jobs(), db),
       files: this.options.files.query(db),
+      credentials: credentialQueryCapability(this.credentialsFor(internal, null), principal),
     }) as QueryCtx;
   }
 
@@ -529,11 +563,13 @@ export class RuntimeFunctionExecutor<C> {
     writes: WriteCollector,
     extras?: Record<string, unknown>,
   ): MutationCtx {
+    const internal = internalDatabase(db);
     return Object.freeze({
       ...extras,
       db: applicationDatabase(db),
       auth: principal,
       timestamp,
+      internal: Object.freeze({ db: internal }),
       jobs: mutationJobsNamespace(
         this.options.jobs(),
         db,
@@ -544,6 +580,10 @@ export class RuntimeFunctionExecutor<C> {
           ? at
           : Math.min(writes.fileCleanupAt, at);
       }, () => markOneTimeResult(writes)),
+      credentials: credentialMutationCapability(
+        this.credentialsFor(internal, writes),
+        principal,
+      ),
     }) as MutationCtx;
   }
 
@@ -556,14 +596,7 @@ export class RuntimeFunctionExecutor<C> {
       const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
-        this.bindCredentialContext(
-          invocation,
-          principal,
-          this.options.engine.writer,
-          null,
-          writes,
-          (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
-        ));
+        invokeFunction(fn, invocation, args, { mutationAccess }));
     };
   }
 
@@ -671,14 +704,7 @@ export class RuntimeFunctionExecutor<C> {
               writes,
               { runNumber },
             ) as MutationCtx & { readonly runNumber: number };
-            return await this.bindCredentialContext(
-              context,
-              SYSTEM_PRINCIPAL,
-              this.options.engine.writer,
-              null,
-              writes,
-              run,
-            );
+            return await run(context);
           },
         };
         const scope = createMutationInvocationScope(this.options.engine.writer, writes);
@@ -720,31 +746,21 @@ export class RuntimeFunctionExecutor<C> {
       this.options.now,
     );
     if (account.issuer === CREDENTIAL_ISSUER) {
-      // A vault credential is already a first-class Identity; aliasing it onto
-      // another Identity would give one credential two authorities.
+      // An AckerDB credential is already a first-class Identity; aliasing it
+      // onto another Identity would give one credential two authorities.
       throw new AckerDBError(
         "validation",
         "credential tokens cannot be linked as external accounts",
       );
     }
     throwIfAborted(signal);
-    await this.coordinator.transactFramework({
-      fairnessKey,
-      requestBytes,
-      admissionSignal: signal,
-      transactionSignal: signal,
-      work: () => {
-        if (account.expiresAt <= this.readNow()) {
-          throw new AckerDBError("unauthenticated", "invalid credential");
-        }
-        if (!this.options.engine.attachIdentityAccount(
-          principal.identity,
-          account.issuer,
-          account.subject,
-        )) {
-          throw new AckerDBError("conflict", "external account is already linked");
-        }
-      },
+    await this.identityWrite(fairnessKey, signal, requestBytes, async (identities) => {
+      if (account.expiresAt <= this.readNow()) {
+        throw new AckerDBError("unauthenticated", "invalid credential");
+      }
+      if (!await identities.attach(principal.identity, account.issuer, account.subject)) {
+        throw new AckerDBError("conflict", "external account is already linked");
+      }
     });
   }
 
@@ -771,20 +787,15 @@ export class RuntimeFunctionExecutor<C> {
     }
     const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
     throwIfAborted(signal);
-    const result = await this.coordinator.transactFramework({
+    const result = await this.identityWrite(
       fairnessKey,
+      signal,
       requestBytes,
-      admissionSignal: signal,
-      transactionSignal: signal,
-      work: () => this.options.engine.detachIdentityAccount(
-        principal.identity,
-        account.issuer,
-        account.subject,
-      ),
-      afterCommit: (committed) => {
-        if (committed === "removed") accountUnlinked(account);
-      },
-    });
+      (identities) => identities.detach(principal.identity, account.issuer, account.subject),
+    );
+    // Published after the write committed, exactly as before: an unlink that
+    // rolled back must not terminate the session it never removed.
+    if (result === "removed") accountUnlinked(account);
     if (result === "not_owned") {
       throw new AckerDBError("unauthorized", "account unlinking requires ownership");
     }

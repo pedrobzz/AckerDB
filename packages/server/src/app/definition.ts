@@ -1,6 +1,6 @@
 import { brand, hasBrand } from "../shared/identity.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
-import { ADMIN_API_PATH, DEFAULT_API_PATH } from "@ackerdb/core";
+import { DEFAULT_API_PATH } from "@ackerdb/core";
 import { apiPath } from "./functions.ts";
 import { validateScopeVocabulary, type ScopeValues } from "../auth/scopes.ts";
 
@@ -11,7 +11,7 @@ export interface App<
   Scopes extends ScopeValues | undefined = ScopeValues | undefined,
 > {
   readonly schema: S;
-  /** Groups beyond the framework's own that this application publishes in. */
+  /** Groups beyond the default one that this application publishes in. */
   readonly apiPaths: readonly string[];
   /** The application's scope vocabulary; absent when it declares none. */
   readonly scopes: Scopes;
@@ -23,16 +23,16 @@ export interface AppDefinition<
 > {
   readonly schema: S;
   /**
-   * The API paths this application publishes beyond the framework's own
-   * `"api"` and `"admin"`. Code generation reads only this manifest — never
-   * the function modules, which import what it writes — so a group earns its
-   * `internal.*` binding by being named here once.
+   * The API paths this application publishes beyond the default `"api"`. Code
+   * generation reads only this manifest — never the function modules, which
+   * import what it writes — so a group earns its `internal.*` binding by being
+   * named here once.
    */
   readonly apiPaths?: readonly string[];
   /**
    * The one scope vocabulary every Identity grant and every function
-   * requirement draws from. Names carrying the reserved marker belong to the
-   * framework and are refused here.
+   * requirement draws from. It is the application's alone: AckerDB declares no
+   * scopes and reserves no names inside it.
    */
   readonly scopes?: Scopes;
 }
@@ -49,21 +49,11 @@ export type AppScope<A extends App> = A["scopes"] extends ScopeValues
   : never;
 
 /**
- * The groups the framework publishes on every application's behalf: the
- * default one every declaration falls back to, and the one the Admin API is
- * declared in. Neither is listed in a manifest, and both are known to the
- * Registry and to code generation without one.
- */
-const FRAMEWORK_API_PATHS: ReadonlySet<string> = new Set([
-  DEFAULT_API_PATH,
-  ADMIN_API_PATH,
-]);
-
-/**
  * The extra groups, validated exactly as a declaration's own `apiPath` is and
  * sorted like every other list code generation reads, so reordering `app.ts`
- * never rewrites a generated file. Neither framework group is listed: every
- * application publishes both, and naming one would offer a way to leave it out.
+ * never rewrites a generated file. The default group is not listed: every
+ * application publishes it, and naming it would offer a way to leave it out.
+ * Every other name is the application's to claim, `admin` included.
  */
 function declaredApiPaths(value: unknown): readonly string[] {
   if (value === undefined) return Object.freeze([]);
@@ -73,12 +63,8 @@ function declaredApiPaths(value: unknown): readonly string[] {
   const declared = new Set<string>();
   for (const entry of value) {
     // `apiPath` refuses every name a binding cannot be, `events` included.
-    // Only the framework's two are legal on a declaration yet illegal here —
-    // an application publishes its own functions in either, and code
-    // generation emits both bindings whether or not a manifest says so, so
-    // listing one would emit it twice.
     const path = apiPath(entry, "application apiPaths entry");
-    if (FRAMEWORK_API_PATHS.has(path)) {
+    if (path === DEFAULT_API_PATH) {
       throw new TypeError(
         `application apiPaths must not list "${path}" — every application publishes it`,
       );

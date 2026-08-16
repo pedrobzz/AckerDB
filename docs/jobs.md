@@ -321,36 +321,14 @@ Crash behavior: runs are recovered through leases. If the process dies
 mid-run, the run's lease expires and recovery settles it through the retry
 policy, which schedules the next run — work is delayed, never lost.
 
-### Upgrading from the single-table model
+### Databases written before the split
 
 `0.16.0` shipped one `_ackerdb_jobs` table carrying its own attempt history.
-Opening such a database transforms it, one way, into the pair: every Job keeps
-its id, arguments, key, journal, and scheduling intent; every recorded attempt
-becomes the run it always was, in order, with its timings and error; a Job that
-was running keeps its lease on its in-flight run, so ordinary lease recovery
-finishes it instead of restarting it silently; and a completed Job's output
-moves onto the run that produced it. Nothing reads the old shape afterwards.
-
-Three consequences are worth knowing.
-
-Runs that predate the split all read as `automatic_retry`: the old history
-could not distinguish a manual re-run from an automatic one, and a run
-suspended in `step.sleep` across the upgrade resumes as its Job's next run
-rather than as the same open run. The work is still exact — the journal is on
-the Job, so recorded steps answer instead of executing — and the run number is
-the one the old model would have claimed, because a sleep gave its attempt back
-before the upgrade. Only the provenance label is unrecoverable.
-
-Migrated Jobs carry no retention stamp — they are retained until deleted —
-because retention belongs to a Job definition, and definitions are not loaded
-while schema work runs; guessing a window could delete an outcome a
-`"forever"` dedupe promised. Every Job the runner settles after the upgrade is
-stamped normally.
-
-An attempt whose record is damaged still becomes a run, carrying the loss in
-its `errorText`. When the damaged record is the *last* one of a terminal Job,
-the run takes its state and output from the Job itself, which is the
-authoritative record of how that Job ended.
+There is no upgrade path onto the Job / Job run pair: a later change promoted
+the Identity and Credential tables into the managed schema under the physical
+names the internal ones already held, so the engine schema version is a floor
+and a database written before it is refused at open. Start such a deployment on
+a fresh database.
 
 ## Recipes
 

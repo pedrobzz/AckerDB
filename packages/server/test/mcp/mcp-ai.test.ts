@@ -11,6 +11,7 @@ import {
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
+import { Credentials } from "../../src/credentials/module.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
@@ -24,7 +25,6 @@ import {
   type McpAiToolSet,
   type McpBuilder,
 } from "../../src/mcp/index.ts";
-import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -333,7 +333,7 @@ async function eventually(check: () => boolean): Promise<void> {
 describe("MCP zero-hop AI SDK tools", () => {
   test("passes the returned tools directly to AI SDK v7 with lossless structured values", async () => {
     const fetch = spyOn(globalThis, "fetch");
-    const authenticate = spyOn(engine[credentialVaultOwner], "authenticate");
+    const authenticate = spyOn(Credentials.prototype, "authenticate");
     try {
       const result = await callAi("structured");
 

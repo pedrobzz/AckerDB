@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
-import { credentials } from "../../src/auth/credential-context.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
   mutation,
@@ -43,18 +42,18 @@ async function noMcpRuntime(): Promise<{ readonly runtime: Runtime; readonly ses
   const list = typedQuery({
     access: "public",
     args: {},
-    handler: (ctx) => credentials.list(ctx),
+    handler: (ctx) => ctx.credentials.query().collect(),
   });
   const create = typedMutation({
     access: "public",
     args: {},
-    handler: (ctx) => credentials.create(ctx, { name: "hidden", metadata: {} }),
+    handler: (ctx) => ctx.credentials.issue({ name: "hidden", metadata: {} }),
   });
   const transact = typedProcedure({
     access: "public",
     http: true,
     args: {},
-    handler: (ctx) => ctx.tx((tx) => credentials.list(tx)),
+    handler: (ctx) => ctx.tx((tx) => tx.credentials.query().collect()),
   });
   const registry = new Registry({ ordinary: { create, list, transact } });
   expect(registry.mcps.size).toBe(0);
@@ -80,8 +79,8 @@ async function noMcpRuntime(): Promise<{ readonly runtime: Runtime; readonly ses
   return { runtime, session };
 }
 
-describe("credential operations without an MCP endpoint", () => {
-  test("binds credential operations everywhere while denying anonymous administration", async () => {
+describe("owner-scoped credential operations", () => {
+  test("bind everywhere, and refuse a caller with no user Identity to own", async () => {
     const { runtime, session } = await noMcpRuntime();
     await runtime.openSession(session);
 
@@ -89,15 +88,15 @@ describe("credential operations without an MCP endpoint", () => {
       session,
       request(queryMessage(1, "api.ordinary.list")),
     )).rejects.toMatchObject({
-      code: "unauthorized",
-      message: "credential administration requires a user identity",
+      code: "unauthenticated",
+      message: "owner-scoped credential operations require a user identity",
     });
     await expect(runtime.mutation(
       session,
       request(mutationMessage(2, "2", {}, "api.ordinary.create")),
     )).rejects.toMatchObject({
-      code: "unauthorized",
-      message: "credential administration requires a user identity",
+      code: "unauthenticated",
+      message: "owner-scoped credential operations require a user identity",
     });
 
     const response = await runtime.runProcedure({
@@ -108,8 +107,8 @@ describe("credential operations without an MCP endpoint", () => {
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });
     expect(decode(await response.text())).toMatchObject({
-      code: "unauthorized",
-      message: "credential administration requires a user identity",
+      code: "unauthenticated",
+      message: "owner-scoped credential operations require a user identity",
     });
   });
 });

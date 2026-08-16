@@ -8,25 +8,19 @@
  * out of the key rather than being a rule applied on top of it, which is why
  * there is no per-group map here and no group argument on any lookup.
  *
- * **Two contributors, one set of passes.** The framework declares its own
- * `admin` group and the application walks its functions directory; both arrive
- * as module records and are flattened into one list before a single pass over
- * each kind. Nothing below asks which contributor an export came from, so an
- * admin function is addressed, routed, codec-compiled and documented by the
- * same code as everything else. Ownership is recorded once and read by the one
- * rule that genuinely turns on it: an application may not require a scope from
- * the framework's vocabulary.
+ * **One contributor.** Every registered function is the application's: the
+ * framework declares none on its behalf, so there is no second module record to
+ * flatten in and no ownership to record. What the framework offers an
+ * application is capabilities on the invocation context, not functions in its
+ * address space.
  */
 import {
-  ADMIN_API_PATH,
   DEFAULT_API_PATH,
   EVENTS_NAMESPACE,
   getRef,
   httpPathForAddress,
   RESERVED_MARKER,
 } from "@ackerdb/core";
-import { frameworkFunctionModules } from "../admin/index.ts";
-import type { AdminOptions } from "../admin/options.ts";
 import type { Principal } from "../auth/credentials.ts";
 import {
   apiPath,
@@ -51,12 +45,7 @@ import {
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
-import {
-  checkRequirementAgainstVocabulary,
-  isReservedScope,
-  knownScopeVocabulary,
-  type NormalizedScopeRequirement,
-} from "../auth/scopes.ts";
+import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
   claimsReservedName,
   exposedHttpKind,
@@ -69,13 +58,6 @@ import {
 } from "../transport/http-codec.ts";
 
 type ServerOnlyExport = AnyMcpDeclaration;
-
-/**
- * Who declared a module: the framework, or the application whose functions
- * directory was walked. It decides one rule and no dispatch, which is why it
- * is read at registration and never carried onto a registered value.
- */
-type Contributor = "framework" | "application";
 
 interface ModuleExport {
   /**
@@ -126,18 +108,8 @@ export class Registry {
   private readonly mcpByPath = new Map<string, AnyMcpDeclaration>();
   private readonly toolsByMcp = new Map<AnyMcpDeclaration, readonly AnyRegisteredMcpTool[]>();
   private readonly addressByObject = new Map<object, string>();
-  /**
-   * Every group this registry may publish: the manifest's, plus the two the
-   * framework publishes for every application.
-   */
+  /** Every group this registry may publish: the manifest's, plus the default one. */
   private readonly declaredApiPaths: ReadonlySet<string>;
-  /**
-   * Every declaration the framework contributed, by identity. Ownership is a
-   * fact about the value rather than about the address it landed at, because
-   * the `admin` group is shared: an application function published there is
-   * the application's, at an address that begins with the framework's group.
-   */
-  private readonly frameworkDeclarations = new WeakSet<object>();
 
   /**
    * `modules` is keyed by dot path: functions/messages.ts -> "messages".
@@ -146,31 +118,12 @@ export class Registry {
    * group not named there is a startup refusal: code generation reads the
    * manifest alone, so an undeclared group is a live address no binding can
    * name, and a misspelled one is invisible in exactly the same way. Omitting
-   * the argument declares no group beyond the framework's two rather than
-   * waiving the rule — the check has no off switch.
-   *
-   * `admin` is the resolved administration object. It is a constructor
-   * argument because the framework's declarations are built from it, and they
-   * are built here because "always registered in every application" has to be
-   * true of `acker start` and `acker openapi` alike: composing them at each
-   * call site would be two statements of one fact, and the second would drift.
+   * the argument declares no group beyond the default one rather than waiving
+   * the rule — the check has no off switch.
    */
-  constructor(
-    modules: LoadedModules,
-    declaredApiPaths: readonly string[] = [],
-    admin: AdminOptions = {},
-  ) {
-    this.declaredApiPaths = new Set([
-      DEFAULT_API_PATH,
-      ADMIN_API_PATH,
-      ...declaredApiPaths,
-    ]);
-    // The framework contributes first, so an application declaration that
-    // reaches one of its addresses is the one the collision names.
-    const moduleExports = [
-      ...this.contribute(frameworkFunctionModules(admin), "framework"),
-      ...this.contribute(modules, "application"),
-    ];
+  constructor(modules: LoadedModules, declaredApiPaths: readonly string[] = []) {
+    this.declaredApiPaths = new Set([DEFAULT_API_PATH, ...declaredApiPaths]);
+    const moduleExports = this.contribute(modules);
 
     for (const { name, value } of moduleExports) {
       if (!isRegisteredFunction(value)) continue;
@@ -181,9 +134,6 @@ export class Registry {
       // as one with no route.
       const address = `${this.groupOf(value.apiPath, name, "function")}.${name}`;
       this.registerAddress(address, value);
-      if (value.scopes !== undefined) {
-        this.refuseBorrowedFrameworkScope(value, value.scopes, `function "${address}"`);
-      }
       this.functions.set(address, value);
     }
 
@@ -256,14 +206,6 @@ export class Registry {
         if (this.mcpTools.has(key)) {
           throw new Error(`duplicate MCP tool name "${name}" in MCP "${value.name}"`);
         }
-        const policy = tool.accessPolicy;
-        if (policy.kind === "anyOf" || policy.kind === "allOf") {
-          this.refuseBorrowedFrameworkScope(
-            value,
-            policy,
-            `MCP "${value.name}" tool "${name}"`,
-          );
-        }
         this.mcpTools.set(key, tool);
       }
     }
@@ -322,16 +264,8 @@ export class Registry {
     }
   }
 
-  /**
-   * Flatten one contributor's modules into the shared export list, in a fixed
-   * order, and record which declarations the framework owns. The two
-   * contributors meet here and nowhere else: after this, an export is an
-   * export.
-   */
-  private contribute(
-    modules: LoadedModules,
-    contributor: Contributor,
-  ): ModuleExport[] {
+  /** Flatten the application's modules into one export list, in a fixed order. */
+  private contribute(modules: LoadedModules): ModuleExport[] {
     const contributed: ModuleExport[] = [];
     for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>
       a.localeCompare(b))) {
@@ -345,13 +279,6 @@ export class Registry {
       }
       for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
         a.localeCompare(b))) {
-        if (
-          contributor === "framework" &&
-          (typeof value === "object" || typeof value === "function") &&
-          value !== null
-        ) {
-          this.frameworkDeclarations.add(value);
-        }
         contributed.push({ name: `${modulePath}.${exportName}`, value });
       }
     }
@@ -367,7 +294,7 @@ export class Registry {
    * builders' scope union cannot.
    */
   checkScopeRequirements(applicationScopes: readonly string[] | undefined): void {
-    const vocabulary = knownScopeVocabulary(applicationScopes);
+    const vocabulary = applicationScopes ?? [];
     for (const [address, fn] of this.functions) {
       if (fn.scopes === undefined) continue;
       // Registration already normalized and froze it. Re-normalizing here
@@ -386,39 +313,11 @@ export class Registry {
   }
 
   /**
-   * An application declares its own vocabulary and requires from it alone. The
-   * framework's names sit in the same namespace and so pass the membership
-   * check above, while the generated `Scope` union refuses them at compile
-   * time — and a rule the type system holds and the runtime does not is a rule
-   * with a hole in it, reachable by any untyped declaration.
-   *
-   * It runs at registration rather than beside the vocabulary cross-check,
-   * because it needs no manifest to decide: a host that never reconciles one
-   * still cannot borrow the framework's names. Ownership is the whole test,
-   * because the `admin` group is shared — publishing a function beside the
-   * framework's does not make it the framework's.
-   */
-  private refuseBorrowedFrameworkScope(
-    declaration: object,
-    requirement: NormalizedScopeRequirement,
-    where: string,
-  ): void {
-    if (this.frameworkDeclarations.has(declaration)) return;
-    for (const scope of requirement.scopes) {
-      if (!isReservedScope(scope)) continue;
-      throw new TypeError(
-        `${where} requires ${JSON.stringify(scope)}, which belongs to the framework's own vocabulary` +
-          ` — "${RESERVED_MARKER}" marks a scope an application may neither declare nor require`,
-      );
-    }
-  }
-
-  /**
    * The one interpreter of a registered value's group, and so of the first
    * segment of its address. It is re-read, never trusted: an untyped export
    * meets the same shape rule the builder applies, so a malformed group is a
    * registration error rather than an address at `undefined.messages.list` or
-   * a route at `/_admin/...`.
+   * a route at `/_reserved/...`.
    */
   private groupOf(value: unknown, name: string, label: string): string {
     const group = apiPath(value, `${label} "${name}" apiPath`);

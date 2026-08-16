@@ -6,30 +6,28 @@
  * things it orders:
  *
  *   listening → codegen (if `prepare`) → loading → hold check → opening-storage
- *   → migrating | reconciling → issuing-credential → loading-runtime
- *   → starting-runtime → activation.
+ *   → migrating | reconciling → loading-runtime → starting-runtime →
+ *   activation.
  *
  * The listener is built first so `/live` and `/ready` answer through a slow
  * migration. Runtime modules load only after durable schema work commits, so
- * unrelated runtime configuration cannot block a pending migration. The Admin
- * Credential is minted before any application module is imported and before
- * the Runtime starts, so administration never depends on application code
- * (ADR-0027). Activation is last and refuses a Runtime that is not ready.
+ * unrelated runtime configuration cannot block a pending migration. Nothing
+ * here mints a credential: an application with no credentials is a valid
+ * application, and whether a root credential should exist is its decision to
+ * make through its own functions. Activation is last and refuses a Runtime
+ * that is not ready.
  *
  * Interruption is one AbortSignal, checked at every phase boundary and raced
  * only against work JavaScript cannot cancel — the caller's preparation, the
- * loaders, the FileStore probe. Reconcile, the credential mint and the
- * Runtime's start are bounded local transactions and are never abandoned. On
- * interruption boot drains what it built and rejects with the signal's reason.
+ * loaders, the FileStore probe. Reconcile and the Runtime's start are bounded
+ * local transactions and are never abandoned. On interruption boot drains what
+ * it built and rejects with the signal's reason.
  */
 import type { DurabilityPolicy } from "@ackerdb/core";
-import { ensureAdminCredential, type AdminCredentialBoot } from "./admin/credentials.ts";
-import type { AdminOptions } from "./admin/options.ts";
 import type { App } from "./app/definition.ts";
 import { Registry, type LoadedModules } from "./app/registry.ts";
 import type { AppSystemCtx, SystemRunner } from "./app/system.ts";
 import type { CredentialVerifier, ScopeResolver } from "./auth/credentials.ts";
-import { knownScopeVocabulary } from "./auth/scopes.ts";
 import { Engine, type EngineCloseDisposition } from "./database/engine.ts";
 import { resolveFileStoreBinding } from "./files/binding.ts";
 import type { RuntimeFilesOptions } from "./files/namespace.ts";
@@ -64,9 +62,9 @@ export interface LoadedRuntime {
 
 /**
  * Loaders rather than values, because *when* they run is the point: the
- * manifest before storage opens, application code only after the schema and
- * the credential are settled. Dynamic import of user code stays with the host;
- * a test or an embedder wraps already-built values in a loader.
+ * manifest before storage opens, application code only after the schema is
+ * settled. Dynamic import of user code stays with the host; a test or an
+ * embedder wraps already-built values in a loader.
  */
 export interface BootLoaders<A extends App = App> {
   app(signal: AbortSignal): Promise<LoadedApp<A>>;
@@ -77,8 +75,6 @@ export interface BootLoaders<A extends App = App> {
 export interface BootReporter {
   phase?(phase: AckerDBStartupPhase): void;
   reconciled?(lines: readonly string[]): void;
-  /** Exactly the boot that minted the master; no later boot can report the token again. */
-  adminCredentialIssued?(issued: { readonly id: string; readonly token: string }): void;
 }
 
 export interface BootStorage {
@@ -98,7 +94,6 @@ export interface BootOptions<A extends App = App> {
   readonly load: BootLoaders<A>;
   /** Defaults to PRODUCTION_LIMITS; shared by the listener and the Runtime. */
   readonly limits?: ServiceLimits;
-  readonly admin?: AdminOptions;
   readonly now?: () => number;
   /** Caller-owned startup cancellation; a running application is stopped with `RunningApp.drain()`. */
   readonly signal?: AbortSignal;
@@ -224,42 +219,12 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     const { applied } = await reconcile(engine, migrations);
     reporter.reconciled?.(applied);
 
-    // Administration must exist before anything can be administered, and
-    // before any application code runs: the mint needs only the reconciled
-    // engine, the manifest's scope vocabulary and the limits. (The vocabulary
-    // is a pure, frozen derivation of `app.scopes`; the Registry check and the
-    // Runtime derive it again from the same manifest rather than take it as a
-    // second input that could disagree with the first.) A failure here
-    // is fatal by design — a server nobody can administer, that printed
-    // nothing to say so, is discovered at the moment administration is most
-    // needed. It is not raced against the signal: abandoning it loses the
-    // plaintext of a credential that committed, which no later boot can print
-    // and only break-glass can undo.
-    advance("issuing-credential");
-    let adminCredential: AdminCredentialBoot;
-    try {
-      adminCredential = ensureAdminCredential(engine, {
-        vocabulary: knownScopeVocabulary(app.scopes),
-        limits: limits.credentials,
-        now: options.now ?? Date.now,
-      });
-    } catch (cause) {
-      throw new Error(
-        `the Admin Credential could not be issued: ${cause instanceof Error ? cause.message : String(cause)}`
-          + "\n\nrecover with the server stopped:\n\n    acker credential reset",
-        { cause },
-      );
-    }
-    if (adminCredential.token !== undefined) {
-      reporter.adminCredentialIssued?.({ id: adminCredential.id, token: adminCredential.token });
-    }
-
     // Credential verifiers and application modules belong to the request
     // runtime, not schema migration. Load them only after durable schema work
-    // and the credential commit.
+    // commits.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    const registry = new Registry(loaded.functions, app.apiPaths, options.admin);
+    const registry = new Registry(loaded.functions, app.apiPaths);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);
@@ -275,8 +240,8 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
       ...(options.now === undefined ? {} : { now: options.now }),
     });
 
-    // Nothing arms before this: the credential above is minted, and the
-    // manifest checked, before the first repeat Job can be minted or run.
+    // Nothing arms before this: the manifest is checked before the first
+    // repeat Job can be minted or run.
     advance("starting-runtime");
     await runtime.start();
     checkpoint();

@@ -1,7 +1,7 @@
 /**
  * Opaque identity-credential tokens: the bearer form of an issued credential.
  *
- * A credential token authenticates a first-class Identity — a standalone agent
+ * A credential token authenticates a first-class Identity — a root credential
  * or a child of a user — on every transport. Its synthetic external account
  * (issuer `ackerdb:credentials`, subject = token id) is how revocations and
  * grant changes ride the one generic auth-invalidation path instead of a
@@ -9,16 +9,16 @@
  */
 import { AckerDBError } from "../shared/errors.ts";
 
-/** The synthetic issuer every vault-issued credential authenticates under. */
+/** The synthetic issuer every AckerDB-issued credential authenticates under. */
 export const CREDENTIAL_ISSUER = "ackerdb:credentials";
 
 /**
- * Brand carried only by the Runtime's composed credential authority. A
- * vault-prefixed bearer must never reach an application verifier, so
+ * Brand carried only by the Runtime's composed credential authority. An
+ * AckerDB-prefixed bearer must never reach an application verifier, so
  * verification fails closed unless the verifier declares this capability.
  */
-export const VAULT_CREDENTIAL_AUTHORITY: unique symbol = Symbol.for(
-  "@ackerdb/server/VaultCredentialAuthority/v1",
+export const CREDENTIAL_AUTHORITY: unique symbol = Symbol.for(
+  "@ackerdb/server/CredentialAuthority/v1",
 );
 
 export const CREDENTIAL_TOKEN_PREFIX = "ackerdb_credential.";

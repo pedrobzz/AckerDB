@@ -1,9 +1,7 @@
 /** Compile-time contract for schema-bound MCP tools and client API erasure. */
 import type { Identity } from "@ackerdb/core";
 import {
-  credentials,
   mcp as mcpDeclaration,
-  systemCredentials,
   v,
   defineApp,
   defineSchema,
@@ -61,7 +59,7 @@ void agentMcp;
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => credentials.create(ctx, { name: args.name }),
+  handler: (ctx, args) => ctx.credentials.issue({ name: args.name }),
 });
 const createScopedToken = typedMutation({
   access: "authenticated",
@@ -69,7 +67,7 @@ const createScopedToken = typedMutation({
     name: v.string(),
     scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => credentials.create(ctx, args),
+  handler: (ctx, args) => ctx.credentials.issue(args),
 });
 const updateScopedToken = typedMutation({
   access: "authenticated",
@@ -77,47 +75,44 @@ const updateScopedToken = typedMutation({
     tokenId: v.string(),
     scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => credentials.updateScopes(ctx, args.tokenId, args.scopes),
+  handler: (ctx, args) => ctx.credentials.updateScopes(args.tokenId, args.scopes),
 });
 const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => credentials.list(ctx),
+  handler: (ctx) => ctx.credentials.query().collect(),
 });
 const updateAgentToken = typedMutation({
   access: "authenticated",
   args: { tokenId: v.string(), name: v.string() },
-  handler: (ctx, args) => credentials.update(ctx, args.tokenId, { name: args.name }),
+  handler: (ctx, args) => ctx.credentials.update(args.tokenId, { name: args.name }),
 });
 const revokeAgentToken = typedMutation({
   access: "authenticated",
   args: { tokenId: v.string() },
-  handler: (ctx, args) => credentials.revoke(ctx, args.tokenId),
+  handler: (ctx, args) => ctx.credentials.revoke(args.tokenId),
 });
-const createSystemAgentToken = typedMutation({
+/** Global administration: an ordinary function decides who reaches it. */
+const issueForIdentity = typedMutation({
   access: "system",
   args: { identity: v.identity(), name: v.string() },
-  handler: (ctx, args) => systemCredentials.create(
-    ctx,
-    args.identity,
-    { name: args.name },
-  ),
+  handler: (ctx, args) => ctx.credentials.manage.issueFor(args.identity, { name: args.name }),
 });
-/** Standalone identities: no parent, scopes granted directly. */
-const createStandaloneToken = typedMutation({
+/** Root credentials: no parent, scopes granted directly. */
+const issueRootToken = typedMutation({
   access: "system",
   args: { name: v.string(), scopes: v.array(v.string()) },
-  handler: (ctx, args) => systemCredentials.create(ctx, null, args),
+  handler: (ctx, args) => ctx.credentials.manage.issueRoot(args),
 });
-const listSystemAgentTokens = typedQuery({
+const listEveryToken = typedQuery({
   access: "system",
-  args: { identity: v.identity() },
-  handler: (ctx, args) => systemCredentials.list(ctx, args.identity),
+  args: {},
+  handler: (ctx) => ctx.credentials.manage.query().collect(),
 });
-const revokeSystemAgentToken = typedMutation({
+const revokeAnyToken = typedMutation({
   access: "system",
-  args: { identity: v.identity(), tokenId: v.string() },
-  handler: (ctx, args) => systemCredentials.revoke(ctx, args.identity, args.tokenId),
+  args: { tokenId: v.string() },
+  handler: (ctx, args) => ctx.credentials.manage.revoke(args.tokenId),
 });
 const localAiTools = typedProcedure({
   access: "authenticated",
@@ -139,14 +134,14 @@ const localAiTools = typedProcedure({
 });
 const createdToken: string = createAgentToken._retType!.data.token;
 const createdIdentity: Identity = createAgentToken._retType!.data.identity;
-const createdSystemToken: string = createSystemAgentToken._retType!.data.token;
-const createdStandaloneToken: string = createStandaloneToken._retType!.data.token;
+const createdSystemToken: string = issueForIdentity._retType!.data.token;
+const createdStandaloneToken: string = issueRootToken._retType!.data.token;
 const listedTokenId: string = listAgentTokens._retType!.data[0]!.id;
 const createdScope: string = createScopedToken._retType!.data.scopes[0]!;
 // @ts-expect-error listing descriptors never recover the plaintext secret
 void listAgentTokens._retType!.data[0]!.token;
 // @ts-expect-error system listing descriptors never recover the plaintext secret
-void listSystemAgentTokens._retType!.data[0]!.token;
+void listEveryToken._retType!.data[0]!.token;
 void createdToken;
 void createdIdentity;
 void createdSystemToken;
@@ -156,7 +151,7 @@ void createdScope;
 void updateAgentToken;
 void revokeAgentToken;
 void updateScopedToken;
-void revokeSystemAgentToken;
+void revokeAnyToken;
 void localAiTools;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
@@ -179,12 +174,8 @@ const writeNote = typedProcedure({
     // A procedure needs an explicit transaction before it can reach the database.
     // @ts-expect-error procedure contexts do not expose a database directly
     void ctx.db;
-    // @ts-expect-error credential administration requires a mutation or transaction context
-    credentials.list(ctx);
-    // @ts-expect-error credential minting requires an application mutation or transaction context
-    credentials.create(ctx, { name: "forbidden" });
-    // @ts-expect-error tools cannot invoke the system-administration facade
-    systemCredentials.list(ctx, 1n as Identity);
+    // @ts-expect-error a procedure has no credential capability outside a transaction
+    void ctx.credentials;
     const nestedTools = agentMcp.aiTools(ctx);
     void nestedTools;
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
@@ -242,20 +233,20 @@ typedMutation({
   access: "authenticated",
   args: {},
   handler: (ctx) => {
-    // @ts-expect-error owner credential operations never accept a selected Identity
-    credentials.create(ctx, 1n as Identity, { name: "escalation" });
+    // @ts-expect-error owner issuance never accepts a selected Identity
+    ctx.credentials.issue(1n as Identity, { name: "escalation" });
     // @ts-expect-error descriptor edits cannot change authorization grants
-    credentials.update(ctx, "token", { scopes: ["orders.get"] });
+    ctx.credentials.update("token", { scopes: ["orders.get"] });
     // @ts-expect-error descriptor edits expose only bounded name and metadata
-    credentials.update(ctx, "token", { expiresAt: Date.now() });
+    ctx.credentials.update("token", { expiresAt: Date.now() });
     // @ts-expect-error descriptor edits require at least one replacement field
-    credentials.update(ctx, "token", {});
+    ctx.credentials.update("token", {});
     // @ts-expect-error plaintext secrets cannot be recovered
-    credentials.recover(ctx, "token");
+    ctx.credentials.recover("token");
     // @ts-expect-error owner lifecycle has no built-in expiration
-    credentials.expire(ctx, "token");
-    // @ts-expect-error system creation requires an explicit parent Identity or null
-    systemCredentials.create(ctx, { name: "invalid" });
+    ctx.credentials.expire("token");
+    // @ts-expect-error global issuance for an Identity needs that Identity
+    ctx.credentials.manage.issueFor({ name: "invalid" });
   },
 });
 

@@ -66,22 +66,11 @@ export {
   type ApiFromModules,
   apiGroup,
   httpPathForAddress,
-  ADMIN_API_PATH,
   DEFAULT_API_PATH,
   EVENTS_ADDRESS_PREFIX,
   EVENTS_NAMESPACE,
   RESERVED_MARKER,
-  type AdminApiPath,
   type DefaultApiPath,
 } from "./refs.ts";
-export {
-  adminApi,
-  type AdminApi,
-  type AdminCredential,
-  type AdminCredentialIssued,
-  type AdminCredentialsArgs,
-  type AdminSystemInfo,
-  type AdminSystemInfoArgs,
-} from "./admin.ts";
 export * from "./protocol.ts";
 export * from "./sse.ts";

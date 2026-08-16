@@ -251,9 +251,8 @@ describe("ackerdb startup migrations", () => {
     const status: StatusReport = await inspectDatabase(loadConfig(dir));
     expect(status.operation).toBe("status");
     expect(status.schemaFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    // Two application mutations. The boot's Admin Credential mint is a
-    // framework write and spends no logical commit version, and the restarts
-    // find the master and write nothing.
+    // Two application mutations, and nothing else: the boot mints no
+    // credential, so a restart writes nothing at all.
     expect(status.status.commitVersion).toBe("2");
   }, TEST_TIMEOUT_MS);
 

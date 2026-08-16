@@ -27,8 +27,7 @@
 import type { Engine } from "../database/engine.ts";
 import { canonicalSnapshotJson, snapshotOf } from "./snapshot.ts";
 import { applyChain } from "./migrations/chain.ts";
-import { planFrameworkMigrations } from "./migrations/framework.ts";
-import { MigrationError, type MigrationStep } from "./migrations/types.ts";
+import type { MigrationStep } from "./migrations/types.ts";
 import { planAndReconcile } from "./planner.ts";
 
 export function reconcile(engine: Engine): { applied: string[] };
@@ -50,17 +49,6 @@ export function reconcile(
   if (current === null) {
     engine.createAll();
     return { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
-  }
-  // A framework migration transforms rows, and a row transform is asynchronous
-  // by contract, so the chain-free entry cannot run one. It refuses loudly and
-  // names the entry that can, rather than reporting the framework's own tables
-  // to the developer as unanswered refusals.
-  const { pending } = planFrameworkMigrations(current);
-  if (pending.length > 0) {
-    throw new MigrationError(
-      `this database predates the framework migration(s) ${pending.map((m) => m.name).join(", ")}; ` +
-        "they transform framework-owned tables and are applied by the awaited entry, `await reconcile(engine, steps)`",
-    );
   }
   if (canonicalSnapshotJson(current) === canonicalSnapshotJson(target)) return { applied: [] };
   return { applied: planAndReconcile(engine, current, target) };

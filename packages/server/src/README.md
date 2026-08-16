@@ -2,15 +2,16 @@
 
 `index.ts` is the package entrypoint. `boot.ts` is the one implementation file
 at this root: the boot composes every module below into a running application
-(listener → schema → credential → runtime → activation) and belongs to none of
+(listener → schema → runtime → activation) and belongs to none of
 them. Every other implementation file lives in the ownership-based module that
 owns its invariants; do not add new files to this root.
 
 | Module | Owns |
 | --- | --- |
 | `app/` | Application definitions, function builders, invocation, and registration |
-| `auth/` | Credentials, invalidation, and verifier leases |
+| `auth/` | Principals, external accounts and Identities, invalidation, and verifier leases |
 | `channels/` | Typed application-channel declarations, optional rooms, membership, and fan-out |
+| `credentials/` | Identity credentials: the table, the policy module, and the invocation capability |
 | `database/` | SQLite access, engine, durability artifacts, ownership, restore, and reset |
 | `files/` | File identity, durable store binding, lifecycle, transfer, and physical-store adapters |
 | `mcp/` | MCP declarations, scopes, tokens, HTTP handling, content, and wire behavior |
