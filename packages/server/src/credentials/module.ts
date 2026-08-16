@@ -251,12 +251,6 @@ function safeCredential(row: CredentialRow): Credential {
 type CredentialMaterializers = Omit<CredentialQuery, "where" | "orderBy">;
 
 function materializers(query: ManagedQuery<CredentialRow>): CredentialMaterializers {
-  const unsupported = (name: string) => () => {
-    throw new AckerDBError(
-      "validation",
-      `credentials.query().${name}() has no safe credential column to aggregate`,
-    );
-  };
   return {
     collect: async () => (await query.collect()).map(safeCredential),
     take: async (count) => (await query.take(count)).map(safeCredential),
@@ -269,10 +263,10 @@ function materializers(query: ManagedQuery<CredentialRow>): CredentialMaterializ
       return row === null ? null : safeCredential(row);
     },
     count: () => query.count(),
-    sum: unsupported("sum") as CredentialMaterializers["sum"],
-    avg: unsupported("avg") as CredentialMaterializers["avg"],
-    min: unsupported("min") as CredentialMaterializers["min"],
-    max: unsupported("max") as CredentialMaterializers["max"],
+    sum: ((column: never) => query.sum(column)) as CredentialMaterializers["sum"],
+    avg: ((column: never) => query.avg(column)) as CredentialMaterializers["avg"],
+    min: ((column: never) => query.min(column)) as CredentialMaterializers["min"],
+    max: ((column: never) => query.max(column)) as CredentialMaterializers["max"],
     iter: async function* () {
       for await (const row of query.iter()) yield safeCredential(row);
     },
@@ -310,7 +304,7 @@ const credentialRef = (row: never): CredentialRowRef => row as unknown as Creden
 
 export class Credentials {
   /** Every credential is an Identity, so the two domains meet on one handle. */
-  readonly identities: Identities;
+  private readonly identities: Identities;
 
   constructor(private readonly options: CredentialsOptions) {
     this.identities = new Identities(options.db);
@@ -543,23 +537,16 @@ export class Credentials {
    * so a credential named twice — directly and through its parent — is revoked
    * once and reported once.
    */
-  async revokeMany(
-    scope: CredentialScope,
-    ids: readonly string[],
-  ): Promise<readonly string[]> {
+  async revokeMany(ids: readonly string[]): Promise<readonly string[]> {
     this.writing();
     if (!Array.isArray(ids)) {
       throw new AckerDBError("validation", "credential ids must be an array");
     }
     const wanted = [...new Set(ids.map(checkedTokenId))];
     if (wanted.length === 0) return NO_IDS;
-    let query = this.table.query()
-      .where((row) => credentialRef(row).tokenId.in(wanted));
-    if (scope.kind === "owner") {
-      const owner = scope.identity;
-      query = query.where((row) => credentialRef(row).parentIdentity.eq(owner));
-    }
-    return this.remove(await query.collect());
+    return this.remove(await this.table.query()
+      .where((row) => credentialRef(row).tokenId.in(wanted))
+      .collect());
   }
 
   /** The shared tail of both revocations: expand the lineage, delete it, stage it. */

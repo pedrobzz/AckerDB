@@ -23,6 +23,10 @@ export interface ManagedQuery<Row> {
   first(): Promise<Row | null>;
   unique(): Promise<Row | null>;
   count(): Promise<number>;
+  sum(column: (row: never) => unknown): Promise<number | bigint>;
+  avg(column: (row: never) => unknown): Promise<number | null>;
+  min(column: (row: never) => unknown): Promise<unknown | null>;
+  max(column: (row: never) => unknown): Promise<unknown | null>;
   iter(): AsyncIterable<Row>;
   paginate(options: { cursor?: string | null; pageSize: number }): Promise<QueryPage<Row>>;
 }

@@ -90,7 +90,7 @@ export function credentialMutationCapability(
       revoke: async (id: string) => {
         await credentials.revoke(GLOBAL_SCOPE, id);
       },
-      revokeMany: (ids: readonly string[]) => credentials.revokeMany(GLOBAL_SCOPE, ids),
+      revokeMany: (ids: readonly string[]) => credentials.revokeMany(ids),
     }),
   });
 }

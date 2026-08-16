@@ -19,7 +19,6 @@ import {
   checkpointWriteCollector,
   makeDbReader,
   rollbackWriteCollector,
-  type ReadRecorder,
   type WriteCollector,
 } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
@@ -173,7 +172,7 @@ export interface RuntimeFunctionExecutorOptions<C> {
   readonly reads: RuntimeReadExecutor;
   readonly reactive: OrderedReactive<C>;
   readonly credentialVerifier?: CredentialVerifier;
-  /** Application scopes plus the framework's: what a credential grant expands against. */
+  /** The application's declared scopes: what a credential grant expands against. */
   readonly vocabulary: readonly string[];
   /**
    * Committed revocations and grant changes, onto the generic auth-invalidation

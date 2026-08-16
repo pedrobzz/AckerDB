@@ -100,11 +100,9 @@ export interface ManageCredentialCapability extends CredentialReadCapability {
   revokeMany(ids: readonly string[]): Promise<readonly string[]>;
 }
 
-export interface ManageCredentialQueryCapability extends CredentialReadCapability {}
-
 /** What a query context holds: reads only, on both scopes. */
 export interface CredentialQueryCapability extends CredentialReadCapability {
-  readonly manage: ManageCredentialQueryCapability;
+  readonly manage: CredentialReadCapability;
 }
 
 /** What a mutation or transaction context holds. */
