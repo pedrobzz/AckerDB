@@ -4,6 +4,7 @@ import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
   ACKERDB_VERSION,
+  APPLICATION_ADDRESS_ROOT,
   decode,
   encode,
   parseSseAckRequest,
@@ -938,13 +939,13 @@ export class AckerDBServer {
         boundary.cors,
       );
     }
-    // The application owns every path AckerDB has not reserved — `apiPath`
-    // makes `/api/` one group among however many the application names — and
-    // it answers the bare unavailable outcome before the registry that would
+    // The application owns every path beneath its fixed `/api/` root and
+    // answers the bare unavailable outcome before the registry that would
     // resolve it exists, even for a preflight, because a raw route's OPTIONS
     // belongs to its handler and no handler exists yet.
     if (
       (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
+      url.pathname.startsWith(`/${APPLICATION_ADDRESS_ROOT}/`) &&
       !isAckerDBHttpRoute(url.pathname)
     ) {
       return outcomeError(unavailableWhile(this.lifecycle));

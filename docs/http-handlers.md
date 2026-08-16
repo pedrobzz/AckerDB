@@ -59,20 +59,19 @@ export const stripe = httpHandler({
 ```
 
 - The route is address-derived like every other function: the address is
-  `<apiPath>.<module path>.<export name>` and the URL is that address, segment
-  for segment — `hooks.stripe` is addressed `api.hooks.stripe` and serves
-  `/api/hooks/stripe`, and `apiPath: "internal"` addresses it
-  `internal.hooks.stripe` at `/internal/hooks/stripe`. There is no router and no path field; a
-  webhook URL is a thing pasted into a provider's dashboard, and the reserved
-  `_` marker plus the MCP-path collision checks apply at registration exactly
-  as they do for exposed functions.
+  `api.<module path>.<export name>` and the URL is that address, segment for
+  segment — `hooks.stripe` is addressed `api.hooks.stripe` and serves
+  `/api/hooks/stripe`. There is no router and no path field; a webhook URL is a
+  thing pasted into a provider's dashboard, and the reserved `_` marker plus
+  the MCP-path collision checks apply at registration exactly as they do for
+  exposed functions.
 - `methods` is an explicit non-empty list drawn from GET, HEAD, POST, PUT,
   PATCH, DELETE, OPTIONS — no wildcard. An empty list, an unknown method, a
   repeated method, or a non-function handler is a registration error naming
   the export, whether the definition came through the builder or an untyped
-  module. The definition carries exactly `apiPath`, `methods`, and `handler`:
-  there is no `args`, `returns`, `description`, or `access`, because nothing
-  consumes them — no validators, no OpenAPI operation, no policy.
+  module. The definition carries exactly `methods` and `handler`: there is no
+  `args`, `returns`, `description`, or `access`, because nothing consumes them
+  — no validators, no OpenAPI operation, no policy.
 - Validation is userland: any `v` validator's own `check` runs by hand inside
   the handler, and the response to invalid input is the handler's decision —
   Stripe's "answer 200 for unrecognized events" is expressible here and

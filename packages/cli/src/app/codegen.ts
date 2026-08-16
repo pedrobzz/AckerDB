@@ -179,17 +179,8 @@ export type DatabaseWriter = DbWriter<Schema>;
 `;
 }
 
-/**
- * Every name `api.ts` needs for itself carries the reserved `_`, which an API
- * path may never begin with. A group's name is written straight into
- * `export const <name>`, so reserving the prefix makes collision with a
- * generated import, the module type, or a module alias unrepresentable rather
- * than a list to keep in step. The two names left unprefixed — `api` and
- * `events` — are the surface, and the manifest refuses both.
- */
 function apiTs(
   config: AppConfig,
-  apiPaths: readonly string[],
   schema: Schema,
   modules: ModuleFile[],
 ): string {
@@ -203,19 +194,8 @@ function apiTs(
       `    ${t}: _EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
   );
 
-  // One binding per group the manifest declares, each a reference builder
-  // seeded with its own name. The module tree every binding types is the same
-  // one — the file list knows nothing about groups — but each is rooted at its
-  // group, so the addresses it produces begin there and two groups can hold
-  // one trailing name without naming one function.
-  const groups = apiPaths.map(
-    (path) =>
-      `\n/** Functions declared \`apiPath: ${JSON.stringify(path)}\`: bound as \`${path}.*\`, addressed and served under \`${path}\`. */\n` +
-      `export const ${path} = _apiGroup(${JSON.stringify(path)}) as unknown as _ApiFromModules<_Modules, ${JSON.stringify(path)}>;\n`,
-  );
-
   return `${HEADER}
-import { anyApi as _anyApi, apiGroup as _apiGroup } from "@ackerdb/core";
+import { anyApi as _anyApi } from "@ackerdb/core";
 import type { ApiFromModules as _ApiFromModules, EventRef as _EventRef } from "@ackerdb/core";
 ${imports.join("\n")}${imports.length > 0 ? "\n" : ""}
 type _Modules = {
@@ -228,7 +208,7 @@ ${eventLines.join("\n")}${eventLines.length > 0 ? "\n" : ""}  };
 };
 
 export const ${EVENTS_NAMESPACE} = api.${EVENTS_NAMESPACE};
-${groups.join("")}`;
+`;
 }
 
 function typesTs(config: AppConfig, schema: Schema): string {
@@ -309,7 +289,7 @@ export async function runCodegen(config: AppConfig): Promise<CodegenResult> {
 
   const app = await importApp(config);
   const modules = listFunctionModules(config);
-  emit("api.ts", apiTs(config, app.apiPaths, app.schema, modules));
+  emit("api.ts", apiTs(config, app.schema, modules));
   emit("types.ts", typesTs(config, app.schema));
   return { written };
 }

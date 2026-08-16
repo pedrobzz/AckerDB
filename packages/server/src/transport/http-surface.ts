@@ -2,11 +2,9 @@
  * The canonical HTTP surface: the paths AckerDB's listener owns, the methods
  * each exposed kind answers, and the headers a call carries beside its body.
  *
- * The framework's own routes live at the root behind the `_` marker, which no
- * `apiPath` may begin with. `/api/` is one function group among however many an
- * application names, so a protocol endpoint nested under it would be squatting
- * in that group's namespace; at the root, `_` belongs to AckerDB and every
- * other path belongs to the application.
+ * The framework's own routes live at the root behind the `_` marker. The
+ * application's address-derived routes live beneath the fixed `/api/` root;
+ * at the root, `_` belongs to AckerDB.
  *
  * The operational endpoints are the deliberate exception. `/live`, `/ready`,
  * and `/status` carry no marker because they are the contract with the outside
@@ -43,9 +41,9 @@ export function isAckerDBHttpRoute(path: string): boolean {
 /**
  * Whether a path an application wants to claim reaches into a name marked as
  * the framework's own. `_` is AckerDB's at the root, where the protocol
- * endpoints live, and directly under a group, so a future built-in route can
- * never collide with an application's. Segments deeper than that are the
- * application's own business.
+ * endpoints live, and directly under the application root, so a future
+ * built-in route can never collide with an application's. Segments deeper
+ * than that are the application's own business.
  *
  * One predicate for every claiming site — address-derived routes and the
  * free-form paths MCP endpoints choose alike — so the reservation cannot hold

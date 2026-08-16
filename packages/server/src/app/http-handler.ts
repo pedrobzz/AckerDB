@@ -8,7 +8,6 @@
  */
 import type { Schema } from "../schema/definition.ts";
 import {
-  apiPath,
   refuseUnknownFields,
   type FunctionResult,
   type TxCtx,
@@ -56,8 +55,6 @@ export interface RegisteredHttpHandler<S extends Schema = Schema> {
   /** Generated client APIs erase this export; it has no callable reference. */
   readonly isAckerDBServerOnly: true;
   readonly kind: "http";
-  /** The group whose HTTP root this route hangs under; `"api"` when unnamed. */
-  readonly apiPath: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: (
     ctx: HttpHandlerCtx<S>,
@@ -75,14 +72,6 @@ export type AnyRegisteredHttpHandler = RegisteredHttpHandler<any>;
  * what the builder accepts and what registration allows.
  */
 export interface HttpHandlerDef<S extends Schema = Schema> {
-  /**
-   * The group this route is published in; `"api"` by default. Unlike the four
-   * function kinds it need not be a string literal: a raw handler appears in
-   * no generated tree, so its group moves only its route and there is no
-   * binding for a widened `string` to fail to select. An undeclared group is
-   * still a startup refusal, as it is everywhere else.
-   */
-  readonly apiPath?: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: (
     ctx: HttpHandlerCtx<S>,
@@ -115,7 +104,6 @@ function validateMethods(value: unknown, where: string): readonly HttpHandlerMet
 
 /** The declaration's own fields; `satisfies` keeps the list and the type equal. */
 const DEFINITION_FIELDS = {
-  apiPath: true,
   methods: true,
   handler: true,
 } satisfies Record<keyof HttpHandlerDef, true>;
@@ -127,20 +115,18 @@ const REGISTERED_KEYS = Object.freeze(
 
 /** A raw handler's surface, read once from the declaration it was written on. */
 interface HttpHandlerSurface {
-  readonly apiPath: string;
   readonly methods: readonly HttpHandlerMethod[];
   readonly handler: AnyRegisteredHttpHandler["handler"];
 }
 
 /**
- * The one interpreter of a raw handler's definition. Exactly `apiPath`,
- * `methods`, and `handler`: nothing else exists to consume — no validators, no
+ * The one interpreter of a raw handler's definition. Exactly `methods` and
+ * `handler`: nothing else exists to consume — no validators, no
  * OpenAPI operation, no policy — so any other field is a registration error,
  * never a silently ignored expectation.
  */
 export function validateHttpHandlerShape(
   value: {
-    readonly apiPath?: unknown;
     readonly methods?: unknown;
     readonly handler?: unknown;
   },
@@ -148,7 +134,6 @@ export function validateHttpHandlerShape(
   allowed: readonly string[] = DEFINITION_KEYS,
 ): HttpHandlerSurface {
   refuseUnknownFields(value, allowed, where);
-  const apiPathValue = apiPath(value.apiPath, `${where} apiPath`);
   const methods = validateMethods(value.methods, where);
   // Read once, here, and returned: an accessor that answered a function to
   // this check and something else at dispatch would put a non-function into a
@@ -158,7 +143,6 @@ export function validateHttpHandlerShape(
     throw new TypeError(`${where} handler must be a function`);
   }
   return {
-    apiPath: apiPathValue,
     methods,
     handler: handler as AnyRegisteredHttpHandler["handler"],
   };
@@ -181,7 +165,6 @@ export function validateRegisteredHttpHandler(
 ): AnyRegisteredHttpHandler {
   const snapshot = value as {
     isAckerDBServerOnly?: unknown;
-    apiPath?: unknown;
     methods?: unknown;
     handler?: unknown;
   };

@@ -54,7 +54,7 @@ async function start(
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions, ["internal"]),
+    registry: new Registry(functions),
     limits: limits(),
     jobs,
     now: () => clock,
@@ -73,7 +73,7 @@ async function restart(
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions, ["internal"]),
+    registry: new Registry(functions),
     limits: limits(),
     jobs,
     now: () => clock,
@@ -130,7 +130,6 @@ afterEach(async () => {
 
 /** Registered targets for `step.run`, shared across tests. */
 const record = mutation({
-  apiPath: "internal",
   access: "system",
   args: { line: v.string() },
   handler: async (ctx: Ctx, args: Ctx) => {
@@ -144,7 +143,6 @@ const snapshot = query({
   handler: () => "observed",
 });
 const payInvoice = procedure({
-  apiPath: "internal",
   access: "authenticated",
   args: { invoiceId: v.string() },
   handler: (_ctx: Ctx, args: Ctx) =>
@@ -170,7 +168,7 @@ describe("step replay", () => {
                 externalCalls++;
                 return { receipt: `r-${externalCalls}` };
               });
-              const written = await ctx.step.run("internal.fns.record", { line: charged.receipt });
+              const written = await ctx.step.run("api.fns.record", { line: charged.receipt });
               expect(written).toMatchObject({ ok: true, data: "r-1" });
               attempts++;
               if (attempts < 3) throw new Error(`boom ${attempts}`);
@@ -200,7 +198,7 @@ describe("step replay", () => {
     // The external call and the mutation ran exactly once across 3 runs.
     expect(externalCalls).toBe(1);
     expect(logLines()).toEqual(["r-1"]);
-    expect(journalNames()).toEqual(["charge", "internal.fns.record"]);
+    expect(journalNames()).toEqual(["charge", "api.fns.record"]);
     expect(jobRows()[0]).toMatchObject({ state: "completed", runCount: 3n });
   });
 
@@ -253,7 +251,7 @@ describe("step.run", () => {
             args: {},
             handler: async (ctx: Ctx) => {
               const seen = await ctx.step.run("api.fns.snapshot", {});
-              const written = await ctx.step.run("internal.fns.record", { line: seen.data });
+              const written = await ctx.step.run("api.fns.record", { line: seen.data });
               return { seen: seen.data, wrote: written.data };
             },
           }),
@@ -279,7 +277,7 @@ describe("step.run", () => {
             retry: { attempts: 3, backoff: "fixed", delayMs: 1_000 },
             handler: async (ctx: Ctx) => {
               attempts++;
-              const payment = await ctx.step.run("internal.fns.payInvoice", { invoiceId: "bad" });
+              const payment = await ctx.step.run("api.fns.payInvoice", { invoiceId: "bad" });
               if (!payment.ok) return { failed: payment.error.code };
               return { paid: true };
             },
@@ -355,7 +353,7 @@ describe("mismatch refusals", () => {
             handler: async (ctx: Ctx) => {
               // The classic bug: a value from outside any step feeds args.
               const line = `line-${nondeterministic++}`;
-              await ctx.step.run("internal.fns.record", { line });
+              await ctx.step.run("api.fns.record", { line });
               throw new Error("later step fails");
             },
           }),

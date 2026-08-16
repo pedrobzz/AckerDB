@@ -10,7 +10,7 @@ export type {
   AckerDBChannelOptions,
   AckerDBChannelState,
 } from "./channels/channel.ts";
-export { anyApi, apiGroup, getRef, httpPathForAddress, stableEncode } from "@ackerdb/core";
+export { anyApi, getRef, httpPathForAddress, stableEncode } from "@ackerdb/core";
 export type {
   ApiFromModules,
   AnyChannelRef,

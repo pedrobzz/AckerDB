@@ -134,23 +134,19 @@ await acker.system.run("fixture.typed", async (ctx) => {
     const config = loadConfig(dir);
     await runCodegen(config);
     const modules = await importFunctionModules(config);
-    const registry = new Registry(modules, ["internal"]);
+    const registry = new Registry(modules);
     expect([...registry.functions.keys()].sort()).toEqual([
       // Every address is the application's: the framework registers none.
+      "api.admin.users.compact",
       "api.admin.users.count",
       "api.messages.enqueueNote",
       "api.messages.list",
       "api.messages.send",
       "api.messages.tail",
-      "internal.admin.users.compact",
     ]);
-    // the group is the address's first segment, and the URL is the address
     expect(registry.exposed.get("/api/messages/tail")?.address).toBe("api.messages.tail");
-    expect(registry.get("internal.admin.users.compact")?.apiPath).toBe("internal");
-    // `functions/admin/` is a module directory, not a group: a directory named
-    // after a declared group still publishes into the group each function
-    // declares.
-    expect(registry.get("api.admin.users.count")?.apiPath).toBe("api");
+    expect(registry.get("api.admin.users.compact")?.kind).toBe("mutation");
+    expect(registry.get("api.admin.users.count")?.kind).toBe("query");
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     expect(api).toContain("messages: typeof _m_messages;");
@@ -161,7 +157,7 @@ await acker.system.run("fixture.typed", async (ctx) => {
     );
   });
 
-  test("emits one binding per API path the manifest declares", async () => {
+  test("emits the one fixed API binding", async () => {
     const dir = fixture();
     const config = loadConfig(dir);
     await runCodegen(config);
@@ -169,21 +165,9 @@ await acker.system.run("fixture.typed", async (ctx) => {
     expect(api).toContain(
       "export const api = _anyApi as unknown as _ApiFromModules<_Modules> & {",
     );
-    expect(api).toContain(
-      'export const internal = _apiGroup("internal") as unknown as _ApiFromModules<_Modules, "internal">;',
-    );
-    // `admin` is not a framework group any more: no binding exists for a group
-    // the manifest never declared.
-    expect(api).not.toContain("export const admin =");
-    // An undeclared group earns none: the manifest is the only list, and code
-    // generation never imports the function modules that would hold one.
-    expect(api).not.toContain("export const reports =");
-    // Every name the module needs for itself carries the reserved `_`, which a
-    // group's name can never begin with — so `api` and `events` are the whole
-    // of what a group must not be called, and the manifest refuses both.
     for (const line of api.split("\n")) {
       const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
-      if (owned !== undefined) expect(["api", "events", "internal"]).toContain(owned);
+      if (owned !== undefined) expect(["api", "events"]).toContain(owned);
     }
     expect(typecheckFixture(dir)).toBe("");
   });
@@ -206,7 +190,7 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     const config = loadConfig(dir);
     await runCodegen(config);
 
-    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    const registry = new Registry(await importFunctionModules(config));
     expect(applicationAddresses(registry))
       .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
 
@@ -250,7 +234,7 @@ export const agentMcp = mcp({
     expect(generatedServer).toContain("export type Scope = AppScope<typeof app>;");
     expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;");
 
-    const registry = new Registry(await importFunctionModules(config), ["internal"]);
+    const registry = new Registry(await importFunctionModules(config));
     // The tool is an ordinary function and keeps its address; the endpoint is
     // the only server-only export.
     expect(applicationAddresses(registry)).toEqual(["api.agent.echo"]);

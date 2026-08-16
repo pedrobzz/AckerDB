@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ACKERDB_VERSION,
-  apiGroup,
+  anyApi,
   decode,
   encode,
   parseClientMessage,
@@ -112,7 +112,7 @@ function sseEvent(frame: unknown): string {
 /** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
 const SSE_ACK_PATH = "/_sse/ack";
 
-/** The group is the root: "api.stream.ordered" streams from "/api/stream/ordered". */
+/** The canonical address maps segment for segment onto its HTTP path. */
 function ssePath(address: string): string {
   return `/${address.replaceAll(".", "/")}`;
 }
@@ -1229,7 +1229,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     framed.client.close();
   });
 
-  test("streams from the root of the group its reference was taken from", async () => {
+  test("derives a stream URL directly from its fixed-root reference address", async () => {
     let streamUrl = "";
     const { client } = createHarness({
       fetch: async (url) => {
@@ -1237,13 +1237,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
         return sseResponse([{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
       },
     });
-    // A generated binding seeds the address with its group, so the URL is the
-    // address and the client needs nothing beside it.
-    const ref = apiGroup("internal").ops.tail as SseRef<Record<string, never>, string>;
+    const ref = anyApi.ops.tail as SseRef<Record<string, never>, string>;
     await client.sse(ref, {})[Symbol.asyncIterator]().next();
-    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("internal.ops.tail")}`);
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.ops.tail")}`);
 
-    // A hand-written address is the same one value, group segment included.
+    // A hand-written address is the same one value.
     await client.sse("api.ops.tail", {})[Symbol.asyncIterator]().next();
     expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.ops.tail")}`);
     client.close();

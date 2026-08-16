@@ -1,27 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { anyApi, apiGroup, EVENTS_ADDRESS_PREFIX, getRef, httpPathForAddress } from "@ackerdb/core";
+import { anyApi, EVENTS_ADDRESS_PREFIX, getRef, httpPathForAddress } from "@ackerdb/core";
 
 describe("function references", () => {
-  test("anyApi builds dot-joined addresses under the default group", () => {
+  test("anyApi builds dot-joined addresses under the fixed application root", () => {
     expect(anyApi.messages.list.$ref).toBe("api.messages.list");
     expect(anyApi.admin.users.get.$ref).toBe("api.admin.users.get");
     expect(anyApi.events.typingEvents.$ref).toBe("api.events.typingEvents");
     expect(anyApi.events.typingEvents.$ref).toBe(`${EVENTS_ADDRESS_PREFIX}typingEvents`);
   });
 
-  test("a group is the address's first segment, not a field beside it", () => {
-    // The whole point of the group: two groups may hold one trailing name and
-    // the addresses stay distinct, so neither can squat on the other.
-    expect(apiGroup("internal").messages.list.$ref).toBe("internal.messages.list");
-    expect(apiGroup("admin").messages.list.$ref).toBe("admin.messages.list");
-    expect(anyApi.messages.list.$ref).not.toBe(apiGroup("internal").messages.list.$ref);
+  test("a reference carries only its fixed-root address", () => {
     expect(Object.keys(anyApi.messages.list)).toEqual(["$ref"]);
   });
 
   test("an exposed function's URL is its address, segment for segment", () => {
     expect(httpPathForAddress(anyApi.messages.list.$ref)).toBe("/api/messages/list");
-    expect(httpPathForAddress(apiGroup("internal").messages.list.$ref))
-      .toBe("/internal/messages/list");
   });
 
   test("getRef accepts references and strings", () => {
