@@ -10,7 +10,10 @@ This document covers the *contract* surface: functions served through their
 `v` validators and published in OpenAPI. Endpoints whose shapes an external
 party dictates — webhooks verifying an HMAC over raw bytes, OAuth callbacks —
 are the contract-less side of the same surface, owned by
-[raw HTTP handlers](http-handlers.md).
+[HTTP routes](http-routes.md). Both sides are the same `Http` value in the same
+registry — see [ADR-0033](adr/0033-one-http-route-model-and-one-registry.md);
+what differs is that this side derives its path from an address and is served
+through its contract.
 
 ## Motivation
 
@@ -127,10 +130,16 @@ send an `Authorization` header, so it would serve only anonymous streams.
 **The framework's own routes live at the root, behind the `_` marker.** `/api/`
 belongs to application addresses, so a protocol endpoint nested under it would
 be squatting in application-owned space — there was never a principle
-separating `/ws` at the root from `/api/_files` below it, only history. The
-reservation is uniform: `_` belongs to AckerDB at the HTTP root and directly
-under `/api/`, so a future built-in route can never collide with an application
-module.
+separating `/ws` at the root from `/api/_files` below it, only history. `_`
+belongs to AckerDB at the HTTP root, and directly under `/api/`, so a future
+built-in route can never collide with an *exposed function's* derived path.
+
+**Only exposed functions derive their path from an address.** A raw
+[HTTP route](http-routes.md) states its URL explicitly and may claim anything
+outside the reserved set — the root included — because an external provider
+frequently dictates it. That is why the second segment is reserved beneath
+`/api/` and nowhere else: `/webhooks/_raw` is a provider's name for a path
+AckerDB will never serve.
 
 | Route | Fate |
 | --- | --- |
@@ -138,7 +147,7 @@ module.
 | `/api/sse` | deleted (replaced by per-function paths) |
 | `/ws` | → `/_ws` |
 | `/api/sse/ack` | → `/_sse/ack` |
-| `/api/_files/<route>/…` | → `/_files/<route>/…` |
+| `/api/_files/<route>/…` | → `/_files/uploads/:handle`, `/_files/grants/:handle` |
 | — | new, opt-in: `GET /_openapi.json` |
 | `/live`, `/ready`, `/status` | unchanged, and unmarked |
 
@@ -366,9 +375,14 @@ alongside its access policy.
 - A `_`-prefixed module segment is refused for *every* function, exposed or
   not: the CLI manifest loader rejects a function-module path segment that is
   not a plain identifier, so an app loaded the normal way never reaches the
-  registry at all. The registry's own check — an exposed function may not claim
-  a path under a `_`-marked namespace — is the narrower second net, for a `Registry`
-  constructed directly from modules.
+  registry at all. The registry's own check — an application route may not
+  claim a built-in path or one under a `_`-marked namespace — is the narrower
+  second net, for a `Registry` constructed directly from modules, and it
+  covers derived and explicit paths alike.
+- Two routes claiming one path are refused at load naming both, whether they
+  are two exposed functions, two raw routes, or one of each. A collision with a
+  framework route is refused when the application batch enters the live
+  registry, which happens before readiness.
 - Two module files claiming one name are refused where the name is decided, in
   the CLI manifest loader, naming both files: `functions/orders.ts` beside
   `functions/orders/index.ts`, and a `functions/index.ts` with no directory to
@@ -379,7 +393,7 @@ alongside its access policy.
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
 - A field no declaration consumes is a registration error naming it, exactly as
-  for `httpHandler`. An intersection parameter turns off TypeScript's
+  for an `http` route. An intersection parameter turns off TypeScript's
   excess-property check, so a misspelled key would otherwise be dropped in
   silence and read as an expectation nothing meets.
 - An exposed function's kind is narrowed to the four this surface serves at
@@ -433,11 +447,20 @@ replaced with path+body, and `runProcedure` emits the plain value instead of a
 `ProcedureOkMessage` frame), the coordinator's optional
 `IdempotencyIdentity`, `outcomeHttpStatus`, the standard-schema JSON Schema
 emitters, and the HTTP ingress (auth lease, admission, `parseHttpBody`, and
-CORS) in `transport/server.ts`. New work: kind dispatch from the
-path, `runQuery`/`runMutation` HTTP siblings of `runProcedure`, the `http`
-definition field and its registry plumbing, receipt headers, the shared
-schema module extraction, the OpenAPI walk, the CLI export, the `_` route
-renames, and deleting the envelope routes plus their core types and tests.
+CORS) in `transport/server.ts`. New work: `runQuery`/`runMutation` HTTP
+siblings of `runProcedure`, the `http` definition field and its registry
+plumbing, receipt headers, the shared schema module extraction, the OpenAPI
+walk, the CLI export, the `_` route renames, and deleting the envelope routes
+plus their core types and tests.
+
+Dispatch itself is no longer this surface's concern. An exposed function is
+compiled at activation into one canonical `Http` value — the derived path, the
+methods its kind answers plus the framework CORS preflight, and one closure
+per method carrying everything `call` does — and added to the same
+`HttpRegistry` every other route lives in
+(`transport/routing/`, and `AckerDBServer.exposedRoute`). The method table it
+compiles from is `EXPOSED_HTTP_METHODS`, which is also what the OpenAPI walk
+reads, so the served methods and the documented ones cannot drift.
 
 The wire format reuses `compileStandardJsonCodec`
 (`validation/standard-schema.ts`) — there is no second codec. `transport/http-codec.ts` compiles one per exposed

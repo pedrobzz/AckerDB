@@ -217,6 +217,34 @@ listener). Always runs under the reactive system's execution root, under the
 subscriber's own principal — never under the identity or context of whoever
 triggered it.
 
+## HTTP surface
+
+**HTTP route** — One entry on AckerDB's HTTP surface: an explicit path and a
+non-empty map from HTTP method to the handler answering it. Every entry is one
+— a health probe, a File byte route, the WebSocket door, an exposed function's
+compiled surface, an application webhook — so a new entry is a value rather
+than another branch in the listener.
+_Avoid_: Endpoint, handler, controller
+
+**Route pattern** — An HTTP route's path in the one language AckerDB publishes:
+static segments, single-segment `:name` parameters, and at most one terminal
+`*`. The compiler and the matcher read the same grammar, so a pattern that
+types is a pattern that routes, and one a literal cannot express does not
+exist.
+_Avoid_: Route regex, URL matcher, glob
+
+**Route capture** — What a pattern's `:name` or terminal `*` matched, decoded
+once and handed to the handler as `ctx.params`. Every capture is a string:
+nothing coerces or validates it, and a static pattern captures nothing at all.
+_Avoid_: Path variable, route argument, URL parameter
+
+**Route table** — The listener's one live collection of HTTP routes, owning
+path matching, precedence, method selection, and the generic refusals — 405
+with its complete `Allow`, and the fallback for a path no route claims. It
+never learns what kind of thing a route serves; reachability, authority, cost,
+and shape stay with the handler.
+_Avoid_: Router, dispatcher, route map
+
 ## Application channels
 
 **Application channel** — A typed bidirectional application communication
@@ -683,10 +711,11 @@ _Avoid_: Role, superuser flag, permission group
 
 **Function address** — The one dotted name every registered function answers
 to, in process and over every transport: the fixed `api` root, then the
-directory segments of the module declaring it, then the export name. The HTTP
-route is that address segment for segment. A file named `index.ts` contributes
-its directory's name rather than its own, so a directory may hold a module of
-its own name beside its siblings.
+directory segments of the module declaring it, then the export name. An
+HTTP-exposed function's URL is that address segment for segment; an HTTP route
+states its own path and is not addressed by it. A file named `index.ts`
+contributes its directory's name rather than its own, so a directory may hold a
+module of its own name beside its siblings.
 _Avoid_: Function name, ref string, route
 
 **Identity credential** — An opaque bearer credential that *is* an Identity:
