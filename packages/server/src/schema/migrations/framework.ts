@@ -23,7 +23,6 @@
 import type { Engine } from "../../database/engine.ts";
 import { Schema, type TableDef } from "../definition.ts";
 import { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "../snapshot.ts";
-import { SPLIT_JOBS_INTO_RUNS } from "../../jobs/migration.ts";
 import { applyStep } from "./apply.ts";
 import type { Migration, MigrationStep } from "./types.ts";
 
@@ -42,8 +41,14 @@ export interface FrameworkMigration {
  * live framework tables; when a new one is added, the one before it freezes the
  * shape it actually targeted, exactly as an application chain records its own
  * historical targets.
+ *
+ * The list is empty because the engine schema version is the floor: promoting
+ * Identities, Identity Accounts, and Credentials into the managed schema
+ * changed physical tables an older build had already created under the same
+ * names, so a database written before it is refused at open. A transform can
+ * only be written for a stored shape this build can still read.
  */
-export const FRAMEWORK_MIGRATIONS: readonly FrameworkMigration[] = [SPLIT_JOBS_INTO_RUNS];
+export const FRAMEWORK_MIGRATIONS: readonly FrameworkMigration[] = [];
 
 export interface FrameworkMigrationPlan {
   /** The migrations this stored snapshot still needs, oldest first. */

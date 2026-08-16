@@ -38,7 +38,6 @@ import {
   FILE_GRANTS_TABLE,
   FILE_UPLOADS_TABLE,
   FILES_TABLE,
-  FILE_TABLES,
 } from "./tables.ts";
 import type { FileStore } from "./store/contract.ts";
 import { checkedFileText } from "./text.ts";
@@ -195,15 +194,6 @@ function mappedGrantQuery(query: FileDatabaseQuery<FileGrantRow>): FileGrantMeta
     },
   };
   return Object.freeze(mapped);
-}
-
-export function applicationDatabase(db: unknown): unknown {
-  const source = db as Readonly<Record<string, unknown>>;
-  const application: Record<string, unknown> = Object.create(null);
-  for (const [name, table] of Object.entries(source)) {
-    if (!FILE_TABLES.includes(name as (typeof FILE_TABLES)[number])) application[name] = table;
-  }
-  return application;
 }
 
 function queryCapability(db: FileDatabase): FileQueryCapability {

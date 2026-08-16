@@ -26,22 +26,6 @@ export const DEFAULT_API_PATH = "api";
 export type DefaultApiPath = typeof DEFAULT_API_PATH;
 
 /**
- * The group the framework publishes its own administration functions in, and
- * so the first segment of every Admin API address. It is an ordinary group
- * carrying no reserved marker — the marker belongs to roots and scopes, and a
- * group's name becomes a generated binding, which the marker is reserved
- * against. What keeps the surface unsquattable is the address rule itself: an
- * application's `orders.list` is `api.orders.list`, never `admin.orders.list`, so
- * the two can never name one function. An application may still publish its
- * own functions here, which is why the group is shared rather than sealed.
- *
- * Like {@link DEFAULT_API_PATH} it lives here because the generated trees, the
- * server's registry, and the declaration builders must agree on it exactly.
- */
-export const ADMIN_API_PATH = "admin";
-export type AdminApiPath = typeof ADMIN_API_PATH;
-
-/**
  * The namespace the generated api module gives event-table references. It is
  * reserved in three places that must agree — a function module may not be
  * called it, an API path may not be named it, and code generation writes the
@@ -60,16 +44,18 @@ export const EVENTS_NAMESPACE = "events";
 export const EVENTS_ADDRESS_PREFIX = `${DEFAULT_API_PATH}.${EVENTS_NAMESPACE}.`;
 
 /**
- * The character marking a name as the framework's own, across every namespace
- * an application shares with it: API paths, HTTP roots, and scopes. An
- * application may never declare a name carrying it, so the two vocabularies
- * cannot collide.
+ * The character marking a name as the framework's own, across the two
+ * namespaces an application shares with it: API paths and HTTP roots. An
+ * application may never declare a name carrying it, so the framework's own
+ * protocol surface can never be squatted. Scopes are not one of those
+ * namespaces: the whole vocabulary belongs to the application, so `_` is an
+ * ordinary character inside a scope name.
  *
- * It lives here for the same reason the two names above do — the rule is
- * enforced in the server's routing, its authorization vocabulary, and the
- * declaration builders that refuse it, and those must agree on one character.
- * The one exception is framework tables, which carry the older `_ackerdb_`
- * prefix released in 0.16.0 data; see CONTEXT.md.
+ * It lives here for the same reason the name above does — the rule is enforced
+ * in the server's routing and in the declaration builders that refuse it, and
+ * those must agree on one character. The one exception is framework tables,
+ * which carry the older `_ackerdb_` prefix released in 0.16.0 data; see
+ * CONTEXT.md.
  */
 export const RESERVED_MARKER = "_";
 

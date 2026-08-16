@@ -15,6 +15,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
+import { storedIdentityForAccount } from "../support/identities.ts";
 
 interface ProviderFixture {
   readonly name: string;
@@ -336,7 +337,7 @@ describe("provider-neutral exact-account Identity", () => {
       .query("DELETE FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .run(providerNamed("keycloak").issuer, "retired-subject");
     second.engine.writer
-      .query("DELETE FROM _ackerdb_identities WHERE identity = ?")
+      .query("DELETE FROM _ackerdb_identities WHERE id = ?")
       .run(retired.identity);
     second.engine.writer.exec("COMMIT");
     await close(second.runtime, second.engine);
@@ -350,8 +351,7 @@ describe("provider-neutral exact-account Identity", () => {
     expect((replacement.identity as bigint) > (retired.identity as bigint)).toBe(true);
     for (const [key, identity] of identitiesByAccount) {
       const separator = key.indexOf("\0");
-      expect(third.engine.identityForAccount(
-        third.engine.reader,
+      expect(storedIdentityForAccount(third.engine,
         key.slice(0, separator),
         key.slice(separator + 1),
       )).toBe(identity);

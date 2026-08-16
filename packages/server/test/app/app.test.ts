@@ -63,9 +63,8 @@ describe("defineApp", () => {
     expect(() => defineApp({ schema, apiPaths: ["api"] })).toThrow(
       'application apiPaths must not list "api" — every application publishes it',
     );
-    expect(() => defineApp({ schema, apiPaths: ["admin"] })).toThrow(
-      'application apiPaths must not list "admin" — every application publishes it',
-    );
+    // `admin` is an ordinary group name an application may claim for itself.
+    expect(defineApp({ schema, apiPaths: ["admin"] }).apiPaths).toEqual(["admin"]);
     expect(() => defineApp({ schema, apiPaths: ["events"] })).toThrow(
       'must not be "events" — the generated api module already binds that name',
     );

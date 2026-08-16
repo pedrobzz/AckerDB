@@ -16,7 +16,6 @@ import {
   CREDENTIAL_ISSUER,
   parseCredentialToken,
 } from "../../src/auth/credential-token.ts";
-import { credentialVaultOwner } from "../../src/auth/credential-vault.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
 import {
   cleanupCredentialFixtures,
@@ -126,9 +125,9 @@ describe("credential delegation lineage", () => {
     ) as UserPrincipal;
     expect(descendant.scopes).toEqual([]);
     const stored = engine.reader
-      .query("SELECT scopes FROM _ackerdb_credentials WHERE token_id = ?")
-      .get(grandchild.id) as { scopes: string };
-    expect(stored.scopes).toContain("orders.all");
+      .query("SELECT scopesJson FROM _ackerdb_credentials WHERE tokenId = ?")
+      .get(grandchild.id) as { scopesJson: string };
+    expect(stored.scopesJson).toContain("orders.all");
   });
 
   test("an external issuer's invalidation reaches the credentials delegated from it", async () => {
@@ -265,7 +264,7 @@ describe("credential delegation lineage", () => {
       // an invalidation for a revocation that never committed would have
       // terminated a credential that is still perfectly valid.
       expect(engine.reader
-        .query("SELECT COUNT(*) AS count FROM _ackerdb_credentials WHERE token_id = ?")
+        .query("SELECT COUNT(*) AS count FROM _ackerdb_credentials WHERE tokenId = ?")
         .get(child.id)).toEqual({ count: 1n });
       expect(lease.signal.aborted).toBe(false);
 
@@ -280,28 +279,33 @@ describe("credential delegation lineage", () => {
     }
   });
 
-  test("the lineage walk names the credential and every delegate under it", async () => {
-    const { runtime, engine } = await start();
-    void runtime;
-    const vault = engine[credentialVaultOwner];
-    const identity = (engine.writer
-      .query("INSERT INTO _ackerdb_identities DEFAULT VALUES RETURNING identity")
-      .get() as { identity: bigint }).identity;
-    engine.writer.exec("BEGIN IMMEDIATE");
-    const root = vault.create(identity as never, { name: "Root" }, FIXTURE_SCOPES, {
-      maxPerIdentity: 8,
-      maxNameBytes: 128,
-      maxMetadataBytes: 1024,
-    }, Date.now());
-    const leaf = vault.create(root.identity, { name: "Leaf" }, FIXTURE_SCOPES, {
-      maxPerIdentity: 8,
-      maxNameBytes: 128,
-      maxMetadataBytes: 1024,
-    }, Date.now());
-    engine.writer.exec("COMMIT");
+  test("revocation reaches every delegate beneath the credential it names", async () => {
+    const { runtime } = await start();
+    const alice = await user(runtime, "cascade-alice", FIXTURE_SCOPES);
+    const aliceSession = session(alice, "cascade-alice-session");
+    await runtime.openSession(aliceSession);
 
-    expect([...vault.lineage(engine.reader, root.id)].sort())
-      .toEqual([root.id, leaf.id].sort());
-    expect(vault.lineage(engine.reader, leaf.id)).toEqual([leaf.id]);
+    const root = (await runtime.mutation(
+      aliceSession,
+      request(mutationMessage(1, "1", { name: "Root", metadata: {} })),
+    )).value as { readonly id: string; readonly token: string };
+    // The child is issued *by* the root, so it is a delegate rather than
+    // another credential of Alice's - only the cascade can reach it.
+    const rootPrincipal = await runtime.authenticateCredential(root.token, "cascade-root");
+    const rootSession = session(rootPrincipal as UserPrincipal, "cascade-root-session");
+    await runtime.openSession(rootSession);
+    const leaf = (await runtime.mutation(
+      rootSession,
+      request(mutationMessage(2, "2", { name: "Leaf", metadata: {} })),
+    )).value as { readonly id: string; readonly token: string };
+
+    await runtime.mutation(
+      aliceSession,
+      request(mutationMessage(3, "3", { id: root.id }, "api.tokens.revokeAgentToken")),
+    );
+    await expect(runtime.authenticateCredential(root.token, "cascade-root-gone"))
+      .rejects.toMatchObject({ code: "unauthenticated" });
+    await expect(runtime.authenticateCredential(leaf.token, "cascade-leaf-gone"))
+      .rejects.toMatchObject({ code: "unauthenticated" });
   });
 });

@@ -4,8 +4,12 @@ import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
 import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
-import { applicationAddresses } from "ackerdb-test-support/framework-functions";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+
+/** Every registered address, sorted. The framework contributes none. */
+function applicationAddresses(registry: Registry): string[] {
+  return [...registry.functions.keys()].sort();
+}
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -132,10 +136,7 @@ await acker.system.run("fixture.typed", async (ctx) => {
     const modules = await importFunctionModules(config);
     const registry = new Registry(modules, ["internal"]);
     expect([...registry.functions.keys()].sort()).toEqual([
-      // The framework's own group is registered in every application.
-      "admin.credentials.list",
-      "admin.credentials.rotate",
-      "admin.system.info",
+      // Every address is the application's: the framework registers none.
       "api.admin.users.count",
       "api.messages.enqueueNote",
       "api.messages.list",
@@ -171,22 +172,18 @@ await acker.system.run("fixture.typed", async (ctx) => {
     expect(api).toContain(
       'export const internal = _apiGroup("internal") as unknown as _ApiFromModules<_Modules, "internal">;',
     );
-    // The framework's two groups earn a binding without the manifest naming
-    // them, and `admin` takes the framework's own tree rather than selecting
-    // from modules that could never hold it.
-    expect(api).toContain(
-      'export const admin = _adminApi as unknown as typeof _adminApi & _ApiFromModules<_Modules, "admin">;',
-    );
+    // `admin` is not a framework group any more: no binding exists for a group
+    // the manifest never declared.
+    expect(api).not.toContain("export const admin =");
     // An undeclared group earns none: the manifest is the only list, and code
     // generation never imports the function modules that would hold one.
     expect(api).not.toContain("export const reports =");
     // Every name the module needs for itself carries the reserved `_`, which a
-    // group's name can never begin with — so `api`, `admin` and `events` are
-    // the whole of what a group must not be called, and the manifest refuses
-    // all three.
+    // group's name can never begin with — so `api` and `events` are the whole
+    // of what a group must not be called, and the manifest refuses both.
     for (const line of api.split("\n")) {
       const owned = /^export const ([A-Za-z_][A-Za-z0-9_]*)/.exec(line)?.[1];
-      if (owned !== undefined) expect(["admin", "api", "events", "internal"]).toContain(owned);
+      if (owned !== undefined) expect(["api", "events", "internal"]).toContain(owned);
     }
     expect(typecheckFixture(dir)).toBe("");
   });
@@ -317,6 +314,7 @@ export default {};
       "backend.ts": FIXTURE_APP,
       "functions/sideEffect.ts": `
 import { writeFileSync } from "node:fs";
+
 writeFileSync(new URL("../../function-imported", import.meta.url), "imported");
 `,
       ".ackerdb.config.json": JSON.stringify({ app: "./backend.ts" }),

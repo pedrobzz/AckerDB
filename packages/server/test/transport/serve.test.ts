@@ -846,25 +846,14 @@ describe("exposed HTTP procedures", () => {
     await within(client.closed());
   });
 
-  test("serves the framework's own group, inert without a grant covering its scope", async () => {
-    // Registered in every application, and answering nothing to a caller with
-    // no grant: `unauthenticated` for anonymous and `unauthorized` for a user
-    // holding no framework scope — never `not_found`, which would be a lie
-    // about a live route, and never data.
-    const anonymous = await fetch(`${base}${httpPath("admin.system.info")}`, {
+  test("serves no framework group: the literal admin path is the application's to declare", async () => {
+    // Nothing is registered at `admin.*`, so its route is a 404 rather than a
+    // live endpoint an application never asked for.
+    const response = await fetch(`${base}${httpPath("admin.system.info")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
-    expect(anonymous.status).toBe(401);
-    expect(JSON.parse(await anonymous.text())).toMatchObject({ code: "unauthenticated" });
-
-    const user = await fetch(`${base}${httpPath("admin.system.info")}`, {
-      method: "POST",
-      headers: { authorization: "Bearer user-token" },
-      body: JSON.stringify({}),
-    });
-    expect(user.status).toBe(403);
-    expect(JSON.parse(await user.text())).toMatchObject({ code: "unauthorized" });
+    expect(response.status).toBe(404);
   });
 
   test("serves another group off its own root, gated by access alone", async () => {

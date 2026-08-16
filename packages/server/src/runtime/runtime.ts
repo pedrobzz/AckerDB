@@ -25,7 +25,7 @@ import {
   parseCredentialToken,
   type ParsedCredentialToken,
 } from "../auth/credential-token.ts";
-import { knownScopeVocabulary } from "../auth/scopes.ts";
+import { scopeVocabulary } from "../auth/scopes.ts";
 import {
   RuntimeCredentials,
   type CredentialLease,
@@ -166,9 +166,9 @@ export class Runtime implements RuntimePort {
     if (options.resolveScopes !== undefined && typeof options.resolveScopes !== "function") {
       throw new TypeError("Runtime resolveScopes must be a function");
     }
-    this.vocabulary = knownScopeVocabulary(options.scopes);
-    // The Runtime's one credential authority: vault credentials compose with
-    // the application verifier, and both invalidate through one boundary.
+    this.vocabulary = scopeVocabulary(options.scopes);
+    // The Runtime's one credential authority: AckerDB's own credentials compose
+    // with the application verifier, and both invalidate through one boundary.
     this.credentials = new RuntimeCredentials({
       engine: this.engine,
       reads: () => this.reads,
@@ -178,6 +178,7 @@ export class Runtime implements RuntimePort {
       ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
       ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
       vocabulary: this.vocabulary,
+      limits: this.limits.credentials,
       subscribeInvalidation: (listener) =>
         this.authInvalidation.subscribeDirect(listener),
       revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
@@ -356,8 +357,8 @@ export class Runtime implements RuntimePort {
     account: ExternalAccount,
     signal?: AbortSignal,
   ): Promise<Identity> {
-    // A vault credential is already an Identity; it is resolved from the
-    // vault, never provisioned as an external account.
+    // An AckerDB credential is already an Identity; it is resolved from the
+    // credential table, never provisioned as an external account.
     if (account.issuer === CREDENTIAL_ISSUER) {
       return this.credentials.identityFor(account, signal);
     }

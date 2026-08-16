@@ -18,29 +18,12 @@ export {
   type RunningApp,
 } from "./boot.ts";
 export {
-  frameworkFunctionModules,
-  type FrameworkFunctionModules,
-} from "./admin/index.ts";
-export {
-  MAX_ADMIN_APPLICATION_BYTES,
-  normalizeAdminOptions,
-  type AdminApplicationOptions,
-  type AdminOptions,
-  type NormalizedAdminApplication,
-  type NormalizedAdminOptions,
-} from "./admin/options.ts";
-export { ADMIN_CREDENTIAL_NAME } from "./admin/credentials.ts";
-export { ADMIN_SCOPES, type AdminScope } from "./admin/scopes.ts";
-export {
-  ADMINISTRATIVE_GRANT,
   expandScopeGrant,
-  FRAMEWORK_SCOPES,
-  isAdministrativeGrant,
   isScopeGrant,
   isScopePattern,
-  knownScopeVocabulary,
   principalScopes,
   SCOPE_WILDCARD,
+  scopeVocabulary,
   validateScopeVocabulary,
   type NormalizedScopeRequirement,
   type ScopeRequirement,
@@ -51,27 +34,25 @@ export {
   issueChildScopes,
 } from "./auth/child-credentials.ts";
 export {
-  credentials,
-  systemCredentials,
-  type CreatedCredential,
-  type CredentialCreateInput,
-  type CredentialDescriptor,
-  type CredentialOperations,
-  type CredentialUpdateInput,
-  type SystemCredentialOperations,
-} from "./auth/credential-context.ts";
-export {
-  resetAdminCredentials,
-  type AdminCredentialResetResult,
-} from "./auth/credential-reset.ts";
-export {
   CREDENTIAL_ISSUER,
   CREDENTIAL_TOKEN_PREFIX,
   hasCredentialTokenPrefix,
   parseCredentialToken,
   type ParsedCredentialToken,
 } from "./auth/credential-token.ts";
-export type { CredentialLimits } from "./auth/credential-vault.ts";
+export type {
+  Credential,
+  CredentialMutationCapability,
+  CredentialQuery,
+  CredentialQueryCapability,
+  CredentialReadCapability,
+  IssueCredentialInput,
+  IssuedCredential,
+  ManageCredentialCapability,
+  OrderedCredentialQuery,
+  UpdateCredentialInput,
+} from "./credentials/api.ts";
+export type { CredentialLimits } from "./credentials/module.ts";
 export {
   type FileGrantId,
   type FileId,

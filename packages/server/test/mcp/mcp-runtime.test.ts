@@ -2,7 +2,6 @@ import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.j
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
-import { credentials } from "../../src/auth/credential-context.ts";
 import { v } from "../../src/validation/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import type { Runtime } from "../../src/runtime/runtime.ts";
@@ -90,7 +89,7 @@ function releaseGates(): void {
 const createOwnershipToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => credentials.create(ctx, {
+  handler: (ctx, args) => ctx.credentials.issue({
     name: args.name,
     metadata: {},
   }),

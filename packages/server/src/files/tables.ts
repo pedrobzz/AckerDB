@@ -86,13 +86,12 @@ function cleanupTable(): TableDef {
     .index(["createdAt"]) as TableDef;
 }
 
-export function withFilesTables(schema: Schema): Schema {
-  if (FILE_TABLES.every((name) => Object.hasOwn(schema.tables, name))) return schema;
+/** The Files tables, as one framework schema contribution. */
+export function filesSchema(): Schema {
   return new Schema({
-    ...schema.tables,
     [FILES_TABLE]: filesTable(),
     [FILE_UPLOADS_TABLE]: uploadsTable(),
     [FILE_GRANTS_TABLE]: grantsTable(),
     [FILE_CLEANUP_TABLE]: cleanupTable(),
-  }, new Map(schema.namedTypes));
+  }, new Map());
 }

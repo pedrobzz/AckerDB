@@ -32,11 +32,11 @@ export async function exportOpenApi(config: AppConfig, file: string): Promise<Op
   await runCodegen(config);
   const app = await importApp(config);
   // The document's identity is the application's own, because it describes
-  // that application's API rather than AckerDB's — and it is the same name the
-  // Admin API reports, resolved once in the configuration.
+  // that application's API rather than AckerDB's: its package manifest, read
+  // once in the configuration.
   const document = openApiDocument(
-    new Registry(await importFunctionModules(config), app.apiPaths, config.admin),
-    { title: config.admin.application.name, version: config.admin.application.version },
+    new Registry(await importFunctionModules(config), app.apiPaths),
+    { title: config.application.name, version: config.application.version },
   );
   writeFileSync(file, openApiBytes(document));
   return { file, operations: operationCount(document) };

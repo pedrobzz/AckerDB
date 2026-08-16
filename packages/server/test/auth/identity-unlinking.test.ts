@@ -31,6 +31,7 @@ import {
 } from "../../src/subscriptions/session/contract.ts";
 import { Session } from "../../src/subscriptions/session/session.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
+import { storedIdentityForAccount } from "../support/identities.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -368,7 +369,7 @@ describe("transactional external-account unlinking", () => {
     expect(unlinked).toEqual({ status: 200, body: true });
     expect(invalidationOrder).toEqual([false]);
     expect(lease.signal).toMatchObject({ aborted: true });
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
+    expect(storedIdentityForAccount(harness.engine, ISSUER_A, "alice")).toBeNull();
     expect(directoryCounts(harness.engine)).toEqual({ identities: 1n, accounts: 1n, owned: 1n });
 
     const directory = harness.directory;
@@ -376,7 +377,7 @@ describe("transactional external-account unlinking", () => {
     harness = await open(directory);
     const aliceB = await authenticate(harness, "alice-b");
     expect(aliceB.identity).toBe(aliceA.identity);
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
+    expect(storedIdentityForAccount(harness.engine, ISSUER_A, "alice")).toBeNull();
     expect(await invoke(harness, aliceB, "api.owned.current", {})).toMatchObject({
       status: 200,
       body: { userId: String(aliceA.identity), value: "durable owner" },
@@ -409,7 +410,7 @@ describe("transactional external-account unlinking", () => {
       status: 409,
       body: { code: "conflict", message: "cannot unlink the final external account" },
     });
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "bob"))
+    expect(storedIdentityForAccount(harness.engine, ISSUER_A, "bob"))
       .toBe(bob.identity);
     expect(directoryCounts(harness.engine)).toEqual({ identities: 2n, accounts: 3n, owned: 0n });
   });
@@ -434,7 +435,7 @@ describe("transactional external-account unlinking", () => {
     expect(await invoke(harness, alice, "api.accounts.unlink", ALICE_ROLLBACK))
       .toMatchObject({ status: 500 });
     expect(invalidations).toEqual([]);
-    expect(harness.engine.identityForAccount(harness.engine.reader, ROLLBACK_ISSUER, "alice"))
+    expect(storedIdentityForAccount(harness.engine, ROLLBACK_ISSUER, "alice"))
       .toBe(alice.identity);
     harness.engine.writer.exec("DROP TRIGGER fail_identity_unlink");
 
@@ -447,9 +448,9 @@ describe("transactional external-account unlinking", () => {
       { issuer: ROLLBACK_ISSUER, subject: "alice" },
       { issuer: ISSUER_C, subject: "alice" },
     ]);
-    expect(harness.engine.identityForAccount(harness.engine.reader, ROLLBACK_ISSUER, "alice"))
+    expect(storedIdentityForAccount(harness.engine, ROLLBACK_ISSUER, "alice"))
       .toBeNull();
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_C, "alice"))
+    expect(storedIdentityForAccount(harness.engine, ISSUER_C, "alice"))
       .toBeNull();
     expect(directoryCounts(harness.engine)).toEqual({ identities: 1n, accounts: 2n, owned: 0n });
   });
@@ -543,7 +544,7 @@ describe("transactional external-account unlinking", () => {
     httpBlock.release();
     await settle();
     expect(resolverSawCanceledAccount).toBe(true);
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
+    expect(storedIdentityForAccount(harness.engine, ISSUER_A, "alice")).toBeNull();
 
     const sessionBlock = harness.verifier.block("alice-c");
     const sink = new RecordingSink();
@@ -563,7 +564,7 @@ describe("transactional external-account unlinking", () => {
     await settle();
     expect(sink.controls.some((message) => message.t === "welcome")).toBe(false);
     expect(sink.closes[0]).toMatchObject({ code: "unauthenticated", message: "credential revoked" });
-    expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_C, "alice")).toBeNull();
+    expect(storedIdentityForAccount(harness.engine, ISSUER_C, "alice")).toBeNull();
     expect(directoryCounts(harness.engine)).toEqual({ identities: 1n, accounts: 1n, owned: 0n });
   });
 });

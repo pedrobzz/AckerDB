@@ -8,7 +8,6 @@ import {
   type PrincipalInvalidation,
   type UserPrincipal,
 } from "../../src/auth/credentials.ts";
-import { credentials } from "../../src/auth/credential-context.ts";
 import { CREDENTIAL_ISSUER } from "../../src/auth/credential-token.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcp as mcpDeclaration } from "../../src/mcp/index.ts";
@@ -97,43 +96,39 @@ describe("Identity credentials", () => {
     expect(created.identity).not.toBe(alice.identity);
 
     const stored = engine.writer.query(
-      "SELECT token_id, identity, parent_identity, secret_digest, name, metadata, scopes, created_at, updated_at FROM _ackerdb_credentials",
+      "SELECT tokenId, identity, parentIdentity, secretDigest, name, metadataJson, scopesJson, createdAt, updatedAt FROM _ackerdb_credentials",
     ).get() as {
-      token_id: string;
+      tokenId: string;
       identity: bigint;
-      parent_identity: bigint;
-      secret_digest: Uint8Array;
+      parentIdentity: bigint;
+      secretDigest: Uint8Array;
       name: string;
-      metadata: string;
-      scopes: string;
-      created_at: number;
-      updated_at: number;
+      metadataJson: string;
+      scopesJson: string;
+      createdAt: number;
+      updatedAt: number;
     };
     const secret = created.token.split(".")[2]!;
     expect(stored).toMatchObject({
-      token_id: created.id,
+      tokenId: created.id,
       identity: created.identity,
-      parent_identity: alice.identity,
+      parentIdentity: alice.identity,
       name: "Laptop",
-      scopes: "[]",
+      scopesJson: "[]",
     });
-    expect(Buffer.from(stored.secret_digest).toString("hex")).toBe(
+    expect(Buffer.from(stored.secretDigest).toString("hex")).toBe(
       createHash("sha256").update(secret).digest("hex"),
     );
     const storedText = JSON.stringify({
       ...stored,
       identity: stored.identity.toString(),
-      parent_identity: stored.parent_identity.toString(),
+      parentIdentity: stored.parentIdentity.toString(),
     });
     expect(storedText).not.toContain(created.token);
     expect(storedText).not.toContain(secret);
     expect(
       engine.writer.query("SELECT result_disposition, result, result_bytes FROM _ackerdb_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
-    expect(() => credentials.create(retainedOwnerContext()!, {
-      name: "Escaped context",
-      metadata: {},
-    })).toThrow("credential operations require an AckerDB invocation context");
     expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_credentials").get())
       .toEqual({ count: 1n });
 
@@ -197,8 +192,8 @@ describe("Identity credentials", () => {
     });
 
     const before = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _ackerdb_credentials WHERE token_id = ?",
-    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
+      "SELECT secretDigest, scopesJson FROM _ackerdb_credentials WHERE tokenId = ?",
+    ).get(created.id) as { readonly secretDigest: Uint8Array; readonly scopesJson: string };
     const active = await runtime.authenticateCredential(created.token, "before-edit");
 
     await runtime.mutation(aliceSession, request(mutationMessage(
@@ -227,10 +222,10 @@ describe("Identity credentials", () => {
     });
 
     const after = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _ackerdb_credentials WHERE token_id = ?",
-    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
-    expect(Buffer.from(after.secret_digest)).toEqual(Buffer.from(before.secret_digest));
-    expect(after.scopes).toBe(before.scopes);
+      "SELECT secretDigest, scopesJson FROM _ackerdb_credentials WHERE tokenId = ?",
+    ).get(created.id) as { readonly secretDigest: Uint8Array; readonly scopesJson: string };
+    expect(Buffer.from(after.secretDigest)).toEqual(Buffer.from(before.secretDigest));
+    expect(after.scopesJson).toBe(before.scopesJson);
     expect(await runtime.authenticateCredential(created.token, "after-edit"))
       .toMatchObject({ identity: created.identity, tokenId: created.id });
     const activeResult = await runtime.runMcpTool({
@@ -459,12 +454,12 @@ describe("Identity credentials", () => {
       code: "unauthorized",
     });
     expect(engine.reader.query(
-      "SELECT scopes FROM _ackerdb_credentials WHERE token_id = ?",
-    ).get(created.id)).toEqual({ scopes: "[]" });
+      "SELECT scopesJson FROM _ackerdb_credentials WHERE tokenId = ?",
+    ).get(created.id)).toEqual({ scopesJson: "[]" });
     // A grant persisted outside the vocabulary can never authorize anything:
     // the intersection with the issuer's declared grant drops it.
     engine.writer.query(
-      "UPDATE _ackerdb_credentials SET scopes = ? WHERE token_id = ?",
+      "UPDATE _ackerdb_credentials SET scopesJson = ? WHERE tokenId = ?",
     ).run(encode(["orders.create"]), created.id);
     const undeclared = await runtime.authenticateCredential(
       created.token,
@@ -658,15 +653,15 @@ describe("Identity credentials", () => {
     )).value as { readonly id: string };
     const firstId = "z".repeat(22);
     const secondId = "A".repeat(22);
-    first.engine.writer.query("UPDATE _ackerdb_credentials SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _ackerdb_credentials SET tokenId = ? WHERE tokenId = ?")
       .run(firstId, firstCreated.id);
-    first.engine.writer.query("UPDATE _ackerdb_credentials SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _ackerdb_credentials SET tokenId = ? WHERE tokenId = ?")
       .run(secondId, secondCreated.id);
     expect(first.engine.reader.query(
-      "SELECT creation_seq, token_id FROM _ackerdb_credentials ORDER BY creation_seq",
+      "SELECT id, tokenId FROM _ackerdb_credentials ORDER BY id",
     ).all()).toEqual([
-      { creation_seq: 1n, token_id: firstId },
-      { creation_seq: 2n, token_id: secondId },
+      { id: 1n, tokenId: firstId },
+      { id: 2n, tokenId: secondId },
     ]);
     await first.close();
 

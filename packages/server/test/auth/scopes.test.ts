@@ -4,11 +4,10 @@ import {
   checkRequirementAgainstVocabulary,
   enforceScopeRequirement,
   expandScopeGrant,
-  FRAMEWORK_SCOPES,
   isScopeAuthorized,
   isScopeGrant,
   isScopePattern,
-  knownScopeVocabulary,
+  scopeVocabulary,
   normalizeScopeRequirement,
   principalScopes,
   validateScopeVocabulary,
@@ -27,14 +26,18 @@ import {
 import { acquireAuthLease } from "../../src/auth/lease.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 
-/** An application vocabulary plus a stand-in framework half, as the runtime sees it. */
+/**
+ * One application vocabulary, and it is the whole vocabulary. `_`-prefixed
+ * names are the application's like every other name: they are here to prove the
+ * marker has no meaning inside this namespace.
+ */
 const VOCABULARY = Object.freeze([
   "admin:read",
   "admin:write",
   "notes:read",
   "notes:write",
-  "_admin:jobs:read",
-  "_admin:jobs:write",
+  "_internal:purge",
+  "_internal:replay",
 ]);
 
 function user(scopes: readonly string[] = []): UserPrincipal {
@@ -69,16 +72,15 @@ describe("scope vocabulary", () => {
     ).toThrow(/at most/);
   });
 
-  test("an application may never declare a framework scope or a pattern", () => {
-    expect(() => validateScopeVocabulary(["_admin:jobs:read"])).toThrow(/framework/);
-    expect(() => validateScopeVocabulary(["_"])).toThrow(/framework/);
+  test("an application may declare a marked name, but never a pattern", () => {
+    expect(validateScopeVocabulary(["_internal:purge", "_"])).toEqual(["_internal:purge", "_"]);
     expect(() => validateScopeVocabulary(["notes:*"])).toThrow(/wildcard/);
     expect(() => validateScopeVocabulary(["*"])).toThrow(/wildcard/);
   });
 
-  test("the known vocabulary is the application's plus the framework's", () => {
-    expect(knownScopeVocabulary(undefined)).toEqual(FRAMEWORK_SCOPES);
-    expect(knownScopeVocabulary(["notes:read"])).toEqual(["notes:read", ...FRAMEWORK_SCOPES]);
+  test("the vocabulary is exactly what the manifest declared", () => {
+    expect(scopeVocabulary(undefined)).toEqual([]);
+    expect(scopeVocabulary(["notes:read"])).toEqual(["notes:read"]);
   });
 });
 
@@ -114,18 +116,14 @@ describe("expansion", () => {
     expect(expandScopeGrant(["notes:*"], VOCABULARY)).toEqual(["notes:read", "notes:write"]);
   });
 
-  test("a bare * is every application scope and no framework scope", () => {
-    expect(expandScopeGrant(["*"], VOCABULARY))
-      .toEqual(["admin:read", "admin:write", "notes:read", "notes:write"]);
+  test("a bare * is every declared scope, marked names included", () => {
+    expect(expandScopeGrant(["*"], VOCABULARY)).toEqual([...VOCABULARY]);
   });
 
-  test("the framework half is reached only through a marked pattern", () => {
+  test("_* is an ordinary prefix pattern over declared names", () => {
     expect(expandScopeGrant(["_*"], VOCABULARY))
-      .toEqual(["_admin:jobs:read", "_admin:jobs:write"]);
-    expect(expandScopeGrant(["_admin:jobs:*"], VOCABULARY))
-      .toEqual(["_admin:jobs:read", "_admin:jobs:write"]);
-    // An administrative identity is one holding both halves — nothing else.
-    expect(expandScopeGrant(["*", "_*"], VOCABULARY)).toEqual([...VOCABULARY]);
+      .toEqual(["_internal:purge", "_internal:replay"]);
+    expect(expandScopeGrant(["_internal:p*"], VOCABULARY)).toEqual(["_internal:purge"]);
   });
 
   test("a pattern matching nothing grants nothing", () => {

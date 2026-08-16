@@ -422,6 +422,55 @@ export function isSchema(value: unknown): value is Schema {
   return hasBrand(value, SCHEMA_IDENTITY);
 }
 
+/**
+ * Merge schema contributions into one schema, refusing every collision.
+ *
+ * Composition is the one way two declared table sets ever meet — the framework
+ * schema is assembled from its domain modules' contributions, and the root
+ * schema is that composition beside the application's. Both table names and
+ * named enum/union types must be unique across contributions: a silent
+ * overwrite would let one contribution answer for another's rows, and the
+ * failure would surface as a decode error long after the schema was built.
+ *
+ * A named type declared identically by two contributions is not a conflict —
+ * `defineSchema` already interns one validator per name, and two contributions
+ * that agree byte for byte describe the same type.
+ */
+export function composeSchemas(contributions: readonly Schema[], where: string): Schema {
+  const tables: Record<string, TableDef> = {};
+  const owners = new Map<string, number>();
+  const namedTypes = new Map<string, Validator<unknown, string>>();
+  const namedDescriptors = new Map<string, string>();
+  contributions.forEach((contribution, index) => {
+    if (!isSchema(contribution)) {
+      throw new ValidationError(`${where}: contribution ${index} is not a schema`);
+    }
+    for (const [name, table] of Object.entries(contribution.tables)) {
+      const owner = owners.get(name);
+      if (owner !== undefined) {
+        throw new ValidationError(
+          `${where}: table "${name}" is declared by contributions ${owner} and ${index}`,
+        );
+      }
+      owners.set(name, index);
+      tables[name] = table;
+    }
+    for (const [name, validator] of contribution.namedTypes) {
+      const descriptor = JSON.stringify(validator.descriptor());
+      const existing = namedDescriptors.get(name);
+      if (existing === undefined) {
+        namedDescriptors.set(name, descriptor);
+        namedTypes.set(name, validator);
+      } else if (existing !== descriptor) {
+        throw new ValidationError(
+          `${where}: named type "${name}" is declared twice with different definitions`,
+        );
+      }
+    }
+  });
+  return new Schema(tables, namedTypes);
+}
+
 export function defineSchema<T extends Record<string, TableDef>>(tables: T): Schema<T> {
   const namedTypes = new Map<string, Validator<unknown, string>>();
   const namedDescriptors = new Map<string, string>();

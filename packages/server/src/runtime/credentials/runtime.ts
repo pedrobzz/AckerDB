@@ -1,14 +1,23 @@
 /**
- * Runtime ownership of identity-credential authentication.
+ * Runtime ownership of identity-credential authentication: the Credentials
+ * module's second adapter.
  *
- * Composes the application's credential verifier with the Engine-backed vault:
- * a vault-prefixed bearer authenticates here, everything else delegates to the
- * configured verifier. Vault credentials resolve to their own Identity and to
- * an expanded grant narrowed by every ancestor's current grant, and their
- * revocations and grant changes arrive as account invalidations on the one
- * generic auth-invalidation path — the same channel every session and lease
- * already subscribes to.
+ * Composes the application's credential verifier with AckerDB's own
+ * credentials: an AckerDB-prefixed bearer authenticates here, everything else
+ * delegates to the configured verifier. Issued credentials resolve to their own
+ * Identity and to an expanded grant narrowed by every ancestor's current grant,
+ * and their revocations and grant changes arrive as account invalidations on
+ * the one generic auth-invalidation path — the same channel every session and
+ * lease already subscribes to.
+ *
+ * **This adapter exists because authentication precedes an invocation.** There
+ * is no principal yet, no transaction, and nothing subscribing, so it opens a
+ * read snapshot through the RuntimeReadExecutor and builds a managed database
+ * reader with no ReadRecorder: the same tables and the same module as
+ * `ctx.credentials`, without inventing query reactivity for a read no
+ * subscription is waiting on.
  */
+import type { Database } from "bun:sqlite";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import type { Identity } from "@ackerdb/core";
 import {
@@ -28,14 +37,17 @@ import {
   VAULT_CREDENTIAL_AUTHORITY,
   type ParsedCredentialToken,
 } from "../../auth/credential-token.ts";
-import { credentialVaultOwner } from "../../auth/credential-vault.ts";
 import {
   invalidationReaches,
   type AuthInvalidationScope,
   type AuthInvalidationSubscription,
 } from "../../auth/invalidation.ts";
 import { expandScopeGrant } from "../../auth/scopes.ts";
+import { Credentials, type CredentialLimits } from "../../credentials/module.ts";
+import type { CredentialDatabase } from "../../credentials/tables.ts";
+import { makeDbReader } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
+import { internalDatabase } from "../../database/framework-schema.ts";
 import { externalAccountFairnessKey } from "../caller.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 
@@ -61,8 +73,9 @@ export interface RuntimeCredentialsOptions {
   readonly operationSignal: (signal?: AbortSignal) => AbortSignal;
   readonly appVerifier?: CredentialVerifier;
   readonly resolveAppScopes?: ScopeResolver;
-  /** Application scopes plus the framework's: what every grant expands against. */
+  /** The application's declared scopes: what every grant expands against. */
   readonly vocabulary: readonly string[];
+  readonly limits: CredentialLimits;
   /** Boundary-published account invalidations; present without an app verifier. */
   readonly subscribeInvalidation: (
     listener: (invalidation: PrincipalInvalidation) => void,
@@ -94,6 +107,24 @@ export class RuntimeCredentials {
   }
 
   /**
+   * The Credentials module over one snapshot connection, with no ReadRecorder:
+   * authentication has no subscription to invalidate, so recording a dependency
+   * would build machinery nobody reads. Writes are absent for the same reason —
+   * there is no transaction here to stage anything on.
+   */
+  private moduleFor(connection: Database): Credentials {
+    return new Credentials({
+      db: internalDatabase(
+        makeDbReader(this.options.engine, connection, null),
+      ) as CredentialDatabase,
+      vocabulary: this.options.vocabulary,
+      limits: this.options.limits,
+      now: this.options.now,
+      writes: null,
+    });
+  }
+
+  /**
    * The generic scope resolution every transport uses: vault accounts read the
    * credential's effective grant; every other Identity asks the application
    * resolver. Both answers arrive expanded, so a principal's grant is always
@@ -113,16 +144,13 @@ export class RuntimeCredentials {
         : resolvedGrant(await resolve(identity, account)).scopes;
       return expandScopeGrant(grant, this.options.vocabulary);
     }
-    // The lineage travels with the grant. Every transport resolves a vault
+    // The lineage travels with the grant. Every transport resolves an issued
     // credential through here, so this is the one place that can guarantee a
     // delegated principal knows the accounts an invalidation may narrow it by.
     return this.options.reads().submit(
-      (connection) => this.options.engine[credentialVaultOwner].effectiveGrant(
-        connection,
+      (connection) => this.moduleFor(connection).effectiveGrant(
         identity,
-        this.options.vocabulary,
         (ancestor) => this.resolveIdentityGrant(ancestor),
-        (open, root) => this.options.engine.accountsForIdentity(open, root),
       ),
       {
         bytes: 1,
@@ -132,14 +160,11 @@ export class RuntimeCredentials {
     );
   };
 
-  /** Resolve a verified vault account to its Identity; fails closed when revoked. */
+  /** Resolve a verified credential account to its Identity; fails closed when revoked. */
   async identityFor(account: ExternalAccount, signal?: AbortSignal): Promise<Identity> {
     this.options.assertReady();
     const identity = await this.options.reads().submit(
-      (connection) => this.options.engine[credentialVaultOwner].identityForToken(
-        connection,
-        account.subject,
-      ),
+      (connection) => this.moduleFor(connection).identityForToken(account.subject),
       {
         bytes: 1,
         fairnessKey: externalAccountFairnessKey(account),
@@ -160,14 +185,11 @@ export class RuntimeCredentials {
     const operationSignal = this.options.operationSignal(signal);
     const principal = await this.options.reads().submit(
       async (connection) => {
-        const vault = this.options.engine[credentialVaultOwner];
-        const credential = vault.authenticate(connection, parsed);
-        const grant = await vault.effectiveGrant(
-          connection,
+        const credentials = this.moduleFor(connection);
+        const credential = await credentials.authenticate(parsed);
+        const grant = await credentials.effectiveGrant(
           credential.identity,
-          this.options.vocabulary,
           (ancestor) => this.resolveIdentityGrant(ancestor),
-          (open, root) => this.options.engine.accountsForIdentity(open, root),
         );
         return Object.freeze({
           kind: "user" as const,
@@ -258,9 +280,9 @@ export class RuntimeCredentials {
   ): Promise<VerifiedCredential> {
     const parsed = parseCredentialToken(credential);
     if (parsed === null) {
-      // The prefix claims the vault, so the vault answers — malformed included.
-      // Delegating a reserved-prefix bearer would let a permissive application
-      // verifier authenticate a string the vault has already refused.
+      // The prefix claims AckerDB's own credentials, so AckerDB answers —
+      // malformed included. Delegating a reserved-prefix bearer would let a
+      // permissive application verifier authenticate a string already refused.
       if (source === undefined || hasCredentialTokenPrefix(credential)) {
         throw unauthenticated();
       }
@@ -269,7 +291,7 @@ export class RuntimeCredentials {
     this.options.assertReady();
     const account: ExternalAccount = { issuer: CREDENTIAL_ISSUER, subject: parsed.id };
     const authenticated = await this.options.reads().submit(
-      (connection) => this.options.engine[credentialVaultOwner].authenticate(connection, parsed),
+      (connection) => this.moduleFor(connection).authenticate(parsed),
       {
         bytes: parsed.bytes,
         fairnessKey: externalAccountFairnessKey(account),

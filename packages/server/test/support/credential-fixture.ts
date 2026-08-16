@@ -11,7 +11,6 @@ import {
   type SubscribeMessage,
 } from "@ackerdb/core";
 import type { CredentialVerifier, UserPrincipal } from "../../src/auth/credentials.ts";
-import { credentials } from "../../src/auth/credential-context.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -86,11 +85,11 @@ const attemptSelfAdministration = typedProcedure({
   args: {},
   returns: v.object({ status: v.string() }),
   handler: async (ctx) => {
-    const done = await ctx.tx((tx) => {
-      credentials.list(tx);
+    const done = await ctx.tx(async (tx) => {
+      await tx.credentials.query().collect();
       // Chained delegation: an agent may mint a sub-credential, but only a
       // subset of its own grant — over-delegation is a typed error.
-      credentials.create(tx, { name: "escalated", scopes: ["orders.all"] });
+      await tx.credentials.issue({ name: "escalated", scopes: ["orders.all"] });
       return { status: "over-delegated" };
     });
     if (!done.ok) throw new Error("administration unexpectedly failed");
@@ -174,20 +173,20 @@ const createAgentToken = typedMutation({
   },
   handler: (ctx, args) => {
     escapedOwnerContext = ctx;
-    return credentials.create(ctx, args);
+    return ctx.credentials.issue(args);
   },
 });
 
 const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => credentials.list(ctx),
+  handler: (ctx) => ctx.credentials.query().collect(),
 });
 
 const renameAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string(), name: v.string() },
-  handler: (ctx, args) => credentials.update(ctx, args.id, { name: args.name }),
+  handler: (ctx, args) => ctx.credentials.update(args.id, { name: args.name }),
 });
 
 const updateAgentTokenMetadata = typedMutation({
@@ -196,14 +195,13 @@ const updateAgentTokenMetadata = typedMutation({
     id: v.string(),
     metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
-  handler: (ctx, args) => credentials.update(ctx, args.id, { metadata: args.metadata }),
+  handler: (ctx, args) => ctx.credentials.update(args.id, { metadata: args.metadata }),
 });
 
 const invalidAgentTokenUpdate = typedMutation({
   access: "authenticated",
   args: { id: v.string(), kind: invalidUpdateKind },
-  handler: (ctx, args) => credentials.update(
-    ctx,
+  handler: (ctx, args) => ctx.credentials.update(
     args.id,
     (args.kind === "empty" ? {} : { name: undefined }) as never,
   ),
@@ -212,7 +210,7 @@ const invalidAgentTokenUpdate = typedMutation({
 const revokeAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => credentials.revoke(ctx, args.id),
+  handler: (ctx, args) => ctx.credentials.revoke(args.id),
 });
 
 /** Revoke inside a nested scope that then rolls back, and report that it did. */
@@ -222,8 +220,8 @@ const revokeThenRollback = typedProcedure({
   args: { id: v.string() },
   returns: v.object({ rolledBack: v.boolean() }),
   handler: async (ctx, args) => {
-    const attempt = await ctx.tx((tx) => {
-      credentials.revoke(tx, args.id);
+    const attempt = await ctx.tx(async (tx) => {
+      await tx.credentials.revoke(args.id);
       return Err("rolled-back", {}, Status.Conflict);
     });
     return { rolledBack: !attempt.ok };
@@ -236,7 +234,7 @@ const createScopedToken = typedMutation({
     name: v.string(),
     scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => credentials.create(ctx, args),
+  handler: (ctx, args) => ctx.credentials.issue(args),
 });
 
 const updateScopedToken = typedMutation({
@@ -245,13 +243,13 @@ const updateScopedToken = typedMutation({
     id: v.string(),
     scopes: v.array(v.string()),
   },
-  handler: (ctx, args) => credentials.updateScopes(ctx, args.id, args.scopes),
+  handler: (ctx, args) => ctx.credentials.updateScopes(args.id, args.scopes),
 });
 
 const listScopedTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => credentials.list(ctx),
+  handler: (ctx) => ctx.credentials.query().collect(),
 });
 
 const normalProcedure = typedProcedure({
