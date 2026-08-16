@@ -91,6 +91,7 @@ import { RuntimeFiles } from "../../files/namespace.ts";
 import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
 import { settleOnAbort } from "../abort.ts";
+import { finiteMillis } from "../../shared/clock.ts";
 
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
@@ -377,7 +378,7 @@ export class RuntimeFunctionExecutor<C> {
       execution.connection,
       execution.reads,
     );
-    const timestamp = this.readNow();
+    const timestamp = finiteMillis(this.options.now(), "runtime clock");
     return invokeFunction(fn, this.hostQueryContext(db, principal, timestamp), args);
   }
 
@@ -547,7 +548,7 @@ export class RuntimeFunctionExecutor<C> {
     args: unknown,
   ): (db: MutationCtx["db"], writes: WriteCollector) => unknown {
     return (db, writes) => {
-      const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
+      const invocation = this.hostMutationContext(db, principal, finiteMillis(this.options.now(), "runtime clock"), writes);
       const scope = createMutationInvocationScope(this.options.engine.writer, writes);
       return scope.runRoot((mutationAccess) =>
         invokeFunction(fn, invocation, args, { mutationAccess }));
@@ -654,7 +655,7 @@ export class RuntimeFunctionExecutor<C> {
             const context = this.hostMutationContext(
               db,
               SYSTEM_PRINCIPAL,
-              this.readNow(),
+              finiteMillis(this.options.now(), "runtime clock"),
               writes,
               { runNumber },
             ) as MutationCtx & { readonly runNumber: number };
@@ -709,7 +710,7 @@ export class RuntimeFunctionExecutor<C> {
     }
     throwIfAborted(signal);
     await this.identityWrite(fairnessKey, signal, requestBytes, async (identities) => {
-      if (account.expiresAt <= this.readNow()) {
+      if (account.expiresAt <= finiteMillis(this.options.now(), "runtime clock")) {
         throw unauthenticated();
       }
       if (!await identities.attach(principal.identity, account.issuer, account.subject)) {
@@ -768,7 +769,4 @@ export class RuntimeFunctionExecutor<C> {
     );
   }
 
-  private readNow(): number {
-    return this.options.now();
-  }
 }

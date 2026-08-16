@@ -1015,7 +1015,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     const completion = iterator.next();
     await eventually(
-      () => acknowledgments.length === 1 && clock.nextDueIn() === 50,
+      () => acknowledgments.length === 1 && clock.nextDueIn() === 100,
       "the first jitter delay",
     );
     const refresh = client.refreshCredential({ kind: "bearer", token: "current-token" });
@@ -1023,8 +1023,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
     // resolves the attempt without a separate auth round-trip.
     sockets[0]!.welcome(client.clientSessionId, USER_AUTHENTICATION);
     await refresh;
-    expect(clock.nextDueIn()).toBe(50);
-    clock.advance(49);
+    expect(clock.nextDueIn()).toBe(100);
+    clock.advance(99);
     await Promise.resolve();
     expect(acknowledgments).toHaveLength(1);
     clock.advance(1);
@@ -1884,9 +1884,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
     client.close();
   });
 
-  test("bounds zero-delay network acknowledgment retries", async () => {
+  test("bounds acknowledgment retries and never retries in the same millisecond", async () => {
     let attempts = 0;
-    const { client } = createHarness({
+    const { client, clock } = createHarness({
       fetch: async (url) => {
         if (isSseCall(url)) {
           return sseResponse(
@@ -1901,7 +1901,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const iterator = client.sse<{}, string>("api.stream.retry-limit", {})[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
-    expect(await iterator.next().catch((error) => error)).toMatchObject({
+    const completion = iterator.next().catch((error) => error);
+    // Every retry now waits at least one base delay, so the injected clock —
+    // not a tight loop — is what drives the schedule forward.
+    for (let step = 0; step < 2_000 && attempts < 8; step++) {
+      await Promise.resolve();
+      clock.advance(1);
+    }
+    expect(await completion).toMatchObject({
       code: "deadline_exceeded",
       resource: "sse",
     });

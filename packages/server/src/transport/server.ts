@@ -3,13 +3,9 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
-  ACKERDB_VERSION,
   decode,
-  encode,
   parseSseAckRequest,
   stableEncode,
-  type ErrorMessage,
-  type Outcome,
   type SseAckRequest,
 } from "@ackerdb/core";
 import {
@@ -29,31 +25,36 @@ import {
 } from "../runtime/caller.ts";
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import { WebSocketSessionSink } from "../subscriptions/delivery/websocket.ts";
-import { AckerDBError, drainingError } from "../shared/errors.ts";
+import { AckerDBError, drainingError, notReadyError } from "../shared/errors.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   EXPOSED_HTTP_METHODS,
   IDEMPOTENCY_KEY_HEADER,
-  RECEIPT_HEADERS,
   SSE_STREAM_HEADERS,
   isAckerDBHttpRoute,
 } from "./http-surface.ts";
 import type { ExposedHttpCodec } from "./http-codec.ts";
+import {
+  CORS,
+  frameMethodNotAllowed,
+  json,
+  methodNotAllowed,
+  outcomeError,
+  protocolError,
+  valueResponder,
+  VARY_AUTHORIZATION,
+} from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
-import { standardJsonText } from "../validation/standard-json.ts";
-import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
+import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
-import type {
-  HttpMutationReceipt,
-  RuntimeHttpResponder,
-} from "../runtime/contracts/requests.ts";
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
 import { utf8ByteLength } from "../shared/bytes.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 /** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
@@ -116,31 +117,6 @@ interface WsData {
 
 const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
-const CORS = Object.freeze({
-  "access-control-allow-origin": "*",
-  // PATCH, PUT and DELETE are raw HTTP handler methods; the exposed function
-  // surface serves only GET and POST.
-  "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
-  "access-control-expose-headers": [
-    ...Object.values(SSE_STREAM_HEADERS),
-    ...Object.values(RECEIPT_HEADERS),
-    "accept-ranges",
-    "content-disposition",
-    "content-range",
-    "digest",
-    "etag",
-    "last-modified",
-  ].join(", "),
-});
-
-/**
- * One URL answers different bearer credentials with different rows, and the GET
- * query form is the cacheable one an operator is invited to put a CDN rule in
- * front of. Without this, such a rule serves one caller's rows to another.
- */
-const VARY_AUTHORIZATION = "authorization";
-
 const SSE_HEADERS = Object.freeze({
   ...CORS,
   "content-type": "text/event-stream; charset=utf-8",
@@ -162,99 +138,10 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   "starting-runtime": 7,
 });
 
-function json(value: unknown, status = 200): Response {
-  return new Response(encode(value), {
-    status,
-    headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
-  });
-}
-
-/**
- * Protocol-2 routes answer with a frame. Every remaining one is connection
- * level — health, status, the WebSocket upgrade, SSE receiver credit — so the
- * frame never names an operation.
- */
-function protocolError(error: unknown): Response {
-  const outcome = outcomeFromError(error);
-  const frame: ErrorMessage = { v: ACKERDB_VERSION, t: "err", id: null, outcome };
-  return json(frame, outcomeHttpStatus(outcome));
-}
-
-function outcomeResponse(
-  outcome: Outcome,
-  status: number,
-  headers: Record<string, string> = {},
-): Response {
-  return new Response(standardJsonText(outcome), {
-    status,
-    headers: { ...CORS, "content-type": "application/json; charset=utf-8", ...headers },
-  });
-}
-
-/**
- * The exposed surface answers failures with the plain outcome, never a frame —
- * and in the standard JSON its document publishes, never the wire encoder the
- * connection-level routes above use.
- */
-function outcomeError(error: unknown): Response {
-  const outcome = outcomeFromError(error);
-  return outcomeResponse(outcome, outcomeHttpStatus(outcome));
-}
-
-/**
- * A wrong method answers the same outcome shape, at the status and with the
- * `Allow` header HTTP mandates. No outcome code names a wrong method — the
- * status carries that — so this one is built rather than mapped.
- */
-function methodNotAllowed(allow: string): Response {
-  return outcomeResponse(
-    { code: "malformed", retryable: false, message: `method not allowed; allow: ${allow}` },
-    405,
-    { allow },
-  );
-}
-
-/**
- * The mutation receipt rides response headers so the body stays the plain
- * return value. It is state at response time: a pending obligation's later
- * durability transition belongs to the WebSocket protocol, not to this caller.
- * The empty obligation list omits its header outright: RFC 9110 permits an
- * empty field value, so serializers may carry one, and a caller reading `""`
- * cannot tell it from a malformed list.
- */
-function receiptHeaders(receipt: HttpMutationReceipt): Record<string, string> {
-  return {
-    [RECEIPT_HEADERS.commitVersion]: String(receipt.commitVersion),
-    [RECEIPT_HEADERS.durability]: receipt.durability,
-    [RECEIPT_HEADERS.replay]: String(receipt.replay === "replayed"),
-    ...(receipt.obligations.length === 0
-      ? {}
-      : { [RECEIPT_HEADERS.obligations]: receipt.obligations.join(",") }),
-  };
-}
-
-/**
- * Every path-addressed call hands its encoded value to the same response shape.
- * No `Cache-Control` is emitted: caching policy belongs to the operator.
- */
-const valueResponder: RuntimeHttpResponder = ({ body, status, receipt }) => new Response(body, {
-  status,
-  headers: {
-    ...CORS,
-    "content-type": "application/json; charset=utf-8",
-    vary: VARY_AUTHORIZATION,
-    ...(receipt === undefined ? {} : receiptHeaders(receipt)),
-  },
-});
-
 function unavailableWhile(state: AckerDBServerState): AckerDBError {
-  if (state === "draining") {
-    return drainingError("server is draining", "connection");
-  }
-  return new AckerDBError("unavailable", "server is not ready", {
-    retryable: true,
-    resource: "connection",
-  });
+  return state === "draining"
+    ? drainingError("server is draining", "connection")
+    : notReadyError("server is not ready", "connection");
 }
 
 function requestTooLarge(): AckerDBError {
@@ -846,9 +733,7 @@ export class AckerDBServer {
     if (this.lifecycle === "failed") {
       return Promise.reject(new AckerDBError("unavailable", "server has failed", { resource: "connection" }));
     }
-    if (!Number.isFinite(deadlineAtMs)) {
-      throw new RangeError("server shutdown deadline must be finite");
-    }
+    finiteMillis(deadlineAtMs, "server shutdown deadline");
 
     this.beginShutdown();
     this.drainPromise = this.performDrain(deadlineAtMs);
@@ -1207,7 +1092,7 @@ export class AckerDBServer {
   }
 
   private upgradeWebSocket(request: Request, listener: Server<WsData>): Response | undefined {
-    if (request.method !== "GET") return methodNotAllowed("GET");
+    if (request.method !== "GET") return frameMethodNotAllowed("GET");
     if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
       return protocolError(new AckerDBError("overloaded", "connection capacity is full", {
@@ -1232,7 +1117,7 @@ export class AckerDBServer {
       return protocolError(error);
     }
     this.connections.delete(data);
-    return new Response("websocket upgrade required", { status: 400, headers: CORS });
+    return protocolError(new AckerDBError("malformed", "websocket upgrade required"));
   }
 
   private openWebSocket(socket: ServerWebSocket<WsData>): void {

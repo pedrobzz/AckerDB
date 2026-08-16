@@ -15,6 +15,7 @@ import type {
   ClientResult,
 } from "../client.ts";
 import { raceWithAbort } from "../abort.ts";
+import { retryDelay, type RetryPolicy } from "../connection/retry-policy.ts";
 
 /** Reusable byte bodies keep an ambiguous upload safe to retry against its session. */
 export type AckerDBFileUploadBody = Blob | BufferSource;
@@ -63,6 +64,7 @@ export interface AckerDBFilesClientPort {
   authorizationHeaders(): HeadersInit;
   readonly httpOrigin: string;
   readonly scheduler: AckerDBClientScheduler;
+  readonly random: () => number;
   readResponse(response: Response, signal: AbortSignal): Promise<string>;
   clientError(outcome: Outcome, interruption?: "suspension"): AckerDBClientError;
 }
@@ -210,14 +212,26 @@ function responseRetryAfterMs(response: Response, now: number): number {
   return Math.min(Number.isFinite(delayMs) ? delayMs : MAX_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS);
 }
 
+const UPLOAD_RETRY_POLICY: RetryPolicy = Object.freeze({
+  baseDelayMs: UPLOAD_RETRY_BASE_MS,
+  maxDelayMs: UPLOAD_RETRY_MAX_MS,
+});
+
+/**
+ * The same full-jitter schedule reconnect uses, over the upload's own base and
+ * cap, floored by the server's `Retry-After` and capped by what is left of the
+ * caller's deadline.
+ */
 function uploadRetryDelay(
   failures: number,
   remainingMs: number,
   retryAfterMs: number,
+  random: () => number,
 ): number {
-  const exponent = Math.min(Math.max(0, failures - 1), 30);
-  const backoff = Math.min(UPLOAD_RETRY_BASE_MS * 2 ** exponent, UPLOAD_RETRY_MAX_MS);
-  return Math.min(Math.max(backoff, retryAfterMs), remainingMs);
+  return Math.min(
+    retryDelay(UPLOAD_RETRY_POLICY, failures - 2, retryAfterMs, random, MAX_RETRY_AFTER_MS),
+    remainingMs,
+  );
 }
 
 function waitForRetry(
@@ -475,7 +489,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
         if (!(remaining > 0)) continue;
         await waitForRetry(
           this.port.scheduler,
-          uploadRetryDelay(failures, remaining, retryAfterMs),
+          uploadRetryDelay(failures, remaining, retryAfterMs, this.port.random),
           control.signal,
         );
       }

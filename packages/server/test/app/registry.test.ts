@@ -221,29 +221,6 @@ describe("raw http handler routes", () => {
     expect(typeof registry.httpRoutes.get("/api/hooks/shifty")!.fn.handler).toBe("function");
   });
 
-  test("refuses a shape hiding fields behind non-enumerable keys", () => {
-    // An array carries a non-enumerable `length`; Object.keys would miss it.
-    const arrayShaped = Object.assign([], {
-      isAckerDB: true,
-      isAckerDBServerOnly: true,
-      kind: "http",
-      methods: ["POST"],
-      handler: () => new Response(null),
-    });
-    expect(() => new Registry({ hooks: { arrayShaped: arrayShaped as never } })).toThrow(
-      'http handler "hooks.arrayShaped" must not declare "length"',
-    );
-  });
-
-  test("refuses fields no raw handler consumes", () => {
-    const withAccess = { ...hook, access: "public" } as never;
-    expect(() => new Registry({ hooks: { withAccess } })).toThrow(
-      'http handler "hooks.withAccess" must not declare "access"',
-    );
-    expect(() =>
-      httpHandler({ methods: ["POST"], handler: () => new Response(null), description: "x" } as never)
-    ).toThrow('httpHandler must not declare "description"');
-  });
 });
 
 describe("the httpHandler builder", () => {

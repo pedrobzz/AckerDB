@@ -13,7 +13,7 @@ import {
   type SessionSink,
 } from "../session/contract.ts";
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
-import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
+import { SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 import { utf8ByteLength } from "../../shared/bytes.ts";
 
@@ -27,7 +27,7 @@ export interface WebSocketSessionSinkOptions {
   readonly socket: WebSocketDeliverySocket;
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
-  readonly clock?: DeliveryClock;
+  readonly clock?: Clock;
 }
 
 export interface WebSocketDeliverySnapshot {
@@ -74,7 +74,7 @@ export class WebSocketSessionSink implements SessionSink {
   private readonly socket: WebSocketDeliverySocket;
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
-  private readonly clock: DeliveryClock;
+  private readonly clock: Clock;
   private readonly queue: PendingFrame[] = [];
   private readonly buffered: BufferedFrame[] = [];
   private applicationBytes = 0;
@@ -95,7 +95,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.socket = options.socket;
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
+    this.clock = options.clock ?? SYSTEM_CLOCK;
     this.controlReserveBytes = options.limits.maxFrameBytes;
   }
 

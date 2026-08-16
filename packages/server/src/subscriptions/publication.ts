@@ -1,5 +1,6 @@
-import { AckerDBError } from "../shared/errors.ts";
+import { AckerDBError, drainingError } from "../shared/errors.ts";
 import { validateCapacityLimits, type CapacityLimits } from "../runtime/limits.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 export interface Publication<T> {
   readonly version: bigint;
@@ -132,7 +133,7 @@ export class OrderedPublication<T> {
     if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) {
       throw new RangeError("reservedBytes must be a non-negative safe integer");
     }
-    if (this.closed) throw unavailable("draining", "Publication coordinator is closed");
+    if (this.closed) throw drainingError("Publication coordinator is closed", "publication");
     if (this.items >= this.limits.maxItems || reservedBytes > this.limits.maxBytes - this.bytes) {
       throw unavailable("overloaded", "Publication capacity is full", true);
     }
@@ -140,7 +141,7 @@ export class OrderedPublication<T> {
       throw unavailable("unavailable", "A writer publication reservation is already open");
     }
 
-    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, this.readNow());
+    const slot = new Slot(this, this.committedHighWater + 1n, reservedBytes, finiteMillis(this.now(), "publication clock"));
     this.openReservation = slot;
     this.items++;
     this.bytes += reservedBytes;
@@ -162,7 +163,7 @@ export class OrderedPublication<T> {
     if (typeof evaluationVersion !== "bigint" || evaluationVersion < 0n) {
       throw new RangeError("evaluationVersion must be a non-negative bigint");
     }
-    if (this.closed) throw unavailable("draining", "Publication coordinator is closed");
+    if (this.closed) throw drainingError("Publication coordinator is closed", "publication");
     if (evaluationVersion !== this.committedHighWater) return false;
     const installed = install();
     if (
@@ -176,7 +177,7 @@ export class OrderedPublication<T> {
   }
 
   snapshot(): PublicationSnapshot {
-    const now = this.readNow();
+    const now = finiteMillis(this.now(), "publication clock");
     return Object.freeze({
       items: this.items,
       bytes: this.bytes,
@@ -318,15 +319,10 @@ export class OrderedPublication<T> {
     this.closing?.resolve();
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("now must return a finite number");
-    return now;
-  }
 }
 
 function unavailable(
-  code: "overloaded" | "draining" | "unavailable",
+  code: "overloaded" | "unavailable",
   message: string,
   retryable = false,
 ): AckerDBError {

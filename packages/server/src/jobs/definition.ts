@@ -24,18 +24,6 @@ import { cronNext, parseCronExpression } from "./cron.ts";
 
 const JOB_IDENTITY = Symbol.for("@ackerdb/server/Job/v1");
 
-function assertOnlyKeys(
-  value: object,
-  allowed: readonly string[],
-  what: string,
-): void {
-  for (const option of Object.keys(value)) {
-    if (!allowed.includes(option)) {
-      throw new TypeError(`unknown ${what} option "${option}"`);
-    }
-  }
-}
-
 /** A Job's own state. `retrying` is non-terminal: its next run is scheduled. */
 export const JOB_STATES = [
   "pending",
@@ -278,7 +266,6 @@ function normalizeRetry(retry: JobRetry | JobRetryConfig | undefined): JobRetry 
   if (typeof retry !== "object" || retry === null) {
     throw new TypeError("job retry must be a function or { attempts, backoff?, delayMs? }");
   }
-  assertOnlyKeys(retry, ["attempts", "backoff", "delayMs"], "job retry");
   const { attempts, backoff = "exponential", delayMs = 1_000 } = retry;
   if (!Number.isInteger(attempts) || attempts < 1) {
     throw new TypeError("job retry attempts must be a positive integer");
@@ -302,7 +289,6 @@ function normalizeRepeat(repeat: JobRepeat | JobRepeatConfig | undefined): JobRe
     throw new TypeError("job repeat must be a function, { cron, tz }, or { everyMs }");
   }
   if ("everyMs" in repeat) {
-    assertOnlyKeys(repeat, ["everyMs"], "job repeat");
     const { everyMs } = repeat;
     if (!Number.isFinite(everyMs) || everyMs <= 0) {
       throw new TypeError("job repeat everyMs must be a positive number");
@@ -314,7 +300,6 @@ function normalizeRepeat(repeat: JobRepeat | JobRepeatConfig | undefined): JobRe
     };
   }
   if ("cron" in repeat) {
-    assertOnlyKeys(repeat, ["cron", "tz"], "job repeat");
     const { cron, tz } = repeat as { cron: string; tz: string };
     if (typeof tz !== "string" || tz.length === 0) {
       throw new TypeError("job repeat cron requires an IANA tz");
@@ -339,7 +324,6 @@ function normalizeDedupe(
   if (typeof dedupe !== "object" || dedupe === null) {
     throw new TypeError('job dedupe must be "inflight" or { completed?, failed? }');
   }
-  assertOnlyKeys(dedupe, ["completed", "failed"], "job dedupe");
   return Object.freeze({
     completed: dedupe.completed === undefined
       ? 0
@@ -349,18 +333,6 @@ function normalizeDedupe(
       : normalizeWindow(dedupe.failed, "job dedupe failed"),
   });
 }
-
-const KNOWN_OPTIONS = new Set([
-  "kind",
-  "args",
-  "handler",
-  "concurrency",
-  "key",
-  "retry",
-  "repeat",
-  "dedupe",
-  "retention",
-]);
 
 export function job<
   A extends ObjectShape,
@@ -373,7 +345,6 @@ export function job<
   if (typeof definition !== "object" || definition === null || Array.isArray(definition)) {
     throw new TypeError("job definition must be a plain object");
   }
-  assertOnlyKeys(definition, [...KNOWN_OPTIONS], "job");
   const kind = definition.kind ?? "procedure";
   if (kind !== "procedure" && kind !== "mutation") {
     throw new TypeError('job kind must be "procedure" or "mutation"');

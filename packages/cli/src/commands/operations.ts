@@ -1,11 +1,8 @@
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   statSync,
@@ -36,6 +33,8 @@ import {
   verifyFilesBackup,
   type BackupFilesManifest,
 } from "./backup-files.ts";
+import { fsyncPathSync } from "../shared/durability.ts";
+import { exactFields } from "../shared/json.ts";
 
 export { backupFilesPath } from "./backup-files.ts";
 export type { BackupFilesManifest } from "./backup-files.ts";
@@ -122,7 +121,7 @@ export function parseBackupManifest(value: unknown): VerifiedBackupManifest {
     throw new Error("backup manifest must be a JSON object");
   }
   const record = value as Record<string, unknown>;
-  const fields = [
+  exactFields(record, [
     "format",
     "sha256",
     "bytes",
@@ -131,12 +130,7 @@ export function parseBackupManifest(value: unknown): VerifiedBackupManifest {
     "durability",
     "files",
     "verifiedAt",
-  ];
-  const actual = Object.keys(record).sort();
-  const expected = [...fields].sort();
-  if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
-    throw new Error("backup manifest has an unsupported shape");
-  }
+  ], "backup manifest");
   if (record.format !== 2) throw new Error("backup manifest format must be 2");
   if (typeof record.commitVersion !== "string" || !DECIMAL_BIGINT.test(record.commitVersion)) {
     throw new Error("backup manifest commitVersion must be a canonical non-negative decimal string");
@@ -191,25 +185,6 @@ function statusJson(status: EngineStatus): EngineStatusJson {
   return { ...status, commitVersion: status.commitVersion.toString() };
 }
 
-function fsyncPath(path: string): void {
-  const fd = openSync(path, "r");
-  let failed = false;
-  let failure: unknown;
-  try {
-    fsyncSync(fd);
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    closeSync(fd);
-  } catch (closeError) {
-    if (failed) throw new AggregateError([failure, closeError], `fsync and descriptor close both failed: ${path}`);
-    throw closeError;
-  }
-  if (failed) throw failure;
-}
-
 function publishManifest(path: string, manifest: VerifiedBackupManifest): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${crypto.randomUUID()}`;
@@ -220,13 +195,13 @@ function publishManifest(path: string, manifest: VerifiedBackupManifest): void {
       flag: "wx",
       mode: 0o600,
     });
-    fsyncPath(temporary);
+    fsyncPathSync(temporary);
     // Linking a complete file gives us exclusive, atomic publication: an
     // existing manifest is never replaced, even if another process races us.
     linkSync(temporary, path);
     published = true;
     unlinkSync(temporary);
-    fsyncPath(dirname(path));
+    fsyncPathSync(dirname(path));
   } catch (error) {
     const cleanup: unknown[] = [];
     let removed = false;
@@ -246,7 +221,7 @@ function publishManifest(path: string, manifest: VerifiedBackupManifest): void {
     }
     if (removed) {
       try {
-        fsyncPath(dirname(path));
+        fsyncPathSync(dirname(path));
       } catch (cleanupError) {
         cleanup.push(cleanupError);
       }
@@ -289,7 +264,7 @@ function removeBackupCandidates(artifact: string, filesPublished: boolean): read
   }
   if (removed) {
     try {
-      fsyncPath(dirname(artifact));
+      fsyncPathSync(dirname(artifact));
     } catch (error) {
       failures.push(error);
     }

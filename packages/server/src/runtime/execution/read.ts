@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import type { ReadRecorder } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
+import { transactionAsync } from "../../database/transaction.ts";
 import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
 import {
   BoundedExecutor,
@@ -55,30 +56,21 @@ export class RuntimeReadExecutor {
   ): Promise<T> {
     return this.submit(async (connection) => {
       throwIfAborted(signal);
-      let transactionOpen = false;
-      try {
-        connection.exec("BEGIN DEFERRED");
-        transactionOpen = true;
+      return transactionAsync(connection, async () => {
         const commitVersion = this.engine.commitVersion(connection);
         const value = await work(Object.freeze({ connection, reads }), commitVersion);
         throwIfAborted(signal);
-        connection.exec("COMMIT");
-        transactionOpen = false;
         return value;
-      } catch (error) {
-        if (transactionOpen) {
-          try {
-            connection.exec("ROLLBACK");
-          } catch (rollbackError) {
-            throw new AckerDBError(
-              "unavailable",
-              "reader snapshot could not be closed",
-              { resource: "reader", cause: rollbackError },
-            );
-          }
-        }
-        throw error;
-      }
+      }, {
+        begin: "deferred",
+        onRollbackFailure: (_primary, rollbackError) => {
+          throw new AckerDBError(
+            "unavailable",
+            "reader snapshot could not be closed",
+            { resource: "reader", cause: rollbackError },
+          );
+        },
+      });
     }, {
       bytes: requestBytes,
       fairnessKey,

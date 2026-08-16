@@ -927,6 +927,37 @@ describe("exposed HTTP procedures", () => {
     expect(preflight.status).toBe(204);
   });
 
+  test("answers every websocket-door refusal with the same protocol frame", async () => {
+    const wrongMethod = await fetch(`${base}/_ws`, { method: "POST" });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("GET");
+    expect(parseServerMessage(decode(await wrongMethod.text()))).toEqual({
+      v: ACKERDB_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "malformed",
+        retryable: false,
+        message: "method not allowed; allow: GET",
+      },
+    });
+
+    // A plain GET on the upgrade path carries no upgrade headers, so Bun
+    // refuses it and the door answers the same frame instead of plain text.
+    const noUpgrade = await fetch(`${base}/_ws`);
+    expect(noUpgrade.status).toBe(400);
+    expect(parseServerMessage(decode(await noUpgrade.text()))).toEqual({
+      v: ACKERDB_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "malformed",
+        retryable: false,
+        message: "websocket upgrade required",
+      },
+    });
+  });
+
   test("varies cacheable responses by the credential that changes them", async () => {
     // A GET query is the cacheable form an operator is invited to front with a
     // CDN rule; without this it would serve one caller's rows to another.

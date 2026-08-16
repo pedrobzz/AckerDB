@@ -10,7 +10,7 @@ import {
 } from "../../validation/vector.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
-import { runStatement } from "../transaction-statement.ts";
+import { runStatement, transaction } from "../transaction.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
@@ -233,22 +233,12 @@ class NearestQueryRuntime {
 
   private execute(count: number): NearestExecution {
     assertMutationAccess();
-    const ownsTransaction = !this.conn.inTransaction;
-    let transactionOpen = false;
-    try {
-      if (ownsTransaction) {
-        this.conn.exec("BEGIN DEFERRED");
-        transactionOpen = true;
-      }
+    const search = (): NearestExecution => {
       if (this.reads !== null) {
         recordPredicateDependencies(this.plan, this.state.predicates, this.reads);
       }
       const ranked = this.rank(count);
       const rows = this.fetchRows(ranked.winners);
-      if (ownsTransaction) {
-        this.conn.exec("COMMIT");
-        transactionOpen = false;
-      }
       return {
         matches: ranked.winners.map((winner) => ({
           row: rows.get(winner.id)!,
@@ -257,19 +247,12 @@ class NearestQueryRuntime {
         candidateRowCount: ranked.candidateRowCount,
         retainedRowCount: ranked.retainedRowCount,
       };
-    } catch (error) {
-      if (transactionOpen && this.conn.inTransaction) {
-        try {
-          this.conn.exec("ROLLBACK");
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            `${this.plan.displayName}.nearest failed and its snapshot could not be closed`,
-          );
-        }
-      }
-      throw error;
-    }
+    };
+    // A caller that already holds a snapshot owns its transaction; this one only
+    // opens its own when the connection is idle.
+    return this.conn.inTransaction
+      ? search()
+      : transaction(this.conn, search, { begin: "deferred" });
   }
 
   private rank(count: number): RankedCandidates {

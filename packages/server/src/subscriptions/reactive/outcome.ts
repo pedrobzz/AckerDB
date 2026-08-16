@@ -1,5 +1,5 @@
 import type { Outcome } from "@ackerdb/core";
-import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
+import { AckerDBError } from "../../shared/errors.ts";
 
 export function isAuthFailure(outcome: Outcome): boolean {
   return outcome.code === "auth_stale" ||
@@ -20,20 +20,6 @@ export function overloadOutcome(message: string): Outcome {
     resource: "subscription",
     message,
   });
-}
-
-export function errorOutcome(error: unknown): Outcome {
-  if (isAckerDBError(error)) {
-    return Object.freeze({
-      code: error.code,
-      retryable: error.retryable,
-      message: error.message.slice(0, 512),
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-      ...(error.resource === undefined ? {} : { resource: error.resource }),
-      ...(error.committed === undefined ? {} : { committed: error.committed }),
-    });
-  }
-  return Object.freeze({ code: "internal", retryable: false, message: "Subscription evaluation failed" });
 }
 
 export function overloaded(message: string): AckerDBError {

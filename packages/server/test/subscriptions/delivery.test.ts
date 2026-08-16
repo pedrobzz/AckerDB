@@ -8,7 +8,7 @@ import {
   type SseMessage,
 } from "@ackerdb/core";
 import { OutboundBudget } from "../../src/subscriptions/delivery/budget.ts";
-import type { DeliveryClock } from "../../src/subscriptions/delivery/clock.ts";
+import type { Clock } from "../../src/shared/clock.ts";
 import { BoundedSseProducer } from "../../src/subscriptions/delivery/sse.ts";
 import {
   WebSocketSessionSink,
@@ -54,7 +54,7 @@ interface Timer {
   readonly callback: () => void;
 }
 
-class FakeClock implements DeliveryClock {
+class FakeClock implements Clock {
   private time = 0;
   private nextId = 1;
   private readonly timers = new Map<number, Timer>();

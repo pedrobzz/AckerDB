@@ -1,5 +1,5 @@
 import type { Engine } from "../../database/engine.ts";
-import { AckerDBError, drainingError } from "../../shared/errors.ts";
+import { AckerDBError, drainingError, notReadyError } from "../../shared/errors.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
@@ -20,6 +20,7 @@ import type {
 } from "../sessions/store.ts";
 import type { FileCleanupRuntime } from "../../files/cleanup.ts";
 import { wireByteLength } from "../../shared/bytes.ts";
+import { finiteMillis } from "../../shared/clock.ts";
 
 
 export interface RuntimeControlOptions {
@@ -140,11 +141,7 @@ export class RuntimeControl {
     if (this.lifecycle === "draining") {
       throw drainingError("runtime is not accepting operations", "operation");
     }
-    throw new AckerDBError(
-      "unavailable",
-      "runtime is not available",
-      { resource: "operation" },
-    );
+    throw notReadyError("runtime is not available", "operation");
   }
 
   admittedRequestBytes(request: unknown, receivedBytes?: number): number {
@@ -207,9 +204,7 @@ export class RuntimeControl {
   drain(deadlineAtMs = Date.now() + this.options.limits.gracefulShutdownMs): Promise<void> {
     if (this.drainPromise !== null) return this.drainPromise;
     if (this.lifecycle === "stopped") return Promise.resolve();
-    if (!Number.isFinite(deadlineAtMs)) {
-      throw new RangeError("runtime shutdown deadline must be finite");
-    }
+    finiteMillis(deadlineAtMs, "runtime shutdown deadline");
     this.lifecycle = "draining";
     this.options.jobs.stop();
     this.options.fileCleanup.stop();

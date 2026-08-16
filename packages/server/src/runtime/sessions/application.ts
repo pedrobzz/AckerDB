@@ -42,6 +42,7 @@ import type { RuntimeQueries } from "../queries/runtime.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "./store.ts";
 import { RuntimeSessionStore } from "./store.ts";
 import { digestOfWire } from "../../shared/digest.ts";
+import { finiteMillis } from "../../shared/clock.ts";
 
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
@@ -215,7 +216,7 @@ export class RuntimeSessionApplication {
             context.fairnessKey,
             signal,
             requestBytes,
-            this.readNow(),
+            finiteMillis(this.options.now(), "runtime clock"),
             invalidations.publish,
           );
           const result = await invokeSideEffectingHandler(
@@ -454,11 +455,6 @@ export class RuntimeSessionApplication {
     return fn;
   }
 
-  private readNow(): number {
-    const now = this.options.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
 }
 
 function applicationError(value: unknown) {

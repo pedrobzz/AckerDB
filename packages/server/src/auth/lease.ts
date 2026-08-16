@@ -3,7 +3,7 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialExpired,
   credentialRevoked,
-  credentialVerifierUnavailable,
+  authenticationUnavailable,
   verifyClientCredential,
   type AuthenticatedPrincipal,
   type ClientPrincipal,
@@ -19,12 +19,8 @@ import {
 } from "./invalidation.ts";
 import { cancellation, throwIfAborted, type AckerDBError } from "../shared/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../shared/numbers.ts";
-
-export interface AuthLeaseClock {
-  now(): number;
-  setTimeout(callback: () => void, delayMs: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
+import { SYSTEM_CLOCK, type Clock } from "../shared/clock.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 export interface AuthLease {
   readonly principal: ClientPrincipal;
@@ -41,20 +37,11 @@ export interface AcquireAuthLeaseOptions {
   readonly resolveScopes?: ScopeResolver;
   readonly signal?: AbortSignal;
   readonly revocationDeadlineMs: number;
-  readonly clock?: AuthLeaseClock;
+  readonly clock?: Clock;
 }
 
 export const MAX_REVOCATION_DEADLINE_MS = 5_000;
 const NEVER_ABORTED = new AbortController().signal;
-const SYSTEM_CLOCK: AuthLeaseClock = Object.freeze({
-  now: Date.now,
-  setTimeout: (callback: () => void, delayMs: number) => {
-    const handle = setTimeout(callback, delayMs);
-    handle.unref?.();
-    return handle;
-  },
-  clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-});
 
 export function validateCredentialVerifierRevocation(
   verifier: CredentialVerifier | undefined,
@@ -192,9 +179,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     // AckerDB credentials never expire; invalidation revokes them instead.
     if (!Number.isFinite(verified.expiresAt)) return;
     try {
-      const now = clock.now();
-      if (!Number.isFinite(now)) throw new RangeError("auth lease clock must return finite milliseconds");
-      const remaining = verified.expiresAt - now;
+      const remaining = verified.expiresAt - finiteMillis(clock.now(), "auth lease clock");
       if (remaining <= 0) {
         abort(credentialExpired());
         return;
@@ -206,7 +191,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
         }, Math.min(remaining, MAX_TIMER_DELAY_MS)),
       };
     } catch (error) {
-      abort(credentialVerifierUnavailable(error));
+      abort(authenticationUnavailable(error));
     }
   };
 
@@ -227,7 +212,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     } catch (error) {
       subscriptionSettled = true;
       if (ended) throw controller.signal.reason;
-      throw credentialVerifierUnavailable(error);
+      throw authenticationUnavailable(error);
     }
     if (ended) {
       release();
@@ -246,7 +231,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     ]);
     acquiring = false;
     if (verified.kind === "anonymous") {
-      throw credentialVerifierUnavailable(new Error("remote credential resolved to an anonymous principal"));
+      throw authenticationUnavailable(new Error("remote credential resolved to an anonymous principal"));
     }
     if (ended) throw controller.signal.reason;
     principal = verified;

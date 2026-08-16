@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, openSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   canonicalDatabasePaths,
@@ -6,34 +6,11 @@ import {
   restoreArtifactPaths,
 } from "./artifacts.ts";
 import { DatabaseOwnership } from "./ownership.ts";
+import { fsyncPathSync } from "../shared/durability.ts";
 
 export interface DatabaseResetResult {
   readonly database: string;
   readonly removed: readonly string[];
-}
-
-function fsyncDirectory(path: string): void {
-  const descriptor = openSync(path, "r");
-  let failed = false;
-  let failure: unknown;
-  try {
-    fsyncSync(descriptor);
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    closeSync(descriptor);
-  } catch (closeError) {
-    if (failed) {
-      throw new AggregateError(
-        [failure, closeError],
-        `database reset directory sync and descriptor close both failed: ${path}`,
-      );
-    }
-    throw closeError;
-  }
-  if (failed) throw failure;
 }
 
 /**
@@ -65,7 +42,7 @@ export function resetDatabase(path: string): DatabaseResetResult {
     }
     if (removed.length > 0) {
       try {
-        fsyncDirectory(dirname(database));
+        fsyncPathSync(dirname(database));
       } catch (error) {
         failures.push(error);
       }

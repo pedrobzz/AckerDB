@@ -23,7 +23,7 @@ import { positiveSafeInteger } from "../../shared/numbers.ts";
 import {
   credentialExpired,
   credentialRevoked,
-  credentialVerifierUnavailable,
+  authenticationUnavailable,
   verifyClientCredential,
   type ClientPrincipal,
   type Principal,
@@ -43,7 +43,7 @@ import {
   transportSource,
   type TransportSource,
 } from "../../runtime/caller.ts";
-import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
+import { AckerDBError, drainingError, isAckerDBError } from "../../shared/errors.ts";
 import { PRODUCTION_LIMITS } from "../../runtime/limits.ts";
 import { outcomeFromError } from "../../runtime/outcome.ts";
 import { MAX_TIMER_DELAY_MS } from "../../shared/numbers.ts";
@@ -54,7 +54,6 @@ import {
   type RuntimePublication,
   type RuntimePublicationBatch,
   type RuntimeRequest,
-  type SessionClock,
   type SessionControlMessage,
   type SessionOptions,
   type SessionPhase,
@@ -67,6 +66,7 @@ import {
   type DecodedClientFrame,
   type SessionWireFrame,
 } from "./frame.ts";
+import { finiteMillis, SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 
 function authenticationDescriptor(
   principal: ClientPrincipal,
@@ -86,12 +86,6 @@ function authenticationDescriptor(
     ? Object.freeze({ principal: "user", identity: principal.identity, provenance, credentialTtlMs })
     : Object.freeze({ principal: "workload", provenance, credentialTtlMs });
 }
-
-const SYSTEM_CLOCK: SessionClock = Object.freeze({
-  now: Date.now,
-  setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
-  clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-});
 
 function internalError(cause: unknown): AckerDBError {
   return new AckerDBError("internal", "internal server error", { cause });
@@ -117,7 +111,7 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly clock: SessionClock;
+  private readonly clock: Clock;
   private readonly source: TransportSource;
   private phase: SessionPhase = "awaiting_hello";
   private clientSessionId: string | null = null;
@@ -213,7 +207,7 @@ export class Session {
     return rejected;
   }
 
-  close(error: AckerDBError = new AckerDBError("draining", "session closed")): Promise<void> {
+  close(error: AckerDBError = drainingError("session closed", "connection")): Promise<void> {
     return this.terminate(error);
   }
 
@@ -310,7 +304,7 @@ export class Session {
     try {
       principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
-      const failure = credentialVerifierUnavailable(error);
+      const failure = authenticationUnavailable(error);
       if (this.pendingAuthController === authController) this.pendingAuthController = null;
       void this.terminate(failure);
       return;
@@ -334,7 +328,7 @@ export class Session {
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
-        ...authenticationDescriptor(principal, this.readNow()),
+        ...authenticationDescriptor(principal, finiteMillis(this.clock.now(), "session clock")),
       });
       if (this.isClosed()) return;
       this.paused = false;
@@ -368,7 +362,7 @@ export class Session {
         this.queueAuthCompletion(message, transitionController, principal);
       },
       (error) => {
-        const failure = credentialVerifierUnavailable(error);
+        const failure = authenticationUnavailable(error);
         this.queueAuthCompletion(message, transitionController, failure);
       },
     );
@@ -406,7 +400,7 @@ export class Session {
       void this.terminate(internalError(new Error("auth completed before hello")));
       return;
     }
-    if (result.kind !== "anonymous" && result.expiresAt <= this.readNow()) {
+    if (result.kind !== "anonymous" && result.expiresAt <= finiteMillis(this.clock.now(), "session clock")) {
       void this.terminate(credentialExpired());
       return;
     }
@@ -461,7 +455,7 @@ export class Session {
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
-          ...authenticationDescriptor(result, this.readNow()),
+          ...authenticationDescriptor(result, finiteMillis(this.clock.now(), "session clock")),
         };
         await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
@@ -603,7 +597,7 @@ export class Session {
       credential,
       this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
-      () => this.readNow(),
+      () => finiteMillis(this.clock.now(), "session clock"),
       this.runtime.resolveScopes,
     );
     if (signal?.aborted) throw signal.reason;
@@ -618,11 +612,6 @@ export class Session {
     return this.phase === "closed";
   }
 
-  private readNow(): number {
-    const now = this.clock.now();
-    if (!Number.isFinite(now)) throw new RangeError("session clock must return a finite value");
-    return now;
-  }
 
   private scheduleExpiry(principal: Principal, authEpoch: number): void {
     this.clearExpiry();
@@ -634,7 +623,7 @@ export class Session {
     ) return;
     const schedule = () => {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
-      const remaining = principal.expiresAt - this.readNow();
+      const remaining = principal.expiresAt - finiteMillis(this.clock.now(), "session clock");
       if (remaining <= 0) {
         void this.terminate(credentialExpired());
         return;

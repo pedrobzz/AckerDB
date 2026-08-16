@@ -68,6 +68,11 @@ export function drainingError(message: string, resource: ResourceClass): AckerDB
   });
 }
 
+/** Refused only because this process has not finished coming up: always retryable. */
+export function notReadyError(message: string, resource: ResourceClass): AckerDBError {
+  return new AckerDBError("unavailable", message, { retryable: true, resource });
+}
+
 /** Preserve framework abort reasons and normalize every external cancellation. */
 export function cancellation(reason: unknown): AckerDBError {
   return isAckerDBError(reason)

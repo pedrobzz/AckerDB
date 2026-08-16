@@ -115,14 +115,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
 ]);
 
 function parseRawConfig(value: unknown): RawConfig {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("application configuration must be a JSON object");
-  }
-  const unknown = Object.keys(value).filter((field) => !RAW_CONFIG_FIELDS.has(field));
-  if (unknown.length > 0) {
-    throw new Error(`unknown configuration field: ${unknown.join(", ")}`);
-  }
-  return value as RawConfig;
+  return exactObject(value, [...RAW_CONFIG_FIELDS], "configuration") as RawConfig;
 }
 
 function listenerPort(value: unknown): number {

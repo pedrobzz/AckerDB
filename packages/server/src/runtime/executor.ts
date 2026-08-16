@@ -6,6 +6,7 @@ import {
 import type { QueueLimits } from "./limits.ts";
 import type { AdmissionResource } from "./admission.ts";
 import { MAX_TIMER_DELAY_MS, positiveSafeInteger } from "../shared/numbers.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 export interface ExecutorTaskOptions {
   readonly bytes: number;
@@ -152,7 +153,7 @@ export class BoundedExecutor {
     this.clearExpiryTimer();
     if (snapshot.closed || snapshot.nextExpiryAtMs === undefined) return;
     const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("executor clock must return finite milliseconds");
+    finiteMillis(now, "executor clock");
     const delay = Math.min(Math.max(0, snapshot.nextExpiryAtMs - now), MAX_TIMER_DELAY_MS);
     this.expiryTimer = setTimeout(() => {
       this.expiryTimer = undefined;

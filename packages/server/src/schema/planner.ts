@@ -34,6 +34,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { Engine, indexSqlName, type PhysicalTablePlan } from "../database/engine.ts";
+import { transaction } from "../database/transaction.ts";
 import { CorruptDatabaseError } from "../shared/errors.ts";
 import { isValidationError } from "../validation/error.ts";
 import { checkDescriptor } from "./descriptor-kinds.ts";
@@ -480,18 +481,12 @@ export function planDiff(ctx: PlanContext, diff: SchemaDiff): SchemaPlan {
 
 /** Apply a refusal-free plan: tags, ops, and the new snapshot in one transaction. */
 export function commitPlan(engine: Engine, target: SchemaSnapshot, plan: SchemaPlan): void {
-  const writer = engine.writer;
-  writer.exec("BEGIN IMMEDIATE");
-  try {
+  transaction(engine.writer, () => {
     verifyPlanProbes(plan);
     engine.persistTags();
     for (const op of plan.ops) op();
     engine.saveSnapshot(target);
-    writer.exec("COMMIT");
-  } catch (error) {
-    writer.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 /** Refuse a stale optimistic plan before its transaction performs any writes. */

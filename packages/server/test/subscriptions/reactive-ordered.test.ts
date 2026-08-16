@@ -7,6 +7,7 @@ import type {
 } from "@ackerdb/core";
 import { stableEncode } from "@ackerdb/core";
 import { AckerDBError } from "../../src/shared/errors.ts";
+import { ValidationError } from "../../src/validation/error.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   ReactiveCommit,
@@ -1592,6 +1593,44 @@ describe("ordered reactive ownership", () => {
       historyBytes: 0,
       evaluatingEntries: 0,
     });
+  });
+
+  test("answers a bad argument inside a shared subscription with the validation outcome", async () => {
+    let version = 0n;
+    let fail = false;
+    const subscriber = new RecordingSubscriber();
+    const reactive = new OrderedReactive({
+      limits: testLimits(),
+      generation: generationSequence(),
+      evaluate: async () => {
+        if (fail) throw new ValidationError("messages.list: limit must be a positive integer");
+        return evaluation("ok", version, "messages");
+      },
+    });
+    await reactive.subscribeQuery({
+      address: "api.messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber,
+      id: 1,
+      authEpoch: 0,
+    });
+
+    await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+      fail = true;
+    });
+
+    expect(subscriber.errors).toEqual([{
+      id: 1,
+      outcome: {
+        code: "validation",
+        retryable: false,
+        message: "messages.list: limit must be a positive integer",
+      },
+    }]);
   });
 
   test("terminates an active subscription when a recompute grows beyond one frame", async () => {

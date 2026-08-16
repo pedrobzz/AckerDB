@@ -429,7 +429,6 @@ export {
   type OutboundLane,
   type OutboundReservation,
 } from "./subscriptions/delivery/budget.ts";
-export { type DeliveryClock } from "./subscriptions/delivery/clock.ts";
 export {
   WebSocketSessionSink,
   type WebSocketDeliverySnapshot,
@@ -465,7 +464,6 @@ export {
   type RuntimePublication,
   type RuntimeRequest,
   type SessionApplicationMessage,
-  type SessionClock,
   type SessionControlMessage,
   type SessionOptions,
   type SessionPhase,

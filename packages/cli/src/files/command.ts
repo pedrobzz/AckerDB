@@ -32,6 +32,7 @@ import {
   type FileStoreMigrationCompleteReport,
   type FileStoreMigrationProgressEvent,
 } from "./migrate.ts";
+import { fsyncPathSync, runWithCleanupAsync } from "../shared/durability.ts";
 
 const CONFIG_NAME = ".ackerdb.config.json";
 const MAX_TARGET_DESCRIPTOR_BYTES = 64 * 1024;
@@ -79,15 +80,6 @@ function unchanged(snapshot: ConfigSnapshot): boolean {
     : existsSync(snapshot.path) && readFileSync(snapshot.path, "utf8") === snapshot.contents;
 }
 
-function syncPath(path: string): void {
-  const descriptor = openSync(path, "r");
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 function publishActiveFilesConfig(
   snapshot: ConfigSnapshot,
   target: Readonly<Record<string, unknown>>,
@@ -120,7 +112,7 @@ function publishActiveFilesConfig(
     renameSync(temporary, snapshot.path);
     published = true;
     try {
-      syncPath(dirname(snapshot.path));
+      fsyncPathSync(dirname(snapshot.path));
     } catch (error) {
       throw new Error(
         `FileStore configuration was replaced at ${snapshot.path}, but its directory sync failed; ` +
@@ -158,29 +150,12 @@ function containsPath(parent: string, child: string): boolean {
   );
 }
 
-async function closeAfter<T>(engine: Engine, work: () => Promise<T>): Promise<T> {
-  let failed = false;
-  let failure: unknown;
-  let result: T | undefined;
-  try {
-    result = await work();
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    engine.close("clean");
-  } catch (closeError) {
-    if (failed) {
-      throw new AggregateError(
-        [failure, closeError],
-        "FileStore migration and database close both failed",
-      );
-    }
-    throw closeError;
-  }
-  if (failed) throw failure;
-  return result!;
+function closeAfter<T>(engine: Engine, work: () => Promise<T>): Promise<T> {
+  return runWithCleanupAsync(
+    work,
+    () => engine.close("clean"),
+    "FileStore migration and database close both failed",
+  );
 }
 
 /** Run one offline migration and publish its target as the app's active FileStore. */

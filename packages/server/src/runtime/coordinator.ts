@@ -30,6 +30,7 @@ import {
   poisonTransaction,
   runInTransaction,
 } from "./transaction-context.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
@@ -248,7 +249,7 @@ export class CommitCoordinator<Publication> {
           },
         };
       }
-      const now = this.readNow();
+      const now = finiteMillis(this.now(), "coordinator clock");
       const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
       if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
         throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
@@ -279,6 +280,9 @@ export class CommitCoordinator<Publication> {
     let publication: Publication | undefined;
     try {
       throwIfAborted(request.transactionSignal);
+      // Not a `transaction()` site: the publication reservation strictly contains
+      // this transaction, and the rollback path continues with more work inside
+      // the same frame. Bracketing it is a coordinator redesign, not a dedupe.
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
       let value: T;
@@ -318,6 +322,8 @@ export class CommitCoordinator<Publication> {
             }
             let staged: StagedMutation;
             try {
+              // Not a `transaction()` site: `transactionOpen` is the frame-wide
+              // flag the surrounding coordinator path also reads.
               this.engine.writer.exec("BEGIN IMMEDIATE");
               transactionOpen = true;
               staged = this.engine[mutationReplayOwner].stage({
@@ -326,7 +332,7 @@ export class CommitCoordinator<Publication> {
                 result: result ?? null,
                 resultBytes,
                 durability: this.engine.durability,
-              }, this.readNow(), "replay");
+              }, finiteMillis(this.now(), "coordinator clock"), "replay");
               this.engine.writer.exec("COMMIT");
               transactionOpen = false;
               this.engine[mutationReplayOwner].committed(staged);
@@ -382,7 +388,7 @@ export class CommitCoordinator<Publication> {
           result: result ?? null,
           resultBytes,
           durability: this.engine.durability,
-        }, this.readNow());
+        }, finiteMillis(this.now(), "coordinator clock"));
         commitVersion = stagedMutation.commitVersion;
       } else {
         commitVersion = this.engine.allocateCommitVersion();
@@ -448,7 +454,7 @@ export class CommitCoordinator<Publication> {
   }
 
   private pruneExpiredMutations(): void {
-    const now = this.readNow();
+    const now = finiteMillis(this.now(), "coordinator clock");
     if (now < this.nextPruneAtMs) return;
     this.nextPruneAtMs = now + 60_000;
     const before = now - this.limits.mutationReplay.maxAgeMs;
@@ -471,9 +477,4 @@ export class CommitCoordinator<Publication> {
     return sequence;
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("coordinator clock must return finite milliseconds");
-    return now;
-  }
 }

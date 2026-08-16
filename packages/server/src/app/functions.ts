@@ -710,30 +710,6 @@ const SSE_FIELDS = {
 const FUNCTION_KEYS = Object.freeze(Object.keys(FUNCTION_FIELDS));
 const SSE_KEYS = Object.freeze(Object.keys(SSE_FIELDS));
 
-/**
- * Every field a declaration may carry, refused by name otherwise. An
- * intersection parameter turns off TypeScript's excess-property check, so a
- * misspelled or retired key — `internal`, once — would otherwise be dropped in
- * silence and read as an expectation nothing meets.
- *
- * Every own key, enumerable or not, string or symbol: a field hidden behind
- * `enumerable: false` is still a field the author expected something to
- * consume, and nothing here consumes any of them.
- */
-export function refuseUnknownFields(
-  def: object,
-  allowed: readonly string[],
-  where: string,
-): void {
-  for (const key of Reflect.ownKeys(def)) {
-    if (typeof key === "symbol" || !allowed.includes(key)) {
-      throw new TypeError(
-        `${where} must not declare "${String(key)}" — it carries exactly ${allowed.join(", ")}`,
-      );
-    }
-  }
-}
-
 function register<K extends string>(kind: K) {
   return <
     A extends ObjectShape,
@@ -750,7 +726,6 @@ function register<K extends string>(kind: K) {
     ResultOfDefinition<Definition>,
     DefinitionReturn<Definition>
   > & ApiPathOf<Definition> => {
-    refuseUnknownFields(def, FUNCTION_KEYS, kind);
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
@@ -850,7 +825,6 @@ export function sseProcedure<
 >(
   def: SseDef<A, Y, Ctx> & Definition & ApiPathConstraint<NoInfer<Definition>>,
 ): RegisteredSse<A, Expand<InferValidator<Y>>, Schema> & ApiPathOf<Definition> {
-  refuseUnknownFields(def, SSE_KEYS, "sse");
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }

@@ -290,6 +290,19 @@ interface CredentialRowRef {
 
 const credentialRef = (row: never): CredentialRowRef => row as unknown as CredentialRowRef;
 
+/**
+ * Credential inputs reach this module straight from application code, with no
+ * validator in front of them, so an undeclared field is refused here rather
+ * than silently ignored.
+ */
+function refuseUnknownCredentialFields(input: object, allowed: readonly string[]): void {
+  for (const key of Object.keys(input)) {
+    if (!allowed.includes(key)) {
+      throw new AckerDBError("validation", `unknown credential field "${key}"`);
+    }
+  }
+}
+
 export class Credentials {
   /** Every credential is an Identity, so the two domains meet on one handle. */
   private readonly identities: Identities;
@@ -397,11 +410,7 @@ export class Credentials {
     if (declaration === null || typeof declaration !== "object" || Array.isArray(declaration)) {
       throw new AckerDBError("validation", "credential input must be an object");
     }
-    for (const key of Object.keys(declaration)) {
-      if (key !== "name" && key !== "metadata" && key !== "scopes") {
-        throw new AckerDBError("validation", `unknown credential field "${key}"`);
-      }
-    }
+    refuseUnknownCredentialFields(declaration, ["name", "metadata", "scopes"]);
     const name = checkedName(declaration.name, writes.limits.maxNameBytes);
     const metadata = checkedMetadata(declaration.metadata ?? {}, writes.limits.maxMetadataBytes);
     const scopes = normalizeGrantPatterns(
@@ -464,11 +473,7 @@ export class Credentials {
     if (keys.length === 0) {
       throw new AckerDBError("validation", "credential update requires name or metadata");
     }
-    for (const key of keys) {
-      if (key !== "name" && key !== "metadata") {
-        throw new AckerDBError("validation", `unknown credential field "${key}"`);
-      }
-    }
+    refuseUnknownCredentialFields(input, ["name", "metadata"]);
     const row = await this.addressed(scope, tokenId);
     const patch: Record<string, unknown> = { updatedAt: this.timestamp(writes) };
     if (Object.hasOwn(input, "name")) {

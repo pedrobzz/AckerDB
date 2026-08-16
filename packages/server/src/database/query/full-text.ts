@@ -3,7 +3,7 @@ import { ValidationError } from "../../validation/error.ts";
 import type { Engine, TablePlan } from "../engine.ts";
 import type { ReadRecorder } from "../access.ts";
 import { ftsCorpusKey } from "../keys.ts";
-import { runStatement } from "../transaction-statement.ts";
+import { runStatement } from "../transaction.ts";
 import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {

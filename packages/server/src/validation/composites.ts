@@ -1,6 +1,6 @@
 /** The `v` validators that compose other validators: arrays, objects, unions. */
 import { encode, WireError } from "@ackerdb/core";
-import { ValidationError } from "./error.ts";
+import { refuseUnknownKeys, refuseUnknownUnionKeys, ValidationError } from "./error.ts";
 import { lengthBound, nextBounds, numberBounds, type Bounds } from "./bounds.ts";
 import { checkArrayConstraints, type ConstraintFields } from "./constraints.ts";
 import {
@@ -153,11 +153,7 @@ export function compileShape<S extends ObjectShape>(
       fail(path, "object", value);
     }
     const input = value as Record<string, unknown>;
-    for (const key of Object.keys(input)) {
-      if (knownKeys[key] !== true && input[key] !== undefined) {
-        throw new ValidationError(`${path}: unknown field "${key}"`);
-      }
-    }
+    refuseUnknownKeys(input, (key) => knownKeys[key] === true, path);
     const out: Record<string, unknown> = {};
     for (const field of fields) {
       const present = Object.hasOwn(input, field.key);
@@ -372,11 +368,7 @@ export function union<M extends UnionMembers>(name: string, members: M): UnionVa
             `${path}.tag: expected one of ${variantNames.map((v) => JSON.stringify(v)).join(" | ")}, got ${describe(variant) === "string" ? JSON.stringify(variant) : describe(variant)}`,
           );
         }
-        for (const key of Object.keys(input)) {
-          if (key !== "tag" && key !== "value" && input[key] !== undefined) {
-            throw new ValidationError(`${path}: unknown field "${key}" on union value`);
-          }
-        }
+        refuseUnknownUnionKeys(input, path);
         const member = members[variant]!;
         if (
           !Object.hasOwn(input, "value") &&

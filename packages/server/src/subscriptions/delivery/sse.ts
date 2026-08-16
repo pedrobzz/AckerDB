@@ -10,14 +10,14 @@ import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
 import { PUBLIC_ERROR_FALLBACK, fitOutcome, outcomeFromError } from "../../runtime/outcome.ts";
 import type { OutboundBudget, OutboundReservation } from "./budget.ts";
-import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
+import { SYSTEM_CLOCK, type Clock } from "../../shared/clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
 
 export interface BoundedSseProducerOptions {
   readonly budget: OutboundBudget;
   readonly limits: ServiceLimits;
   readonly signal?: AbortSignal;
-  readonly clock?: DeliveryClock;
+  readonly clock?: Clock;
 }
 
 export interface SseDeliverySnapshot {
@@ -134,7 +134,7 @@ export class BoundedSseProducer {
 
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
-  private readonly clock: DeliveryClock;
+  private readonly clock: Clock;
   private readonly controller: ReadableStreamDefaultController<Uint8Array>;
   private readonly abortController = new AbortController();
   private readonly reservations = new Map<number, StreamReservation>();
@@ -169,7 +169,7 @@ export class BoundedSseProducer {
     }
     this.budget = options.budget;
     this.limits = options.limits;
-    this.clock = options.clock ?? SYSTEM_DELIVERY_CLOCK;
+    this.clock = options.clock ?? SYSTEM_CLOCK;
     this.externalSignal = options.signal;
     this.signal = this.abortController.signal;
 

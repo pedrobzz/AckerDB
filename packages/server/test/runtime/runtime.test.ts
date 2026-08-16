@@ -952,6 +952,24 @@ describe("runtime commit and replay ownership", () => {
     expect(JSON.parse(await mismatched.text())).toMatchObject({ code: "validation" });
   });
 
+  test("refuses to run a query on a clock that stopped returning milliseconds", async () => {
+    currentTime = Number.NaN;
+    let response: Response;
+    try {
+      response = await runtime.runQuery({
+        id: 24,
+        address: "api.messages.list",
+        args: { channelId: 1n },
+        principal: ANONYMOUS_PRINCIPAL,
+        respond: ({ body, status }) => new Response(body, { status }),
+      });
+    } finally {
+      currentTime = null;
+    }
+    expect(response.status).toBe(500);
+    expect(JSON.parse(await response.text())).toMatchObject({ code: "internal" });
+  });
+
   test("publishes application errors separately and uses a procedure's named HTTP status", async () => {
     await session.open();
     const queryResult = await runtime.query(session.context, request({

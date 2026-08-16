@@ -11,7 +11,7 @@ import { emitFullTextWriteKeys, emitWriteKeys, idKey } from "./keys.ts";
 import { createTableQuery } from "./query/query.ts";
 import { createNearestQuery } from "./query/nearest.ts";
 import { createFullTextQuery } from "./query/full-text.ts";
-import { runStatement } from "./transaction-statement.ts";
+import { runStatement } from "./transaction.ts";
 import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
 import { decode, stableEncode } from "@ackerdb/core";
@@ -188,11 +188,6 @@ function checkFullRow(plan: TablePlan, row: unknown, op: string): Record<string,
       : input[name];
     out[name] = validator.check(value, `${plan.displayName}.${op}.${name}`);
   }
-  for (const key of Object.keys(input)) {
-    if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
-      throw new ValidationError(`${plan.displayName}.${op}: unknown field "${key}"`);
-    }
-  }
   return out;
 }
 
@@ -307,10 +302,10 @@ function updateRow(
     if (key === plan.pk) {
       throw new ValidationError(`${plan.displayName}.patch: the primary key cannot be changed`);
     }
-    if (!Object.hasOwn(plan.table.columns, key)) {
-      throw new ValidationError(`${plan.displayName}.patch: unknown field "${key}"`);
-    }
-    const validator = plan.table.columns[key]!;
+    // TypeScript refuses a column this table does not declare; a key that
+    // still arrives at runtime carries no storage and is not written.
+    const validator = plan.table.columns[key];
+    if (validator === undefined) continue;
     const value = validator.check(partial[key], `${plan.displayName}.patch.${key}`);
     changed[key] = value;
     updated[key] = value;
@@ -607,11 +602,6 @@ function eventWriteMethods(
             ? null
             : input[name];
           out[name] = validator.check(value, `${logicalName}.insert.${name}`);
-        }
-        for (const key of Object.keys(input)) {
-          if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
-            throw new ValidationError(`${logicalName}.insert: unknown field "${key}"`);
-          }
         }
         writes.events.push({ table: logicalName, row: { [pk]: nextEventId(logicalName), ...out } });
       } catch (error) {

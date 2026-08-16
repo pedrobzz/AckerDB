@@ -9,7 +9,6 @@
 import type { Schema } from "../schema/definition.ts";
 import {
   apiPath,
-  refuseUnknownFields,
   type FunctionResult,
   type TxCtx,
 } from "./functions.ts";
@@ -108,18 +107,6 @@ function validateMethods(value: unknown, where: string): readonly HttpHandlerMet
   return Object.freeze([...value]) as readonly HttpHandlerMethod[];
 }
 
-/** The declaration's own fields; `satisfies` keeps the list and the type equal. */
-const DEFINITION_FIELDS = {
-  apiPath: true,
-  methods: true,
-  handler: true,
-} satisfies Record<keyof HttpHandlerDef, true>;
-
-const DEFINITION_KEYS = Object.freeze(Object.keys(DEFINITION_FIELDS));
-const REGISTERED_KEYS = Object.freeze(
-  [...DEFINITION_KEYS, "isAckerDB", "isAckerDBServerOnly", "kind"],
-);
-
 /** A raw handler's surface, read once from the declaration it was written on. */
 interface HttpHandlerSurface {
   readonly apiPath: string;
@@ -129,9 +116,8 @@ interface HttpHandlerSurface {
 
 /**
  * The one interpreter of a raw handler's definition. Exactly `apiPath`,
- * `methods`, and `handler`: nothing else exists to consume — no validators, no
- * OpenAPI operation, no policy — so any other field is a registration error,
- * never a silently ignored expectation.
+ * `methods`, and `handler` are consumed — no validators, no OpenAPI operation,
+ * no policy — and each is read once, here.
  */
 export function validateHttpHandlerShape(
   value: {
@@ -140,9 +126,7 @@ export function validateHttpHandlerShape(
     readonly handler?: unknown;
   },
   where = "httpHandler",
-  allowed: readonly string[] = DEFINITION_KEYS,
 ): HttpHandlerSurface {
-  refuseUnknownFields(value, allowed, where);
   const apiPathValue = apiPath(value.apiPath, `${where} apiPath`);
   const methods = validateMethods(value.methods, where);
   // Read once, here, and returned: an accessor that answered a function to
@@ -183,7 +167,7 @@ export function validateRegisteredHttpHandler(
   // The same interpreter, widened to the markers the builder stamps: one
   // owner for every field, so the registered form cannot read a field
   // differently from the declaration it came from.
-  const surface = validateHttpHandlerShape(snapshot, where, REGISTERED_KEYS);
+  const surface = validateHttpHandlerShape(snapshot, where);
   if (snapshot.isAckerDBServerOnly !== true) {
     throw new TypeError(
       `${where} must carry isAckerDBServerOnly: true — generated client APIs erase the export by that marker`,

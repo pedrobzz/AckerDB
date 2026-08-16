@@ -46,6 +46,7 @@ import {
   type TagMap,
   type TagsOf,
 } from "../../database/engine.ts";
+import { transactionAsync } from "../../database/transaction.ts";
 import { fullTextTargetPlan } from "../../database/full-text.ts";
 import { isFrameworkTable } from "../../database/framework-schema.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
@@ -217,8 +218,7 @@ export async function applyStep(
   }
   const saved = augmentSnapshot(target, driftOf);
 
-  writer.exec("BEGIN IMMEDIATE");
-  try {
+  await transactionAsync(writer, async () => {
     // The CLI/read-only plan is advisory. Re-run every data-dependent guard
     // under the writer lock before tags, rows, snapshots, or history can move.
     verifyPlanProbes(plan);
@@ -263,11 +263,7 @@ export async function applyStep(
         .query("INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
         .run(step.number, step.name, migrationIdentity(step), Date.now());
     }
-    writer.exec("COMMIT");
-  } catch (error) {
-    writer.exec("ROLLBACK");
-    throw error;
-  }
+  });
   return { applied, saved };
 }
 
@@ -448,11 +444,6 @@ function checkRow(table: string, snap: TableSnapshot, row: unknown, op: string):
       ? null
       : input[name];
     out[name] = checkDescriptor(desc, value, `${table}.${op}.${name}`);
-  }
-  for (const key of Object.keys(input)) {
-    if (key !== pk && !Object.hasOwn(snap.columns, key) && input[key] !== undefined) {
-      throw new ValidationError(`${table}.${op}: unknown field "${key}"`);
-    }
   }
   return out;
 }

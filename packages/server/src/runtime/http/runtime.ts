@@ -55,6 +55,7 @@ import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.t
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { validatedSseSource } from "../sse/source.ts";
 import { digestOfWire } from "../../shared/digest.ts";
+import { finiteMillis } from "../../shared/clock.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
@@ -178,7 +179,7 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        this.readNow(),
+        finiteMillis(this.options.now(), "runtime clock"),
         invalidations.publish,
       );
       return await invokeSideEffectingHandler(
@@ -218,7 +219,7 @@ export class RuntimeHttp {
         fairnessKey,
         signal,
         requestBytes,
-        this.readNow(),
+        finiteMillis(this.options.now(), "runtime clock"),
         () => {},
         "http",
       );
@@ -293,7 +294,7 @@ export class RuntimeHttp {
           fairnessKey,
           producer.signal,
           requestBytes,
-          this.readNow(),
+          finiteMillis(this.options.now(), "runtime clock"),
           invalidations.publish,
         );
         const handler = invokeFunction(fn, procedure as SseCtx, request.args, {
@@ -424,9 +425,4 @@ export class RuntimeHttp {
     if (this.sseProducers.get(streamId) === producer) this.sseProducers.delete(streamId);
   }
 
-  private readNow(): number {
-    const now = this.options.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
 }

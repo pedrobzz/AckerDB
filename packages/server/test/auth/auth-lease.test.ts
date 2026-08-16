@@ -1,3 +1,4 @@
+import type { Clock } from "../../src/shared/clock.ts";
 import { describe, expect, test } from "bun:test";
 import type { Credential } from "@ackerdb/core";
 import {
@@ -5,7 +6,6 @@ import {
   assertCredentialVerifier,
   MAX_REVOCATION_DEADLINE_MS,
   validateCredentialVerifierRevocation,
-  type AuthLeaseClock,
 } from "../../src/auth/lease.ts";
 import {
   ANONYMOUS_PRINCIPAL,
@@ -50,7 +50,7 @@ interface Timer {
   readonly callback: () => void;
 }
 
-class ManualClock implements AuthLeaseClock {
+class ManualClock implements Clock {
   nowMs: number;
   clearCalls = 0;
   readonly delays: number[] = [];
@@ -173,7 +173,7 @@ class FakeVerifier implements CredentialVerifier {
 
 function options(
   verifier: CredentialVerifier,
-  clock: AuthLeaseClock,
+  clock: Clock,
   signal?: AbortSignal,
 ) {
   const resolveIdentity: IdentityResolver = async () => 1n as Awaited<ReturnType<IdentityResolver>>;

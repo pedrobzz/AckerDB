@@ -1,6 +1,8 @@
 import { type Database, type Statement } from "bun:sqlite";
 import type { DurabilityPolicy } from "@ackerdb/core";
 import { CorruptDatabaseError } from "../shared/errors.ts";
+import { transaction } from "./transaction.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 /** Package-internal capability for the Engine-owned replay ledger. */
 export const mutationReplayOwner = Symbol("ackerdb.mutationReplay");
@@ -224,7 +226,7 @@ export class MutationReplayLedger {
     if (!Number.isSafeInteger(record.resultBytes) || record.resultBytes < 0) {
       throw new RangeError("mutation resultBytes must be a non-negative safe integer");
     }
-    if (!Number.isFinite(now)) throw new RangeError("mutation completion time must be finite");
+    finiteMillis(now, "mutation completion time");
     if (
       (record.resultDisposition === "replayable" && typeof record.result !== "string") ||
       (record.resultDisposition === "one-time" && (record.result !== null || record.resultBytes !== 0))
@@ -276,7 +278,7 @@ export class MutationReplayLedger {
 
   /** Remove at most one expired commit-ordered prefix and update the index only after COMMIT. */
   prune(completedBefore: number, limit = 1_000): number {
-    if (!Number.isFinite(completedBefore)) throw new RangeError("mutation prune time must be finite");
+    finiteMillis(completedBefore, "mutation prune time");
     if (!Number.isSafeInteger(limit) || limit <= 0) {
       throw new RangeError("mutation prune limit must be a positive safe integer");
     }
@@ -289,8 +291,7 @@ export class MutationReplayLedger {
     }
     if (prefix.length === 0) return 0;
     const bytes = prefix.reduce((sum, row) => sum + row.result_bytes, 0n);
-    this.connection.exec("BEGIN IMMEDIATE");
-    try {
+    transaction(this.connection, () => {
       const removed = this.connection
         .query("DELETE FROM _ackerdb_mutations WHERE sequence <= ?")
         .run(prefix.at(-1)!.sequence);
@@ -300,11 +301,7 @@ export class MutationReplayLedger {
       this.connection
         .query("UPDATE _ackerdb_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
         .run(prefix.length, bytes);
-      this.connection.exec("COMMIT");
-    } catch (error) {
-      this.connection.exec("ROLLBACK");
-      throw error;
-    }
+    });
     for (const row of prefix) {
       const session = this.index.get(row.session_id)!;
       session.delete(row.request_id);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
+import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server";
 
 const dirs: string[] = [];
 const freshPath = () => {
@@ -77,8 +77,48 @@ describe("engine storage", () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).message).toBe(
-      "database schema creation and rollback both failed",
+      "transaction failed and its rollback failed too",
     );
+    expect((failure as AggregateError).errors).toEqual([primary, rollback]);
+    engine.close("unclean");
+  });
+
+  test("a reconciled schema change preserves its failure when rollback also fails", () => {
+    const path = freshPath();
+    const before = new Engine(
+      defineSchema({ notes: defineTable({ id: v.primaryKey(), body: v.string() }) }),
+      path,
+    );
+    reconcile(before);
+    before.close("clean");
+
+    const engine = new Engine(
+      defineSchema({
+        notes: defineTable({ id: v.primaryKey(), body: v.string() }),
+        extra: defineTable({ id: v.primaryKey(), body: v.string() }),
+      }),
+      path,
+    );
+    const primary = new Error("injected plan failure");
+    const rollback = new Error("injected plan rollback failure");
+    const originalExec = engine.writer.exec;
+    engine.writer.exec = ((sql: string) => {
+      if (sql.startsWith("CREATE TABLE")) throw primary;
+      if (sql === "ROLLBACK") throw rollback;
+      return originalExec.call(engine.writer, sql);
+    }) as typeof engine.writer.exec;
+
+    let failure: unknown;
+    try {
+      reconcile(engine);
+    } catch (error) {
+      failure = error;
+    } finally {
+      engine.writer.exec = originalExec;
+      if (engine.writer.inTransaction) engine.writer.exec("ROLLBACK");
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toEqual([primary, rollback]);
     engine.close("unclean");
   });

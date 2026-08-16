@@ -1,13 +1,10 @@
 import { createHash } from "node:crypto";
 import {
-  closeSync,
   createReadStream,
   createWriteStream,
   existsSync,
-  fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
   opendirSync,
   renameSync,
   rmSync,
@@ -24,6 +21,7 @@ import {
 } from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 import { createFileStore } from "../files/store.ts";
+import { fsyncPathSync, runWithCleanupAsync } from "../shared/durability.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const FILE_SCAN_BATCH = 128;
@@ -49,28 +47,6 @@ interface StoredFileTotals {
 
 export function backupFilesPath(artifact: string): string {
   return `${artifact}.files`;
-}
-
-function fsyncPath(path: string): void {
-  const descriptor = openSync(path, "r");
-  let failure: unknown;
-  try {
-    fsyncSync(descriptor);
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    closeSync(descriptor);
-  } catch (closeError) {
-    if (failure !== undefined) {
-      throw new AggregateError(
-        [failure, closeError],
-        `File backup sync and descriptor close both failed: ${path}`,
-      );
-    }
-    throw closeError;
-  }
-  if (failure !== undefined) throw failure;
 }
 
 function addSafeTotal(left: number, right: number, description: string): number {
@@ -117,28 +93,11 @@ async function withStoredFileDatabase<T>(
   work: (database: Database) => T | Promise<T>,
 ): Promise<T> {
   const database = new Database(databasePath, { readonly: true, safeIntegers: true, strict: true });
-  let failed = false;
-  let failure: unknown;
-  let result: T | undefined;
-  try {
-    result = await work(database);
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    database.close(false);
-  } catch (closeError) {
-    if (failed) {
-      throw new AggregateError(
-        [failure, closeError],
-        `File backup inspection and SQLite close both failed: ${databasePath}`,
-      );
-    }
-    throw closeError;
-  }
-  if (failed) throw failure;
-  return result!;
+  return runWithCleanupAsync(
+    () => work(database),
+    () => database.close(false),
+    `File backup inspection and SQLite close both failed: ${databasePath}`,
+  );
 }
 
 async function scanStoredFiles(
@@ -234,7 +193,7 @@ async function streamToBackupFile(
       hashing,
       createWriteStream(destination, { flags: "wx", mode: 0o600 }),
     );
-    fsyncPath(destination);
+    fsyncPathSync(destination);
     if (bytes !== file.size || hash.digest("hex") !== file.sha256) {
       throw new CorruptDatabaseError(`File ${file.id} storage bytes do not match its metadata`);
     }
@@ -265,10 +224,10 @@ export async function createFilesBackup(
     const totals = await scanStoredFiles(databasePath, async (file) => {
       await streamToBackupFile(store, file, join(temporary, file.id.toString()));
     });
-    fsyncPath(temporary);
+    fsyncPathSync(temporary);
     renameSync(temporary, destination);
     published = true;
-    fsyncPath(dirname(destination));
+    fsyncPathSync(dirname(destination));
     return { mode: "included", count: totals.count, bytes: totals.bytes };
   } catch (error) {
     const cleanup: unknown[] = [];
@@ -280,7 +239,7 @@ export async function createFilesBackup(
       }
     }
     try {
-      fsyncPath(dirname(destination));
+      fsyncPathSync(dirname(destination));
     } catch (cleanupError) {
       cleanup.push(cleanupError);
     }

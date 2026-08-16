@@ -77,24 +77,6 @@ describe("apiPath declarations", () => {
     }
   });
 
-  test("refuses a field no declaration consumes, including the retired internal flag", () => {
-    expect(() =>
-      query({ internal: true, access: "public", args: {}, handler: () => null } as never),
-    ).toThrow('query must not declare "internal"');
-    expect(() =>
-      procedure({ acess: "public", access: "public", args: {}, handler: () => null } as never),
-    ).toThrow('procedure must not declare "acess"');
-    expect(() =>
-      sseProcedure({
-        internal: true,
-        access: "public",
-        args: {},
-        yields: v.string(),
-        handler: async function* () {},
-      } as never),
-    ).toThrow('sse must not declare "internal"');
-  });
-
   test("refuses apiPath on the socket-addressed kind", () => {
     expect(() =>
       channel({

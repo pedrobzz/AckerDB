@@ -397,7 +397,7 @@ describe("File HTTP flow", () => {
       code: "validation",
       message: "Content-Type is not allowed by this Upload Session",
       retryable: false,
-      resource: "idempotency",
+      resource: "operation",
     });
 
     const retried = await fetch(`${base}${sessionPath}`, {
@@ -432,7 +432,7 @@ describe("File HTTP flow", () => {
       code: "malformed",
       message: "Content-Length is required for streaming file uploads",
       retryable: false,
-      resource: "idempotency",
+      resource: "operation",
     });
 
     const short = await runtime.runFileRequest({
@@ -448,7 +448,7 @@ describe("File HTTP flow", () => {
       code: "malformed",
       message: "uploaded bytes do not match Content-Length",
       retryable: false,
-      resource: "idempotency",
+      resource: "operation",
     });
     const retried = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
@@ -459,6 +459,23 @@ describe("File HTTP flow", () => {
       authenticate: () => Promise.reject(new Error("uploads do not authenticate")),
     });
     expect(retried.status).toBe(201);
+  });
+
+  test("answers a wrong method on a File route with the same bare outcome body", async () => {
+    const created = await runtime.system.run("test.files.create-method-upload", (ctx) =>
+      ctx.tx((tx) => tx.files.createUploadSession()),
+    );
+    if (!created.ok) throw created.error;
+    const response = await fetch(`${base}${new URL(created.data.url).pathname}`, { method: "GET" });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("PUT");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(parseOutcome(await response.json())).toEqual({
+      code: "malformed",
+      message: "method not allowed; allow: PUT",
+      retryable: false,
+    });
   });
 
   test("invalid bearer upload URLs never enter the database writer", async () => {

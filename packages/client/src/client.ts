@@ -794,6 +794,7 @@ export class AckerDBClient {
       },
       httpOrigin: new URL(this.httpUrl).origin,
       scheduler: this.scheduler,
+      random: this.random,
       readResponse: (response, signal) =>
         this.readBoundedResponse(response, this.limits.maxFrameBytes, signal, "idempotency"),
       clientError: (outcome, interruption) => new AckerDBClientError(outcome, interruption),
@@ -2881,18 +2882,20 @@ export class AckerDBClient {
       if (remainingMs <= 0) {
         throw localError("deadline_exceeded", "SSE acknowledgment deadline exceeded", "sse");
       }
-      const random = this.random();
-      if (!Number.isFinite(random) || random < 0 || random >= 1) {
+      // The same jittered exponential schedule reconnect uses, so a thousand
+      // clients failing together do not acknowledge in the same millisecond.
+      let delayMs: number;
+      try {
+        delayMs = retryDelay(
+          this.reconnect,
+          attempts - 2,
+          retryAfterMs,
+          this.random,
+          MAX_RETRY_AFTER_MS,
+        );
+      } catch {
         throw localError("internal", "client random source is invalid", "sse");
       }
-      const jitterCeiling = Math.min(
-        this.reconnect.maxDelayMs,
-        this.reconnect.baseDelayMs * 2 ** Math.min(attempts - 1, 30),
-      );
-      const delayMs = Math.max(
-        retryAfterMs,
-        Math.floor(random * (jitterCeiling + 1)),
-      );
       if (delayMs >= remainingMs) {
         throw localError("deadline_exceeded", "SSE acknowledgment cannot retry before its deadline", "sse");
       }

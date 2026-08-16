@@ -14,6 +14,7 @@ import { runInInvocationRoot } from "../invocation-state.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { inTransaction } from "../transaction-context.ts";
+import { finiteMillis } from "../../shared/clock.ts";
 
 const SYSTEM_FAIRNESS_KEY = callerFairnessKey(
   SYSTEM_PRINCIPAL,
@@ -60,7 +61,7 @@ export class RuntimeSystem {
           SYSTEM_FAIRNESS_KEY,
           signal,
           1,
-          readNow(this.options.now),
+          finiteMillis(this.options.now(), "runtime clock"),
           this.options.invalidations.publish,
         );
         return await invokeSideEffectingHandler(
@@ -81,8 +82,3 @@ export class RuntimeSystem {
   }
 }
 
-function readNow(now: () => number): number {
-  const value = now();
-  if (!Number.isFinite(value)) throw new RangeError("runtime clock must return finite milliseconds");
-  return value;
-}

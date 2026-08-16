@@ -26,7 +26,7 @@
  */
 import { decode, isApplicationError, isResult, stableEncode, type OutcomeCode } from "@ackerdb/core";
 import type { SystemCtx, SystemRunner } from "../../app/system.ts";
-import { AckerDBError } from "../../shared/errors.ts";
+import { AckerDBError, drainingError } from "../../shared/errors.ts";
 import { ValidationError } from "../../validation/error.ts";
 import {
   DEFAULT_JOB_RETENTION_MS,
@@ -275,7 +275,7 @@ export class RuntimeJobs {
       this.notifyDirect(id, {
         ok: false,
         state: "pending",
-        error: new AckerDBError("draining", "runtime is draining; the job resumes after restart"),
+        error: drainingError("runtime is draining; the job resumes after restart", "operation"),
         nextRetryAt: null,
       });
     }
@@ -1096,11 +1096,6 @@ export class RuntimeJobs {
       definition.args as Record<string, { check(value: unknown, where: string): unknown }>,
     )) {
       out[field] = validator.check(input[field], `jobs.${name}.args.${field}`);
-    }
-    for (const field of Object.keys(input)) {
-      if (!Object.hasOwn(definition.args, field) && input[field] !== undefined) {
-        throw new ValidationError(`jobs.${name}: unknown args field "${field}"`);
-      }
     }
     return out;
   }

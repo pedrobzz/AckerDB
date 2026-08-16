@@ -83,6 +83,7 @@ import {
   type RuntimeFileRequest,
 } from "../files/http.ts";
 import { FileCleanupRuntime } from "../files/cleanup.ts";
+import { finiteMillis } from "../shared/clock.ts";
 
 /**
  * Composes the Runtime's domain owners and exposes the public server lifecycle.
@@ -480,7 +481,7 @@ export class Runtime implements RuntimePort {
       state.context.fairnessKey,
       signal,
       requestBytes,
-      this.readNow(),
+      finiteMillis(this.now(), "runtime clock"),
       invalidations.publish,
     );
     let active = true;
@@ -494,9 +495,4 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private readNow(): number {
-    const now = this.now();
-    if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
-    return now;
-  }
 }
