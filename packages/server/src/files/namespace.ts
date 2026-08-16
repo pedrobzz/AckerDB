@@ -10,13 +10,17 @@ import {
 } from "@ackerdb/core";
 import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
 import type { Principal } from "../auth/credentials.ts";
-import type { QueryMaterializers } from "../database/query/types.ts";
+import {
+  mappedMaterializers,
+  mappedTableQuery,
+  type ManagedQuery,
+  type SafeProjection,
+} from "../database/managed.ts";
 import { ValidationError } from "../validation/error.ts";
 import {
   fileDatabase,
   pendingCleanupRow,
   type FileDatabase,
-  type FileDatabaseQuery,
   type FileGrantRow,
   type FileRow,
 } from "./database.ts";
@@ -30,7 +34,6 @@ import type {
   FileGrantMetadataQuery,
   FileMetadataQuery,
   FileMutationCapability,
-  OrderedFileMetadataQuery,
   FileQueryCapability,
 } from "./api.ts";
 import {
@@ -113,50 +116,24 @@ function fileMetadata(row: FileRow | null): FileMetadata | null {
   });
 }
 
-type FileMetadataMaterializers = Omit<FileMetadataQuery, "where" | "orderBy">;
-
-function mappedFileMaterializers(query: FileDatabaseQuery<FileRow>): FileMetadataMaterializers {
-  const map = (row: FileRow): FileMetadata => fileMetadata(row)!;
-  return {
-    collect: async () => (await query.collect()).map(map),
-    take: async (count) => (await query.take(count)).map(map),
-    first: async () => fileMetadata(await query.first()),
-    unique: async () => fileMetadata(await query.unique()),
-    count: () => query.count(),
-    sum: ((column: never) => query.sum(column)) as FileMetadataMaterializers["sum"],
-    avg: ((column: never) => query.avg(column)) as FileMetadataMaterializers["avg"],
-    min: ((column: never) => query.min(column)) as FileMetadataMaterializers["min"],
-    max: ((column: never) => query.max(column)) as FileMetadataMaterializers["max"],
-    iter: async function* () {
-      for await (const row of query.iter()) {
-        const metadata = fileMetadata(row);
-        if (metadata !== null) yield metadata;
-      }
-    },
-    paginate: async (options) => {
-      const page = await query.paginate(options);
-      return { items: page.items.map(map), nextCursor: page.nextCursor };
-    },
-  };
-}
-
-function mappedQuery(query: FileDatabaseQuery<FileRow>): FileMetadataQuery {
-  const mapped = {
-    ...mappedFileMaterializers(query),
-    where: (predicate: unknown) => mappedQuery(query.where(predicate as never)),
-    orderBy: (order: unknown) => mappedOrderedQuery(query.orderBy(order as never)),
-  };
-  return Object.freeze(mapped) as unknown as FileMetadataQuery;
-}
-
-function mappedOrderedQuery(query: FileDatabaseQuery<FileRow>): OrderedFileMetadataQuery {
-  const mapped = {
-    ...mappedFileMaterializers(query),
-    where: (predicate: unknown) => mappedOrderedQuery(query.where(predicate as never)),
-    thenBy: (order: unknown) => mappedOrderedQuery(query.thenBy(order as never)),
-  };
-  return Object.freeze(mapped) as unknown as OrderedFileMetadataQuery;
-}
+/**
+ * What a File looks like to every reader, and the only row a caller's
+ * predicate, order, or aggregate can address. The stored object key and the
+ * pending expiry are physical bookkeeping and are absent from both.
+ */
+const SAFE_FILE: SafeProjection<FileRow, FileMetadata> = {
+  descriptor: (row) => fileMetadata(row)!,
+  columns: (row) => ({
+    id: row.id,
+    state: row.state,
+    owner: row.owner,
+    size: row.size,
+    sha256: row.sha256,
+    contentType: row.contentType,
+    name: row.name,
+    createdAt: row.createdAt,
+  }),
+};
 
 function grantMetadata(row: FileGrantRow): FileGrantMetadata {
   return Object.freeze({
@@ -172,28 +149,8 @@ function grantMetadata(row: FileGrantRow): FileGrantMetadata {
   });
 }
 
-function mappedGrantQuery(query: FileDatabaseQuery<FileGrantRow>): FileGrantMetadataQuery {
-  const mapped: FileGrantMetadataQuery = {
-    collect: async () => (await query.collect()).map(grantMetadata),
-    take: async (count) => (await query.take(count)).map(grantMetadata),
-    first: async () => {
-      const row = await query.first();
-      return row === null ? null : grantMetadata(row);
-    },
-    unique: async () => {
-      const row = await query.unique();
-      return row === null ? null : grantMetadata(row);
-    },
-    count: () => query.count(),
-    iter: async function* () {
-      for await (const row of query.iter()) yield grantMetadata(row);
-    },
-    paginate: async (options) => {
-      const page = await query.paginate(options);
-      return { items: page.items.map(grantMetadata), nextCursor: page.nextCursor };
-    },
-  };
-  return Object.freeze(mapped);
+function mappedGrantQuery(query: ManagedQuery<FileGrantRow>): FileGrantMetadataQuery {
+  return mappedMaterializers(query, grantMetadata) as FileGrantMetadataQuery;
 }
 
 function queryCapability(db: FileDatabase): FileQueryCapability {
@@ -201,7 +158,7 @@ function queryCapability(db: FileDatabase): FileQueryCapability {
   const grants = db[FILE_GRANTS_TABLE]!;
   return {
     get: async (fileId) => fileMetadata(await files.get(fileId)),
-    query: () => mappedQuery(files.query()),
+    query: () => mappedTableQuery(files.query(), SAFE_FILE) as FileMetadataQuery,
     grants: (fileId) => mappedGrantQuery(grants.query().where((row) =>
       (row as unknown as { fileId: { eq(value: bigint): unknown } }).fileId.eq(fileId)
     )),

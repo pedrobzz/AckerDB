@@ -233,10 +233,10 @@ typedMutation({
   access: "authenticated",
   args: {},
   handler: (ctx) => {
-    // @ts-expect-error owner credential operations never accept a selected Identity
-    credentials.create(ctx, 1n as Identity, { name: "escalation" });
+    // @ts-expect-error owner issuance never accepts a selected Identity
+    ctx.credentials.issue(1n as Identity, { name: "escalation" });
     // @ts-expect-error descriptor edits cannot change authorization grants
-    credentials.update(ctx, "token", { scopes: ["orders.get"] });
+    ctx.credentials.update("token", { scopes: ["orders.get"] });
     // @ts-expect-error descriptor edits expose only bounded name and metadata
     ctx.credentials.update("token", { expiresAt: Date.now() });
     // @ts-expect-error descriptor edits require at least one replacement field

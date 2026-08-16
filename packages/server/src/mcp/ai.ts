@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "../auth/credentials.ts";
 import { CREDENTIAL_ISSUER } from "../auth/credential-token.ts";
 import { isScopeGrant } from "../auth/scopes.ts";
-import { effectiveChildScopes } from "../auth/child-credentials.ts";
+import { effectiveChildScopes } from "../credentials/delegation.ts";
 import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
 import type { ProcedureCtx } from "../app/functions.ts";
 import type {

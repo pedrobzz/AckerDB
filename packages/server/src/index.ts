@@ -23,7 +23,6 @@ export {
   isScopePattern,
   principalScopes,
   SCOPE_WILDCARD,
-  scopeVocabulary,
   validateScopeVocabulary,
   type NormalizedScopeRequirement,
   type ScopeRequirement,
@@ -32,7 +31,7 @@ export {
 export {
   effectiveChildScopes,
   issueChildScopes,
-} from "./auth/child-credentials.ts";
+} from "./credentials/delegation.ts";
 export {
   CREDENTIAL_ISSUER,
   CREDENTIAL_TOKEN_PREFIX,
@@ -282,11 +281,6 @@ export {
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
 export { readStoredState, type StoredState } from "./schema/migrations/stored.ts";
-export {
-  planFrameworkMigrations,
-  type FrameworkMigration,
-  type FrameworkMigrationPlan,
-} from "./schema/migrations/framework.ts";
 export {
   applyRenames,
   renameRoutes,

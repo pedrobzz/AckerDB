@@ -25,7 +25,7 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { decode, encode, type Identity } from "@ackerdb/core";
-import { effectiveChildScopes, issueChildScopes } from "../auth/child-credentials.ts";
+import { effectiveChildScopes, issueChildScopes } from "./delegation.ts";
 import type { ExternalAccount } from "../auth/credentials.ts";
 import {
   CREDENTIAL_ISSUER,
@@ -40,7 +40,7 @@ import {
   SCOPE_WILDCARD,
 } from "../auth/scopes.ts";
 import type { WriteCollector } from "../database/access.ts";
-import type { ManagedQuery } from "../database/managed.ts";
+import { mappedTableQuery, type SafeProjection } from "../database/managed.ts";
 import { markOneTimeResult } from "../runtime/one-time-result.ts";
 import { AckerDBError, CorruptDatabaseError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
@@ -49,7 +49,6 @@ import type {
   CredentialQuery,
   IssueCredentialInput,
   IssuedCredential,
-  OrderedCredentialQuery,
   UpdateCredentialInput,
 } from "./api.ts";
 import {
@@ -95,17 +94,31 @@ export type CredentialScope =
 
 export const GLOBAL_SCOPE: CredentialScope = Object.freeze({ kind: "global" });
 
+/**
+ * What a write needs and a read does not: the transaction's collector, where
+ * authority changes and the one-time mark are staged, plus the limits and the
+ * clock a new or edited row is held to. They travel together because they
+ * appear and disappear together — a read-only root has none of the three, and
+ * bundling them is what keeps that a type rather than three unused fields.
+ */
+export interface CredentialWriteContext {
+  readonly collector: WriteCollector;
+  readonly limits: CredentialLimits;
+  readonly now: () => number;
+}
+
 export interface CredentialsOptions {
   readonly db: CredentialDatabase;
   /** The application's declared scopes: what every grant expands against. */
   readonly vocabulary: readonly string[];
-  readonly limits: CredentialLimits;
-  readonly now: () => number;
   /**
-   * The transaction's write set, where authority changes and the one-time mark
-   * are staged. Null on a read-only root, where no write can be attempted.
+   * The grant patterns an Identity holding no credential of its own carries.
+   * The lineage walk ends here, and so does the delegation bound when the
+   * caller is not the parent it is issuing for.
    */
-  readonly writes: WriteCollector | null;
+  readonly resolveIdentityGrant: IdentityGrantResolver;
+  /** Absent on a read-only root, where no write can be attempted. */
+  readonly writes: CredentialWriteContext | null;
 }
 
 const utf8 = new TextEncoder();
@@ -113,8 +126,6 @@ const DUMMY_DIGEST = new Uint8Array(32);
 const EMPTY_ACCOUNTS: readonly ExternalAccount[] = Object.freeze([]);
 const NO_INVALIDATIONS: readonly ExternalAccount[] = Object.freeze([]);
 const NO_IDS: readonly string[] = Object.freeze([]);
-/** Descendants are read one indexed level at a time; this bounds one level. */
-const LINEAGE_LEVEL_LIMIT = 1_000;
 
 function digestOf(secret: string): Uint8Array {
   return createHash("sha256").update(secret).digest();
@@ -190,7 +201,7 @@ function checkedMetadata(value: unknown, maxBytes: number): {
  * declared after the credential was minted — so only its shape is checked here,
  * and what it authorizes is decided at expansion.
  */
-export function normalizeGrantPatterns(
+function normalizeGrantPatterns(
   value: unknown,
   vocabulary: readonly string[],
   where: string,
@@ -248,56 +259,37 @@ function safeCredential(row: CredentialRow): Credential {
   });
 }
 
-type CredentialMaterializers = Omit<CredentialQuery, "where" | "orderBy">;
-
-function materializers(query: ManagedQuery<CredentialRow>): CredentialMaterializers {
-  return {
-    collect: async () => (await query.collect()).map(safeCredential),
-    take: async (count) => (await query.take(count)).map(safeCredential),
-    first: async () => {
-      const row = await query.first();
-      return row === null ? null : safeCredential(row);
-    },
-    unique: async () => {
-      const row = await query.unique();
-      return row === null ? null : safeCredential(row);
-    },
-    count: () => query.count(),
-    sum: ((column: never) => query.sum(column)) as CredentialMaterializers["sum"],
-    avg: ((column: never) => query.avg(column)) as CredentialMaterializers["avg"],
-    min: ((column: never) => query.min(column)) as CredentialMaterializers["min"],
-    max: ((column: never) => query.max(column)) as CredentialMaterializers["max"],
-    iter: async function* () {
-      for await (const row of query.iter()) yield safeCredential(row);
-    },
-    paginate: async (options) => {
-      const page = await query.paginate(options);
-      return { items: page.items.map(safeCredential), nextCursor: page.nextCursor };
-    },
-  };
-}
-
-function mappedQuery(query: ManagedQuery<CredentialRow>): CredentialQuery {
-  return Object.freeze({
-    ...materializers(query),
-    where: (predicate: unknown) => mappedQuery(query.where(predicate as never)),
-    orderBy: (order: unknown) => mappedOrderedQuery(query.orderBy(order as never)),
-  }) as unknown as CredentialQuery;
-}
-
-function mappedOrderedQuery(query: ManagedQuery<CredentialRow>): OrderedCredentialQuery {
-  return Object.freeze({
-    ...materializers(query),
-    where: (predicate: unknown) => mappedOrderedQuery(query.where(predicate as never)),
-    thenBy: (order: unknown) => mappedOrderedQuery(query.thenBy(order as never)),
-  }) as unknown as OrderedCredentialQuery;
-}
+/**
+ * What a credential looks like to every reader, and the only row a caller's
+ * predicate, order, or aggregate can address.
+ *
+ * `id` is the public token id rather than the stored primary key, which is the
+ * whole reason this projection exists: the two are different columns of
+ * different types, and a caller who filters on the id it was handed must reach
+ * the one it was handed. Everything absent here — the stored key, the digest,
+ * the two encoded columns — is unaddressable rather than merely untyped.
+ */
+const SAFE_CREDENTIAL: SafeProjection<CredentialRow, Credential> = {
+  descriptor: safeCredential,
+  columns: (row) => ({
+    id: row.tokenId,
+    identity: row.identity,
+    parentIdentity: row.parentIdentity,
+    name: row.name,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }),
+};
 
 /** Column references, named once so the untyped row proxy is cast in one place. */
 interface CredentialRowRef {
   readonly tokenId: { eq(value: string): unknown; in(values: readonly string[]): unknown };
   readonly identity: { eq(value: Identity): unknown };
-  readonly parentIdentity: { eq(value: Identity): unknown; isNull(): unknown };
+  readonly parentIdentity: {
+    eq(value: Identity): unknown;
+    in(values: readonly Identity[]): unknown;
+    isNull(): unknown;
+  };
 }
 
 const credentialRef = (row: never): CredentialRowRef => row as unknown as CredentialRowRef;
@@ -322,11 +314,12 @@ export class Credentials {
    */
   query(scope: CredentialScope): CredentialQuery {
     const base = this.table.query();
-    return mappedQuery(
+    return mappedTableQuery(
       scope.kind === "global"
         ? base
         : base.where((row) => credentialRef(row).parentIdentity.eq(scope.identity)),
-    );
+      SAFE_CREDENTIAL,
+    ) as CredentialQuery;
   }
 
   /** The credential a bearer names, once its secret matches the stored digest. */
@@ -361,14 +354,14 @@ export class Credentials {
    * invalidation for the account upstream would otherwise miss it, and a
    * non-expiring principal never re-authenticates out of stale authority.
    */
-  async effectiveGrant(
-    identity: Identity,
-    resolveIdentityGrant: IdentityGrantResolver,
-  ): Promise<EffectiveGrant> {
+  async effectiveGrant(identity: Identity): Promise<EffectiveGrant> {
     const row = await this.rowForIdentity(identity);
     if (row === null) {
       return Object.freeze({
-        scopes: expandScopeGrant(await resolveIdentityGrant(identity), this.options.vocabulary),
+        scopes: expandScopeGrant(
+          await this.options.resolveIdentityGrant(identity),
+          this.options.vocabulary,
+        ),
         derivedFrom: await this.identities.accountsFor(identity),
       });
     }
@@ -376,7 +369,7 @@ export class Credentials {
     if (row.parentIdentity === null) {
       return Object.freeze({ scopes: stored, derivedFrom: EMPTY_ACCOUNTS });
     }
-    const parent = await this.effectiveGrant(row.parentIdentity, resolveIdentityGrant);
+    const parent = await this.effectiveGrant(row.parentIdentity);
     return Object.freeze({
       scopes: effectiveChildScopes(stored, parent.scopes),
       derivedFrom: parent.derivedFrom,
@@ -386,13 +379,17 @@ export class Credentials {
   /**
    * Issue one credential, minting its Identity in the same transaction.
    *
-   * `delegatedBy` is the grant the request must fit inside, and it is separate
-   * from `parentIdentity` on purpose: the bound is whatever authority is
-   * actually asking, while the parent is whose lineage the new credential joins.
-   * Global administration passes none, because a function that reached
-   * `ctx.credentials.manage` was already admitted by the application's own
-   * policy — but a root's patterns are still validated against the vocabulary,
-   * so a typo is refused rather than stored as an empty grant.
+   * **A child never exceeds its parent, whoever asked.** `delegatedBy` is the
+   * grant the request must fit inside; an owner passes the authority it is
+   * presenting, and global administration passes none — so the bound is
+   * re-derived from the parent's *current* effective grant instead. "No
+   * framework access check" is about who may reach the operation, not about
+   * whether a stored grant may exceed its source: a child that did would be
+   * held back only by the use-time intersection, and would spring open the
+   * moment its parent widened.
+   *
+   * A root has no parent to be bounded by, so its patterns are validated
+   * against the vocabulary and nothing else.
    */
   async issue(input: {
     readonly parentIdentity: Identity | null;
@@ -409,22 +406,23 @@ export class Credentials {
         throw new AckerDBError("validation", `unknown credential field "${key}"`);
       }
     }
-    const name = checkedName(declaration.name, this.options.limits.maxNameBytes);
-    const metadata = checkedMetadata(
-      declaration.metadata ?? {},
-      this.options.limits.maxMetadataBytes,
-    );
+    const name = checkedName(declaration.name, writes.limits.maxNameBytes);
+    const metadata = checkedMetadata(declaration.metadata ?? {}, writes.limits.maxMetadataBytes);
     const scopes = normalizeGrantPatterns(
       declaration.scopes ?? [],
       this.options.vocabulary,
       "credential scopes",
     );
-    if (input.delegatedBy !== undefined) {
-      issueChildScopes(input.delegatedBy, scopes, this.options.vocabulary);
+    const now = this.timestamp(writes);
+    if (input.parentIdentity !== null) {
+      await this.requireIdentity(input.parentIdentity);
+      issueChildScopes(
+        await this.delegationBound(input.parentIdentity, input.delegatedBy),
+        scopes,
+        this.options.vocabulary,
+      );
     }
-    const now = this.timestamp();
-    if (input.parentIdentity !== null) await this.requireIdentity(input.parentIdentity);
-    await this.checkCapacity(input.parentIdentity);
+    await this.checkCapacity(input.parentIdentity, writes.limits);
 
     const identity = await this.identities.create();
     const tokenId = randomBytes(16).toString("base64url");
@@ -442,7 +440,7 @@ export class Credentials {
     });
     // The plaintext exists for exactly this answer, so the answer may never be
     // replayed from the mutation ledger.
-    markOneTimeResult(writes);
+    markOneTimeResult(writes.collector);
     return Object.freeze({
       id: tokenId,
       identity,
@@ -462,7 +460,7 @@ export class Credentials {
     tokenId: string,
     input: UpdateCredentialInput,
   ): Promise<void> {
-    this.writing();
+    const writes = this.writing();
     if (input === null || typeof input !== "object" || Array.isArray(input)) {
       throw new AckerDBError("validation", "credential update input must be an object");
     }
@@ -476,13 +474,13 @@ export class Credentials {
       }
     }
     const row = await this.addressed(scope, tokenId);
-    const patch: Record<string, unknown> = { updatedAt: this.timestamp() };
+    const patch: Record<string, unknown> = { updatedAt: this.timestamp(writes) };
     if (Object.hasOwn(input, "name")) {
-      patch["name"] = checkedName(input.name, this.options.limits.maxNameBytes);
+      patch["name"] = checkedName(input.name, writes.limits.maxNameBytes);
     }
     if (Object.hasOwn(input, "metadata")) {
       patch["metadataJson"] =
-        checkedMetadata(input.metadata, this.options.limits.maxMetadataBytes).encoded;
+        checkedMetadata(input.metadata, writes.limits.maxMetadataBytes).encoded;
     }
     await this.table.patch(row.id, patch);
   }
@@ -501,20 +499,24 @@ export class Credentials {
   ): Promise<void> {
     const writes = this.writing();
     const scopes = normalizeGrantPatterns(value, this.options.vocabulary, "credential scopes");
-    if (delegatedBy !== undefined) {
-      issueChildScopes(delegatedBy, scopes, this.options.vocabulary);
-    }
     const row = await this.addressed(scope, tokenId);
+    if (row.parentIdentity !== null) {
+      issueChildScopes(
+        await this.delegationBound(row.parentIdentity, delegatedBy),
+        scopes,
+        this.options.vocabulary,
+      );
+    }
     const previous = storedScopes(row.scopesJson);
     await this.table.patch(row.id, {
       scopesJson: encode(scopes),
-      updatedAt: this.timestamp(),
+      updatedAt: this.timestamp(writes),
     });
     const changed = previous.length !== scopes.length ||
       previous.some((pattern, index) => scopes[index] !== pattern);
     if (!changed) return;
     for (const reached of await this.lineage([row])) {
-      writes.credentialInvalidations.push(reached.tokenId);
+      writes.collector.credentialInvalidations.push(reached.tokenId);
     }
   }
 
@@ -556,38 +558,54 @@ export class Credentials {
     const reached = await this.lineage(roots);
     await this.table.deleteMany(reached.map((row) => row.id));
     const revoked = reached.map((row) => row.tokenId);
-    for (const tokenId of revoked) writes.credentialInvalidations.push(tokenId);
+    for (const tokenId of revoked) writes.collector.credentialInvalidations.push(tokenId);
     return Object.freeze(revoked);
   }
 
   /**
    * A set of credentials plus everything delegated beneath them, deduplicated.
    * Identity creation order makes the delegation chain acyclic, and the owner
-   * index answers each level directly, so the walk costs one indexed query per
-   * level of depth rather than one per credential.
+   * index answers a whole level at once, so the walk costs one indexed query
+   * per level of depth rather than one per credential.
+   *
+   * Every descendant is collected, never a bounded page: a descendant this walk
+   * missed would survive its parent's revocation, and — because an Identity
+   * with no credential row reads as an ordinary application Identity — would
+   * then be resolved by the application's own scope resolver instead of failing
+   * closed. Depth and breadth are already bounded by issuance capacity.
    */
   private async lineage(roots: readonly CredentialRow[]): Promise<readonly CredentialRow[]> {
     const found = new Map<bigint, CredentialRow>();
-    let frontier = roots.filter((row) => {
-      if (found.has(row.id)) return false;
+    let frontier: Identity[] = [];
+    for (const row of roots) {
+      if (found.has(row.id)) continue;
       found.set(row.id, row);
-      return true;
-    });
+      frontier.push(row.identity);
+    }
     while (frontier.length > 0) {
-      const next: CredentialRow[] = [];
-      for (const parent of frontier) {
-        const children = await this.table.query()
-          .where((row) => credentialRef(row).parentIdentity.eq(parent.identity))
-          .take(LINEAGE_LEVEL_LIMIT);
-        for (const child of children) {
-          if (found.has(child.id)) continue;
-          found.set(child.id, child);
-          next.push(child);
-        }
+      const parents = frontier;
+      const children = await this.table.query()
+        .where((row) => credentialRef(row).parentIdentity.in(parents))
+        .collect();
+      frontier = [];
+      for (const child of children) {
+        if (found.has(child.id)) continue;
+        found.set(child.id, child);
+        frontier.push(child.identity);
       }
-      frontier = next;
     }
     return [...found.values()];
+  }
+
+  /**
+   * What a child may be granted: the authority the caller is presenting when it
+   * is the parent, and the parent's current effective grant when it is not.
+   */
+  private async delegationBound(
+    parentIdentity: Identity,
+    presented: readonly string[] | undefined,
+  ): Promise<readonly string[]> {
+    return presented ?? (await this.effectiveGrant(parentIdentity)).scopes;
   }
 
   /** The one row an operation names, proved to sit inside the scope that named it. */
@@ -623,26 +641,29 @@ export class Credentials {
     }
   }
 
-  private async checkCapacity(parentIdentity: Identity | null): Promise<void> {
+  private async checkCapacity(
+    parentIdentity: Identity | null,
+    limits: CredentialLimits,
+  ): Promise<void> {
     const held = await this.table.query()
       .where((row) => parentIdentity === null
         ? credentialRef(row).parentIdentity.isNull()
         : credentialRef(row).parentIdentity.eq(parentIdentity))
       .count();
-    if (held >= this.options.limits.maxPerIdentity) {
+    if (held >= limits.maxPerIdentity) {
       throw new AckerDBError("overloaded", "credential capacity is full", { resource: "operation" });
     }
   }
 
-  private timestamp(): number {
-    const now = this.options.now();
+  private timestamp(writes: CredentialWriteContext): number {
+    const now = writes.now();
     if (!Number.isFinite(now) || now < 0) {
       throw new RangeError("credential clock must be finite and non-negative");
     }
     return now;
   }
 
-  private writing(): WriteCollector {
+  private writing(): CredentialWriteContext {
     const writes = this.options.writes;
     if (writes === null) {
       throw new AckerDBError("validation", "credential writes require a mutation or transaction");

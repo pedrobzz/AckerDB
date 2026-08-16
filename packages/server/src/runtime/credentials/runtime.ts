@@ -43,7 +43,7 @@ import {
   type AuthInvalidationSubscription,
 } from "../../auth/invalidation.ts";
 import { expandScopeGrant } from "../../auth/scopes.ts";
-import { Credentials, type CredentialLimits } from "../../credentials/module.ts";
+import { Credentials } from "../../credentials/module.ts";
 import type { CredentialDatabase } from "../../credentials/tables.ts";
 import { makeDbReader } from "../../database/access.ts";
 import type { Engine } from "../../database/engine.ts";
@@ -75,7 +75,6 @@ export interface RuntimeCredentialsOptions {
   readonly resolveAppScopes?: ScopeResolver;
   /** The application's declared scopes: what every grant expands against. */
   readonly vocabulary: readonly string[];
-  readonly limits: CredentialLimits;
   /** Boundary-published account invalidations; present without an app verifier. */
   readonly subscribeInvalidation: (
     listener: (invalidation: PrincipalInvalidation) => void,
@@ -118,8 +117,7 @@ export class RuntimeCredentials {
         makeDbReader(this.options.engine, connection, null),
       ) as CredentialDatabase,
       vocabulary: this.options.vocabulary,
-      limits: this.options.limits,
-      now: this.options.now,
+      resolveIdentityGrant: this.resolveIdentityGrant,
       writes: null,
     });
   }
@@ -148,10 +146,7 @@ export class RuntimeCredentials {
     // credential through here, so this is the one place that can guarantee a
     // delegated principal knows the accounts an invalidation may narrow it by.
     return this.options.reads().submit(
-      (connection) => this.moduleFor(connection).effectiveGrant(
-        identity,
-        (ancestor) => this.resolveIdentityGrant(ancestor),
-      ),
+      (connection) => this.moduleFor(connection).effectiveGrant(identity),
       {
         bytes: 1,
         fairnessKey: externalAccountFairnessKey(account),
@@ -187,10 +182,7 @@ export class RuntimeCredentials {
       async (connection) => {
         const credentials = this.moduleFor(connection);
         const credential = await credentials.authenticate(parsed);
-        const grant = await credentials.effectiveGrant(
-          credential.identity,
-          (ancestor) => this.resolveIdentityGrant(ancestor),
-        );
+        const grant = await credentials.effectiveGrant(credential.identity);
         return Object.freeze({
           kind: "user" as const,
           identity: credential.identity,
@@ -264,15 +256,20 @@ export class RuntimeCredentials {
   }
 
   /**
-   * The grant patterns an application-owned Identity holds. Only the scopes
-   * are wanted here: this resolves an *ancestor* for the child intersection,
-   * and the lineage the walk is building is the caller's, not the ancestor's.
+   * The grant patterns an application-owned Identity holds. Only the scopes are
+   * wanted here: this resolves an Identity the credential domain does not own —
+   * an ancestor the lineage walk ends at, or the parent a delegation is bounded
+   * by — and the lineage being built is never that Identity's own.
+   *
+   * It is public because both Credentials adapters need the same answer, and
+   * two derivations of "what does the application say this Identity holds"
+   * would be two chances to disagree.
    */
-  private async resolveIdentityGrant(identity: Identity): Promise<readonly string[]> {
+  readonly resolveIdentityGrant = async (identity: Identity): Promise<readonly string[]> => {
     const resolve = this.options.resolveAppScopes;
     if (resolve === undefined) return EMPTY_SCOPES;
     return resolvedGrant(await resolve(identity, null)).scopes;
-  }
+  };
 
   private async verify(
     credential: string,

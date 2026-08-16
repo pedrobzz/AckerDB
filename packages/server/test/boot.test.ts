@@ -422,18 +422,6 @@ describe("boot", () => {
     await app.drain();
   });
 
-  test("the boot reports nothing beyond its phases and the reconcile", async () => {
-    const reported: string[] = [];
-    const app = await start({
-      reporter: {
-        phase: (phase) => reported.push(`phase:${phase}`),
-        reconciled: () => reported.push("reconciled"),
-      },
-    });
-    expect(reported.filter((line) => line.includes("credential"))).toEqual([]);
-    await app.drain();
-  });
-
   test("system runs are refused after drain", async () => {
     const app = await start();
     await app.drain();

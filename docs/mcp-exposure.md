@@ -63,7 +63,7 @@ remains auth plus function policy everywhere.
 
 There is no MCP-local auth system. An MCP endpoint authenticates ordinary
 identity credentials (`ackerdb_credential.<id>.<secret>` bearers issued
-through the app-wide `credentials` / `systemCredentials` API), and every tool
+through the app-wide `ctx.credentials` capability), and every tool
 entry's scope requirement draws from the one application vocabulary declared
 in `defineApp({ scopes })` — see `docs/scopes.md` for the vocabulary, the
 grant model, the child-credential subset invariant, and live invalidation.

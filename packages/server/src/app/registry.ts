@@ -45,7 +45,7 @@ import {
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
-import { checkRequirementAgainstVocabulary, scopeVocabulary } from "../auth/scopes.ts";
+import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
   claimsReservedName,
   exposedHttpKind,
@@ -294,7 +294,7 @@ export class Registry {
    * builders' scope union cannot.
    */
   checkScopeRequirements(applicationScopes: readonly string[] | undefined): void {
-    const vocabulary = scopeVocabulary(applicationScopes);
+    const vocabulary = applicationScopes ?? [];
     for (const [address, fn] of this.functions) {
       if (fn.scopes === undefined) continue;
       // Registration already normalized and froze it. Re-normalizing here

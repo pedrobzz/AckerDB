@@ -86,11 +86,21 @@ export interface CredentialReadCapability {
   query(): CredentialQuery;
 }
 
-/** Global credential administration, with no framework access check of its own. */
+/**
+ * Global credential administration, with no framework access check of its own.
+ *
+ * "No access check" is about who may reach these operations, not about what
+ * they may store: a child issued or rescoped here is still bounded by its
+ * parent's current effective grant, because a stored grant that exceeded its
+ * source would spring open the moment that source widened.
+ */
 export interface ManageCredentialCapability extends CredentialReadCapability {
-  /** Issue a credential bounded by nothing: a new Identity with no parent. */
+  /** Issue a root credential: a new Identity with no parent to bound it. */
   issueRoot(input: IssueCredentialInput): Promise<IssuedCredential>;
-  /** Issue a credential whose new Identity has the chosen Identity as its parent. */
+  /**
+   * Issue a credential whose new Identity has the chosen Identity as its
+   * parent, bounded by what that parent currently holds.
+   */
   issueFor(parentIdentity: Identity, input: IssueCredentialInput): Promise<IssuedCredential>;
   update(id: string, input: UpdateCredentialInput): Promise<void>;
   updateScopes(id: string, scopes: readonly string[]): Promise<void>;

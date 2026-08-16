@@ -130,6 +130,25 @@ describe("durability and internal state", () => {
     expect(() => new Engine(schema, legacy)).toThrow(IncompatibleDatabaseError);
   });
 
+  test("refuses a database an older engine schema wrote, by version and by name", () => {
+    // Promoting the Identity and Credential tables into the managed schema
+    // reused their physical names with different shapes, so a database from
+    // before the promotion is refused at open rather than meeting a reconcile
+    // that would try to create tables it can already see.
+    const { database } = fresh();
+    const written = new Engine(schema, database);
+    reconcile(written);
+    written.close("clean");
+
+    const db = new Database(database);
+    db.query("UPDATE _ackerdb_meta SET value = '14' WHERE key = 'engine_schema'").run();
+    db.close();
+
+    expect(() => new Engine(schema, database))
+      .toThrow("database engine schema is 14; expected 15");
+    expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
+  });
+
   test("keeps persistent coordination identity while releasing ownership with the process handle", () => {
     const { database } = fresh();
     const coordination = coordinationDatabasePath(database);

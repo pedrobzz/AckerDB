@@ -120,13 +120,6 @@ export function validateScopeVocabulary(value: unknown): ScopeValues {
   return Object.freeze([...value]) as unknown as ScopeValues;
 }
 
-/** The vocabulary every grant expands against: exactly what the manifest declared. */
-export function scopeVocabulary(
-  applicationScopes: readonly string[] | undefined,
-): readonly string[] {
-  return applicationScopes === undefined ? EMPTY_SCOPES : Object.freeze([...applicationScopes]);
-}
-
 function matchesPattern(pattern: string, scope: string): boolean {
   if (!pattern.endsWith(SCOPE_WILDCARD)) return pattern === scope;
   return scope.startsWith(pattern.slice(0, -1));

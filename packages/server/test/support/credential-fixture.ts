@@ -19,7 +19,6 @@ import {
   procedure,
   query,
   type MutationBuilder,
-  type MutationCtx,
   type ProcedureBuilder,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
@@ -163,18 +162,13 @@ export const scopedMcp = typedMcp({
     read_reports: { fn: allScopedTool, access: { allOf: ["orders.get", "reports.all"] } },
   },
 });
-let escapedOwnerContext: MutationCtx<typeof schema> | null = null;
-
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: {
     name: v.string(),
     metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
-  handler: (ctx, args) => {
-    escapedOwnerContext = ctx;
-    return ctx.credentials.issue(args);
-  },
+  handler: (ctx, args) => ctx.credentials.issue(args),
 });
 
 const listAgentTokens = typedQuery({
@@ -343,13 +337,8 @@ export function trackCleanup(cleanup: () => Promise<void>): void {
 }
 
 export async function cleanupCredentialFixtures(): Promise<void> {
-  escapedOwnerContext = null;
   while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
-}
-
-export function retainedOwnerContext(): MutationCtx<typeof schema> | null {
-  return escapedOwnerContext;
 }
 
 export async function user(

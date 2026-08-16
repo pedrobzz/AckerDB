@@ -214,4 +214,3 @@ Both honest fixes are closed; the noise stays.
 **A misspelled group is a startup refusal, not a compile error.** See above —
 the earlier error is buyable only by putting the manifest's groups into the
 type of every builder.
-\n

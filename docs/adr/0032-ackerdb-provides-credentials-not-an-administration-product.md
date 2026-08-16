@@ -110,6 +110,13 @@ CLI, or no root credential ever. Leaving the decision at the function boundary
 costs nothing in safety — a function is already the one authorization funnel —
 and it is the whole difference between a capability and a product.
 
+**Admission is not the delegation bound.** `issueFor` and `manage.updateScopes`
+are still held to the parent's current effective grant; only a root, which has
+no parent, is bounded by the vocabulary alone. A stored child grant that
+exceeded its source would be held back only by the use-time intersection, and
+would spring open the moment the source widened — so the subset invariant is
+checked wherever a child is written, not wherever a caller was admitted.
+
 ## Consequences
 
 - Every pre-existing database is refused at open. The engine schema version
@@ -119,7 +126,10 @@ and it is the whole difference between a capability and a product.
   No migration promotes old rows; this is a deliberate break, not an oversight.
 - The pre-split jobs framework migration goes with it: it could only ever run
   against a database written before the break, which no longer opens. The
-  framework-migration facility stays and its list is empty.
+  framework-migration facility goes too — a transform can only be written for a
+  stored shape this build can still read, so an empty list of them was
+  machinery with no possible member. ADR-0024 and the history keep the design
+  for whenever a framework table next changes shape.
 - Credential operations are asynchronous, because managed table access is.
 - Provisioning an Identity for a first-seen external account is now an ordinary
   coordinated write, so it allocates a commit version and publishes write keys

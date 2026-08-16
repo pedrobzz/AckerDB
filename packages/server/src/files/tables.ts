@@ -7,13 +7,6 @@ export const FILE_UPLOADS_TABLE = "_ackerdb_file_uploads";
 export const FILE_GRANTS_TABLE = "_ackerdb_file_grants";
 export const FILE_CLEANUP_TABLE = "_ackerdb_file_cleanup";
 
-export const FILE_TABLES = Object.freeze([
-  FILES_TABLE,
-  FILE_UPLOADS_TABLE,
-  FILE_GRANTS_TABLE,
-  FILE_CLEANUP_TABLE,
-] as const);
-
 function filesTable(): TableDef {
   return new TableDef({
     id: v.primaryKey(),

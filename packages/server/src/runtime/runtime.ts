@@ -25,7 +25,6 @@ import {
   parseCredentialToken,
   type ParsedCredentialToken,
 } from "../auth/credential-token.ts";
-import { scopeVocabulary } from "../auth/scopes.ts";
 import {
   RuntimeCredentials,
   type CredentialLease,
@@ -115,7 +114,7 @@ export class Runtime implements RuntimePort {
   private readonly fileHttp: FileHttpRuntime;
   private readonly fileCleanup: FileCleanupRuntime;
   private readonly credentials: RuntimeCredentials;
-  /** Application scopes plus the framework's: what every grant expands against. */
+  /** The application's declared scopes: what every grant expands against. */
   private readonly vocabulary: readonly string[];
   /**
    * Package-internal: the transport builds one origin-aware publisher per
@@ -166,7 +165,7 @@ export class Runtime implements RuntimePort {
     if (options.resolveScopes !== undefined && typeof options.resolveScopes !== "function") {
       throw new TypeError("Runtime resolveScopes must be a function");
     }
-    this.vocabulary = scopeVocabulary(options.scopes);
+    this.vocabulary = Object.freeze([...options.scopes ?? []]);
     // The Runtime's one credential authority: AckerDB's own credentials compose
     // with the application verifier, and both invalidate through one boundary.
     this.credentials = new RuntimeCredentials({
@@ -178,7 +177,6 @@ export class Runtime implements RuntimePort {
       ...(options.verifier === undefined ? {} : { appVerifier: options.verifier }),
       ...(options.resolveScopes === undefined ? {} : { resolveAppScopes: options.resolveScopes }),
       vocabulary: this.vocabulary,
-      limits: this.limits.credentials,
       subscribeInvalidation: (listener) =>
         this.authInvalidation.subscribeDirect(listener),
       revocationDeadlineMs: this.limits.auth.revocationDeadlineMs,
@@ -210,6 +208,7 @@ export class Runtime implements RuntimePort {
       reactive: this.reactive,
       credentialVerifier: this.credentialVerifier,
       vocabulary: this.vocabulary,
+      resolveIdentityGrant: this.credentials.resolveIdentityGrant,
       publishAuthInvalidation: this.immediateProcedureInvalidations.publish,
       files: this.files,
       ...(hasMcpCapabilities

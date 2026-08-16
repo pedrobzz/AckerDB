@@ -192,8 +192,8 @@ credential and Identity tables. There is no `list()`: it would be
 `query().collect()` under another name.
 
 Owner-scoped operations require a user Identity; an anonymous or system caller
-fails as `unauthenticated`. **`manage` carries no framework check at all.** The
-containing registered function's `access` policy and declared scopes are the
+fails as `unauthenticated`. **`manage` carries no framework admission check.**
+The containing registered function's `access` policy and declared scopes are the
 whole admission decision, which is what lets an application choose its own
 bootstrap and recovery model — a one-time public setup route, an authenticated
 operator screen, a system flow, or nothing:
@@ -206,6 +206,11 @@ export const issueOperator = mutation({
   handler: (ctx, args) => ctx.credentials.manage.issueRoot(args),
 });
 ```
+
+The delegation bound is not an admission check and does not lift with one:
+`issueFor` and `manage.updateScopes` are still held to the parent's *current*
+effective grant, and only a root — which has no parent — is bounded by the
+vocabulary alone.
 
 `revokeMany(ids)` revokes every named credential and its descendants in one
 transaction, ignores ids that do not exist, deduplicates overlapping descendant

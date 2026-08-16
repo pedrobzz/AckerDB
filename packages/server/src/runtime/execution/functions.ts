@@ -44,7 +44,11 @@ import {
   credentialMutationCapability,
   credentialQueryCapability,
 } from "../../credentials/capability.ts";
-import { Credentials, takeCredentialInvalidations } from "../../credentials/module.ts";
+import {
+  Credentials,
+  takeCredentialInvalidations,
+  type IdentityGrantResolver,
+} from "../../credentials/module.ts";
 import type { CredentialDatabase } from "../../credentials/tables.ts";
 import {
   applicationDatabase,
@@ -175,6 +179,12 @@ export interface RuntimeFunctionExecutorOptions<C> {
   /** The application's declared scopes: what a credential grant expands against. */
   readonly vocabulary: readonly string[];
   /**
+   * The grant patterns an Identity holding no credential carries: what the
+   * lineage walk ends at, and what bounds a delegation the caller is not the
+   * parent of.
+   */
+  readonly resolveIdentityGrant: IdentityGrantResolver;
+  /**
    * Committed revocations and grant changes, onto the generic auth-invalidation
    * path, for a commit whose origin holds no response of its own.
    */
@@ -247,13 +257,16 @@ export class RuntimeFunctionExecutor<C> {
    * null on a query, which is the whole of what makes credential writes exist
    * only on a mutation or transaction context.
    */
-  private credentialsFor(db: unknown, writes: WriteCollector | null): Credentials {
+  private credentialsFor(internal: unknown, writes: WriteCollector | null): Credentials {
     return new Credentials({
-      db: internalDatabase(db) as CredentialDatabase,
+      db: internal as CredentialDatabase,
       vocabulary: this.options.vocabulary,
-      limits: this.options.limits.credentials,
-      now: this.options.now,
-      writes,
+      resolveIdentityGrant: this.options.resolveIdentityGrant,
+      writes: writes === null ? null : {
+        collector: writes,
+        limits: this.options.limits.credentials,
+        now: this.options.now,
+      },
     });
   }
 
@@ -519,25 +532,27 @@ export class RuntimeFunctionExecutor<C> {
   }
 
   /**
-   * `internal.db` is on the context rather than handed to each capability
-   * because it is the same handle every framework implementation wants and the
-   * same one the caller must not see: the application-facing types omit it, so
-   * a handler that never casts cannot reach a framework table its capability
-   * exists to protect.
+   * `internal.db` is the framework's half of one invocation's database handle,
+   * narrowed once here. Every framework capability on the context is built from
+   * that same value rather than narrowing the handle again, so what a
+   * capability can reach and what `ctx.internal.db` shows are the same set by
+   * construction. The application-facing types omit it, so a handler that never
+   * casts cannot reach a framework table its capability exists to protect.
    */
   private hostQueryContext(
     db: unknown,
     principal: Principal,
     timestamp: number,
   ): QueryCtx {
+    const internal = internalDatabase(db);
     return Object.freeze({
       db: applicationDatabase(db),
       auth: principal,
       timestamp,
-      internal: Object.freeze({ db: internalDatabase(db) }),
+      internal: Object.freeze({ db: internal }),
       jobs: queryJobsNamespace(this.options.jobs(), db),
       files: this.options.files.query(db),
-      credentials: credentialQueryCapability(this.credentialsFor(db, null), principal),
+      credentials: credentialQueryCapability(this.credentialsFor(internal, null), principal),
     }) as QueryCtx;
   }
 
@@ -548,12 +563,13 @@ export class RuntimeFunctionExecutor<C> {
     writes: WriteCollector,
     extras?: Record<string, unknown>,
   ): MutationCtx {
+    const internal = internalDatabase(db);
     return Object.freeze({
       ...extras,
       db: applicationDatabase(db),
       auth: principal,
       timestamp,
-      internal: Object.freeze({ db: internalDatabase(db) }),
+      internal: Object.freeze({ db: internal }),
       jobs: mutationJobsNamespace(
         this.options.jobs(),
         db,
@@ -564,7 +580,10 @@ export class RuntimeFunctionExecutor<C> {
           ? at
           : Math.min(writes.fileCleanupAt, at);
       }, () => markOneTimeResult(writes)),
-      credentials: credentialMutationCapability(this.credentialsFor(db, writes), principal),
+      credentials: credentialMutationCapability(
+        this.credentialsFor(internal, writes),
+        principal,
+      ),
     }) as MutationCtx;
   }
 

@@ -14,7 +14,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode, Err, Status, type Identity } from "@ackerdb/core";
-import { ANONYMOUS_PRINCIPAL, type Principal } from "../../src/auth/credentials.ts";
+import {
+  ANONYMOUS_PRINCIPAL,
+  type Principal,
+  type UserPrincipal,
+} from "../../src/auth/credentials.ts";
 import { CREDENTIALS_TABLE } from "../../src/credentials/tables.ts";
 import { IDENTITIES_TABLE } from "../../src/auth/tables.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -148,6 +152,51 @@ const revokeMany = typedMutation({
   handler: async (ctx, args) => [...await ctx.credentials.manage.revokeMany(args.ids)],
 });
 
+/**
+ * The same global capability behind two other admission decisions. Neither
+ * changes what `manage` may do — that is the point of testing all three.
+ */
+const authenticatedIssue = typedMutation({
+  access: "authenticated",
+  args: { name: v.string() },
+  handler: (ctx, args) => ctx.credentials.manage.issueRoot({ name: args.name, scopes: [] }),
+});
+
+const customPolicyIssue = typedMutation({
+  access: (_ctx, args: { readonly name: string }) => args.name.startsWith("allowed-"),
+  args: { name: v.string() },
+  handler: (ctx, args) => ctx.credentials.manage.issueRoot({ name: args.name, scopes: [] }),
+});
+
+/** The public token id a caller was handed must be the one it can filter on. */
+const byPublicId = typedQuery({
+  access: "public",
+  args: { id: v.string() },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const found = await ctx.credentials.manage.query()
+      .where((row) => row.id.eq(args.id))
+      .orderBy((row) => row.createdAt.asc())
+      .thenBy((row) => row.name.desc())
+      .collect();
+    return found.map((credential) => credential.name);
+  },
+});
+
+/** Aggregates address the same safe row a predicate does. */
+const newestCreatedAt = typedQuery({
+  access: "public",
+  args: {},
+  returns: v.float().nullable(),
+  handler: async (ctx) => await ctx.credentials.manage.query().max((row) => row.createdAt) ?? null,
+});
+
+const issueChild = typedMutation({
+  access: "authenticated",
+  args: { name: v.string(), scopes: v.array(v.string()) },
+  handler: (ctx, args) => ctx.credentials.issue(args),
+});
+
 /** What each database capability can see: the boundary of user story 41. */
 const visibleTables = typedQuery({
   access: "public",
@@ -175,7 +224,9 @@ const modules = {
     revokeManyThenFail,
     rootCredentials,
   },
-  inspect: { visibleTables },
+  gated: { authenticatedIssue, customPolicyIssue },
+  inspect: { byPublicId, newestCreatedAt, visibleTables },
+  own: { issueChild },
 };
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -217,14 +268,46 @@ async function start(): Promise<Harness> {
 }
 
 function anonymousSession(): SessionRuntimeContext {
+  return sessionFor(ANONYMOUS_PRINCIPAL as Principal, "manage");
+}
+
+function sessionFor(
+  principal: Principal,
+  name: string,
+  publications?: RuntimePublication[],
+): SessionRuntimeContext {
   return Object.freeze({
-    clientSessionId: "manage",
-    principal: ANONYMOUS_PRINCIPAL as Principal,
-    fairnessKey: callerFairnessKey(ANONYMOUS_PRINCIPAL, { family: "test", address: "manage" }),
+    clientSessionId: name,
+    principal,
+    fairnessKey: callerFairnessKey(principal, { family: "test", address: name }),
     authEpoch: 0,
     signal: new AbortController().signal,
-    publish: async (_publication: RuntimePublication) => true,
+    publish: async (publication: RuntimePublication) => {
+      publications?.push(publication);
+      return true;
+    },
   }) as SessionRuntimeContext;
+}
+
+async function userSession(
+  runtime: Runtime,
+  subject: string,
+  name: string,
+): Promise<{ readonly principal: UserPrincipal; readonly session: SessionRuntimeContext }> {
+  const identity = await runtime.resolveIdentity({ issuer: "https://issuer.test/", subject });
+  const principal: UserPrincipal = Object.freeze({
+    kind: "user",
+    scopes: Object.freeze([...VOCABULARY]),
+    identity,
+    issuer: "https://issuer.test/",
+    subject,
+    claims: Object.freeze({}),
+    expiresAt: Date.now() + 60_000,
+    tokenId: `external-${subject}`,
+  });
+  const session = sessionFor(principal, name);
+  await runtime.openSession(session);
+  return { principal, session };
 }
 
 let messageId = 0;
@@ -379,6 +462,200 @@ describe("global credential administration", () => {
       { ids: [first.id, second.id] },
       "api.admin.revokeMany",
     ))).value).toEqual([]);
+  });
+
+  test("a caller filters, orders, and aggregates on the credential it was handed", async () => {
+    const { runtime, session } = await start();
+    await runtime.openSession(session);
+    const issued = (await runtime.mutation(session, call(
+      { name: "Findable", scopes: [] },
+      "api.admin.bootstrapRoot",
+    ))).value as { readonly id: string };
+    await runtime.mutation(session, call({ name: "Other", scopes: [] }, "api.admin.bootstrapRoot"));
+
+    // `id` is the public token id, not the stored primary key: a caller who
+    // filters on the id it was given must reach the row it was given.
+    messageId += 1;
+    expect(await runtime.query(session, request({
+      t: "q" as const,
+      id: messageId,
+      ref: "api.inspect.byPublicId",
+      args: { id: issued.id },
+    }))).toEqual(["Findable"]);
+    expect(await runtime.query(session, read("api.inspect.newestCreatedAt")))
+      .toBeGreaterThan(0);
+  });
+
+  test("owner scope refuses a system principal as firmly as an anonymous one", async () => {
+    const { runtime } = await start();
+    // Neither has a user Identity to own anything, and neither may be guessed
+    // into one: system authority is the framework's own rather than a
+    // credential holder's, so it fails as unauthenticated instead of reading
+    // somebody else's empty list.
+    await expect(runtime.system.run("owner-read", (ctx) =>
+      ctx.tx((tx) => tx.credentials.query().collect())))
+      .rejects.toMatchObject({
+        code: "unauthenticated",
+        message: "owner-scoped credential operations require a user identity",
+      });
+    await expect(runtime.system.run("owner-write", (ctx) =>
+      ctx.tx((tx) => tx.credentials.issue({ name: "system-owned" }))))
+      .rejects.toMatchObject({ code: "unauthenticated" });
+  });
+
+  test("manage answers to whatever policy the containing function declares", async () => {
+    const { runtime, session } = await start();
+    await runtime.openSession(session);
+    const { session: alice } = await userSession(runtime, "policy-alice", "policy-alice");
+
+    // Authenticated: admitted for a user, refused for anonymous.
+    expect((await runtime.mutation(alice, call(
+      { name: "Behind authentication" },
+      "api.gated.authenticatedIssue",
+    ))).value).toMatchObject({ name: "Behind authentication" });
+    await expect(runtime.mutation(session, call(
+      { name: "Anonymous" },
+      "api.gated.authenticatedIssue",
+    ))).rejects.toMatchObject({ code: "unauthenticated" });
+
+    // Custom policy: the callback is the whole decision, on both answers.
+    expect((await runtime.mutation(session, call(
+      { name: "allowed-one" },
+      "api.gated.customPolicyIssue",
+    ))).value).toMatchObject({ name: "allowed-one" });
+    await expect(runtime.mutation(session, call(
+      { name: "refused-one" },
+      "api.gated.customPolicyIssue",
+    ))).rejects.toMatchObject({ code: "unauthenticated" });
+  });
+
+  test("a child never exceeds its parent, however it was issued", async () => {
+    const { runtime, session } = await start();
+    await runtime.openSession(session);
+    const { session: aliceSession } = await userSession(runtime, "bound-alice", "bound-alice");
+    // Alice holds the whole vocabulary; `narrow` deliberately does not, so it
+    // is the parent whose bound is worth testing.
+    const narrow = (await runtime.mutation(aliceSession, call(
+      { name: "Narrow", scopes: ["orders.get"] },
+      "api.own.issueChild",
+    ))).value as { readonly id: string; readonly identity: Identity };
+
+    // `issueFor` is global administration and carries no access check, and it
+    // still cannot mint a child that outruns the parent it names.
+    await expect(runtime.system.run("escalate", (ctx) =>
+      ctx.tx((tx) => tx.credentials.manage.issueFor(narrow.identity, {
+        name: "Escalated",
+        scopes: ["reports.all"],
+      })))).rejects.toMatchObject({ code: "unauthorized" });
+    const bounded = await runtime.system.run("delegate", (ctx) =>
+      ctx.tx((tx) => tx.credentials.manage.issueFor(narrow.identity, {
+        name: "Bounded",
+        scopes: ["orders.get"],
+      })));
+    expect(bounded.ok).toBe(true);
+    const grandchild = (bounded as { data: { id: string } }).data;
+
+    // `manage.updateScopes` is bounded by the addressed credential's parent,
+    // which for the grandchild is `narrow` rather than Alice.
+    await expect(runtime.mutation(session, call(
+      { id: grandchild.id, scopes: ["reports.all"] },
+      "api.admin.rescopeAny",
+    ))).rejects.toMatchObject({ code: "unauthorized" });
+    // Alice holds everything, so widening her own child stays inside her grant.
+    await runtime.mutation(session, call(
+      { id: narrow.id, scopes: ["orders.all"] },
+      "api.admin.rescopeAny",
+    ));
+
+    // A root has no parent to be bounded by; only the vocabulary holds it.
+    const root = (await runtime.mutation(session, call(
+      { name: "Root", scopes: ["reports.all"] },
+      "api.admin.bootstrapRoot",
+    ))).value as { readonly id: string };
+    await runtime.mutation(session, call(
+      { id: root.id, scopes: ["orders.all", "reports.all"] },
+      "api.admin.rescopeAny",
+    ));
+    await expect(runtime.mutation(session, call(
+      { id: root.id, scopes: ["never.declared"] },
+      "api.admin.rescopeAny",
+    ))).rejects.toMatchObject({ code: "validation" });
+  });
+
+  test("revokeMany reports an overlapping parent and child exactly once", async () => {
+    const { runtime, session } = await start();
+    await runtime.openSession(session);
+    const { session: aliceSession } = await userSession(runtime, "bulk-alice", "bulk-alice");
+    const parent = (await runtime.mutation(aliceSession, call(
+      { name: "Parent", scopes: [] },
+      "api.own.issueChild",
+    ))).value as { readonly id: string; readonly identity: Identity };
+    const child = await runtime.system.run("child", (ctx) =>
+      ctx.tx((tx) => tx.credentials.manage.issueFor(parent.identity, {
+        name: "Child",
+        scopes: [],
+      })));
+    const childId = (child as { data: { id: string } }).data.id;
+
+    // The child is reachable twice: named directly, and through the cascade.
+    const revoked = (await runtime.mutation(session, call(
+      { ids: [parent.id, childId] },
+      "api.admin.revokeMany",
+    ))).value as readonly string[];
+    expect([...revoked].sort()).toEqual([parent.id, childId].sort());
+    expect(revoked).toHaveLength(2);
+    expect(await runtime.query(session, read("api.admin.countCredentials"))).toBe(0);
+  });
+
+  test("a subscribed global query reruns on a credential write and on nothing else", async () => {
+    const { runtime, engine } = await start();
+    const published: RuntimePublication[] = [];
+    const watcher = sessionFor(ANONYMOUS_PRINCIPAL as Principal, "watcher", published);
+    await runtime.openSession(watcher);
+    messageId += 1;
+    await runtime.subscribe(watcher, request({
+      t: "sub" as const,
+      id: messageId,
+      ref: "api.admin.countCredentials",
+      args: {},
+    }));
+    const initial = published.length;
+
+    await runtime.mutation(watcher, call(
+      { name: "Watched", scopes: [] },
+      "api.admin.bootstrapRoot",
+    ));
+    expect(published.length).toBeGreaterThan(initial);
+    const afterCredential = published.length;
+
+    // An unrelated table's write reaches no credential subscription.
+    await runtime.system.run("unrelated", (ctx) =>
+      ctx.tx((tx) => (tx.db as unknown as {
+        audit: { insert(row: { line: string }): PromiseLike<bigint> };
+      }).audit.insert({ line: "noise" })));
+    void engine;
+    expect(published.length).toBe(afterCredential);
+  });
+
+  test("runtime authentication reads a snapshot and records no reactive dependency", async () => {
+    const { runtime, session } = await start();
+    await runtime.openSession(session);
+    const issued = (await runtime.mutation(session, call(
+      { name: "Bearer", scopes: [] },
+      "api.admin.bootstrapRoot",
+    ))).value as { readonly token: string };
+
+    // Authentication precedes an invocation: there is no subscription waiting
+    // on its read, so it opens a snapshot with no recorder. Anything else would
+    // build reactive machinery for a read nobody re-runs.
+    const before = runtime.status().reactive;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await runtime.authenticateCredential(issued.token, `snapshot-${attempt}`);
+    }
+    const after = runtime.status().reactive;
+    expect(after.dependencyKeys).toBe(before.dependencyKeys);
+    expect(after.dependencyEdges).toBe(before.dependencyEdges);
+    expect(after.sharedEntries).toBe(before.sharedEntries);
   });
 
   test("framework tables are absent from ctx.db and present on ctx.internal.db", async () => {

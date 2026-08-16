@@ -1,7 +1,7 @@
 /**
  * Opaque identity-credential tokens: the bearer form of an issued credential.
  *
- * A credential token authenticates a first-class Identity — a standalone agent
+ * A credential token authenticates a first-class Identity — a root credential
  * or a child of a user — on every transport. Its synthetic external account
  * (issuer `ackerdb:credentials`, subject = token id) is how revocations and
  * grant changes ride the one generic auth-invalidation path instead of a

@@ -1,4 +1,5 @@
 import type { FileGrantId, FileId, Identity } from "@ackerdb/core";
+import type { ManagedInsert, ManagedTable } from "../database/managed.ts";
 import {
   FILE_CLEANUP_TABLE,
   FILE_GRANTS_TABLE,
@@ -60,43 +61,11 @@ export interface FileCleanupRow {
   readonly createdAt: number;
 }
 
-type InsertRow<Row extends { readonly id: bigint }> = Omit<Row, "id">;
-type PatchRow<Row extends { readonly id: bigint }> = Partial<InsertRow<Row>>;
-
-export interface FileDatabaseQuery<Row> {
-  where(predicate: (row: never) => unknown): FileDatabaseQuery<Row>;
-  orderBy(order: (row: never) => unknown): FileDatabaseQuery<Row>;
-  thenBy(order: (row: never) => unknown): FileDatabaseQuery<Row>;
-  collect(): Promise<Row[]>;
-  take(count: number): Promise<Row[]>;
-  first(): Promise<Row | null>;
-  unique(): Promise<Row | null>;
-  count(): Promise<number>;
-  sum(column: (row: never) => unknown): Promise<number | bigint>;
-  avg(column: (row: never) => unknown): Promise<number | null>;
-  min(column: (row: never) => unknown): Promise<unknown | null>;
-  max(column: (row: never) => unknown): Promise<unknown | null>;
-  iter(): AsyncIterable<Row>;
-  paginate(options: { cursor?: string | null; pageSize: number }): Promise<{
-    items: Row[];
-    nextCursor: string | null;
-  }>;
-}
-
-export interface FileDatabaseTable<Row extends { readonly id: bigint }> {
-  get(id: bigint): Promise<Row | null>;
-  insert(row: InsertRow<Row>): PromiseLike<Row["id"]>;
-  patch(id: bigint, row: PatchRow<Row>): PromiseLike<void>;
-  delete(id: bigint): PromiseLike<void>;
-  deleteMany(ids: readonly bigint[]): Promise<number>;
-  query(): FileDatabaseQuery<Row>;
-}
-
 export interface FileDatabase {
-  readonly [FILES_TABLE]: FileDatabaseTable<FileRow>;
-  readonly [FILE_UPLOADS_TABLE]: FileDatabaseTable<FileUploadRow>;
-  readonly [FILE_GRANTS_TABLE]: FileDatabaseTable<FileGrantRow>;
-  readonly [FILE_CLEANUP_TABLE]: FileDatabaseTable<FileCleanupRow>;
+  readonly [FILES_TABLE]: ManagedTable<FileRow>;
+  readonly [FILE_UPLOADS_TABLE]: ManagedTable<FileUploadRow>;
+  readonly [FILE_GRANTS_TABLE]: ManagedTable<FileGrantRow>;
+  readonly [FILE_CLEANUP_TABLE]: ManagedTable<FileCleanupRow>;
 }
 
 /** Runtime table validation has already decoded these rows at this seam. */
@@ -109,7 +78,7 @@ export function pendingCleanupRow(input: {
   readonly fileId: FileId | null;
   readonly now: number;
   readonly lastError: string | null;
-}): InsertRow<FileCleanupRow> {
+}): ManagedInsert<FileCleanupRow> {
   return {
     objectKey: input.objectKey,
     fileId: input.fileId,

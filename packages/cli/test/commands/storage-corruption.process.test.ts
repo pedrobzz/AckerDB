@@ -330,7 +330,7 @@ describe("fresh-process storage corruption rejection", () => {
       { value: "committed-before-crash" },
     ]);
     // The recovered commit is the only logical commit: recovery restores the
-    // row, and the boot's Admin Credential mint spends no commit version.
+    // row, and the boot itself commits nothing.
     expect(recovered.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
       commit_version: 1n,
     });
@@ -427,8 +427,7 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(recoveredReset);
     const resetDatabase = new Database(resetPath, { readonly: true, safeIntegers: true });
     expect(resetDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 501n });
-    // Two recovered commits; the boot's own Admin Credential mint spends no
-    // logical commit version.
+    // Two recovered commits, and nothing from the boot itself.
     expect(resetDatabase.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
       commit_version: 2n,
     });

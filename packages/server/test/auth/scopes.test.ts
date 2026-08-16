@@ -7,7 +7,6 @@ import {
   isScopeAuthorized,
   isScopeGrant,
   isScopePattern,
-  scopeVocabulary,
   normalizeScopeRequirement,
   principalScopes,
   validateScopeVocabulary,
@@ -15,7 +14,7 @@ import {
 import {
   effectiveChildScopes,
   issueChildScopes,
-} from "../../src/auth/child-credentials.ts";
+} from "../../src/credentials/delegation.ts";
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
@@ -78,10 +77,6 @@ describe("scope vocabulary", () => {
     expect(() => validateScopeVocabulary(["*"])).toThrow(/wildcard/);
   });
 
-  test("the vocabulary is exactly what the manifest declared", () => {
-    expect(scopeVocabulary(undefined)).toEqual([]);
-    expect(scopeVocabulary(["notes:read"])).toEqual(["notes:read"]);
-  });
 });
 
 describe("grant patterns", () => {

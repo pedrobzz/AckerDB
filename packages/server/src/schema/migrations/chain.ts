@@ -22,7 +22,6 @@ import type { Engine } from "../../database/engine.ts";
 import { canonicalSnapshotJson, snapshotOf } from "../snapshot.ts";
 import { planAndReconcile } from "../planner.ts";
 import { applyStep } from "./apply.ts";
-import { applyFrameworkMigrations } from "./framework.ts";
 import { migrationIdentity, MigrationError, stepLabel, type MigrationStep } from "./types.ts";
 
 /** Numbers must be 1-based and strictly increasing across the whole chain. */
@@ -135,12 +134,6 @@ export async function applyChain(engine: Engine, steps: MigrationStep[]): Promis
     current = saved;
   }
   if (pending.length > 0) engine.reinternTags();
-  // Framework migrations run here, after the application's chain and before the
-  // safe hop: a step generated against an older framework then meets the
-  // framework tables exactly as they were when it was generated.
-  const framework = await applyFrameworkMigrations(engine, current);
-  applied.push(...framework.applied);
-  current = framework.snapshot;
   // Trailing safe hop: fold any remaining safe drift into the live schema. The
   // database is non-fresh here (a fresh one returned above), so this runs the
   // planner's safe-reconcile core directly — plan stored → live, refuse or apply

@@ -389,8 +389,7 @@ describe("process crash replay", () => {
       requestId,
     )).toBe(0);
     // The killed mutation contributed nothing, which is the point of the
-    // assertion; the boot's own Admin Credential mint is a framework write and
-    // spends no logical commit version.
+    // assertion; the boot itself commits nothing.
     expect(storageState(database)).toEqual({
       commitVersion: 0,
       mutationRecords: 0,
@@ -437,7 +436,7 @@ describe("process crash replay", () => {
       requestId,
     )).toBe(1);
     // The retried mutation is the first logical commit this database has ever
-    // taken; the boot's Admin Credential mint spends no commit version.
+    // taken; the boot itself commits nothing.
     const committedState = storageState(database);
     expect(committedState).toMatchObject({ commitVersion: 1, mutationRecords: 1 });
     expect(committedState.mutationResultBytes).toBeGreaterThan(0);
