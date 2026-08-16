@@ -56,7 +56,7 @@ import type { RuntimeOptions } from "./contracts/options.ts";
 import type {
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
-  RuntimeHttpHandlerRequest,
+  RuntimeHttpRouteRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "./contracts/requests.ts";
@@ -429,8 +429,8 @@ export class Runtime implements RuntimePort {
     return this.http.runProcedure(request);
   }
 
-  async runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
-    return this.http.runHttpHandler(input);
+  async runHttpRoute(input: RuntimeHttpRouteRequest): Promise<Response> {
+    return this.http.runHttpRoute(input);
   }
 
   /** Streaming built-in Upload Session and File Grant routes. */

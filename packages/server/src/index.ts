@@ -389,14 +389,32 @@ export {
   type TxCtx,
 } from "./app/functions.ts";
 export {
-  httpHandler,
-  HTTP_HANDLER_METHODS,
-  type AnyRegisteredHttpHandler,
-  type HttpHandlerBuilder,
+  HTTP_METHODS,
+  type HttpMethod,
+  type HttpParams,
+  type ValidHttpPath,
+} from "./transport/routing/path.ts";
+export {
+  http,
+  isHttpShaped,
+  type AnyHttp,
+  type Http,
+  type HttpBuilder,
+  type HttpCapabilities,
+  type HttpHandler,
   type HttpHandlerCtx,
-  type HttpHandlerMethod,
-  type RegisteredHttpHandler,
-} from "./app/http-handler.ts";
+  type HttpHandlerDELETE,
+  type HttpHandlerGET,
+  type HttpHandlerHEAD,
+  type HttpHandlerOPTIONS,
+  type HttpHandlerPATCH,
+  type HttpHandlerPOST,
+  type HttpHandlerPUT,
+  type HttpHandlers,
+  type HttpRequest,
+  type HttpRoute,
+  type HttpRouteCtx,
+} from "./transport/routing/route.ts";
 export {
   channel,
   isRegisteredChannel,
@@ -489,7 +507,7 @@ export {
 } from "./runtime/contracts/options.ts";
 export {
   type HttpMutationReceipt,
-  type RuntimeHttpHandlerRequest,
+  type RuntimeHttpRouteRequest,
   type RuntimeHttpMutationRequest,
   type RuntimeHttpRequest,
   type RuntimeHttpResponder,

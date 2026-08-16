@@ -4,7 +4,7 @@ import { ValidationError } from "../../src/validation/error.ts";
 import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
-import { httpHandler } from "../../src/app/http-handler.ts";
+import { http } from "../../src/transport/routing/route.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   claimsReservedName,
@@ -39,6 +39,8 @@ const listing = query({
   handler: () => [],
 });
 
+const hook = http("/api/hooks/stripe", { POST: () => new Response(null) });
+
 describe("HTTP-exposed function paths", () => {
   test("maps address segments to path segments and keeps unexposed functions out", () => {
     const registry = new Registry({
@@ -48,36 +50,47 @@ describe("HTTP-exposed function paths", () => {
     });
 
     // Every route is the application's: the framework registers none.
-    expect([...registry.exposed.keys()]).toEqual([
-      "/api/admin/messages/purge",
-      "/api/messages/list",
-      "/api/notes/echo",
+    expect([...registry.exposed.keys()].sort()).toEqual([
+      "api.admin.messages.purge",
+      "api.messages.list",
+      "api.notes.echo",
     ]);
-    const echo = registry.exposed.get("/api/notes/echo");
+    const echo = registry.exposed.get("api.notes.echo");
     expect(echo).toMatchObject({
       address: "api.notes.echo",
       path: "/api/notes/echo",
       openapi: true,
     });
     expect(echo?.fn).toBe(registry.get("api.notes.echo")!);
-    expect(registry.exposed.get("/api/admin/messages/purge")).toMatchObject({
+    expect(registry.exposed.get("api.admin.messages.purge")).toMatchObject({
       address: "api.admin.messages.purge",
       openapi: false,
     });
-    expect(registry.exposed.get("/api/messages/unexposed")).toBeUndefined();
+    expect(registry.exposed.get("api.messages.unexposed")).toBeUndefined();
     expect(registry.get("api.messages.unexposed")).toBe(unexposed);
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
     expect(() => new Registry({ _internal: { echo: exposed } })).toThrow(
-      'HTTP-exposed function "api._internal.echo" claims AckerDB-owned path "/api/_internal/echo"; "_" is reserved to AckerDB',
+      'HTTP-exposed function "api._internal.echo" claims AckerDB-owned path "/api/_internal/echo"',
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
     expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
-    // A raw handler claims its path through the same check, named by its kind.
-    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
-    expect(() => new Registry({ _internal: { hook } })).toThrow(
-      'http handler "api._internal.hook" claims AckerDB-owned path "/api/_internal/hook"; "_" is reserved to AckerDB',
+    // A raw route claims its explicit path through the same check.
+    const reserved = { ...hook, path: "/_ws" } as never;
+    expect(() => new Registry({ hooks: { reserved } })).toThrow(
+      'http route "api.hooks.reserved" claims AckerDB-owned path "/_ws"',
+    );
+    const underApi = { ...hook, path: "/api/_internal/hook" } as never;
+    expect(() => new Registry({ hooks: { underApi } })).toThrow(
+      'http route "api.hooks.underApi" claims AckerDB-owned path "/api/_internal/hook"',
+    );
+    // The operational endpoints carry no marker — they are named by the
+    // outside world — so the built-in list is what keeps an application off
+    // them, and one refusal covers both kinds of AckerDB path.
+    const probe = { ...hook, path: "/live" } as never;
+    expect(() => new Registry({ hooks: { probe } })).toThrow(
+      'http route "api.hooks.probe" claims AckerDB-owned path "/live"',
     );
   });
 
@@ -97,13 +110,16 @@ describe("HTTP-exposed function paths", () => {
       expect(isAckerDBHttpRoute(operational)).toBe(true);
     }
 
-    // One reservation, applied wherever a path is claimed: the application
-    // root and its top-level module alike.
+    // One reservation, applied wherever a path is claimed: the root, and the
+    // segment directly beneath the fixed application root.
     expect(claimsReservedName("/api/_files")).toBe(true);
     expect(claimsReservedName("/_ws")).toBe(true);
     expect(claimsReservedName("/_private/tools")).toBe(true);
     expect(claimsReservedName("/api/notes/_echo")).toBe(false);
     expect(claimsReservedName("/api/my_notes")).toBe(false);
+    // An explicit raw path owns its second segment: only `/api/` reserves it,
+    // because only there does a future built-in route derive from an address.
+    expect(claimsReservedName("/webhooks/_raw")).toBe(false);
   });
 
   test("refuses two addresses projecting onto one path", () => {
@@ -116,13 +132,13 @@ describe("HTTP-exposed function paths", () => {
     ).toThrow(
       'HTTP-exposed function "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
     );
-    // A raw handler meets the same check: handler paths are claimed after
-    // exposed ones, so one check covers both orders and both kinds.
-    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
+    // A raw route meets the same check: explicit paths are claimed after
+    // derived ones, so one check covers both orders and both kinds.
+    const collide = { ...hook, path: "/api/notes/echo/deep" } as never;
     expect(() =>
-      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: hook } })
+      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { collide } })
     ).toThrow(
-      'http handler "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
+      'http route "api.notes.echo.collide" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
     );
   });
 
@@ -147,22 +163,27 @@ describe("HTTP-exposed function paths", () => {
   });
 });
 
-describe("raw http handler routes", () => {
-  const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
-
-  test("claims its address-derived path outside the function and exposed maps", () => {
+describe("application-owned raw routes", () => {
+  test("claims its explicit path outside the function and exposed maps", () => {
     const registry = new Registry({ hooks: { stripe: hook } });
 
-    const route = registry.httpRoutes.get("/api/hooks/stripe");
-    expect(route).toMatchObject({ address: "api.hooks.stripe", path: "/api/hooks/stripe" });
-    // The route serves the registry's own validated snapshot; the handler it
-    // calls is the exported one.
-    expect(route?.fn.handler).toBe(hook.handler);
-    expect(route?.fn.methods).toEqual(["POST"]);
-    expect(registry.httpHandler("api.hooks.stripe")).toBe(route?.fn);
+    expect(registry.httpRoutes).toMatchObject([
+      { address: "api.hooks.stripe", http: { path: "/api/hooks/stripe" } },
+    ]);
+    // The registry serves its own validated snapshot; the handler it calls is
+    // the exported one.
+    expect(registry.httpRoutes[0]!.http.handlers.POST).toBe(hook.handlers.POST);
+    expect(registry.kindOf("api.hooks.stripe")).toBe("http");
     // Not a contract function: it is neither addressable nor exposed.
     expect(registry.get("api.hooks.stripe")).toBeUndefined();
-    expect(registry.exposed.get("/api/hooks/stripe")).toBeUndefined();
+    expect(registry.exposed.get("api.hooks.stripe")).toBeUndefined();
+  });
+
+  test("owns a path outside the application root, because a provider dictated it", () => {
+    const root = http("/webhooks/:provider/callback", { GET: () => new Response(null) });
+    const registry = new Registry({ hooks: { root } });
+
+    expect(registry.httpRoutes[0]!.http.path).toBe("/webhooks/:provider/callback");
   });
 
   test("refuses an untyped export missing the client-erasure marker", () => {
@@ -171,29 +192,31 @@ describe("raw http handler routes", () => {
     const { isAckerDBServerOnly: _erased, ...rest } = hook;
     const unmarked = rest as never;
     expect(() => new Registry({ hooks: { unmarked } })).toThrow(
-      'http handler "hooks.unmarked" must carry isAckerDBServerOnly: true',
+      'http route "hooks.unmarked" must carry isAckerDBServerOnly: true',
     );
   });
 
   test("serves the validated snapshot, not the exported object", () => {
     // A value whose fields change after registration — a getter that answers
-    // twice, or a mutated methods array — must not change what the surface
+    // twice, or a mutated handler map — must not change what the surface
     // serves: every field is read once, at registration, and copied.
+    const handlers: Record<string, unknown> = { POST: () => new Response(null) };
     const mutable = {
       isAckerDB: true,
       isAckerDBServerOnly: true,
       kind: "http",
-      methods: ["POST"],
-      handler: () => new Response(null),
+      path: "/api/hooks/mutable",
+      handlers,
     };
     const registry = new Registry({ hooks: { mutable: mutable as never } });
-    const route = registry.httpRoutes.get("/api/hooks/mutable")!;
+    const route = registry.httpRoutes[0]!.http;
 
-    mutable.methods[0] = "TRACE";
-    mutable.handler = null as never;
-    expect(route.fn.methods).toEqual(["POST"]);
-    expect(typeof route.fn.handler).toBe("function");
-    expect(Object.isFrozen(route.fn)).toBe(true);
+    handlers.POST = null;
+    handlers.GET = () => new Response(null);
+    expect(Object.keys(route.handlers)).toEqual(["POST"]);
+    expect(typeof route.handlers.POST).toBe("function");
+    expect(Object.isFrozen(route)).toBe(true);
+    expect(Object.isFrozen(route.handlers)).toBe(true);
   });
 
   test("stores the handler it type-checked, not a second read of the field", () => {
@@ -205,43 +228,59 @@ describe("raw http handler routes", () => {
       isAckerDB: true,
       isAckerDBServerOnly: true,
       kind: "http",
-      methods: ["POST"],
-      get handler() {
-        reads++;
-        return reads === 1 ? () => new Response(null) : ("not a function" as never);
+      path: "/api/hooks/shifty",
+      handlers: {
+        get POST() {
+          reads++;
+          return reads === 1 ? () => new Response(null) : ("not a function" as never);
+        },
       },
     };
     const registry = new Registry({ hooks: { shifty: shifty as never } });
-    expect(typeof registry.httpRoutes.get("/api/hooks/shifty")!.fn.handler).toBe("function");
+    expect(typeof registry.httpRoutes[0]!.http.handlers.POST).toBe("function");
   });
-
 });
 
-describe("the httpHandler builder", () => {
-  test("refuses malformed methods", () => {
-    const handler = () => new Response(null);
-    expect(() => httpHandler({ methods: [], handler })).toThrow(
-      "httpHandler methods must be a non-empty array of HTTP methods",
+describe("the http factory", () => {
+  test("refuses a malformed path, in the same words the compiler uses", () => {
+    const handlers = { GET: () => new Response(null) };
+    expect(() => http("nope" as never, handlers)).toThrow(
+      'http path "nope" must start with "/"',
     );
-    expect(() => httpHandler({ methods: "POST" as never, handler })).toThrow(
-      "httpHandler methods must be a non-empty array of HTTP methods",
+    expect(() => http("/a//b" as never, handlers)).toThrow(
+      'http path "/a//b" may not contain an empty segment',
     );
-    expect(() => httpHandler({ methods: ["POST", "TRACE" as never], handler })).toThrow(
-      "httpHandler methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    expect(() => http("/a/*/b" as never, handlers)).toThrow(
+      'http path "/a/*/b" may only use "*" as the last segment',
     );
-    expect(() => httpHandler({ methods: ["POST", "POST"], handler })).toThrow(
-      'httpHandler methods must not repeat "POST"',
+    expect(() => http("/:id/:id" as never, handlers)).toThrow(
+      'http path "/:id/:id" names ":id" twice',
     );
-    // An untyped export reaches the same interpreter, named by its address.
-    const badMethod = { ...httpHandler({ methods: ["POST"], handler }), methods: ["POST", "FETCH"] } as never;
-    expect(() => new Registry({ hooks: { badMethod } })).toThrow(
-      'http handler "hooks.badMethod" methods[1] must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
+    expect(() => http("/a/:" as never, handlers)).toThrow(
+      'http path "/a/:" has a ":" that names no parameter',
+    );
+    expect(() => http("/a/**" as never, handlers)).toThrow(
+      'http path "/a/**" segment "**" is neither static text, ":name", nor the terminal "*"',
     );
   });
 
-  test("refuses a non-function handler", () => {
-    expect(() => httpHandler({ methods: ["POST"], handler: null as never })).toThrow(
-      "httpHandler handler must be a function",
+  test("refuses a malformed method map", () => {
+    expect(() => http("/a", {})).toThrow("http handlers must name at least one HTTP method");
+    expect(() => http("/a", { TRACE: () => new Response(null) } as never)).toThrow(
+      'http handlers key "TRACE" must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
+    );
+    expect(() => http("/a", { POST: null } as never)).toThrow(
+      'http handler for "POST" must be a function',
+    );
+    expect(() => http("/a", null as never)).toThrow(
+      "http handlers must be an object keyed by HTTP method",
+    );
+  });
+
+  test("refuses a field nothing consumes, so an expectation is never ignored", () => {
+    const extra = { ...hook, access: "public" } as never;
+    expect(() => new Registry({ hooks: { extra } })).toThrow(
+      'http route "hooks.extra" must not declare "access"',
     );
   });
 });
@@ -257,7 +296,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       errors: { "notes.gone": { body: v.object({ at: v.bigint() }), status: Status.Gone } },
       handler: (_ctx, args) => Err("notes.gone", { at: args.rank }, Status.Gone),
     });
-    const { codec } = new Registry({ notes: { roundTrip } }).exposed.get("/api/notes/roundTrip")!;
+    const { codec } = new Registry({ notes: { roundTrip } }).exposed.get("api.notes.roundTrip")!;
 
     expect(codec.decodeArgs({ rank: "12", blob: "AQI=" })).toEqual({
       rank: 12n,
@@ -282,7 +321,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       args: {},
       handler: () => ({ id: 9n, blob: new Uint8Array([255]) }),
     });
-    const { codec } = new Registry({ notes: { untyped } }).exposed.get("/api/notes/untyped")!;
+    const { codec } = new Registry({ notes: { untyped } }).exposed.get("api.notes.untyped")!;
 
     expect(codec.encodeValue({ id: 9n, blob: new Uint8Array([255]) }))
       .toEqual({ id: "9", blob: "/w==" });
@@ -313,7 +352,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       returns: opaque,
       handler: () => ({ id: 3n }),
     });
-    const { codec } = new Registry({ notes: { foreign } }).exposed.get("/api/notes/foreign")!;
+    const { codec } = new Registry({ notes: { foreign } }).exposed.get("api.notes.foreign")!;
 
     expect(codec.encodeValue({ id: 3n })).toEqual({ id: "3" });
     expect(() => codec.encodeValue({ id: "3" })).toThrow(/expected a bigint/);

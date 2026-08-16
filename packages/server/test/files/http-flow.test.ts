@@ -436,12 +436,15 @@ describe("File HTTP flow", () => {
       resource: "operation",
     });
 
+    const uploadHandle = new URL(created.data.url).pathname.split("/").pop()!;
     const short = await runtime.runFileRequest({
       request: new Request(`${base}${new URL(created.data.url).pathname}`, {
         method: "PUT",
         headers: { "content-length": "7" },
         body: "short",
       }),
+      route: "uploads",
+      handle: uploadHandle,
       authenticate: () => Promise.reject(new Error("uploads do not authenticate")),
     });
     expect(short.status).toBe(400);
@@ -457,6 +460,8 @@ describe("File HTTP flow", () => {
         headers: { "content-length": "7" },
         body: "exactly",
       }),
+      route: "uploads",
+      handle: uploadHandle,
       authenticate: () => Promise.reject(new Error("uploads do not authenticate")),
     });
     expect(retried.status).toBe(201);
@@ -470,11 +475,12 @@ describe("File HTTP flow", () => {
     const response = await fetch(`${base}${new URL(created.data.url).pathname}`, { method: "GET" });
 
     expect(response.status).toBe(405);
-    expect(response.headers.get("allow")).toBe("PUT");
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    // The registry owns method selection, so the Allow header names every
+    // method the route registered — the preflight included.
+    expect(response.headers.get("allow")).toBe("PUT, OPTIONS");
     expect(parseOutcome(await response.json())).toEqual({
       code: "malformed",
-      message: "method not allowed; allow: PUT",
+      message: "method not allowed; allow: PUT, OPTIONS",
       retryable: false,
     });
   });

@@ -27,6 +27,7 @@
     "@fastify/proxy-addr": "5.1.0",
     "@hono/node-server": "2.0.12",
     "jose": "6.2.3",
-    "numkong": "7.7.1"
+    "numkong": "7.7.1",
+    "rou3": "0.9.1"
   }
 }

@@ -37,16 +37,25 @@ import {
 import type { ExposedHttpCodec } from "./http-codec.ts";
 import {
   CORS,
-  frameMethodNotAllowed,
   json,
-  methodNotAllowed,
   outcomeError,
   protocolError,
   valueResponder,
   VARY_AUTHORIZATION,
 } from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
-import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
+import { HttpRegistry } from "./routing/registry.ts";
+import type { HttpParams } from "./routing/path.ts";
+import {
+  frameworkHttp,
+  type AnyHttp,
+  type HttpHandlers,
+  type HttpRoute,
+  type HttpRouteCtx,
+  type HttpRouteHandler,
+  type HttpRouteResult,
+} from "./routing/route.ts";
+import type { ExposedFunction, HttpRouteDefinition } from "../app/registry.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
@@ -551,6 +560,8 @@ export class AckerDBServer {
   private readonly httpAdmission: HttpAdmission;
   private readonly fileAdmission: HttpAdmission;
   private readonly openapiInfo: OpenApiInfo | undefined;
+  /** The listener's one route table; `fetch` asks it and nothing else. */
+  private readonly routes: HttpRegistry;
   /** The OpenAPI document assembled at activation, or null while it is not served. */
   private openapi: Uint8Array<ArrayBuffer> | null = null;
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
@@ -598,6 +609,11 @@ export class AckerDBServer {
       MAX_FILE_TRANSFERS_PER_CALLER,
       { owner: "File transfer", ingress: "File transfer" },
     );
+    // The live route table exists before the port does, so a probe that
+    // arrives on the first tick of Boot meets a registered route rather than a
+    // lifecycle branch. Application routes join it at activation.
+    this.routes = new HttpRegistry(() => this.unmatched());
+    for (const route of this.frameworkRoutes()) this.routes.add(route, "AckerDB");
     try {
       this.listener = Bun.serve<WsData, never>({
         port: options.port,
@@ -613,7 +629,10 @@ export class AckerDBServer {
         ),
         development: false,
         error: (error) => internalErrorResponse(error),
-        fetch: (request, listener) => this.fetch(request, listener),
+        // One permanent dispatch for the listener's whole life: lifecycle
+        // transitions change what the table holds and what its handlers
+        // answer, never which function Bun calls.
+        fetch: (request) => this.routes.dispatch(new URL(request.url).pathname, request),
         websocket: {
           open: (socket) => this.openWebSocket(socket),
           message: (socket, raw) => this.handleWebSocketMessage(socket, raw),
@@ -703,6 +722,16 @@ export class AckerDBServer {
       if (this.openapiInfo !== undefined) {
         this.openapi = openApiBytes(openApiDocument(runtime.registry, this.openapiInfo));
       }
+      // The whole application is compiled and validated before the first
+      // insertion, and readiness flips only after the last one — with no await
+      // anywhere between, so no request can observe half an application.
+      const application: readonly (readonly [HttpRoute, string])[] = [
+        ...[...runtime.registry.exposed.values()]
+          .map((exposed) => [this.exposedRoute(exposed), exposed.address] as const),
+        ...runtime.registry.httpRoutes
+          .map((definition) => [this.applicationRoute(definition), definition.address] as const),
+      ];
+      for (const [route, owner] of application) this.routes.add(route, owner);
     } catch (error) {
       this.startup = null;
       this.lifecycle = "stopped";
@@ -740,109 +769,159 @@ export class AckerDBServer {
     return this.drainPromise;
   }
 
-  private async fetch(request: Request, listener: Server<WsData>): Promise<Response | undefined> {
-    const url = new URL(request.url);
+  /**
+   * Whether application-owned work may run: the listener has been activated
+   * and its Runtime is still serving. Every route that reaches application
+   * code asks this, because a route existing and a route being reachable are
+   * different questions and only the second one moves with the lifecycle.
+   */
+  private applicationReady(): boolean {
+    return this.lifecycle === "ready" && this.activeRuntime?.state === "ready";
+  }
 
-    if (url.pathname === ACKERDB_HTTP_ROUTES.live && request.method === "GET") {
-      const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
-      return json({ version: 1, live }, live ? 200 : 503);
+  /**
+   * The routes AckerDB always owns, registered through the same factory an
+   * application uses. `/live` and `/ready` are in the table before the first
+   * request, so probes answer throughout Boot; the rest answer the lifecycle
+   * themselves, because when a route is reachable is its own policy.
+   */
+  private frameworkRoutes(): readonly HttpRoute[] {
+    // Framework CORS is the same preflight everywhere it applies, so it is one
+    // handler value assigned to several routes rather than several handlers.
+    const preflight = (): Response => new Response(null, { status: 204, headers: CORS });
+    const grants = ACKERDB_HTTP_ROUTES.fileDownload;
+    // GET and HEAD are the same route behaviour, so they are the same handler
+    // value under two keys rather than two closures that must stay equal.
+    const download = (
+      ctx: HttpRouteCtx<typeof grants>,
+      request: Request,
+    ): Promise<Response> => this.fileCall(request, "grants", ctx.params.handle);
+    return [
+      frameworkHttp(ACKERDB_HTTP_ROUTES.live, {
+        GET: () => {
+          const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
+          return json({ version: 1, live }, live ? 200 : 503);
+        },
+        OPTIONS: preflight,
+      }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.ready, {
+        GET: () => {
+          const runtimeState = this.activeRuntime?.status().state;
+          const ready = this.lifecycle === "ready" && runtimeState === "ready";
+          const state = this.lifecycle === "ready" && runtimeState !== "ready"
+            ? runtimeState ?? "starting"
+            : this.lifecycle;
+          return json({
+            version: 1,
+            ready,
+            state,
+            ...(this.startup === null ? {} : { phase: this.startup }),
+          }, ready ? 200 : 503);
+        },
+        OPTIONS: preflight,
+      }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.status, {
+        GET: (_ctx, request) => this.statusCall(request),
+        OPTIONS: preflight,
+      }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.websocket, {
+        GET: (_ctx, request) => {
+          if (!this.applicationReady()) return protocolError(unavailableWhile(this.lifecycle));
+          return this.upgradeWebSocket(request);
+        },
+      }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.sseAck, {
+        POST: (_ctx, request) => this.acknowledgeSse(
+          request,
+          callerFairnessKey(ANONYMOUS_PRINCIPAL, this.requestSource(request)),
+        ),
+        OPTIONS: preflight,
+      }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.fileUpload, {
+        PUT: (ctx, request) => this.fileCall(request, "uploads", ctx.params.handle),
+        OPTIONS: preflight,
+      }),
+      frameworkHttp(grants, { GET: download, HEAD: download, OPTIONS: preflight }),
+      // A schema request is a copy of bytes the activation already assembled:
+      // it takes no admission slot, no credential, and no runtime work. Left
+      // unconfigured — the default — the route does not exist at all, and the
+      // path answers the same 404 as any other unclaimed one.
+      ...(this.openapiInfo === undefined ? [] : [frameworkHttp(ACKERDB_HTTP_ROUTES.openapi, {
+        GET: () => this.openapi === null
+          ? protocolError(unavailableWhile(this.lifecycle))
+          : new Response(this.openapi, {
+            headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
+          }),
+        OPTIONS: preflight,
+      })]),
+    ];
+  }
+
+  /**
+   * One exposed function as a route: the path its address derives, the methods
+   * its kind answers, and a compiled closure that is the whole of `call` —
+   * authentication, decoding, admission, idempotency, and the Runtime
+   * invocation. The method table is the one OpenAPI documents from, so the
+   * served methods and the published ones cannot drift.
+   */
+  private exposedRoute(exposed: ExposedFunction): HttpRoute {
+    const call: HttpRouteHandler = (_ctx, request) =>
+      this.call(request, new URL(request.url), exposed, this.requestSource(request));
+    const handlers: Record<string, HttpRouteHandler> = {
+      OPTIONS: () => new Response(null, { status: 204, headers: CORS }),
+    };
+    for (const method of EXPOSED_HTTP_METHODS[exposed.kind]) handlers[method] = call;
+    return frameworkHttp(exposed.path, handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>);
+  }
+
+  /**
+   * One application-owned raw route as the listener serves it. Every declared
+   * method reaches the same closure, because which handler runs is the route
+   * value's own business and the Runtime reads it from the request; what this
+   * adds is the framework's part — reachability, admission, and the byte bound.
+   */
+  private applicationRoute(definition: HttpRouteDefinition): HttpRoute {
+    const call: HttpRouteHandler = (ctx, request) =>
+      this.applicationRouteCall(request, definition.http, ctx.params);
+    const handlers: Record<string, HttpRouteHandler> = {};
+    for (const method of Object.keys(definition.http.handlers)) handlers[method] = call;
+    return frameworkHttp(
+      definition.http.path,
+      handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>,
+    );
+  }
+
+  /**
+   * What a request no route claims is answered with. Before readiness and
+   * while draining the application is unreachable rather than absent, so the
+   * lifecycle outcome comes first; afterwards an unclaimed path is an ordinary
+   * 404 in the one shape every other failure here speaks — a caller decoding
+   * this surface meets `not_found`, never a plain-text body its decoder
+   * reports as malformed.
+   */
+  private unmatched(): Response {
+    return this.applicationReady()
+      ? outcomeError(new AckerDBError("not_found", "no route at this path"))
+      : outcomeError(unavailableWhile(this.lifecycle));
+  }
+
+  private async statusCall(request: Request): Promise<Response> {
+    let admission: HttpAdmissionLease | undefined;
+    let lease: AuthLease | undefined;
+    try {
+      if (!this.applicationReady()) throw unavailableWhile(this.lifecycle);
+      const source = this.requestSource(request);
+      admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
+      lease = await this.authenticate(request);
+      admission.transfer(callerFairnessKey(lease.principal, source));
+      requireStatusScope(lease.principal, this.statusScope);
+      return json({ version: 1, ...this.status() });
+    } catch (error) {
+      return protocolError(error);
+    } finally {
+      lease?.release();
+      admission?.release();
     }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.ready && request.method === "GET") {
-      const runtimeState = this.activeRuntime?.status().state;
-      const ready = this.lifecycle === "ready" && runtimeState === "ready";
-      const state = this.lifecycle === "ready" && runtimeState !== "ready"
-        ? runtimeState ?? "starting"
-        : this.lifecycle;
-      return json({
-        version: 1,
-        ready,
-        state,
-        ...(this.startup === null ? {} : { phase: this.startup }),
-      }, ready ? 200 : 503);
-    }
-    // The application owns every path beneath its fixed `/api/` root and
-    // answers the bare unavailable outcome before the registry that would
-    // resolve it exists, even for a preflight, because a raw route's OPTIONS
-    // belongs to its handler and no handler exists yet.
-    if (
-      (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
-      url.pathname.startsWith(`/${APPLICATION_ADDRESS_ROOT}/`)
-    ) {
-      return outcomeError(unavailableWhile(this.lifecycle));
-    }
-    // Raw routes resolve before the listener's own OPTIONS answer: preflight
-    // on a raw path is the handler's business when declared, a 405 otherwise.
-    const rawRoute = this.activeRuntime?.registry.httpRoutes.get(url.pathname);
-    if (rawRoute !== undefined) {
-      if (!(rawRoute.fn.methods as readonly string[]).includes(request.method)) {
-        return methodNotAllowed(rawRoute.fn.methods.join(", "));
-      }
-      return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
-    }
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.files}/`)) {
-      if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-        return outcomeError(unavailableWhile(this.lifecycle));
-      }
-      return this.fileCall(request, this.requestSource(request, listener));
-    }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
-      if (request.method !== "POST") return methodNotAllowed("POST");
-      const source = this.requestSource(request, listener);
-      return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-    }
-    if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-      return protocolError(unavailableWhile(this.lifecycle));
-    }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.status && request.method === "GET") {
-      let admission: HttpAdmissionLease | undefined;
-      let lease: AuthLease | undefined;
-      try {
-        const source = this.requestSource(request, listener);
-        admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-        lease = await this.authenticate(request);
-        admission.transfer(callerFairnessKey(lease.principal, source));
-        requireStatusScope(lease.principal, this.statusScope);
-        return json({ version: 1, ...this.status() });
-      } catch (error) {
-        return protocolError(error);
-      } finally {
-        lease?.release();
-        admission?.release();
-      }
-    }
-    // A schema request is a copy of bytes the activation already assembled: it
-    // takes no admission slot, no credential, and no runtime work. Unclaimed —
-    // the default — the path falls through to the same 404 as any other.
-    if (url.pathname === ACKERDB_HTTP_ROUTES.openapi && this.openapi !== null) {
-      if (request.method !== "GET") return methodNotAllowed("GET");
-      return new Response(this.openapi, {
-        headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
-      });
-    }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.websocket) {
-      return this.upgradeWebSocket(request, listener);
-    }
-    // An unexposed function falls through to the same 404 as a nonexistent
-    // path: exposure is never discoverable by probing.
-    const exposed = this.requireRuntime().registry.exposed.get(url.pathname);
-    if (exposed !== undefined) {
-      const methods = EXPOSED_HTTP_METHODS[exposed.kind];
-      if (!methods.includes(request.method)) return methodNotAllowed(methods.join(", "));
-      return this.call(request, url, exposed, this.requestSource(request, listener));
-    }
-    if (
-      url.pathname === ACKERDB_HTTP_ROUTES.live ||
-      url.pathname === ACKERDB_HTTP_ROUTES.ready ||
-      url.pathname === ACKERDB_HTTP_ROUTES.status
-    ) {
-      return methodNotAllowed("GET");
-    }
-    // An unclaimed path answers the one shape every other failure here answers:
-    // a caller decoding this surface meets `not_found`, never a plain-text body
-    // its decoder reports as malformed — the mistake this surface makes most
-    // likely is calling a function that was never given `http`.
-    return outcomeError(new AckerDBError("not_found", "no route at this path"));
   }
 
   private async authenticate(
@@ -861,8 +940,8 @@ export class AckerDBServer {
     });
   }
 
-  private requestSource(request: Request, listener: Server<WsData>): TransportSource {
-    const source = transportSource(listener.requestIP(request));
+  private requestSource(request: Request): TransportSource {
+    const source = transportSource(this.listener!.requestIP(request));
     if (this.trustedProxy === null) return source;
     const address = proxyaddr({
       headers: { "x-forwarded-for": request.headers.get("x-forwarded-for") ?? undefined },
@@ -957,21 +1036,26 @@ export class AckerDBServer {
   }
 
   /**
-   * One raw handler call. The framework's part here is survival, not
-   * semantics: admission and the byte bound run before the handler, and the
-   * buffered Request then crosses whole — body bytes exact, every header
-   * including Authorization. The handler's Response passes through unstamped;
-   * only failures answer framework-authored bare Outcomes.
+   * One application-owned raw route call. The framework's part here is
+   * survival, not semantics: reachability, admission, and the byte bound run
+   * before the handler, and the buffered Request then crosses whole — body
+   * bytes exact, every header including Authorization. The handler's Response
+   * passes through unstamped; only failures answer framework-authored bare
+   * Outcomes.
    */
-  private async rawHandlerCall(
+  private async applicationRouteCall(
     request: Request,
-    route: HttpHandlerRoute,
-    source: TransportSource,
+    route: AnyHttp,
+    params: HttpParams,
   ): Promise<Response> {
-    const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
     try {
-      const fairnessKey = callerFairnessKey(ANONYMOUS_PRINCIPAL, source);
+      if (!this.applicationReady()) throw unavailableWhile(this.lifecycle);
+      const runtime = this.requireRuntime();
+      const fairnessKey = callerFairnessKey(
+        ANONYMOUS_PRINCIPAL,
+        this.requestSource(request),
+      );
       admission = this.httpAdmission.admit(fairnessKey);
       const id = ++this.httpRequests;
       const body = request.body === null
@@ -981,8 +1065,9 @@ export class AckerDBServer {
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
-      const response = await runtime.runHttpHandler({
-        address: route.address,
+      const response = await runtime.runHttpRoute({
+        route,
+        params,
         request: bufferedRawRequest(request, body),
         id,
         // The runtime owns the floor for bodiless requests.
@@ -1019,15 +1104,23 @@ export class AckerDBServer {
   }
 
   /** File bodies stay streaming while admission and any auth lease own the response. */
-  private async fileCall(request: Request, source: TransportSource): Promise<Response> {
-    const runtime = this.requireRuntime();
+  private async fileCall(
+    request: Request,
+    route: "uploads" | "grants",
+    handle: string,
+  ): Promise<Response> {
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
     try {
+      if (!this.applicationReady()) throw unavailableWhile(this.lifecycle);
+      const runtime = this.requireRuntime();
+      const source = this.requestSource(request);
       const anonymousKey = callerFairnessKey(ANONYMOUS_PRINCIPAL, source);
       admission = this.fileAdmission.admit(anonymousKey);
       const response = await runtime.runFileRequest({
         request,
+        route,
+        handle,
         authenticate: async () => {
           lease ??= await this.authenticate(request);
           const fairnessKey = callerFairnessKey(lease.principal, source);
@@ -1090,8 +1183,7 @@ export class AckerDBServer {
     }
   }
 
-  private upgradeWebSocket(request: Request, listener: Server<WsData>): Response | undefined {
-    if (request.method !== "GET") return frameMethodNotAllowed("GET");
+  private upgradeWebSocket(request: Request): Response | undefined {
     if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
       return protocolError(new AckerDBError("overloaded", "connection capacity is full", {
@@ -1102,7 +1194,7 @@ export class AckerDBServer {
     }
 
     const data: WsData = {
-      source: this.requestSource(request, listener),
+      source: this.requestSource(request),
       socket: null,
       sink: null,
       session: null,
@@ -1110,7 +1202,9 @@ export class AckerDBServer {
     // Reserve the transport slot before upgrade/open/hello can perform any work.
     this.connections.add(data);
     try {
-      if (listener.upgrade(request, { data })) return undefined;
+      // Bun's own contract for an accepted upgrade: the socket has left HTTP,
+      // so this route answers `undefined` rather than a Response.
+      if (this.listener!.upgrade(request, { data })) return undefined;
     } catch (error) {
       this.connections.delete(data);
       return protocolError(error);

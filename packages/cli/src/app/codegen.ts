@@ -115,7 +115,7 @@ function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
   return `${HEADER}
 import {
   channel as channelGeneric,
-  httpHandler as httpHandlerGeneric,
+  http as httpGeneric,
   job as jobGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
@@ -128,8 +128,18 @@ import type {
   ChannelBuilder,
   DbReader,
   DbWriter,
-  HttpHandlerBuilder,
+  Http as GenericHttp,
+  HttpBuilder,
+  HttpHandler as GenericHttpHandler,
   HttpHandlerCtx as GenericHttpHandlerCtx,
+  HttpHandlerDELETE as GenericHttpHandlerDELETE,
+  HttpHandlerGET as GenericHttpHandlerGET,
+  HttpHandlerHEAD as GenericHttpHandlerHEAD,
+  HttpHandlerOPTIONS as GenericHttpHandlerOPTIONS,
+  HttpHandlerPATCH as GenericHttpHandlerPATCH,
+  HttpHandlerPOST as GenericHttpHandlerPOST,
+  HttpHandlerPUT as GenericHttpHandlerPUT,
+  HttpMethod,
   JobBuilder,
   JobCtx as GenericJobCtx,
   JobTxCtx as GenericJobTxCtx,
@@ -160,14 +170,23 @@ export const channel = channelGeneric as ChannelBuilder<Schema>;
 export const mutation = mutationGeneric as MutationBuilder<Schema, MutationJobs, Scope>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedureJobs, MutationJobs, Scope>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedureJobs, MutationJobs, Scope>;
-export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema>;
+export const http = httpGeneric as HttpBuilder<Schema>;
 export const job = jobGeneric as JobBuilder<Schema, ProcedureJobs, MutationJobs>;
 
 export type QueryCtx = GenericQueryCtx<Schema, QueryJobs>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationJobs>;
 export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedureJobs, MutationJobs>;
 export type SseCtx = GenericSseCtx<Schema, ProcedureJobs, MutationJobs>;
-export type HttpHandlerCtx = GenericHttpHandlerCtx<Schema>;
+export type Http<Path extends string = string> = GenericHttp<Path, GenericHttpHandlerCtx<Path, Schema>>;
+export type HttpHandlerCtx<Path extends string = string> = GenericHttpHandlerCtx<Path, Schema>;
+export type HttpHandler<Method extends HttpMethod, Path extends string> = GenericHttpHandler<Method, Path, Schema>;
+export type HttpHandlerGET<Path extends string> = GenericHttpHandlerGET<Path, Schema>;
+export type HttpHandlerHEAD<Path extends string> = GenericHttpHandlerHEAD<Path, Schema>;
+export type HttpHandlerPOST<Path extends string> = GenericHttpHandlerPOST<Path, Schema>;
+export type HttpHandlerPUT<Path extends string> = GenericHttpHandlerPUT<Path, Schema>;
+export type HttpHandlerPATCH<Path extends string> = GenericHttpHandlerPATCH<Path, Schema>;
+export type HttpHandlerDELETE<Path extends string> = GenericHttpHandlerDELETE<Path, Schema>;
+export type HttpHandlerOPTIONS<Path extends string> = GenericHttpHandlerOPTIONS<Path, Schema>;
 export type SystemCtx = GenericSystemCtx<Schema, ProcedureJobs, MutationJobs>;
 export type JobCtx = GenericJobCtx<Schema, ProcedureJobs, MutationJobs>;
 export type JobTxCtx = GenericJobTxCtx<Schema, MutationJobs>;

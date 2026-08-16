@@ -29,10 +29,16 @@ import type {
   RuntimeExternalRequest,
   RuntimeHttpMutationRequest,
   RuntimeHttpRequest,
-  RuntimeHttpHandlerRequest,
+  RuntimeHttpRouteRequest,
   RuntimeSseRequest,
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
+import type { HttpMethod, HttpParams } from "../../transport/routing/path.ts";
+import type {
+  AnyHttpHandler,
+  HttpHandlerCtx,
+  HttpRequest,
+} from "../../transport/routing/route.ts";
 import { runInInvocationRoot } from "../invocation-state.ts";
 import type { IdempotencyIdentity } from "../coordinator.ts";
 import {
@@ -59,6 +65,7 @@ import { finiteClock } from "../../shared/clock.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
+const NO_PARAMS: HttpParams = Object.freeze({});
 
 interface ClaimedHttpRequest {
   readonly requestBytes: number;
@@ -196,18 +203,20 @@ export class RuntimeHttp {
   }
 
   /**
-   * The HTTP entry point for a raw handler. No credential resolution, no args
-   * decode, no codec: the buffered Request crosses whole and the handler's
-   * Response leaves whole. A failure rejects with the transport error and the
-   * listener answers it as the bare Outcome — the handler authored nothing, so
-   * the framework speaks its own language.
+   * The HTTP entry point for an application-owned raw route. No credential
+   * resolution, no args decode, no codec: the buffered Request crosses whole
+   * and the handler's Response leaves whole. A failure rejects with the
+   * transport error and the listener answers it as the bare Outcome — the
+   * handler authored nothing, so the framework speaks its own language.
    */
-  runHttpHandler(input: RuntimeHttpHandlerRequest): Promise<Response> {
-    const registered = this.options.registry.httpHandler(input.address);
-    if (registered === undefined) {
-      return Promise.reject(
-        new AckerDBError("not_found", `unknown http handler "${input.address}"`),
-      );
+  runHttpRoute(input: RuntimeHttpRouteRequest): Promise<Response> {
+    const { route, request } = input;
+    const handler = route.handlers[request.method as HttpMethod] as AnyHttpHandler | undefined;
+    if (handler === undefined) {
+      return Promise.reject(new AckerDBError(
+        "not_found",
+        `http route "${route.path}" serves no ${request.method}`,
+      ));
     }
     const requestBytes = Math.max(1, input.requestBytes ?? 1);
     const fairnessKey = input.fairnessKey
@@ -216,7 +225,7 @@ export class RuntimeHttp {
       const signal = this.options.operationSignal(input.signal);
       throwIfAborted(signal);
       // The http surface has no auth members, so no account can ever unlink.
-      const context = this.options.functions.createProcedureContext(
+      const capabilities = this.options.functions.createProcedureContext(
         ANONYMOUS_PRINCIPAL,
         fairnessKey,
         signal,
@@ -225,13 +234,18 @@ export class RuntimeHttp {
         () => {},
         "http",
       );
+      // The captures ride on the same frozen context the capabilities do,
+      // inherited rather than copied so `timestamp` stays the live accessor.
+      const context = Object.freeze(Object.create(capabilities, {
+        params: { value: input.params ?? NO_PARAMS, enumerable: true },
+      })) as HttpHandlerCtx;
       return await invokeSideEffectingHandler(
         signal,
         "http handler",
         (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
           onAuthorized();
           try {
-            const response = await registered.handler(context, input.request);
+            const response = await handler(context, request as HttpRequest);
             if (!(response instanceof Response)) {
               throw new Error("http handler returned a non-Response value");
             }
@@ -249,11 +263,11 @@ export class RuntimeHttp {
             } catch {
               described = "<unreadable handler error>";
             }
-            console.log(`http handler "${input.address}" failed`, {
+            console.log(`http route "${route.path}" failed`, {
               error: described,
             });
             // Rethrowing a plain Error keeps the abort conversion above intact.
-            throw new Error(`http handler "${input.address}" failed`);
+            throw new Error(`http route "${route.path}" failed`);
           }
         }),
       );
@@ -396,7 +410,7 @@ export class RuntimeHttp {
   }
 
   private codec(address: string): ExposedHttpCodec {
-    const exposed = this.options.registry.exposedFunction(address);
+    const exposed = this.options.registry.exposed.get(address);
     if (exposed === undefined) {
       throw new AckerDBError("not_found", `"${address}" is not exposed over HTTP`);
     }
