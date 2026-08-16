@@ -382,7 +382,7 @@ export class Runtime implements RuntimePort {
   readonly resolveScopes: ScopeResolver = (identity, account) =>
     this.credentials.resolveScopes(identity, account);
 
-  /** Authenticate one raw vault credential into its full first-class principal. */
+  /** Authenticate one raw AckerDB credential into its full first-class principal. */
   async authenticateCredential(
     rawToken: string,
     fairnessKey: string,

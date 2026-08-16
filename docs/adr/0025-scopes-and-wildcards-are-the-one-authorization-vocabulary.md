@@ -1,5 +1,14 @@
 # Scopes and wildcards are the one authorization vocabulary
 
+> Amended by [ADR-0032](0032-ackerdb-provides-credentials-not-an-administration-product.md): the vocabulary has no framework half. AckerDB
+> declares no scopes and reserves no names inside this namespace, so `_` is an
+> ordinary character in a scope name, `*` covers every declared scope including
+> `_`-prefixed ones, and `_*` is an ordinary prefix pattern. Read every mention
+> of "the framework's own vocabulary", the reserved marker, `_admin:<domain>:<verb>`,
+> and the administrative grant `["*", "_*"]` below as history. The one
+> vocabulary, the closed set, the one funnel, and grants-carry-wildcards /
+> requirements-stay-concrete are unchanged — there is simply one half left.
+
 AckerDB had two authorization systems. `access` — `"public" | "authenticated" |
 "system" | (ctx, args) => boolean` — decided who may call a function, and a
 separate MCP subsystem carried scope descriptors, a token vault, token-bound

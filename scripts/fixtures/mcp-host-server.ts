@@ -20,7 +20,7 @@ import {
   type UserPrincipal,
 } from "@ackerdb/server";
 import { listen } from "ackerdb-test-support/listen";
-import { credentials, mcp, mcpContent, type McpToolResult } from "@ackerdb/server";
+import { mcp, mcpContent, type McpToolResult } from "@ackerdb/server";
 
 const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
@@ -208,7 +208,7 @@ const acceptanceMcp = typedMcp({
 const createToken = typedMutation({
   access: "authenticated",
   args: { name: v.string(), scopes: v.array(v.string()) },
-  handler: (ctx, args) => credentials.create(ctx, {
+  handler: (ctx, args) => ctx.credentials.issue({
     name: args.name,
     metadata: { fixture: "host-acceptance" },
     scopes: args.scopes,
@@ -218,13 +218,13 @@ const createToken = typedMutation({
 const updateTokenScopes = typedMutation({
   access: "authenticated",
   args: { id: v.string(), scopes: v.array(v.string()) },
-  handler: (ctx, args) => credentials.updateScopes(ctx, args.id, args.scopes),
+  handler: (ctx, args) => ctx.credentials.updateScopes(args.id, args.scopes),
 });
 
 const revokeToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => credentials.revoke(ctx, args.id),
+  handler: (ctx, args) => ctx.credentials.revoke(args.id),
 });
 
 const modules = {

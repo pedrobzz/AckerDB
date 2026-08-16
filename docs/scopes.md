@@ -23,8 +23,8 @@ export default defineApp({
 - At most 128 scopes, each a non-empty string of at most 256 UTF-8 bytes,
   unique.
 - A scope may not contain `*` — the wildcard belongs to grants, never to the
-  vocabulary — and may not begin with `_`, which marks the framework's own
-  names.
+  vocabulary. Nothing else about a name is reserved: `_internal:purge` is an
+  ordinary scope, because the vocabulary is yours alone.
 - Scope strings are opaque to AckerDB. Conventions like `<domain>:<verb>` are
   the application's, not machinery.
 - Code generation emits `type Scope` and binds it into the generated
@@ -32,19 +32,10 @@ export default defineApp({
   undeclared scope is a compile error. Startup cross-checks every registered
   requirement against the vocabulary as well, which covers untyped callers.
 
-**Two vocabularies, one namespace.** Application scopes carry no `_`; framework
-scopes are pre-declared under it and an application may never declare one. That
-is what lets `*` mean "every application scope" and `_*` mean "every framework
-scope" without either side enumerating the other. The framework's list is the
-[Admin API](admin-api.md)'s `_admin:<domain>:<verb>` names; `_*` names it, and
-grows with it, because a grant expands against the vocabulary known at the
-moment of the check.
-
-An application may not *require* a framework scope either. The generated `Scope`
-union refuses one at compile time, and startup refuses a `_`-prefixed scope on
-any function or MCP tool entry the framework does not own — including one your
-application published in the `admin` group, since publishing beside the
-framework's functions does not make a function the framework's.
+**One vocabulary, and it is the application's.** AckerDB declares no scopes of
+its own and reserves no names inside this namespace, so there is no framework
+half to keep apart, no marker to avoid, and no rule about which side of a
+namespace a name falls on.
 
 ## Requirements on functions
 
@@ -100,13 +91,11 @@ prefix followed by exactly one trailing `*`:
 | `notes:read` | that scope, if it is declared |
 | `notes:*` | every known scope starting with `notes:` |
 | `ad*` | every known scope starting with `ad` |
-| `*` | every application scope, and no framework scope |
-| `_*` | every framework scope |
-| `["*", "_*"]` | everything — this, and nothing else, is an administrative identity |
+| `*` | every declared scope, `_`-prefixed names included |
+| `_*` | every declared scope starting with `_` — an ordinary prefix pattern |
 
-The bare `*` carve-out is the only special case. Every other pattern excludes
-the framework's half on its own, because a prefix that does not begin with `_`
-cannot match a name that does.
+There are no special cases. `*` is the empty prefix, so it matches everything
+the manifest declared.
 
 **Checking is expansion, then membership.** A holder's patterns are expanded
 against the currently known vocabulary and the requirement is tested against the
@@ -122,23 +111,9 @@ Two consequences follow from expanding against the *current* vocabulary:
   must already name a declared scope, because a name nothing answers to is a
   typo rather than a claim on the future.
 
-There is no `admin: true`. An administrative identity holds `["*", "_*"]`;
-creating another is creating another identity with those two patterns.
-
-### The Admin Credential
-
-A **root** credential — one with no parent — whose stored grant is exactly those
-two patterns is the [Admin Credential](admin-api.md#the-admin-credential). That
-is the whole definition, it lives in the vault, and every path that asks the
-question calls it: boot-mint, `admin.credentials.*`, and `acker credential
-reset`. Two things follow from the shape of the test:
-
-- It is on the patterns **as written**, not on what they expand to. A grant that
-  happens to cover today's vocabulary stops covering it the moment a scope is
-  declared, and a credential's kind must not change because an application grew.
-- A **child** holding the same patterns is not one. Its live authority is
-  intersected with its parent's, so it is bounded by a master rather than being
-  one; counting it would make a rotation revoke credentials that never were.
+There is no `admin: true`, and no framework notion of an administrative
+identity. A grant that covers your whole vocabulary is a grant that covers your
+whole vocabulary; what it authorizes is whatever your functions require.
 
 ## Grants on Identity
 
@@ -159,18 +134,16 @@ Where the patterns come from:
 
 ## Identity credentials
 
-An issued credential **is** an Identity. `credentials.create(ctx, { name,
-scopes, metadata })` mints an Identity whose parent is the calling user;
-`systemCredentials.create(ctx, parentIdentity | null, input)` is the privileged
-surface and may create **standalone** identities (`null` parent) whose grants
-come straight from the vocabulary — which is how an administrative `["*", "_*"]`
-credential is minted without any identity holding that authority first. The
-returned opaque bearer (`ackerdb_credential.<id>.<secret>`) is shown exactly
-once; only its SHA-256 digest is stored, in `_ackerdb_credentials`.
+An issued credential **is** an Identity. `ctx.credentials.issue({ name, scopes,
+metadata })` mints an Identity whose parent is the calling user;
+`ctx.credentials.manage.issueRoot(input)` mints one with no parent, whose grant
+comes straight from the vocabulary. The returned opaque bearer
+(`ackerdb_credential.<id>.<secret>`) is shown exactly once; only its SHA-256
+digest is stored, in `_ackerdb_credentials`.
 
 The child invariant is enforced at BOTH ends:
 
-- **Issuance**: `create` and `updateScopes` expand the request and reject any
+- **Issuance**: `issue` and `updateScopes` expand the request and reject any
   scope the issuing principal's own expanded grant does not currently hold
   (`unauthorized`), after validating the request's shape and its concrete
   entries against the vocabulary (`validation`).
@@ -190,18 +163,63 @@ Agents are first-class users. A credential bearer authenticates on every
 transport — WebSocket sessions, exposed HTTP functions, and MCP endpoints —
 through the Runtime's one composed credential authority, producing an ordinary
 `user` principal (`issuer: "ackerdb:credentials"`, subject = token id,
-non-expiring). A vault-prefixed bearer can never fall through to an application
-verifier. Fairness and File ownership key on the credential's own Identity, and
+non-expiring). An AckerDB-prefixed bearer can never fall through to an
+application verifier. Fairness and File ownership key on the credential's own Identity, and
 a credential cannot be linked as an external account onto another Identity.
 
 Limits live in `limits.credentials`: `maxPerIdentity`, `maxNameBytes`,
 `maxMetadataBytes`.
 
+### The capability
+
+`ctx.credentials` is scoped to the calling user Identity and addresses the
+credentials it issued directly. `ctx.credentials.manage` is global. Reads exist
+on every context; writes only on a mutation or a transaction.
+
+| | `ctx.credentials` | `ctx.credentials.manage` |
+| --- | --- | --- |
+| read | `query()` over credentials whose parent is the caller | `query()` over every credential |
+| issue | `issue(input)` — a child of the caller | `issueRoot(input)`, `issueFor(identity, input)` |
+| edit | `update(id, { name, metadata })`, `updateScopes(id, scopes)` | the same two |
+| revoke | `revoke(id)` | `revoke(id)`, `revokeMany(ids)` |
+
+`query()` is the ordinary table-query interface over a safe descriptor — `id`,
+`identity`, `parentIdentity`, `name`, `metadata`, `scopes`, `createdAt`,
+`updatedAt` — so it filters, orders, paginates, counts, and re-runs reactively
+like a query over your own tables. Stored secret digests are not part of that
+descriptor and are not reachable from `ctx.db`, which hides the framework's
+credential and Identity tables. There is no `list()`: it would be
+`query().collect()` under another name.
+
+Owner-scoped operations require a user Identity; an anonymous or system caller
+fails as `unauthenticated`. **`manage` carries no framework check at all.** The
+containing registered function's `access` policy and declared scopes are the
+whole admission decision, which is what lets an application choose its own
+bootstrap and recovery model — a one-time public setup route, an authenticated
+operator screen, a system flow, or nothing:
+
+```ts
+export const issueOperator = mutation({
+  access: "authenticated",
+  scopes: { allOf: ["operators:write"] },
+  args: { name: v.string(), scopes: v.array(v.string()) },
+  handler: (ctx, args) => ctx.credentials.manage.issueRoot(args),
+});
+```
+
+`revokeMany(ids)` revokes every named credential and its descendants in one
+transaction, ignores ids that do not exist, deduplicates overlapping descendant
+sets, and returns the ids actually revoked — so repeating a bulk offboarding is
+safe.
+
+AckerDB itself issues no credential. A fresh database has none, and whether a
+root credential should ever exist is your application's decision.
+
 ## Live invalidation
 
 Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts`):
 
-- `credentials.revoke` and any `updateScopes` change stage on the write set and
+- `revoke`, `revokeMany`, and any `updateScopes` change stage on the write set and
   publish after commit as account invalidations under the synthetic
   `ackerdb:credentials` issuer. Live WebSocket sessions and HTTP leases holding
   that credential are cancelled immediately; the next verification reads the new
@@ -225,7 +243,7 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   itself and every credential delegated beneath it. A descendant's live session
   matches on its own token id, so publishing only for the changed credential
   would leave a descendant holding an authority its source no longer has, and a
-  vault principal never expires out of it.
+  credential principal never expires out of it.
 - Resolver-backed user grants re-authorize through the same path when the
   application publishes an invalidation for the account.
 - An **external** identity's grant change reaches the credentials delegated

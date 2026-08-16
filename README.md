@@ -116,15 +116,13 @@ client.close();
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
   sessions, HTTP procedures, and SSE.
-- [Scopes and identity credentials](docs/scopes.md) documents the application
-  scope vocabulary, wildcard grants and the reserved `_` framework space,
-  `{ anyOf | allOf }` requirements on any function, and the credential vault
-  that makes an agent a first-class Identity bounded by its issuer.
-- [The Admin API](docs/admin-api.md) documents the built-in administration
-  surface: the `admin` group every application publishes, the framework's
-  `_admin:<domain>:<verb>` vocabulary, what "inert without a grant" means
-  exactly, the reference tree shipped from `@ackerdb/core`, and the one `admin`
-  configuration object.
+- [Scopes and identity credentials](docs/scopes.md) documents the one
+  application-owned scope vocabulary, wildcard grants,
+  `{ anyOf | allOf }` requirements on any function, and the `ctx.credentials`
+  capability that makes an agent a first-class Identity bounded by its issuer.
+  AckerDB ships no administration product: `ctx.credentials.manage` carries no
+  framework check, so an application builds the administration it wants out of
+  ordinary functions.
 - [Auth providers](docs/auth-providers.md) is the per-provider recipe book —
   Clerk, WorkOS AuthKit, Auth0, and BetterAuth — with each provider's exact
   issuer string, configuration block, and client credential-source wiring.

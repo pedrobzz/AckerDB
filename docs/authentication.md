@@ -226,7 +226,7 @@ A function may additionally declare a `scopes` requirement, enforced at this
 same funnel immediately after the policy above. The policy decides whether a
 caller is admitted at all; the requirement decides what an admitted caller may
 reach. See [Scopes and identity credentials](scopes.md) for the vocabulary,
-wildcard grants, and the credential vault that issues them.
+wildcard grants, and the credential capability that issues them.
 
 ## External OIDC configuration
 

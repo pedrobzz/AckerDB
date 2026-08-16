@@ -252,8 +252,7 @@ operators must configure a workload provider that selects `scope` before
 `acker start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
 `opening-storage`, `migrating` (when a migration chain is present) or
-`reconciling`, `issuing-credential` (the Admin Credential is minted before any
-application code is imported), `loading-runtime` for credential verifiers,
+`reconciling`, `loading-runtime` for credential verifiers,
 function and job modules, and `starting-runtime` (the Runtime's own start:
 repeat jobs minted, the job runner armed). Runtime-only modules load after
 durable schema work commits, so their configuration cannot block a pending
@@ -264,8 +263,8 @@ remain reachable;
 acknowledgement passes bounded admission but is an oracle-free no-op before a
 Runtime producer exists. Application, WebSocket, and protected-status traffic
 receives typed `unavailable`. After storage validation, schema reconciliation,
-the credential mint, registry construction, and the Runtime's start all
-succeed, activation attaches the Runtime and flips readiness atomically. A
+registry construction, and the Runtime's start all succeed, activation attaches
+the Runtime and flips readiness atomically. A
 startup failure or signal-triggered interruption drains the listener and closes
 any acquired storage ownership; it can never activate later from an abandoned
 import/preparation promise.

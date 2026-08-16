@@ -179,11 +179,6 @@ application names its own groups. A name must be one identifier-shaped path
 segment that `export const <name>` accepts, and may not begin with `_`, which
 is reserved to AckerDB.
 
-`"admin"` is the one group the framework declares functions in itself — the
-[Admin API](admin-api.md) — and it is shared: an application may publish its own
-functions there, and they require the application's own scopes, never the
-framework's.
-
 **A group decides where a function answers, not whether it answers.** Plain
 HTTP is still opt-in: a function without `http` has no URL in any group. Over
 the socket a call names the function by its dotted address, group segment
@@ -209,20 +204,21 @@ module of its own name beside its siblings. Two files may not claim one name:
 naming both, and so is a `functions/index.ts` with no directory to be named
 after.
 
-Groups beyond the framework's `"api"` and `"admin"` are declared once in the
-manifest, because code generation reads the manifest and never the function
-modules — which import what it writes. Neither framework group is listed: every
-application publishes both, so naming one would offer a way to leave it out.
+Groups beyond the default `"api"` are declared once in the manifest, because
+code generation reads the manifest and never the function modules — which import
+what it writes. `"api"` itself is not listed: every application publishes it, so
+naming it would offer a way to leave it out. Every other name, `"admin"`
+included, is yours to claim.
 
 ```ts
 // app.ts
 export default defineApp({ schema, apiPaths: ["internal"] });
 ```
 
-That earns `_generated/api.ts` an `internal` binding beside `api` and `admin`:
+That earns `_generated/api.ts` an `internal` binding beside `api`:
 
 ```ts
-import { admin, api, internal } from "./_generated/api.ts";
+import { api, internal } from "./_generated/api.ts";
 ```
 
 The manifest and the declarations are two statements of one fact, so startup

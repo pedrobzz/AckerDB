@@ -293,8 +293,8 @@ No compatibility shim, in either direction.
   `query`, `mutation`, or `procedure` declaring `description` and `returns`.
 - `createMcp` becomes `mcp`; the scope vocabulary lives in
   `defineApp({ scopes })`.
-- Token administration is the app-wide `credentials` / `systemCredentials`
-  API; there is no per-provider surface.
+- Token administration is the app-wide `ctx.credentials` capability; there is
+  no per-provider surface.
 - `McpToolCtx.tx` returning a raw `Awaited<R>` disappears with it; a tool now
   gets its kind's own context, so `ctx.tx` follows `ProcedureCtx`'s
   `FunctionResult<R>` contract like everything else.
@@ -316,7 +316,7 @@ No compatibility shim, in either direction.
 Reused unchanged: `compileStandardJsonCodec`, `validation/json-schema.ts`,
 `authorizeMcpTool` as the single `tools/call` choke point (its explicit local
 grant is the local/remote discriminator), `isMcpToolAuthorized`, the
-credential vault's declarative internal objects, and the invocation path's
+credential domain's managed tables, and the invocation path's
 existing access enforcement — a tool runs through `invokeFunction` like every
 other call, so argument validation, policy, and function-level scope
 requirements cannot be skipped.

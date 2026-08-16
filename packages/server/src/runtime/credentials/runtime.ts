@@ -34,7 +34,7 @@ import {
   CREDENTIAL_ISSUER,
   hasCredentialTokenPrefix,
   parseCredentialToken,
-  VAULT_CREDENTIAL_AUTHORITY,
+  CREDENTIAL_AUTHORITY,
   type ParsedCredentialToken,
 } from "../../auth/credential-token.ts";
 import {
@@ -86,13 +86,13 @@ export interface RuntimeCredentialsOptions {
 const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
 
 export class RuntimeCredentials {
-  /** The one verifier the Runtime owns: vault credentials plus the app verifier. */
+  /** The one verifier the Runtime owns: AckerDB credentials plus the app verifier. */
   readonly verifier: CredentialVerifier;
 
   constructor(private readonly options: RuntimeCredentialsOptions) {
     const source = options.appVerifier;
     this.verifier = Object.freeze({
-      [VAULT_CREDENTIAL_AUTHORITY]: true,
+      [CREDENTIAL_AUTHORITY]: true,
       revocationBound: source?.revocationBound ??
         Object.freeze({
           kind: "invalidation" as const,
@@ -125,7 +125,7 @@ export class RuntimeCredentials {
   }
 
   /**
-   * The generic scope resolution every transport uses: vault accounts read the
+   * The generic scope resolution every transport uses: credential accounts read the
    * credential's effective grant; every other Identity asks the application
    * resolver. Both answers arrive expanded, so a principal's grant is always
    * concrete vocabulary members.

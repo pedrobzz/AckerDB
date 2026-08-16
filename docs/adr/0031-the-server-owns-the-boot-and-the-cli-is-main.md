@@ -1,5 +1,14 @@
 # The server owns the boot; the CLI is main
 
+> Amended by [ADR-0032](0032-ackerdb-provides-credentials-not-an-administration-product.md): the Admin Credential is gone, and with it the
+> boot's `issuing-credential` phase, its reporter callback, and every ordering
+> rule about minting before application code. Read the sequence below without
+> that step: `listening → codegen → loading → opening-storage → migrating |
+> reconciling → loading-runtime → starting-runtime`, then activation. Everything
+> else this decision settled — `boot()` as the one home, the loaders, the
+> reporter, the hold gate, one AbortSignal, the Runtime's created state and
+> explicit `start()`, and the owned drain — stands unchanged.
+
 An AckerDB application boots in a fixed order — bind the listener, run codegen,
 load the manifest and the migration chain, open storage, reconcile, mint the
 Admin Credential, load the function and job modules, build the Registry and the
@@ -58,32 +67,14 @@ failure was logged and the boot proceeded; a boot that cannot mint its own
 repeat Jobs has a storage problem everything else will hit, so it is now
 fail-fast, the same class as a failed reconcile.
 
-## The credential is minted through the vault, before the Runtime exists
-
-`ensureAdminCredential` takes the engine, the scope vocabulary, the credential
-limits and a clock, and mints directly through the vault: one read on the open
-engine so a boot with nothing to do writes nothing, then one immediate writer
-transaction that re-checks and creates. At boot no Runtime exists, and the two
-live-runtime concerns the shared credential orchestration carries — recording
-the reactive read key, marking a token-bearing result one-time — have no
-subject yet; break-glass already calls the vault directly for the same reason.
-The invariant [ADR-0027](0027-the-admin-credential-has-one-definition-and-three-issuers.md)
-states — the master is minted before any application code runs — becomes
-structural instead of scheduled: the mint precedes `load.runtime()`, and nothing
-arms before `start()`.
-
-The rejected shape was a `created` state that admits system runs so the mint
-could keep using `system.run`. That is a special case inside admission, and it
-would keep the credential's existence dependent on the Runtime's construction.
-
 ## One signal, one drain, one reporter
 
 Startup interruption was tracked four ways — an AbortSignal, a boolean, a
 rejecting promise, and the listener's state — and two composition roots
 drifted. Boot takes one AbortSignal, checks it at every phase boundary, and
 races only work JavaScript cannot cancel (the caller's preparation, the loaders,
-the FileStore probe) against it. Reconcile, the mint and `start()` are bounded
-local transactions and are never abandoned. On interruption boot drains what it
+the FileStore probe) against it. Reconcile and `start()` are bounded local
+transactions and are never abandoned. On interruption boot drains what it
 built and rejects with the signal's reason; there is no dedicated interruption
 error class. The CLI maps an aborted signal to exit 0.
 
@@ -91,30 +82,21 @@ error class. The CLI maps an aborted signal to exit 0.
 shutdown, drain the listener (which drains the Runtime when activated) or both
 when not activated, then close the engine with the clean/unclean disposition.
 
-Phases, reconcile lines and the credential flow through a small reporter with
-three optional callbacks, invoked synchronously at the moment the thing
-happens. The CLI prints its `[ackerdb] …` lines from them, including the token
-before the shutdown check, so stdout is byte-for-byte what it was. Boot itself
-never writes to stdout. The reporter is the natural attachment point for later
+Phases and reconcile lines flow through a small reporter with two optional
+callbacks, invoked synchronously at the moment the thing happens. The CLI prints
+its `[ackerdb] …` lines from them. Boot itself never writes to stdout. The reporter is the natural attachment point for later
 boot events; nothing here commits to a plugin API.
 
 ## Consequences
 
 - Phase order is `listening → codegen → loading → opening-storage →
-  migrating | reconciling → issuing-credential → loading-runtime →
-  starting-runtime`, then activation. `issuing-credential` moved before
-  `loading-runtime`; `starting-runtime` is new. With the mint before module
-  import, a token can be printed for a boot that then fails on import — which is
-  today's semantics after any post-mint failure: the next boot prints nothing
-  and the printed token is valid.
+  migrating | reconciling → loading-runtime → starting-runtime`, then
+  activation. `starting-runtime` is new.
 - The hold gate (`pendingMigrations: "hold"`) peeks the stored migration
   history read-only before opening storage and rejects with
   `MigrationsHeldError` carrying the pending count. The read-only peek moved
   from the CLI into the server; the CLI's plan and write commands use it from
   there.
-- The boot-mint spends no logical commit version: it is a framework write
-  outside the coordinator's commit path, like the FileStore binding and
-  break-glass. A fresh database still spends Identity 1 on the master.
 - `serve` and its options type are gone. Suites that build a Runtime by hand
   start it and put it on a listener through a test-support helper; production
   hosts boot.

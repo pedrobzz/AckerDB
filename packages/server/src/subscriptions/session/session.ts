@@ -636,7 +636,7 @@ export class Session {
     if (
       principal.kind === "anonymous" ||
       principal.kind === "system" ||
-      // Vault credentials never expire; invalidation revokes them instead.
+      // AckerDB credentials never expire; invalidation revokes them instead.
       !Number.isFinite(principal.expiresAt)
     ) return;
     const schedule = () => {

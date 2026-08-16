@@ -295,7 +295,7 @@ export class RuntimeSessionApplication {
               // uses: a replay is the same caller's when the Identity matches,
               // not when its credential's expiry and claims happen to match
               // too. Digesting the whole principal would make a token refresh —
-              // or a non-expiring vault credential, whose deadline is not even
+              // or a non-expiring AckerDB credential, whose deadline is not even
               // encodable — look like a different caller.
               principalFingerprint: context.fairnessKey,
               functionRef: message.ref,

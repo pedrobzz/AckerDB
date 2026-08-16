@@ -1,5 +1,12 @@
 # API paths group function addresses; access alone decides admission
 
+> Amended by [ADR-0032](0032-ackerdb-provides-credentials-not-an-administration-product.md):
+> the framework publishes no group of its own. `api` is the only group every
+> application carries, and `admin` is an ordinary name an application declares
+> in `apiPaths` like any other — the rows and sentences below that treat it as
+> framework-owned are history. The address grammar, the one-root rule, and
+> "access alone decides admission" are unchanged.
+
 > Amended: the group is now the *first segment* of a function address rather
 > than a field beside it, which is what makes this document's title true. The
 > sections below already read that way; **The group is a namespace, not a
@@ -207,3 +214,4 @@ Both honest fixes are closed; the noise stays.
 **A misspelled group is a startup refusal, not a compile error.** See above —
 the earlier error is buyable only by putting the manifest's groups into the
 type of every builder.
+\n
