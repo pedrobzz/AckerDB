@@ -171,6 +171,14 @@ const functions = {
     assets: http("/users/:id/assets/*", {
       GET: (ctx) => Response.json({ id: ctx.params.id, rest: ctx.params["*"] }),
     }),
+    // Captures and application capabilities are one context, not two.
+    record: http("/deliveries/:type", {
+      POST: async (ctx: Ctx) => {
+        const at: number = ctx.timestamp;
+        await ctx.tx((tx: Ctx) => tx.db.deliveries.insert({ type: ctx.params.type }));
+        return Response.json({ stored: ctx.params.type, dated: at > 0 });
+      },
+    }),
   },
 };
 
@@ -266,6 +274,15 @@ describe("the registry routes before any handler runs", () => {
       retryable: false,
       message: "no route at this path",
     });
+  });
+
+  test("a capture and the application capabilities are one context", async () => {
+    const response = await fetch(`${base}/deliveries/payment.succeeded`, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ stored: "payment.succeeded", dated: true });
+    const rows = (await (await fetch(`${base}/api/feed/list`)).json()) as { type: string }[];
+    expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
   });
 
   test("an exposed function keeps its derived path and its preflight", async () => {

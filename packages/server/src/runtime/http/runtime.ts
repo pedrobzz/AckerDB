@@ -234,9 +234,11 @@ export class RuntimeHttp {
         () => {},
         "http",
       );
-      // The captures ride on the same frozen context the capabilities do,
-      // inherited rather than copied so `timestamp` stays the live accessor.
-      const context = Object.freeze(Object.create(capabilities, {
+      // The captures join the capabilities as own properties of one frozen
+      // context — descriptors copied, so `timestamp` stays the live accessor
+      // rather than a value read once.
+      const context = Object.freeze(Object.defineProperties({}, {
+        ...Object.getOwnPropertyDescriptors(capabilities),
         params: { value: input.params ?? NO_PARAMS, enumerable: true },
       })) as HttpHandlerCtx;
       return await invokeSideEffectingHandler(
