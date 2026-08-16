@@ -34,12 +34,7 @@ import type {
   RuntimeSseResponse,
 } from "../contracts/requests.ts";
 import { NO_PARAMS } from "../../transport/routing/path.ts";
-import {
-  handlerFor,
-  type AnyHttpHandler,
-  type HttpHandlerCtx,
-  type HttpRequest,
-} from "../../transport/routing/route.ts";
+import type { HttpHandlerCtx, HttpRequest } from "../../transport/routing/route.ts";
 import { runInInvocationRoot } from "../invocation-state.ts";
 import type { IdempotencyIdentity } from "../coordinator.ts";
 import {
@@ -210,14 +205,7 @@ export class RuntimeHttp {
    * handler authored nothing, so the framework speaks its own language.
    */
   runHttpRoute(input: RuntimeHttpRouteRequest): Promise<Response> {
-    const { route, request } = input;
-    const handler = handlerFor(route, request.method) as AnyHttpHandler | undefined;
-    if (handler === undefined) {
-      return Promise.reject(new AckerDBError(
-        "not_found",
-        `http route "${route.path}" serves no ${request.method}`,
-      ));
-    }
+    const { handler, path, request } = input;
     const requestBytes = Math.max(1, input.requestBytes ?? 1);
     const fairnessKey = input.fairnessKey
       ?? callerFairnessKey(ANONYMOUS_PRINCIPAL, DIRECT_RUNTIME_SOURCE);
@@ -265,11 +253,11 @@ export class RuntimeHttp {
             } catch {
               described = "<unreadable handler error>";
             }
-            console.log(`http route "${route.path}" failed`, {
+            console.log(`http route "${path}" failed`, {
               error: described,
             });
             // Rethrowing a plain Error keeps the abort conversion above intact.
-            throw new Error(`http route "${route.path}" failed`);
+            throw new Error(`http route "${path}" failed`);
           }
         }),
       );

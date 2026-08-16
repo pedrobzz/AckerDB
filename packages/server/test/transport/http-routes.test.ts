@@ -488,6 +488,52 @@ describe("lifecycle decides reachability, not the route table", () => {
     }
   });
 
+  test("two routes claiming one URL are refused where the whole table is known", async () => {
+    // Path ownership has one owner, and only it also knows the framework's
+    // routes — a route the loader admits can still be refused here. A
+    // parameter's name is the author's vocabulary rather than the URL's, and
+    // unique addresses do not imply unique paths. (An application claiming a
+    // path AckerDB owns is namespace policy and never reaches this seam; the
+    // loader refuses it, proved in app/registry.test.ts.)
+    const refuse = async (
+      modules: Record<string, Record<string, unknown>>,
+    ): Promise<string> => {
+      const home = mkdtempSync(join(tmpdir(), "ackerdb-http-claim-"));
+      const store = new Engine(schema, join(home, "data.db"));
+      reconcile(store);
+      const other = new Runtime({ engine: store, registry: new Registry(modules), limits });
+      await other.start();
+      const listener = new AckerDBServer({ limits, port: 0 });
+      try {
+        listener.activate(other);
+        return "activation was not refused";
+      } catch (error) {
+        expect(listener.state).toBe("stopped");
+        return (error as Error).message;
+      } finally {
+        await listener.drain().catch(() => {});
+        await other.drain().catch(() => {});
+        store.close("clean");
+        rmSync(home, { recursive: true, force: true });
+      }
+    };
+
+    expect(await refuse({
+      hooks: {
+        byId: http("/people/:id", { GET: () => new Response(null) }),
+        bySlug: http("/people/:slug", { GET: () => new Response(null) }),
+      },
+    })).toContain('both claim the HTTP route "/people/:slug"');
+
+    // The projection joins on `/` where the address joined on `.`, so a
+    // string-named export can reach a path another address already derives.
+    const exposedNote = () => query({ access: "public", http: true, args: {}, handler: () => [] });
+    expect(await refuse({
+      notes: { ["echo/deep"]: exposedNote() },
+      "notes.echo": { deep: exposedNote() },
+    })).toContain('both claim the HTTP route "/api/notes/echo/deep"');
+  });
+
   test("the same path is reachable after activation and unavailable while draining", async () => {
     expect((await fetch(`${base}/users/7`)).status).toBe(200);
 

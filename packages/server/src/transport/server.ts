@@ -44,10 +44,10 @@ import {
 } from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import { HttpRegistry } from "./routing/registry.ts";
-import { HTTP_METHODS, type HttpMethod, type HttpParams } from "./routing/path.ts";
+import type { HttpMethod, HttpParams } from "./routing/path.ts";
 import {
   frameworkHttp,
-  type AnyHttp,
+  type AnyHttpHandler,
   type HttpHandlers,
   type HttpRoute,
   type HttpRouteCtx,
@@ -757,14 +757,26 @@ export class AckerDBServer {
           owner: exposed.address,
         })),
         // A raw route answers exactly what it declared, preflight included or
-        // not: its OPTIONS is its author's, or it has none.
+        // not: its OPTIONS is its author's, or it has none. Each declared
+        // method is compiled to its own handler, so the method that selected a
+        // route in the table is never asked again further in.
         ...runtime.registry.httpRoutes.map(({ address, http }) => ({
           route: frameworkHttp(
             http.path,
-            everyMethod(
-              HTTP_METHODS.filter((method) => http.handlers[method] !== undefined),
-              (ctx, request) => this.applicationRouteCall(request, http, ctx.params),
-            ),
+            Object.fromEntries(
+              // The map's value type is a union of method-narrowed handlers;
+              // the method that keys one is the method it was declared for.
+              Object.entries(http.handlers).map(([method, handler]) => [
+                method,
+                (ctx: HttpRouteCtx, request: Request) =>
+                  this.applicationRouteCall(
+                    request,
+                    handler as AnyHttpHandler,
+                    http.path,
+                    ctx.params,
+                  ),
+              ]),
+            ) as HttpHandlers<HttpRouteCtx, HttpRouteResult>,
           ),
           owner: address,
         })),
@@ -1045,7 +1057,8 @@ export class AckerDBServer {
    */
   private async applicationRouteCall(
     request: Request,
-    route: AnyHttp,
+    handler: AnyHttpHandler,
+    path: string,
     params: HttpParams,
   ): Promise<Response> {
     let admission: HttpAdmissionLease | undefined;
@@ -1066,7 +1079,8 @@ export class AckerDBServer {
             runtime.limits.readQueue.maxAgeMs,
           );
       const response = await runtime.runHttpRoute({
-        route,
+        handler,
+        path,
         params,
         request: bufferedRawRequest(request, body),
         id,

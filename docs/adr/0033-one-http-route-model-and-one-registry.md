@@ -163,3 +163,33 @@ answers both "which route" and "which methods does it serve".
 - Generated application code exports `http`, `Http`, `HttpHandlerCtx`, the
   canonical `HttpHandler`, and all seven method aliases, each with the
   application's `Schema` bound in and the literal `Path` left to the caller.
+  `@ackerdb/server` publishes that set and nothing more: the registry, the
+  route context it builds, and the shapes it holds stay transport-owned.
+- **A File handle is percent-decoded** before it is parsed, where the old
+  regular expression ran on the raw pathname. Harmless — the secret is
+  compared by digest in constant time, so a decoded variant simply fails to
+  match — but `/_files/grants/%31%37.<secret>` now resolves where it used to
+  404.
+- Three matcher edges are accepted rather than guarded, and are written down in
+  [the route contract](../http-routes.md): a parameter matches an empty
+  segment, exactly one trailing slash is stripped, and a wildcard capture is
+  decoded as one string.
+
+## The line count went up, and that is the honest result
+
+#322 asks for "a net reduction in source lines, excluding tests and
+documentation". It is not met: src grew by roughly 500 lines raw, of which
+about 300 are code and the rest are comments in this repository's usual
+density. The mechanism half of that criterion *is* met — one dispatch
+function, one route model, one collision owner, one 405, one 404, one method
+selection; the fourteen-branch chain, both path maps, `Registry.httpHandler`,
+`frameMethodNotAllowed`, and the File route's regular expression are all gone.
+
+The lines went into capability this issue also asked for and that did not
+exist before: a path grammar written for the compiler *and* the matcher
+(`ValidHttpPath`, `HttpParams`, `validateRoutePath`, `routeSignature`), route
+parameters and wildcards, decoded captures, seven exported handler aliases, a
+batch registration that is atomic against a refusal, and the compile-time
+refusals the issue's own testing decisions require. Reaching a negative number
+would mean dropping one of those. The premise that consolidation alone would
+shrink the surface was wrong; the consolidation did shrink the *mechanisms*.

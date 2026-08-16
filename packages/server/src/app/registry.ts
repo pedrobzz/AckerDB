@@ -41,7 +41,7 @@ import {
   compileExposedHttpCodec,
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
-import { routeSignature, validateRoutePath } from "../transport/routing/path.ts";
+import { validateRoutePath } from "../transport/routing/path.ts";
 
 interface ModuleExport {
   /** Module path joined to export name, without the fixed `api.` root. */
@@ -82,8 +82,6 @@ export class Registry {
   /** Application-owned raw routes, in the loader's fixed export order. */
   readonly httpRoutes: readonly HttpRouteDefinition[];
   private readonly httpByAddress = new Map<string, AnyHttp>();
-  /** Every application-claimed route pattern, so two exports cannot own one URL. */
-  private readonly claimedPaths = new Map<string, string>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
 
@@ -128,11 +126,12 @@ export class Registry {
           `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
         );
       }
-      const path = this.claimApplicationHttpPath(
-        httpPathForAddress(address),
-        address,
-        "HTTP-exposed function",
-      );
+      // A derived path is a path like any other: an export named through a
+      // string literal can project one the route grammar does not admit. An
+      // explicit path was already checked by the factory that built it.
+      const where = `HTTP-exposed function "${address}"`;
+      const path = validateRoutePath(httpPathForAddress(address), where);
+      this.refuseAckerDBPath(path, where);
       // The codec is compiled here, once: a contract that cannot cross the
       // surface's standard-JSON boundary fails the load, never a caller.
       this.exposed.set(address, Object.freeze({
@@ -145,12 +144,11 @@ export class Registry {
       }));
     }
 
-    // Raw route paths are claimed with the same nets as exposed functions: the
-    // reserved marker and any path already claimed. They are claimed second,
-    // so one check covers a raw path colliding with an exposed one as well as
-    // with another raw one.
+    // A raw route meets the same namespace policy as a derived one. Two
+    // routes claiming one URL is not checked here: the live registry is the
+    // one owner of path ownership, and it spans framework routes too.
     this.httpRoutes = Object.freeze([...this.httpByAddress].map(([address, http]) => {
-      this.claimApplicationHttpPath(http.path, address, "http route");
+      this.refuseAckerDBPath(http.path, `http route "${address}"`);
       return Object.freeze({ address, http });
     }));
 
@@ -207,31 +205,17 @@ export class Registry {
     }
   }
 
-  /** One owner for the application-path invariants: the grammar, the `_` reserve, every collision. */
-  private claimApplicationHttpPath(path: string, address: string, label: string): string {
-    // A derived path is a path like any other: an export named through a
-    // string literal can project one the route grammar does not admit.
-    validateRoutePath(path, `${label} "${address}"`);
-    // Every application route obeys the reserved-name rule, derived or explicit.
+  /**
+   * The application's HTTP namespace policy, derived paths and explicit ones
+   * alike: an application may not claim a path AckerDB owns.
+   */
+  private refuseAckerDBPath(path: string, where: string): void {
     if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
       throw new Error(
-        `${label} "${address}" claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
+        `${where} claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
           `paths and every name marked "${RESERVED_MARKER}"`,
       );
     }
-    // Unique addresses do not imply unique paths: an exposed function's path
-    // joins its address on `/` where the address joined on `.`, and an export
-    // named through a string literal may contain either. `api.notes.a/b` and
-    // `api.notes.a.b` are two functions with two access policies at one URL,
-    // and the second insertion would otherwise replace the first in silence.
-    // The claim is by pattern, so `/u/:id` and `/u/:slug` collide as they must.
-    const signature = routeSignature(path);
-    const owner = this.claimedPaths.get(signature);
-    if (owner !== undefined) {
-      throw new Error(`${label} "${address}" and "${owner}" both claim path "${path}"`);
-    }
-    this.claimedPaths.set(signature, address);
-    return path;
   }
 
   /** The one fixed-root application address space, checked once. */

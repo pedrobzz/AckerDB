@@ -25,11 +25,11 @@ import { methodNotAllowed, outcomeError } from "../response.ts";
 import {
   matcherPattern,
   routeSignature,
-  HTTP_METHODS,
   NO_PARAMS,
+  type HttpMethod,
   type HttpParams,
 } from "./path.ts";
-import { handlerFor, type HttpRequest, type HttpRoute } from "./route.ts";
+import type { HttpRequest, HttpRoute, HttpRouteHandler } from "./route.ts";
 
 /** One route and the export that answers for it if its claim is refused. */
 export interface ClaimedRoute {
@@ -75,11 +75,18 @@ export class HttpRegistry {
   constructor(private readonly unmatched: () => Response) {}
 
   /**
-   * The sole registration operation, and a whole batch at a time: every claim
-   * in the batch is checked before the matcher is touched at all, so a refused
+   * The sole registration operation, and the one owner of path ownership —
+   * framework routes and application routes claim from the same table, so no
+   * two maps can disagree about who serves a URL. A whole batch at a time:
+   * every claim is checked before the matcher is touched at all, so a refused
    * route leaves the live table exactly as it was rather than half-installed.
-   * Ownership is by pattern, not by written path — two routes whose parameters
-   * differ only in name claim the same URLs.
+   *
+   * Ownership is by pattern, not by written path. `/u/:id` and `/u/:slug`
+   * match the same requests, and unique addresses do not imply unique paths
+   * either: an exposed function's path joins its address on `/` where the
+   * address joined on `.`, so `api.notes.a/b` and `api.notes.a.b` are two
+   * functions with two access policies at one URL. Without this the second
+   * insertion would replace the first in silence.
    */
   add(routes: readonly ClaimedRoute[]): void {
     const claimed = new Map<string, string>();
@@ -93,9 +100,11 @@ export class HttpRegistry {
     }
     for (const [signature, owner] of claimed) this.owners.set(signature, owner);
     for (const { route } of routes) {
+      // The handler map is a validated snapshot carrying method keys and
+      // nothing else, so its own keys are the complete Allow.
       addRoute(this.matcher, "", matcherPattern(route.path), {
         route,
-        allow: HTTP_METHODS.filter((method) => route.handlers[method] !== undefined).join(", "),
+        allow: Object.keys(route.handlers).join(", "),
       });
     }
   }
@@ -104,7 +113,11 @@ export class HttpRegistry {
     const matched = findRoute(this.matcher, "", pathname);
     if (matched === undefined) return this.unmatched();
     const { route, allow } = matched.data;
-    const handler = handlerFor(route, request.method);
+    // The map's value type is a union of method-narrowed handlers; the method
+    // that selected one is the method it was declared for.
+    const handler = route.handlers[request.method as HttpMethod] as
+      | HttpRouteHandler
+      | undefined;
     if (handler === undefined) return methodNotAllowed(allow);
     const params = decodedParams(matched.params);
     if (params === null) {

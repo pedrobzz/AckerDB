@@ -236,21 +236,6 @@ export function http<const Path extends string>(
   }) as unknown as Http<Path, HttpHandlerCtx<Path>, Response>;
 }
 
-/**
- * Which handler answers one method — one rule, so the table that selects to
- * refuse a wrong method and the Runtime that selects to invoke cannot disagree
- * about what a route serves.
- */
-export function handlerFor<Ctx, Result extends HttpRouteResult>(
-  route: Http<string, Ctx, Result>,
-  method: string,
-): HttpHandlerOf<HttpMethod, Ctx, Result> | undefined {
-  // The map's value type is a union of method-narrowed handlers; the method
-  // that selected one is the method it was declared for.
-  return route.handlers[method as HttpMethod] as
-    | HttpHandlerOf<HttpMethod, Ctx, Result>
-    | undefined;
-}
 
 /**
  * The registered form, for untyped exports: the definition fields plus every

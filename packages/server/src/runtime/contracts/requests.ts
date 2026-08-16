@@ -1,7 +1,7 @@
 import type { MutationReceipt } from "@ackerdb/core";
 import type { Principal } from "../../auth/credentials.ts";
 import type { HttpParams } from "../../transport/routing/path.ts";
-import type { AnyHttp } from "../../transport/routing/route.ts";
+import type { AnyHttpHandler } from "../../transport/routing/route.ts";
 
 export interface RuntimeExternalRequest {
   readonly id: number;
@@ -43,12 +43,13 @@ export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
 /**
  * One application-owned raw route call. `request` is the buffered Request the
  * handler receives whole — no codec, no principal, no responder: the handler
- * authors its own Response. The route selects its handler by the request's own
- * method, so this is also the direct entry point a test uses: everything but
- * the route and the Request defaults.
+ * authors its own Response. The method already chose the handler in the route
+ * table, so what arrives here is the handler itself; `path` only names it in a
+ * failure log and never reaches the wire.
  */
 export interface RuntimeHttpRouteRequest {
-  readonly route: AnyHttp;
+  readonly handler: AnyHttpHandler;
+  readonly path: string;
   readonly request: Request;
   /** The captures the listener decoded; a static route has none. */
   readonly params?: HttpParams;

@@ -118,6 +118,16 @@ export const asset = http("/orgs/:org/assets/*", {
   parameters, two parameters in one segment, host constraints. No coercion
   either — every capture is a `string`.
 
+Three edges are known and deliberately left alone, because a guard for any of
+them would cost more than it is worth:
+
+- A parameter matches an empty segment. `/users//x` matches `/users/:id/x`
+  with `ctx.params.id === ""`; a handler that cares checks for it.
+- Exactly one trailing slash is stripped, so `/live/` reaches `/live` but
+  `/live//` does not.
+- A wildcard capture is decoded as one string, so a `%2F` inside it is
+  indistinguishable from a separator.
+
 ## Where a route may live
 
 An explicit path may claim any URL AckerDB has not reserved. Reserved is:

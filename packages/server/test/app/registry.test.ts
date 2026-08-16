@@ -122,24 +122,16 @@ describe("HTTP-exposed function paths", () => {
     expect(claimsReservedName("/webhooks/_raw")).toBe(false);
   });
 
-  test("refuses two addresses projecting onto one path", () => {
-    // Unique addresses do not imply unique paths: the projection joins on `/`
-    // where the address joined on `.`, and a string-named export may contain
-    // either. Two functions with two access policies at one URL would
-    // otherwise be settled by whichever was registered second.
-    expect(() =>
-      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { deep: listing } })
-    ).toThrow(
-      'HTTP-exposed function "api.notes.echo.deep" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
-    );
-    // A raw route meets the same check: explicit paths are claimed after
-    // derived ones, so one check covers both orders and both kinds.
-    const collide = { ...hook, path: "/api/notes/echo/deep" } as never;
-    expect(() =>
-      new Registry({ notes: { ["echo/deep"]: exposed }, "notes.echo": { collide } })
-    ).toThrow(
-      'http route "api.notes.echo.collide" and "api.notes.echo/deep" both claim path "/api/notes/echo/deep"',
-    );
+  test("leaves path ownership to the one registry that spans framework routes too", () => {
+    // Two addresses projecting onto one path load without complaint here: the
+    // live HTTP registry owns who serves a URL, because only it also knows the
+    // framework's routes. See the activation refusals in http-routes.test.ts.
+    const registry = new Registry({
+      notes: { ["echo/deep"]: exposed },
+      "notes.echo": { deep: listing },
+    });
+    expect([...registry.exposed.values()].map((one) => one.path))
+      .toEqual(["/api/notes/echo/deep", "/api/notes/echo/deep"]);
   });
 
   test("refuses a malformed http field from an untyped export", () => {
@@ -269,16 +261,6 @@ describe("the http factory", () => {
     }
     expect(() => http("/x/:a.b" as never, handlers)).toThrow(
       'http path "/x/:a.b" parameter name "a.b" must be letters, digits, "_", and "-"',
-    );
-  });
-
-  test("refuses two patterns that claim the same URLs", () => {
-    // The parameter name is the author's vocabulary, not the URL's: these two
-    // routes match exactly the same requests, and the matcher would serve one.
-    const byId = { ...hook, path: "/users/:id" } as never;
-    const bySlug = { ...hook, path: "/users/:slug" } as never;
-    expect(() => new Registry({ hooks: { byId, bySlug } })).toThrow(
-      'http route "api.hooks.bySlug" and "api.hooks.byId" both claim path "/users/:slug"',
     );
   });
 

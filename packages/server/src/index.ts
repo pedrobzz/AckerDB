@@ -388,19 +388,18 @@ export {
   type SseSource,
   type TxCtx,
 } from "./app/functions.ts";
+// The route-authoring surface, and only that: the registry, the route
+// context it builds, and the shapes it holds are transport-owned, so they are
+// not part of what an application may import.
 export {
-  HTTP_METHODS,
   type HttpMethod,
   type HttpParams,
   type ValidHttpPath,
 } from "./transport/routing/path.ts";
 export {
   http,
-  isHttpShaped,
-  type AnyHttp,
   type Http,
   type HttpBuilder,
-  type HttpCapabilities,
   type HttpHandler,
   type HttpHandlerCtx,
   type HttpHandlerDELETE,
@@ -410,10 +409,6 @@ export {
   type HttpHandlerPATCH,
   type HttpHandlerPOST,
   type HttpHandlerPUT,
-  type HttpHandlers,
-  type HttpRequest,
-  type HttpRoute,
-  type HttpRouteCtx,
 } from "./transport/routing/route.ts";
 export {
   channel,
