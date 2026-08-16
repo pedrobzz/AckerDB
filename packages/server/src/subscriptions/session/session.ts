@@ -21,6 +21,9 @@ import {
 } from "@ackerdb/core";
 import { positiveSafeInteger } from "../../shared/numbers.ts";
 import {
+  credentialExpired,
+  credentialRevoked,
+  credentialVerifierUnavailable,
   verifyClientCredential,
   type ClientPrincipal,
   type Principal,
@@ -43,6 +46,7 @@ import {
 import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import { PRODUCTION_LIMITS } from "../../runtime/limits.ts";
 import { outcomeFromError } from "../../runtime/outcome.ts";
+import { MAX_TIMER_DELAY_MS } from "../../shared/numbers.ts";
 import {
   assertRuntimePublication,
   prepareRuntimeRequest,
@@ -83,8 +87,6 @@ function authenticationDescriptor(
     : Object.freeze({ principal: "workload", provenance, credentialTtlMs });
 }
 
-const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
-
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
   setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
@@ -92,16 +94,7 @@ const SYSTEM_CLOCK: SessionClock = Object.freeze({
 });
 
 function internalError(cause: unknown): AckerDBError {
-  return new AckerDBError("internal", "internal error", { cause });
-}
-
-function verifierError(cause: unknown): AckerDBError {
-  return isAckerDBError(cause)
-    ? cause
-    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
-        retryable: true,
-        cause,
-      });
+  return new AckerDBError("internal", "internal server error", { cause });
 }
 
 function operationError(cause: unknown): AckerDBError {
@@ -317,7 +310,7 @@ export class Session {
     try {
       principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
-      const failure = verifierError(error);
+      const failure = credentialVerifierUnavailable(error);
       if (this.pendingAuthController === authController) this.pendingAuthController = null;
       void this.terminate(failure);
       return;
@@ -375,7 +368,7 @@ export class Session {
         this.queueAuthCompletion(message, transitionController, principal);
       },
       (error) => {
-        const failure = verifierError(error);
+        const failure = credentialVerifierUnavailable(error);
         this.queueAuthCompletion(message, transitionController, failure);
       },
     );
@@ -414,7 +407,7 @@ export class Session {
       return;
     }
     if (result.kind !== "anonymous" && result.expiresAt <= this.readNow()) {
-      void this.terminate(new AckerDBError("unauthenticated", "credential expired"));
+      void this.terminate(credentialExpired());
       return;
     }
     if (this.authEpoch >= Number.MAX_SAFE_INTEGER) {
@@ -643,7 +636,7 @@ export class Session {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
       const remaining = principal.expiresAt - this.readNow();
       if (remaining <= 0) {
-        void this.terminate(new AckerDBError("unauthenticated", "credential expired"));
+        void this.terminate(credentialExpired());
         return;
       }
       this.expiryTimer = this.clock.setTimeout(schedule, Math.min(remaining, MAX_TIMER_DELAY_MS));
@@ -658,7 +651,7 @@ export class Session {
   }
 
   private onInvalidation(invalidation: PrincipalInvalidation): void {
-    const error = new AckerDBError("unauthenticated", "credential revoked");
+    const error = credentialRevoked();
     if (this.pendingAuthController !== null) {
       aborted(this.pendingAuthController, error);
       void this.terminate(error);
@@ -688,10 +681,8 @@ export class Session {
     const outcome = outcomeFromError(error);
     this.phase = "closed";
     this.paused = true;
-    let resolveClose!: () => void;
-    this.closePromise = new Promise<void>((resolve) => {
-      resolveClose = resolve;
-    });
+    const closed = Promise.withResolvers<void>();
+    this.closePromise = closed.promise;
     aborted(this.epochController, error);
     this.abortActiveProcedures(error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
@@ -729,7 +720,8 @@ export class Session {
         // The transport is already considered closed by the Session owner.
       }
     })();
-    void Promise.all([closeRuntime, closeSink]).then(resolveClose, resolveClose);
+    const settle = (): void => closed.resolve();
+    void Promise.all([closeRuntime, closeSink]).then(settle, settle);
     return this.closePromise;
   }
 }

@@ -66,7 +66,7 @@ function drain(waiters: Set<Waiter>): Waiter[] {
 // a caller that mutates its argument object while the call waits must not
 // change what it asked for. Unencodable values pass through untouched: the
 // client sees them at dispatch and reports its own typed validation outcome.
-function snapshotWireValue<A>(args: A): A {
+export function snapshotWireValue<A>(args: A): A {
   try {
     return decode(encode(args)) as A;
   } catch {

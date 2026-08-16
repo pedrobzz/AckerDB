@@ -18,8 +18,7 @@ import { decode, stableEncode } from "@ackerdb/core";
 import { JOB_RUNS_TABLE, JOBS_TABLE, JOBS_GUARDED_COLUMNS } from "../jobs/table.ts";
 import { hashJobArgs } from "../jobs/identity.ts";
 import { FILES_TABLE } from "../files/tables.ts";
-
-const quote = (name: string): string => `"${name}"`;
+import { quoteIdentifier } from "../shared/sql.ts";
 
 const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@ackerdb/server/UniqueConstraintError/v1");
 
@@ -147,7 +146,7 @@ function readMethods(
           const raw = engine
             .statement(
               conn,
-              `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+              `SELECT ${plan.readProjection} FROM ${quoteIdentifier(plan.name)} WHERE ${quoteIdentifier(plan.pk)} = ?`,
             )
             .get(id as never) as Record<string, unknown> | null;
           return raw === null ? null : engine.rowFromSql(plan, raw);
@@ -267,7 +266,7 @@ function claimFileReferences(
   for (const id of ids) {
     const raw = engine.statement(
       engine.writer,
-      `SELECT ${filePlan.readProjection} FROM ${quote(filePlan.name)} WHERE ${quote(filePlan.pk)} = ?`,
+      `SELECT ${filePlan.readProjection} FROM ${quoteIdentifier(filePlan.name)} WHERE ${quoteIdentifier(filePlan.pk)} = ?`,
     ).get(id as never) as Record<string, unknown> | null;
     const file = raw === null ? null : engine.rowFromSql(filePlan, raw);
     if (file === null || file.state === "deleting") {
@@ -318,7 +317,7 @@ function updateRow(
     const columnPlan = plan.columns.get(key)!;
     const sqlValues = columnPlan.toSql(value);
     columnPlan.phys.forEach((phys, index) => {
-      sets.push(`${quote(phys.name)} = ?`);
+      sets.push(`${quoteIdentifier(phys.name)} = ?`);
       params.push(sqlValues[index]);
     });
   }
@@ -327,7 +326,7 @@ function updateRow(
     engine
       .statement(
         engine.writer,
-        `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`,
+        `UPDATE ${quoteIdentifier(plan.name)} SET ${sets.join(", ")} WHERE ${quoteIdentifier(plan.pk)} = ?`,
       )
       .run(...(params as never[]), input.id as never);
   } catch (error) {
@@ -358,7 +357,7 @@ function writeMethods(
     const raw = engine
       .statement(
         conn,
-        `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+        `SELECT ${plan.readProjection} FROM ${quoteIdentifier(plan.name)} WHERE ${quoteIdentifier(plan.pk)} = ?`,
       )
       .get(id as never) as Record<string, unknown> | null;
     return raw === null ? null : engine.rowFromSql(plan, raw);
@@ -407,13 +406,13 @@ function writeMethods(
           if (columnPlan.kind === "pk") continue;
           const sqlValues = columnPlan.toSql(values[columnPlan.jsName]);
           columnPlan.phys.forEach((phys, i) => {
-            sets.push(`${quote(phys.name)} = ?`);
+            sets.push(`${quoteIdentifier(phys.name)} = ?`);
             params.push(sqlValues[i]);
           });
         }
         try {
           engine
-            .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
+            .statement(conn, `UPDATE ${quoteIdentifier(plan.name)} SET ${sets.join(", ")} WHERE ${quoteIdentifier(plan.pk)} = ?`)
             .run(...(params as never[]), id as never);
         } catch (error) {
           wrapUnique(plan.displayName, error);
@@ -434,7 +433,7 @@ function writeMethods(
         const old = getRow(id);
         if (old === null) return { value: undefined, row: null }; // idempotent under retry
         engine
-          .statement(conn, `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+          .statement(conn, `DELETE FROM ${quoteIdentifier(plan.name)} WHERE ${quoteIdentifier(plan.pk)} = ?`)
           .run(id as never);
         emitWriteKeys(plan, old, writes.keys);
         emitFullTextWriteKeys(plan, old, null, writes.keys);
@@ -467,7 +466,7 @@ function writeMethods(
           const rawRows = engine
             .statement(
               conn,
-              `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} IN (${placeholders}) RETURNING ${plan.readProjection}`,
+              `DELETE FROM ${quoteIdentifier(plan.name)} WHERE ${quoteIdentifier(plan.pk)} IN (${placeholders}) RETURNING ${plan.readProjection}`,
             )
             .all(...(uniqueIds as never[])) as Record<string, unknown>[];
           for (const raw of rawRows) {
@@ -530,7 +529,7 @@ function attachUpsert(
         const columnPlan = plan.columns.get(column)!;
         const sqlValues = columnPlan.toSql(checked);
         for (let position = 0; position < columnPlan.phys.length; position++) {
-          const physical = quote(columnPlan.phys[position]!.name);
+          const physical = quoteIdentifier(columnPlan.phys[position]!.name);
           const sqlValue = sqlValues[position];
           if (sqlValue === null) {
             clauses.push(`${physical} IS NULL`);
@@ -544,7 +543,7 @@ function attachUpsert(
       const raws = engine
         .statement(
           engine.writer,
-          `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${where} LIMIT 2`,
+          `SELECT ${plan.readProjection} FROM ${quoteIdentifier(plan.name)} WHERE ${where} LIMIT 2`,
         )
         .all(...(params as never[])) as Record<string, unknown>[];
       if (raws.length > 1) {

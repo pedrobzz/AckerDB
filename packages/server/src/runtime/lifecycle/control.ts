@@ -1,5 +1,5 @@
 import type { Engine } from "../../database/engine.ts";
-import { AckerDBError } from "../../shared/errors.ts";
+import { AckerDBError, drainingError } from "../../shared/errors.ts";
 import type { OutboundBudget } from "../../subscriptions/delivery/budget.ts";
 import type { BoundedSseProducer } from "../../subscriptions/delivery/sse.ts";
 import type { OrderedReactive } from "../../subscriptions/reactive/ordered.ts";
@@ -19,9 +19,8 @@ import type {
   RuntimeSessionStore,
 } from "../sessions/store.ts";
 import type { FileCleanupRuntime } from "../../files/cleanup.ts";
+import { wireByteLength } from "../../shared/bytes.ts";
 
-const DRAIN_RETRY_AFTER_MS = 1_000;
-const utf8 = new TextEncoder();
 
 export interface RuntimeControlOptions {
   readonly limits: ServiceLimits;
@@ -139,15 +138,7 @@ export class RuntimeControl {
   assertReady(): void {
     if (this.lifecycle === "ready") return;
     if (this.lifecycle === "draining") {
-      throw new AckerDBError(
-        "draining",
-        "runtime is not accepting operations",
-        {
-          retryable: true,
-          retryAfterMs: DRAIN_RETRY_AFTER_MS,
-          resource: "operation",
-        },
-      );
+      throw drainingError("runtime is not accepting operations", "operation");
     }
     throw new AckerDBError(
       "unavailable",
@@ -160,7 +151,7 @@ export class RuntimeControl {
     let bytes = receivedBytes;
     if (bytes === undefined) {
       try {
-        bytes = byteLength(request);
+        bytes = wireByteLength(request);
       } catch (cause) {
         throw new AckerDBError("validation", "request is not wire-representable", { cause });
       }
@@ -222,11 +213,7 @@ export class RuntimeControl {
     this.lifecycle = "draining";
     this.options.jobs.stop();
     this.options.fileCleanup.stop();
-    const draining = new AckerDBError("draining", "runtime is draining", {
-      retryable: true,
-      retryAfterMs: DRAIN_RETRY_AFTER_MS,
-      resource: "operation",
-    });
+    const draining = drainingError("runtime is draining", "operation");
     this.systemDrainController.abort(draining);
     const sessionDrains = [...this.options.sessions.values()].map((state) =>
       this.options.sessions.startClose(state));
@@ -294,8 +281,3 @@ function operationOverload(message: string): AckerDBError {
     resource: "operation",
   });
 }
-
-function byteLength(value: unknown): number {
-  return utf8.encode(encode(value)).byteLength;
-}
-import { encode } from "@ackerdb/core";

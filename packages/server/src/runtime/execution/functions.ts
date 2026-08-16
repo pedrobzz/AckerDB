@@ -10,6 +10,7 @@ import {
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
+  unauthenticated,
   verifyUserBearerCredential,
   type CredentialVerifier,
   type ExternalAccount,
@@ -709,7 +710,7 @@ export class RuntimeFunctionExecutor<C> {
     throwIfAborted(signal);
     await this.identityWrite(fairnessKey, signal, requestBytes, async (identities) => {
       if (account.expiresAt <= this.readNow()) {
-        throw new AckerDBError("unauthenticated", "invalid credential");
+        throw unauthenticated();
       }
       if (!await identities.attach(principal.identity, account.issuer, account.subject)) {
         throw new AckerDBError("conflict", "external account is already linked");

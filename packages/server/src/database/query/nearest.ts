@@ -24,8 +24,8 @@ import {
   type VectorRuntime,
 } from "./vector-runtime.ts";
 import type { VectorMetric } from "./types.ts";
+import { quoteIdentifier } from "../../shared/sql.ts";
 
-const quote = (name: string): string => `"${name}"`;
 const WINNER_FETCH_SIZE = 256;
 
 interface Candidate {
@@ -279,10 +279,10 @@ class NearestQueryRuntime {
       `${this.plan.displayName}.nearest`,
     );
     const where = [
-      `${quote(this.vector.physical)} IS NOT NULL`,
+      `${quoteIdentifier(this.vector.physical)} IS NOT NULL`,
       predicate.sql,
     ].filter((clause) => clause !== "").map((clause) => `(${clause})`).join(" AND ");
-    const sql = `SELECT ${quote(this.plan.pk)} AS "__ackerdb_pk", ${quote(this.vector.physical)} AS "__ackerdb_vector" FROM ${quote(this.plan.name)} WHERE ${where}`;
+    const sql = `SELECT ${quoteIdentifier(this.plan.pk)} AS "__ackerdb_pk", ${quoteIdentifier(this.vector.physical)} AS "__ackerdb_vector" FROM ${quoteIdentifier(this.plan.name)} WHERE ${where}`;
     const statement = this.conn.prepare(sql);
     const runtime = loadVectorRuntime();
     const heap = new WinnerHeap(count);
@@ -331,7 +331,7 @@ class NearestQueryRuntime {
       const rawRows = this.engine
         .statement(
           this.conn,
-          `SELECT ${this.plan.readProjection} FROM ${quote(this.plan.name)} WHERE ${quote(this.plan.pk)} IN (${placeholders})`,
+          `SELECT ${this.plan.readProjection} FROM ${quoteIdentifier(this.plan.name)} WHERE ${quoteIdentifier(this.plan.pk)} IN (${placeholders})`,
         )
         .all(...(chunk.map(({ id }) => id) as never[])) as Record<string, unknown>[];
       for (const raw of rawRows) {

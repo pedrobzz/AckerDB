@@ -31,7 +31,6 @@ import {
   type ChannelServerEvents,
   type ChannelClientEvents,
   type ChannelError,
-  type ClientMessage,
   type Credential,
   type EventRef,
   type LiveEventCursor,
@@ -65,6 +64,7 @@ import {
   type AckerDBFiles,
 } from "./files/client.ts";
 import { SseEventDecoder } from "./sse/event-decoder.ts";
+import { raceWithAbort } from "./abort.ts";
 import {
   SubscriptionRetryScheduler,
   createSubscriptionRetryState,
@@ -483,39 +483,6 @@ function releaseReaderLock(reader: SseResponseReader): void {
     reader.releaseLock();
   } catch {
     // A pending external read may make immediate lock release impossible.
-  }
-}
-
-async function raceWithAbort<T>(
-  promise: Promise<T>,
-  signal: AbortSignal,
-  error: AckerDBClientError,
-  onLate?: (value: T) => void,
-): Promise<T> {
-  const discard = (value: T): never => {
-    try {
-      onLate?.(value);
-    } catch {
-      // Late external values cannot regain ownership or replace the cancellation outcome.
-    }
-    throw error;
-  };
-  const observed = promise.then((value) => (signal.aborted ? discard(value) : value));
-  if (signal.aborted) {
-    void observed.catch(() => {});
-    throw error;
-  }
-  let rejectInterrupted!: () => void;
-  const interrupted = new Promise<never>((_resolve, reject) => {
-    rejectInterrupted = () => reject(error);
-  });
-  const onAbort = (): void => rejectInterrupted();
-  signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    const value = await Promise.race([observed, interrupted]);
-    return signal.aborted ? discard(value) : value;
-  } finally {
-    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -946,12 +913,7 @@ export class AckerDBClient {
     this.credentialExpiresAtMs = undefined;
     this.authBlocked = false;
     this.blockingError = undefined;
-    let resolve!: (authentication: AckerDBAuthentication) => void;
-    let reject!: (error: AckerDBClientError) => void;
-    const result = new Promise<AckerDBAuthentication>((promiseResolve, promiseReject) => {
-      resolve = promiseResolve;
-      reject = promiseReject;
-    });
+    const { promise: result, resolve, reject } = Promise.withResolvers<AckerDBAuthentication>();
     const attempt: AuthAttempt = {
       id,
       credential: nextCredential,
@@ -1343,13 +1305,11 @@ export class AckerDBClient {
         void promise.catch(() => {});
         throw cancellationError;
       }
-      let rejectInterrupted!: () => void;
-      const interrupted = new Promise<never>((_resolve, reject) => {
-        rejectInterrupted = () => reject(cancellationError);
-      });
+      const interrupted = Promise.withResolvers<never>();
+      const rejectInterrupted = (): void => interrupted.reject(cancellationError);
       interruptWait = rejectInterrupted;
       try {
-        const value = await Promise.race([promise, interrupted]);
+        const value = await Promise.race([promise, interrupted.promise]);
         if (cleanupStarted) throw cancellationError;
         return value;
       } finally {
@@ -1793,12 +1753,7 @@ export class AckerDBClient {
       const bytes = this.reservePersistent(frame, "operation");
       unownedReservation = bytes;
       const maxAge = kind === "mutation" ? this.limits.maxMutationAgeMs : this.limits.maxQueryAgeMs;
-      let resolve!: (value: unknown) => void;
-      let reject!: (error: AckerDBClientError) => void;
-      const result = new Promise<unknown>((promiseResolve, promiseReject) => {
-        resolve = promiseResolve;
-        reject = promiseReject;
-      });
+      const { promise: result, resolve, reject } = Promise.withResolvers<unknown>();
       const pending: PendingRequest = {
         id,
         kind,
@@ -2853,7 +2808,7 @@ export class AckerDBClient {
                 signal: attemptSignal,
               }))(),
             attemptSignal,
-            cancellationError,
+            () => cancellationError,
             (late) => {
               if (late.body) cancelWithoutWaiting(late.body, attemptSignal.reason);
             },
@@ -2874,7 +2829,7 @@ export class AckerDBClient {
               const part = await raceWithAbort(
                 (async () => reader.read())(),
                 attemptSignal,
-                cancellationError,
+                () => cancellationError,
               );
               if (!part.done) {
                 throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
@@ -3070,13 +3025,11 @@ export class AckerDBClient {
     try {
       for (;;) {
         let part: Awaited<ReturnType<SseResponseReader["read"]>>;
-        let rejectInterrupted!: () => void;
-        const interrupted = new Promise<never>((_resolve, reject) => {
-          rejectInterrupted = () => reject(cancellationError);
-        });
+        const interrupted = Promise.withResolvers<never>();
+        const rejectInterrupted = (): void => interrupted.reject(cancellationError);
         interruptRead = rejectInterrupted;
         try {
-          part = await Promise.race([(async () => reader.read())(), interrupted]);
+          part = await Promise.race([(async () => reader.read())(), interrupted.promise]);
         } catch (error) {
           if (signal.aborted) throw cancellationError;
           throw error;

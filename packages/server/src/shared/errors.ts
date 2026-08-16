@@ -56,13 +56,28 @@ export function isAckerDBError(value: unknown): value is AckerDBError {
   return hasBrand(value, ACKERDB_ERROR_IDENTITY);
 }
 
+/** How long a client should wait before retrying work refused during a drain. */
+export const DRAIN_RETRY_AFTER_MS = 1_000;
+
+/** A refusal that only lasts as long as the drain: always retryable, always bounded. */
+export function drainingError(message: string, resource: ResourceClass): AckerDBError {
+  return new AckerDBError("draining", message, {
+    retryable: true,
+    retryAfterMs: DRAIN_RETRY_AFTER_MS,
+    resource,
+  });
+}
+
 /** Preserve framework abort reasons and normalize every external cancellation. */
-export function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw isAckerDBError(signal.reason)
-    ? signal.reason
+export function cancellation(reason: unknown): AckerDBError {
+  return isAckerDBError(reason)
+    ? reason
     : new AckerDBError("unavailable", "operation was canceled", {
         resource: "operation",
-        cause: signal.reason,
+        cause: reason,
       });
+}
+
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw cancellation(signal.reason);
 }

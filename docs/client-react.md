@@ -53,13 +53,13 @@ Normal hooks and their public types come from `@ackerdb/client-react`.
 consumer that never imports that subpath does not resolve AI SDK code.
 
 Vite dev servers should pre-bundle the client's CommonJS-interop
-dependencies, or the first on-demand optimization pass can reload the page
+dependency, or the first on-demand optimization pass can reload the page
 mid-render and surface as a duplicated-React "Invalid hook call":
 
 ```ts
 // vite.config.ts
 export default defineConfig({
-  optimizeDeps: { include: ["eventsource-parser", "msgpackr"] },
+  optimizeDeps: { include: ["eventsource-parser"] },
 });
 ```
 

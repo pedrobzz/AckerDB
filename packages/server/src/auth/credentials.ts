@@ -10,6 +10,7 @@ import { parseCredential, type Credential, type Identity } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { isScopeGrant } from "./scopes.ts";
+import { utf8ByteLength } from "../shared/bytes.ts";
 import {
   hasCredentialTokenPrefix,
   CREDENTIAL_AUTHORITY,
@@ -464,6 +465,29 @@ export function unauthenticated(cause?: unknown): AckerDBError {
   return new AckerDBError("unauthenticated", "invalid credential", { cause });
 }
 
+/** A credential the authority has revoked: the session may not continue on it. */
+export function credentialRevoked(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential revoked");
+}
+
+/** A credential past its own deadline: the caller must present a fresh one. */
+export function credentialExpired(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential expired");
+}
+
+/**
+ * A verifier that could not answer. A framework failure travels unchanged; any
+ * other cause becomes the retryable `auth_unavailable` the contract promises.
+ */
+export function credentialVerifierUnavailable(cause: unknown): AckerDBError {
+  return isAckerDBError(cause)
+    ? cause
+    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
+        retryable: true,
+        cause,
+      });
+}
+
 async function boundedJwksResponse(
   response: Response,
   maxBytes: number,
@@ -850,7 +874,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
         typeof credential !== "string" ||
         credential.length === 0 ||
         credential.length > maxTokenBytes ||
-        new TextEncoder().encode(credential).byteLength > maxTokenBytes
+        utf8ByteLength(credential) > maxTokenBytes
       ) {
         throw unauthenticated();
       }

@@ -29,7 +29,7 @@ import {
 } from "../runtime/caller.ts";
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import { WebSocketSessionSink } from "../subscriptions/delivery/websocket.ts";
-import { AckerDBError } from "../shared/errors.ts";
+import { AckerDBError, drainingError } from "../shared/errors.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
 import {
   ACKERDB_HTTP_ROUTES,
@@ -53,6 +53,7 @@ import type {
 import type { RuntimeStatus } from "../runtime/contracts/status.ts";
 import { Session } from "../subscriptions/session/session.ts";
 import { DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES } from "../files/namespace.ts";
+import { utf8ByteLength } from "../shared/bytes.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 /** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
@@ -115,8 +116,6 @@ interface WsData {
 
 const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
-const utf8 = new TextEncoder();
-
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   // PATCH, PUT and DELETE are raw HTTP handler methods; the exposed function
@@ -150,7 +149,6 @@ const SSE_HEADERS = Object.freeze({
   "x-accel-buffering": "no",
 });
 
-const DRAIN_RETRY_AFTER_MS = 1_000;
 const MAX_FILE_TRANSFERS = 128;
 const MAX_FILE_TRANSFERS_PER_CALLER = 16;
 const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Object.freeze({
@@ -251,11 +249,7 @@ const valueResponder: RuntimeHttpResponder = ({ body, status, receipt }) => new 
 
 function unavailableWhile(state: AckerDBServerState): AckerDBError {
   if (state === "draining") {
-    return new AckerDBError("draining", "server is draining", {
-      retryable: true,
-      retryAfterMs: DRAIN_RETRY_AFTER_MS,
-      resource: "connection",
-    });
+    return drainingError("server is draining", "connection");
   }
   return new AckerDBError("unavailable", "server is not ready", {
     retryable: true,
@@ -368,11 +362,7 @@ class HttpAdmission {
 
   admit(fairnessKey: string): HttpAdmissionLease {
     if (!this.accepting) {
-      throw new AckerDBError("draining", `${this.labels.ingress} is draining`, {
-        retryable: true,
-        retryAfterMs: DRAIN_RETRY_AFTER_MS,
-        resource: "connection",
-      });
+      throw drainingError(`${this.labels.ingress} is draining`, "connection");
     }
     if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
       this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
@@ -573,11 +563,12 @@ function bufferedRawRequest(request: Request, body: Uint8Array<ArrayBuffer> | nu
   });
 }
 
-function decodeHttpBody(text: string): unknown {
+/** Text into a value; any parser failure is the one malformed outcome, with its cause. */
+function parsedOrMalformed<T>(text: string, parse: (text: string) => T, message: string): T {
   try {
-    return decode(text);
+    return parse(text);
   } catch (cause) {
-    throw new AckerDBError("malformed", "malformed request body", { cause });
+    throw new AckerDBError("malformed", message, { cause });
   }
 }
 
@@ -588,7 +579,10 @@ async function parseHttpBody<T>(
   parse: (value: unknown) => T,
 ): Promise<ParsedHttpBody<T>> {
   const body = await readBoundedBody(request, maxBytes, maxAgeMs);
-  return { value: parse(decodeHttpBody(body.text)), bytes: body.bytes };
+  return {
+    value: parse(parsedOrMalformed(body.text, decode, "malformed request body")),
+    bytes: body.bytes,
+  };
 }
 
 /**
@@ -598,13 +592,7 @@ async function parseHttpBody<T>(
  */
 function decodeArgs(text: string | null, codec: ExposedHttpCodec): unknown {
   if (text === null || text === "") return codec.decodeArgs({});
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch (cause) {
-    throw new AckerDBError("malformed", "args are not valid JSON", { cause });
-  }
-  return codec.decodeArgs(json);
+  return codec.decodeArgs(parsedOrMalformed(text, JSON.parse, "args are not valid JSON"));
 }
 
 async function parseArgsHttpBody(
@@ -630,7 +618,7 @@ function parseArgsSearchParameter(
 ): ParsedHttpBody<unknown> {
   const raw = url.searchParams.get("args");
   if (raw === null) return { value: decodeArgs(null, codec), bytes: 0 };
-  const bytes = utf8.encode(raw).byteLength;
+  const bytes = utf8ByteLength(raw);
   if (bytes > maxBytes) throw requestTooLarge();
   return { value: decodeArgs(raw, codec), bytes };
 }
@@ -907,14 +895,13 @@ export class AckerDBServer {
       }
       return this.rawHandlerCall(request, rawRoute, this.requestSource(request, listener));
     }
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.files}/`)) {
-      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
       if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
         return outcomeError(unavailableWhile(this.lifecycle));
       }
       return this.fileCall(request, this.requestSource(request, listener));
     }
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") return methodNotAllowed("POST");
       const source = this.requestSource(request, listener);
@@ -1168,13 +1155,13 @@ export class AckerDBServer {
       for (const [name, value] of Object.entries(CORS)) {
         if (!headers.has(name)) headers.set(name, value);
       }
-      if (response.body === null) {
-        return new Response(null, {
+      const rewrapped = (streamed: ReadableStream<Uint8Array> | null): Response =>
+        new Response(streamed, {
           status: response.status,
           statusText: response.statusText,
           headers,
         });
-      }
+      if (response.body === null) return rewrapped(null);
       const streamAdmission = admission;
       const streamLease = lease;
       admission = undefined;
@@ -1184,11 +1171,7 @@ export class AckerDBServer {
         streamAdmission.release();
       });
       try {
-        return new Response(body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-        });
+        return rewrapped(body);
       } catch (error) {
         cancel(body, error);
         throw error;
@@ -1225,7 +1208,6 @@ export class AckerDBServer {
 
   private upgradeWebSocket(request: Request, listener: Server<WsData>): Response | undefined {
     if (request.method !== "GET") return methodNotAllowed("GET");
-    if (this.lifecycle !== "ready") return protocolError(unavailableWhile(this.lifecycle));
     if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
       return protocolError(new AckerDBError("overloaded", "connection capacity is full", {
@@ -1310,11 +1292,7 @@ export class AckerDBServer {
   private async performDrain(deadlineAtMs: number): Promise<void> {
     const listener = this.listener!;
     const runtime = this.activeRuntime;
-    const reason = new AckerDBError("draining", "server is draining", {
-      retryable: true,
-      retryAfterMs: DRAIN_RETRY_AFTER_MS,
-      resource: "connection",
-    });
+    const reason = drainingError("server is draining", "connection");
     const sessions = [...this.connections].map((connection) => {
       if (connection.session !== null) return connection.session.close(reason);
       connection.socket?.close(1013, "draining");

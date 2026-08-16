@@ -1,5 +1,6 @@
 import { ProtocolError, decode } from "@ackerdb/core";
 import { AckerDBError } from "../../shared/errors.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 /** One raw WebSocket message whose byte ownership remains inside Session. */
 export type SessionWireFrame = string | Uint8Array;
@@ -35,7 +36,7 @@ export function decodeClientFrame<Message>(
 ): DecodedClientFrame<Message> {
   let bytes: number;
   if (typeof raw === "string") {
-    bytes = Buffer.byteLength(raw);
+    bytes = utf8ByteLength(raw);
   } else if (raw instanceof Uint8Array) {
     bytes = raw.byteLength;
   } else {

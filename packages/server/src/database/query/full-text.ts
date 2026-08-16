@@ -11,8 +11,7 @@ import {
   resolvePredicate,
   type PredicateNode,
 } from "./predicate.ts";
-
-const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+import { quoteIdentifier } from "../../shared/sql.ts";
 
 interface FullTextState {
   readonly predicates: readonly PredicateNode[];
@@ -98,16 +97,16 @@ class FullTextQueryRuntime {
     const matchRank = "__ackerdb_fts_rank";
     const where = predicate.sql === "" ? "" : ` WHERE (${predicate.sql})`;
     const sql = [
-      `WITH ${quote(matches)} AS (`,
-      `SELECT rowid AS ${quote(matchPk)}, rank AS ${quote(matchRank)}`,
-      `FROM ${quote(this.target.indexTable)}`,
-      `WHERE ${quote(this.target.indexTable)} MATCH ?`,
+      `WITH ${quoteIdentifier(matches)} AS (`,
+      `SELECT rowid AS ${quoteIdentifier(matchPk)}, rank AS ${quoteIdentifier(matchRank)}`,
+      `FROM ${quoteIdentifier(this.target.indexTable)}`,
+      `WHERE ${quoteIdentifier(this.target.indexTable)} MATCH ?`,
       ")",
       `SELECT ${this.plan.readProjection}`,
-      `FROM ${quote(this.plan.name)}`,
-      `JOIN ${quote(matches)} ON ${quote(this.plan.name)}.${quote(this.plan.pk)} = ${quote(matches)}.${quote(matchPk)}`,
+      `FROM ${quoteIdentifier(this.plan.name)}`,
+      `JOIN ${quoteIdentifier(matches)} ON ${quoteIdentifier(this.plan.name)}.${quoteIdentifier(this.plan.pk)} = ${quoteIdentifier(matches)}.${quoteIdentifier(matchPk)}`,
       where,
-      `ORDER BY ${quote(matches)}.${quote(matchRank)} ASC, ${quote(this.plan.name)}.${quote(this.plan.pk)} ASC`,
+      `ORDER BY ${quoteIdentifier(matches)}.${quoteIdentifier(matchRank)} ASC, ${quoteIdentifier(this.plan.name)}.${quoteIdentifier(this.plan.pk)} ASC`,
       `LIMIT ${count}`,
     ].join(" ");
     const statement = this.conn.prepare(sql);

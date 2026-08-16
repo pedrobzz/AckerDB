@@ -35,6 +35,7 @@ import type {
 import type { AuthInvalidationScope } from "../../auth/invalidation.ts";
 import type { TransportSource } from "../../runtime/caller.ts";
 import type { ServiceLimits } from "../../runtime/limits.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
@@ -63,7 +64,7 @@ export function prepareRuntimePublication(message: SessionApplicationMessage): R
   const publication = Object.freeze({
     message,
     text,
-    bytes: Buffer.byteLength(text),
+    bytes: utf8ByteLength(text),
     [RUNTIME_PUBLICATION_BRAND]: true as const,
   });
   runtimePublications.add(publication);

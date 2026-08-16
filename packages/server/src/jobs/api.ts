@@ -8,20 +8,10 @@ import type { TableColumns } from "../schema/definition.ts";
 import type { TableQuery } from "../database/query/types.ts";
 import type { AnyJob, JobState } from "./definition.ts";
 import type { buildJobRunsTable, buildJobsTable } from "./table.ts";
-import type { JobEnqueueOptions, JobHandle } from "../runtime/jobs/runtime.ts";
+import type { JobEnqueueOptions, JobHandle, JobRunOutcome } from "../runtime/jobs/runtime.ts";
 
 type JobsTableColumns = TableColumns<ReturnType<typeof buildJobsTable>>;
 type JobRunsTableColumns = TableColumns<ReturnType<typeof buildJobRunsTable>>;
-
-/** One settled run, typed by the job's declared result. */
-export type TypedJobOutcome<R> =
-  | { readonly ok: true; readonly value: R }
-  | {
-      readonly ok: false;
-      readonly state: "pending" | "retrying" | "failed" | "canceled";
-      readonly error: unknown;
-      readonly nextRetryAt: number | null;
-    };
 
 /** The read surface: the reactive query builders scoped to this definition. */
 export interface JobQuerySurface {
@@ -40,8 +30,8 @@ export interface JobMutationSurface<Args> extends JobQuerySurface {
 export interface JobControlSurface<Args, R> {
   enqueue(args: Args, options?: JobEnqueueOptions): Promise<JobHandle>;
   /** Enqueue and resolve at the current run's settle. */
-  run(args: Args, options?: JobEnqueueOptions): Promise<TypedJobOutcome<R>>;
-  wait(handle: JobHandle | bigint): Promise<TypedJobOutcome<R>>;
+  run(args: Args, options?: JobEnqueueOptions): Promise<JobRunOutcome<R>>;
+  wait(handle: JobHandle | bigint): Promise<JobRunOutcome<R>>;
   cancel(handle: JobHandle | bigint): Promise<JobState>;
   /** Manual retry: another run for a Failed Job, keeping identity and journal. */
   retry(handle: JobHandle | bigint): Promise<void>;

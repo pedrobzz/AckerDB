@@ -14,6 +14,7 @@ import type {
   AckerDBClientScheduler,
   ClientResult,
 } from "../client.ts";
+import { raceWithAbort } from "../abort.ts";
 
 /** Reusable byte bodies keep an ambiguous upload safe to retry against its session. */
 export type AckerDBFileUploadBody = Blob | BufferSource;
@@ -172,32 +173,6 @@ function lifecycleInterruption(signal: AbortSignal): "suspension" | undefined {
     : undefined;
 }
 
-async function waitForFetch(
-  request: Promise<Response>,
-  signal: AbortSignal,
-): Promise<Response> {
-  const observed = request.then((response) => {
-    if (!signal.aborted) return response;
-    cancelResponse(response, signal.reason);
-    throw signal.reason;
-  });
-  if (signal.aborted) {
-    void observed.catch(() => {});
-    throw signal.reason;
-  }
-  let rejectAborted!: () => void;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    rejectAborted = () => reject(signal.reason);
-  });
-  const onAbort = (): void => rejectAborted();
-  signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    return await Promise.race([observed, aborted]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
 async function waitForSession<Error extends ApplicationError>(
   request: Promise<ClientResult<FileUploadSession, Error>>,
   signal: AbortSignal | undefined,
@@ -349,7 +324,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
       const authorization = new Headers(this.port.authorizationHeaders()).get("authorization");
       if (authorization === null) headers.delete("authorization");
       else headers.set("authorization", authorization);
-      const response = await waitForFetch(
+      const response = await raceWithAbort(
         Promise.resolve().then(() => this.port.fetch(grantUrl, {
           method,
           headers,
@@ -358,6 +333,8 @@ export class AckerDBFilesClient implements AckerDBFiles {
           redirect: "error",
         })),
         control.signal,
+        () => control.signal.reason,
+        (late) => cancelResponse(late, control.signal.reason),
       );
       return managedStreamingResponse(response, control);
     } catch (error) {
@@ -439,7 +416,7 @@ export class AckerDBFilesClient implements AckerDBFiles {
         attempted = true;
         let retryAfterMs = 0;
         try {
-          const response = await waitForFetch(
+          const response = await raceWithAbort(
             Promise.resolve().then(() => this.port.fetch(uploadUrl, {
               method: "PUT",
               headers,
@@ -447,6 +424,8 @@ export class AckerDBFilesClient implements AckerDBFiles {
               signal: control.signal,
             })),
             control.signal,
+            () => control.signal.reason,
+            (late) => cancelResponse(late, control.signal.reason),
           );
           if (!response.ok) {
             let outcome: Outcome;

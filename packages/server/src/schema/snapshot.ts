@@ -44,7 +44,8 @@ export function snapshotOf(schema: Schema): SchemaSnapshot {
   return { version: 2, tables };
 }
 
-function canonicalJson(value: unknown): unknown {
+/** Key-sorted, order-independent JSON view of any stored value. */
+export function canonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJson);
   if (typeof value !== "object" || value === null) return value;
   const normalized = Object.create(null) as Record<string, unknown>;
@@ -57,9 +58,4 @@ function canonicalJson(value: unknown): unknown {
 /** Stable snapshot encoding independent of declaration order or package instance. */
 export function canonicalSnapshotJson(snapshot: SchemaSnapshot): string {
   return JSON.stringify(canonicalJson(snapshot));
-}
-
-/** Stable schema identity derived from the persisted representation. */
-export function canonicalSchemaSnapshot(schema: Schema): string {
-  return canonicalSnapshotJson(snapshotOf(schema));
 }

@@ -8,6 +8,7 @@ import {
 import { dirname, resolve, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { UUID_V4 } from "../../database/artifacts.ts";
 import {
   assertRange,
   classifiedReadableStream,
@@ -30,7 +31,6 @@ export interface LocalFileStoreConfig {
 }
 
 const FILE_STORE_ID = ".ackerdb-store-id";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function nodeErrorCode(error: unknown): string | undefined {
   return error instanceof Error && "code" in error && typeof error.code === "string"
@@ -144,7 +144,7 @@ export class LocalFileStore implements FileStore {
       );
     }
     const id = (await fs.readFile(marker, "utf8")).trim();
-    if (!UUID.test(id)) {
+    if (!UUID_V4.test(id)) {
       throw new FileStoreError("invalid_configuration", operation, `filesystem FileStore marker is invalid: ${marker}`);
     }
     return `filesystem:${id}`;

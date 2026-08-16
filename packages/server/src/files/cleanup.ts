@@ -13,7 +13,7 @@ import {
   FILE_UPLOADS_TABLE,
   FILES_TABLE,
 } from "./tables.ts";
-import { FileStoreError } from "./store/contract.ts";
+import { MAX_TIMER_DELAY_MS } from "../shared/numbers.ts";
 
 export interface FileCleanupRuntimeOptions {
   readonly files: RuntimeFiles;
@@ -32,7 +32,6 @@ interface CleanupTask {
 
 const BATCH_SIZE = 32;
 const LEASE_MS = 60_000;
-const MAX_TIMER_MS = 2_147_483_647;
 
 function stateAndTime<Row>(
   query: ManagedQuery<Row>,
@@ -108,28 +107,23 @@ async function nextCleanupAt(db: FileDatabase): Promise<number | null> {
 /** Durable, idle-until-armed cleanup for pending uploads, Files, and object deletion. */
 export class FileCleanupRuntime {
   private readonly controller = new AbortController();
-  private readonly recoveryReady: Promise<void>;
-  private resolveRecoveryReady!: () => void;
+  private readonly recovery = Promise.withResolvers<void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
   private recovering = true;
   private armedAt: number | null = null;
   private rerun = false;
-  private recoveryReadyResolved = false;
   lastFailure: unknown = null;
 
   constructor(private readonly options: FileCleanupRuntimeOptions) {
-    this.recoveryReady = new Promise((resolve) => {
-      this.resolveRecoveryReady = resolve;
-    });
     options.files.bindCleanupScheduler((at) => this.arm(at));
   }
 
   /** Starts with a read-only inspection and resolves once restart recovery commits. */
   activate(): Promise<void> {
     this.run();
-    return this.recoveryReady;
+    return this.recovery.promise;
   }
 
   arm(at: number): void {
@@ -137,7 +131,7 @@ export class FileCleanupRuntime {
     if (this.armedAt !== null && this.armedAt <= at) return;
     if (this.timer !== null) clearTimeout(this.timer);
     this.armedAt = at;
-    const delay = Math.min(MAX_TIMER_MS, Math.max(0, at - this.options.now()));
+    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, at - this.options.now()));
     this.timer = setTimeout(() => {
       this.timer = null;
       this.armedAt = null;
@@ -389,8 +383,6 @@ export class FileCleanupRuntime {
   }
 
   private completeRecovery(): void {
-    if (this.recoveryReadyResolved) return;
-    this.recoveryReadyResolved = true;
-    this.resolveRecoveryReady();
+    this.recovery.resolve();
   }
 }

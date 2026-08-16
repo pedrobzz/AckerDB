@@ -20,8 +20,10 @@ import {
   type StoredMutation,
 } from "../database/mutation-replay.ts";
 import { isOneTimeResult } from "./one-time-result.ts";
+import type { RuntimeOperationOutcome } from "./execution/operation-runner.ts";
 import type { PublicationReservation } from "../subscriptions/publication.ts";
 import type { Schema } from "../schema/definition.ts";
+import { utf8ByteLength, wireByteLength } from "../shared/bytes.ts";
 import {
   assertTransactionHealthy,
   inTransaction,
@@ -122,13 +124,9 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly wait?: CommitWaitHook;
 }
 
-type PublicationCompletion =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly cause: unknown };
-
 interface CommitHandoff<T, Publication> {
   readonly result: CommitResult<T, Publication>;
-  readonly completion?: Promise<PublicationCompletion>;
+  readonly completion?: Promise<RuntimeOperationOutcome<void>>;
 }
 
 function conflict(message: string): AckerDBError {
@@ -154,7 +152,6 @@ export class CommitCoordinator<Publication> {
   private readonly now: () => number;
   private readonly wait: CommitWaitHook | undefined;
   private readonly eventSequences = new Map<string, bigint>();
-  private readonly encoder = new TextEncoder();
   private nextPruneAtMs = 0;
 
   constructor(options: CommitCoordinatorOptions<Publication>) {
@@ -201,7 +198,7 @@ export class CommitCoordinator<Publication> {
         throw new AckerDBError(
           "convergence_unavailable",
           "the transaction committed but ordered publication failed",
-          { committed: true, cause: completion.cause },
+          { committed: true, cause: completion.error },
         );
       }
     }
@@ -303,7 +300,7 @@ export class CommitCoordinator<Publication> {
           const result = resultDisposition === "replayable" ? encode(value) : undefined;
             const resultBytes = result === undefined
               ? 0
-              : this.encoder.encode(result).byteLength;
+              : utf8ByteLength(result);
             if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
               throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
                 retryable: false,
@@ -358,7 +355,7 @@ export class CommitCoordinator<Publication> {
       if (idempotency && resultDisposition === "replayable") {
         result = encode(value);
       }
-      const resultBytes = result === undefined ? 0 : this.encoder.encode(result).byteLength;
+      const resultBytes = result === undefined ? 0 : utf8ByteLength(result);
       if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
         throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
           retryable: false,
@@ -424,8 +421,8 @@ export class CommitCoordinator<Publication> {
           publication,
         },
         completion: reservation.completion.then(
-          (): PublicationCompletion => ({ ok: true }),
-          (cause): PublicationCompletion => ({ ok: false, cause }),
+          (): RuntimeOperationOutcome<void> => ({ ok: true, value: undefined }),
+          (error): RuntimeOperationOutcome<void> => ({ ok: false, error }),
         ),
       };
     } catch (error) {
@@ -462,10 +459,10 @@ export class CommitCoordinator<Publication> {
   }
 
   private publicationBytes(writes: WriteCollector): number {
-    return this.encoder.encode(encode({
+    return wireByteLength({
       keys: [...writes.keys],
       events: writes.events,
-    })).byteLength;
+    });
   }
 
   private nextEventSequence(table: string): bigint {

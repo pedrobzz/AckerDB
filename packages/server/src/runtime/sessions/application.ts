@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
 import {
   isApplicationError,
   isResult,
-  stableEncode,
   type ApplicationErrorMessage,
   type ChannelJoinMessage,
   type ChannelLeaveMessage,
@@ -43,6 +41,7 @@ import {
 import type { RuntimeQueries } from "../queries/runtime.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "./store.ts";
 import { RuntimeSessionStore } from "./store.ts";
+import { digestOfWire } from "../../shared/digest.ts";
 
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
@@ -294,7 +293,7 @@ export class RuntimeSessionApplication {
               // encodable — look like a different caller.
               principalFingerprint: context.fairnessKey,
               functionRef: message.ref,
-              argsFingerprint: digest(message.args),
+              argsFingerprint: digestOfWire(message.args),
             },
             fn,
             principal: context.principal,
@@ -475,10 +474,6 @@ function requiredPublication(
 ): RuntimePublication {
   if (publication === undefined) throw new Error(`${operation} publication was not prepared`);
   return publication;
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }
 
 function convergenceError(message: string): AckerDBError {

@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   decode,
   isResult,
@@ -9,7 +9,6 @@ import {
 } from "@ackerdb/core";
 import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
 import type { Principal } from "../auth/credentials.ts";
-import { outcomeFromError } from "../runtime/outcome.ts";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import {
   fileDatabase,
@@ -34,6 +33,7 @@ import {
   FILES_TABLE,
 } from "./tables.ts";
 import { PENDING_FILE_LIFETIME_MS, type RuntimeFiles } from "./namespace.ts";
+import { sha256Base64Url } from "../shared/digest.ts";
 
 export interface FileRequestAuthentication {
   readonly principal: Principal;
@@ -84,7 +84,6 @@ interface DownloadGrant {
   readonly file: FileRow;
 }
 
-const utf8 = new TextEncoder();
 /** Derived from the canonical surface, so the route cannot drift from it. */
 const FILE_ROUTE = new RegExp(
   `^${ACKERDB_HTTP_ROUTES.files}/(uploads|grants)/([1-9]\\d*)\\.([A-Za-z0-9_-]{20,})$`,
@@ -101,6 +100,14 @@ function concealedAuthenticationFailure(error: unknown): boolean {
     error.code === "auth_stale" ||
     error.code === "unauthorized"
   );
+}
+
+/** The object a File names is not readable right now; the File itself is intact. */
+function fileStorageUnavailable(): AckerDBError {
+  return new AckerDBError("unavailable", "file storage is unavailable", {
+    resource: "operation",
+    retryable: true,
+  });
 }
 
 function fileStoreDownloadFailure(error: unknown): never {
@@ -153,13 +160,9 @@ function uploadError(
   });
 }
 
-function hashSecret(value: string): string {
-  return createHash("sha256").update(value).digest("base64url");
-}
-
 function sameSecret(expected: unknown, plain: string): boolean {
   if (typeof expected !== "string") return false;
-  const actual = hashSecret(plain);
+  const actual = sha256Base64Url(plain);
   const left = Buffer.from(expected);
   const right = Buffer.from(actual);
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
@@ -684,10 +687,7 @@ export class FileHttpRuntime {
           signal: input.request.signal,
         });
         if (attributes.size !== size) {
-          throw new AckerDBError("unavailable", "file storage is unavailable", {
-            resource: "operation",
-            retryable: true,
-          });
+          throw fileStorageUnavailable();
         }
         return new Response(null, { status: range === null ? 200 : 206, headers });
       }
@@ -697,10 +697,7 @@ export class FileHttpRuntime {
       });
       if (opened.attributes.size !== size) {
         await opened.body.cancel("File Store object size does not match immutable File metadata").catch(() => {});
-        throw new AckerDBError("unavailable", "file storage is unavailable", {
-          resource: "operation",
-          retryable: true,
-        });
+        throw fileStorageUnavailable();
       }
       return new Response(opened.body, { status: range === null ? 200 : 206, headers });
     } catch (error) {

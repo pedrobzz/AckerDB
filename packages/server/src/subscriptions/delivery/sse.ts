@@ -45,22 +45,6 @@ interface PreparedSseChunk {
   readonly bytes: Uint8Array;
 }
 
-interface Waiter {
-  readonly promise: Promise<void>;
-  readonly resolve: () => void;
-  readonly reject: (error: unknown) => void;
-}
-
-function waiter(): Waiter {
-  let resolve!: () => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<void>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
-}
-
 const SSE_PROOF_LENGTH = 22;
 
 function sseProof(): string {
@@ -145,7 +129,7 @@ export class BoundedSseProducer {
   readonly stream: ReadableStream<Uint8Array>;
   readonly signal: AbortSignal;
   readonly controlReserveBytes: number;
-  private readonly finishedWaiter = waiter();
+  private readonly finishedWaiter = Promise.withResolvers<void>();
   readonly finished = this.finishedWaiter.promise;
 
   private readonly budget: OutboundBudget;
@@ -165,8 +149,8 @@ export class BoundedSseProducer {
   private closureError: AckerDBError | null = null;
   private activeMerge: Promise<void> | null = null;
   private activeReader: SseSourceReader | null = null;
-  private emptyWaiter: Waiter | null = null;
-  private closedWaiter: Waiter | null = null;
+  private emptyWaiter: PromiseWithResolvers<void> | null = null;
+  private closedWaiter: PromiseWithResolvers<void> | null = null;
   private completion: Promise<void> | null = null;
   private stallSince: number | null = null;
   private stallTimer: unknown;
@@ -477,7 +461,7 @@ export class BoundedSseProducer {
 
   private waitForEmpty(): Promise<void> {
     if (this.unackedBytes === 0) return Promise.resolve();
-    if (this.emptyWaiter === null) this.emptyWaiter = waiter();
+    if (this.emptyWaiter === null) this.emptyWaiter = Promise.withResolvers<void>();
     return this.emptyWaiter.promise;
   }
 
@@ -485,7 +469,7 @@ export class BoundedSseProducer {
     if (this.state === "closed") {
       return this.closureError === null ? Promise.resolve() : Promise.reject(this.closureError);
     }
-    if (this.closedWaiter === null) this.closedWaiter = waiter();
+    if (this.closedWaiter === null) this.closedWaiter = Promise.withResolvers<void>();
     return this.closedWaiter.promise;
   }
 

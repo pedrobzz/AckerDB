@@ -45,6 +45,7 @@ import type { JobCursor, JobRow, JobRunRow, JobsStore } from "./store.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
 import type { Database } from "bun:sqlite";
 import { outcomeFromError } from "../outcome.ts";
+import { MAX_TIMER_DELAY_MS } from "../../shared/numbers.ts";
 
 /** The slice of the function executor the runner consumes. */
 export interface JobsExecutor {
@@ -67,9 +68,9 @@ const REAP_INTERVAL_MS = 60_000;
 /** Runs deleted with their Job in one sweep; a Job's history is small by construction. */
 const CASCADE_BATCH = 512;
 
-/** What one settled run reports to awaiting callers. */
-export type JobRunOutcome =
-  | { readonly ok: true; readonly value: unknown }
+/** What one settled run reports to awaiting callers, typed by the job's result. */
+export type JobRunOutcome<R = unknown> =
+  | { readonly ok: true; readonly value: R }
   | {
       readonly ok: false;
       readonly state: "pending" | "retrying" | "failed" | "canceled";
@@ -237,7 +238,7 @@ export class RuntimeJobs {
         if (at === null) return;
         const now = this.options.now();
         if (at <= now && this.stalled) return; // overdue but unclaimable: wait for a wake
-        const delay = Math.min(Math.max(0, at - now), 0x7fff_ffff);
+        const delay = Math.min(Math.max(0, at - now), MAX_TIMER_DELAY_MS);
         this.timer = setTimeout(() => {
           this.timer = null;
           void this.run().catch(() => {});
@@ -354,19 +355,16 @@ export class RuntimeJobs {
     if (typeof id !== "bigint") {
       throw new ValidationError("jobs.wait: expected a bigint job id");
     }
-    let resolver: ((outcome: JobRunOutcome) => void) | null = null;
-    const pending = new Promise<JobRunOutcome>((resolve) => {
-      resolver = resolve;
-      let set = this.waiters.get(id);
-      if (set === undefined) this.waiters.set(id, (set = new Set()));
-      set.add(resolve);
-    });
+    const { promise: pending, resolve: resolver } = Promise.withResolvers<JobRunOutcome>();
+    let set = this.waiters.get(id);
+    if (set === undefined) this.waiters.set(id, (set = new Set()));
+    set.add(resolver);
     // Read after registering, so a settle between read and registration
     // cannot be missed; a terminal Job resolves from its recorded outcome.
     const rows = await this.readOutcome(id);
     const unregister = () => {
       const set = this.waiters.get(id);
-      if (set !== undefined && resolver !== null) {
+      if (set !== undefined) {
         set.delete(resolver);
         if (set.size === 0) this.waiters.delete(id);
       }

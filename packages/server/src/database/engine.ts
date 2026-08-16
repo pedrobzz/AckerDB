@@ -31,7 +31,6 @@ import {
   copyFileSync,
   existsSync,
   fstatSync,
-  fsyncSync,
   linkSync,
   lstatSync,
   mkdtempSync,
@@ -65,6 +64,7 @@ import {
   withFrameworkTables,
 } from "./framework-schema.ts";
 import {
+  canonicalJson,
   snapshotOf,
   type SchemaSnapshot,
   type TableSnapshot,
@@ -94,11 +94,24 @@ import {
   prepareFullTextLiteral as prepareLiteralFullTextQuery,
   type FullTextTargetPlan,
 } from "./full-text.ts";
+import { fsyncPath } from "../shared/durability.ts";
+import { quoteIdentifier } from "../shared/sql.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
+
 export interface TagMap {
   toTag: Map<string, number>;
   toName: Map<number, string>;
+}
+
+/** Persist tag maps (insert-only). The caller owns the transaction. */
+export function persistTagMaps(writer: Database, maps: ReadonlyMap<string, TagMap>): void {
+  const insert = writer.query(
+    "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
+  );
+  for (const [type, map] of maps) {
+    for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);
+  }
 }
 
 interface PhysCol {
@@ -250,7 +263,6 @@ const WAL_FORMAT_VERSION = 3_007_000;
 const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const FULL_TEXT_OBJECT_PREFIX = "_ackerdb_fts_";
-const quote = (name: string) => `"${name}"`;
 
 /** Compile the exact physical row shape expected by `rowFromSql`. */
 export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
@@ -259,7 +271,7 @@ export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
   for (const column of columns) {
     if (column.kind === "int") castsInt = true;
     for (const physical of column.phys) {
-      const name = quote(physical.name);
+      const name = quoteIdentifier(physical.name);
       selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
     }
   }
@@ -387,13 +399,13 @@ export function physicalColumnDdl(name: string, descriptor: Descriptor, path: st
     corruptSnapshot(`${path} has an invalid nullable descriptor`);
   }
   const notNull = nullable ? "" : " NOT NULL";
-  if (base["k"] === "pk") return [`${quote(name)} INTEGER PRIMARY KEY AUTOINCREMENT`];
+  if (base["k"] === "pk") return [`${quoteIdentifier(name)} INTEGER PRIMARY KEY AUTOINCREMENT`];
   if (base["k"] === "union") {
-    return [`${quote(name)} INTEGER${notNull}`, `${quote(`${name}__p`)} TEXT${notNull}`];
+    return [`${quoteIdentifier(name)} INTEGER${notNull}`, `${quoteIdentifier(`${name}__p`)} TEXT${notNull}`];
   }
   const sqlType = sqlTypeOf(base["k"] as string);
   if (sqlType === undefined) corruptSnapshot(`${path} cannot be stored as a table column`);
-  return [`${quote(name)} ${sqlType}${notNull}`];
+  return [`${quoteIdentifier(name)} ${sqlType}${notNull}`];
 }
 
 /** Resolve one named enum/union type to the tag map owning its stable storage tags. */
@@ -596,14 +608,6 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
   return parsed as unknown as SchemaSnapshot;
 }
 
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (!storedRecord(value)) return value;
-  const normalized = Object.create(null) as Record<string, unknown>;
-  for (const key of Object.keys(value).sort()) normalized[key] = canonicalJson(value[key]);
-  return normalized;
-}
-
 /** Hash the persisted application schema without consulting or mutating an Engine. */
 function schemaSnapshotFingerprint(root: SchemaSnapshot): string {
   return createHash("sha256")
@@ -691,7 +695,7 @@ function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
       type: "table",
       name: tableName,
       table: tableName,
-      sql: `CREATE TABLE ${quote(tableName)} (${columns.join(", ")})`,
+      sql: `CREATE TABLE ${quoteIdentifier(tableName)} (${columns.join(", ")})`,
     });
     for (const index of table.indexes) {
       const name = indexSqlName(tableName, index.name);
@@ -699,7 +703,7 @@ function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
         type: "index",
         name,
         table: tableName,
-        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(name)} ON ${quote(tableName)} (${index.columns.map(quote).join(", ")})`,
+        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdentifier(name)} ON ${quoteIdentifier(tableName)} (${index.columns.map(quoteIdentifier).join(", ")})`,
       });
     }
     const scheduleAt = Object.entries(table.columns).find(([, descriptor]) => descriptor["k"] === "scheduleAt")?.[0];
@@ -709,7 +713,7 @@ function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
         type: "index",
         name,
         table: tableName,
-        sql: `CREATE INDEX ${quote(name)} ON ${quote(tableName)} (${quote(scheduleAt)})`,
+        sql: `CREATE INDEX ${quoteIdentifier(name)} ON ${quoteIdentifier(tableName)} (${quoteIdentifier(scheduleAt)})`,
       });
     }
     const primaryKey = Object.entries(table.columns)
@@ -954,25 +958,6 @@ function normalizeStorageError(error: unknown): unknown {
     return new CorruptDatabaseError(`database storage is corrupt (${code})`, { cause: error });
   }
   return error;
-}
-
-function fsyncPath(path: string): void {
-  const fd = openSync(path, "r");
-  let failed = false;
-  let failure: unknown;
-  try {
-    fsyncSync(fd);
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  try {
-    closeSync(fd);
-  } catch (closeError) {
-    if (failed) throw new AggregateError([failure, closeError], `fsync and descriptor close both failed: ${path}`);
-    throw closeError;
-  }
-  if (failed) throw failure;
 }
 
 function runWithCleanup<T>(
@@ -1450,7 +1435,7 @@ export class Engine {
 
   /**
    * Assign stable tags to every named enum/union variant in the application
-   * schema. Reads `_ackerdb_tags` but never writes it — `persistTags` commits
+   * schema. Reads `_ackerdb_tags` but never writes it — `persistTagMaps` commits
    * the assignment in the caller-owned schema transaction.
    */
   private internTags(): void {
@@ -1479,6 +1464,11 @@ export class Engine {
     }
   }
 
+  /** Persist the application's tag plan. The caller owns the schema transaction. */
+  persistTags(): void {
+    persistTagMaps(this.writer, this.tags);
+  }
+
   /**
    * Re-derive every in-memory tag map from `_ackerdb_tags` + the live schema. Run
    * after a migration relabels variants (`UPDATE _ackerdb_tags`) so the renamed-to
@@ -1489,18 +1479,6 @@ export class Engine {
   reinternTags(): void {
     for (const typeName of this.schema.namedTypes.keys()) this.tags.delete(typeName);
     this.internTags();
-  }
-
-  /** Persist the application's tag plan. The caller owns the schema transaction. */
-  persistTags(): void {
-    const insert = this.writer.query(
-      "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
-    );
-    for (const typeName of this.schema.namedTypes.keys()) {
-      for (const [variant, tag] of this.tags.get(typeName)!.toTag) {
-        insert.run(typeName, variant, tag);
-      }
-    }
   }
 
   /**
@@ -1566,7 +1544,7 @@ export class Engine {
       for (const phys of column.phys) cols.push(phys.ddl);
     }
     cols.push(...extraColumnDdls); // rebuilds append carried columns absent from the plan
-    return `CREATE TABLE IF NOT EXISTS ${quote(nameOverride ?? plan.name)} (${cols.join(", ")})`;
+    return `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(nameOverride ?? plan.name)} (${cols.join(", ")})`;
   }
 
   /** Create one table plus every ordinary and derived storage artifact it owns. */
@@ -1580,15 +1558,15 @@ export class Engine {
     for (const index of plan.indexes) this.writer.exec(this.indexDdl(plan, index));
     if (plan.scheduleAt !== null) {
       this.writer.exec(
-        `CREATE INDEX IF NOT EXISTS ${quote(`ix__sched_${plan.name}`)} ON ${quote(plan.name)} (${quote(plan.scheduleAt)})`,
+        `CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`ix__sched_${plan.name}`)} ON ${quoteIdentifier(plan.name)} (${quoteIdentifier(plan.scheduleAt)})`,
       );
     }
   }
 
   indexDdl(plan: PhysicalTablePlan, index: IndexDef): string {
     const unique = index.unique ? "UNIQUE " : "";
-    const cols = index.columns.map((c) => quote(c)).join(", ");
-    return `CREATE ${unique}INDEX IF NOT EXISTS ${quote(indexSqlName(plan.name, index.name))} ON ${quote(plan.name)} (${cols})`;
+    const cols = index.columns.map((c) => quoteIdentifier(c)).join(", ");
+    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdentifier(indexSqlName(plan.name, index.name))} ON ${quoteIdentifier(plan.name)} (${cols})`;
   }
 
   createFullTextPhysical(plan: PhysicalTablePlan): void {
@@ -1740,8 +1718,8 @@ export class Engine {
     // that case differently.
     const values = physCols.length === 0
       ? "DEFAULT VALUES"
-      : `(${physCols.map(quote).join(", ")}) VALUES (${physCols.map(() => "?").join(", ")})`;
-    const sql = `INSERT INTO ${quote(plan.name)} ${values} RETURNING ${quote(plan.pk)}`;
+      : `(${physCols.map(quoteIdentifier).join(", ")}) VALUES (${physCols.map(() => "?").join(", ")})`;
+    const sql = `INSERT INTO ${quoteIdentifier(plan.name)} ${values} RETURNING ${quoteIdentifier(plan.pk)}`;
     return {
       sql,
       bind: (row) => columns.flatMap((c) => c.toSql(row[c.jsName])),

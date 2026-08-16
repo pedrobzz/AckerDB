@@ -11,7 +11,6 @@ describe("production profile configuration", () => {
       dbDir: resolve(".ackerdb"),
       hostname: "127.0.0.1",
       durability: "production",
-      statusScope: "ackerdb:status",
       files: {
         backend: "filesystem",
         root: resolve(".ackerdb/files"),
@@ -124,18 +123,6 @@ describe("production profile configuration", () => {
         expect(() => loadConfig(dir, {})).toThrow(
           "credentialVerifier must be a non-empty module path",
         );
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("rejects status scope lists and control characters", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
-    try {
-      for (const invalid of ["ops read", "ops\nread", ""]) {
-        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ statusScope: invalid }));
-        expect(() => loadConfig(dir, {})).toThrow("statusScope must be one OAuth scope token");
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

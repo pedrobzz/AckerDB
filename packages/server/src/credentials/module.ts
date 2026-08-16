@@ -26,7 +26,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { decode, encode, type Identity } from "@ackerdb/core";
 import { effectiveChildScopes, issueChildScopes } from "./delegation.ts";
-import type { ExternalAccount } from "../auth/credentials.ts";
+import { unauthenticated, type ExternalAccount } from "../auth/credentials.ts";
 import {
   CREDENTIAL_ISSUER,
   CREDENTIAL_TOKEN_PREFIX,
@@ -44,6 +44,7 @@ import { mappedTableQuery, type SafeProjection } from "../database/managed.ts";
 import { markOneTimeResult } from "../runtime/one-time-result.ts";
 import { AckerDBError, CorruptDatabaseError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
+import { utf8ByteLength } from "../shared/bytes.ts";
 import type {
   Credential,
   CredentialQuery,
@@ -121,7 +122,6 @@ export interface CredentialsOptions {
   readonly writes: CredentialWriteContext | null;
 }
 
-const utf8 = new TextEncoder();
 const DUMMY_DIGEST = new Uint8Array(32);
 const EMPTY_ACCOUNTS: readonly ExternalAccount[] = Object.freeze([]);
 const NO_INVALIDATIONS: readonly ExternalAccount[] = Object.freeze([]);
@@ -150,10 +150,6 @@ export function takeCredentialInvalidations(
   return Object.freeze(accounts);
 }
 
-function invalidCredential(): AckerDBError {
-  return new AckerDBError("unauthenticated", "invalid credential");
-}
-
 function checkedTokenId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(value)) {
     throw new AckerDBError("validation", "credential ID is invalid");
@@ -166,7 +162,7 @@ function checkedName(value: unknown, maxBytes: number): string {
     throw new AckerDBError("validation", "credential name must be non-empty");
   }
   const name = value.trim();
-  if (utf8.encode(name).byteLength > maxBytes) {
+  if (utf8ByteLength(name) > maxBytes) {
     throw new AckerDBError("validation", `credential name exceeds ${maxBytes} UTF-8 bytes`);
   }
   return name;
@@ -185,7 +181,7 @@ function checkedMetadata(value: unknown, maxBytes: number): {
   } catch (cause) {
     throw new AckerDBError("validation", "credential metadata must be wire-encodable", { cause });
   }
-  if (utf8.encode(encoded).byteLength > maxBytes) {
+  if (utf8ByteLength(encoded) > maxBytes) {
     throw new AckerDBError("validation", `credential metadata exceeds ${maxBytes} UTF-8 bytes`);
   }
   return { encoded, value: deepFreeze(decode(encoded) as Record<string, unknown>) };
@@ -328,7 +324,7 @@ export class Credentials {
     const expected = row?.secretDigest ?? DUMMY_DIGEST;
     const matches = expected.byteLength === 32 &&
       timingSafeEqual(digestOf(parsed.secret), expected);
-    if (!matches || row === null) throw invalidCredential();
+    if (!matches || row === null) throw unauthenticated();
     return Object.freeze({
       identity: row.identity,
       parentIdentity: row.parentIdentity,

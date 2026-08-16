@@ -1,8 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   isResult,
-  stableEncode,
   uuidV7Timestamp,
   type SseAckRequest,
 } from "@ackerdb/core";
@@ -55,6 +54,7 @@ import { claimHttpRequestProvenance } from "../request-provenance.ts";
 import type { RuntimeReactiveContext, RuntimeSession } from "../sessions/store.ts";
 import { invokeSideEffectingHandler } from "../side-effecting-handler.ts";
 import { validatedSseSource } from "../sse/source.ts";
+import { digestOfWire } from "../../shared/digest.ts";
 
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
@@ -69,11 +69,6 @@ interface ClaimedHttpRequest {
    * back to the Runtime's immediate fan-out.
    */
   readonly invalidations: AuthInvalidationPublisher;
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
 }
 
 export interface RuntimeHttpOptions {
@@ -291,7 +286,7 @@ export class RuntimeHttp {
         });
         streamId = this.register(producer);
         void producer.finished.then(() => this.remove(streamId!, producer!));
-        const authorized = deferred<void>();
+        const authorized = Promise.withResolvers<void>();
         let handlerContext: <T>(work: () => T) => T = (work) => work();
         const procedure = this.options.functions.createProcedureContext(
           request.principal,
@@ -393,7 +388,7 @@ export class RuntimeHttp {
       issuedAt,
       principalFingerprint: fairnessKey,
       functionRef: request.address,
-      argsFingerprint: digest(request.args),
+      argsFingerprint: digestOfWire(request.args),
     };
   }
 
@@ -434,14 +429,4 @@ export class RuntimeHttp {
     if (!Number.isFinite(now)) throw new RangeError("runtime clock must return finite milliseconds");
     return now;
   }
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => { resolve = accept; });
-  return { promise, resolve };
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }

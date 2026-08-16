@@ -1,4 +1,4 @@
-import { positiveSafeInteger } from "../shared/numbers.ts";
+import { MAX_TIMER_DELAY_MS, positiveSafeInteger } from "../shared/numbers.ts";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -151,7 +151,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   if (limits.resume.maxBytesPerStream > limits.resume.maxBytes) {
     throw new RangeError("resume.maxBytesPerStream cannot exceed resume.maxBytes");
   }
-  if (limits.gracefulShutdownMs > 0x7fff_ffff) {
+  if (limits.gracefulShutdownMs > MAX_TIMER_DELAY_MS) {
     throw new RangeError("gracefulShutdownMs cannot exceed the platform timer limit");
   }
 

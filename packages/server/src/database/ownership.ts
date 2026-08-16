@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
-  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -14,17 +13,18 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { fsyncPath } from "../shared/durability.ts";
 import { Database } from "bun:sqlite";
 import {
   databasePublicationArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
+  UUID_V4,
 } from "./artifacts.ts";
 
 /** ASCII `AckerDB`, persisted in SQLite's application_id header field. */
 const ACKERDB_COORDINATION_APPLICATION_ID = 0x44425a5a;
 const COORDINATION_SUFFIX = ".ackerdb-coordination";
 const COORDINATION_STAGE_MARKER = ".ackerdb-bootstrap-";
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function sqliteCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
@@ -76,28 +76,6 @@ export function canonicalizeDatabasePath(path: string): string {
 function combinedFailure(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
   if (cleanup.length === 0) return primary;
   return new AggregateError([primary, ...cleanup], message);
-}
-
-function fsyncPath(path: string): void {
-  const descriptor = openSync(path, "r");
-  let failure: unknown;
-  try {
-    fsyncSync(descriptor);
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    closeSync(descriptor);
-  } catch (closeError) {
-    if (failure !== undefined) {
-      throw new AggregateError(
-        [failure, closeError],
-        `coordination sync and descriptor close both failed: ${path}`,
-      );
-    }
-    throw closeError;
-  }
-  if (failure !== undefined) throw failure;
 }
 
 function exactCoordinationStageName(path: string, name: string): boolean {

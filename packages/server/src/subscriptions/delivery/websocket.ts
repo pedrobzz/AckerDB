@@ -15,6 +15,7 @@ import {
 import type { OutboundBudget, OutboundLane, OutboundReservation } from "./budget.ts";
 import { SYSTEM_DELIVERY_CLOCK, type DeliveryClock } from "./clock.ts";
 import { overloaded, slowConsumer, unavailable } from "./failure.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 
 export interface WebSocketDeliverySocket {
   send(data: string): number;
@@ -53,8 +54,6 @@ interface BufferedFrame {
   readonly reservation: OutboundReservation;
 }
 
-const utf8 = new TextEncoder();
-
 function webSocketErrorText(error: AckerDBError, maxBytes: number): string | null {
   const outcome = outcomeFromError(error);
   return fitOutcome(outcome, maxBytes, (candidate) => {
@@ -64,7 +63,7 @@ function webSocketErrorText(error: AckerDBError, maxBytes: number): string | nul
       id: null,
       outcome: candidate,
     } satisfies SessionControlMessage);
-    return { value, bytes: utf8.encode(value).byteLength };
+    return { value, bytes: utf8ByteLength(value) };
   })?.value ?? null;
 }
 
@@ -185,7 +184,7 @@ export class WebSocketSessionSink implements SessionSink {
       } catch (error) {
         return Promise.reject(error);
       }
-      bytes = utf8.encode(text).byteLength;
+      bytes = utf8ByteLength(text);
     }
     if (bytes > this.limits.maxFrameBytes) {
       const error = overloaded("outbound", "WebSocket frame exceeds maxFrameBytes");
@@ -385,7 +384,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.releaseBuffered(this.bufferedBytes);
 
     const text = webSocketErrorText(terminal, this.limits.maxFrameBytes);
-    const bytes = text === null ? 0 : utf8.encode(text).byteLength;
+    const bytes = text === null ? 0 : utf8ByteLength(text);
     const reservation = text === null ? null : this.budget.reserve(bytes, "control");
     try {
       if (reservation !== null && text !== null) {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   getRef,
   stableEncode,
@@ -44,6 +44,7 @@ import {
 } from "./tables.ts";
 import type { FileStore } from "./store/contract.ts";
 import { checkedFileText } from "./text.ts";
+import { sha256Base64Url } from "../shared/digest.ts";
 
 export const DEFAULT_FILE_MAX_BYTES = 1024 ** 3;
 export const HARD_FILE_MAX_BYTES = 5 * 1024 ** 3;
@@ -77,7 +78,7 @@ function durationMs(value: FileDuration, path: string): number {
 
 function secret(): { readonly plain: string; readonly hash: string } {
   const plain = randomBytes(32).toString("base64url");
-  return { plain, hash: createHash("sha256").update(plain).digest("base64url") };
+  return { plain, hash: sha256Base64Url(plain) };
 }
 
 function filePublicUrl(value: string | undefined): string {

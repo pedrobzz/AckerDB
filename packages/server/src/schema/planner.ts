@@ -48,6 +48,7 @@ import {
   physicalColumnsOf,
   type StoredTags,
 } from "./stored-rows.ts";
+import { quoteIdentifier } from "../shared/sql.ts";
 
 export class UnsafeSchemaChange extends Error {
   readonly refusals: SchemaRefusal[];
@@ -60,8 +61,6 @@ export class UnsafeSchemaChange extends Error {
     this.refusals = refusals;
   }
 }
-
-const quote = (name: string) => `"${name}"`;
 
 export type Op = () => void;
 
@@ -166,7 +165,7 @@ export class SchemaPlanner {
         const tablePlan = planOf(table);
         const columnPlan = tablePlan.columns.get(change.column)!;
         for (const phys of columnPlan.phys) {
-          this._ops.push(() => writer.exec(`ALTER TABLE ${quote(tablePlan.name)} ADD COLUMN ${phys.ddl}`));
+          this._ops.push(() => writer.exec(`ALTER TABLE ${quoteIdentifier(tablePlan.name)} ADD COLUMN ${phys.ddl}`));
         }
         this._applied.push(`added nullable column ${table}.${change.column}`);
         return;
@@ -180,7 +179,7 @@ export class SchemaPlanner {
         return;
       case "drop-index": {
         const tablePlan = planOf(table);
-        this._ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(tablePlan.name, change.index))}`));
+        this._ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quoteIdentifier(indexSqlName(tablePlan.name, change.index))}`));
         this._applied.push(`dropped index ${table}.${change.index}`);
         return;
       }
@@ -271,10 +270,10 @@ export function probeUniqueIndex(
   phys: { table: string; column: (c: string) => string } = { table, column: (c) => c },
 ): SchemaRefusal | null {
   if (!columns.every((column) => Object.hasOwn(currentColumns, column))) return null;
-  const physCols = columns.map((c) => quote(phys.column(c)));
+  const physCols = columns.map((c) => quoteIdentifier(phys.column(c)));
   const notNull = physCols.map((c) => `${c} IS NOT NULL`).join(" AND ");
   const dupes = query(
-    `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(phys.table)} WHERE ${notNull} GROUP BY ${physCols.join(", ")} HAVING COUNT(*) > 1)`,
+    `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quoteIdentifier(phys.table)} WHERE ${notNull} GROUP BY ${physCols.join(", ")} HAVING COUNT(*) > 1)`,
   );
   if (dupes === 0) return null;
   return {
@@ -421,7 +420,7 @@ function createIndexOp(engine: Engine, tablePlan: PhysicalTablePlan, name: strin
   const index = tablePlan.indexes.find((ix) => ix.name === name)!;
   return () => {
     const writer = engine.writer;
-    if (recreate) writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(tablePlan.name, name))}`);
+    if (recreate) writer.exec(`DROP INDEX IF EXISTS ${quoteIdentifier(indexSqlName(tablePlan.name, name))}`);
     writer.exec(engine.indexDdl(tablePlan, index));
   };
 }
@@ -431,7 +430,7 @@ function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSn
   const writer = engine.writer;
   ops.push(() => {
     const oldPhys = physicalColumnsOf(oldTable);
-    const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quote).join(", ");
+    const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quoteIdentifier).join(", ");
     const tmp = `${tablePlan.name}__rebuild`;
     const seqRow = writer
       .query("SELECT seq FROM sqlite_sequence WHERE name = ?")
@@ -439,10 +438,10 @@ function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSn
     engine.dropStoredFullTextPhysical(tablePlan.name, oldTable);
     writer.exec(engine.createTableDdl(tablePlan, tmp));
     if (copy.length > 0) {
-      writer.exec(`INSERT INTO ${quote(tmp)} (${copy}) SELECT ${copy} FROM ${quote(tablePlan.name)}`);
+      writer.exec(`INSERT INTO ${quoteIdentifier(tmp)} (${copy}) SELECT ${copy} FROM ${quoteIdentifier(tablePlan.name)}`);
     }
-    writer.exec(`DROP TABLE ${quote(tablePlan.name)}`);
-    writer.exec(`ALTER TABLE ${quote(tmp)} RENAME TO ${quote(tablePlan.name)}`);
+    writer.exec(`DROP TABLE ${quoteIdentifier(tablePlan.name)}`);
+    writer.exec(`ALTER TABLE ${quoteIdentifier(tmp)} RENAME TO ${quoteIdentifier(tablePlan.name)}`);
     if (seqRow !== null) {
       // never reuse ids: restore the sequence high-water mark
       const changed = writer

@@ -194,12 +194,7 @@ export class AdmissionQueue<T> {
       ? "deadline"
       : "age";
     const expiresAtMs = expiresBy === "deadline" ? options.deadlineMs! : ageExpiry;
-    let resolve!: (lease: AdmissionLease<T>) => void;
-    let reject!: (error: AdmissionRejected) => void;
-    const ticket = new Promise<AdmissionLease<T>>((ticketResolve, ticketReject) => {
-      resolve = ticketResolve;
-      reject = ticketReject;
-    });
+    const { promise: ticket, resolve, reject } = Promise.withResolvers<AdmissionLease<T>>();
     const entry: PendingAdmission<T> = {
       sequence: ++this.sequence,
       value,

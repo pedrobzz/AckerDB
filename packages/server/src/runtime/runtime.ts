@@ -15,6 +15,7 @@ import {
 } from "@ackerdb/core";
 import {
   SYSTEM_PRINCIPAL,
+  unauthenticated,
   type CredentialVerifier,
   type ExternalAccount,
   type Principal,
@@ -34,7 +35,6 @@ import { externalAccountFairnessKey } from "./caller.ts";
 import { OutboundBudget } from "../subscriptions/delivery/budget.ts";
 import type { SseDeliverySnapshot } from "../subscriptions/delivery/sse.ts";
 import type { Engine } from "../database/engine.ts";
-import { AckerDBError } from "../shared/errors.ts";
 import type { OwnedProcedureContext } from "../app/functions.ts";
 import type { SystemRunner } from "../app/system.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
@@ -347,7 +347,7 @@ export class Runtime implements RuntimePort {
   ): Promise<Principal> {
     const parsed = parseCredentialToken(rawToken);
     if (parsed === null) {
-      throw new AckerDBError("unauthenticated", "invalid credential");
+      throw unauthenticated();
     }
     return this.credentials.authenticate(parsed, fairnessKey, signal);
   }

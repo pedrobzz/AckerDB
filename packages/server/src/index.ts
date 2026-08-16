@@ -187,7 +187,6 @@ export {
   type MutationJobsOf,
   type ProcedureJobsOf,
   type QueryJobsOf,
-  type TypedJobOutcome,
 } from "./jobs/api.ts";
 export { JOB_RUNS_TABLE, JOBS_TABLE } from "./jobs/table.ts";
 export {

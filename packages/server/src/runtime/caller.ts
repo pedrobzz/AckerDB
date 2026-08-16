@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-import { stableEncode } from "@ackerdb/core";
 import type { ExternalAccount, Principal } from "../auth/credentials.ts";
+import { digestOfWire } from "../shared/digest.ts";
 
 /** Network identity used only to group anonymous transport work fairly. */
 export interface TransportSource {
@@ -27,9 +26,7 @@ export function transportSource(source: TransportSource | null): TransportSource
 }
 
 function fairnessKey(owner: unknown): string {
-  return createHash("sha256")
-    .update(stableEncode(["caller-fairness-v1", owner]))
-    .digest("base64url");
+  return digestOfWire(["caller-fairness-v1", owner]);
 }
 
 /** Fixed-width ownership for verified credential work before application Identity exists. */

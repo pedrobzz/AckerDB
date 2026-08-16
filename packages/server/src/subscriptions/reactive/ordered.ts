@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
 import {
   EVENTS_ADDRESS_PREFIX,
   decode,
@@ -38,6 +37,8 @@ import {
   type QueryListener,
 } from "./entry.ts";
 import { TransitionHistory } from "./history.ts";
+import { sha256Base64Url } from "../../shared/digest.ts";
+import { utf8ByteLength } from "../../shared/bytes.ts";
 import {
   authOutcome,
   errorOutcome,
@@ -56,7 +57,6 @@ interface InstalledEvaluation<C> {
   readonly overloadMessage?: string;
 }
 
-const utf8 = new TextEncoder();
 
 export class OrderedReactive<C = unknown> {
   readonly publication: OrderedPublication<ReactiveCommit>;
@@ -377,15 +377,15 @@ export class OrderedReactive<C = unknown> {
     this.makeEntryCapacity();
     const entry: QueryEntry<C> = {
       key,
-      identity: createHash("sha256").update(key).digest("base64url"),
+      identity: sha256Base64Url(key),
       address: input.address,
       args: Object.freeze({
         decoded: deepFreeze(decode(encodedArgs)),
         encoded: encodedArgs,
-        bytes: byteLength(encodedArgs),
+        bytes: utf8ByteLength(encodedArgs),
       }),
       policyScopeFingerprint: input.policyScopeFingerprint,
-      revalidationBytes: byteLength(key),
+      revalidationBytes: utf8ByteLength(key),
       ownerFairnessKey: input.fairnessKey,
       context: input.context,
       generation: this.generation(),
@@ -526,7 +526,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   private installEvaluation(entry: QueryEntry<C>, evaluated: QueryEvaluation): InstalledEvaluation<C> {
-    const resultBytes = byteLength(evaluated.encoded);
+    const resultBytes = utf8ByteLength(evaluated.encoded);
     const overloadMessage = this.makeResultCapacity(entry, resultBytes);
     if (overloadMessage) {
       if (entry.listeners.size === 0) {
@@ -951,8 +951,4 @@ function cursorEquals(left: SubscriptionCursor, right: SubscriptionCursor): bool
     left.commitVersion === right.commitVersion &&
     left.authEpoch === right.authEpoch &&
     left.identity === right.identity;
-}
-
-function byteLength(value: string): number {
-  return utf8.encode(value).byteLength;
 }
