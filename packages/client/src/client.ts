@@ -1277,9 +1277,9 @@ export class AckerDBClient {
     if (this.suspended) {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
-    // The URL is the address, segment for segment — the group is already its
-    // first segment. The response is the correlation, so the request carries
-    // the args object alone — no envelope, no client id.
+    // The URL is the canonical address, segment for segment. The response is
+    // the correlation, so the request carries the args object alone — no
+    // envelope, no client id.
     const url = `${this.httpUrl}${httpPathForAddress(getRef(ref))}`;
     let body: string;
     try {

@@ -19,8 +19,7 @@ describe("defineApp", () => {
     expect(rootSchema).toBe(schema);
     expect(app.schema).toBe(schema);
     expect(isApp(app)).toBe(true);
-    expect(app.apiPaths).toEqual([]);
-    expect(Object.keys(app)).toEqual(["schema", "apiPaths", "scopes"]);
+    expect(Object.keys(app)).toEqual(["schema", "scopes"]);
     expect(Object.isFrozen(app)).toBe(true);
     expect(Reflect.set(app, "schema", defineSchema({}))).toBe(false);
     expect(app.schema).toBe(schema);
@@ -36,37 +35,4 @@ describe("defineApp", () => {
     );
   });
 
-  test("declares the extra API paths whose bindings code generation emits", () => {
-    const schema = defineSchema({});
-    expect(defineApp({ schema, apiPaths: ["reports", "internal"] }).apiPaths).toEqual([
-      "internal",
-      "reports",
-    ]);
-    expect(Object.isFrozen(defineApp({ schema, apiPaths: [] }).apiPaths)).toBe(true);
-  });
-
-  test("rejects malformed API path declarations", () => {
-    const schema = defineSchema({});
-
-    expect(() => defineApp({ schema, apiPaths: "internal" as never })).toThrow(
-      "application apiPaths must be an array of group names",
-    );
-    expect(() => defineApp({ schema, apiPaths: ["_admin"] })).toThrow(
-      '"_" is reserved to AckerDB',
-    );
-    expect(() => defineApp({ schema, apiPaths: ["api"] })).toThrow(
-      'application apiPaths must not list "api" — every application publishes it',
-    );
-    // `admin` is an ordinary group name an application may claim for itself.
-    expect(defineApp({ schema, apiPaths: ["admin"] }).apiPaths).toEqual(["admin"]);
-    expect(() => defineApp({ schema, apiPaths: ["events"] })).toThrow(
-      'must not be "events" — the generated api module already binds that name',
-    );
-    expect(() => defineApp({ schema, apiPaths: ["class"] })).toThrow(
-      'must not be "class"',
-    );
-    expect(() => defineApp({ schema, apiPaths: ["internal", "internal"] })).toThrow(
-      'application apiPaths repeats "internal"',
-    );
-  });
 });

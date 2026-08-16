@@ -4,11 +4,10 @@
  * ("api.messages.list"); the generic parameters carry kind/args/data/error
  * types so every call is end-to-end typed through codegen.
  *
- * **An address begins with its group.** `<apiPath>.<...module segments>.<export
- * name>` is the whole rule, and it holds everywhere an address appears — the
- * socket, the registry's keys, the URL. A group is therefore a namespace and
- * not a label: `api.messages.list` and `internal.messages.list` are two
- * functions, and one group's names can never be squatted from another.
+ * **An application address begins with `api`.**
+ * `api.<...module segments>.<export name>` is the whole rule, and it holds
+ * everywhere an address appears — the socket, the registry's keys, and the
+ * URL.
  */
 
 import type { ErrResult, OkResult } from "./result.ts";
@@ -16,40 +15,36 @@ import type { ErrResult, OkResult } from "./result.ts";
 export type FunctionKind = "query" | "mutation" | "procedure" | "sse" | "event";
 
 /**
- * The API path every function without an explicit one is published in, and so
- * the first segment of its address. It is an ordinary group, not a privileged
- * category: the framework names this one so a declaration need not. It lives
- * here because the generated trees below and the server's declaration builders
- * must agree on it exactly.
+ * The fixed root of every application address. It lives here because generated
+ * references, registry addresses, event references, and channels must agree
+ * on it exactly.
  */
-export const DEFAULT_API_PATH = "api";
-export type DefaultApiPath = typeof DEFAULT_API_PATH;
+export const APPLICATION_ADDRESS_ROOT = "api";
 
 /**
  * The namespace the generated api module gives event-table references. It is
  * reserved in three places that must agree — a function module may not be
- * called it, an API path may not be named it, and code generation writes the
- * export that causes both — so the name lives here, with the tree it belongs
- * to.
+ * called it, and code generation writes the export that causes both — so the
+ * name lives here, with the tree it belongs to.
  */
 export const EVENTS_NAMESPACE = "events";
 
 /**
  * The address prefix every event-table reference carries. Event tables are not
- * modules, but they are leaves of the default group's tree, so they are
- * addressed like everything else in it. The subscription path that parses a
+ * modules, but they are leaves of the application tree, so they are addressed
+ * like everything else in it. The subscription path that parses a
  * table out of an address and the generated module that writes one must agree
  * on this exactly, so it is spelled once.
  */
-export const EVENTS_ADDRESS_PREFIX = `${DEFAULT_API_PATH}.${EVENTS_NAMESPACE}.`;
+export const EVENTS_ADDRESS_PREFIX = `${APPLICATION_ADDRESS_ROOT}.${EVENTS_NAMESPACE}.`;
 
 /**
  * The character marking a name as the framework's own, across the two
- * namespaces an application shares with it: API paths and HTTP roots. An
- * application may never declare a name carrying it, so the framework's own
- * protocol surface can never be squatted. Scopes are not one of those
- * namespaces: the whole vocabulary belongs to the application, so `_` is an
- * ordinary character inside a scope name.
+ * application-address and HTTP namespaces. An application may never claim a
+ * marked name at either reserved boundary, so the framework's own protocol
+ * surface can never be squatted. Scopes are not one of those namespaces: the
+ * whole vocabulary belongs to the application, so `_` is an ordinary
+ * character inside a scope name.
  *
  * It lives here for the same reason the name above does — the rule is enforced
  * in the server's routing and in the declaration builders that refuse it, and
@@ -138,9 +133,8 @@ export function getRef(
 
 /**
  * The wire contract for an exposed function's URL: the address, segment for
- * segment. The group needs no separate argument because it is already the
- * first segment, so the listener claiming the path and the client building it
- * read one rule over one value and cannot drift.
+ * segment. The listener claiming the path and the client building it read one
+ * rule over one value and cannot drift.
  */
 export function httpPathForAddress(address: string): string {
   return `/${address.replaceAll(".", "/")}`;
@@ -171,20 +165,11 @@ function makeRefProxy(address: string): unknown {
 }
 
 /**
- * Untyped reference builder for one group: `apiGroup("internal").messages.list`
- * yields the reference for address "internal.messages.list", resolving under
- * `/internal/messages/list`. The group is the address's first segment, so the
- * builder is seeded with it and every property access appends the next.
- * Generated `api.ts` casts each group's builder to that group's typed tree.
+ * Untyped application reference builder. Generated `api.ts` casts it to the
+ * application's typed tree.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function apiGroup(apiPath: string): any {
-  return makeRefProxy(apiPath);
-}
-
-/** The same builder for the default group: `anyApi.messages.list`. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const anyApi: any = apiGroup(DEFAULT_API_PATH);
+export const anyApi: any = makeRefProxy(APPLICATION_ADDRESS_ROOT);
 
 /**
  * The marker interface every registered server function satisfies (the server
@@ -228,15 +213,6 @@ export interface RegisteredServerOnly {
   readonly isAckerDBServerOnly: true;
 }
 
-/**
- * The API path a registered function was published in — the first segment of
- * its address — carried on its type so a generated tree can select one group.
- * Every registered function has one.
- */
-export interface RegisteredApiPath<Path extends string> {
-  readonly apiPath: Path;
-}
-
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
 type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Error : never;
 
@@ -246,37 +222,13 @@ type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
     : FunctionReference<Kd, A, R>
   : never;
 
-/** The one owner of group membership: whether an export appears in this tree. */
-type InApiPath<Export, Path extends string> = Export extends RegisteredServerOnly
-  ? // A server-only export has no reference in any group.
-    false
-  : Export extends RegisteredFunction
-    ? // A function carries the group it was declared in.
-      Export extends RegisteredApiPath<Path>
-      ? true
-      : false
-    : Export extends RegisteredChannelContract
-      ? // Socket-addressed contracts refuse `apiPath`, so their addresses
-        // begin with the default group and they live in that tree alone.
-        [Path] extends [DefaultApiPath]
-        ? true
-        : false
-      : // A namespace, kept in every group and filtered by its own recursion.
-        // Testing it for emptiness here — so `internal.` listed only modules
-        // that reach it — makes this type and `ApiFromModules` mutually
-        // recursive, which TypeScript reports as an excessively deep
-        // instantiation on real module trees. A group's binding therefore
-        // shows every module namespace; only its leaves are selected.
-        true;
-
 /**
- * Maps a record of module namespaces (arbitrarily nested) to the typed shape of
- * one API path — `api` by default, and one tree per group the application
- * declares. Function files should export only ackerdb functions (same
- * convention as Convex); other exports produce unusable branches, not errors.
+ * Maps a record of module namespaces (arbitrarily nested) to the application's
+ * typed API shape. Function files should export only AckerDB declarations;
+ * server-only exports are erased.
  */
-export type ApiFromModules<T, Path extends string = DefaultApiPath> = {
-  [K in keyof T as InApiPath<T[K], Path> extends true ? K : never]:
+export type ApiFromModules<T> = {
+  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
   T[K] extends RegisteredChannelContract<
     infer A,
     infer Room,
@@ -287,5 +239,5 @@ export type ApiFromModules<T, Path extends string = DefaultApiPath> = {
     ? ChannelRef<A, Room, ClientEvents, ServerEvents, Error>
     : T[K] extends RegisteredFunction
     ? FunctionRefOf<T[K]>
-    : ApiFromModules<T[K], Path>;
+    : ApiFromModules<T[K]>;
 };

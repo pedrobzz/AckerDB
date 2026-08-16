@@ -303,18 +303,13 @@ const functions = {
     }),
   },
   ops: {
-    /** Another group's root: an ordinary address, served off `/internal/`. */
-    // (declared in APP_API_PATHS below, exactly as an app.ts manifest would)
     count: query({
-      apiPath: "internal",
       access: "public",
       http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.db.notes.query().count(),
     }),
-    /** The group grants nothing: `access` is the whole of the admission decision. */
     purge: mutation({
-      apiPath: "internal",
       access: "system",
       http: true,
       args: {},
@@ -322,9 +317,6 @@ const functions = {
     }),
   },
 };
-
-/** What `defineApp({ apiPaths })` would declare for the modules above. */
-const APP_API_PATHS = ["internal"];
 
 class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
@@ -471,7 +463,7 @@ beforeEach(async () => {
   verifier = new TestVerifier();
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions, APP_API_PATHS),
+    registry: new Registry(functions),
     verifier,
     limits,
   });
@@ -487,7 +479,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** The group is the root and address segments follow: "api.notes.echo" -> "/api/notes/echo". */
+/** Address segments map directly to path segments: "api.notes.echo" -> "/api/notes/echo". */
 function httpPath(address: string): string {
   return `/${address.replaceAll(".", "/")}`;
 }
@@ -656,7 +648,7 @@ describe("health and protected status", () => {
       reconcile(earlyEngine);
       earlyRuntime = new Runtime({
         engine: earlyEngine,
-        registry: new Registry(functions, APP_API_PATHS),
+        registry: new Registry(functions),
         verifier,
         limits,
       });
@@ -846,56 +838,42 @@ describe("exposed HTTP procedures", () => {
     await within(client.closed());
   });
 
-  test("serves no framework group: the literal admin path is the application's to declare", async () => {
-    // Nothing is registered at `admin.*`, so its route is a 404 rather than a
-    // live endpoint an application never asked for.
-    const response = await fetch(`${base}${httpPath("admin.system.info")}`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    expect(response.status).toBe(404);
-  });
-
-  test("serves another group off its own root, gated by access alone", async () => {
-    const counted = await fetch(`${base}${httpPath("internal.ops.count")}`, {
+  test("serves one fixed application root, gated by access alone", async () => {
+    const counted = await fetch(`${base}${httpPath("api.ops.count")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
     expect(counted.status).toBe(200);
 
-    // The same function is nowhere under `/api/`: a group is one root, not an
-    // alias for every root.
-    const wrongRoot = await fetch(`${base}${httpPath("api.ops.count")}`, {
+    const wrongRoot = await fetch(`${base}${httpPath("other.ops.count")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
     expect(wrongRoot.status).toBe(404);
 
-    // Being in the `internal` group grants nothing. The system-only mutation
-    // answers exactly what its `access` says, to an anonymous caller and to an
-    // authenticated user alike.
-    const anonymous = await fetch(`${base}${httpPath("internal.ops.purge")}`, {
+    // The system-only mutation answers exactly what its `access` says, to an
+    // anonymous caller and to an authenticated user alike.
+    const anonymous = await fetch(`${base}${httpPath("api.ops.purge")}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
     expect(anonymous.status).toBe(401);
-    const user = await fetch(`${base}${httpPath("internal.ops.purge")}`, {
+    const user = await fetch(`${base}${httpPath("api.ops.purge")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
       body: JSON.stringify({}),
     });
     expect(user.status).toBe(403);
 
-    // Over the socket the address carries the group as its first segment, so
-    // the same one name reaches the function on both surfaces — and the same
+    // The same address reaches the function on both surfaces, and the same
     // policy answers.
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/_ws`);
-    client.send({ t: "q", id: 1, ref: "internal.ops.count", args: {} });
+    client.send({ t: "q", id: 1, ref: "api.ops.count", args: {} });
     expect(await within(client.next())).toMatchObject({ t: "ok", id: 1 });
     client.send({
       t: "m",
       id: 2,
-      ref: "internal.ops.purge",
+      ref: "api.ops.purge",
       args: {},
       mutationRequestId: uuidV7(2),
       issuedAt: Date.now(),
@@ -1157,7 +1135,7 @@ describe("exposed HTTP procedures", () => {
     const fairVerifier = new TestVerifier();
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions, APP_API_PATHS),
+      registry: new Registry(functions),
       verifier: fairVerifier,
       limits: defineServiceLimits({
         ...limits,
@@ -1813,7 +1791,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
-    const registry = new Registry(modules, APP_API_PATHS);
+    const registry = new Registry(modules);
     const documentedRuntime = new Runtime({
       engine,
       registry,
@@ -1847,7 +1825,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     // The endpoint and `acker openapi` publish one encoding of one document.
     const served = new Uint8Array(await response.arrayBuffer());
     expect(served).toEqual(
-      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions, APP_API_PATHS), info))),
+      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions), info))),
     );
 
     const document = JSON.parse(new TextDecoder().decode(served)) as Ctx;
@@ -2157,7 +2135,7 @@ describe("WebSocket Session transport", () => {
     });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions, APP_API_PATHS),
+      registry: new Registry(functions),
       verifier: new TestVerifier(),
       limits: fairLimits,
     });
@@ -2277,7 +2255,7 @@ describe("WebSocket Session transport", () => {
     reconcile(overlapEngine);
     const overlapRuntime = new Runtime({
       engine: overlapEngine,
-      registry: new Registry(functions, APP_API_PATHS),
+      registry: new Registry(functions),
       limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
     });
     await overlapRuntime.start();
@@ -2386,7 +2364,7 @@ describe("lifecycle drain", () => {
     });
     const slowRuntime = new Runtime({
       engine: slowEngine,
-      registry: new Registry(functions, APP_API_PATHS),
+      registry: new Registry(functions),
       limits: slowLimits,
     });
     await slowRuntime.start();

@@ -645,11 +645,11 @@ on demand.
 ## Authorization and credentials
 
 **Reserved marker** — The leading `_` that marks a name as the framework's own,
-across the two namespaces an application shares with it: API paths and HTTP
-roots. An application may never declare a name carrying it, so the framework's
-protocol surface cannot be squatted. Scopes are not one of those namespaces —
-the whole vocabulary is the application's. Framework *tables* are the one
-exception: they carry the older `_ackerdb_` prefix (`_ackerdb_jobs`,
+across the address segments and HTTP roots an application shares with it. An
+application may never declare a name carrying it, so the framework's protocol
+surface cannot be squatted. Scopes are not one of those namespaces — the whole
+vocabulary is the application's. Framework *tables* are the one exception:
+they carry the older `_ackerdb_` prefix (`_ackerdb_jobs`,
 `_ackerdb_credentials`, `_ackerdb_meta`, …), which is in released 0.16.0 data.
 _Avoid_: Private prefix, system namespace, underscore convention
 
@@ -681,22 +681,12 @@ glob with no carve-outs: `*` is the empty prefix and covers the whole
 vocabulary, `_*` covers the declared names beginning with `_`.
 _Avoid_: Role, superuser flag, permission group
 
-**API path** — The named group a function is published in, and the first
-segment of its function address. It decides the generated binding and the HTTP
-root together, because both are read off that one address. It is a namespacing
-choice and never an access rule: who may call a function is decided by its
-access policy alone. No group's name may carry the reserved marker — the
-framework's protocol endpoints live at the reserved root, outside every group.
-`api` is the only group every application publishes, so a manifest lists every
-other one it uses.
-_Avoid_: Internal flag, private function, route prefix
-
 **Function address** — The one dotted name every registered function answers
-to, in process and over every transport: its API path, then the directory
-segments of the module declaring it, then the export name. The HTTP route is
-that address segment for segment. A file named `index.ts` contributes its
-directory's name rather than its own, so a directory may hold a module of its
-own name beside its siblings.
+to, in process and over every transport: the fixed `api` root, then the
+directory segments of the module declaring it, then the export name. The HTTP
+route is that address segment for segment. A file named `index.ts` contributes
+its directory's name rather than its own, so a directory may hold a module of
+its own name beside its siblings.
 _Avoid_: Function name, ref string, route
 
 **Identity credential** — An opaque bearer credential that *is* an Identity:

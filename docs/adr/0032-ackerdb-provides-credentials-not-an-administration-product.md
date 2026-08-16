@@ -1,12 +1,12 @@
 # AckerDB provides a credential capability, not an administration product
 
 AckerDB shipped an administration product to every application whether it
-wanted one or not. The framework contributed an `admin` function group, reserved
-half the scope namespace under `_`, defined a specially-classified Admin
-Credential, minted one during the boot and printed its plaintext, owned listing
-and rotation of it, shipped an offline break-glass command to clear it, and
-carried an `admin` configuration object and a generated client binding for the
-whole thing.
+wanted one or not. The framework contributed an administration function tree,
+reserved half the scope namespace under `_`, defined a specially-classified
+Admin Credential, minted one during the boot and printed its plaintext, owned
+listing and rotation of it, shipped an offline break-glass command to clear it,
+and carried an `admin` configuration object and a generated client surface for
+the whole thing.
 
 None of that is necessary for AckerDB to give an application credentials, and
 all of it made credentials harder to use: an application's own administration
@@ -23,27 +23,29 @@ make a credential safe, and nothing else about administering one.**
 ## The Admin product is deleted, not replaced
 
 There is no framework-declared function left, so the Registry has one
-contributor. There is no `admin` group, so `admin` is an ordinary name an
-application may declare like `internal` or `reports`. There is no `admin`
-configuration, so the OpenAPI document takes its title and version from the
-application's package manifest — which is where the old configuration's own
-defaults came from. There is no boot credential, so an application with zero
-credentials is a valid application and the boot has no phase, no output, and no
-failure mode about issuing one. There is no `acker credential reset`, because
-AckerDB no longer claims a recovery policy on an application's behalf.
+contributor. `functions/admin/` is an ordinary application module, addressed
+under `api.admin.*`, rather than a framework-owned namespace. There is no
+`admin` configuration, so the OpenAPI document takes its title and version from
+the application's package manifest — which is where the old configuration's
+own defaults came from. There is no boot credential, so an application with
+zero credentials is a valid application and the boot has no phase, no output,
+and no failure mode about issuing one. There is no `acker credential reset`,
+because AckerDB no longer claims a recovery policy on an application's behalf.
 
-The rejected alternative was a smaller Admin: keep the group, drop the extras.
-It fails the same way the original did — whatever the framework declares, an
-application inherits and must design around. A capability an application reaches
-*into* composes; a surface the framework publishes *at* it does not.
+The rejected alternative was a smaller Admin: keep a built-in function tree and
+drop the extras. It fails the same way the original did — whatever the framework
+declares, an application inherits and must design around. A capability an
+application reaches *into* composes; a surface the framework publishes *at* it
+does not.
 
 ## The scope vocabulary is the application's, whole
 
 `*` now covers every declared scope, `_` reserves nothing, and `_*` is an
-ordinary prefix pattern. The reserved marker still guards API paths and HTTP
-roots, where the framework really does own names; inside the scope namespace it
-guarded a vocabulary that no longer exists, and an application that wanted a
-scope called `_internal:purge` was refused for no reason it could see.
+ordinary prefix pattern. The reserved marker still guards application address
+segments and HTTP roots, where the framework really does own names; inside the
+scope namespace it guarded a vocabulary that no longer exists, and an
+application that wanted a scope called `_operations:purge` was refused for no
+reason it could see.
 
 Requirements stay concrete and grants keep trailing wildcards. Nothing about the
 subset-at-issuance / intersection-at-use invariant changes; there is simply one

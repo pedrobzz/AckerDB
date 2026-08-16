@@ -33,8 +33,8 @@ export function useSseProcedure<A, Chunk>(
   ref: SseRef<A, Chunk> | string,
 ): SseProcedureCall<A, Chunk> {
   const client = useProviderClient("useSseProcedure");
-  // The address identifies the callable, group included: it is the address's
-  // first segment, so the root the stream is fetched from travels with it.
+  // The canonical address identifies the callable and maps directly to the
+  // path the stream is fetched from.
   const address = getRef(ref);
   return useCallback<SseProcedureCall<A, Chunk>>(
     (args, options = {}) => {

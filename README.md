@@ -50,12 +50,11 @@ your-app/
   `sseProcedure`, and `channel` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
-  A declaration may also name its `apiPath`: the group it is published in and
-  the first segment of its address, deciding its generated binding and its HTTP
-  root together — `"internal"` addresses `internal.orders.list` and serves
-  `/internal/orders/list`, and `"api"` is the default. A file named `index.ts`
-  takes its directory's name. Namespacing and routing only; `access` alone
-  decides who may call (ADR-0023).
+  Every application address begins with `api`, followed by the function module
+  path and export name: `functions/orders/list.ts` exporting `open` becomes
+  `api.orders.list.open`. The HTTP route is that address segment for segment.
+  A file named `index.ts` takes its directory's name, and `access` alone decides
+  who may call.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
   external work and open explicit `ctx.tx(...)` transactions. Durable jobs

@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
+  APPLICATION_ADDRESS_ROOT,
   decode,
   parseSseAckRequest,
   stableEncode,
@@ -32,7 +33,6 @@ import {
   EXPOSED_HTTP_METHODS,
   IDEMPOTENCY_KEY_HEADER,
   SSE_STREAM_HEADERS,
-  isAckerDBHttpRoute,
 } from "./http-surface.ts";
 import type { ExposedHttpCodec } from "./http-codec.ts";
 import {
@@ -760,14 +760,13 @@ export class AckerDBServer {
         ...(this.startup === null ? {} : { phase: this.startup }),
       }, ready ? 200 : 503);
     }
-    // The application owns every path AckerDB has not reserved — `apiPath`
-    // makes `/api/` one group among however many the application names — and
-    // it answers the bare unavailable outcome before the registry that would
+    // The application owns every path beneath its fixed `/api/` root and
+    // answers the bare unavailable outcome before the registry that would
     // resolve it exists, even for a preflight, because a raw route's OPTIONS
     // belongs to its handler and no handler exists yet.
     if (
       (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") &&
-      !isAckerDBHttpRoute(url.pathname)
+      url.pathname.startsWith(`/${APPLICATION_ADDRESS_ROOT}/`)
     ) {
       return outcomeError(unavailableWhile(this.lifecycle));
     }

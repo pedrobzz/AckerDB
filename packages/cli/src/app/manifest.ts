@@ -41,9 +41,9 @@ function listModules(dir: string, kind: string): ModuleFile[] {
     if (segments[segments.length - 1] === INDEX_MODULE) {
       segments.pop();
       // At the root there is no directory to take a name from, and the
-      // alternative — publishing the exports directly under the group — is a
-      // module with no name at all, which neither the tree nor an address can
-      // hold. Refusing it keeps the collapse one rule with no exception.
+      // alternative — publishing exports directly below `api` — is a module
+      // with no name at all, which neither the tree nor an address can hold.
+      // Refusing it keeps the collapse one rule with no exception.
       if (segments.length === 0) {
         throw new Error(
           `${kind} module "${entry}": an "${INDEX_MODULE}" file takes its directory's name, and this one has no directory — move it into one or give it a name`,

@@ -35,7 +35,7 @@ export async function exportOpenApi(config: AppConfig, file: string): Promise<Op
   // that application's API rather than AckerDB's: its package manifest, read
   // once in the configuration.
   const document = openApiDocument(
-    new Registry(await importFunctionModules(config), app.apiPaths),
+    new Registry(await importFunctionModules(config)),
     { title: config.application.name, version: config.application.version },
   );
   writeFileSync(file, openApiBytes(document));
