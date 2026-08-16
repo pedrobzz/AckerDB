@@ -8,9 +8,7 @@
     "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test ./packages/core/test ./packages/server/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
-    "test:mcp:conformance": "bun scripts/mcp-conformance.ts",
-    "test:mcp:hosts": "bun scripts/mcp-host-acceptance.ts",
+    "test": "bun test ./packages/core/test ./packages/server/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/verify-packages.ts",
     "test:packages": "bun scripts/verify-packages.ts",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
     "typecheck:tooling": "bunx tsc -p scripts/tsconfig.json --noEmit",
@@ -23,7 +21,6 @@
     "prepare": "git config core.hooksPath .githooks && git config branch.main.mergeoptions --no-ff && git config branch.canary.mergeoptions --no-ff"
   },
   "devDependencies": {
-    "@modelcontextprotocol/conformance": "0.1.16",
     "@types/bun": "^1.2.0",
     "@types/node": "22.15.3",
     "ackerdb-test-support": "workspace:*",
@@ -32,10 +29,8 @@
   "overrides": {
     "@hono/node-server": "2.0.12",
     "brace-expansion": "5.0.9",
-    "fast-uri": "3.1.5",
     "uuid": "11.1.1",
     "hono": "4.12.34",
-    "ip-address": "10.4.0",
     "postcss": "8.5.25"
   }
 }

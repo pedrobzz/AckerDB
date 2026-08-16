@@ -1,7 +1,7 @@
 /**
  * The one contract → JSON Schema emission. Every schema AckerDB publishes comes
- * from this walk: MCP tool input/output schemas, the dependency-free Standard
- * Schema view, and the OpenAPI document. There is no second emitter — a
+ * from this walk: the dependency-free Standard Schema view and the OpenAPI
+ * document. There is no second emitter — a
  * validator describes itself exactly once, whoever is asking.
  */
 import type { Descriptor, StandardValidator } from "./validator.ts";
@@ -29,7 +29,7 @@ export type JsonSchemaTarget = "draft-2020-12" | "draft-07" | (string & {});
 export interface JsonSchemaOptions {
   /** Defaults to `input`. */
   readonly mode?: JsonSchemaMode;
-  /** Defaults to draft 2020-12, the dialect OpenAPI 3.1 and MCP both speak. */
+  /** Defaults to draft 2020-12, the dialect OpenAPI 3.1 speaks. */
   readonly target?: JsonSchemaTarget;
   /**
    * A standard-JSON protocol boundary carries bigint, Identity, FileId,
@@ -40,7 +40,7 @@ export interface JsonSchemaOptions {
   readonly protocol?: boolean;
 }
 
-export interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
+interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
   readonly $schema: typeof JSON_SCHEMA_2020_12;
   readonly type: "object";
   readonly properties: Readonly<Record<string, Readonly<Record<string, unknown>>>>;

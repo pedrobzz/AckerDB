@@ -9,7 +9,6 @@ import {
 import {
   type AnyRegistered,
   type AnyRegisteredSse,
-  type OwnedProcedureContext,
   type SseCtx,
   type SseSource,
 } from "../../app/functions.ts";
@@ -187,15 +186,11 @@ export class RuntimeHttp {
         this.readNow(),
         invalidations.publish,
       );
-      try {
-        return await invokeSideEffectingHandler(
-          signal,
-          "procedure",
-          (onAuthorized) => invokeFunction(fn, context.value, request.args, { onAuthorized }),
-        );
-      } finally {
-        context.release();
-      }
+      return await invokeSideEffectingHandler(
+        signal,
+        "procedure",
+        (onAuthorized) => invokeFunction(fn, context, request.args, { onAuthorized }),
+      );
     }, {
       finalize: (outcome) => this.responses.respond(request, codec, "procedure", outcome),
       fairnessKey,
@@ -232,42 +227,38 @@ export class RuntimeHttp {
         () => {},
         "http",
       );
-      try {
-        return await invokeSideEffectingHandler(
-          signal,
-          "http handler",
-          (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
-            onAuthorized();
-            try {
-              const response = await registered.handler(context.value, input.request);
-              if (!(response instanceof Response)) {
-                throw new Error("http handler returned a non-Response value");
-              }
-              return response;
-            } catch (cause) {
-              // Every uncaught throw — an AckerDBError, a validation error,
-              // anything — crosses as the one sanitized `internal` outcome:
-              // the handler authors its failures as Responses, so a thrown
-              // message is never the handler speaking to the caller. The
-              let described: string;
-              try {
-                described = cause instanceof Error
-                  ? cause.stack ?? cause.message
-                  : String(cause);
-              } catch {
-                described = "<unreadable handler error>";
-              }
-              console.log(`http handler "${input.address}" failed`, {
-                error: described,
-              });
-              // Rethrowing a plain Error keeps the abort conversion above intact.
-              throw new Error(`http handler "${input.address}" failed`);
+      return await invokeSideEffectingHandler(
+        signal,
+        "http handler",
+        (onAuthorized) => runInInvocationRoot(ANONYMOUS_PRINCIPAL, async () => {
+          onAuthorized();
+          try {
+            const response = await registered.handler(context, input.request);
+            if (!(response instanceof Response)) {
+              throw new Error("http handler returned a non-Response value");
             }
-          }),
-        );
-      } finally {
-        context.release();
-      }
+            return response;
+          } catch (cause) {
+            // Every uncaught throw — an AckerDBError, a validation error,
+            // anything — crosses as the one sanitized `internal` outcome:
+            // the handler authors its failures as Responses, so a thrown
+            // message is never the handler speaking to the caller. The
+            let described: string;
+            try {
+              described = cause instanceof Error
+                ? cause.stack ?? cause.message
+                : String(cause);
+            } catch {
+              described = "<unreadable handler error>";
+            }
+            console.log(`http handler "${input.address}" failed`, {
+              error: described,
+            });
+            // Rethrowing a plain Error keeps the abort conversion above intact.
+            throw new Error(`http handler "${input.address}" failed`);
+          }
+        }),
+      );
     }, {
       fairnessKey,
     });
@@ -286,7 +277,6 @@ export class RuntimeHttp {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
       let lifecycle: Promise<void> | null = null;
-      let procedure: OwnedProcedureContext | null = null;
       try {
         const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
         if (fn.yields === undefined) {
@@ -303,7 +293,7 @@ export class RuntimeHttp {
         void producer.finished.then(() => this.remove(streamId!, producer!));
         const authorized = deferred<void>();
         let handlerContext: <T>(work: () => T) => T = (work) => work();
-        procedure = this.options.functions.createProcedureContext(
+        const procedure = this.options.functions.createProcedureContext(
           request.principal,
           fairnessKey,
           producer.signal,
@@ -311,7 +301,7 @@ export class RuntimeHttp {
           this.readNow(),
           invalidations.publish,
         );
-        const handler = invokeFunction(fn, procedure.value as SseCtx, request.args, {
+        const handler = invokeFunction(fn, procedure as SseCtx, request.args, {
           onAuthorized: () => {
             handlerContext = AsyncLocalStorage.snapshot();
             authorized.resolve();
@@ -335,11 +325,7 @@ export class RuntimeHttp {
           }
           throw error;
         });
-        lifecycle = completion.finally(() => {
-          procedure!.release();
-          procedure = null;
-          release();
-        });
+        lifecycle = completion.finally(release);
         void lifecycle.catch(() => {});
         await Promise.race([
           authorized.promise,
@@ -358,10 +344,7 @@ export class RuntimeHttp {
           }
         }
         if (lifecycle !== null) await lifecycle.catch(() => {});
-        else {
-          procedure?.release();
-          release();
-        }
+        else release();
         throw transportError(error);
       }
     };

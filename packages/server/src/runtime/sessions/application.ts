@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  ACKERDB_VERSION,
   isApplicationError,
   isResult,
   stableEncode,
@@ -220,35 +219,31 @@ export class RuntimeSessionApplication {
             this.readNow(),
             invalidations.publish,
           );
-          try {
-            const result = await invokeSideEffectingHandler(
-              signal,
-              "procedure",
-              (onAuthorized) => invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
-            );
-            if (!isResult(result)) {
-              throw new AckerDBError("internal", "procedure boundary returned no Result");
-            }
-            publication = this.options.store.prepare(
-              result.ok
-                ? {
-                    t: "ok",
-                    id: message.id,
-                    kind: "procedure",
-                    value: result.data,
-                  } satisfies ProcedureOkMessage
-                : {
-                    t: "app_err",
-                    id: message.id,
-                    kind: "procedure",
-                    error: applicationError(result.error),
-                  } satisfies ApplicationErrorMessage,
-              "procedure result",
-            );
-            return result.ok ? result.data : result;
-          } finally {
-            procedure.release();
+          const result = await invokeSideEffectingHandler(
+            signal,
+            "procedure",
+            (onAuthorized) => invokeFunction(fn, procedure, message.args, { onAuthorized }),
+          );
+          if (!isResult(result)) {
+            throw new AckerDBError("internal", "procedure boundary returned no Result");
           }
+          publication = this.options.store.prepare(
+            result.ok
+              ? {
+                  t: "ok",
+                  id: message.id,
+                  kind: "procedure",
+                  value: result.data,
+                } satisfies ProcedureOkMessage
+              : {
+                  t: "app_err",
+                  id: message.id,
+                  kind: "procedure",
+                  error: applicationError(result.error),
+                } satisfies ApplicationErrorMessage,
+            "procedure result",
+          );
+          return result.ok ? result.data : result;
         },
         {
           successPublication: () => requiredPublication(publication, "procedure"),

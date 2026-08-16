@@ -46,11 +46,6 @@ export type HttpHandlerCtx<S extends Schema = Schema> = {
   ): Promise<FunctionResult<R>>;
 };
 
-export interface OwnedHttpHandlerContext {
-  readonly value: HttpHandlerCtx;
-  release(): void;
-}
-
 export interface RegisteredHttpHandler<S extends Schema = Schema> {
   readonly isAckerDB: true;
   /** Generated client APIs erase this export; it has no callable reference. */

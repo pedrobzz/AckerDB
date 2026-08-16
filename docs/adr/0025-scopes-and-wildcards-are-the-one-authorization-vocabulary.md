@@ -11,8 +11,8 @@
 
 AckerDB had two authorization systems. `access` — `"public" | "authenticated" |
 "system" | (ctx, args) => boolean` — decided who may call a function, and a
-separate MCP subsystem carried scope descriptors, a token vault, token-bound
-principals, and its own revocation registry, for agents alone. Roughly 1,100
+separate agent-credential subsystem carried scope descriptors, a token vault,
+token-bound principals, and its own revocation registry, for agents alone. Roughly 1,100
 lines existed only because an agent's authority was modelled as a thing that is
 not a user. An application that wanted permissions for its *own* users had
 nothing to build on and wrote a bespoke system inside its access callbacks.
@@ -27,8 +27,8 @@ framework pre-declares its own under the reserved marker `_`, and an application
 may never declare a name carrying it. That single character is what lets `*`
 mean "every application scope" and `_*` mean "every framework scope" without
 either side enumerating the other. The alternative — two namespaces with two
-sets of rules, which is what the MCP subsystem had — needs a translation layer
-at every boundary and a decision about which one wins wherever they meet.
+sets of rules, which is what the old agent subsystem had — needs a translation
+layer at every boundary and a decision about which one wins wherever they meet.
 
 The vocabulary is a closed set, so authorization is membership in a known
 collection rather than string comparison against a guess. A requirement naming a
@@ -39,7 +39,7 @@ passes.
 
 `app/invocation.ts` already compiled `access` once per registered function and
 ran it on the single path every entry reaches a handler through — client call,
-HTTP, MCP tool, nested server-side call. The scope requirement is enforced
+HTTP, nested server-side call. The scope requirement is enforced
 there, immediately after the base policy, and nowhere else. A second checkpoint
 would be a second thing to keep in sync with the first, and the first is already
 the only one that cannot be bypassed.
@@ -96,7 +96,7 @@ An identity credential is an Identity: issuing one mints an Identity row, and
 the bearer authenticates into an ordinary `user` principal. Fairness keying,
 File ownership and every access callback
 therefore work on an agent without knowing it came from a token, and the
-`McpPrincipal` special case that each of those sites had to remember is gone
+token-principal special case that each of those sites had to remember is gone
 along with the vault, descriptor, context, and invalidation machinery that
 served it — about 1,100 lines replaced by one vault and a small tool-access
 predicate.
@@ -111,11 +111,9 @@ feature, so it is part of the contract rather than a later optimization.
 
 ## Consequences
 
-- One breaking storage change: `_ackerdb_mcp_tokens` is replaced by
+- One breaking storage change: the old agent-token table is replaced by
   `_ackerdb_credentials` (engine schema 13). There is no compatibility shim;
-  0.16.0 databases carrying MCP tokens must reissue them.
-- `mcpAuth` and the `mcp({ auth })` field are deleted. A tool entry's `access`
-  draws from the application vocabulary like every function requirement.
+  0.16.0 databases carrying agent tokens must reissue them.
 - A vault-prefixed bearer can never reach an application's `credentialVerifier`:
   the Runtime's composed authority is branded, and verification fails closed
   without that brand.

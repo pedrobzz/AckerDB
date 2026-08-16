@@ -22,7 +22,6 @@ jobs:
       test_packages: ${{ steps.changes.outputs.test_packages }}
       code: ${{ steps.changes.outputs.code }}
       verify_packages: ${{ steps.changes.outputs.verify_packages }}
-      mcp: ${{ steps.changes.outputs.mcp }}
       workflows: ${{ steps.changes.outputs.workflows }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -71,9 +70,6 @@ jobs:
       - name: Audit production dependencies
         if: needs.changes.outputs.verify_packages == 'true'
         run: bun scripts/ci/audit-production.ts
-      - name: Check MCP conformance
-        if: needs.changes.outputs.mcp == 'true'
-        run: bun run test:mcp:conformance
       - name: Verify publishable packages
         if: needs.changes.outputs.verify_packages == 'true'
         run: bun run test:packages

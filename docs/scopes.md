@@ -28,7 +28,7 @@ export default defineApp({
 - Scope strings are opaque to AckerDB. Conventions like `<domain>:<verb>` are
   the application's, not machinery.
 - Code generation emits `type Scope` and binds it into the generated
-  `query`/`mutation`/`procedure`/`sseProcedure`/`mcp` builders, so naming an
+  `query`/`mutation`/`procedure`/`sseProcedure` builders, so naming an
   undeclared scope is a compile error. Startup cross-checks every registered
   requirement against the vocabulary as well, which covers untyped callers.
 
@@ -40,7 +40,7 @@ namespace a name falls on.
 ## Requirements on functions
 
 Any function may declare a requirement, enforced at the one authorization funnel
-after its access policy — every entry path (client call, HTTP, MCP tool, nested
+after its access policy — every entry path (client call, HTTP, nested
 server-side call) reaches the handler only through that enforcer:
 
 ```ts
@@ -63,23 +63,6 @@ export const purge = mutation({
   never fire.
 - An anonymous caller failing a scope check gets `unauthenticated`; an
   authenticated caller without the grant gets `unauthorized`.
-
-MCP tool entries declare the same `{ anyOf | allOf }` shape in their `access`
-field, drawn from the same vocabulary. One deliberate difference: a tool entry
-is a curation surface, so even system authority passes a scoped entry only
-through an explicit local grant.
-
-**What a local delegation grants.** `mcp.aiTools(ctx, { scopes })` is
-application code handing a model a curated tool set, and the scopes it names are
-a literal in that code — never caller input. So for an ordinary user the
-delegation carries the *application's* authority: the procedure has already
-passed its own access policy, and what it then lends the model is its decision,
-exactly as calling the function directly would be. For a **credential-backed**
-caller the delegation is intersected with that credential's own grant, because
-such a caller is itself a delegate and the child invariant must not be
-sidesteppable through the AI adapter. Authority never exceeds its source; for an
-external user the source is the application, and for a credential it is the
-credential.
 
 ## Grants and wildcards
 
@@ -160,7 +143,7 @@ with no credential row reads as an ordinary application root — it would be
 resolved by the application's own scope resolver instead of failing closed.
 
 Agents are first-class users. A credential bearer authenticates on every
-transport — WebSocket sessions, exposed HTTP functions, and MCP endpoints —
+transport — WebSocket sessions, exposed HTTP functions, and SSE streams —
 through the Runtime's one composed credential authority, producing an ordinary
 `user` principal (`issuer: "ackerdb:credentials"`, subject = token id,
 non-expiring). An AckerDB-prefixed bearer can never fall through to an
@@ -236,12 +219,12 @@ Grant changes ride the one generic auth-invalidation path (`auth/invalidation.ts
   `ctx.unlinkAccount` uses. Without it, revoking the credential you are
   authenticated with would close the connection carrying the result from inside
   your own commit: on a WebSocket the session terminates before the result
-  frame, and on the MCP endpoint the tool call's own signal aborts. Every other
+  frame, and on an HTTP call the request's own signal aborts. Every other
   holder is still cancelled at commit, and the origin follows immediately after.
   Every subscriber is addressable, so no door is exempt from the exclusion.
-  The exclusion names a **subscription**, which a WebSocket session and an MCP
-  batch share across their concurrent operations — so a sibling call on that one
-  connection keeps the credential until the answer lands. That connection is the
+  The exclusion names a **subscription**, which one connection's concurrent
+  operations share — so a sibling call on that one connection keeps the
+  credential until the answer lands. That connection is the
   same principal by construction, so what it buys is a moment more use of an
   authority the caller already held and is itself retiring.
 - One change publishes for **every credential it reaches** — the credential

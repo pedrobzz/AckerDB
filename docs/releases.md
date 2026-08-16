@@ -52,7 +52,7 @@ Pull requests into `canary`, and urgent pull requests into `main`, run:
 - the release and branch-policy check;
 - package tests for directly affected packages and their AckerDB dependents;
 - the repository TypeScript checks, skipped when only documentation changed;
-- package, MCP, and workflow boundary checks only when their inputs changed.
+- package and workflow boundary checks only when their inputs changed.
 
 Ordinary work is consolidated into `Select affected work` and one `Fast CI`
 job. This avoids paying a full runner minute for each short package or boundary

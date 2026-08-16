@@ -114,7 +114,6 @@ function serverTs(config: AppConfig, jobModules: ModuleFile[]): string {
       }\n};`;
   return `${HEADER}
 import {
-  mcp as mcpGeneric,
   channel as channelGeneric,
   httpHandler as httpHandlerGeneric,
   job as jobGeneric,
@@ -134,7 +133,6 @@ import type {
   JobBuilder,
   JobCtx as GenericJobCtx,
   JobTxCtx as GenericJobTxCtx,
-  McpBuilder,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
   MutationJobsOf,
@@ -164,7 +162,6 @@ export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedureJ
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedureJobs, MutationJobs, Scope>;
 export const httpHandler = httpHandlerGeneric as HttpHandlerBuilder<Schema>;
 export const job = jobGeneric as JobBuilder<Schema, ProcedureJobs, MutationJobs>;
-export const mcp = mcpGeneric as McpBuilder<Schema, Scope>;
 
 export type QueryCtx = GenericQueryCtx<Schema, QueryJobs>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationJobs>;

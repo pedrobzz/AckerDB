@@ -123,6 +123,12 @@ export type ProcedureCtx<
   ): Promise<FunctionResult<R>>;
 };
 
+/**
+ * One channel invocation's context together with the auth-invalidation
+ * publisher opened for it. A channel handler runs outside any single request,
+ * so the publisher it may revoke through is finished by the owner rather than
+ * by a response handoff.
+ */
 export interface OwnedProcedureContext {
   readonly value: ProcedureCtx;
   release(): void;
@@ -181,7 +187,7 @@ export interface ErrorDeclaration {
   readonly status: ErrorHttpStatus;
 }
 
-export type ErrorDeclarations = Readonly<Record<string, ErrorDeclaration>>;
+type ErrorDeclarations = Readonly<Record<string, ErrorDeclaration>>;
 
 type DeclaredErrors<Declarations extends ErrorDeclarations> = {
   readonly [Code in Extract<keyof Declarations, string>]: ApplicationError<

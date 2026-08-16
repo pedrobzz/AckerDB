@@ -17,11 +17,9 @@
 import {
   DEFAULT_API_PATH,
   EVENTS_NAMESPACE,
-  getRef,
   httpPathForAddress,
   RESERVED_MARKER,
 } from "@ackerdb/core";
-import type { Principal } from "../auth/credentials.ts";
 import {
   apiPath,
   httpExposure,
@@ -38,13 +36,6 @@ import {
   isRegisteredChannel,
   type AnyRegisteredChannel,
 } from "../channels/definition.ts";
-import {
-  isMcpDeclaration,
-  type AnyMcpDeclaration,
-  type AnyRegisteredMcpTool,
-  type McpEndpointDeclaration,
-} from "../mcp/index.ts";
-import { isMcpToolAuthorized } from "../mcp/tool-access.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
   claimsReservedName,
@@ -56,8 +47,6 @@ import {
   compileExposedHttpCodec,
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
-
-type ServerOnlyExport = AnyMcpDeclaration;
 
 interface ModuleExport {
   /**
@@ -102,11 +91,6 @@ export class Registry {
   readonly httpRoutes = new Map<string, HttpHandlerRoute>();
   private readonly httpHandlersByAddress = new Map<string, AnyRegisteredHttpHandler>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
-  readonly serverOnly = new Map<string, ServerOnlyExport>();
-  readonly mcps = new Map<string, AnyMcpDeclaration>();
-  readonly mcpTools = new Map<string, AnyRegisteredMcpTool>();
-  private readonly mcpByPath = new Map<string, AnyMcpDeclaration>();
-  private readonly toolsByMcp = new Map<AnyMcpDeclaration, readonly AnyRegisteredMcpTool[]>();
   private readonly addressByObject = new Map<object, string>();
   /** Every group this registry may publish: the manifest's, plus the default one. */
   private readonly declaredApiPaths: ReadonlySet<string>;
@@ -160,58 +144,6 @@ export class Registry {
       this.channels.set(address, value);
     }
 
-    for (const { name, value } of moduleExports) {
-      if (!isMcpDeclaration(value)) continue;
-      // An MCP endpoint is server-only: it has no reference in any group, so
-      // it takes the default group's prefix to occupy one name in the one
-      // address space every module export shares.
-      const address = `${DEFAULT_API_PATH}.${name}`;
-      this.registerAddress(address, value);
-      const existing = this.mcps.get(value.name);
-      if (existing !== undefined) {
-        throw new Error(`duplicate MCP name "${value.name}"`);
-      }
-      // A private endpoint claims no path: it is reachable only through
-      // `aiTools`, so it neither collides with an application module nor
-      // leaves a route advertising a tool list no caller may read.
-      if (value.path !== null) {
-        // Two refusals, not one message: a path that hits a built-in route and
-        // a path that reaches into a marked name send the developer looking in
-        // very different places.
-        if (isAckerDBHttpRoute(value.path)) {
-          throw new Error(
-            `MCP "${value.name}" path "${value.path}" collides with AckerDB route "${value.path}"`,
-          );
-        }
-        if (claimsReservedName(value.path)) {
-          throw new Error(
-            `MCP "${value.name}" path "${value.path}" claims a "${RESERVED_MARKER}"-marked name reserved to AckerDB`,
-          );
-        }
-        const pathOwner = this.mcpByPath.get(value.path);
-        if (pathOwner !== undefined) {
-          throw new Error(
-            `MCP "${value.name}" and "${pathOwner.name}" both use path "${value.path}"`,
-          );
-        }
-        this.mcpByPath.set(value.path, value);
-      }
-      this.mcps.set(value.name, value);
-      this.serverOnly.set(address, value);
-      const endpointTools = Object.freeze(Object.values(value.tools));
-      this.toolsByMcp.set(value, endpointTools);
-      for (const tool of endpointTools) {
-        const name = tool.name;
-        const key = this.mcpToolKey(value.name, name);
-        if (this.mcpTools.has(key)) {
-          throw new Error(`duplicate MCP tool name "${name}" in MCP "${value.name}"`);
-        }
-        this.mcpTools.set(key, tool);
-      }
-    }
-
-    // Exposed paths are claimed after every MCP path, so the single collision
-    // check below covers both declaration orders.
     for (const [address, fn] of this.functions) {
       const exposure = httpExposure(fn.http, `function "${address}" http`);
       if (exposure === null) continue;
@@ -240,15 +172,15 @@ export class Registry {
     }
 
     // Raw handler paths are claimed with the same nets as exposed functions:
-    // the reserved prefix, MCP collisions, and any path already claimed. They
-    // are claimed second, so one check covers a raw path colliding with an
-    // exposed one as well as with another raw one.
+    // the reserved prefix and any path already claimed. They are claimed
+    // second, so one check covers a raw path colliding with an exposed one as
+    // well as with another raw one.
     for (const [address, fn] of this.httpHandlersByAddress) {
       const path = this.claimApplicationHttpPath(address, "http handler");
       this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
     }
 
-    // The two server-only kinds are the two the passes above recognize, so the
+    // The server-only kind is the one the passes above recognize, so the
     // refusal reads the value's shape rather than where it landed: a marked
     // export the registry does not understand has no address to be named by.
     for (const { name, value } of moduleExports) {
@@ -256,7 +188,6 @@ export class Registry {
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
         (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
-        !isMcpDeclaration(value) &&
         !isHttpHandlerShaped(value)
       ) {
         throw new Error(`unknown server-only export at "${name}"`);
@@ -287,11 +218,10 @@ export class Registry {
 
   /**
    * Load-time cross-check where the App manifest meets the Registry: every
-   * scope a function or a tool entry requires must exist in the known
-   * vocabulary. Registered declarations are module-level constants that exist
-   * before `defineApp` is evaluated, so the check lives here rather than at
-   * registration — and it covers untyped callers, which the generated
-   * builders' scope union cannot.
+   * scope a function requires must exist in the known vocabulary. Registered
+   * functions are module-level constants that exist before `defineApp` is
+   * evaluated, so the check lives here rather than at registration — and it
+   * covers untyped callers, which the generated builders' scope union cannot.
    */
   checkScopeRequirements(applicationScopes: readonly string[] | undefined): void {
     const vocabulary = applicationScopes ?? [];
@@ -300,15 +230,6 @@ export class Registry {
       // Registration already normalized and froze it. Re-normalizing here
       // would mean validating a value dispatch may not be enforcing.
       checkRequirementAgainstVocabulary(fn.scopes, vocabulary, `function "${address}"`);
-    }
-    for (const tool of this.mcpTools.values()) {
-      const policy = tool.accessPolicy;
-      if (policy.kind !== "anyOf" && policy.kind !== "allOf") continue;
-      checkRequirementAgainstVocabulary(
-        policy,
-        vocabulary,
-        `MCP "${tool.mcp.name}" tool "${tool.name}"`,
-      );
     }
   }
 
@@ -340,10 +261,6 @@ export class Registry {
         `${label} "${address}" claims AckerDB-owned path "${path}"; "${RESERVED_MARKER}" is reserved to AckerDB`,
       );
     }
-    const mcp = this.mcpByPath.get(path);
-    if (mcp !== undefined) {
-      throw new Error(`${label} "${address}" and MCP "${mcp.name}" both use path "${path}"`);
-    }
     // Unique addresses do not imply unique paths: the projection joins on `/`
     // where the address joined on `.`, and an export named through a string
     // literal may contain either. `api.notes.a/b` and `api.notes.a.b` are two
@@ -366,8 +283,7 @@ export class Registry {
     if (
       this.functions.has(address) ||
       this.httpHandlersByAddress.has(address) ||
-      this.channels.has(address) ||
-      this.serverOnly.has(address)
+      this.channels.has(address)
     ) {
       throw new Error(`duplicate server export address "${address}"`);
     }
@@ -377,20 +293,10 @@ export class Registry {
         ? "registered function"
         : isHttpHandlerShaped(value)
           ? "registered http handler"
-        : isRegisteredChannel(value)
-          ? "registered channel"
-          : "server-only value";
+          : "registered channel";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
     this.addressByObject.set(value, address);
-  }
-
-  private mcpToolKey(mcp: string, tool: string): string {
-    return `${mcp}\u0000${tool}`;
-  }
-
-  mcpAtPath(path: string): AnyMcpDeclaration | undefined {
-    return this.mcpByPath.get(path);
   }
 
   /** The HTTP surface of one address, or undefined when the function is not exposed. */
@@ -401,23 +307,6 @@ export class Registry {
   /** The raw handler at one address, or undefined when none is registered. */
   httpHandler(address: string): AnyRegisteredHttpHandler | undefined {
     return this.httpHandlersByAddress.get(address);
-  }
-
-  toolsFor(
-    mcp: McpEndpointDeclaration,
-    principal: Principal,
-  ): readonly AnyRegisteredMcpTool[] {
-    return this.registeredToolsFor(mcp).filter((tool) =>
-      isMcpToolAuthorized(tool.accessPolicy, principal)
-    );
-  }
-
-  registeredToolsFor(mcp: McpEndpointDeclaration): readonly AnyRegisteredMcpTool[] {
-    return this.toolsByMcp.get(mcp as AnyMcpDeclaration) ?? [];
-  }
-
-  mcpTool(mcp: string, tool: string): AnyRegisteredMcpTool | undefined {
-    return this.mcpTools.get(this.mcpToolKey(mcp, tool));
   }
 
   /**

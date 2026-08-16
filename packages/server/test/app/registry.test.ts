@@ -5,7 +5,6 @@ import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
-import { mcp } from "../../src/mcp/index.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   claimsReservedName,
@@ -104,54 +103,13 @@ describe("HTTP-exposed function paths", () => {
       expect(isAckerDBHttpRoute(operational)).toBe(true);
     }
 
-    // One reservation, applied wherever a path is claimed: the group, the
-    // module namespace under it, and an MCP endpoint's free-form path alike.
+    // One reservation, applied wherever a path is claimed: the group and the
+    // module namespace under it alike.
     expect(claimsReservedName("/api/_files")).toBe(true);
     expect(claimsReservedName("/_ws")).toBe(true);
-    expect(claimsReservedName("/mcp/_private")).toBe(true);
+    expect(claimsReservedName("/_private/tools")).toBe(true);
     expect(claimsReservedName("/api/notes/_echo")).toBe(false);
-    expect(claimsReservedName("/mcp/my_endpoint")).toBe(false);
-  });
-
-  test("refuses an MCP endpoint reaching into a marked name", () => {
-    // `/api/_files` holds no framework route, but the marker is still
-    // AckerDB's — and the rule cannot hold for functions while lapsing for the
-    // one surface that picks its path by hand.
-    const squatter = mcp({
-      name: "squatter",
-      path: "/api/_files",
-      tools: {},
-    });
-    expect(() => new Registry({ mcp: { squatter } })).toThrow(
-      'MCP "squatter" path "/api/_files" claims a "_"-marked name reserved to AckerDB',
-    );
-    // A path that really is a built-in route says so instead.
-    const collider = mcp({
-      name: "collider",
-      path: "/_ws",
-      tools: {},
-    });
-    expect(() => new Registry({ mcp: { collider } })).toThrow(
-      'MCP "collider" path "/_ws" collides with AckerDB route "/_ws"',
-    );
-  });
-
-  test("refuses a path claimed by both a function and an MCP endpoint, in either order", () => {
-    const endpoint = mcp({
-      name: "agent",
-      path: "/api/notes/echo",
-      tools: {},
-    });
-    const message = 'HTTP-exposed function "api.notes.echo" and MCP "agent" both use path "/api/notes/echo"';
-
-    expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);
-    expect(() => new Registry({ mcp: { endpoint }, notes: { echo: exposed } })).toThrow(message);
-    expect(() => new Registry({ notes: { echo: internal }, mcp: { endpoint } })).not.toThrow();
-    // A raw handler at the same path meets the same check, named by its kind.
-    const hook = httpHandler({ methods: ["POST"], handler: () => new Response(null) });
-    expect(() => new Registry({ notes: { echo: hook }, mcp: { endpoint } })).toThrow(
-      'http handler "api.notes.echo" and MCP "agent" both use path "/api/notes/echo"',
-    );
+    expect(claimsReservedName("/api/my_notes")).toBe(false);
   });
 
   test("refuses two addresses projecting onto one path", () => {

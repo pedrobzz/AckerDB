@@ -16,7 +16,6 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   type ClientPrincipal,
-  type Principal,
 } from "../auth/credentials.ts";
 import {
   acquireAuthLease,
@@ -44,23 +43,9 @@ import type { ExposedHttpCodec } from "./http-codec.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import type { ExposedFunction, HttpHandlerRoute } from "../app/registry.ts";
 import { standardJsonText } from "../validation/standard-json.ts";
-import type { McpEndpointDeclaration } from "../mcp/index.ts";
-import { credentialTokenFromAuthorization } from "../auth/credential-token.ts";
-import {
-  McpHttpBoundary,
-  type McpHttpOptions,
-} from "../mcp/http-boundary.ts";
-import {
-  mcpBoundaryRejected,
-  mcpErrorResponse,
-  mcpMethodNotAllowed,
-  parseMcpJson,
-  withMcpCors,
-} from "../mcp/wire.ts";
 import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
-import type { CredentialLease } from "../runtime/credentials/runtime.ts";
 import type {
   HttpMutationReceipt,
   RuntimeHttpResponder,
@@ -89,7 +74,6 @@ export interface AckerDBServerOptions {
   readonly hostname?: string;
   /** Socket peers permitted to supply a client address through X-Forwarded-For. */
   readonly trustedProxy?: string | readonly string[];
-  readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
   /**
@@ -101,8 +85,6 @@ export interface AckerDBServerOptions {
    */
   readonly openapiEndpoint?: OpenApiInfo;
 }
-
-export type { McpHttpOptions } from "../mcp/http-boundary.ts";
 
 export interface AckerDBServerStatus {
   readonly state: AckerDBServerState;
@@ -140,7 +122,7 @@ const CORS = Object.freeze({
   // PATCH, PUT and DELETE are raw HTTP handler methods; the exposed function
   // surface serves only GET and POST.
   "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, mcp-protocol-version, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
+  "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
   "access-control-expose-headers": [
     ...Object.values(SSE_STREAM_HEADERS),
     ...Object.values(RECEIPT_HEADERS),
@@ -653,15 +635,6 @@ function parseArgsSearchParameter(
   return { value: decodeArgs(raw, codec), bytes };
 }
 
-async function parseJsonHttpBody(
-  request: Request,
-  maxBytes: number,
-  maxAgeMs: number,
-): Promise<ParsedHttpBody<unknown>> {
-  const body = await readBoundedBody(request, maxBytes, maxAgeMs);
-  return { value: parseMcpJson(body.text), bytes: body.bytes };
-}
-
 function configuredStatusScope(value: string | undefined): string {
   const scope = value ?? DEFAULT_STATUS_SCOPE;
   if (typeof scope !== "string" || !STATUS_SCOPE_TOKEN.test(scope)) {
@@ -702,7 +675,6 @@ export class AckerDBServer {
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
   private readonly fileAdmission: HttpAdmission;
-  private readonly mcpHttp: McpHttpBoundary;
   private readonly openapiInfo: OpenApiInfo | undefined;
   /** The OpenAPI document assembled at activation, or null while it is not served. */
   private openapi: Uint8Array<ArrayBuffer> | null = null;
@@ -737,7 +709,6 @@ export class AckerDBServer {
           ? options.trustedProxy
           : [...options.trustedProxy],
       );
-    this.mcpHttp = new McpHttpBoundary(this.hostname, options.mcpHttp);
     this.openapiInfo = options.openapiEndpoint;
     this.outbound = new OutboundBudget(
       this.limits.webSocket.maxBytes,
@@ -851,7 +822,6 @@ export class AckerDBServer {
       throw new Error("Runtime limits must match listener limits");
     }
     try {
-      this.mcpHttp.assertCanServe(runtime.registry.mcps.size > 0);
       // The registry is immutable after load, so the document is too: assemble
       // it once here and serve those bytes. A document that cannot be built
       // fails the activation rather than the first caller that asks for it.
@@ -916,27 +886,6 @@ export class AckerDBServer {
         state,
         ...(this.startup === null ? {} : { phase: this.startup }),
       }, ready ? 200 : 503);
-    }
-    const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
-    if (mcp !== undefined) {
-      const boundary = this.mcpHttp.inspect(
-        request,
-        this.port,
-        this.limits.mcp.maxHeaderBytes,
-      );
-      if (boundary.rejectionStatus !== undefined) {
-        return mcpBoundaryRejected(boundary.rejectionStatus, boundary.cors);
-      }
-      if (request.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: boundary.cors });
-      }
-      if (request.method !== "POST") return mcpMethodNotAllowed(boundary.cors);
-      return this.mcp(
-        request,
-        mcp,
-        this.requestSource(request, listener),
-        boundary.cors,
-      );
     }
     // The application owns every path AckerDB has not reserved — `apiPath`
     // makes `/api/` one group among however many the application names — and
@@ -1248,69 +1197,6 @@ export class AckerDBServer {
       return outcomeError(error);
     } finally {
       lease?.release();
-      admission?.release();
-    }
-  }
-
-  private async mcp(
-    request: Request,
-    mcp: McpEndpointDeclaration,
-    source: TransportSource,
-    cors: Readonly<Record<string, string>>,
-  ): Promise<Response> {
-    const runtime = this.requireRuntime();
-    let admission: HttpAdmissionLease | undefined;
-    let credentialLease: CredentialLease | undefined;
-    let principal: Principal = ANONYMOUS_PRINCIPAL;
-    // The MCP door's credential lease is a subscriber like any other, and the
-    // JSON-RPC body is assembled after the tool call returns, so releasing the
-    // origin's own delivery belongs here rather than inside the Runtime.
-    let invalidations: AuthInvalidationPublisher | undefined;
-    try {
-      if (this.lifecycle !== "ready" || runtime.state !== "ready") {
-        throw unavailableWhile(this.lifecycle);
-      }
-      admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-      const { value, bytes } = await parseJsonHttpBody(
-        request,
-        runtime.limits.maxRequestBytes,
-        runtime.limits.readQueue.maxAgeMs,
-      );
-      const credential = credentialTokenFromAuthorization(request.headers.get("authorization"));
-      if (credential !== null) {
-        credentialLease = await runtime.acquireCredentialLease(
-          credential,
-          callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
-          request.signal,
-        );
-        principal = credentialLease.principal;
-      }
-      const fairnessKey = callerFairnessKey(principal, source);
-      admission.transfer(fairnessKey);
-      invalidations = runtime.authInvalidation.publisher(
-        principal,
-        credentialLease?.invalidationScope,
-      );
-      const { handleMcpPost } = await import("../mcp/http.ts");
-      return withMcpCors(await handleMcpPost({
-        request,
-        body: value,
-        bytes,
-        mcp,
-        runtime,
-        principal,
-        signal: credentialLease?.signal ?? request.signal,
-        fairnessKey,
-        invalidations,
-      }), cors);
-    } catch (error) {
-      return mcpErrorResponse(error, cors, {
-        realm: mcp.name,
-        credentialPresented: request.headers.has("authorization"),
-      });
-    } finally {
-      invalidations?.finish();
-      credentialLease?.release();
       admission?.release();
     }
   }

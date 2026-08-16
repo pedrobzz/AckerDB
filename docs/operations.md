@@ -471,6 +471,10 @@ and total object and byte counts.
 
 ## Remaining limitations
 
+- Pre-1.0, an AckerDB upgrade that bumps the storage engine's internal schema
+  refuses to open older `.ackerdb` files; the error names both versions. The
+  development workflow is wipe and reseed — there is no engine-schema migration
+  story before 1.0, by design.
 - One process owns one SQLite database and one writer. There is no consensus,
   replication, automatic failover, active-active region, sharding, cross-shard
   transaction, or global consistency claim.

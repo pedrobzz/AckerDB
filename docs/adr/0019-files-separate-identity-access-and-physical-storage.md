@@ -74,7 +74,7 @@ metadata-only, so a harmless-looking read never allocates the entire object.
 Backend stores use the same automatic owner capture and pending-claim lifecycle
 as client uploads.
 
-An upload session created by a user or MCP principal captures that principal's
+An upload session created by a user principal captures that principal's
 durable identity, and its completed File receives it as an immutable owner
 automatically. Anonymous, workload, and system creation is unowned unless
 trusted server-side code explicitly chooses an owner.

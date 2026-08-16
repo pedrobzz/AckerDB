@@ -7,7 +7,6 @@
  * grant changes ride the one generic auth-invalidation path instead of a
  * parallel cancellation registry.
  */
-import { AckerDBError } from "../shared/errors.ts";
 
 /** The synthetic issuer every AckerDB-issued credential authenticates under. */
 export const CREDENTIAL_ISSUER = "ackerdb:credentials";
@@ -45,15 +44,3 @@ export function parseCredentialToken(value: string): ParsedCredentialToken | nul
     : Object.freeze({ id: match[1]!, secret: match[2]!, bytes: value.length });
 }
 
-/** MCP HTTP accepts either no credential or one exact parsed AckerDB credential bearer. */
-export function credentialTokenFromAuthorization(
-  value: string | null,
-): ParsedCredentialToken | null {
-  if (value === null) return null;
-  const match = /^Bearer ([^\s,]+)$/i.exec(value);
-  const parsed = match === null ? null : parseCredentialToken(match[1]!);
-  if (parsed === null) {
-    throw new AckerDBError("unauthenticated", "invalid credential");
-  }
-  return parsed;
-}

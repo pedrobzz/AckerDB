@@ -11,7 +11,6 @@ interface ChangeSet {
   readonly testPackages: readonly string[];
   readonly code: boolean;
   readonly verifyPackages: boolean;
-  readonly mcp: boolean;
   readonly workflows: boolean;
 }
 
@@ -80,8 +79,6 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     .sort((left, right) => packageOrder.get(left)! - packageOrder.get(right)!);
 
   const verifyPackages = verifyPackagesInputsChanged(files);
-  const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
-    files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
   const code = codeInputsChanged(files);
   return {
@@ -89,7 +86,6 @@ export function classifyChanges(base: string, head: string): ChangeSet {
     testPackages,
     code,
     verifyPackages,
-    mcp,
     workflows,
   };
 }
@@ -125,7 +121,6 @@ if (import.meta.main) {
       `test_packages=${JSON.stringify(changes.testPackages)}`,
       `code=${changes.code}`,
       `verify_packages=${changes.verifyPackages}`,
-      `mcp=${changes.mcp}`,
       `workflows=${changes.workflows}`,
       "",
     ].join("\n"));

@@ -138,6 +138,6 @@ checked wherever a child is written, not wherever a caller was admitted.
   tables. It still shows the Jobs tables: a Job's scheduling intent is
   application state, guarded column by column at the write seam, and that has
   not changed.
-- Savoria's Admin Panel, Admin Chat, Admin MCP, and Agents page keep their
-  names. They are an application's own administration feature, which is exactly
-  the thing this decision says applications should build.
+- Savoria's Admin Panel, Admin Chat, and Agents page keep their names. They are
+  an application's own administration feature, which is exactly the thing this
+  decision says applications should build.

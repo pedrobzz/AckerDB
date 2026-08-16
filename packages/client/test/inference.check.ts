@@ -150,7 +150,7 @@ export async function _generatedClientInference(): Promise<void> {
   const queryResult = await client.query(api.generated.authorizationSummary, { label: "query" });
   if (!queryResult.ok) throw queryResult.error;
   const _queryLabel: string = queryResult.data.label;
-  const _principalKind: "anonymous" | "user" | "mcp" | "workload" | "system" = queryResult.data.kind;
+  const _principalKind: "anonymous" | "user" | "workload" | "system" = queryResult.data.kind;
   // @ts-expect-error query handler inference keeps label as string
   const _wrongQueryLabel: number = queryResult.data.label;
 

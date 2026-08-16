@@ -118,7 +118,7 @@ validated URL for programmatic private downloads.
 ## Upload Sessions
 
 An Upload Session is one-use bearer authority for one successful upload. A
-session created under a user or MCP principal captures that principal's durable
+session created under a user principal captures that principal's durable
 Identity as the immutable File owner, even if someone else receives and uses
 the upload URL. Anonymous, workload, and system creation is unowned unless
 trusted code supplies `owner` explicitly.

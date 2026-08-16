@@ -97,9 +97,6 @@ async function main(): Promise<void> {
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
     );
-    if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
-      throw new Error("packed @ackerdb/server does not expose ./mcp from ./src/mcp/index.ts");
-    }
     if (serverManifest.exports?.["./files/s3"] !== "./src/files/store/s3.ts") {
       throw new Error(
         "packed @ackerdb/server does not expose ./files/s3 from ./src/files/store/s3.ts",
@@ -121,7 +118,6 @@ async function main(): Promise<void> {
       );
     }
     const exactServerDependencies = {
-      "@modelcontextprotocol/sdk": "1.30.0",
       "numkong": "7.7.1",
     } as const;
     for (const [dependency, expected] of Object.entries(exactServerDependencies)) {
@@ -140,7 +136,6 @@ async function main(): Promise<void> {
     ) as { readonly packages: Readonly<Record<string, readonly unknown[]>> };
     for (const [dependency, expected] of Object.entries({
       "@hono/node-server": "2.0.12",
-      "fast-uri": "3.1.5",
     })) {
       const prefix = `${dependency}@`;
       const resolved = new Set(Object.values(consumerLock.packages).flatMap(
@@ -169,7 +164,7 @@ export default defineApp({ schema, scopes: ["orders.all", "orders.get"] as const
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
 import { v } from "@ackerdb/server";
-import { mcp, query, type QueryCtx, type Scope } from "../_generated/server.ts";
+import { query, type QueryCtx, type Scope } from "../_generated/server.ts";
 
 export const getOrder = query({
   description: "Get an order by ID.",
@@ -181,11 +176,6 @@ export const getOrder = query({
     void typedContext;
     return { id: args.id };
   },
-});
-
-export const agentMcp = mcp({
-  name: "agent",
-  tools: { orders_get: { fn: getOrder, access: { anyOf: ["orders.all", "orders.get"] } } },
 });
 
 const scope: Scope = "orders.get";
@@ -204,10 +194,7 @@ import {
   Engine,
   type FileGrantId,
   makeDbWriter,
-  mcp as mcpFromRoot,
-  mcpContent as mcpContentFromRoot,
   newWriteCollector,
-  procedure,
   v,
 } from "@ackerdb/server";
 import * as serverRoot from "@ackerdb/server";
@@ -221,10 +208,6 @@ import {
   S3FileStore,
   type S3FileStoreConfig,
 } from "@ackerdb/server/files/s3";
-import {
-  mcp as mcpFromSubpath,
-  mcpContent as mcpContentFromSubpath,
-} from "@ackerdb/server/mcp";
 
 if ("S3FileStore" in serverRoot) {
   throw new Error("the root @ackerdb/server entrypoint eagerly exposes the optional S3 adapter");
@@ -260,25 +243,6 @@ const s3Config = {
 if (!(new S3FileStore(s3Config) instanceof S3FileStore)) {
   throw new Error("@ackerdb/server/files/s3 did not construct its public S3 adapter");
 }
-
-if (mcpFromRoot !== mcpFromSubpath) {
-  throw new Error("@ackerdb/server/mcp resolves a different mcp implementation");
-}
-if (mcpContentFromRoot !== mcpContentFromSubpath) {
-  throw new Error("@ackerdb/server/mcp resolves a different mcpContent implementation");
-}
-const probe = procedure({
-  description: "Verify packed MCP tool assembly.",
-  access: "public",
-  args: {},
-  returns: mcpContentFromSubpath(),
-  handler: () => ({ content: [{ type: "text" as const, text: "ok" }] }),
-});
-const endpoint = mcpFromSubpath({
-  name: "package_probe",
-  tools: { package_probe: { fn: probe, access: "public" } },
-});
-if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
 
 const vectorSchema = defineSchema({
   documents: defineTable({
@@ -346,7 +310,7 @@ try {
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} public @ackerdb packages at ${version}, lazy S3 adapter exports, generated MCP types, Bun runtime, SDK 1.30.0 with audited transitive security floors, and native NumKong exact search, with no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} public @ackerdb packages at ${version}, lazy S3 adapter exports, generated types, Bun runtime, audited transitive security floors, and native NumKong exact search, with no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

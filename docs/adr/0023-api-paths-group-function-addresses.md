@@ -70,9 +70,9 @@ them, `admin` included. A name is one identifier-shaped path segment, may not
 be a word `export const <name>` rejects, and may not begin with `_` — the
 reserved marker, which keeps every root AckerDB may want permanently free of
 application routes. The marker rule is stated once and applied wherever a path
-is claimed — the group, the module namespace under it, and the free-form path
-an MCP endpoint chooses alike. The socket-addressed kind (channels) has no
-HTTP root to group and refuses `apiPath` at startup.
+is claimed — the group and the module namespace under it alike. The
+socket-addressed kind (channels) has no HTTP root to group and refuses
+`apiPath` at startup.
 
 A group decides *where* a function answers, never *whether* it answers: plain
 HTTP still requires `http`, and over the socket a function is addressed by the
@@ -193,9 +193,9 @@ A unique address does not imply a unique route. The projection joins segments
 with `/` where the address joined them with `.`, and an export named through a
 string literal may contain either, so `api.notes.a/b` and `api.notes.a.b` are
 two functions with two access policies at one URL. The path claim refuses the
-second rather than replacing the first, beside the reserved-marker and MCP
-refusals it already owned — the one place a path is claimed is the one place
-that can know a path is taken.
+second rather than replacing the first, beside the reserved-marker refusal it
+already owned — the one place a path is claimed is the one place that can know
+a path is taken.
 
 ## Two costs accepted deliberately
 

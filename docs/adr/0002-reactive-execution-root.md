@@ -4,10 +4,11 @@ Subscription re-evaluation and event delivery execute application code *on
 behalf of subscribers*, but they used to run in whatever async context happened
 to trigger them. Async context flows implicitly through every async hop, so
 when a commit landed inside a handler's still-open invocation scope (`ctx.tx`
-in MCP tools, procedures, SSE procedures), each affected subscriber's query
-re-ran looking like a *nested invocation under the mutator's principal* — and
-the confused-deputy guard correctly revoked it. Symptom: every live dashboard
-subscription errored `unauthorized` the moment any MCP action committed. The
+in procedures and SSE procedures), each affected subscriber's query re-ran
+looking like a *nested invocation under the mutator's principal* — and the
+confused-deputy guard correctly revoked it. Symptom: every live dashboard
+subscription errored `unauthorized` the moment a procedure's own transaction
+committed. The
 unstated invariant "nothing commits while an invocation scope is ambient" held
 only for WS mutations, whose transaction *contains* the handler invocation
 rather than the reverse — an accident of containment order, not a design.
@@ -38,8 +39,8 @@ implicitly**.
 
 ## Consequences
 
-Every commit path — WS mutation, MCP tool, procedure, SSE procedure, and
-anything added later — now lands identically: commit → publication → each
+Every commit path — WS mutation, exposed HTTP call, procedure, SSE procedure,
+and anything added later — now lands identically: commit → publication → each
 subscriber re-evaluated under its own principal inside the reactive root.
 Tripping the confused-deputy guard is now always a genuine context bug, never
 reactive fallout, and it reports `invocation context principal mismatch` —

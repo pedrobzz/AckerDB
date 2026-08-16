@@ -1,19 +1,9 @@
 import type { MutationReceipt } from "@ackerdb/core";
 import type { Principal } from "../../auth/credentials.ts";
-import type { RuntimeMcpToolAuthorization } from "../mcp/authorization.ts";
 
 export interface RuntimeExternalRequest {
   readonly id: number;
   readonly address: string;
-  readonly args: unknown;
-  readonly principal: Principal;
-  readonly signal?: AbortSignal;
-  readonly fairnessKey?: string;
-}
-
-export interface RuntimeMcpToolRequest {
-  readonly id: string | number;
-  readonly authorization: RuntimeMcpToolAuthorization;
   readonly args: unknown;
   readonly principal: Principal;
   readonly signal?: AbortSignal;

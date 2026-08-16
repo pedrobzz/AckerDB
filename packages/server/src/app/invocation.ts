@@ -18,7 +18,6 @@ import type { AccessPolicy, InvocationContext } from "./access.ts";
 import {
   enforceScopeRequirement,
   type NormalizedScopeRequirement,
-  type ScopeRequirement,
 } from "../auth/scopes.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import {
@@ -104,7 +103,7 @@ function compileBaseAccess<Ctx extends InvocationContext, Args>(
 /**
  * The one authorization funnel: the base access policy first, then the
  * declared scope requirement against the caller's expanded grant. Every entry
- * — client call, HTTP, MCP tool, nested server-side call — reaches a handler
+ * — client call, HTTP, nested server-side call — reaches a handler
  * only through this enforcer, which is why scopes need no second checkpoint of
  * their own.
  */

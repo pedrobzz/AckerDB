@@ -63,22 +63,18 @@ export class RuntimeSystem {
           readNow(this.options.now),
           this.options.invalidations.publish,
         );
-        try {
-          return await invokeSideEffectingHandler(
-            signal,
-            "system callback",
-            (onAuthorized) => runInInvocationRoot(
-              SYSTEM_PRINCIPAL,
-              () => {
-                onAuthorized();
-                return work(context.value as SystemCtx);
-              },
-              writerOwnedByCaller,
-            ),
-          );
-        } finally {
-          context.release();
-        }
+        return await invokeSideEffectingHandler(
+          signal,
+          "system callback",
+          (onAuthorized) => runInInvocationRoot(
+            SYSTEM_PRINCIPAL,
+            () => {
+              onAuthorized();
+              return work(context as SystemCtx);
+            },
+            writerOwnedByCaller,
+          ),
+        );
       },
       { fairnessKey: SYSTEM_FAIRNESS_KEY },
     ));

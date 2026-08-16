@@ -29,14 +29,12 @@ import {
 import type {
   AnyRegistered,
   MutationCtx,
-  OwnedProcedureContext,
   ProcedureCtx,
   QueryCtx,
   TxCtx,
 } from "../../app/functions.ts";
-import type { OwnedHttpHandlerContext } from "../../app/http-handler.ts";
+import type { HttpHandlerCtx } from "../../app/http-handler.ts";
 import type { Registry } from "../../app/registry.ts";
-import type { McpAiContext } from "../../mcp/ai.ts";
 import { Identities } from "../../auth/identities.ts";
 import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
 import type { IdentityDatabase } from "../../auth/tables.ts";
@@ -93,8 +91,6 @@ import { FileProcedureRuntime } from "../../files/procedure.ts";
 import { markOneTimeResult } from "../one-time-result.ts";
 import { settleOnAbort } from "../abort.ts";
 
-const releaseNothing = (): void => {};
-
 /** What one runner transaction can reach; see `jobsWrite`. */
 export interface JobsWriteSurface {
   readonly jobs: JobsStore;
@@ -142,14 +138,6 @@ export interface RuntimeMutationCommitRequest {
   readonly publishAuthInvalidation?: (account: ExternalAccount) => void;
 }
 
-export interface RuntimeFunctionMcpCapabilities {
-  bindAiContext(
-    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
-    fairnessKey: string,
-    requestBytes: number,
-  ): () => void;
-}
-
 interface RuntimeCommitRequest<T> {
   readonly operation: "mutation" | "transaction";
   readonly fairnessKey: string;
@@ -189,7 +177,6 @@ export interface RuntimeFunctionExecutorOptions<C> {
    * path, for a commit whose origin holds no response of its own.
    */
   readonly publishAuthInvalidation: (account: ExternalAccount) => void;
-  readonly mcp?: RuntimeFunctionMcpCapabilities;
   /** Commit-wake: fired when a transaction touched the jobs table. */
   readonly armJobs: () => void;
   /** Lazy: the jobs runner is constructed after this executor. */
@@ -412,35 +399,6 @@ export class RuntimeFunctionExecutor<C> {
     });
   }
 
-  createMcpTransactionContext(
-    principal: Principal,
-    fairnessKey: string,
-    signal: AbortSignal,
-    requestBytes: number,
-    timestamp: number,
-  ): McpAiContext & Pick<ProcedureCtx, "timestamp"> {
-    return Object.freeze({
-      auth: principal,
-      abortSignal: signal,
-      timestamp,
-      tx: async <R>(work: (ctx: TxCtx) => R): Promise<Awaited<R>> =>
-        await this.executeWrite(
-          "transaction",
-          fairnessKey,
-          signal,
-          requestBytes,
-          async (db, writes) => {
-            const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
-            try {
-              return await work(context);
-            } catch (error) {
-              return poisonCurrentInvocation(error);
-            }
-          },
-        ) as Awaited<R>,
-    });
-  }
-
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -449,7 +407,7 @@ export class RuntimeFunctionExecutor<C> {
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
     surface?: "procedure",
-  ): OwnedProcedureContext;
+  ): ProcedureCtx;
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -458,7 +416,7 @@ export class RuntimeFunctionExecutor<C> {
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
     surface: "http",
-  ): OwnedHttpHandlerContext;
+  ): HttpHandlerCtx;
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -468,7 +426,7 @@ export class RuntimeFunctionExecutor<C> {
     accountUnlinked: (account: ExternalAccount) => void,
     /** "http" omits the auth members: raw routes resolve no credential. */
     surface: "procedure" | "http" = "procedure",
-  ): OwnedProcedureContext | OwnedHttpHandlerContext {
+  ): ProcedureCtx | HttpHandlerCtx {
     const currentTimestamp = typeof timestamp === "function"
       ? timestamp
       : () => timestamp;
@@ -523,12 +481,7 @@ export class RuntimeFunctionExecutor<C> {
         ),
       }),
     }) as ProcedureCtx;
-    // The MCP AI capability authenticates as the calling principal; the http
-    // surface has none, so binding it there would carry an absent identity.
-    const release = surface !== "http"
-      ? this.options.mcp?.bindAiContext(value, fairnessKey, requestBytes) ?? releaseNothing
-      : releaseNothing;
-    return Object.freeze({ value, release });
+    return value;
   }
 
   /**

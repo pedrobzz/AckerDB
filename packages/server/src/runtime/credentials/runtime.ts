@@ -18,7 +18,7 @@
  * subscription is waiting on.
  */
 import type { Database } from "bun:sqlite";
-import { AckerDBError, throwIfAborted } from "../../shared/errors.ts";
+import { throwIfAborted } from "../../shared/errors.ts";
 import type { Identity } from "@ackerdb/core";
 import {
   resolvedGrant,
@@ -37,10 +37,9 @@ import {
   CREDENTIAL_AUTHORITY,
   type ParsedCredentialToken,
 } from "../../auth/credential-token.ts";
-import {
-  invalidationReaches,
-  type AuthInvalidationScope,
-  type AuthInvalidationSubscription,
+import type {
+  AuthInvalidationScope,
+  AuthInvalidationSubscription,
 } from "../../auth/invalidation.ts";
 import { expandScopeGrant } from "../../auth/scopes.ts";
 import { Credentials } from "../../credentials/module.ts";
@@ -50,19 +49,6 @@ import type { Engine } from "../../database/engine.ts";
 import { internalDatabase } from "../../database/framework-schema.ts";
 import { externalAccountFairnessKey } from "../caller.ts";
 import type { RuntimeReadExecutor } from "../execution/read.ts";
-
-/** Owns one exact non-expiring credential from verification through HTTP completion. */
-export interface CredentialLease {
-  readonly principal: UserPrincipal;
-  readonly signal: AbortSignal;
-  /**
-   * Package-owned origin naming this exact lease. A revocation the leased
-   * caller performs itself is published with this scope excluded, so the door
-   * that carries the response is not the door the change closes.
-   */
-  readonly invalidationScope: AuthInvalidationScope;
-  release(): void;
-}
 
 export interface RuntimeCredentialsOptions {
   readonly engine: Engine;
@@ -206,53 +192,6 @@ export class RuntimeCredentials {
     );
     throwIfAborted(operationSignal);
     return principal;
-  }
-
-  /** Own credential validity for exactly one stateless HTTP operation. */
-  async acquireLease(
-    parsed: ParsedCredentialToken,
-    fairnessKey: string,
-    signal?: AbortSignal,
-  ): Promise<CredentialLease> {
-    this.options.assertReady();
-    const controller = new AbortController();
-    // The subscription opens before verification so an invalidation racing it
-    // fails closed, which is why the listener has two shapes. Until the
-    // principal exists there is nothing to match on but the token being
-    // verified; once it exists, the one predicate every holder of a live
-    // principal shares takes over — and that is what carries the upstream
-    // accounts a delegated credential is bounded by.
-    let leased: UserPrincipal | undefined;
-    const subscription = this.options.subscribeInvalidation((invalidation) => {
-      if (controller.signal.aborted) return;
-      const reached = leased === undefined
-        ? invalidation.issuer === CREDENTIAL_ISSUER &&
-          (invalidation.subject === undefined || invalidation.subject === parsed.id)
-        : invalidationReaches(leased, invalidation);
-      if (reached) controller.abort(new AckerDBError("unauthenticated", "credential revoked"));
-    });
-    const leaseSignal = signal === undefined
-      ? controller.signal
-      : AbortSignal.any([signal, controller.signal]);
-    try {
-      const principal = await this.authenticate(parsed, fairnessKey, leaseSignal);
-      leased = principal;
-      throwIfAborted(leaseSignal);
-      let active = true;
-      return Object.freeze({
-        principal,
-        signal: leaseSignal,
-        invalidationScope: subscription.scope,
-        release: () => {
-          if (!active) return;
-          active = false;
-          subscription.unsubscribe();
-        },
-      });
-    } catch (error) {
-      subscription.unsubscribe();
-      throw error;
-    }
   }
 
   /**

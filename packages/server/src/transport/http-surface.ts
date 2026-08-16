@@ -47,9 +47,8 @@ export function isAckerDBHttpRoute(path: string): boolean {
  * never collide with an application's. Segments deeper than that are the
  * application's own business.
  *
- * One predicate for every claiming site — address-derived routes and the
- * free-form paths MCP endpoints choose alike — so the reservation cannot hold
- * on one surface and lapse on another.
+ * One predicate for every claiming site, so the reservation cannot hold on one
+ * surface and lapse on another.
  */
 export function claimsReservedName(path: string): boolean {
   return path

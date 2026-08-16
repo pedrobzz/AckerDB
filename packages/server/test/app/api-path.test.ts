@@ -9,7 +9,6 @@ import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { httpHandler } from "../../src/app/http-handler.ts";
 import { channel } from "../../src/channels/definition.ts";
-import { mcp } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 /** Every registered address, sorted. The framework contributes none. */
@@ -228,18 +227,5 @@ describe("the HTTP root a group owns", () => {
     const registry = new Registry({ "admin.messages": { list } });
     expect(applicationAddresses(registry)).toEqual(["api.admin.messages.list"]);
     expect(applicationRoutes(registry)).toEqual(["/api/admin/messages/list"]);
-  });
-
-  test("an MCP tools record may name a function from any group", () => {
-    const endpoint = mcp({
-      name: "admin",
-      path: "/mcp/admin",
-      tools: { list_index: { fn: compact, access: "public" } },
-    });
-    const registry = new Registry({
-      messages: { list, compact },
-      tools: { endpoint },
-    }, ["internal"]);
-    expect(registry.mcpTool("admin", "list_index")?.fn).toBe(compact as never);
   });
 });
