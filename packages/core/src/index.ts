@@ -61,7 +61,6 @@ export {
   type ChannelError,
   type RegisteredFunction,
   type RegisteredChannelContract,
-  type RegisteredServerOnly,
   type ApiFromModules,
   httpPathForAddress,
   APPLICATION_ADDRESS_ROOT,

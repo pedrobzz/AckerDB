@@ -164,7 +164,7 @@ afterEach(async () => {
   }
 });
 
-describe("procedure-kind jobs", () => {
+describe("procedure-mode Jobs", () => {
   test("claims, runs the handler as a system operation, and settles the outcome", async () => {
     clock = 1_000_000;
     const seen: unknown[] = [];
@@ -610,7 +610,7 @@ describe("durability", () => {
     const jobs = () => declareJobs({
       work: {
         note: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: { line: v.string() },
           handler: async (tx: Ctx, args: Ctx) => {
             await tx.db.log.insert({ line: args.line });
@@ -736,7 +736,7 @@ describe("durability", () => {
     await start(declareJobs({
       work: {
         tick: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: {},
           repeat: { everyMs: 1_000 },
           retention: "forever",
@@ -846,7 +846,7 @@ describe("durability", () => {
     await start(declareJobs({
       work: {
         brief: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: {},
           retention: 1_000,
           handler: async () => "done",
@@ -872,7 +872,7 @@ describe("durability", () => {
     await start(declareJobs({
       work: {
         cached: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: {},
           retention: 1_000,
           dedupe: { completed: 500_000 },
@@ -931,7 +931,7 @@ describe("durability", () => {
     await start(declareJobs({
       work: {
         brief: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: { n: v.int() },
           retention: 1_000,
           handler: async (_tx: Ctx, args: Ctx) => `value:${args.n}`,
@@ -1130,7 +1130,7 @@ describe("administration transitions", () => {
     await start(declareJobs({
       work: {
         brief: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: { n: v.int() },
           retention: 1_000,
           handler: async () => "done",
@@ -1180,7 +1180,7 @@ describe("administration transitions", () => {
     await start(declareJobs({
       work: {
         cached: job({
-          kind: "mutation" as const,
+          mode: "mutation" as const,
           args: {},
           retention: 1_000,
           dedupe: { completed: "forever" },
@@ -1236,7 +1236,7 @@ describe("administration transitions", () => {
     // the claim back and leaving the Job due: claimed again, thrown out of
     // again, forever, with no run to show for it. It must fail once, durably.
     //
-    // The kind matters. A procedure-kind Job decodes inside its settlement
+    // The mode matters. A procedure-mode Job decodes inside its settlement
     // boundary and always failed correctly; the mutation envelope collapses
     // claim, handler and settle into one transaction, and decoding before the
     // savepoint took the claim down with it. The two envelopes had drifted.
@@ -1245,7 +1245,7 @@ describe("administration transitions", () => {
     await start(declareJobs({
       work: {
         readArgs: job({
-          kind: "mutation",
+          mode: "mutation",
           args: { note: v.string() },
           handler: async () => {
             ran++;

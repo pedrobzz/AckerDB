@@ -41,18 +41,18 @@ export const sendReceipt = job({
 });
 ```
 
-### Execution kinds
+### Execution modes
 
-Each definition declares its envelope; `"procedure"` is the default.
+Each Job definition declares its execution mode; `"procedure"` is the default.
 
-- **procedure-kind** — the handler may do external work and open explicit
+- **procedure-mode** — the handler may do external work and open explicit
   `ctx.tx(...)` transactions, exactly like a procedure, under the system
   principal with `ctx.runNumber` and an `abortSignal` that fires on cancel and
   shutdown. The envelope is claim → run → settle: the claim transaction creates
   the run under a lease, and the settle transaction re-validates the run and its
   lease before recording the outcome. Under retries this is at-least-once;
   idempotency is the handler's contract.
-- **mutation-kind** (`kind: "mutation"`) — the handler is one writer
+- **mutation-mode** (`mode: "mutation"`) — the handler is one writer
   transaction: claim, handler, and settle commit atomically, exactly-once. No
   external I/O. A failed handler rolls back whole — no partial write survives —
   and the failed run is recorded in the same transaction.
@@ -126,12 +126,12 @@ repeat: { cron: "0 12 * * *", tz: "America/Sao_Paulo" },
 
 ## Durable steps
 
-Steps give a procedure-kind job memory across runs (ADR-0022). Each completed
+Steps give a procedure-mode Job memory across runs (ADR-0022). Each completed
 step's identity and result are recorded in the Job's step journal — the journal
 belongs to the Job because it outlives one run; a resumed run replays the
 handler, recorded steps answer instead of executing, and the first unrecorded
 step executes. Using `ctx.step` is the
-opt-in — a handler with no steps is untouched, and mutation-kind jobs exclude
+opt-in — a handler with no steps is untouched, and mutation-mode Jobs exclude
 it by construction: their single writer transaction *is* one atomic step.
 
 ```ts
@@ -334,7 +334,7 @@ a fresh database.
 
 ### External effects: claim → effect → settle, reconcile — don't assume
 
-A procedure-kind job is at-least-once under retries, so an external effect
+A procedure-mode Job is at-least-once under retries, so an external effect
 needs two things from the handler: an idempotency key derived from the job's
 identity, and recovery that *asks* the provider what happened instead of
 assuming.
@@ -376,7 +376,7 @@ decrement and the join-enqueue commit atomically with each child's own writes:
 
 ```ts
 export const processChunk = job({
-  kind: "mutation",
+  mode: "mutation",
   args: { batchId: v.bigint(), chunk: v.int() },
   handler: async (tx, args) => {
     // ...process the chunk...

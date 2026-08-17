@@ -141,17 +141,15 @@ describe("HTTP-exposed function paths", () => {
     );
   });
 
-  test("refuses an exposure whose kind no HTTP method serves", () => {
-    // The narrowed kind is what the listener and the document both read, so an
-    // unservable exposure fails the load rather than becoming a 404 at call time
-    // and a silent omission from the document.
+  test("refuses an unknown definition kind at module load", () => {
     const untyped = { ...exposed, kind: "queryy" } as never;
     expect(() => new Registry({ notes: { untyped } })).toThrow(
-      'HTTP-exposed function "api.notes.untyped" is a queryy, which the HTTP surface does not serve',
+      'function module export "notes.untyped" has unknown definition kind "queryy"',
     );
-    // Unexposed, no HTTP surface reads its kind and the load stands.
     const internalKind = { ...exposed, kind: "queryy", http: false } as never;
-    expect(() => new Registry({ notes: { internalKind } })).not.toThrow();
+    expect(() => new Registry({ notes: { internalKind } })).toThrow(
+      'function module export "notes.internalKind" has unknown definition kind "queryy"',
+    );
   });
 });
 
@@ -176,14 +174,9 @@ describe("application-owned raw routes", () => {
     expect(registry.httpRoutes[0]!.http.path).toBe("/webhooks/:provider/callback");
   });
 
-  test("refuses an untyped export missing the client-erasure marker", () => {
-    // Generated client APIs erase the export by isAckerDBServerOnly; a value
-    // without it would register a live route while leaking a client reference.
-    const { isAckerDBServerOnly: _erased, ...rest } = hook;
-    const unmarked = rest as never;
-    expect(() => new Registry({ hooks: { unmarked } })).toThrow(
-      'http route "hooks.unmarked" is not an http route',
-    );
+  test("carries no second server-only identity marker", () => {
+    expect(Object.hasOwn(hook, "isAckerDBServerOnly")).toBe(false);
+    expect(new Registry({ hooks: { hook } }).kindOf("api.hooks.hook")).toBe("http");
   });
 });
 

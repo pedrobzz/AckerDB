@@ -156,12 +156,10 @@ export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
   declareJobs,
-  isJob,
   job,
   DEFAULT_JOB_RETENTION_MS,
-  type AnyJob,
   type DeclaredJob,
-  type Job,
+  type JobDefinition,
   type JobBuilder,
   type JobCtx,
   type JobStep,
@@ -365,7 +363,6 @@ export {
   mutation,
   procedure,
   sseProcedure,
-  isRegisteredFunction,
   type AnyRegistered,
   type AnyInvocable,
   type ArgsInput,
@@ -412,7 +409,6 @@ export {
 } from "./transport/routing/route.ts";
 export {
   channel,
-  isRegisteredChannel,
   type AnyRegisteredChannel,
   type ChannelAuthorizationCtx,
   type ChannelBuilder,
@@ -425,6 +421,7 @@ export {
   type ChannelSend,
   type RegisteredChannel,
 } from "./channels/definition.ts";
+export type { Definition, DefinitionKind } from "./definitions.ts";
 export {
   type StandardJsonCodec,
   type StandardJsonInput,

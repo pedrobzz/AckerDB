@@ -67,6 +67,11 @@ _Avoid_: Independent transaction, ordinary helper call
 
 ## Framework runtime
 
+**Server definition** — An application declaration that becomes a query,
+mutation, procedure, SSE procedure, HTTP route, Job definition, or application
+channel. Each kind is distinct from every other kind.
+_Avoid_: Registered export
+
 **Application manifest** — The application's single executable assembly point,
 declaring its root schema. Operational settings remain outside the manifest.
 
@@ -143,7 +148,7 @@ _Avoid_: Local procedure call, background job, ambient system context
 
 ## Durable jobs
 
-**Step** — One named, journaled unit of work inside a procedure-kind job
+**Step** — One named, journaled unit of work inside a procedure-mode Job
 handler. A completed step's recorded result stands in for re-execution when
 the handler replays, so a Job run executes only work the journal has not
 recorded. The name carries the author's promise that the same name means the

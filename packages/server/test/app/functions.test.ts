@@ -49,7 +49,7 @@ describe("sseProcedure declaration", () => {
         yield { label: args.label };
       },
     });
-    expect(declared).toMatchObject({ isAckerDB: true, kind: "sse" });
+    expect(declared).toMatchObject({ kind: "sse" });
     expect(declared.yields.kind).toBe("object");
     expect(() => (declared as unknown as () => void)()).toThrow(
       "sses cannot be called in-process",

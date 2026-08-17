@@ -35,9 +35,9 @@ mutation committed.
 Jobs are declared in a `jobs/` directory, discovered and named like functions:
 typed authority without a manifest cycle, and no handler imports in schema
 tooling. Each definition declares its
-envelope. A mutation-kind job collapses claim, handler, and settle into one
+envelope. A mutation-mode Job collapses claim, handler, and settle into one
 writer transaction — exactly-once, no external I/O, the old scheduled-table
-guarantee kept. A procedure-kind job (the default) is claimed under a lease,
+guarantee kept. A procedure-mode Job (the default) is claimed under a lease,
 runs as a system operation with external work allowed, and settles in a
 transaction that re-validates state and lease — at-least-once under retries,
 with a stale lease discarding the late result rather than double-settling.

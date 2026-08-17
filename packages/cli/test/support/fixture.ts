@@ -103,7 +103,7 @@ import { api } from "../_generated/api.ts";
 import { job } from "../_generated/server.ts";
 
 export const record = job({
-  kind: "mutation",
+  mode: "mutation",
   args: { note: v.string() },
   handler: async (tx, args) => {
     await tx.db.messages.insert({
@@ -117,7 +117,7 @@ export const record = job({
 
 // A server-side caller names a system-only function through the same typed API.
 export const sweep = job({
-  kind: "procedure",
+  mode: "procedure",
   args: { channelId: v.bigint() },
   handler: async (ctx, args) => {
     await ctx.step.run(api.admin.users.compact, { channelId: args.channelId });

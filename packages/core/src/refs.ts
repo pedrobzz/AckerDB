@@ -172,20 +172,18 @@ function makeRefProxy(address: string): unknown {
 export const anyApi: any = makeRefProxy(APPLICATION_ADDRESS_ROOT);
 
 /**
- * The marker interface every registered server function satisfies (the server
- * package's `query()`, `mutation()`, ... return types extend it). Lives in
- * core so generated `api.ts` can derive reference types from type-only imports
- * of the user's function modules without touching server code.
+ * The type-only contract every registered server function satisfies. It lives
+ * in core so generated `api.ts` can derive reference types from type-only
+ * imports of the user's function modules without touching server code.
  */
 export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = unknown, R = unknown> {
-  readonly isAckerDB: true;
   readonly kind: K;
   readonly _argsType?: A;
   readonly _retType?: R;
 }
 
 /**
- * Type-only marker implemented by the server package's `channel()` return.
+ * Type-only contract implemented by the server package's `channel()` return.
  * It lives in core so generated client APIs infer the complete event contract
  * without importing server runtime code.
  */
@@ -196,21 +194,12 @@ export interface RegisteredChannelContract<
   ServerEvents extends EventMap = EventMap,
   Error = never,
 > {
-  readonly isAckerDBChannel: true;
   readonly kind: "channel";
   readonly _argsType?: A;
   readonly _roomType?: Room;
   readonly _clientEventsType?: ClientEvents;
   readonly _serverEventsType?: ServerEvents;
   readonly _errorType?: Error;
-}
-
-/**
- * Marker for declarations that belong to the server module graph but are not
- * remotely callable AckerDB functions. Generated client APIs erase these keys.
- */
-export interface RegisteredServerOnly {
-  readonly isAckerDBServerOnly: true;
 }
 
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
@@ -228,7 +217,7 @@ type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
  * server-only exports are erased.
  */
 export type ApiFromModules<T> = {
-  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
+  [K in keyof T as T[K] extends { readonly kind: "http" | "job" } ? never : K]:
   T[K] extends RegisteredChannelContract<
     infer A,
     infer Room,

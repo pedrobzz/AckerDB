@@ -18,18 +18,17 @@ import {
 } from "@ackerdb/core";
 import {
   httpExposure,
-  isRegisteredFunction,
   type AnyRegistered,
 } from "./functions.ts";
 import {
-  isHttpShaped,
   validateRegisteredHttp,
   type RuntimeHttp,
 } from "../transport/routing/route.ts";
+import type { AnyRegisteredChannel } from "../channels/definition.ts";
 import {
-  isRegisteredChannel,
-  type AnyRegisteredChannel,
-} from "../channels/definition.ts";
+  definitionFromModuleExport,
+  type Definition,
+} from "../definitions.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
   claimsReservedName,
@@ -90,25 +89,34 @@ export class Registry {
     const moduleExports = this.contribute(modules);
 
     for (const { name, value } of moduleExports) {
-      if (!isRegisteredFunction(value)) continue;
       const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
-      this.registerAddress(address, value);
-      this.functions.set(address, value);
-    }
-
-    for (const { name, value } of moduleExports) {
-      if (!isHttpShaped(value)) continue;
-      const registered = validateRegisteredHttp(value, `http route "${name}"`);
-      const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
-      this.registerAddress(address, value);
-      this.httpByAddress.set(address, registered);
-    }
-
-    for (const { name, value } of moduleExports) {
-      if (!isRegisteredChannel(value)) continue;
-      const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
-      this.registerAddress(address, value);
-      this.channels.set(address, value);
+      const definition = definitionFromModuleExport(
+        value,
+        `function module export "${name}"`,
+      );
+      if (definition === undefined) continue;
+      switch (definition.kind) {
+        case "query":
+        case "mutation":
+        case "procedure":
+        case "sse":
+          this.registerAddress(address, definition);
+          this.functions.set(address, definition);
+          break;
+        case "http":
+          this.registerAddress(address, definition);
+          this.httpByAddress.set(
+            address,
+            validateRegisteredHttp(definition, `http route "${name}"`),
+          );
+          break;
+        case "channel":
+          this.registerAddress(address, definition);
+          this.channels.set(address, definition);
+          break;
+        case "job":
+          throw new TypeError(`function module export "${name}" is a job definition`);
+      }
     }
 
     for (const [address, fn] of this.functions) {
@@ -149,19 +157,6 @@ export class Registry {
       return Object.freeze({ address, http });
     }));
 
-    // The server-only kind is the one the passes above recognize, so the
-    // refusal reads the value's shape rather than where it landed: a marked
-    // export the registry does not understand has no address to be named by.
-    for (const { name, value } of moduleExports) {
-      if (
-        (typeof value === "object" || typeof value === "function") &&
-        value !== null &&
-        (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
-        !isHttpShaped(value)
-      ) {
-        throw new Error(`unknown server-only export at "${name}"`);
-      }
-    }
   }
 
   /** Flatten the application's modules into one export list, in a fixed order. */
@@ -216,7 +211,7 @@ export class Registry {
   }
 
   /** The one fixed-root application address space, checked once. */
-  private registerAddress(address: string, value: object): void {
+  private registerAddress(address: string, value: Definition): void {
     if (
       this.functions.has(address) ||
       this.httpByAddress.has(address) ||
@@ -226,11 +221,13 @@ export class Registry {
     }
     const existingAddress = this.addressByObject.get(value);
     if (existingAddress !== undefined) {
-      const kind = isRegisteredFunction(value)
-        ? "registered function"
-        : isHttpShaped(value)
-          ? "registered http route"
-          : "registered channel";
+      const kind = value.kind === "http"
+        ? "registered http route"
+        : value.kind === "channel"
+          ? "registered channel"
+          : value.kind === "job"
+            ? "registered job"
+            : "registered function";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
     this.addressByObject.set(value, address);

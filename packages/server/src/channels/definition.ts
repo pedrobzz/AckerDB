@@ -338,7 +338,6 @@ export const channel: ChannelBuilder<Schema> = <
   }
 
   const registered = Object.freeze({
-    isAckerDBChannel: true as const,
     kind: "channel" as const,
     ...definition,
     handler: definition.authorize ?? (() => undefined),
@@ -357,22 +356,8 @@ export const channel: ChannelBuilder<Schema> = <
   return registered;
 };
 
-export type AnyRegisteredChannel = RegisteredChannel<
-  ObjectShape,
-  Validator<unknown, string> | undefined,
-  ChannelEventDeclarations,
-  ChannelEventDeclarations,
-  unknown,
-  Schema
->;
-
-export function isRegisteredChannel(value: unknown): value is AnyRegisteredChannel {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { readonly isAckerDBChannel?: unknown }).isAckerDBChannel === true &&
-    (value as { readonly kind?: unknown }).kind === "channel"
-  );
-}
+// Channel registries deliberately erase the declaration's concrete contract.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyRegisteredChannel = RegisteredChannel<any, any, any, any, any, any>;
 
 export { channelAuthorizationResult };

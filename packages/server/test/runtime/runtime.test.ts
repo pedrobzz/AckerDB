@@ -125,7 +125,7 @@ type Ctx = any;
 const declaredJobs = () => declareJobs({
   reminders: {
     fire: job({
-      kind: "mutation",
+      mode: "mutation",
       args: { message: v.string(), attempt: v.int() },
       handler: async (tx: Ctx, args: Ctx) => {
         scheduledAttempts++;
@@ -2431,7 +2431,7 @@ describe("jobs runner and lifecycle", () => {
       .query(`SELECT state, runCount FROM "${JOBS_TABLE}" ORDER BY id`)
       .all() as { state: string; runCount: number | bigint }[];
 
-  test("runs a due mutation-kind job exactly once in one commit", async () => {
+  test("runs a due mutation-mode Job exactly once in one commit", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     const attempt = Number.MAX_SAFE_INTEGER;

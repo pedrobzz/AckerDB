@@ -42,8 +42,6 @@ export type HttpHandlers<Ctx, Result extends HttpRouteResult> = {
 };
 
 export interface Http<Path extends string = string> {
-  readonly isAckerDB: true;
-  readonly isAckerDBServerOnly: true;
   readonly kind: "http";
   readonly path: Path;
 }
@@ -85,8 +83,6 @@ function buildHttp<const Path extends string>(
   }
   if (!Object.keys(compiled).length) throw new TypeError("http requires a handler");
   return Object.freeze({
-    isAckerDB: true,
-    isAckerDBServerOnly: true,
     kind: "http",
     path: validateRoutePath(path, "http") as Path,
     handlers: Object.freeze(compiled),
@@ -109,14 +105,9 @@ export function frameworkHttp<const Path extends string>(
     handler(ctx, request) as HttpRouteResult | Promise<HttpRouteResult>);
 }
 
-export function isHttpShaped(value: unknown): value is Http {
-  return typeof value === "object" && value !== null &&
-    (value as Partial<Http>).isAckerDB === true && (value as Partial<Http>).kind === "http";
-}
-
-export function validateRegisteredHttp(value: object, where: string): RuntimeHttp {
-  if (!isHttpShaped(value) || value.isAckerDBServerOnly !== true ||
-    typeof (value as Partial<RuntimeHttp>).handlers !== "object") {
+export function validateRegisteredHttp(value: Http, where: string): RuntimeHttp {
+  const handlers = (value as Partial<RuntimeHttp>).handlers;
+  if (typeof value.path !== "string" || typeof handlers !== "object" || handlers === null) {
     throw new TypeError(`${where} is not an http route`);
   }
   validateRoutePath(value.path, where);

@@ -398,15 +398,15 @@ export interface Invocable<
  * where the reference carries the validated chunk type while the handler
  * returns a chunk source.
  */
-export interface Registered<
-  K extends string,
+export type Registered<
+  K extends RegisteredFunctionKind,
   A extends ObjectShape,
   Ctx extends InvocationContext,
   R,
   H = R,
-> extends Invocable<K, A, Ctx, R, H>, ExposureDef {
-  readonly isAckerDB: true;
-}
+> = Invocable<K, A, Ctx, R, H> & ExposureDef;
+
+export type RegisteredFunctionKind = "query" | "mutation" | "procedure" | "sse";
 
 export type RegisteredQuery<
   A extends ObjectShape,
@@ -553,7 +553,7 @@ type ExactKeys<Definition, Allowed> = {
   readonly [K in Exclude<keyof Definition, keyof Allowed>]: never;
 };
 
-function register<K extends string>(kind: K) {
+function register<K extends RegisteredFunctionKind>(kind: K) {
   return <
     A extends ObjectShape,
     Ctx extends InvocationContext,
@@ -585,7 +585,6 @@ function register<K extends string>(kind: K) {
             throw new Error(`${kind}s cannot be called in-process — they exist at the transport boundary`);
           };
     const registered = Object.assign(callable, {
-      isAckerDB: true as const,
       kind,
       args: def.args,
       ...(def.returns === undefined ? {} : { returns: def.returns }),
@@ -613,7 +612,7 @@ function register<K extends string>(kind: K) {
 }
 
 /** Schema-agnostic constructors; queries and mutations are directly callable. */
-function registerCallable<K extends string>(kind: K) {
+function registerCallable<K extends Exclude<RegisteredFunctionKind, "sse">>(kind: K) {
   return register(kind) as <
     A extends ObjectShape,
     Ctx extends InvocationContext,
@@ -680,7 +679,6 @@ export function sseProcedure<
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
   };
   const registered = Object.assign(callable, {
-    isAckerDB: true as const,
     kind: "sse" as const,
     args: def.args,
     yields: def.yields,
@@ -795,23 +793,23 @@ export type SseBuilder<
   >,
 ) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;
 
-// Runtime registries deliberately erase each function's concrete context.
+// Runtime registries deliberately erase each function's concrete context while
+// preserving separate literal-kind members for exhaustive narrowing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyRegistered = Registered<string, ObjectShape, any, any, any>;
+type RuntimeRegistered<K extends RegisteredFunctionKind> = Registered<K, ObjectShape, any, any, any>;
+
+type RuntimeRegisteredSse = RuntimeRegistered<"sse"> & {
+  readonly yields: Validator<unknown, string>;
+};
+
+export type AnyRegistered =
+  | RuntimeRegistered<"query">
+  | RuntimeRegistered<"mutation">
+  | RuntimeRegistered<"procedure">
+  | RuntimeRegisteredSse;
 
 // Invocation registries deliberately erase each declaration's concrete context.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyInvocable = Invocable<string, ObjectShape, any, any, any>;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyRegisteredSse = RegisteredSse<ObjectShape, any, any>;
-
-export function isRegisteredFunction(value: unknown): value is AnyRegistered {
-  return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    (value as { isAckerDB?: unknown }).isAckerDB === true &&
-    typeof (value as { kind?: unknown }).kind === "string" &&
-    isAccessPolicy((value as { access?: unknown }).access)
-  );
-}
+export type AnyRegisteredSse = RuntimeRegisteredSse;
