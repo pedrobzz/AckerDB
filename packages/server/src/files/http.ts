@@ -7,8 +7,7 @@ import {
   type OutcomeCode,
   type ResourceClass,
 } from "@ackerdb/core";
-import { ACKERDB_HTTP_ROUTES } from "../transport/http-surface.ts";
-import { methodNotAllowed, outcomeResponse } from "../transport/response.ts";
+import { outcomeResponse } from "../transport/response.ts";
 import type { Principal } from "../auth/credentials.ts";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import {
@@ -45,6 +44,10 @@ export interface FileRequestAuthentication {
 
 export interface RuntimeFileRequest {
   readonly request: Request;
+  /** Which File byte route matched: an Upload Session's bytes, or a grant's. */
+  readonly route: "uploads" | "grants";
+  /** The `<id>.<secret>` segment the route captured. */
+  readonly handle: string;
   authenticate(): Promise<FileRequestAuthentication>;
 }
 
@@ -86,10 +89,8 @@ interface DownloadGrant {
   readonly file: FileRow;
 }
 
-/** Derived from the canonical surface, so the route cannot drift from it. */
-const FILE_ROUTE = new RegExp(
-  `^${ACKERDB_HTTP_ROUTES.files}/(uploads|grants)/([1-9]\\d*)\\.([A-Za-z0-9_-]{20,})$`,
-);
+/** The captured handle: the row's decimal id, a dot, and the presented secret. */
+const FILE_HANDLE = /^([1-9]\d*)\.([A-Za-z0-9_-]{20,})$/;
 const MAX_UPLOAD_RECOVERY_WAIT_MS = 30_000;
 const NO_STORE = Object.freeze({ "cache-control": "no-store" });
 
@@ -162,17 +163,13 @@ function sameSecret(expected: unknown, plain: string): boolean {
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
-function parseRoute(request: Request): {
-  readonly kind: "uploads" | "grants";
-  readonly id: bigint;
-  readonly secret: string;
-} | null {
-  const match = FILE_ROUTE.exec(new URL(request.url).pathname);
+function parseHandle(handle: string): { readonly id: bigint; readonly secret: string } | null {
+  const match = FILE_HANDLE.exec(handle);
   if (match === null) return null;
   try {
-    const id = BigInt(match[2]!);
+    const id = BigInt(match[1]!);
     if (id <= 0n || id > (1n << 63n) - 1n) return null;
-    return { kind: match[1] as "uploads" | "grants", id, secret: match[3]! };
+    return { id, secret: match[2]! };
   } catch {
     return null;
   }
@@ -281,16 +278,11 @@ export class FileHttpRuntime {
   }
 
   async handle(input: RuntimeFileRequest): Promise<Response> {
-    const route = parseRoute(input.request);
-    if (route === null) return notFound();
-    if (route.kind === "uploads") {
-      if (input.request.method !== "PUT") return methodNotAllowed("PUT", NO_STORE);
-      return this.upload(input.request, route.id, route.secret);
-    }
-    if (input.request.method !== "GET" && input.request.method !== "HEAD") {
-      return methodNotAllowed("GET, HEAD", NO_STORE);
-    }
-    return this.download(input, route.id, route.secret);
+    const handle = parseHandle(input.handle);
+    if (handle === null) return notFound();
+    return input.route === "uploads"
+      ? this.upload(input.request, handle.id, handle.secret)
+      : this.download(input, handle.id, handle.secret);
   }
 
   private async upload(request: Request, id: bigint, secret: string): Promise<Response> {
@@ -565,11 +557,7 @@ export class FileHttpRuntime {
     }
   }
 
-  private async download(input: RuntimeFileRequest, id: bigint, secret: string): Promise<Response> {
-    return this.executeDownload(input, id, secret);
-  }
-
-  private async executeDownload(
+  private async download(
     input: RuntimeFileRequest,
     id: bigint,
     secret: string,

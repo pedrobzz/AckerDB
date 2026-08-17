@@ -232,7 +232,7 @@ describe("openapi document", () => {
       "/api/messages/tail",
     ]);
     // Hidden from the document, still callable at its path.
-    expect(registry.exposed.has("/api/messages/purge")).toBe(true);
+    expect(registry.exposed.has("api.messages.purge")).toBe(true);
     expect(openapi.paths["/api/messages/purge"]).toBeUndefined();
     // Never exposed: absent from both.
     expect(registry.exposed.has("/api/messages/sweep")).toBe(false);

@@ -1,11 +1,14 @@
 /**
- * The raw handler surface's one rule, held against a real listener: the
- * framework touches neither the request nor a handler-authored response. The
- * exact wire bytes reach the handler (an HMAC verification is the proof), the
- * Authorization header crosses whatever its scheme, and nothing is stamped on
- * the way out. Everything the framework does author — 405, over-limit, the
- * sanitized 500, not-ready — speaks the same bare Outcome as the rest of the
- * HTTP surface.
+ * The unified HTTP route surface, held against a real listener.
+ *
+ * Two rules meet here. Routing is generic: the more specific pattern wins,
+ * captures arrive decoded, a known path with an unsupported method answers 405
+ * with the complete Allow, and an unknown one answers 404 — none of which a
+ * handler participates in. Raw handlers are symmetric: the exact wire bytes
+ * reach them, the Authorization header crosses whatever its scheme, and
+ * nothing is stamped on the way out. Everything the framework does author —
+ * 405, over-limit, the sanitized 500, not-ready — speaks the same bare Outcome
+ * as the rest of the HTTP surface.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
@@ -17,7 +20,7 @@ import { ValidationError } from "../../src/validation/error.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query } from "../../src/app/functions.ts";
-import { httpHandler } from "../../src/app/http-handler.ts";
+import { http } from "../../src/transport/routing/route.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -51,6 +54,10 @@ const limits = defineServiceLimits({
 /** Proves the framework answered before the handler existed. */
 let handlerRuns = 0;
 
+/** One handler value under two method keys: path ownership is stated once. */
+const shared = (_ctx: Ctx, request: Request): Response =>
+  new Response(JSON.stringify({ saw: request.method }), { status: 200 });
+
 const functions = {
   feed: {
     list: query({
@@ -61,9 +68,8 @@ const functions = {
     }),
   },
   hooks: {
-    stripe: httpHandler({
-      methods: ["POST"],
-      handler: async (ctx: Ctx, request: Request) => {
+    stripe: http("/api/hooks/stripe", {
+      POST: async (ctx: Ctx, request: Request) => {
         handlerRuns += 1;
         const payload = new Uint8Array(await request.arrayBuffer());
         if (request.headers.get("x-signature") !== sign(payload)) {
@@ -77,47 +83,40 @@ const functions = {
         });
       },
     }),
-    echo: httpHandler({
-      methods: ["POST", "OPTIONS"],
-      handler: (_ctx: Ctx, request: Request) => {
-        if (request.method === "OPTIONS") {
-          return new Response(null, {
-            status: 204,
-            headers: { "access-control-allow-origin": "https://app.example" },
-          });
-        }
-        return new Response(
+    echo: http("/api/hooks/echo", {
+      POST: (_ctx, request) =>
+        new Response(
           JSON.stringify({ authorization: request.headers.get("authorization") }),
           { status: 200, headers: { "x-echo": "1" } },
-        );
-      },
+        ),
+      OPTIONS: () =>
+        new Response(null, {
+          status: 204,
+          headers: { "access-control-allow-origin": "https://app.example" },
+        }),
     }),
-    redirect: httpHandler({
-      methods: ["GET"],
-      handler: () =>
+    both: http("/api/hooks/both", { GET: shared, POST: shared }),
+    redirect: http("/api/hooks/redirect", {
+      GET: () =>
         new Response(null, { status: 302, headers: { location: "https://example.com/done" } }),
     }),
-    boom: httpHandler({
-      methods: ["POST"],
-      handler: () => {
+    boom: http("/api/hooks/boom", {
+      POST: () => {
         throw new Error("the secret cause");
       },
     }),
-    boomFramework: httpHandler({
-      methods: ["POST"],
-      handler: () => {
+    boomFramework: http("/api/hooks/boomFramework", {
+      POST: () => {
         throw new AckerDBError("validation", "secret validation detail");
       },
     }),
-    boomValidation: httpHandler({
-      methods: ["POST"],
-      handler: () => {
+    boomValidation: http("/api/hooks/boomValidation", {
+      POST: () => {
         throw new ValidationError("secret field detail");
       },
     }),
-    boomHostile: httpHandler({
-      methods: ["POST"],
-      handler: () => {
+    boomHostile: http("/api/hooks/boomHostile", {
+      POST: () => {
         // Describing the cause is handler-controlled work too: an accessor
         // that throws must not carry its own error past the sanitizer.
         throw new Proxy(new AckerDBError("validation", "secret proxy detail"), {
@@ -128,13 +127,11 @@ const functions = {
         });
       },
     }),
-    invalid: httpHandler({
-      methods: ["POST"],
-      handler: () => ({ nope: true }) as never,
+    invalid: http("/api/hooks/invalid", {
+      POST: () => ({ nope: true }) as never,
     }),
-    hold: httpHandler({
-      methods: ["GET"],
-      handler: () =>
+    hold: http("/api/hooks/hold", {
+      GET: () =>
         new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
@@ -145,9 +142,8 @@ const functions = {
           { headers: { "content-type": "text/plain" } },
         ),
     }),
-    stream: httpHandler({
-      methods: ["GET"],
-      handler: () => {
+    stream: http("/api/hooks/stream", {
+      GET: () => {
         const encoder = new TextEncoder();
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -162,6 +158,34 @@ const functions = {
       },
     }),
   },
+  // A provider dictates its own callback URL, so an explicit path may live
+  // anywhere the framework has not reserved — the application root included.
+  routes: {
+    user: http("/users/:id", {
+      GET: (ctx) => Response.json({ matched: "param", id: ctx.params.id }),
+    }),
+    me: http("/users/me", { GET: () => Response.json({ matched: "static" }) }),
+    pair: http("/o/:org/r/:repo", {
+      GET: (ctx) => Response.json({ org: ctx.params.org, repo: ctx.params.repo }),
+    }),
+    assets: http("/users/:id/assets/*", {
+      GET: (ctx) => Response.json({ id: ctx.params.id, rest: ctx.params["*"] }),
+    }),
+    readPerson: http("/people/:id", {
+      GET: (ctx) => Response.json({ method: "GET", id: ctx.params.id }),
+    }),
+    writePerson: http("/people/:personId", {
+      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.personId }),
+    }),
+    // Captures and application capabilities are one context, not two.
+    record: http("/deliveries/:type", {
+      POST: async (ctx: Ctx) => {
+        const at: number = ctx.timestamp;
+        await ctx.tx((tx: Ctx) => tx.db.deliveries.insert({ type: ctx.params.type }));
+        return Response.json({ stored: ctx.params.type, dated: at > 0 });
+      },
+    }),
+  },
 };
 
 let dir: string;
@@ -172,7 +196,7 @@ let base: string;
 
 beforeEach(async () => {
   handlerRuns = 0;
-  dir = mkdtempSync(join(tmpdir(), "ackerdb-http-handler-"));
+  dir = mkdtempSync(join(tmpdir(), "ackerdb-http-routes-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   runtime = new Runtime({ engine, registry: new Registry(functions), limits });
@@ -195,6 +219,97 @@ function expectUnstamped(response: Response): void {
   expect(response.headers.get("vary")).toBeNull();
   expect(response.headers.get("cache-control")).toBeNull();
 }
+
+describe("the registry routes before any handler runs", () => {
+  test("a static path reaches its own route", async () => {
+    const response = await fetch(`${base}/users/me`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ matched: "static" });
+  });
+
+  test("an exact path outranks a parameter, and a parameter outranks a wildcard", async () => {
+    // `/users/me` is claimed statically and `/users/:id` dynamically; the
+    // static one wins without either handler knowing the other exists.
+    expect(await (await fetch(`${base}/users/me`)).json()).toEqual({ matched: "static" });
+    expect(await (await fetch(`${base}/users/42`)).json())
+      .toEqual({ matched: "param", id: "42" });
+    expect(await (await fetch(`${base}/users/42/assets/img/logo.png`)).json())
+      .toEqual({ id: "42", rest: "img/logo.png" });
+  });
+
+  test("every named parameter of a nested path reaches ctx.params", async () => {
+    const response = await fetch(`${base}/o/acme/r/widgets`);
+
+    expect(await response.json()).toEqual({ org: "acme", repo: "widgets" });
+  });
+
+  test("captures arrive decoded, so the runtime value matches the declared string", async () => {
+    const response = await fetch(`${base}/users/a%20b%2Fc`);
+
+    expect(await response.json()).toEqual({ matched: "param", id: "a b/c" });
+  });
+
+  test("an undecodable escape is the caller's malformed request, not a missing route", async () => {
+    const response = await fetch(`${base}/users/%zz`);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "malformed" });
+  });
+
+  test("one path may answer several methods without a request.method switch", async () => {
+    expect(await (await fetch(`${base}/api/hooks/both`)).json()).toEqual({ saw: "GET" });
+    expect(await (await fetch(`${base}/api/hooks/both`, { method: "POST" })).json())
+      .toEqual({ saw: "POST" });
+  });
+
+  test("a known path with an unsupported method answers 405 with the complete Allow", async () => {
+    const response = await fetch(`${base}/api/hooks/both`, { method: "DELETE" });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, POST");
+    expect(await response.json()).toMatchObject({ code: "malformed", retryable: false });
+  });
+
+  test("different Http values may contribute methods to one path pattern", async () => {
+    expect(await (await fetch(`${base}/people/7`)).json()).toEqual({ method: "GET", id: "7" });
+    expect(await (await fetch(`${base}/people/7`, { method: "POST" })).json())
+      .toEqual({ method: "POST", id: "7" });
+    const unsupported = await fetch(`${base}/people/7`, { method: "DELETE" });
+    expect(unsupported.status).toBe(405);
+    expect(unsupported.headers.get("allow")).toBe("GET, POST");
+  });
+
+  test("an unknown path answers 404 in the bare Outcome shape", async () => {
+    const response = await fetch(`${base}/nowhere/at/all`);
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      code: "not_found",
+      retryable: false,
+      message: "no route at this path",
+    });
+  });
+
+  test("a capture and the application capabilities are one context", async () => {
+    const response = await fetch(`${base}/deliveries/payment.succeeded`, { method: "POST" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ stored: "payment.succeeded", dated: true });
+    const rows = (await (await fetch(`${base}/api/feed/list`)).json()) as { type: string }[];
+    expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
+  });
+
+  test("an exposed function keeps its derived path and its preflight", async () => {
+    expect((await fetch(`${base}/api/feed/list`)).status).toBe(200);
+    const preflight = await fetch(`${base}/api/feed/list`, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+    const wrong = await fetch(`${base}/api/feed/list`, { method: "DELETE" });
+    expect(wrong.status).toBe(405);
+    expect(wrong.headers.get("allow")).toBe("GET, POST, OPTIONS");
+  });
+});
 
 describe("the request reaches the handler whole", () => {
   test("delivers the exact wire bytes, so HMAC verification and tx persistence work", async () => {
@@ -268,8 +383,8 @@ describe("the handler-authored response leaves whole", () => {
     expect(declared.status).toBe(204);
     expect(declared.headers.get("access-control-allow-origin")).toBe("https://app.example");
 
-    // Not the listener's global 204: an undeclared method on a raw route is a
-    // 405 like any other, because the handler declared what it serves.
+    // Not a framework preflight: an undeclared method on a raw route is a 405
+    // like any other, because the route declared what it serves.
     const undeclared = await fetch(`${base}/api/hooks/stripe`, { method: "OPTIONS" });
     expect(undeclared.status).toBe(405);
     expect(undeclared.headers.get("allow")).toBe("POST");
@@ -289,13 +404,13 @@ describe("framework-authored responses speak the bare Outcome", () => {
     // A plain Error, an AckerDBError, and a ValidationError must all cross
     // identically: a thrown message is never the handler speaking to the
     // caller — the handler authors its failures as Responses.
-    for (const [address, secret] of [
+    for (const [route, secret] of [
       ["boom", "secret cause"],
       ["boomFramework", "secret validation detail"],
       ["boomValidation", "secret field detail"],
       ["boomHostile", "secret proxy detail"],
     ] as const) {
-      const response = await fetch(`${base}/api/hooks/${address}`, { method: "POST", body: "{}" });
+      const response = await fetch(`${base}/api/hooks/${route}`, { method: "POST", body: "{}" });
 
       expect(response.status).toBe(500);
       const text = await response.text();
@@ -358,22 +473,95 @@ describe("framework-authored responses speak the bare Outcome", () => {
     expect(await response.json()).toMatchObject({ code: "overloaded" });
     expect(handlerRuns).toBe(0);
   });
+});
 
-  test("a raw path answers unavailable while the server is not ready — preflight included", async () => {
+describe("lifecycle decides reachability, not the route table", () => {
+  test("probes answer through Boot while application routes are still absent", async () => {
     const starting = new AckerDBServer({ limits, port: 0 });
     try {
-      // Both the call and its preflight: the listener's global OPTIONS answer
-      // must never speak for a handler that does not exist yet.
+      const origin = `http://127.0.0.1:${starting.port}`;
+      const live = await fetch(`${origin}/live`);
+      expect(live.status).toBe(200);
+      expect(await live.json()).toMatchObject({ live: true });
+
+      const ready = await fetch(`${origin}/ready`);
+      expect(ready.status).toBe(503);
+      expect(await ready.json()).toMatchObject({ ready: false, phase: "listening" });
+
+      // Both the call and its preflight: no framework preflight may ever speak
+      // for a handler that does not exist yet.
       for (const method of ["POST", "OPTIONS"] as const) {
-        const response = await fetch(
-          `http://127.0.0.1:${starting.port}/api/hooks/stripe`,
-          { method, ...(method === "POST" ? { body: "{}" } : {}) },
-        );
+        const response = await fetch(`${origin}/api/hooks/stripe`, {
+          method,
+          ...(method === "POST" ? { body: "{}" } : {}),
+        });
         expect(response.status).toBe(503);
         expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
       }
     } finally {
       await starting.drain().catch(() => {});
     }
+  });
+
+  test("two routes claiming one path and method are refused", async () => {
+    // Path ownership has one owner, and only it also knows the framework's
+    // routes — a route the loader admits can still be refused here. A
+    // parameter's name is the author's vocabulary rather than the URL's, and
+    // unique addresses do not imply unique paths. (An application claiming a
+    // path AckerDB owns is namespace policy and never reaches this seam; the
+    // loader refuses it, proved in app/registry.test.ts.)
+    const refuse = async (
+      modules: Record<string, Record<string, unknown>>,
+    ): Promise<string> => {
+      const home = mkdtempSync(join(tmpdir(), "ackerdb-http-claim-"));
+      const store = new Engine(schema, join(home, "data.db"));
+      reconcile(store);
+      const other = new Runtime({ engine: store, registry: new Registry(modules), limits });
+      await other.start();
+      const listener = new AckerDBServer({ limits, port: 0 });
+      try {
+        listener.activate(other);
+        return "activation was not refused";
+      } catch (error) {
+        expect(listener.state).toBe("stopped");
+        return (error as Error).message;
+      } finally {
+        await listener.drain().catch(() => {});
+        await other.drain().catch(() => {});
+        store.close("clean");
+        rmSync(home, { recursive: true, force: true });
+      }
+    };
+
+    expect(await refuse({
+      hooks: {
+        byId: http("/people/:id", { GET: () => new Response(null) }),
+        bySlug: http("/people/:slug", { GET: () => new Response(null) }),
+      },
+    })).toContain('HTTP route "/people/:slug" already owns GET');
+
+    // The projection joins on `/` where the address joined on `.`, so a
+    // string-named export can reach a path another address already derives.
+    const exposedNote = () => query({ access: "public", http: true, args: {}, handler: () => [] });
+    expect(await refuse({
+      notes: { ["echo/deep"]: exposedNote() },
+      "notes.echo": { deep: exposedNote() },
+    })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
+  });
+
+  test("the same path is reachable after activation and unavailable while draining", async () => {
+    expect((await fetch(`${base}/users/7`)).status).toBe(200);
+
+    server.beginShutdown();
+    const draining = await fetch(`${base}/users/7`);
+    // The route still exists — the lifecycle answers, never a 404.
+    expect(draining.status).toBe(503);
+    expect(await draining.json()).toMatchObject({ code: "draining", retryable: true });
+
+    // An unclaimed path answers the same way while draining: unreachable is
+    // not the same statement as absent.
+    const unknown = await fetch(`${base}/nowhere/at/all`);
+    expect(unknown.status).toBe(503);
+    expect(await unknown.json()).toMatchObject({ code: "draining" });
   });
 });

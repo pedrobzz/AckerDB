@@ -119,6 +119,9 @@ async function main(): Promise<void> {
     }
     const exactServerDependencies = {
       "numkong": "7.7.1",
+      // The route matcher AckerDB dispatches on: pinned to the studied
+      // revision, so a consumer resolves the tree ADR-0033 surveyed.
+      "rou3": "0.9.1",
     } as const;
     for (const [dependency, expected] of Object.entries(exactServerDependencies)) {
       if (serverManifest.dependencies?.[dependency] !== expected) {

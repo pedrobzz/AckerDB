@@ -891,14 +891,16 @@ describe("exposed HTTP procedures", () => {
     for (const method of ["GET", "PUT", "DELETE"]) {
       const response = await fetch(`${base}${httpPath("api.notes.echo")}`, { method });
       expect(response.status).toBe(405);
-      expect(response.headers.get("allow")).toBe("POST");
+      // Allow names every method the route registered, framework CORS
+      // preflight included: the registry builds it from the route itself.
+      expect(response.headers.get("allow")).toBe("POST, OPTIONS");
       expect(response.headers.get("access-control-allow-origin")).toBe("*");
       // The same outcome shape as every other failure, at the status and with
       // the Allow header HTTP mandates.
       expect(JSON.parse(await response.text())).toEqual({
         code: "malformed",
         retryable: false,
-        message: "method not allowed; allow: POST",
+        message: "method not allowed; allow: POST, OPTIONS",
       });
     }
     const preflight = await fetch(`${base}${httpPath("api.notes.echo")}`, { method: "OPTIONS" });
@@ -906,18 +908,15 @@ describe("exposed HTTP procedures", () => {
   });
 
   test("answers every websocket-door refusal with the same protocol frame", async () => {
+    // Method selection belongs to the route table, so a wrong method on the
+    // upgrade path answers the registry's bare Outcome like every other route.
     const wrongMethod = await fetch(`${base}/_ws`, { method: "POST" });
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("GET");
-    expect(parseServerMessage(decode(await wrongMethod.text()))).toEqual({
-      v: ACKERDB_VERSION,
-      t: "err",
-      id: null,
-      outcome: {
-        code: "malformed",
-        retryable: false,
-        message: "method not allowed; allow: GET",
-      },
+    expect(JSON.parse(await wrongMethod.text())).toEqual({
+      code: "malformed",
+      retryable: false,
+      message: "method not allowed; allow: GET",
     });
 
     // A plain GET on the upgrade path carries no upgrade headers, so Bun
@@ -1382,15 +1381,15 @@ describe("exposed HTTP queries", () => {
   test("offers GET on query paths alone and names the allowed methods", async () => {
     const wrongMethod = await fetch(`${base}${httpPath("api.notes.list")}`, { method: "DELETE" });
     expect(wrongMethod.status).toBe(405);
-    expect(wrongMethod.headers.get("allow")).toBe("GET, POST");
+    expect(wrongMethod.headers.get("allow")).toBe("GET, POST, OPTIONS");
 
     const procedureGet = await fetch(`${base}${httpPath("api.notes.echo")}`);
     expect(procedureGet.status).toBe(405);
-    expect(procedureGet.headers.get("allow")).toBe("POST");
+    expect(procedureGet.headers.get("allow")).toBe("POST, OPTIONS");
 
     const mutationGet = await fetch(`${base}${httpPath("api.notes.add")}`);
     expect(mutationGet.status).toBe(405);
-    expect(mutationGet.headers.get("allow")).toBe("POST");
+    expect(mutationGet.headers.get("allow")).toBe("POST, OPTIONS");
   });
 });
 
@@ -1692,7 +1691,7 @@ describe("SSE", () => {
     expect(preflight.headers.get("access-control-expose-headers")).toContain("x-ackerdb-sse-stream");
     const wrongMethod = await fetch(`${base}/_sse/ack`);
     expect(wrongMethod.status).toBe(405);
-    expect(wrongMethod.headers.get("allow")).toBe("POST");
+    expect(wrongMethod.headers.get("allow")).toBe("POST, OPTIONS");
 
     // An absent body is empty args here exactly as it is for every other kind.
     const late = await fetch(`${base}${httpPath("api.notes.failLate")}`, { method: "POST" });
@@ -1734,7 +1733,7 @@ describe("SSE", () => {
 
     const wrongMethod = await fetch(`${base}${httpPath("api.notes.chat")}`);
     expect(wrongMethod.status).toBe(405);
-    expect(wrongMethod.headers.get("allow")).toBe("POST");
+    expect(wrongMethod.headers.get("allow")).toBe("POST, OPTIONS");
     expect(runtime.status().activeSse).toBe(0);
   });
 
@@ -1841,7 +1840,7 @@ describe("the opt-in OpenAPI endpoint", () => {
       body: encode({}),
     });
     expect(wrongMethod.status).toBe(405);
-    expect(wrongMethod.headers.get("allow")).toBe("GET");
+    expect(wrongMethod.headers.get("allow")).toBe("GET, OPTIONS");
   });
 
   test("assembles the document at activation, so it never fails a caller", async () => {

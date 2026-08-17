@@ -129,6 +129,50 @@ await acker.system.run("fixture.typed", async (ctx) => {
     expect(typecheckFixture(dir)).toBe("");
   });
 
+  test("binds the generated route factory and handler aliases to this application", async () => {
+    const dir = fixture();
+    const config = loadConfig(dir);
+    await runCodegen(config);
+    writeFileSync(join(dir, "functions/hooks.ts"), `
+import { http, type HttpHandlerGET, type HttpHandlerPOST } from "../_generated/server.ts";
+
+// A separately declared handler supplies only its literal path: the Schema
+// and the context come from the generated binding.
+const show: HttpHandlerGET<"/users/:id"> = (ctx) => new Response(ctx.params.id);
+
+const store: HttpHandlerPOST<"/users/:id"> = async (ctx) => {
+  await ctx.tx((tx) => tx.db.messages.insert({
+    channelId: 1n,
+    body: ctx.params.id,
+    role: "admin",
+    payload: { tag: "nothing", value: null },
+  }));
+  return new Response(null);
+};
+
+export const users = http("/users/:id", { GET: show, POST: store });
+
+export const inline = http("/o/:org/r/:repo", {
+  GET: (ctx) => Response.json({ org: ctx.params.org, repo: ctx.params.repo }),
+});
+
+export const capabilities = http("/api/hooks/tx", {
+  POST: async (ctx) => {
+    // @ts-expect-error the generated context is bound to this application's tables.
+    await ctx.tx((tx) => tx.db.unknown.insert({}));
+    return new Response(null);
+  },
+});
+`);
+
+    const server = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
+    expect(server).toContain("export const http = httpGeneric as HttpBuilder<Schema>;");
+    expect(server).toContain(
+      "export type HttpHandlerGET<Path extends string> = GenericHttpHandlerGET<Path, Schema>;",
+    );
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
   test("generated addresses line up with the runtime registry", async () => {
     const dir = fixture();
     const config = loadConfig(dir);
@@ -144,7 +188,7 @@ await acker.system.run("fixture.typed", async (ctx) => {
       "api.messages.send",
       "api.messages.tail",
     ]);
-    expect(registry.exposed.get("/api/messages/tail")?.address).toBe("api.messages.tail");
+    expect(registry.exposed.get("api.messages.tail")?.path).toBe("/api/messages/tail");
     expect(registry.get("api.admin.users.compact")?.kind).toBe("mutation");
     expect(registry.get("api.admin.users.count")?.kind).toBe("query");
     // the api object produces exactly these addresses

@@ -34,7 +34,7 @@ import type {
   QueryCtx,
   TxCtx,
 } from "../../app/functions.ts";
-import type { HttpHandlerCtx } from "../../app/http-handler.ts";
+import type { HttpCapabilities } from "../../transport/routing/route.ts";
 import type { Registry } from "../../app/registry.ts";
 import { Identities } from "../../auth/identities.ts";
 import { CREDENTIAL_ISSUER } from "../../auth/credential-token.ts";
@@ -420,7 +420,7 @@ export class RuntimeFunctionExecutor<C> {
     timestamp: number | (() => number),
     accountUnlinked: (account: ExternalAccount) => void,
     surface: "http",
-  ): HttpHandlerCtx;
+  ): HttpCapabilities;
   createProcedureContext(
     principal: Principal,
     fairnessKey: string,
@@ -430,7 +430,7 @@ export class RuntimeFunctionExecutor<C> {
     accountUnlinked: (account: ExternalAccount) => void,
     /** "http" omits the auth members: raw routes resolve no credential. */
     surface: "procedure" | "http" = "procedure",
-  ): ProcedureCtx | HttpHandlerCtx {
+  ): ProcedureCtx | HttpCapabilities {
     const currentTimestamp = typeof timestamp === "function"
       ? timestamp
       : () => timestamp;

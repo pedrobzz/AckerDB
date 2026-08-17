@@ -22,10 +22,10 @@ import {
   type AnyRegistered,
 } from "./functions.ts";
 import {
-  isHttpHandlerShaped,
-  validateRegisteredHttpHandler,
-  type AnyRegisteredHttpHandler,
-} from "./http-handler.ts";
+  isHttpShaped,
+  validateRegisteredHttp,
+  type RuntimeHttp,
+} from "../transport/routing/route.ts";
 import {
   isRegisteredChannel,
   type AnyRegisteredChannel,
@@ -41,6 +41,7 @@ import {
   compileExposedHttpCodec,
   type ExposedHttpCodec,
 } from "../transport/http-codec.ts";
+import { validateRoutePath } from "../transport/routing/path.ts";
 
 interface ModuleExport {
   /** Module path joined to export name, without the fixed `api.` root. */
@@ -60,11 +61,15 @@ export interface ExposedFunction {
   readonly codec: ExposedHttpCodec;
 }
 
-/** One raw handler: the path it owns and the registered handler that serves it. */
-export interface HttpHandlerRoute {
+/**
+ * One application-owned raw route: the export that declared it and the
+ * validated value it declared. Unlike an exposed function, its path is
+ * explicit — a webhook URL is a thing pasted into a provider's dashboard —
+ * so the address names the export and the path names the URL.
+ */
+export interface HttpRouteDefinition {
   readonly address: string;
-  readonly path: string;
-  readonly fn: AnyRegisteredHttpHandler;
+  readonly http: RuntimeHttp;
 }
 
 /** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
@@ -72,13 +77,11 @@ export type LoadedModules = Record<string, Record<string, unknown>>;
 
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
-  /** HTTP-exposed functions keyed by the path they own. */
+  /** HTTP-exposed functions keyed by address; their path is derived from it. */
   readonly exposed = new Map<string, ExposedFunction>();
-  /** The same functions keyed by address: the served call knows its path, the runtime its address. */
-  private readonly exposedByAddress = new Map<string, ExposedFunction>();
-  /** Raw handler routes keyed by the path they own. */
-  readonly httpRoutes = new Map<string, HttpHandlerRoute>();
-  private readonly httpHandlersByAddress = new Map<string, AnyRegisteredHttpHandler>();
+  /** Application-owned raw routes, in the loader's fixed export order. */
+  readonly httpRoutes: readonly HttpRouteDefinition[];
+  private readonly httpByAddress = new Map<string, RuntimeHttp>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
 
@@ -94,14 +97,11 @@ export class Registry {
     }
 
     for (const { name, value } of moduleExports) {
-      if (!isHttpHandlerShaped(value)) continue;
-      // The registry serves the validated snapshot, never the exported object:
-      // an accessor cannot answer one way at registration and another at
-      // dispatch. Addresses still key off the exported identity.
-      const registered = validateRegisteredHttpHandler(value, `http handler "${name}"`);
+      if (!isHttpShaped(value)) continue;
+      const registered = validateRegisteredHttp(value, `http route "${name}"`);
       const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
       this.registerAddress(address, value);
-      this.httpHandlersByAddress.set(address, registered);
+      this.httpByAddress.set(address, registered);
     }
 
     for (const { name, value } of moduleExports) {
@@ -123,29 +123,31 @@ export class Registry {
           `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
         );
       }
-      const path = this.claimApplicationHttpPath(address, "HTTP-exposed function");
+      // A derived path is a path like any other: an export named through a
+      // string literal can project one the route grammar does not admit. An
+      // explicit path was already checked by the factory that built it.
+      const where = `HTTP-exposed function "${address}"`;
+      const path = validateRoutePath(httpPathForAddress(address), where);
+      this.refuseAckerDBPath(path, where);
       // The codec is compiled here, once: a contract that cannot cross the
       // surface's standard-JSON boundary fails the load, never a caller.
-      const exposed = Object.freeze({
+      this.exposed.set(address, Object.freeze({
         address,
         path,
         openapi: exposure.openapi,
         kind,
         fn,
         codec: compileExposedHttpCodec(address, fn),
-      });
-      this.exposed.set(path, exposed);
-      this.exposedByAddress.set(address, exposed);
+      }));
     }
 
-    // Raw handler paths are claimed with the same nets as exposed functions:
-    // the reserved prefix and any path already claimed. They are claimed
-    // second, so one check covers a raw path colliding with an exposed one as
-    // well as with another raw one.
-    for (const [address, fn] of this.httpHandlersByAddress) {
-      const path = this.claimApplicationHttpPath(address, "http handler");
-      this.httpRoutes.set(path, Object.freeze({ address, path, fn }));
-    }
+    // A raw route meets the same namespace policy as a derived one. Two
+    // Path-and-method collisions are checked by the live registry, which also
+    // contains framework routes.
+    this.httpRoutes = Object.freeze([...this.httpByAddress].map(([address, http]) => {
+      this.refuseAckerDBPath(http.path, `http route "${address}"`);
+      return Object.freeze({ address, http });
+    }));
 
     // The server-only kind is the one the passes above recognize, so the
     // refusal reads the value's shape rather than where it landed: a marked
@@ -155,7 +157,7 @@ export class Registry {
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
         (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
-        !isHttpHandlerShaped(value)
+        !isHttpShaped(value)
       ) {
         throw new Error(`unknown server-only export at "${name}"`);
       }
@@ -200,32 +202,24 @@ export class Registry {
     }
   }
 
-  /** One owner for the application-path invariants: the `_` reserve and every path collision. */
-  private claimApplicationHttpPath(address: string, label: string): string {
-    const path = httpPathForAddress(address);
-    // Every address-derived route obeys the reserved-name rule.
+  /**
+   * The application's HTTP namespace policy, derived paths and explicit ones
+   * alike: an application may not claim a path AckerDB owns.
+   */
+  private refuseAckerDBPath(path: string, where: string): void {
     if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
       throw new Error(
-        `${label} "${address}" claims AckerDB-owned path "${path}"; "${RESERVED_MARKER}" is reserved to AckerDB`,
+        `${where} claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
+          `paths and every name marked "${RESERVED_MARKER}"`,
       );
     }
-    // Unique addresses do not imply unique paths: the projection joins on `/`
-    // where the address joined on `.`, and an export named through a string
-    // literal may contain either. `api.notes.a/b` and `api.notes.a.b` are two
-    // functions with two access policies at one URL, and the second insertion
-    // would otherwise replace the first in silence.
-    const owner = this.exposed.get(path)?.address ?? this.httpRoutes.get(path)?.address;
-    if (owner !== undefined) {
-      throw new Error(`${label} "${address}" and "${owner}" both claim path "${path}"`);
-    }
-    return path;
   }
 
   /** The one fixed-root application address space, checked once. */
   private registerAddress(address: string, value: object): void {
     if (
       this.functions.has(address) ||
-      this.httpHandlersByAddress.has(address) ||
+      this.httpByAddress.has(address) ||
       this.channels.has(address)
     ) {
       throw new Error(`duplicate server export address "${address}"`);
@@ -234,22 +228,12 @@ export class Registry {
     if (existingAddress !== undefined) {
       const kind = isRegisteredFunction(value)
         ? "registered function"
-        : isHttpHandlerShaped(value)
-          ? "registered http handler"
+        : isHttpShaped(value)
+          ? "registered http route"
           : "registered channel";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
     this.addressByObject.set(value, address);
-  }
-
-  /** The HTTP surface of one address, or undefined when the function is not exposed. */
-  exposedFunction(address: string): ExposedFunction | undefined {
-    return this.exposedByAddress.get(address);
-  }
-
-  /** The raw handler at one address, or undefined when none is registered. */
-  httpHandler(address: string): AnyRegisteredHttpHandler | undefined {
-    return this.httpHandlersByAddress.get(address);
   }
 
   /** Every registered function is addressable; `access` alone decides admission. */
@@ -263,7 +247,7 @@ export class Registry {
 
   kindOf(address: string): string | undefined {
     return this.functions.get(address)?.kind ??
-      this.httpHandlersByAddress.get(address)?.kind ??
+      this.httpByAddress.get(address)?.kind ??
       this.channels.get(address)?.kind;
   }
 

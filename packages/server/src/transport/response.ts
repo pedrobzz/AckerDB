@@ -94,19 +94,21 @@ export function outcomeError(error: unknown): Response {
 
 /**
  * No outcome code names a wrong method — the status carries that — so this one
- * is built rather than mapped, and both body shapes carry the same words.
+ * is built rather than mapped. Every route answers it in the one bare shape:
+ * method selection belongs to the route table, not to the route.
  */
-function methodNotAllowedOutcome(allow: string): Outcome {
-  return { code: "malformed", retryable: false, message: `method not allowed; allow: ${allow}` };
-}
-
-export function methodNotAllowed(allow: string, headers: Record<string, string> = {}): Response {
-  return outcomeResponse(methodNotAllowedOutcome(allow), 405, { allow, ...headers });
-}
-
-/** The connection-level twin, for the routes that speak frames. */
-export function frameMethodNotAllowed(allow: string): Response {
-  return frame(methodNotAllowedOutcome(allow), 405, { allow });
+/**
+ * `no-store` because 405 is one of the few statuses HTTP caches by default
+ * (RFC 9111 §4.2.2), and a route's method set changes with a deploy — a stored
+ * refusal would outlive the deploy that fixed it, on File paths whose URL is
+ * itself a secret as much as anywhere else.
+ */
+export function methodNotAllowed(allow: string): Response {
+  return outcomeResponse(
+    { code: "malformed", retryable: false, message: `method not allowed; allow: ${allow}` },
+    405,
+    { allow, "cache-control": "no-store" },
+  );
 }
 
 /**
