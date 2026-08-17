@@ -48,11 +48,11 @@ import type { HttpMethod, HttpParams } from "./routing/path.ts";
 import {
   frameworkHttp,
   type AnyHttpHandler,
+  type HttpHandlerOf,
   type HttpHandlers,
-  type HttpRoute,
   type HttpRouteCtx,
-  type HttpRouteHandler,
   type HttpRouteResult,
+  type RuntimeHttp,
 } from "./routing/route.ts";
 import type { ExposedFunction } from "../app/registry.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
@@ -146,9 +146,9 @@ const preflight = (): Response => new Response(null, { status: 204, headers: COR
  */
 function everyMethod(
   methods: readonly HttpMethod[],
-  handler: HttpRouteHandler,
+  handler: HttpHandlerOf<HttpMethod, HttpRouteCtx, HttpRouteResult>,
 ): HttpHandlers<HttpRouteCtx, HttpRouteResult> {
-  const handlers: Record<string, HttpRouteHandler> = {};
+  const handlers: Record<string, typeof handler> = {};
   for (const method of methods) handlers[method] = handler;
   return handlers as HttpHandlers<HttpRouteCtx, HttpRouteResult>;
 }
@@ -631,8 +631,12 @@ export class AckerDBServer {
     // The live route table exists before the port does, so a probe that
     // arrives on the first tick of Boot meets a registered route rather than a
     // lifecycle branch. Application routes join it at activation.
-    this.routes = new HttpRegistry(() => this.unmatched());
-    this.routes.add(this.frameworkRoutes().map((route) => ({ route, owner: "AckerDB" })));
+    this.routes = new HttpRegistry(
+      () => this.unmatched(),
+      (handler, path, params, request) =>
+        this.applicationRouteCall(request, handler, path, params),
+    );
+    for (const route of this.frameworkRoutes()) this.routes.add(route);
     try {
       this.listener = Bun.serve<WsData, never>({
         port: options.port,
@@ -741,46 +745,14 @@ export class AckerDBServer {
       if (this.openapiInfo !== undefined) {
         this.openapi = openApiBytes(openApiDocument(runtime.registry, this.openapiInfo));
       }
-      // The whole application is compiled and validated before the first
-      // insertion, and readiness flips only after the last one — with no await
-      // anywhere between, so no request can observe half an application.
-      this.routes.add([
-        // An exposed function answers the methods its kind declares — the very
-        // table OpenAPI documents from, so served and published cannot drift —
-        // plus framework CORS. Its closure is the whole of `call`.
-        ...[...runtime.registry.exposed.values()].map((exposed) => ({
-          route: frameworkHttp(exposed.path, {
-            ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
-              this.call(request, new URL(request.url), exposed, this.requestSource(request))),
-            OPTIONS: preflight,
-          }),
-          owner: exposed.address,
-        })),
-        // A raw route answers exactly what it declared, preflight included or
-        // not: its OPTIONS is its author's, or it has none. Each declared
-        // method is compiled to its own handler, so the method that selected a
-        // route in the table is never asked again further in.
-        ...runtime.registry.httpRoutes.map(({ address, http }) => ({
-          route: frameworkHttp(
-            http.path,
-            Object.fromEntries(
-              // The map's value type is a union of method-narrowed handlers;
-              // the method that keys one is the method it was declared for.
-              Object.entries(http.handlers).map(([method, handler]) => [
-                method,
-                (ctx: HttpRouteCtx, request: Request) =>
-                  this.applicationRouteCall(
-                    request,
-                    handler as AnyHttpHandler,
-                    http.path,
-                    ctx.params,
-                  ),
-              ]),
-            ) as HttpHandlers<HttpRouteCtx, HttpRouteResult>,
-          ),
-          owner: address,
-        })),
-      ]);
+      for (const exposed of runtime.registry.exposed.values()) {
+        this.routes.add(frameworkHttp(exposed.path, {
+          ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
+            this.call(request, new URL(request.url), exposed, this.requestSource(request))),
+          OPTIONS: preflight,
+        }));
+      }
+      for (const { http } of runtime.registry.httpRoutes) this.routes.add(http);
     } catch (error) {
       this.startup = null;
       this.lifecycle = "stopped";
@@ -829,12 +801,11 @@ export class AckerDBServer {
   }
 
   /**
-   * The routes AckerDB always owns, registered through the same factory an
-   * application uses. `/live` and `/ready` are in the table before the first
+   * The routes AckerDB always owns. `/live` and `/ready` are in the table before the first
    * request, so probes answer throughout Boot; the rest answer the lifecycle
    * themselves, because when a route is reachable is its own policy.
    */
-  private frameworkRoutes(): readonly HttpRoute[] {
+  private frameworkRoutes(): readonly RuntimeHttp[] {
     const grants = ACKERDB_HTTP_ROUTES.fileDownload;
     // GET and HEAD are the same route behaviour, so they are the same handler
     // value under two keys rather than two closures that must stay equal.

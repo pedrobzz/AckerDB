@@ -228,9 +228,8 @@ _Avoid_: Endpoint, handler, controller
 
 **Route pattern** — An HTTP route's path in the one language AckerDB publishes:
 static segments, single-segment `:name` parameters, and at most one terminal
-`*`. The compiler and the matcher read the same grammar, so a pattern that
-types is a pattern that routes, and one a literal cannot express does not
-exist.
+`*`. The literal types its capture names; registration validates the complete
+runtime grammar before the matcher receives it.
 _Avoid_: Route regex, URL matcher, glob
 
 **Route capture** — What a pattern's `:name` or terminal `*` matched, decoded

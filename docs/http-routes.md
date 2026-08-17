@@ -60,12 +60,11 @@ export const stripe = http("/hooks/stripe", {
 - **Methods are keys, not a list.** A route serving `GET` and `POST` names both
   and writes no `request.method` switch. When two methods share an
   implementation deliberately, assign the same handler value to both keys.
-  One path is one `Http` value: path ownership is stated once.
-- The declaration carries exactly `path` and `handlers`: there is no `args`,
-  `returns`, `description`, or `access`, because nothing consumes them — no
-  validators, no OpenAPI operation, no policy. Any other field is a
-  registration error naming the export, whether the definition came through
-  the factory or an untyped module.
+  Separate `Http` values may contribute disjoint methods to the same pattern;
+  claiming an owned path-and-method pair is a registration error.
+- `http` returns the opaque executable `Http` value the registry consumes.
+  Application code declares only the path and handlers; routing machinery is
+  not part of its interface.
 - Validation is userland: any `v` validator's own `check` runs by hand inside
   the handler, and the response to invalid input is the handler's decision —
   Stripe's "answer 200 for unrecognized events" is expressible here and
@@ -88,15 +87,13 @@ export const asset = http("/orgs/:org/assets/*", {
 });
 ```
 
-- **Matching and typing are one grammar.** `ctx.params` is derived from the
-  literal path by the compiler and filled by the router at runtime, from the
-  same rules in the same module, so the two cannot drift. A static route
+- **The path types its captures.** `ctx.params` is derived from the literal
+  path and filled by the router at runtime. A static route
   exposes no parameter keys, which makes a misspelled `ctx.params.userId` a
   compile error rather than `undefined`.
-- **A malformed path fails to compile before it fails to load.** A path not
-  starting with `/`, an empty segment, a `*` that is not last, a repeated
-  parameter name, and a `:` naming nothing are each refused by the argument
-  type, and refused again by the loader for values that reach it untyped.
+- **The type rejects a non-absolute literal; runtime validates the complete
+  grammar.** Empty segments, misplaced wildcards, duplicate or malformed
+  parameter names, and matcher syntax are registration errors.
 - **Static text is static.** A segment may not carry `: * ( ) { } \ ? #`. The
   first two are AckerDB's own syntax; the rest are syntax to the matcher
   underneath, so a segment carrying one would quietly become a pattern in a
@@ -225,9 +222,9 @@ headers, body, signal. `params` is on the context rather than on a framework
 - The kind exists only at the HTTP boundary. It has no Protocol-2 form, no
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
-- Application routes enter the live table as one validated batch during
-  activation — every claim is checked before the first insertion, and readiness
-  flips only after the last, so no request observes half an application. Before that, and while draining, they answer
+- Application routes enter the live table through synchronous `add` calls
+  during activation, followed by the readiness transition; no request can run
+  between those operations. Before that, and while draining, they answer
   the established unavailable outcome rather than a 404: unreachable and
   absent are different statements. `/live` and `/ready` are registered before
   the port is bound and answer throughout Boot.

@@ -177,7 +177,7 @@ export type QueryCtx = GenericQueryCtx<Schema, QueryJobs>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationJobs>;
 export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedureJobs, MutationJobs>;
 export type SseCtx = GenericSseCtx<Schema, ProcedureJobs, MutationJobs>;
-export type Http<Path extends string = string> = GenericHttp<Path, GenericHttpHandlerCtx<Path, Schema>>;
+export type Http<Path extends string = string> = GenericHttp<Path>;
 export type HttpHandlerCtx<Path extends string = string> = GenericHttpHandlerCtx<Path, Schema>;
 export type HttpHandler<Method extends HttpMethod, Path extends string> = GenericHttpHandler<Method, Path, Schema>;
 export type HttpHandlerGET<Path extends string> = GenericHttpHandlerGET<Path, Schema>;

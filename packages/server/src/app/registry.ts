@@ -24,7 +24,7 @@ import {
 import {
   isHttpShaped,
   validateRegisteredHttp,
-  type AnyHttp,
+  type RuntimeHttp,
 } from "../transport/routing/route.ts";
 import {
   isRegisteredChannel,
@@ -69,7 +69,7 @@ export interface ExposedFunction {
  */
 export interface HttpRouteDefinition {
   readonly address: string;
-  readonly http: AnyHttp;
+  readonly http: RuntimeHttp;
 }
 
 /** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
@@ -81,7 +81,7 @@ export class Registry {
   readonly exposed = new Map<string, ExposedFunction>();
   /** Application-owned raw routes, in the loader's fixed export order. */
   readonly httpRoutes: readonly HttpRouteDefinition[];
-  private readonly httpByAddress = new Map<string, AnyHttp>();
+  private readonly httpByAddress = new Map<string, RuntimeHttp>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
 
@@ -98,9 +98,6 @@ export class Registry {
 
     for (const { name, value } of moduleExports) {
       if (!isHttpShaped(value)) continue;
-      // The registry serves the validated snapshot, never the exported object:
-      // an accessor cannot answer one way at registration and another at
-      // dispatch. Addresses still key off the exported identity.
       const registered = validateRegisteredHttp(value, `http route "${name}"`);
       const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
       this.registerAddress(address, value);
@@ -145,8 +142,8 @@ export class Registry {
     }
 
     // A raw route meets the same namespace policy as a derived one. Two
-    // routes claiming one URL is not checked here: the live registry is the
-    // one owner of path ownership, and it spans framework routes too.
+    // Path-and-method collisions are checked by the live registry, which also
+    // contains framework routes.
     this.httpRoutes = Object.freeze([...this.httpByAddress].map(([address, http]) => {
       this.refuseAckerDBPath(http.path, `http route "${address}"`);
       return Object.freeze({ address, http });

@@ -50,7 +50,7 @@ and AckerDB policy:
 
 The registry never learns that a route is a probe, a webhook, or a File.
 
-## The path language is what the compiler can prove
+## The path language types its captures
 
 The published grammar is static segments, `:name`, and at most one terminal
 `*`. It is that small because every form must be inferable from the literal
@@ -58,11 +58,10 @@ path: `/users/:id` types its handlers' `ctx.params.id` as `string`, a static
 path types no parameter keys at all — so a misspelling is a compile error, not
 `undefined` — and a terminal `*` types `ctx.params["*"]`.
 
-Both directions of that grammar live in one module. `ValidHttpPath<P>` refuses
-a malformed literal at the call site, and `validateRoutePath` refuses the same
-shapes at load for values that arrive untyped; `HttpParams<P>` extracts the
-names the matcher will capture. A pattern the compiler accepts is a pattern the
-router matches, because there is one set of rules and one file.
+`HttpParams<P>` extracts the names the matcher will capture. The type rejects a
+non-absolute literal; `validateRoutePath` owns the complete runtime grammar,
+including empty segments, terminal wildcard placement, duplicate names, and
+matcher syntax.
 
 The grammar is closed rather than merely restricted. A static segment may not
 carry any character the matcher reads as syntax — `( ) { } \` as well as
@@ -73,16 +72,16 @@ path and register as a pattern-constrained one: the underlying language
 leaking through a hole in the published one, which is the failure mode the
 seam exists to prevent.
 
-Ownership is by pattern, not by written path. `/users/:id` and `/users/:slug`
-are one claim on one set of URLs; keying by the literal string would accept
-both and serve whichever the tree happened to answer with.
+Ownership is by pattern and method, not by written path. `/users/:id` and
+`/users/:slug` may contribute different methods to the same matched route but
+cannot both claim `GET`.
 
-The result type carries the same discipline. Application handlers answer
-`Response`. Bun's contract for an accepted WebSocket upgrade is `undefined`,
-which is a real outcome of an HTTP route — the socket has left HTTP — so the
-canonical handler generic has a result slot whose default is `Response` and
-which the framework's own binding widens. The application-facing factory, and
-the generated one, pin it closed.
+Application handlers answer `Response`; framework handlers may also answer
+`undefined` after a WebSocket upgrade. Two thin construction adapters close
+that genuine execution difference over one opaque executable `Http` model:
+public `http` enters Runtime policy, while internal `frameworkHttp` calls the
+framework handler directly. `HttpRegistry.add` consumes either value without
+conversion and dispatch remains route-kind blind.
 
 ## Matching is adopted, not built
 
@@ -132,9 +131,9 @@ answers both "which route" and "which methods does it serve".
   predicate did, because every path was derived and every derived path began
   with `api` — would forbid `/webhooks/_raw` for nothing.
 - **Lifecycle gating moved from a path prefix to route policy.** The old
-  `startsWith("/api/")` test is gone. Application routes enter the table as one
-  validated synchronous batch at activation with readiness flipping after the
-  last insertion, and each carries its own readiness check for the draining
+  `startsWith("/api/")` test is gone. Application routes enter the table through
+  synchronous additions at activation with readiness flipping after the last,
+  and each carries its own readiness check for the draining
   window; a request no route claims answers unavailable before readiness and
   during drain, `not_found` after.
 - **`Allow` now names every method the route registered**, the framework's CORS
@@ -178,18 +177,16 @@ answers both "which route" and "which methods does it serve".
 ## The line count went up, and that is the honest result
 
 #322 asks for "a net reduction in source lines, excluding tests and
-documentation". It is not met: src grew by roughly 500 lines raw, of which
-about 300 are code and the rest are comments in this repository's usual
-density. The mechanism half of that criterion *is* met — one dispatch
+documentation". It is not met: production source is currently 186 lines over
+`canary`. The simplification review removed 354 production lines from the
+original PR without weakening the public handler types. The mechanism half of
+the criterion *is* met — one dispatch
 function, one route model, one collision owner, one 405, one 404, one method
 selection; the fourteen-branch chain, both path maps, `Registry.httpHandler`,
 `frameMethodNotAllowed`, and the File route's regular expression are all gone.
 
-The lines went into capability this issue also asked for and that did not
-exist before: a path grammar written for the compiler *and* the matcher
-(`ValidHttpPath`, `HttpParams`, `validateRoutePath`, `routeSignature`), route
-parameters and wildcards, decoded captures, seven exported handler aliases, a
-batch registration that is atomic against a refusal, and the compile-time
-refusals the issue's own testing decisions require. Reaching a negative number
-would mean dropping one of those. The premise that consolidation alone would
-shrink the surface was wrong; the consolidation did shrink the *mechanisms*.
+The remaining lines provide typed parameters and wildcards, decoded captures,
+seven exported handler aliases, the public application adapter, the internal
+framework adapter, and the matcher-backed registry. No further clear deletion
+was found that would preserve those requirements; compressing types or moving
+the same decisions elsewhere was rejected as metric gaming.

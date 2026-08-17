@@ -171,6 +171,12 @@ const functions = {
     assets: http("/users/:id/assets/*", {
       GET: (ctx) => Response.json({ id: ctx.params.id, rest: ctx.params["*"] }),
     }),
+    readPerson: http("/people/:id", {
+      GET: (ctx) => Response.json({ method: "GET", id: ctx.params.id }),
+    }),
+    writePerson: http("/people/:personId", {
+      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.personId }),
+    }),
     // Captures and application capabilities are one context, not two.
     record: http("/deliveries/:type", {
       POST: async (ctx: Ctx) => {
@@ -263,6 +269,15 @@ describe("the registry routes before any handler runs", () => {
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET, POST");
     expect(await response.json()).toMatchObject({ code: "malformed", retryable: false });
+  });
+
+  test("different Http values may contribute methods to one path pattern", async () => {
+    expect(await (await fetch(`${base}/people/7`)).json()).toEqual({ method: "GET", id: "7" });
+    expect(await (await fetch(`${base}/people/7`, { method: "POST" })).json())
+      .toEqual({ method: "POST", id: "7" });
+    const unsupported = await fetch(`${base}/people/7`, { method: "DELETE" });
+    expect(unsupported.status).toBe(405);
+    expect(unsupported.headers.get("allow")).toBe("GET, POST");
   });
 
   test("an unknown path answers 404 in the bare Outcome shape", async () => {
@@ -488,7 +503,7 @@ describe("lifecycle decides reachability, not the route table", () => {
     }
   });
 
-  test("two routes claiming one URL are refused where the whole table is known", async () => {
+  test("two routes claiming one path and method are refused", async () => {
     // Path ownership has one owner, and only it also knows the framework's
     // routes — a route the loader admits can still be refused here. A
     // parameter's name is the author's vocabulary rather than the URL's, and
@@ -523,7 +538,7 @@ describe("lifecycle decides reachability, not the route table", () => {
         byId: http("/people/:id", { GET: () => new Response(null) }),
         bySlug: http("/people/:slug", { GET: () => new Response(null) }),
       },
-    })).toContain('both claim the HTTP route "/people/:slug"');
+    })).toContain('HTTP route "/people/:slug" already owns GET');
 
     // The projection joins on `/` where the address joined on `.`, so a
     // string-named export can reach a path another address already derives.
@@ -531,7 +546,7 @@ describe("lifecycle decides reachability, not the route table", () => {
     expect(await refuse({
       notes: { ["echo/deep"]: exposedNote() },
       "notes.echo": { deep: exposedNote() },
-    })).toContain('both claim the HTTP route "/api/notes/echo/deep"');
+    })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
   });
 
   test("the same path is reachable after activation and unavailable while draining", async () => {

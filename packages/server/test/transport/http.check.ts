@@ -151,30 +151,6 @@ typedHttp("/users/:id", {
 // @ts-expect-error a path must start with "/"
 typedHttp("users/:id", { GET: answer });
 
-// @ts-expect-error a path may not contain an empty segment
-typedHttp("/a//b", { GET: answer });
-
-// @ts-expect-error a wildcard is terminal
-typedHttp("/a/*/b", { GET: answer });
-
-// @ts-expect-error a wildcard appears at most once
-typedHttp("/a/*/*", { GET: answer });
-
-// @ts-expect-error a parameter name may not repeat
-typedHttp("/:id/x/:id", { GET: answer });
-
-// @ts-expect-error a segment is static text, ":name", or the terminal "*"
-typedHttp("/a/**", { GET: answer });
-
-// @ts-expect-error the matcher reads "(" as syntax, so static text may not carry it
-typedHttp("/v(1)/x", { GET: answer });
-
-// @ts-expect-error the matcher reads "{" as syntax
-typedHttp("/a{b,c}", { GET: answer });
-
-// @ts-expect-error a parameter name is letters, digits, "_", and "-"
-typedHttp("/x/:a.b", { GET: answer });
-
 // @ts-expect-error TRACE is not a supported method
 typedHttp("/a", { TRACE: answer });
 
