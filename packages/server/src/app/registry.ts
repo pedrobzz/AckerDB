@@ -27,7 +27,6 @@ import {
 import type { AnyRegisteredChannel } from "../channels/definition.ts";
 import {
   definitionFromModuleExport,
-  type Definition,
 } from "../definitions.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
@@ -60,17 +59,6 @@ export interface ExposedFunction {
   readonly codec: ExposedHttpCodec;
 }
 
-/**
- * One application-owned raw route: the export that declared it and the
- * validated value it declared. Unlike an exposed function, its path is
- * explicit — a webhook URL is a thing pasted into a provider's dashboard —
- * so the address names the export and the path names the URL.
- */
-export interface HttpRouteDefinition {
-  readonly address: string;
-  readonly http: RuntimeHttp;
-}
-
 /** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
 export type LoadedModules = Record<string, Record<string, unknown>>;
 
@@ -78,18 +66,20 @@ export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
   /** HTTP-exposed functions keyed by address; their path is derived from it. */
   readonly exposed = new Map<string, ExposedFunction>();
-  /** Application-owned raw routes, in the loader's fixed export order. */
-  readonly httpRoutes: readonly HttpRouteDefinition[];
-  private readonly httpByAddress = new Map<string, RuntimeHttp>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
 
-  /** `modules` is keyed by dot path: functions/messages.ts -> "messages". */
-  constructor(modules: LoadedModules) {
+  /**
+   * `modules` is keyed by dot path: functions/messages.ts -> "messages".
+   * A listener supplies `registerHttp`; metadata-only consumers omit it.
+   */
+  constructor(
+    modules: LoadedModules,
+    registerHttp?: (http: RuntimeHttp) => void,
+  ) {
     const moduleExports = this.contribute(modules);
 
     for (const { name, value } of moduleExports) {
-      const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
       const definition = definitionFromModuleExport(
         value,
         `function module export "${name}"`,
@@ -99,21 +89,25 @@ export class Registry {
         case "query":
         case "mutation":
         case "procedure":
-        case "sse":
+        case "sse": {
+          const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
           this.registerAddress(address, definition);
           this.functions.set(address, definition);
           break;
-        case "http":
-          this.registerAddress(address, definition);
-          this.httpByAddress.set(
-            address,
-            validateRegisteredHttp(definition, `http route "${name}"`),
-          );
+        }
+        case "http": {
+          const where = `http route "${name}"`;
+          const http = validateRegisteredHttp(definition, where);
+          this.refuseAckerDBPath(http.path, where);
+          registerHttp?.(http);
           break;
-        case "channel":
+        }
+        case "channel": {
+          const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
           this.registerAddress(address, definition);
           this.channels.set(address, definition);
           break;
+        }
         case "job":
           throw new TypeError(`function module export "${name}" is a job definition`);
       }
@@ -148,15 +142,6 @@ export class Registry {
         codec: compileExposedHttpCodec(address, fn),
       }));
     }
-
-    // A raw route meets the same namespace policy as a derived one. Two
-    // Path-and-method collisions are checked by the live registry, which also
-    // contains framework routes.
-    this.httpRoutes = Object.freeze([...this.httpByAddress].map(([address, http]) => {
-      this.refuseAckerDBPath(http.path, `http route "${address}"`);
-      return Object.freeze({ address, http });
-    }));
-
   }
 
   /** Flatten the application's modules into one export list, in a fixed order. */
@@ -211,23 +196,16 @@ export class Registry {
   }
 
   /** The one fixed-root application address space, checked once. */
-  private registerAddress(address: string, value: Definition): void {
-    if (
-      this.functions.has(address) ||
-      this.httpByAddress.has(address) ||
-      this.channels.has(address)
-    ) {
+  private registerAddress(
+    address: string,
+    value: AnyRegistered | AnyRegisteredChannel,
+  ): void {
+    if (this.functions.has(address) || this.channels.has(address)) {
       throw new Error(`duplicate server export address "${address}"`);
     }
     const existingAddress = this.addressByObject.get(value);
     if (existingAddress !== undefined) {
-      const kind = value.kind === "http"
-        ? "registered http route"
-        : value.kind === "channel"
-          ? "registered channel"
-          : value.kind === "job"
-            ? "registered job"
-            : "registered function";
+      const kind = value.kind === "channel" ? "registered channel" : "registered function";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
     this.addressByObject.set(value, address);
@@ -244,12 +222,10 @@ export class Registry {
 
   kindOf(address: string): string | undefined {
     return this.functions.get(address)?.kind ??
-      this.httpByAddress.get(address)?.kind ??
       this.channels.get(address)?.kind;
   }
 
   addressOf(value: object): string | undefined {
     return this.addressByObject.get(value);
   }
-
 }

@@ -27,6 +27,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import type {
   RuntimePublication,
   RuntimeRequest,
@@ -265,10 +266,15 @@ export interface CredentialFixture {
   close(): Promise<void>;
 }
 
+export interface ServedCredentialFixture extends CredentialFixture {
+  readonly server: AckerDBServer;
+}
+
 export interface CredentialFixtureOptions {
   readonly limits?: ServiceLimits;
   readonly now?: RuntimeOptions["now"];
   readonly resolveScopes?: RuntimeOptions["resolveScopes"];
+  readonly serve?: boolean;
 }
 
 export function databasePath(prefix: string): string {
@@ -277,38 +283,59 @@ export function databasePath(prefix: string): string {
   return join(directory, "data.db");
 }
 
+export function fixture(
+  path: string,
+  verifier: CredentialVerifier | undefined,
+  extraModules: Record<string, Record<string, unknown>>,
+  options: CredentialFixtureOptions & { readonly serve: true },
+): Promise<ServedCredentialFixture>;
+export function fixture(
+  path: string,
+  verifier?: CredentialVerifier,
+  extraModules?: Record<string, Record<string, unknown>>,
+  options?: CredentialFixtureOptions,
+): Promise<CredentialFixture>;
 export async function fixture(
   path: string,
   verifier?: CredentialVerifier,
   extraModules: Record<string, Record<string, unknown>> = {},
   options: CredentialFixtureOptions = {},
-): Promise<CredentialFixture> {
+): Promise<CredentialFixture | ServedCredentialFixture> {
   const engine = new Engine(schema, path);
   reconcile(engine);
+  const limits = options.limits ?? {
+    ...PRODUCTION_LIMITS,
+    credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
+  };
+  const applicationModules = { ...modules, ...extraModules };
+  const server = options.serve === true
+    ? new AckerDBServer({ limits, port: 0 })
+    : undefined;
   const runtime = new Runtime({
     engine,
-    registry: new Registry({ ...modules, ...extraModules }),
+    registry: server?.loadFunctionModules(applicationModules) ?? new Registry(applicationModules),
     verifier,
     scopes: FIXTURE_SCOPES,
     // Parent identities hold the full vocabulary unless a test narrows it,
     // so child-credential intersections read a real issuer grant.
     resolveScopes: options.resolveScopes ?? (() => FIXTURE_SCOPES),
     ...(options.now === undefined ? {} : { now: options.now }),
-    limits: options.limits ?? {
-      ...PRODUCTION_LIMITS,
-      credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
-    },
+    limits,
   });
   await runtime.start();
+  server?.activate(runtime);
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
-    await runtime.drain().catch(() => {});
+    if (server === undefined) await runtime.drain().catch(() => {});
+    else await server.drain().catch(() => {});
     engine.close("clean");
   };
   cleanups.push(close);
-  return { engine, runtime, close };
+  return server === undefined
+    ? { engine, runtime, close }
+    : { engine, runtime, server, close };
 }
 
 export function trackCleanup(cleanup: () => Promise<void>): void {

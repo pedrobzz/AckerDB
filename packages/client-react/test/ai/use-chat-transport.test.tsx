@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AckerDBFetch, AckerDBWebSocket, SseRef } from "@ackerdb/client";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -35,7 +35,6 @@ import {
 } from "@ackerdb/client-react/ai";
 import { uiMessageChunk } from "./ui-message-chunk.ts";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -54,8 +53,8 @@ const standardArgs = {
   messages: v.jsonb<UIMessage[]>(),
 };
 
-function registry(): Registry {
-  return new Registry({
+function modules() {
+  return {
     ai: {
       // The full chunk-family tour, written through the AI SDK's own
       // UIMessageStream and returned from the handler as-is.
@@ -230,7 +229,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface App {
@@ -243,13 +242,14 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-ai-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
   const runtime = new Runtime({
     engine,
-    registry: registry(),
+    registry: server.loadFunctionModules(modules()),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     runtime,

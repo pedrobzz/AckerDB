@@ -13,9 +13,9 @@ import {
   type QueryRef,
 } from "@ackerdb/client";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -29,7 +29,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
 import { within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -67,7 +66,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-mutation-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     messages: {
       list: query({
         access: "public",
@@ -84,10 +83,12 @@ async function createApp(): Promise<App> {
         handler: async (ctx: Ctx, args: Ctx) => await ctx.db.messages.insert(args),
       }),
     },
-  });
+  };
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+  const registry = server.loadFunctionModules(modules);
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,

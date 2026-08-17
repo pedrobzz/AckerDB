@@ -9,7 +9,7 @@
  * at all. `runCount` is both how many runs exist and the latest run's number,
  * so the Job needs no pointer that could reference a run of another Job.
  *
- * Execution envelopes, by declared kind:
+ * Execution envelopes, by declared mode:
  * - mutation-mode: claim, handler, and settle collapse into one writer
  *   transaction — exactly-once, no external I/O. A failed handler rolls the
  *   whole transaction back; the failed run is then recorded in a fresh
@@ -593,7 +593,7 @@ export class RuntimeJobs {
   }
 
   /**
-   * Claim the next eligible due Job at or beyond `cursor`. Mutation-kind Jobs
+   * Claim the next eligible due Job at or beyond `cursor`. Mutation-mode Jobs
    * execute and settle in the same transaction; procedure-mode Jobs get a
    * leased run for dispatch. Pages past gate-saturated and undeclared Jobs so
    * a blocked prefix cannot starve eligible work behind it.
@@ -746,7 +746,7 @@ export class RuntimeJobs {
     return await this.settleSuccessIn(surface, job, run, value, outputJson);
   }
 
-  /** Procedure-kind dispatch: run as a system operation, then settle. */
+  /** Procedure-mode dispatch: run as a system operation, then settle. */
   private dispatch(claimed: ClaimedRun): void {
     const definition = this.definitions.get(claimed.name)!;
     const controller = new AbortController();

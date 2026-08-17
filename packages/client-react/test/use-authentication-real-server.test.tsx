@@ -6,9 +6,9 @@ import { join } from "node:path";
 import type { AckerDBAuthentication, AckerDBWebSocket, QueryRef } from "@ackerdb/client";
 import { anyApi } from "@ackerdb/client";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -33,7 +33,6 @@ import {
   type UseAuthenticationResult,
 } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -89,7 +88,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     notes: {
       list: query({
         access: "authenticated",
@@ -97,7 +96,9 @@ async function createApp(): Promise<App> {
         handler: (ctx: Ctx) => ctx.db.notes.query().collect(),
       }),
     },
-  });
+  };
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+  const registry = server.loadFunctionModules(modules);
   const verifier = new LeaseVerifier();
   const runtime = new Runtime({
     engine,
@@ -106,7 +107,7 @@ async function createApp(): Promise<App> {
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     verifier,

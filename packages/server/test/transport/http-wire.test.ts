@@ -14,14 +14,12 @@ import { Err, Ok, Status, parseSseMessage, type SseMessage } from "@ackerdb/core
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query, sseProcedure } from "../../src/app/functions.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
-import type { AckerDBServer } from "../../src/transport/server.ts";
-import { listen } from "ackerdb-test-support/listen";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import { jsonSchemaViolations } from "../support/json-schema-check.ts";
 
 // The document is plain JSON; navigating it in tests is not a typed contract.
@@ -83,10 +81,11 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-wire-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  const registry = new Registry(functions);
+  server = new AckerDBServer({ limits, port: 0 });
+  const registry = server.loadFunctionModules(functions);
   runtime = new Runtime({ engine, registry, limits });
   await runtime.start();
-  server = listen(runtime);
+  server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
   document = openApiDocument(registry, info);
 });

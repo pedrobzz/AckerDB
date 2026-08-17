@@ -10,7 +10,9 @@ export type Definition =
   | JobDefinition
   | AnyRegisteredChannel;
 
-export type DefinitionKind = Definition["kind"];
+const DEFINITION_KINDS: ReadonlySet<unknown> = new Set<Definition["kind"]>([
+  "query", "mutation", "procedure", "sse", "http", "job", "channel",
+]);
 
 /**
  * Interpret one module export at the loading seam. Values without a `kind`
@@ -27,16 +29,8 @@ export function definitionFromModuleExport(
   ) return undefined;
 
   const kind = (value as { readonly kind?: unknown }).kind;
-  switch (kind) {
-    case "query":
-    case "mutation":
-    case "procedure":
-    case "sse":
-    case "http":
-    case "job":
-    case "channel":
-      return value as Definition;
-    default:
-      throw new TypeError(`${where} has unknown definition kind ${JSON.stringify(kind)}`);
+  if (!DEFINITION_KINDS.has(kind)) {
+    throw new TypeError(`${where} has unknown definition kind ${JSON.stringify(kind)}`);
   }
+  return value as Definition;
 }

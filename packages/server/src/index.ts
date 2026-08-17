@@ -421,7 +421,7 @@ export {
   type ChannelSend,
   type RegisteredChannel,
 } from "./channels/definition.ts";
-export type { Definition, DefinitionKind } from "./definitions.ts";
+export type { Definition } from "./definitions.ts";
 export {
   type StandardJsonCodec,
   type StandardJsonInput,

@@ -54,7 +54,11 @@ import {
   type HttpRouteResult,
   type RuntimeHttp,
 } from "./routing/route.ts";
-import type { ExposedFunction } from "../app/registry.ts";
+import {
+  Registry,
+  type ExposedFunction,
+  type LoadedModules,
+} from "../app/registry.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
@@ -586,6 +590,7 @@ export class AckerDBServer {
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
+  private loadedRegistry: Registry | null = null;
   private lifecycle: AckerDBServerState = "starting";
   private startup: AckerDBStartupPhase | null = "listening";
   private connectionRejections = 0;
@@ -630,7 +635,7 @@ export class AckerDBServer {
     );
     // The live route table exists before the port does, so a probe that
     // arrives on the first tick of Boot meets a registered route rather than a
-    // lifecycle branch. Application routes join it at activation.
+    // lifecycle branch. Application routes join it as their modules load.
     this.routes = new HttpRegistry(
       () => this.unmatched(),
       (handler, path, params, request) =>
@@ -729,35 +734,46 @@ export class AckerDBServer {
     this.startup = phase;
   }
 
-  /** Atomically attach the started Runtime and admit application traffic. */
-  activate(runtime: Runtime): void {
-    if (this.lifecycle !== "starting" || this.activeRuntime !== null) {
-      throw new Error("server can only be activated once while starting");
-    }
-    if (runtime.state !== "ready") throw new Error("Runtime must be ready before activation");
-    if (stableEncode(runtime.limits) !== stableEncode(this.limits)) {
-      throw new Error("Runtime limits must match listener limits");
+  /**
+   * Load the application's function modules into their two actual owners:
+   * addressed functions and channels enter the application Registry, while
+   * every HTTP route enters the listener's already-live HTTP registry.
+   */
+  loadFunctionModules(modules: LoadedModules): Registry {
+    if (this.lifecycle !== "starting" || this.loadedRegistry !== null) {
+      throw new Error("server can only load function modules once while starting");
     }
     try {
-      // The registry is immutable after load, so the document is too: assemble
-      // it once here and serve those bytes. A document that cannot be built
-      // fails the activation rather than the first caller that asks for it.
-      if (this.openapiInfo !== undefined) {
-        this.openapi = openApiBytes(openApiDocument(runtime.registry, this.openapiInfo));
-      }
-      for (const exposed of runtime.registry.exposed.values()) {
+      const registry = new Registry(modules, (http) => this.routes.add(http));
+      for (const exposed of registry.exposed.values()) {
         this.routes.add(frameworkHttp(exposed.path, {
           ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
             this.call(request, new URL(request.url), exposed, this.requestSource(request))),
           OPTIONS: preflight,
         }));
       }
-      for (const { http } of runtime.registry.httpRoutes) this.routes.add(http);
+      if (this.openapiInfo !== undefined) {
+        this.openapi = openApiBytes(openApiDocument(registry, this.openapiInfo));
+      }
+      this.loadedRegistry = registry;
+      return registry;
     } catch (error) {
       this.startup = null;
       this.lifecycle = "stopped";
       void this.listener?.stop(true).catch(() => {});
       throw error;
+    }
+  }
+
+  /** Attach the started Runtime built from this server's loaded Registry. */
+  activate(runtime: Runtime): void {
+    if (this.lifecycle !== "starting" || this.activeRuntime !== null) {
+      throw new Error("server can only be activated once while starting");
+    }
+    if (runtime.registry !== this.loadedRegistry) throw new Error("Runtime uses the wrong Registry");
+    if (runtime.state !== "ready") throw new Error("Runtime must be ready before activation");
+    if (stableEncode(runtime.limits) !== stableEncode(this.limits)) {
+      throw new Error("Runtime limits must match listener limits");
     }
     this.activeRuntime = runtime;
     this.startup = null;

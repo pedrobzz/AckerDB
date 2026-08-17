@@ -6,8 +6,7 @@
   "exports": {
     "./async": "./src/async.ts",
     "./client-transport": "./src/client-transport.ts",
-    "./dom": "./src/dom.ts",
-    "./listen": "./src/listen.ts"
+    "./dom": "./src/dom.ts"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6"

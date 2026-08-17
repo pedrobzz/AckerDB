@@ -19,8 +19,8 @@ import { ManualClock } from "ackerdb-test-support/client-transport";
 import { createHarness, cursor, mustErr } from "./support/harness.ts";
 import {
   Engine,
+  AckerDBServer,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -29,7 +29,6 @@ import {
   reconcile,
 } from "@ackerdb/server";
 import { until, within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -594,7 +593,7 @@ describe("suspension against a real ackerdb server", () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-suspension-real-"));
     const engine = new Engine(realSchema, join(directory, "data.db"));
     reconcile(engine);
-    const registry = new Registry({
+    const modules = {
       messages: {
         list: query({
           access: "public",
@@ -606,10 +605,12 @@ describe("suspension against a real ackerdb server", () => {
               .collect(),
         }),
       },
-    });
+    };
+    const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+    const registry = server.loadFunctionModules(modules);
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     await runtime.start();
-    const server = listen(runtime);
+    server.activate(runtime);
     // A fake clock against the real server: every timer the client sets is
     // inert unless advanced, so recovery reaching ready proves the whole
     // resume progression runs on socket events alone — no timer, no backoff.

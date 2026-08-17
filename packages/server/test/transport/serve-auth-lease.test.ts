@@ -20,10 +20,10 @@ import { procedure, sseProcedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
+import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { type AckerDBServer } from "../../src/transport/server.ts";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import { deferred, waitForAbort, within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 async function eventually(check: () => boolean): Promise<void> {
   await within((async () => {
@@ -175,13 +175,14 @@ describe("HTTP and SSE credential leases", () => {
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     verifier = new LeaseVerifier();
+    server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
     runtime = new Runtime({
       engine,
-      registry: new Registry(functions),
+      registry: server.loadFunctionModules(functions),
       verifier,
     });
     await runtime.start();
-    server = listen(runtime);
+    server.activate(runtime);
     base = `http://127.0.0.1:${server.port}`;
   });
 

@@ -38,15 +38,17 @@ function definitions() {
 describe("server definitions", () => {
   test("routes every factory result through its kind", () => {
     const { background, ...functions } = definitions();
-    const registry = new Registry({ definitions: functions });
+    const httpDefinitions: unknown[] = [];
+    const registry = new Registry(
+      { definitions: functions },
+      (definition) => httpDefinitions.push(definition),
+    );
 
     expect(registry.get("api.definitions.find")?.kind).toBe("query");
     expect(registry.get("api.definitions.change")?.kind).toBe("mutation");
     expect(registry.get("api.definitions.run")?.kind).toBe("procedure");
     expect(registry.get("api.definitions.stream")?.kind).toBe("sse");
-    expect(registry.httpRoutes).toMatchObject([
-      { address: "api.definitions.hook", http: { kind: "http" } },
-    ]);
+    expect(httpDefinitions).toMatchObject([{ kind: "http" }]);
     expect(registry.getChannel("api.definitions.chat")?.kind).toBe("channel");
     expect(declareJobs({ definitions: { background } })).toMatchObject([
       { name: "definitions.background", job: { kind: "job", mode: "mutation" } },

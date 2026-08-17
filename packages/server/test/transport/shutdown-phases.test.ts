@@ -12,7 +12,6 @@ import { Engine } from "../../src/database/engine.ts";
 import { mutation, procedure } from "../../src/app/functions.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
@@ -63,7 +62,7 @@ beforeEach(async () => {
   engine = new Engine(schema, join(dir, "data.db"));
   await reconcile(engine, []);
   server = new AckerDBServer({ limits, port: 0 });
-  runtime = new Runtime({ engine, registry: new Registry(modules), limits });
+  runtime = new Runtime({ engine, registry: server.loadFunctionModules(modules), limits });
   await runtime.start();
   server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;

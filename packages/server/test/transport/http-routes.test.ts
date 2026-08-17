@@ -21,13 +21,11 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query } from "../../src/app/functions.ts";
 import { http } from "../../src/transport/routing/route.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
-import { listen } from "ackerdb-test-support/listen";
 
 // Raw handlers carry no contract; navigating them in tests is not a typed one.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,9 +197,14 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-routes-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions), limits });
+  server = new AckerDBServer({ limits, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: server.loadFunctionModules(functions),
+    limits,
+  });
   await runtime.start();
-  server = listen(runtime);
+  server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });
 
@@ -476,7 +479,7 @@ describe("framework-authored responses speak the bare Outcome", () => {
 });
 
 describe("lifecycle decides reachability, not the route table", () => {
-  test("probes answer through Boot while application routes are still absent", async () => {
+  test("module loading publishes routing facts before Runtime reachability", async () => {
     const starting = new AckerDBServer({ limits, port: 0 });
     try {
       const origin = `http://127.0.0.1:${starting.port}`;
@@ -498,6 +501,20 @@ describe("lifecycle decides reachability, not the route table", () => {
         expect(response.status).toBe(503);
         expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
       }
+
+      starting.loadFunctionModules({ hooks: { stripe: functions.hooks.stripe } });
+
+      const unsupported = await fetch(`${origin}/api/hooks/stripe`);
+      expect(unsupported.status).toBe(405);
+      expect(unsupported.headers.get("allow")).toBe("POST");
+
+      const gated = await fetch(`${origin}/api/hooks/stripe`, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(gated.status).toBe(503);
+      expect(await gated.json()).toMatchObject({ code: "unavailable", retryable: true });
+      expect(handlerRuns).toBe(0);
     } finally {
       await starting.drain().catch(() => {});
     }
@@ -516,18 +533,23 @@ describe("lifecycle decides reachability, not the route table", () => {
       const home = mkdtempSync(join(tmpdir(), "ackerdb-http-claim-"));
       const store = new Engine(schema, join(home, "data.db"));
       reconcile(store);
-      const other = new Runtime({ engine: store, registry: new Registry(modules), limits });
-      await other.start();
       const listener = new AckerDBServer({ limits, port: 0 });
+      let other: Runtime | undefined;
       try {
+        other = new Runtime({
+          engine: store,
+          registry: listener.loadFunctionModules(modules),
+          limits,
+        });
+        await other.start();
         listener.activate(other);
-        return "activation was not refused";
+        return "loading was not refused";
       } catch (error) {
         expect(listener.state).toBe("stopped");
         return (error as Error).message;
       } finally {
         await listener.drain().catch(() => {});
-        await other.drain().catch(() => {});
+        await other?.drain().catch(() => {});
         store.close("clean");
         rmSync(home, { recursive: true, force: true });
       }

@@ -25,7 +25,7 @@
  */
 import type { DurabilityPolicy } from "@ackerdb/core";
 import type { App } from "./app/definition.ts";
-import { Registry, type LoadedModules } from "./app/registry.ts";
+import type { LoadedModules } from "./app/registry.ts";
 import type { AppSystemCtx, SystemRunner } from "./app/system.ts";
 import type { CredentialVerifier, ScopeResolver } from "./auth/credentials.ts";
 import { Engine, type EngineCloseDisposition } from "./database/engine.ts";
@@ -224,7 +224,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // commits.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    const registry = new Registry(loaded.functions);
+    const registry = server.loadFunctionModules(loaded.functions);
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);

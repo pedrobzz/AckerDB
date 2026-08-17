@@ -6,10 +6,9 @@ import { join } from "node:path";
 import { anyApi, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
-  type AckerDBServer,
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -27,7 +26,6 @@ import {
   type SseProcedureCall,
 } from "@ackerdb/client-react";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -39,8 +37,8 @@ let holdReleased = deferred<void>();
 let holdAfterFirstReleased = deferred<void>();
 let unmountHoldReleased = deferred<void>();
 
-function registry(): Registry {
-  return new Registry({
+function modules() {
+  return {
     stream: {
       grouped: sseProcedure({
         access: "public",
@@ -116,7 +114,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface App {
@@ -130,13 +128,14 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-sse-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
   const runtime = new Runtime({
     engine,
-    registry: registry(),
+    registry: server.loadFunctionModules(modules()),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     runtime,

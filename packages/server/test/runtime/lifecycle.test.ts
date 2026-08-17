@@ -49,15 +49,23 @@ const jobs = declareJobs({
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
+let server: AckerDBServer;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-lifecycle-"));
   engine = new Engine(schema, join(dir, "data.db"));
   await reconcile(engine, []);
-  runtime = new Runtime({ engine, registry: new Registry(modules), limits, jobs });
+  server = new AckerDBServer({ limits, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: server.loadFunctionModules(modules),
+    limits,
+    jobs,
+  });
 });
 
 afterEach(async () => {
+  await server.drain().catch(() => {});
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(dir, { recursive: true, force: true });
@@ -76,12 +84,7 @@ test("a constructed Runtime is created: it refuses operations and arms nothing",
   expect(refused).toBeInstanceOf(AckerDBError);
   expect((refused as AckerDBError).code).toBe("unavailable");
 
-  const server = new AckerDBServer({ limits, port: 0 });
-  try {
-    expect(() => server.activate(runtime)).toThrow("Runtime must be ready before activation");
-  } finally {
-    await server.drain().catch(() => {});
-  }
+  expect(() => server.activate(runtime)).toThrow("Runtime must be ready before activation");
 });
 
 test("start() makes it ready: repeat jobs are minted, the runner is armed, operations run", async () => {
@@ -91,10 +94,8 @@ test("start() makes it ready: repeat jobs are minted, the runner is armed, opera
   expect(runtime.status().jobsArmed).toBe(true);
   await expect(runtime.system.run("test.ready", async () => "ran")).resolves.toBe("ran");
 
-  const server = new AckerDBServer({ limits, port: 0 });
   server.activate(runtime);
   expect((await (await fetch(`http://127.0.0.1:${server.port}/ready`)).json()).ready).toBe(true);
-  await server.drain();
 });
 
 test("start() twice is misuse", async () => {

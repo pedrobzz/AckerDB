@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AckerDBClient, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -20,7 +20,6 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AckerDBProvider, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -42,7 +41,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-query-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     messages: {
       list: query({
         access: "public",
@@ -55,10 +54,12 @@ async function createApp(): Promise<App> {
         handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert({ body: args.body }),
       }),
     },
-  });
+  };
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+  const registry = server.loadFunctionModules(modules);
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   return {
     base: `http://127.0.0.1:${server.port}`,
     async close() {

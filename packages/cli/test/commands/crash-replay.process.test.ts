@@ -62,13 +62,13 @@ const COMMIT_FAULT_SERVER = `
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
-  Registry,
+  PRODUCTION_LIMITS,
   Runtime,
   reconcile,
   type RuntimeHooks,
 } from "@ackerdb/server";
-import { listen } from "ackerdb-test-support/listen";
 import app from "./app.ts";
 import * as messages from "./functions/messages.ts";
 
@@ -93,13 +93,15 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
     if (fault === "throw") throw new Error("injected post-commit hook failure");
   },
 };
+const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port });
 const runtime = new Runtime({
   engine,
-  registry: new Registry({ messages }),
+  registry: server.loadFunctionModules({ messages }),
   ...(hooks === undefined ? {} : { hooks }),
+  limits: PRODUCTION_LIMITS,
 });
 await runtime.start();
-const server = listen(runtime, { port });
+server.activate(runtime);
 let draining: Promise<void> | undefined;
 const drain = () => draining ??= server.drain().then(
   () => engine.close("clean"),

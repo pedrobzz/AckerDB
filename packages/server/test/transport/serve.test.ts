@@ -32,7 +32,6 @@ import { defineEventTable, defineSchema, defineTable } from "../../src/schema/de
 import { openApiBytes, openApiDocument } from "../../src/transport/openapi.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
 import { deferred, within, type Deferred } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 function uuidV7(sequence: number): string {
   const timestamp = Date.now().toString(16).padStart(12, "0");
@@ -461,14 +460,15 @@ beforeEach(async () => {
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   verifier = new TestVerifier();
+  server = new AckerDBServer({ limits, port: 0 });
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: server.loadFunctionModules(functions),
     verifier,
     limits,
   });
   await runtime.start();
-  server = listen(runtime);
+  server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });
 
@@ -648,7 +648,7 @@ describe("health and protected status", () => {
       reconcile(earlyEngine);
       earlyRuntime = new Runtime({
         engine: earlyEngine,
-        registry: new Registry(functions),
+        registry: early.loadFunctionModules(functions),
         verifier,
         limits,
       });
@@ -724,15 +724,14 @@ describe("health and protected status", () => {
   });
 
   test("validates configured status scope", () => {
-    expect(() => listen(runtime, { statusScope: "" })).toThrow(TypeError);
-    expect(() => listen(runtime, { statusScope: "two scopes" })).toThrow(TypeError);
-    expect(() => listen(runtime, { statusScope: "x".repeat(129) })).toThrow(TypeError);
-
-    const unsafeRuntime = Object.create(runtime) as Runtime;
-    Object.defineProperty(unsafeRuntime, "limits", {
-      value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
-    });
-    expect(() => listen(unsafeRuntime)).toThrow(
+    for (const statusScope of ["", "two scopes", "x".repeat(129)]) {
+      expect(() => new AckerDBServer({ limits, port: 0, statusScope })).toThrow(TypeError);
+    }
+    expect(() => new AckerDBServer({
+      limits: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
+      fileMaxBytes: runtime.fileMaxBytes,
+      port: 0,
+    })).toThrow(
       "maxRequestBytes or configured File limit + 1 must be a safe integer",
     );
     expect(() => new AckerDBServer({
@@ -1132,18 +1131,20 @@ describe("exposed HTTP procedures", () => {
     const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
     reconcile(fairEngine);
     const fairVerifier = new TestVerifier();
+    const fairLimits = defineServiceLimits({
+      ...limits,
+      maxOperationsPerCaller: 1,
+      readQueue: { ...limits.readQueue, maxAgeMs: 500 },
+    });
+    const fairServer = new AckerDBServer({ limits: fairLimits, port: 0 });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: fairServer.loadFunctionModules(functions),
       verifier: fairVerifier,
-      limits: defineServiceLimits({
-        ...limits,
-        maxOperationsPerCaller: 1,
-        readQueue: { ...limits.readQueue, maxAgeMs: 500 },
-      }),
+      limits: fairLimits,
     });
     await fairRuntime.start();
-    const fairServer = listen(fairRuntime);
+    fairServer.activate(fairRuntime);
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const sourceController = new AbortController();
     const sseController = new AbortController();
@@ -1790,7 +1791,19 @@ describe("the opt-in OpenAPI endpoint", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
-    const registry = new Registry(modules);
+    const documentedServer = new AckerDBServer({
+      limits,
+      port: 0,
+      openapiEndpoint: info,
+    });
+    let registry: Registry;
+    try {
+      registry = documentedServer.loadFunctionModules(modules);
+    } catch (error) {
+      engine.close("clean");
+      rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
     const documentedRuntime = new Runtime({
       engine,
       registry,
@@ -1798,10 +1811,9 @@ describe("the opt-in OpenAPI endpoint", () => {
       limits,
     });
     // Recorded before activation so a refused document is still torn down.
-    owned = { dir, engine, runtime: documentedRuntime };
+    owned = { dir, engine, runtime: documentedRuntime, server: documentedServer };
     await documentedRuntime.start();
-    const documentedServer = listen(documentedRuntime, { openapiEndpoint: info });
-    owned.server = documentedServer;
+    documentedServer.activate(documentedRuntime);
     return { base: `http://127.0.0.1:${documentedServer.port}`, registry };
   }
 
@@ -1843,9 +1855,9 @@ describe("the opt-in OpenAPI endpoint", () => {
     expect(wrongMethod.headers.get("allow")).toBe("GET, OPTIONS");
   });
 
-  test("assembles the document at activation, so it never fails a caller", async () => {
+  test("assembles the document while modules load, so it never fails a caller", async () => {
     // A non-finite literal crosses the wire as itself, so the codec registers
-    // it; only a JSON Schema cannot express it, and the activation says so
+    // it; only a JSON Schema cannot express it, and module loading says so
     // rather than the first caller of a served path.
     await expect(documented({
       notes: {
@@ -2132,14 +2144,15 @@ describe("WebSocket Session transport", () => {
       maxOperationsPerConnection: 2,
       gracefulShutdownMs: 1_000,
     });
+    const fairServer = new AckerDBServer({ limits: fairLimits, port: 0 });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: new Registry(functions),
+      registry: fairServer.loadFunctionModules(functions),
       verifier: new TestVerifier(),
       limits: fairLimits,
     });
     await fairRuntime.start();
-    const fairServer = listen(fairRuntime);
+    fairServer.activate(fairRuntime);
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const wsUrl = `ws://127.0.0.1:${fairServer.port}/_ws`;
     const clients: WsClient[] = [];
@@ -2252,13 +2265,15 @@ describe("WebSocket Session transport", () => {
     const overlapDir = mkdtempSync(join(tmpdir(), "ackerdb-overlap-"));
     const overlapEngine = new Engine(schema, join(overlapDir, "data.db"));
     reconcile(overlapEngine);
+    const overlapLimits = defineServiceLimits({ ...limits, maxConnections: 2 });
+    const overlapServer = new AckerDBServer({ limits: overlapLimits, port: 0 });
     const overlapRuntime = new Runtime({
       engine: overlapEngine,
-      registry: new Registry(functions),
-      limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
+      registry: overlapServer.loadFunctionModules(functions),
+      limits: overlapLimits,
     });
     await overlapRuntime.start();
-    const overlapServer = listen(overlapRuntime);
+    overlapServer.activate(overlapRuntime);
     const url = `ws://127.0.0.1:${overlapServer.port}/_ws`;
     const sessionId = "overlapping-session";
     const open = async (): Promise<WsClient> => {
@@ -2361,13 +2376,14 @@ describe("lifecycle drain", () => {
       ...limits,
       readQueue: { ...limits.readQueue, maxAgeMs: 500 },
     });
+    const slowServer = new AckerDBServer({ limits: slowLimits, port: 0 });
     const slowRuntime = new Runtime({
       engine: slowEngine,
-      registry: new Registry(functions),
+      registry: slowServer.loadFunctionModules(functions),
       limits: slowLimits,
     });
     await slowRuntime.start();
-    const slowServer = listen(slowRuntime);
+    slowServer.activate(slowRuntime);
     const slowBase = `http://127.0.0.1:${slowServer.port}`;
     const stalledCreditController = new AbortController();
     try {

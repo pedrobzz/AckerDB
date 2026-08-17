@@ -29,8 +29,8 @@ import { ManualClock } from "ackerdb-test-support/client-transport";
 import { createHarness, mustErr, type ClientHarness } from "./support/harness.ts";
 import {
   Engine,
+  AckerDBServer,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -40,7 +40,6 @@ import {
   type SseCtx,
 } from "@ackerdb/server";
 import { deferred, until, waitForAbort, within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const encoder = new TextEncoder();
 
@@ -659,7 +658,7 @@ describe("suspension settlement against a real ackerdb server", () => {
     const holdReleased = deferred<void>();
     const procedureStarted = deferred<void>();
     const procedureGate = deferred<void>();
-    const registry = new Registry({
+    const modules = {
       stream: {
         holdAfterFirst: sseProcedure({
           access: "public",
@@ -696,10 +695,12 @@ describe("suspension settlement against a real ackerdb server", () => {
           },
         }),
       },
-    });
+    };
+    const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+    const registry = server.loadFunctionModules(modules);
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     await runtime.start();
-    const server = listen(runtime);
+    server.activate(runtime);
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.
     const clock = new ManualClock(Date.now());

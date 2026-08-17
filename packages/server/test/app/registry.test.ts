@@ -4,7 +4,7 @@ import { ValidationError } from "../../src/validation/error.ts";
 import type { Validator } from "../../src/validation/validator.ts";
 import { v } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
-import { http } from "../../src/transport/routing/route.ts";
+import { http, type Http } from "../../src/transport/routing/route.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   claimsReservedName,
@@ -79,18 +79,18 @@ describe("HTTP-exposed function paths", () => {
     // A raw route claims its explicit path through the same check.
     const reserved = { ...hook, path: "/_ws" } as never;
     expect(() => new Registry({ hooks: { reserved } })).toThrow(
-      'http route "api.hooks.reserved" claims AckerDB-owned path "/_ws"',
+      'http route "hooks.reserved" claims AckerDB-owned path "/_ws"',
     );
     const underApi = { ...hook, path: "/api/_internal/hook" } as never;
     expect(() => new Registry({ hooks: { underApi } })).toThrow(
-      'http route "api.hooks.underApi" claims AckerDB-owned path "/api/_internal/hook"',
+      'http route "hooks.underApi" claims AckerDB-owned path "/api/_internal/hook"',
     );
     // The operational endpoints carry no marker — they are named by the
     // outside world — so the built-in list is what keeps an application off
     // them, and one refusal covers both kinds of AckerDB path.
     const probe = { ...hook, path: "/live" } as never;
     expect(() => new Registry({ hooks: { probe } })).toThrow(
-      'http route "api.hooks.probe" claims AckerDB-owned path "/live"',
+      'http route "hooks.probe" claims AckerDB-owned path "/live"',
     );
   });
 
@@ -154,29 +154,28 @@ describe("HTTP-exposed function paths", () => {
 });
 
 describe("application-owned raw routes", () => {
-  test("claims its explicit path outside the function and exposed maps", () => {
-    const registry = new Registry({ hooks: { stripe: hook } });
+  test("contributes its exact value without assigning an application address", () => {
+    const routes: Http[] = [];
+    const registry = new Registry(
+      { hooks: { stripe: hook } },
+      (route) => routes.push(route),
+    );
 
-    expect(registry.httpRoutes).toMatchObject([
-      { address: "api.hooks.stripe", http: { path: "/api/hooks/stripe" } },
-    ]);
-    expect(Object.is(registry.httpRoutes[0]!.http, hook)).toBe(true);
-    expect(registry.kindOf("api.hooks.stripe")).toBe("http");
-    // Not a contract function: it is neither addressable nor exposed.
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toBe(hook);
     expect(registry.get("api.hooks.stripe")).toBeUndefined();
     expect(registry.exposed.get("api.hooks.stripe")).toBeUndefined();
+    expect(registry.kindOf("api.hooks.stripe")).toBeUndefined();
+    expect(registry.addressOf(hook)).toBeUndefined();
+    expect(Object.hasOwn(hook, "isAckerDBServerOnly")).toBe(false);
   });
 
   test("owns a path outside the application root, because a provider dictated it", () => {
     const root = http("/webhooks/:provider/callback", { GET: () => new Response(null) });
-    const registry = new Registry({ hooks: { root } });
+    const routes: Http[] = [];
+    new Registry({ hooks: { root } }, (route) => routes.push(route));
 
-    expect(registry.httpRoutes[0]!.http.path).toBe("/webhooks/:provider/callback");
-  });
-
-  test("carries no second server-only identity marker", () => {
-    expect(Object.hasOwn(hook, "isAckerDBServerOnly")).toBe(false);
-    expect(new Registry({ hooks: { hook } }).kindOf("api.hooks.hook")).toBe("http");
+    expect(routes[0]!.path).toBe("/webhooks/:provider/callback");
   });
 });
 
