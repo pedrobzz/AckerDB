@@ -121,21 +121,25 @@ answers both "which route" and "which methods does it serve".
   declaration shape. `Registry.httpHandler(address)`, the path-keyed
   `registry.exposed` map, `registry.httpRoutes` as a path map, and the
   address-keyed raw-handler map are gone; `registry.exposed` is keyed by
-  address, which is what OpenAPI and the Runtime actually consume, and
-  `registry.httpRoutes` is the loader's ordered list of authored routes.
-  `Runtime.runHttpHandler(address, …)` becomes `runHttpRoute(route, …)`: the
-  route value travels instead of a name to be looked up again.
+  address, which is what OpenAPI and the Runtime actually consume. A raw
+  `Http` has no application address and no second holding collection: the
+  loader contributes the validated value directly to the listener's live
+  `HttpRegistry`. `Runtime.runHttpHandler(address, …)` becomes
+  `runHttpRoute(route, …)`: the route value travels instead of a name to be
+  looked up again.
 - **Explicit paths may live outside `/api/`.** The reserved set is the built-in
   paths, any first segment carrying `_`, and any second segment carrying `_`
   *under `/api/`*. Reserving the second segment everywhere — which the old
   predicate did, because every path was derived and every derived path began
   with `api` — would forbid `/webhooks/_raw` for nothing.
 - **Lifecycle gating moved from a path prefix to route policy.** The old
-  `startsWith("/api/")` test is gone. Application routes enter the table through
-  synchronous additions at activation with readiness flipping after the last,
-  and each carries its own readiness check for the draining
-  window; a request no route claims answers unavailable before readiness and
-  during drain, `not_found` after.
+  `startsWith("/api/")` test is gone. Framework routes enter the table before
+  the listener binds; application loading contributes each validated `Http` to
+  that same table. Presence is not reachability: a supported application
+  handler refuses execution until the Runtime is ready and again while it
+  drains, while generic routing facts such as an unsupported method remain
+  truthful as soon as the route exists. A request no route claims answers the
+  lifecycle fallback before readiness and during drain, `not_found` after.
 - **`Allow` now names every method the route registered**, the framework's CORS
   preflight included: `POST, OPTIONS` where an exposed procedure previously
   answered `POST`. It is built from the route rather than from a table beside
