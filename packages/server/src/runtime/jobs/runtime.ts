@@ -31,7 +31,6 @@ import { ValidationError } from "../../validation/error.ts";
 import {
   DEFAULT_JOB_RETENTION_MS,
   type AnyJobDefinition,
-  type DeclaredJob,
   type JobRunTrigger,
   type JobState,
   type JobTrigger,
@@ -97,9 +96,8 @@ export interface RuntimeJobsLimits {
 }
 
 export interface RuntimeJobsOptions {
-  readonly declared: readonly DeclaredJob[];
   readonly executor: JobsExecutor;
-  readonly registry: Pick<Registry, "get">;
+  readonly registry: Pick<Registry, "get" | "getJob" | "jobs">;
   readonly reads: RuntimeReadExecutor;
   readonly system: SystemRunner;
   readonly limits: RuntimeJobsLimits;
@@ -143,7 +141,6 @@ interface JobOutcomeRows {
 }
 
 export class RuntimeJobs {
-  private readonly definitions = new Map<string, AnyJobDefinition>();
   private readonly waiters = new Map<bigint, Set<(outcome: JobRunOutcome) => void>>();
   private readonly runControllers = new Map<bigint, AbortController>();
   private activeRuns = 0;
@@ -163,17 +160,14 @@ export class RuntimeJobs {
 
   constructor(private readonly options: RuntimeJobsOptions) {
     this.now = finiteClock(options.now, "jobs clock");
-    for (const { name, job } of options.declared) {
-      this.definitions.set(name, job);
-    }
   }
 
   get declaredCount(): number {
-    return this.definitions.size;
+    return this.options.registry.jobs.size;
   }
 
   get declaredNames(): readonly string[] {
-    return [...this.definitions.keys()];
+    return [...this.options.registry.jobs.keys()];
   }
 
   get runningCount(): number {
@@ -181,7 +175,7 @@ export class RuntimeJobs {
   }
 
   definition(name: string): AnyJobDefinition {
-    const definition = this.definitions.get(name);
+    const definition = this.options.registry.getJob(name);
     if (definition === undefined) {
       throw new AckerDBError("not_found", `unknown job "${name}"`);
     }
@@ -193,7 +187,7 @@ export class RuntimeJobs {
    * `Runtime.start()`, before the runner is armed; a failure is the start's.
    */
   async bootstrap(): Promise<void> {
-    const repeating = [...this.definitions.entries()].filter(
+    const repeating = [...this.options.registry.jobs.entries()].filter(
       ([, definition]) =>
         definition.repeat !== null && Object.keys(definition.args).length === 0,
     );
@@ -467,7 +461,7 @@ export class RuntimeJobs {
     const now = this.now();
     const previous = job.runCount === 0 ? null : surface.runs.byNumber(job.id, job.runCount);
     if (previous !== null && previous.settledAt !== null) {
-      const definition = this.definitions.get(job.name);
+      const definition = this.options.registry.getJob(job.name);
       await surface.runs.patch(previous.id, {
         deleteAfter: this.window(
           definition?.retention ?? DEFAULT_JOB_RETENTION_MS,
@@ -623,7 +617,7 @@ export class RuntimeJobs {
         if (due.length === 0) return null;
         for (const job of due) {
           page = { nextRunAt: job.nextRunAt, id: job.id };
-          const definition = this.definitions.get(job.name);
+          const definition = this.options.registry.getJob(job.name);
           if (definition === undefined) continue; // undeclared leftover; visible in the table
           const gate = `${job.name}\u0000${job.key ?? ""}`;
           if ((runningByGate.get(gate) ?? 0) >= definition.concurrency) continue;
@@ -748,7 +742,7 @@ export class RuntimeJobs {
 
   /** Procedure-mode dispatch: run as a system operation, then settle. */
   private dispatch(claimed: ClaimedRun): void {
-    const definition = this.definitions.get(claimed.name)!;
+    const definition = this.options.registry.getJob(claimed.name)!;
     const controller = new AbortController();
     this.runControllers.set(claimed.jobId, controller);
     this.activeRuns++;
@@ -878,7 +872,11 @@ export class RuntimeJobs {
     outcome: TerminalOutcome,
   ): Promise<void> {
     const now = this.now();
-    const deleteAfter = this.retentionStamp(this.definitions.get(job.name), outcome.state, now);
+    const deleteAfter = this.retentionStamp(
+      this.options.registry.getJob(job.name),
+      outcome.state,
+      now,
+    );
     // A Job with no run, or whose latest run already settled, records only its
     // own end: cancel before the claim invents no run.
     if (run !== null && run.state === "running") {
@@ -925,7 +923,7 @@ export class RuntimeJobs {
     run: JobRunRow,
     error: unknown,
   ): Promise<Notification> {
-    const definition = this.definitions.get(job.name);
+    const definition = this.options.registry.getJob(job.name);
     const now = this.now();
     let delay: number | null = null;
     // A step refusal — journal/code mismatch, corrupt journal, or exhausted
@@ -982,7 +980,7 @@ export class RuntimeJobs {
    * not from the last retry, so retries cannot drag a schedule forward.
    */
   private async mintRepeat(surface: JobsWriteSurface, job: JobRow, now: number): Promise<void> {
-    const definition = this.definitions.get(job.name);
+    const definition = this.options.registry.getJob(job.name);
     if (definition === undefined || definition.repeat === null) return;
     let at: number | null;
     try {

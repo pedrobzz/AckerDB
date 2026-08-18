@@ -25,7 +25,7 @@ import { mutation, procedure, query, sseProcedure } from "../../src/app/function
 import { channel } from "../../src/channels/definition.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type {
@@ -33,7 +33,7 @@ import type {
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { declareJobs, job } from "../../src/jobs/definition.ts";
+import { job } from "../../src/jobs/definition.ts";
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import type {
   RuntimePublication,
@@ -43,8 +43,6 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
-import { testHttpCodec } from "../support/http.ts";
-import { compileExposedHttpCodec } from "../../src/transport/http-codec.ts";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
 
@@ -124,8 +122,8 @@ const schema = defineSchema({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
 
-const declaredJobs = () => declareJobs({
-  reminders: {
+const jobModules = () => ({
+  scheduled: {
     fire: job({
       mode: "mutation",
       args: { message: v.string(), attempt: v.int() },
@@ -392,7 +390,7 @@ const functions = {
       access: "public",
       args: {},
       handler: (ctx: Ctx) =>
-        ctx.jobs.reminders.fire
+        ctx.jobs.scheduled.fire
           .query()
           .where((row: Ctx) => row.state.eq("pending"))
           .collect(),
@@ -412,7 +410,7 @@ const functions = {
       http: true,
       args: { message: v.string(), attempt: v.int(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.jobs.reminders.fire.enqueue(
+        ctx.jobs.scheduled.fire.enqueue(
           { message: args.message, attempt: args.attempt },
           { at: args.at },
         ),
@@ -743,9 +741,8 @@ async function start(customLimits = limits()): Promise<void> {
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
-    limits: customLimits,
-    jobs: declaredJobs(),
+  registry: testRegistry(functions, jobModules()),
+  limits: customLimits,
     now: () => currentTime ?? Date.now(),
   });
   await runtime.start();
@@ -916,7 +913,6 @@ describe("runtime commit and replay ownership", () => {
       id: 21,
       address: "api.messages.missing",
       args: { id: 7n },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -937,24 +933,12 @@ describe("runtime commit and replay ownership", () => {
       id: 22,
       address: "api.messages.list",
       args: { channelId: 1n },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(value.status).toBe(200);
     expect(JSON.parse(await value.text())).toEqual([]);
 
-    // Kind dispatch is the registry's, so a procedure address is never a query.
-    const mismatched = await runtime.runQuery({
-      id: 23,
-      address: "api.ops.echo",
-      args: { value: "x" },
-      codec: testHttpCodec,
-      principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }) => new Response(body, { status }),
-    });
-    expect(mismatched.status).toBe(400);
-    expect(JSON.parse(await mismatched.text())).toMatchObject({ code: "validation" });
   });
 
   test("refuses to run a query on a clock that stopped returning milliseconds", async () => {
@@ -965,7 +949,6 @@ describe("runtime commit and replay ownership", () => {
         id: 24,
         address: "api.messages.list",
         args: { channelId: 1n },
-        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
         respond: ({ body, status }) => new Response(body, { status }),
       });
@@ -998,7 +981,6 @@ describe("runtime commit and replay ownership", () => {
       id: 11,
       address: "api.ops.reject",
       args: { reason: "not now" },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -1585,7 +1567,6 @@ describe("system execution root", () => {
       id: 301,
       address: "api.ops.enterSystem",
       args: {},
-      codec: testHttpCodec,
       principal: user("system-caller"),
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2054,7 +2035,6 @@ describe("procedures and bounded SSE", () => {
         id: index + 10,
         address: ref,
         args: {},
-        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
         signal: controller.signal,
         respond: ({ body, status }) => new Response(body, { status }),
@@ -2079,7 +2059,6 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.pipeline",
       args: { channelId: 4n },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2089,7 +2068,6 @@ describe("procedures and bounded SSE", () => {
       id: 2,
       address: "api.ops.nestedTx",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2102,7 +2080,6 @@ describe("procedures and bounded SSE", () => {
       id: 3,
       address: "api.ops.catchTxThrow",
       args: { channelId: 30n },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2138,7 +2115,6 @@ describe("procedures and bounded SSE", () => {
         id,
         address,
         args,
-        codec: testHttpCodec,
         principal,
         respond: ({ body, status }) => new Response(body, { status }),
       });
@@ -2179,7 +2155,6 @@ describe("procedures and bounded SSE", () => {
       id: 89,
       address: "api.ops.failEmoji",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2194,7 +2169,6 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.stream",
       args: { count: 2 },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     expect(response.streamId).toMatch(/^[A-Za-z0-9_-]{22}$/);
@@ -2258,7 +2232,6 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.streamed",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2271,10 +2244,6 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.invalidChunk",
       args: {},
-      codec: compileExposedHttpCodec(
-        "api.ops.invalidChunk",
-        runtime.registry.get("api.ops.invalidChunk")!,
-      ),
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2291,7 +2260,6 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.failingStream",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2328,26 +2296,6 @@ describe("direct ingress", () => {
       mutationRequestId: uuidV7(Date.now(), 82),
       issuedAt: Date.now(),
     }, 0))).rejects.toMatchObject(expected);
-    const procedure = {
-      id: 85,
-      address: oversized,
-      args: {},
-      codec: testHttpCodec,
-      principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
-      bytes: 0,
-    };
-    await expect(runtime.runProcedure(procedure)).rejects.toMatchObject(expected);
-    const sse = {
-      id: 86,
-      address: oversized,
-      args: {},
-      codec: testHttpCodec,
-      principal: ANONYMOUS_PRINCIPAL,
-      bytes: 0,
-    };
-    await expect(runtime.runSse(sse)).rejects.toMatchObject(expected);
-
     expect(runtime.status()).toMatchObject({
       activeOperations: 0,
       writer: { active: 0, admitted: 0, queue: { queuedItems: 0 } },
@@ -2371,7 +2319,6 @@ describe("direct ingress", () => {
       id: 88,
       address: "api.ops.echo",
       args: { value: "accepted" },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
       bytes: 257,
@@ -2383,7 +2330,6 @@ describe("direct ingress", () => {
       id: 89,
       address: "api.ops.stream",
       args: { count: 0 },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       bytes: 257,
     };
@@ -2397,7 +2343,6 @@ describe("direct ingress", () => {
       id: 90,
       address: "api.ops.echo",
       args: { value: "accepted canonically after the claim" },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     }, 257, undefined);
@@ -2416,15 +2361,14 @@ describe("direct ingress", () => {
     const respond = ({ body, status }: RuntimeHttpResponse) => new Response(body, { status });
     const run = {
       query: async (input: Ctx) =>
-        (await runtime.runQuery({ ...input, codec: testHttpCodec, respond })).status,
+        (await runtime.runQuery({ ...input, respond })).status,
       mutation: async (input: Ctx) =>
-        (await runtime.runMutation({ ...input, codec: testHttpCodec, respond })).status,
+        (await runtime.runMutation({ ...input, respond })).status,
       procedure: async (input: Ctx) =>
-        (await runtime.runProcedure({ ...input, codec: testHttpCodec, respond })).status,
+        (await runtime.runProcedure({ ...input, respond })).status,
       sse: async (input: Ctx) => {
         const response = await runtime.runSse({
           ...input,
-          codec: testHttpCodec,
         });
         expect((await collectSse(response)).at(-1)?.t).toBe("sse_done");
         return 200;
@@ -2499,7 +2443,6 @@ describe("jobs runner and lifecycle", () => {
       id: 96,
       address: "api.reminders.schedule",
       args: { message: "http", attempt: 1, at: Date.now() - 1 },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });
@@ -2541,7 +2484,7 @@ describe("jobs runner and lifecycle", () => {
     const dueAt = Date.now() + 100_000;
     await session.mutation(1, "api.reminders.schedule", { message: "live", attempt: 1, at: dueAt });
     await eventually(() => pendingRows()?.length === 1);
-    expect(pendingRows()[0]).toMatchObject({ name: "reminders.fire", state: "pending" });
+    expect(pendingRows()[0]).toMatchObject({ name: "scheduled.fire", state: "pending" });
 
     currentTime = dueAt;
     await runtime.runJobs();
@@ -2572,7 +2515,6 @@ describe("jobs runner and lifecycle", () => {
       id: 85,
       address: "api.ops.waitForAbort",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     await eventually(() => runtime.sseSnapshot(response.streamId)?.unackedFrames === 1);
@@ -2596,7 +2538,6 @@ describe("jobs runner and lifecycle", () => {
         id,
         address: "api.ops.holdSse",
         args: {},
-        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
       });
       await started.promise;

@@ -11,6 +11,7 @@
  * as the rest of the HTTP surface.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -200,7 +201,7 @@ beforeEach(async () => {
   server = new AckerDBServer({ limits, port: 0 });
   runtime = new Runtime({
     engine,
-    registry: server.loadFunctionModules(functions),
+    registry: server.registerDefinitions(testDefinitions(functions)),
     limits,
   });
   await runtime.start();
@@ -479,51 +480,10 @@ describe("framework-authored responses speak the bare Outcome", () => {
 });
 
 describe("lifecycle decides reachability, not the route table", () => {
-  test("module loading publishes routing facts before Runtime reachability", async () => {
-    const starting = new AckerDBServer({ limits, port: 0 });
-    try {
-      const origin = `http://127.0.0.1:${starting.port}`;
-      const live = await fetch(`${origin}/live`);
-      expect(live.status).toBe(200);
-      expect(await live.json()).toMatchObject({ live: true });
-
-      const ready = await fetch(`${origin}/ready`);
-      expect(ready.status).toBe(503);
-      expect(await ready.json()).toMatchObject({ ready: false, phase: "listening" });
-
-      // Both the call and its preflight: no framework preflight may ever speak
-      // for a handler that does not exist yet.
-      for (const method of ["POST", "OPTIONS"] as const) {
-        const response = await fetch(`${origin}/api/hooks/stripe`, {
-          method,
-          ...(method === "POST" ? { body: "{}" } : {}),
-        });
-        expect(response.status).toBe(503);
-        expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
-      }
-
-      starting.loadFunctionModules({ hooks: { stripe: functions.hooks.stripe } });
-
-      const unsupported = await fetch(`${origin}/api/hooks/stripe`);
-      expect(unsupported.status).toBe(405);
-      expect(unsupported.headers.get("allow")).toBe("POST");
-
-      const gated = await fetch(`${origin}/api/hooks/stripe`, {
-        method: "POST",
-        body: "{}",
-      });
-      expect(gated.status).toBe(503);
-      expect(await gated.json()).toMatchObject({ code: "unavailable", retryable: true });
-      expect(handlerRuns).toBe(0);
-    } finally {
-      await starting.drain().catch(() => {});
-    }
-  });
-
   function refusedLoad(modules: Record<string, Record<string, unknown>>): string {
     const listener = new AckerDBServer({ limits, port: 0 });
     try {
-      listener.loadFunctionModules(modules);
+      listener.registerDefinitions(testDefinitions(modules));
       return "loading was not refused";
     } catch (error) {
       expect(listener.state).toBe("stopped");

@@ -1,161 +1,118 @@
-/**
- * The function registry: maps dot-joined addresses ("api.messages.list") to
- * registered functions. An address is
- * `api.<...module segments>.<export name>`, exactly mirroring the generated
- * `api` binding.
- *
- * **One contributor.** Every registered function is the application's: the
- * framework declares none on its behalf, so there is no second module record to
- * flatten in and no ownership to record. What the framework offers an
- * application is capabilities on the invocation context, not functions in its
- * address space.
- */
-import {
-  APPLICATION_ADDRESS_ROOT,
-  EVENTS_NAMESPACE,
-} from "@ackerdb/core";
+/** Addressed application definitions and their runtime indexes. */
+import { APPLICATION_ADDRESS_ROOT } from "@ackerdb/core";
 import type { AnyRegistered } from "./functions.ts";
-import {
-  validateRegisteredHttp,
-  type RuntimeHttp,
-} from "../transport/routing/route.ts";
 import type { AnyRegisteredChannel } from "../channels/definition.ts";
-import {
-  definitionFromModuleExport,
-} from "../definitions.ts";
+import type { AnyJobDefinition } from "../jobs/definition.ts";
+import type { CollectedDefinition, Definition } from "../definitions.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
-import {
-  validateApplicationHttpPath,
-} from "../transport/http-surface.ts";
 
-interface ModuleExport {
-  /** Module path joined to export name, without the fixed `api.` root. */
-  readonly name: string;
-  readonly value: unknown;
-}
-
-/** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
-export type LoadedModules = Record<string, Record<string, unknown>>;
+const REGISTRY_KINDS: ReadonlySet<Definition["kind"]> = new Set([
+  "query",
+  "mutation",
+  "procedure",
+  "sse",
+  "channel",
+  "job",
+]);
 
 export class Registry {
-  readonly functions = new Map<string, AnyRegistered>();
-  readonly channels = new Map<string, AnyRegisteredChannel>();
-  private readonly addressByObject = new Map<object, string>();
+  private readonly functionDefinitions = new Map<string, AnyRegistered>();
+  private readonly channelDefinitions = new Map<string, AnyRegisteredChannel>();
+  private readonly jobDefinitions = new Map<string, AnyJobDefinition>();
+  private readonly ownerByKey = new Map<string, CollectedDefinition>();
+  private readonly ownerByObject = new Map<object, CollectedDefinition>();
 
-  /**
-   * `modules` is keyed by dot path: functions/messages.ts -> "messages".
-   * A listener supplies `registerHttp` so raw routes enter its live HTTP registry.
-   */
-  constructor(
-    modules: LoadedModules,
-    registerHttp?: (http: RuntimeHttp) => void,
-  ) {
-    const moduleExports = this.contribute(modules);
+  readonly functions: ReadonlyMap<string, AnyRegistered> = this.functionDefinitions;
+  readonly channels: ReadonlyMap<string, AnyRegisteredChannel> = this.channelDefinitions;
+  readonly jobs: ReadonlyMap<string, AnyJobDefinition> = this.jobDefinitions;
 
-    for (const { name, value } of moduleExports) {
-      const definition = definitionFromModuleExport(
-        value,
-        `function module export "${name}"`,
-      );
-      if (definition === undefined) continue;
-      switch (definition.kind) {
-        case "query":
-        case "mutation":
-        case "procedure":
-        case "sse": {
-          const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
-          this.registerAddress(address, definition);
-          this.functions.set(address, definition);
-          break;
-        }
-        case "http": {
-          const where = `http route "${name}"`;
-          const http = validateRegisteredHttp(definition, where);
-          validateApplicationHttpPath(http.path, where);
-          registerHttp?.(http);
-          break;
-        }
-        case "channel": {
-          const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
-          this.registerAddress(address, definition);
-          this.channels.set(address, definition);
-          break;
-        }
-        case "job":
-          throw new TypeError(`function module export "${name}" is a job definition`);
+  static from(collected: readonly CollectedDefinition[]): Registry {
+    const registry = new Registry();
+    for (const item of collected) registry.add(item);
+    return registry;
+  }
+
+  add(item: CollectedDefinition): void {
+    const { definition, name } = item;
+    if (!REGISTRY_KINDS.has(definition.kind)) return;
+
+    switch (definition.kind) {
+      case "query":
+      case "mutation":
+      case "procedure":
+      case "sse": {
+        const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
+        this.registerAddress(address, item);
+        this.functionDefinitions.set(address, definition);
+        break;
       }
+      case "channel": {
+        const address = `${APPLICATION_ADDRESS_ROOT}.${name}`;
+        this.registerAddress(address, item);
+        this.channelDefinitions.set(address, definition);
+        break;
+      }
+      case "job":
+        this.registerAddress(name, item);
+        this.jobDefinitions.set(name, definition);
+        break;
+      case "http":
+        break;
+      default:
+        definition satisfies never;
+        break;
     }
   }
 
-  /** Flatten the application's modules into one export list, in a fixed order. */
-  private contribute(modules: LoadedModules): ModuleExport[] {
-    const contributed: ModuleExport[] = [];
-    for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>
-      a.localeCompare(b))) {
-      if (
-        modulePath === EVENTS_NAMESPACE ||
-        modulePath.startsWith(`${EVENTS_NAMESPACE}.`)
-      ) {
-        throw new Error(
-          `function module "${modulePath}": the "${EVENTS_NAMESPACE}" namespace is reserved for event-table references`,
-        );
-      }
-      for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
-        a.localeCompare(b))) {
-        contributed.push({ name: `${modulePath}.${exportName}`, value });
-      }
-    }
-    return contributed;
-  }
-
-  /**
-   * Load-time cross-check where the App manifest meets the Registry: every
-   * scope a function requires must exist in the known vocabulary. Registered
-   * functions are module-level constants that exist before `defineApp` is
-   * evaluated, so the check lives here rather than at registration — and it
-   * covers untyped callers, which the generated builders' scope union cannot.
-   */
+  /** Every declared scope requirement must belong to the application vocabulary. */
   checkScopeRequirements(applicationScopes: readonly string[] | undefined): void {
     const vocabulary = applicationScopes ?? [];
     for (const [address, fn] of this.functions) {
       if (fn.scopes === undefined) continue;
-      // Registration already normalized and froze it. Re-normalizing here
-      // would mean validating a value dispatch may not be enforcing.
       checkRequirementAgainstVocabulary(fn.scopes, vocabulary, `function "${address}"`);
     }
   }
 
-  /** The one fixed-root application address space, checked once. */
-  private registerAddress(
-    address: string,
-    value: AnyRegistered | AnyRegisteredChannel,
-  ): void {
-    if (this.functions.has(address) || this.channels.has(address)) {
-      throw new Error(`duplicate server export address "${address}"`);
+  private registerAddress(address: string, item: CollectedDefinition): void {
+    const keyOwner = this.ownerByKey.get(address);
+    if (keyOwner !== undefined) {
+      throw new Error(
+        `server definition "${address}" is published by both "${keyOwner.origin}" and "${item.origin}"`,
+      );
     }
-    const existingAddress = this.addressByObject.get(value);
-    if (existingAddress !== undefined) {
-      const kind = value.kind === "channel" ? "registered channel" : "registered function";
-      throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
+    const objectOwner = this.ownerByObject.get(item.definition);
+    if (objectOwner !== undefined) {
+      throw new Error(
+        `one definition is exported as both "${objectOwner.name}" from "${objectOwner.origin}" and "${item.name}" from "${item.origin}"`,
+      );
     }
-    this.addressByObject.set(value, address);
+    this.ownerByKey.set(address, item);
+    this.ownerByObject.set(item.definition, item);
   }
 
-  /** Every registered function is addressable; `access` alone decides admission. */
   get(address: string): AnyRegistered | undefined {
-    return this.functions.get(address);
+    return this.functionDefinitions.get(address);
   }
 
   getChannel(address: string): AnyRegisteredChannel | undefined {
-    return this.channels.get(address);
+    return this.channelDefinitions.get(address);
   }
 
-  kindOf(address: string): string | undefined {
-    return this.functions.get(address)?.kind ??
-      this.channels.get(address)?.kind;
+  getJob(name: string): AnyJobDefinition | undefined {
+    return this.jobDefinitions.get(name);
+  }
+
+  kindOf(address: string): Definition["kind"] | undefined {
+    return this.functionDefinitions.get(address)?.kind ??
+      this.channelDefinitions.get(address)?.kind ??
+      this.jobDefinitions.get(address)?.kind;
   }
 
   addressOf(value: object): string | undefined {
-    return this.addressByObject.get(value);
+    const item = this.ownerByObject.get(value);
+    if (item === undefined) return undefined;
+    return item.definition.kind === "job"
+      ? item.name
+      : `${APPLICATION_ADDRESS_ROOT}.${item.name}`;
   }
 }

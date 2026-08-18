@@ -1,18 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AckerDBFetch, AckerDBWebSocket, SseRef } from "@ackerdb/client";
 import {
-  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Runtime,
   v,
   defineSchema,
   reconcile,
   sseProcedure,
+  type Runtime,
   type SseCtx,
 } from "@ackerdb/server";
 import {
@@ -242,20 +242,16 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-ai-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry: server.loadFunctionModules(modules()),
+    definitions: testDefinitions(modules()),
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  server.activate(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
-    runtime,
+    base: running.base,
+    runtime: running.runtime,
     async close() {
-      await server.drain().catch(() => {});
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

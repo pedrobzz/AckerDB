@@ -18,10 +18,10 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { storedIdentityForAccount } from "../support/identities.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -148,7 +148,7 @@ async function open(): Promise<Harness> {
   const verifier = new LinkingVerifier(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: testRegistry(functions),
     verifier,
     now: () => NOW,
   });
@@ -195,7 +195,6 @@ async function invoke(
     id,
     address,
     args,
-    codec: testHttpCodec,
     principal,
     respond: ({ body, status }) => new Response(body, { status }),
   });

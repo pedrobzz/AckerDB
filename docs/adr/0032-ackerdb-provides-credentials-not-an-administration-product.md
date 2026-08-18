@@ -23,7 +23,7 @@ make a credential safe, and nothing else about administering one.**
 ## The Admin product is deleted, not replaced
 
 There is no framework-declared function left, so the Registry has one
-contributor. `functions/admin/` is an ordinary application module, addressed
+contributor. `app/admin/` is an ordinary application module, addressed
 under `api.admin.*`, rather than a framework-owned namespace. There is no
 `admin` configuration, so the OpenAPI document takes its title and version from
 the application's package manifest — which is where the old configuration's

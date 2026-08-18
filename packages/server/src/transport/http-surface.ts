@@ -23,7 +23,6 @@ import {
 } from "@ackerdb/core";
 import type { AnyRegistered } from "../app/functions.ts";
 import type { HttpMethod } from "./routing/path.ts";
-import { validateRoutePath } from "./routing/path.ts";
 
 /** The root of the File byte routes; the segments below it name one handle. */
 const FILES_ROOT = "/_files";
@@ -72,16 +71,14 @@ export function claimsReservedName(path: string): boolean {
   return first === APPLICATION_ADDRESS_ROOT && second?.startsWith(RESERVED_MARKER) === true;
 }
 
-/** Refuse every path reserved to AckerDB before it reaches the live HTTP registry. */
-export function validateApplicationHttpPath(path: string, where: string): string {
-  const validated = validateRoutePath(path, where);
-  if (isAckerDBHttpRoute(validated) || claimsReservedName(validated)) {
+/** Refuse every application claim on AckerDB's reserved path namespace. */
+export function assertApplicationHttpPath(path: string, where: string): void {
+  if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
     throw new Error(
-      `${where} claims AckerDB-owned path "${validated}": AckerDB owns its built-in ` +
+      `${where} claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
         `paths and every name marked "${RESERVED_MARKER}"`,
     );
   }
-  return validated;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -236,7 +237,7 @@ describe("File HTTP flow", () => {
     server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
     runtime = new Runtime({
       engine,
-      registry: server.loadFunctionModules(functions),
+      registry: server.registerDefinitions(testDefinitions(functions)),
       verifier: new TestVerifier(),
       files: {
         publicUrl: "https://files.example.test/",

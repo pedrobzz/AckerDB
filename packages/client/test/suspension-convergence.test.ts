@@ -8,6 +8,7 @@
 // the at-most-one-server-effect guarantee with actual commits, including a
 // server stopped and restarted while the application is backgrounded.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -888,7 +889,7 @@ async function createRealApp(): Promise<RealApp> {
   const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
   const runtime = new Runtime({
     engine,
-    registry: server.loadFunctionModules(realModules()),
+    registry: server.registerDefinitions(testDefinitions(realModules())),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
@@ -1369,7 +1370,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
       const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
       const runtime = new Runtime({
         engine,
-        registry: server.loadFunctionModules(realModules()),
+        registry: server.registerDefinitions(testDefinitions(realModules())),
         limits: PRODUCTION_LIMITS,
       });
       await runtime.start();
@@ -1446,7 +1447,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         });
         const runtime2 = new Runtime({
           engine: engine2,
-          registry: server2.loadFunctionModules(realModules()),
+          registry: server2.registerDefinitions(testDefinitions(realModules())),
           limits: PRODUCTION_LIMITS,
         });
         await runtime2.start();
@@ -1507,7 +1508,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
       const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
       const runtime = new Runtime({
         engine,
-        registry: server.loadFunctionModules(realModules()),
+        registry: server.registerDefinitions(testDefinitions(realModules())),
         limits: PRODUCTION_LIMITS,
       });
       await runtime.start();
@@ -1575,7 +1576,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         });
         const runtime2 = new Runtime({
           engine: engine2,
-          registry: server2.loadFunctionModules(realModules()),
+          registry: server2.registerDefinitions(testDefinitions(realModules())),
           limits: PRODUCTION_LIMITS,
         });
         await runtime2.start();

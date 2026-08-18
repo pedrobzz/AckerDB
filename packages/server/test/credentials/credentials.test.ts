@@ -22,7 +22,6 @@ import {
   subscribeMessage,
   user,
 } from "../support/credential-fixture.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 afterEach(cleanupCredentialFixtures);
 
@@ -220,7 +219,6 @@ describe("Identity credentials", () => {
       id: 1,
       address: "api.records.writeOwnedRecord",
       args: { value: "still-active" },
-      codec: testHttpCodec,
       principal: active,
       respond: ({ body, status }) => new Response(body, { status }),
     });

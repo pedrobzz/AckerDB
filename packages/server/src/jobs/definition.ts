@@ -10,8 +10,6 @@
  * through user-authored functions over the jobs tables.
  */
 import type { FunctionReference, Result } from "@ackerdb/core";
-import type { LoadedModules } from "../app/registry.ts";
-import { definitionFromModuleExport } from "../definitions.ts";
 import type { Schema } from "../schema/definition.ts";
 import type { DbReader } from "../database/query/types.ts";
 import type { ObjectShape, InferShape, InferInputShape } from "../validation/composites.ts";
@@ -376,55 +374,4 @@ export function job<
     handler: definition.handler as JobDefinition["handler"],
   };
   return Object.freeze(declared);
-}
-
-/** One job and the exact name rows and ctx.jobs report. */
-export interface DeclaredJob {
-  readonly name: string;
-  readonly job: AnyJobDefinition;
-}
-
-/**
- * Resolve job modules to declarations, mirroring the function
- * registry: `jobs/emails.ts` exporting `sendReceipt` is `emails.sendReceipt`,
- * in deterministic module-then-export order. Helpers are ignored; an export
- * shaped like a Job definition but lacking `kind: "job"` is the residue of
- * forgetting `job(...)` and fails loudly instead of never running.
- */
-export function declareJobs(modules: LoadedModules): DeclaredJob[] {
-  const declared: DeclaredJob[] = [];
-  const names = new Set<string>();
-  for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>
-    a.localeCompare(b))) {
-    for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
-      a.localeCompare(b))) {
-      const name = `${modulePath}.${exportName}`;
-      const definition = definitionFromModuleExport(
-        value,
-        `job module export "${name}"`,
-      );
-      if (definition?.kind === "job") {
-        if (names.has(name)) throw new TypeError(`duplicate job name "${name}"`);
-        names.add(name);
-        declared.push({ name, job: definition });
-        continue;
-      }
-      if (definition !== undefined) {
-        throw new TypeError(
-          `job module export "${name}" is a ${definition.kind} definition`,
-        );
-      }
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        typeof (value as { readonly handler?: unknown }).handler === "function" &&
-        Object.hasOwn(value, "args")
-      ) {
-        throw new TypeError(
-          `job module export "${name}" has a handler but was not created with job(...)`,
-        );
-      }
-    }
-  }
-  return declared;
 }

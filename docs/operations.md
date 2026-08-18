@@ -252,8 +252,8 @@ operators must configure a workload provider that selects `scope` before
 `acker start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
 `opening-storage`, `migrating` (when a migration chain is present) or
-`reconciling`, `loading-runtime` for credential verifiers,
-function and job modules, and `starting-runtime` (the Runtime's own start:
+`reconciling`, `loading-runtime` for credential verifiers and the configured
+definition modules, and `starting-runtime` (the Runtime's own start:
 repeat jobs minted, the job runner armed). Runtime-only modules load after
 durable schema work commits, so their configuration cannot block a pending
 migration. The sequence is `boot()` in `@ackerdb/server`; `acker start` calls

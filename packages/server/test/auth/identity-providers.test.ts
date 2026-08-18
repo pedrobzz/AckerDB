@@ -88,7 +88,7 @@ async function open(path: string): Promise<{ readonly engine: Engine; readonly r
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry({}),
+    registry: new Registry(),
   });
   await runtime.start();
   instances.set(runtime, engine);

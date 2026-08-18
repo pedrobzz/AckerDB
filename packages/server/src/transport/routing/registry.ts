@@ -13,7 +13,7 @@ import type {
   HttpRequest,
   HttpRouteHandler,
   RunHttpHandler,
-  RuntimeHttp,
+  Http,
 } from "./route.ts";
 
 interface RegisteredHandler {
@@ -54,7 +54,7 @@ export class HttpRegistry {
     private readonly run: RunHttpHandler,
   ) {}
 
-  add(route: RuntimeHttp): void {
+  add(route: Http): void {
     const signature = routeSignature(route.path);
     let registered = this.routes.get(signature);
     const methods = Object.keys(route.handlers) as HttpMethod[];

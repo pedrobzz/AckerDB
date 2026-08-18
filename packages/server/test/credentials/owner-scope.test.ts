@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,6 @@ import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.t
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session/contract.ts";
 import { mutationMessage, queryMessage, request } from "../support/credential-fixture.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 const schema = defineSchema({});
@@ -49,7 +49,7 @@ async function bareRuntime(): Promise<{ readonly runtime: Runtime; readonly sess
     args: {},
     handler: (ctx) => ctx.tx((tx) => tx.credentials.query().collect()),
   });
-  const registry = new Registry({ ordinary: { create, list, transact } });
+  const registry = testRegistry({ ordinary: { create, list, transact } });
 
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-owner-scope-"));
   const engine = new Engine(schema, join(directory, "data.db"));
@@ -96,7 +96,6 @@ describe("owner-scoped credential operations", () => {
       id: 3,
       address: "api.ordinary.transact",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });

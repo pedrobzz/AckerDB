@@ -24,7 +24,7 @@ describe("built-in Files capability", () => {
     reconcile(engine);
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       now: () => NOW,
       files: { publicUrl: "https://files.example.test/root/" },
     });

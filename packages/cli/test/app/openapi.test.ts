@@ -65,7 +65,7 @@ export const secret = query({
 const fixture = (files: Record<string, string> = {}) => {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
-    "functions/messages.ts": EXPOSED_MESSAGES,
+    "app/messages.ts": EXPOSED_MESSAGES,
     ...files,
   });
   dirs.push(dir);

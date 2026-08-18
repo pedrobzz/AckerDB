@@ -32,9 +32,9 @@ collide — application table names must start with a letter. Enqueue is a row
 insert in the caller's own transaction: the job exists if and only if the
 mutation committed.
 
-Jobs are declared in a `jobs/` directory, discovered and named like functions:
-typed authority without a manifest cycle, and no handler imports in schema
-tooling. Each definition declares its
+Jobs are declared with `job()` in the same configured definition roots as every
+other server definition. Codegen derives typed authority from that one module
+tree without importing handlers into schema tooling. Each definition declares its
 envelope. A mutation-mode Job collapses claim, handler, and settle into one
 writer transaction — exactly-once, no external I/O, the old scheduled-table
 guarantee kept. A procedure-mode Job (the default) is claimed under a lease,

@@ -566,7 +566,7 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     }
     if (table.scheduleAtColumn !== null) {
       throw new ValidationError(
-        `table "${tableName}": v.scheduleAt() is framework-internal; durable work is declared as a job in jobs/`,
+        `table "${tableName}": v.scheduleAt() is framework-internal; durable work is declared with job() in a definition module`,
       );
     }
     claimTypeName(rowTypeName(tableName), `table "${tableName}"`);

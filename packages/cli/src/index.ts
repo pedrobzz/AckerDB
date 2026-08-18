@@ -14,9 +14,9 @@ export {
 } from "./app/start.ts";
 export type { RunningApp } from "@ackerdb/server";
 export {
-  importApp,
-  importFunctionModules,
-  listFunctionModules,
+  importDefinitionModules,
+  importEntrypoint,
+  listDefinitionModules,
   type ModuleFile,
 } from "./app/manifest.ts";
 export {

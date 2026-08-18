@@ -20,6 +20,7 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
@@ -32,7 +33,6 @@ import {
 import { Session } from "../../src/subscriptions/session/session.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 import { storedIdentityForAccount } from "../support/identities.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -212,7 +212,7 @@ async function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unl
   const verifier = new UnlinkVerifier();
   const runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: testRegistry(functions),
     verifier,
     now: () => NOW,
   });
@@ -274,7 +274,6 @@ async function invoke(
     id: ++requestId,
     address,
     args,
-    codec: testHttpCodec,
     principal,
     ...(signal === undefined ? {} : { signal }),
     respond: ({ body, status }: RuntimeHttpResponse) => {

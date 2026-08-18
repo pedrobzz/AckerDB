@@ -19,12 +19,14 @@ only through functions the application authors.
 
 ## Declare a job
 
-Jobs live in `jobs/` beside `functions/`, named the same way:
-`jobs/emails.ts` exporting `sendReceipt` is the job `emails.sendReceipt`.
-Configure a different directory with `jobs` in `.ackerdb.config.json`.
+Jobs and functions live in the same configured definition roots. With the
+default `definitions: ["./app"]`, `app/emails.ts` exporting `sendReceipt` is
+the Job `emails.sendReceipt`. Additional roots or individual TypeScript files
+can be listed in `definitions` in `.ackerdb.config.json`; all of them publish
+into the same namespace.
 
 ```ts
-// jobs/emails.ts
+// app/emails.ts
 import { v } from "@ackerdb/server";
 import { job } from "../_generated/server.ts";
 

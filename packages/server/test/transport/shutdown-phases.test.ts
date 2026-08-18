@@ -4,6 +4,7 @@
  * while the Runtime is still live, and only then close system-run admission.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,7 +63,11 @@ beforeEach(async () => {
   engine = new Engine(schema, join(dir, "data.db"));
   await reconcile(engine, []);
   server = new AckerDBServer({ limits, port: 0 });
-  runtime = new Runtime({ engine, registry: server.loadFunctionModules(modules), limits });
+  runtime = new Runtime({
+    engine,
+    registry: server.registerDefinitions(testDefinitions(modules)),
+    limits,
+  });
   await runtime.start();
   server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;

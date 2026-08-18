@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,10 +7,8 @@ import { join } from "node:path";
 import type { AckerDBAuthentication, AckerDBWebSocket, QueryRef } from "@ackerdb/client";
 import { anyApi } from "@ackerdb/client";
 import {
-  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -97,23 +96,18 @@ async function createApp(): Promise<App> {
       }),
     },
   };
-  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
-  const registry = server.loadFunctionModules(modules);
   const verifier = new LeaseVerifier();
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry,
+    definitions: testDefinitions(modules),
     verifier,
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  server.activate(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
+    base: running.base,
     verifier,
     async close() {
-      await server.drain();
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

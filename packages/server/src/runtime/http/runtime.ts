@@ -23,7 +23,7 @@ import {
   BoundedSseProducer,
   type SseDeliverySnapshot,
 } from "../../subscriptions/delivery/sse.ts";
-import type { ExposedHttpCodec } from "../../transport/http-codec.ts";
+import { encodeHttpValue } from "../../transport/http-codec.ts";
 import { callerFairnessKey, transportSource } from "../caller.ts";
 import type {
   RuntimeExternalRequest,
@@ -64,7 +64,6 @@ const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
 
 interface ClaimedHttpRequest {
   readonly requestBytes: number;
-  readonly codec: ExposedHttpCodec;
   readonly fairnessKey: string;
   /**
    * The caller's own auth-invalidation channel, owned and released by the
@@ -106,7 +105,8 @@ export class RuntimeHttp {
   }
 
   runQuery(request: RuntimeHttpRequest): Promise<Response> {
-    const { requestBytes, codec, fairnessKey } = this.claim(request);
+    const fn = this.expect(request.address, "query");
+    const { requestBytes, fairnessKey } = this.claim(request);
     return this.options.operations.run(null, requestBytes, () =>
       this.options.queries.execute(
         request.address,
@@ -116,17 +116,17 @@ export class RuntimeHttp {
         this.options.operationSignal(request.signal),
         requestBytes,
       ), {
-      finalize: (outcome) => this.responses.respond(request, codec, "query", outcome),
+      finalize: (outcome) => this.responses.respond(request, fn, "query", outcome),
       fairnessKey,
     });
   }
 
   runMutation(request: RuntimeHttpMutationRequest): Promise<Response> {
-    const { requestBytes, codec, fairnessKey, invalidations } =
+    const fn = this.expect(request.address, "mutation");
+    const { requestBytes, fairnessKey, invalidations } =
       this.claim(request);
     let committed: CommittedHttpMutation | undefined;
     return this.options.operations.run(null, requestBytes, async () => {
-      const fn = this.expect(request.address, "mutation");
       const signal = this.options.operationSignal(request.signal);
       throwIfAborted(signal);
       let encoded: EncodedHttpBody | undefined;
@@ -151,7 +151,12 @@ export class RuntimeHttp {
           if (!isResult(value)) {
             throw new AckerDBError("internal", "mutation boundary returned no Result");
           }
-          encoded = this.responses.encodeBody(value.data, codec.encodeValue, "mutation", null);
+          encoded = this.responses.encodeBody(
+            value.data,
+            (body) => encodeHttpValue(request.address, fn, body),
+            "mutation",
+            null,
+          );
         },
       });
       committed = Object.freeze({
@@ -166,16 +171,16 @@ export class RuntimeHttp {
       return restoreMutationResult(result.value);
     }, {
       finalize: (outcome) =>
-        this.responses.respond(request, codec, "mutation", outcome, committed),
+        this.responses.respond(request, fn, "mutation", outcome, committed),
       fairnessKey,
     });
   }
 
   runProcedure(request: RuntimeHttpRequest): Promise<Response> {
-    const { requestBytes, codec, fairnessKey, invalidations } =
+    const fn = this.expect(request.address, "procedure");
+    const { requestBytes, fairnessKey, invalidations } =
       this.claim(request);
     return this.options.operations.run(null, requestBytes, async () => {
-      const fn = this.expect(request.address, "procedure");
       const signal = this.options.operationSignal(request.signal);
       throwIfAborted(signal);
       const context = this.options.functions.createProcedureContext(
@@ -192,7 +197,7 @@ export class RuntimeHttp {
         (onAuthorized) => invokeFunction(fn, context, request.args, { onAuthorized }),
       );
     }, {
-      finalize: (outcome) => this.responses.respond(request, codec, "procedure", outcome),
+      finalize: (outcome) => this.responses.respond(request, fn, "procedure", outcome),
       fairnessKey,
     });
   }
@@ -267,7 +272,8 @@ export class RuntimeHttp {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
-    const { requestBytes, codec, fairnessKey, invalidations } =
+    const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
+    const { requestBytes, fairnessKey, invalidations } =
       this.claim(request);
     let release: () => void;
     try {
@@ -280,7 +286,6 @@ export class RuntimeHttp {
       let streamId: string | null = null;
       let lifecycle: Promise<void> | null = null;
       try {
-        const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
         if (fn.yields === undefined) {
           throw new AckerDBError("internal", `sse "${request.address}" has no yields validator`);
         }
@@ -310,7 +315,7 @@ export class RuntimeHttp {
           },
         });
         const completion = handler.then(async (result: SseSource<unknown>) => {
-          const source = validatedSseSource(codec, result, handlerContext);
+          const source = validatedSseSource(request.address, fn, result, handlerContext);
           try {
             await producer!.merge(source);
           } catch (error) {
@@ -368,7 +373,6 @@ export class RuntimeHttp {
         { ref: request.address, args: request.args },
         provenance?.bytes,
       ),
-      codec: request.codec,
       fairnessKey: request.fairnessKey
         ?? callerFairnessKey(request.principal, DIRECT_RUNTIME_SOURCE),
       invalidations: provenance?.invalidations ?? this.options.immediateInvalidations,
@@ -401,7 +405,7 @@ export class RuntimeHttp {
 
   private expect(
     address: string,
-    kind: "mutation" | "procedure" | "sse",
+    kind: AnyRegistered["kind"],
   ): AnyRegistered {
     const fn = this.options.registry.get(address);
     if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);

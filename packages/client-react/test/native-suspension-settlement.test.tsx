@@ -6,6 +6,7 @@
  * recovery entirely independent of those terminal settlements.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 // Registers happy-dom before any React module loads — every test file in this
 // suite must do this first (see ackerdb-test-support/dom).
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
@@ -22,10 +23,8 @@ import {
   type SseRef,
 } from "@ackerdb/client";
 import {
-  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -33,6 +32,7 @@ import {
   query,
   reconcile,
   sseProcedure,
+  type Runtime,
   type SseCtx,
 } from "@ackerdb/server";
 import type { UIMessage, UIMessageChunk } from "ai";
@@ -153,20 +153,16 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-native-settlement-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry: server.loadFunctionModules(modules()),
+    definitions: testDefinitions(modules()),
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  server.activate(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
-    runtime,
+    base: running.base,
+    runtime: running.runtime,
     async close() {
-      await server.drain().catch(() => {});
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

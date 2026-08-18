@@ -106,7 +106,7 @@ registration:
 - A validator AckerDB did not build (a hand-written `Validator`, as AI chunk
   streams use) crosses structurally too, and its own `check` remains the single
   word on what is valid. No JSON Schema can describe such a kind, so an
-  operation carrying one fails the *document* — at export or activation, per
+  operation carrying one fails the *document* — at export or registration, per
   the OpenAPI rules below — not the call.
 
 ### SSE
@@ -176,7 +176,7 @@ api.<module directories>.<export name>
 
 The fixed `api` root identifies application-owned behavior. The remaining
 segments come entirely from the function module and its export. For example,
-`functions/admin/users.ts` exporting `list` is addressed
+`app/admin/users.ts` exporting `list` is addressed
 `api.admin.users.list`. Code generation exports one `api` reference tree, jobs
 record the same address, socket calls send it unchanged, and an HTTP-exposed
 function answers at `/api/admin/users/list`.
@@ -188,14 +188,14 @@ admitted according to that policy regardless of its module name. Plain HTTP
 also remains opt-in: a function without `http` has no URL.
 
 The module path is therefore the only application namespace. A function moved
-from `functions/users.ts` to `functions/admin/users.ts` deliberately changes
+from `app/users.ts` to `app/admin/users.ts` deliberately changes
 from `api.users.<export>` to `api.admin.users.<export>` on every surface.
 
 **A file named `index.ts` takes its directory's name.**
-`functions/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
+`app/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
 module of its own name beside its siblings. Two files may not claim one name:
-`functions/orders.ts` beside `functions/orders/index.ts` is a startup refusal
-naming both, and so is a `functions/index.ts` with no directory to be named
+`app/orders.ts` beside `app/orders/index.ts` is a startup refusal
+naming both, and so is an `app/index.ts` with no directory to be named
 after.
 
 The application manifest declares the schema and cross-cutting policy such as
@@ -317,16 +317,17 @@ operation per exposed function with `openapi` not disabled.
 
 - **Never on by default.** The default consumption path is a CLI export
   (`acker openapi <document> [app-dir]`, in the existing `@ackerdb/cli`),
-  which codegens, loads the function modules, and writes the document. It
+  which codegens, discovers the configured definition modules, and writes the document. It
   needs no database, port, or credential authority. The runtime endpoint
   `GET /_openapi.json` exists only when the serve options carry
   `openapiEndpoint`, whose value is the document's `info` — the listener never
   sees an app directory, so it cannot derive the application's identity, and a
   bare `true` could not answer with the export's bytes. It serves a document
-  assembled once at activation — the registry is immutable after load, so the
-  document is too — encoded exactly as the export writes it, so the served and
+  assembled after synchronous definition registration and before
+  `Runtime.start()` — the registry is immutable afterward, so the document is
+  too — encoded exactly as the export writes it, so the served and
   the exported document are byte-identical. Absent, the path is a 404 like any
-  other unclaimed route, and an undocumentable function fails the activation
+  other unclaimed route, and an undocumentable function fails registration
   rather than the first caller.
 - OpenAPI 3.1. Schemas come from the shared contract→JSON Schema module
   (below) targeting draft 2020-12: `args` → request schema, `returns` →
@@ -353,7 +354,7 @@ operation per exposed function with `openapi` not disabled.
   `api.notes.list.get` own different paths but the same `api.notes.list.get` —
   so the walk tracks emitted
   ids and refuses the document naming both addresses, the same way an
-  undocumentable function fails activation and the CLI export.
+  undocumentable function fails registration and the CLI export.
 - The document's `info` is the *application's* identity, not AckerDB's: the
   app directory's `package.json` name and version, or the directory's own name
   at `0.0.0` when it ships none. The methods and header names come from
@@ -371,20 +372,16 @@ alongside its access policy.
 
 ## Registration-time validation
 
-- A `_`-prefixed module segment is refused for *every* function, exposed or
-  not: the CLI manifest loader rejects a function-module path segment that is
-  not a plain identifier, so an app loaded the normal way never reaches the
-  registry at all. The registry's own check — an application route may not
-  claim a built-in path or one under a `_`-marked namespace — is the narrower
-  second net, for a `Registry` constructed directly from modules, and it
-  covers derived and explicit paths alike.
+- A `_`-prefixed module segment is refused during definition discovery. A raw
+  or derived application route may not claim a built-in path or one under a
+  `_`-marked namespace; route registration enforces that HTTP invariant.
 - Two routes claiming one path are refused at load naming both, whether they
   are two exposed functions, two raw routes, or one of each. A collision with a
   framework route is refused when the application batch enters the live
   registry, which happens before readiness.
 - Two module files claiming one name are refused where the name is decided, in
-  the CLI manifest loader, naming both files: `functions/orders.ts` beside
-  `functions/orders/index.ts`, and a `functions/index.ts` with no directory to
+  definition discovery, naming both files: `app/orders.ts` beside
+  `app/orders/index.ts`, and an `app/index.ts` with no directory to
   be named after. The `index.ts` collapse is the only way two files reach one
   name, so this is one check rather than a rule per shape.
 - An HTTP-exposed function whose contract cannot cross the standard-JSON
@@ -395,11 +392,6 @@ alongside its access policy.
   for an `http` route. An intersection parameter turns off TypeScript's
   excess-property check, so a misspelled key would otherwise be dropped in
   silence and read as an expectation nothing meets.
-- An exposed function's kind is narrowed to the four this surface serves at
-  registration, and an exposure no method serves is a registration error like
-  every other malformed one. The narrowed kind is what the listener and the
-  OpenAPI walk both read, so an unservable exposure can never reach a caller as
-  a generic 404 while being silently dropped from the document.
 
 ## Client impact
 
@@ -452,22 +444,14 @@ plumbing, receipt headers, the shared schema module extraction, the OpenAPI
 walk, the CLI export, the `_` route renames, and deleting the envelope routes
 plus their core types and tests.
 
-Dispatch itself is no longer this surface's concern. An exposed function is
-compiled at activation into one canonical `Http` value — the derived path, the
-methods its kind answers plus the framework CORS preflight, and one closure
-per method carrying everything `call` does — and added to the same
-`HttpRegistry` every other route lives in
-(`transport/routing/`, and `AckerDBServer.exposedRoute`). The method table it
-compiles from is `EXPOSED_HTTP_METHODS`, which is also what the OpenAPI walk
-reads, so the served methods and the documented ones cannot drift.
-
 The wire format reuses `compileStandardJsonCodec`
 (`validation/standard-schema.ts`) — there is no second codec.
-`transport/http-codec.ts` compiles one per exposed function while the listener
-registers that function's route. The route closure carries the codec: the
-listener decodes args through it, then passes it with the request so the Runtime
-encodes the return value, every sse chunk, and a declared error body through the
-same boundary. OpenAPI independently walks `registry.functions`, the sole
+`transport/http-codec.ts` caches the compiled standard-JSON contract by the
+registered function object. The route closure retains the address and function
+for request decoding; Runtime resolves that address through its Registry and
+uses the registered definition for return values, SSE chunks, and declared
+error bodies. No codec travels with a Runtime request. OpenAPI independently
+walks `registry.functions`, the sole
 addressable-function collection, and derives only the functions whose HTTP
 declaration permits documentation. The structural mapping for values no
 validator describes is `toStandardJson` in `@ackerdb/core`, which the client

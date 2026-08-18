@@ -36,7 +36,7 @@ That split is the point:
 ## Declaring a route
 
 ```ts
-// functions/hooks.ts
+// app/hooks.ts
 import { http } from "../_generated/server.ts";
 
 export const stripe = http("/hooks/stripe", {
@@ -55,8 +55,8 @@ export const stripe = http("/hooks/stripe", {
 - **The path is explicit.** A webhook URL is a thing pasted into a provider's
   dashboard, and the provider frequently dictates its shape; a path derived
   from a module and export name cannot answer that. The export's address
-  (`api.hooks.stripe`) still names the export — for duplicate-export refusals
-  and for the loader's diagnostics — but it no longer decides the URL.
+  (`hooks.stripe`) still names the definition for collision diagnostics, but it
+  no longer decides the URL.
 - **Methods are keys, not a list.** A route serving `GET` and `POST` names both
   and writes no `request.method` switch. When two methods share an
   implementation deliberately, assign the same handler value to both keys.
@@ -222,9 +222,9 @@ headers, body, signal. `params` is on the context rather than on a framework
 - The kind exists only at the HTTP boundary. It has no Protocol-2 form, no
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
-- Application routes enter the live table through synchronous `add` calls
-  during activation, followed by the readiness transition; no request can run
-  between those operations. Before that, and while draining, they answer
+- Application routes enter the live table through synchronous registration
+  before `Runtime.start()`, and activation later makes their handlers reachable.
+  Before activation, and while draining, they answer
   the established unavailable outcome rather than a 404: unreachable and
   absent are different statements. `/live` and `/ready` are registered before
   the port is bound and answer throughout Boot.

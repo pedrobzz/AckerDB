@@ -6,7 +6,11 @@ import {
 } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import { standardJsonText } from "../../validation/standard-json.ts";
-import type { ExposedHttpCodec } from "../../transport/http-codec.ts";
+import type { AnyRegistered } from "../../app/functions.ts";
+import {
+  encodeHttpError,
+  encodeHttpValue,
+} from "../../transport/http-codec.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "../outcome.ts";
 import type {
   HttpMutationReceipt,
@@ -37,7 +41,7 @@ export class RuntimeHttpResponses {
    */
   respond(
     request: RuntimeHttpRequest,
-    codec: ExposedHttpCodec,
+    fn: AnyRegistered,
     operation: HttpValueOperation,
     outcome: RuntimeOperationOutcome<unknown>,
     committed?: CommittedHttpMutation,
@@ -56,7 +60,7 @@ export class RuntimeHttpResponses {
       }
       if (outcome.value.ok) {
         body = outcome.value.data;
-        toJson = codec.encodeValue;
+        toJson = (value) => encodeHttpValue(request.address, fn, value);
         status = 200;
         proven = committed?.encoded;
       } else {
@@ -68,7 +72,8 @@ export class RuntimeHttpResponses {
         }
         const error = outcome.value.error;
         body = error;
-        toJson = (value) => codec.encodeError(value as ApplicationError);
+        toJson = (value) =>
+          encodeHttpError(request.address, fn, value as ApplicationError);
         status = error.status;
       }
     } else {

@@ -213,12 +213,9 @@ type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
 
 /**
  * Maps a record of module namespaces (arbitrarily nested) to the application's
- * typed API shape. Function files should export only AckerDB declarations;
- * server-only exports are erased.
+ * typed API shape. Server-only definitions and ordinary helper exports are erased.
  */
-export type ApiFromModules<T> = {
-  [K in keyof T as T[K] extends { readonly kind: "http" | "job" } ? never : K]:
-  T[K] extends RegisteredChannelContract<
+type ApiValue<T> = T extends RegisteredChannelContract<
     infer A,
     infer Room,
     infer ClientEvents,
@@ -226,7 +223,16 @@ export type ApiFromModules<T> = {
     infer Error
   >
     ? ChannelRef<A, Room, ClientEvents, ServerEvents, Error>
-    : T[K] extends RegisteredFunction
-    ? FunctionRefOf<T[K]>
-    : ApiFromModules<T[K]>;
+    : T extends RegisteredFunction
+    ? FunctionRefOf<T>
+    : T extends { readonly kind: "http" | "job" }
+      ? never
+      : T extends object
+        ? keyof ApiModule<T> extends never ? never : ApiModule<T>
+        : never;
+
+type ApiModule<T> = {
+  [K in keyof T as ApiValue<T[K]> extends never ? never : K]: ApiValue<T[K]>;
 };
+
+export type ApiFromModules<T> = ApiModule<T>;

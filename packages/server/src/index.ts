@@ -155,10 +155,8 @@ export { restoreVerifiedDatabase } from "./database/restore.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
-  declareJobs,
   job,
   DEFAULT_JOB_RETENTION_MS,
-  type DeclaredJob,
   type JobDefinition,
   type JobBuilder,
   type JobCtx,
@@ -421,7 +419,12 @@ export {
   type ChannelSend,
   type RegisteredChannel,
 } from "./channels/definition.ts";
-export type { Definition } from "./definitions.ts";
+export {
+  collectDefinitions,
+  type CollectedDefinition,
+  type Definition,
+  type ImportedDefinitionModule,
+} from "./definitions.ts";
 export {
   type StandardJsonCodec,
   type StandardJsonInput,
@@ -433,7 +436,7 @@ export {
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
-export { Registry, type LoadedModules } from "./app/registry.ts";
+export { Registry } from "./app/registry.ts";
 export {
   OutboundBudget,
   type OutboundBudgetSnapshot,

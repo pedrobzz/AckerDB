@@ -23,11 +23,11 @@ import {
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
+import { testDefinitions, testRegistry } from "ackerdb-test-support/server";
 import type {
   RuntimePublication,
   RuntimeRequest,
@@ -313,7 +313,9 @@ export async function fixture(
     : undefined;
   const runtime = new Runtime({
     engine,
-    registry: server?.loadFunctionModules(applicationModules) ?? new Registry(applicationModules),
+    registry: server === undefined
+      ? testRegistry(applicationModules)
+      : server.registerDefinitions(testDefinitions(applicationModules)),
     verifier,
     scopes: FIXTURE_SCOPES,
     // Parent identities hold the full vocabulary unless a test narrows it,

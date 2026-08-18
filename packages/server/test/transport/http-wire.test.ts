@@ -7,6 +7,7 @@
  * promised plain JSON.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,7 +83,7 @@ beforeEach(async () => {
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   server = new AckerDBServer({ limits, port: 0 });
-  const registry = server.loadFunctionModules(functions);
+  const registry = server.registerDefinitions(testDefinitions(functions));
   runtime = new Runtime({ engine, registry, limits });
   await runtime.start();
   server.activate(runtime);

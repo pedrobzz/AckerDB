@@ -4,6 +4,7 @@ import {
   Engine,
   PRODUCTION_LIMITS,
   Runtime,
+  collectDefinitions,
   v,
   defineSchema,
   defineServiceLimits,
@@ -157,9 +158,12 @@ const limits = defineServiceLimits({
 const engine = new Engine(schema, join(directory, "data.db"));
 reconcile(engine);
 const server = new AckerDBServer({ limits, port });
+const registry = server.registerDefinitions(collectDefinitions([
+  { name: "items", exports: functions.items, origin: import.meta.url },
+]));
 const runtime = new Runtime({
   engine,
-  registry: server.loadFunctionModules(functions),
+  registry,
   verifier,
   limits,
 });

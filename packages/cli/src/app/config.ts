@@ -45,11 +45,9 @@ export type FilesConfig = FilesCommonConfig & (
 export interface AppConfig {
   appDir: string;
   /** The application manifest (default export = defineApp(...)). */
-  appPath: string;
-  /** Directory of function modules. */
-  functionsDir: string;
-  /** Directory of job modules. */
-  jobsDir: string;
+  entrypoint: string;
+  /** Filesystem roots containing server definitions. */
+  definitions: readonly string[];
   /** Directory of migration modules and their `meta/` sidecars. */
   migrationsDir: string;
   /** Where codegen writes _generated files. */
@@ -83,9 +81,8 @@ export function databasePath(config: Pick<AppConfig, "dbDir">): string {
 }
 
 interface RawConfig {
-  app?: string;
-  functions?: string;
-  jobs?: string;
+  entrypoint?: string;
+  definitions?: unknown;
   migrations?: string;
   generated?: string;
   db?: string;
@@ -99,9 +96,8 @@ interface RawConfig {
 }
 
 const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
-  "app",
-  "functions",
-  "jobs",
+  "entrypoint",
+  "definitions",
   "migrations",
   "generated",
   "db",
@@ -146,6 +142,18 @@ function optionalModulePath(value: unknown, name: string): string | undefined {
     throw new Error(`${name} must be a non-empty module path`);
   }
   return value;
+}
+
+function definitionEntries(value: unknown): readonly string[] {
+  const entries = value ?? ["./app"];
+  if (
+    !Array.isArray(entries) ||
+    entries.length === 0 ||
+    entries.some((entry) => typeof entry !== "string" || entry.trim().length === 0)
+  ) {
+    throw new Error("definitions must be a non-empty array of module paths");
+  }
+  return entries;
 }
 
 function exactProfile<const T extends string>(
@@ -361,9 +369,8 @@ export function loadConfig(
   const scopeResolver = optionalModulePath(raw.scopeResolver, "scopeResolver");
   return {
     appDir: dir,
-    appPath: abs(raw.app ?? "./app.ts"),
-    functionsDir: abs(raw.functions ?? "./functions"),
-    jobsDir: abs(raw.jobs ?? "./jobs"),
+    entrypoint: abs(raw.entrypoint ?? "./app.ts"),
+    definitions: definitionEntries(raw.definitions).map(abs),
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir,

@@ -1,21 +1,15 @@
-/**
- * How a file becomes a module name: the recursive walk, the identifier rule,
- * and the `index.ts` collapse that lets a directory hold a module of its own
- * name alongside its siblings.
- */
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { listFunctionModules, listJobModules } from "../../src/app/manifest.ts";
+import { listDefinitionModules } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { makeFixture } from "../support/fixture.ts";
 
 const dirs: string[] = [];
+const EMPTY = "export {};\n";
 
 afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-
-const EMPTY = "export {};\n";
 
 function fixture(files: Record<string, string>): string {
   const dir = makeFixture(files);
@@ -23,54 +17,71 @@ function fixture(files: Record<string, string>): string {
   return dir;
 }
 
-describe("module names", () => {
-  test("an index file takes its directory's name, not its own", () => {
+const names = (dir: string) =>
+  listDefinitionModules(loadConfig(dir)).map((module) => module.key);
+
+describe("definition module names", () => {
+  test("collapses an index file into its directory beside sibling modules", () => {
     const dir = fixture({
-      "functions/orders/index.ts": EMPTY,
-      "functions/orders/refunds.ts": EMPTY,
-      "functions/notes.ts": EMPTY,
+      "app/orders/index.ts": EMPTY,
+      "app/orders/refunds.ts": EMPTY,
+      "app/notes.ts": EMPTY,
     });
-    expect(listFunctionModules(loadConfig(dir)).map((module) => module.key))
-      .toEqual(["notes", "orders", "orders.refunds"]);
+    expect(names(dir)).toEqual(["notes", "orders", "orders.refunds"]);
   });
 
-  test("the collapse reaches every module directory, jobs included", () => {
-    const dir = fixture({ "jobs/billing/index.ts": EMPTY });
-    expect(listJobModules(loadConfig(dir)).map((module) => module.key)).toEqual(["billing"]);
+  test("combines directories and configured files into one logical namespace", () => {
+    const dir = fixture({
+      ".ackerdb.config.json": JSON.stringify({
+        definitions: ["./sales", "./support/tickets.ts"],
+      }),
+      "sales/orders.ts": EMPTY,
+      "support/tickets.ts": EMPTY,
+    });
+    expect(names(dir)).toEqual(["orders", "tickets"]);
   });
 
-  test("nesting collapses one level at a time", () => {
+  test("collapses only files named index", () => {
     const dir = fixture({
-      "functions/orders/refunds/index.ts": EMPTY,
-      "functions/orders/index/nested.ts": EMPTY,
+      "app/orders/refunds/index.ts": EMPTY,
+      "app/orders/index/nested.ts": EMPTY,
     });
-    // Only a file named `index` collapses, and only into the directory holding
-    // it: a directory named `index` is an ordinary name.
-    expect(listFunctionModules(loadConfig(dir)).map((module) => module.key))
-      .toEqual(["orders.index.nested", "orders.refunds"]);
+    expect(names(dir)).toEqual(["orders.index.nested", "orders.refunds"]);
   });
 
-  test("refuses two files claiming one module name, naming both", () => {
+  test("refuses two files publishing one logical module name", () => {
     const dir = fixture({
-      "functions/orders.ts": EMPTY,
-      "functions/orders/index.ts": EMPTY,
+      "app/orders.ts": EMPTY,
+      "app/orders/index.ts": EMPTY,
     });
-    expect(() => listFunctionModules(loadConfig(dir))).toThrow(
-      'function modules "orders.ts" and "orders/index.ts" both publish "orders"',
+    expect(() => names(dir)).toThrow(/both publish "orders"/);
+  });
+
+  test("refuses an index file with no directory to name", () => {
+    const dir = fixture({ "app/index.ts": EMPTY });
+    expect(() => names(dir)).toThrow(
+      /an "index" file takes its directory's name, and this one has no directory/,
     );
   });
 
-  test("refuses an index file with no directory to take a name from", () => {
-    const dir = fixture({ "functions/index.ts": EMPTY });
-    expect(() => listFunctionModules(loadConfig(dir))).toThrow(
-      'function module "index.ts": an "index" file takes its directory\'s name, and this one has no directory',
-    );
+  test("refuses path segments that cannot become definition names", () => {
+    const dir = fixture({ "app/_private/hidden.ts": EMPTY });
+    expect(() => names(dir)).toThrow("path segments become names and must be identifiers");
   });
 
-  test("still refuses a segment that cannot be a name", () => {
-    const dir = fixture({ "functions/_private/hidden.ts": EMPTY });
-    expect(() => listFunctionModules(loadConfig(dir))).toThrow(
-      "path segments become names and must be identifiers",
-    );
+  test("refuses the entrypoint when a definition root includes it", () => {
+    const dir = fixture({
+      ".ackerdb.config.json": JSON.stringify({ definitions: ["."] }),
+      "app.ts": "export default {};",
+    });
+    expect(() => names(dir)).toThrow(/application entrypoint .* is also discovered/);
+  });
+
+  test("refuses one physical file discovered through overlapping roots", () => {
+    const dir = fixture({
+      ".ackerdb.config.json": JSON.stringify({ definitions: ["./app", "./app/orders.ts"] }),
+      "app/orders.ts": EMPTY,
+    });
+    expect(() => names(dir)).toThrow(/is discovered through both/);
   });
 });

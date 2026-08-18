@@ -36,7 +36,7 @@ bun add --exact @ackerdb/server@X.Y.Z @ackerdb/client@X.Y.Z @ackerdb/cli@X.Y.Z
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # app.ts, functions/, jobs/, .ackerdb.config.json
+│   ├── server/                 # app.ts, app/, .ackerdb.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
@@ -50,15 +50,15 @@ your-app/
   `sseProcedure`, and `channel` constructors. Every declaration
   must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
-  Every application address begins with `api`, followed by the function module
-  path and export name: `functions/orders/list.ts` exporting `open` becomes
+  Every application address begins with `api`, followed by the definition module
+  path and export name: `app/orders/list.ts` exporting `open` becomes
   `api.orders.list.open`. The HTTP route is that address segment for segment.
   A file named `index.ts` takes its directory's name, and `access` alone decides
   who may call.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
-  external work and open explicit `ctx.tx(...)` transactions. Durable jobs
-  declared in `jobs/` execute as the local `system` principal with retries,
+  external work and open explicit `ctx.tx(...)` transactions. Durable Jobs
+  declared in the same definition roots execute as the local `system` principal with retries,
   recurrence, dedup, per-key concurrency, and durable steps — `ctx.step`
   journals completed work so a resumed run re-runs only what the journal has
   not recorded (see docs/jobs.md).
@@ -148,8 +148,9 @@ The remaining single-node and product limitations are listed explicitly in
 
 ## Configuration and CLI
 
-All `.ackerdb.config.json` fields are optional. The path defaults are
-`./app.ts`, `./functions`, `./_generated`, and `./.ackerdb`; the default port is
+All `.ackerdb.config.json` fields are optional. `entrypoint` defaults to
+`./app.ts`, `definitions` to `["./app"]`, and the generated and data directories
+to `./_generated` and `./.ackerdb`; the default port is
 `3211`, and the default listener hostname is `127.0.0.1`. Set `hostname` to
 `0.0.0.0` only when clients must connect through a trusted private development
 network. Authentication can select either built-in `oidc` providers or one

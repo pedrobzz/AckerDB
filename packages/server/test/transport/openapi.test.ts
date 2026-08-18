@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Err, ACKERDB_VERSION, Status, parseSseAckRequest } from "@ackerdb/core";
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
@@ -83,7 +84,7 @@ const functions = () => ({
   },
 });
 
-const document = () => openApiDocument(new Registry(functions()), info) as Ctx;
+const document = () => openApiDocument(testRegistry(functions()), info) as Ctx;
 
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
@@ -222,7 +223,7 @@ describe("openapi document", () => {
   });
 
   test("documents exactly the exposed functions openapi allows", () => {
-    const registry = new Registry(functions());
+    const registry = testRegistry(functions());
     const openapi = openApiDocument(registry, info) as Ctx;
     expect(Object.keys(openapi.paths)).toEqual([
       "/api/admin/stats",
@@ -386,7 +387,7 @@ describe("openapi document", () => {
   test("refuses a document where two addresses claim one operationId", () => {
     // Distinct paths, one operationId: the registry's own collision check
     // cannot see this, and codegen tools reject or silently dedupe it.
-    const registry = new Registry({
+    const registry = testRegistry({
       notes: {
         list: query({
           access: "public",
@@ -417,13 +418,13 @@ describe("openapi document", () => {
   });
 
   test("two exports of one application are byte-identical", () => {
-    const first = JSON.stringify(openApiDocument(new Registry(functions()), info));
-    const second = JSON.stringify(openApiDocument(new Registry(functions()), info));
+    const first = JSON.stringify(openApiDocument(testRegistry(functions()), info));
+    const second = JSON.stringify(openApiDocument(testRegistry(functions()), info));
     expect(second).toBe(first);
   });
 
   test("an application with nothing exposed documents nothing", () => {
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         sweep: procedure({ access: "public", args: {}, handler: () => "swept" }),
       },
@@ -439,7 +440,7 @@ describe("openapi document", () => {
     // registry refuses it when it compiles the function's HTTP codec. What is
     // left for the document to refuse is a value that crosses the wire as
     // itself and has no schema — a non-finite literal.
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         latest: query({
           access: "public",

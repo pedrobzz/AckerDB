@@ -1,5 +1,6 @@
 import type { Clock } from "../../src/shared/clock.ts";
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -472,7 +473,7 @@ async function reconnectTransitionEvidence(
         resume: { ...PRODUCTION_LIMITS.resume, maxTransitionsPerStream: 1 },
       })
     : PRODUCTION_LIMITS;
-  const registry = new Registry({
+  const registry = testRegistry({
     messages: {
       list: query({
         access: "public",
@@ -696,7 +697,7 @@ describe("Session + Runtime integration", () => {
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     let mutationExecutions = 0;
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         list: query({
           access: "public",
@@ -872,7 +873,7 @@ describe("Session + Runtime integration", () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-client-session-events-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
-    const registry = new Registry({
+    const registry = testRegistry({
       typing: {
         emit: mutation({
           access: "public",
@@ -987,7 +988,7 @@ describe("Session + Runtime integration", () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-session-race-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         list: query({
           access: "public",

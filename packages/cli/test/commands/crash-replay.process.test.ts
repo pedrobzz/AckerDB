@@ -66,11 +66,12 @@ import {
   Engine,
   PRODUCTION_LIMITS,
   Runtime,
+  collectDefinitions,
   reconcile,
   type RuntimeHooks,
 } from "@ackerdb/server";
 import app from "./app.ts";
-import * as messages from "./functions/messages.ts";
+import * as messages from "./app/messages.ts";
 
 const port = Number(process.argv[2]);
 const fault = process.env.ACKERDB_COMMIT_FAULT;
@@ -96,7 +97,9 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
 const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port });
 const runtime = new Runtime({
   engine,
-  registry: server.loadFunctionModules({ messages }),
+  registry: server.registerDefinitions(collectDefinitions([
+    { name: "messages", exports: messages, origin: import.meta.url },
+  ])),
   ...(hooks === undefined ? {} : { hooks }),
   limits: PRODUCTION_LIMITS,
 });
@@ -310,7 +313,7 @@ function storedMutation(
 async function makeCommitFaultFixture(port: number): Promise<string> {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
-    "functions/messages.ts": FIXTURE_MESSAGES,
+    "app/messages.ts": FIXTURE_MESSAGES,
     "commit-fault-server.ts": COMMIT_FAULT_SERVER,
     ".ackerdb.config.json": JSON.stringify({ port }),
   });
@@ -325,8 +328,8 @@ describe("process crash replay", () => {
     await assertNoServer(port);
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
-      "functions/messages.ts": FIXTURE_MESSAGES,
-      "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
+      "app/messages.ts": FIXTURE_MESSAGES,
+      "app/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);

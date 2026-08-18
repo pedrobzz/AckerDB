@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import type { Database } from "bun:sqlite";
 import { Err, Failure, Status } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
@@ -239,7 +240,7 @@ describe("Registry function identity", () => {
     const exported = query({ args: {}, access: "public", handler: () => null });
     const unexported = query({ args: {}, access: "public", handler: () => null });
     const ownKeys = Reflect.ownKeys(exported);
-    const registry = new Registry({ messages: { list: exported } });
+    const registry = testRegistry({ messages: { list: exported } });
 
     expect(registry.addressOf(exported)).toBe("api.messages.list");
     expect(registry.addressOf(unexported)).toBeUndefined();
@@ -248,9 +249,11 @@ describe("Registry function identity", () => {
 
   test("rejects aliases for one registered function object", () => {
     const shared = query({ args: {}, access: "public", handler: () => null });
-    expect(() => new Registry({
+    expect(() => testRegistry({
       first: { value: shared },
       second: { alias: shared },
-    })).toThrow('registered function is exported at both "api.first.value" and "api.second.alias"');
+    })).toThrow(
+      'one definition is exported as both "first.value" from "<test:0:first>" and "second.alias" from "<test:0:second>"',
+    );
   });
 });

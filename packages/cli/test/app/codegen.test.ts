@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
-import { Registry } from "@ackerdb/server";
-import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
+import { Registry, collectDefinitions } from "@ackerdb/server";
+import { importDefinitionModules, loadConfig, runCodegen } from "@ackerdb/cli";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_JOBS, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 
 /** Every registered address, sorted. The framework contributes none. */
@@ -20,9 +20,9 @@ afterEach(() => {
 const fixture = () => {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
-    "functions/messages.ts": FIXTURE_MESSAGES,
-    "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
-    "jobs/notes.ts": FIXTURE_JOBS,
+    "app/messages.ts": FIXTURE_MESSAGES,
+    "app/admin/users.ts": FIXTURE_ADMIN_USERS,
+    "app/notes.ts": FIXTURE_JOBS,
   });
   dirs.push(dir);
   return dir;
@@ -133,7 +133,7 @@ await acker.system.run("fixture.typed", async (ctx) => {
     const dir = fixture();
     const config = loadConfig(dir);
     await runCodegen(config);
-    writeFileSync(join(dir, "functions/hooks.ts"), `
+    writeFileSync(join(dir, "app/hooks.ts"), `
 import { http, type HttpHandlerGET, type HttpHandlerPOST } from "../_generated/server.ts";
 
 // A separately declared handler supplies only its literal path: the Schema
@@ -177,8 +177,8 @@ export const capabilities = http("/api/hooks/tx", {
     const dir = fixture();
     const config = loadConfig(dir);
     await runCodegen(config);
-    const modules = await importFunctionModules(config);
-    const registry = new Registry(modules);
+    const modules = await importDefinitionModules(config);
+    const registry = Registry.from(collectDefinitions(modules));
     expect([...registry.functions.keys()].sort()).toEqual([
       // Every address is the application's: the framework registers none.
       "api.admin.users.compact",
@@ -218,12 +218,12 @@ export const capabilities = http("/api/hooks/tx", {
   test("an index module publishes its directory's name beside its siblings", async () => {
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
-      "functions/orders/index.ts": `
+      "app/orders/index.ts": `
 import { query } from "../../_generated/server.ts";
 
 export const list = query({ access: "public", args: {}, handler: () => [] });
 `,
-      "functions/orders/refunds.ts": `
+      "app/orders/refunds.ts": `
 import { query } from "../../_generated/server.ts";
 
 export const pending = query({ access: "public", args: {}, handler: () => [] });
@@ -233,7 +233,7 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     const config = loadConfig(dir);
     await runCodegen(config);
 
-    const registry = new Registry(await importFunctionModules(config));
+    const registry = Registry.from(collectDefinitions(await importDefinitionModules(config)));
     expect(applicationAddresses(registry))
       .toEqual(["api.orders.list", "api.orders.refunds.pending"]);
 
@@ -298,15 +298,15 @@ export default {};
     expect(existsSync(marker)).toBe(false);
   });
 
-  test("loads the configured manifest without executing discovered function modules", async () => {
+  test("loads the configured entrypoint without executing definition modules", async () => {
     const dir = makeFixture({
       "backend.ts": FIXTURE_APP,
-      "functions/sideEffect.ts": `
+      "app/sideEffect.ts": `
 import { writeFileSync } from "node:fs";
 
 writeFileSync(new URL("../../function-imported", import.meta.url), "imported");
 `,
-      ".ackerdb.config.json": JSON.stringify({ app: "./backend.ts" }),
+      ".ackerdb.config.json": JSON.stringify({ entrypoint: "./backend.ts" }),
     });
     dirs.push(dir);
 

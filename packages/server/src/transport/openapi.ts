@@ -41,8 +41,9 @@ import {
   RECEIPT_HEADERS,
   SSE_FRAME_TYPES,
   SSE_STREAM_HEADERS,
-  validateApplicationHttpPath,
+  assertApplicationHttpPath,
 } from "./http-surface.ts";
+import { validateRoutePath } from "./routing/path.ts";
 
 const OPENAPI_VERSION = "3.1.1";
 const BEARER_SCHEME = "bearerAuth";
@@ -427,9 +428,11 @@ export function openApiDocument(registry: Registry, info: OpenApiInfo): OpenApiD
       const exposure = httpExposure(fn.http, `function "${address}" http`);
       if (exposure?.openapi !== true) return [];
       const where = `HTTP-exposed function "${address}"`;
+      const path = validateRoutePath(httpPathForAddress(address), where);
+      assertApplicationHttpPath(path, where);
       return [{
         address,
-        path: validateApplicationHttpPath(httpPathForAddress(address), where),
+        path,
         fn,
       }];
     })

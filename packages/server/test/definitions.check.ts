@@ -40,16 +40,6 @@ const channelDefinition = channel({
   channelDefinition,
 ] satisfies readonly Definition[];
 
-({
-  query: true,
-  mutation: true,
-  procedure: true,
-  sse: true,
-  http: true,
-  job: true,
-  channel: true,
-}) satisfies Record<Definition["kind"], true>;
-
 function exhaustivelyNarrow(definition: Definition): void {
   switch (definition.kind) {
     case "query":
@@ -86,6 +76,8 @@ type Api = ApiFromModules<{
     http: typeof httpDefinition;
     job: typeof jobDefinition;
     channel: typeof channelDefinition;
+    helper: { readonly label: string };
+    plugin: { readonly kind: "plugin"; readonly version: number };
   };
 }>;
 
@@ -96,3 +88,7 @@ api.definitions.channel.$ref satisfies string;
 api.definitions.http;
 // @ts-expect-error Job definitions are server-only by kind
 api.definitions.job;
+// @ts-expect-error ordinary helper exports are not API paths
+api.definitions.helper;
+// @ts-expect-error unknown definition kinds are not API paths
+api.definitions.plugin;

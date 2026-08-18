@@ -31,6 +31,7 @@ import {
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
@@ -41,7 +42,6 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { request } from "../support/credential-fixture.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 const schema = defineSchema({
   audit: defineTable({ id: v.primaryKey(), line: v.string() }),
@@ -252,7 +252,7 @@ async function start(): Promise<Harness> {
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(modules),
+    registry: testRegistry(modules),
     scopes: VOCABULARY,
     resolveScopes: () => VOCABULARY,
   });
@@ -441,7 +441,6 @@ describe("global credential administration", () => {
       id: 900,
       address: "api.admin.revokeManyThenFail",
       args: { ids: [first.id, second.id] },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: { body: string; status: number }) =>
         new Response(body, { status }),

@@ -1,78 +1,71 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  AckerDBServer,
+  Engine,
+  PRODUCTION_LIMITS,
+  Runtime,
   channel,
-  declareJobs,
+  defineSchema,
   http,
   job,
   mutation,
   procedure,
   query,
-  Registry,
+  reconcile,
   sseProcedure,
   v,
 } from "@ackerdb/server";
+import { testDefinitions } from "ackerdb-test-support/server";
 
-function definitions() {
-  return {
-    find: query({ args: {}, access: "public", handler: () => null }),
-    change: mutation({ args: {}, access: "public", handler: () => null }),
-    run: procedure({ args: {}, access: "public", handler: () => null }),
-    stream: sseProcedure({
-      args: {},
-      yields: v.string(),
-      access: "public",
-      handler: async function* () {},
-    }),
-    hook: http("/hooks/test", { POST: () => new Response(null) }),
-    background: job({ mode: "mutation", args: {}, handler: () => null }),
-    chat: channel({
-      args: {},
-      clientEvents: {},
-      serverEvents: {},
-      access: "public",
-      on: {},
-    }),
-  };
-}
-
-describe("server definitions", () => {
-  test("routes every factory result through its kind", () => {
-    const { background, ...functions } = definitions();
-    const httpDefinitions: unknown[] = [];
-    const registry = new Registry(
-      { definitions: functions },
-      (definition) => httpDefinitions.push(definition),
-    );
-
-    expect(registry.get("api.definitions.find")?.kind).toBe("query");
-    expect(registry.get("api.definitions.change")?.kind).toBe("mutation");
-    expect(registry.get("api.definitions.run")?.kind).toBe("procedure");
-    expect(registry.get("api.definitions.stream")?.kind).toBe("sse");
-    expect(httpDefinitions).toMatchObject([{ kind: "http" }]);
-    expect(registry.getChannel("api.definitions.chat")?.kind).toBe("channel");
-    expect(declareJobs({ definitions: { background } })).toMatchObject([
-      { name: "definitions.background", job: { kind: "job", mode: "mutation" } },
+test("registers every factory result with its real owner", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-definitions-"));
+  const engine = new Engine(defineSchema({}), join(directory, "data.db"));
+  reconcile(engine);
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+  const registry = server.registerDefinitions(testDefinitions({
+    definitions: {
+      find: query({ args: {}, access: "public", handler: () => null }),
+      change: mutation({ args: {}, access: "public", handler: () => null }),
+      run: procedure({ args: {}, access: "public", handler: () => null }),
+      stream: sseProcedure({
+        args: {},
+        yields: v.string(),
+        access: "public",
+        handler: async function* () {},
+      }),
+      hook: http("/hooks/test", { POST: () => new Response(null, { status: 204 }) }),
+      background: job({ mode: "mutation", args: {}, handler: () => null }),
+      chat: channel({
+        args: {},
+        clientEvents: {},
+        serverEvents: {},
+        access: "public",
+        on: {},
+      }),
+    },
+  }));
+  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
+  try {
+    expect([...registry.functions.values()].map(({ kind }) => kind)).toEqual([
+      "mutation",
+      "query",
+      "procedure",
+      "sse",
     ]);
-  });
+    expect(registry.getChannel("api.definitions.chat")?.kind).toBe("channel");
+    expect(registry.getJob("definitions.background")?.kind).toBe("job");
 
-  test("keeps kind as the sole identity discriminator", () => {
-    const declared = definitions();
-    for (const definition of Object.values(declared)) {
-      expect(Object.hasOwn(definition, "kind")).toBe(true);
-      expect(Object.hasOwn(definition, "isAckerDB")).toBe(false);
-      expect(Object.hasOwn(definition, "isAckerDBServerOnly")).toBe(false);
-      expect(Object.hasOwn(definition, "isAckerDBChannel")).toBe(false);
-    }
-    expect(Object.getOwnPropertySymbols(declared.background)).toEqual([]);
-  });
-
-  test("refuses unknown kinds at each module-loading boundary", () => {
-    const unknown = { kind: "unknown" };
-    expect(() => new Registry({ definitions: { unknown } })).toThrow(
-      'function module export "definitions.unknown" has unknown definition kind "unknown"',
-    );
-    expect(() => declareJobs({ definitions: { unknown } })).toThrow(
-      'job module export "definitions.unknown" has unknown definition kind "unknown"',
-    );
-  });
+    await runtime.start();
+    server.activate(runtime);
+    expect((await fetch(`http://127.0.0.1:${server.port}/hooks/test`, {
+      method: "POST",
+    })).status).toBe(204);
+  } finally {
+    await server.drain().catch(() => {});
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

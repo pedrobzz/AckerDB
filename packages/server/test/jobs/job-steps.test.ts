@@ -15,13 +15,13 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testDefinitions, testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
-import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts";
+import { job } from "../../src/jobs/definition.ts";
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,18 +46,18 @@ function limits(overrides: Partial<ServiceLimits["jobs"]> = {}): ServiceLimits {
 }
 
 async function start(
-  jobs: DeclaredJob[],
+  registry: Registry,
   functions: Record<string, Record<string, unknown>> = {},
 ): Promise<void> {
   directory = mkdtempSync(join(tmpdir(), "ackerdb-steps-"));
   directories.push(directory);
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  for (const definition of testDefinitions(functions)) registry.add(definition);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry,
     limits: limits(),
-    jobs,
     now: () => clock,
   });
   await runtime.start();
@@ -65,18 +65,18 @@ async function start(
 
 /** Reopen the same database file with a fresh Runtime: the restart seam. */
 async function restart(
-  jobs: DeclaredJob[],
+  registry: Registry,
   functions: Record<string, Record<string, unknown>> = {},
 ): Promise<void> {
   await runtime.drain().catch(() => {});
   engine.close("clean");
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  for (const definition of testDefinitions(functions)) registry.add(definition);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry,
     limits: limits(),
-    jobs,
     now: () => clock,
   });
   await runtime.start();
@@ -159,7 +159,7 @@ describe("step replay", () => {
     let externalCalls = 0;
     let attempts = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           fulfill: job({
             args: {},
@@ -208,7 +208,7 @@ describe("step replay", () => {
     let externalCalls = 0;
     let succeed = false;
     const definitions = () =>
-      declareJobs({
+      testRegistry({
         flows: {
           sync: job({
             args: {},
@@ -246,7 +246,7 @@ describe("step.run", () => {
   test("registered callees: query and mutation results are journaled Results", async () => {
     clock = 3_000_000;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           observe: job({
             args: {},
@@ -271,7 +271,7 @@ describe("step.run", () => {
     clock = 4_000_000;
     let attempts = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           dunning: job({
             args: {},
@@ -298,7 +298,7 @@ describe("step.run", () => {
   test("an unknown callee fails the run through the ordinary retry policy", async () => {
     clock = 5_000_000;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           typo: job({
             args: {},
@@ -319,7 +319,7 @@ describe("mismatch refusals", () => {
   test("a duplicate step name in one run fails without consulting retry", async () => {
     clock = 6_000_000;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           doubled: job({
             args: {},
@@ -346,7 +346,7 @@ describe("mismatch refusals", () => {
     clock = 7_000_000;
     let nondeterministic = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           drifting: job({
             args: {},
@@ -382,7 +382,7 @@ describe("mismatch refusals", () => {
     clock = 8_000_000;
     let sends = 0;
     const v1 = () =>
-      declareJobs({
+      testRegistry({
         flows: {
           notify: job({
             args: {},
@@ -396,7 +396,7 @@ describe("mismatch refusals", () => {
       });
     // v2 redeclares "send" as a different step kind: same name, changed meaning.
     const v2 = () =>
-      declareJobs({
+      testRegistry({
         flows: {
           notify: job({
             args: {},
@@ -426,7 +426,7 @@ describe("mismatch refusals", () => {
     // journal: the recorded "send" answers, and the run completes.
     await restart(v1(), {});
     await restart(
-      declareJobs({
+      testRegistry({
         flows: {
           notify: job({
             args: {},
@@ -452,7 +452,7 @@ describe("step.sleep", () => {
     let before = 0;
     let after = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           settle: job({
             args: {},
@@ -500,7 +500,7 @@ describe("step.sleep", () => {
     clock = 10_000_000;
     let leaked: string | null = null;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           swallower: job({
             args: {},
@@ -551,7 +551,7 @@ describe("step.sleep", () => {
     clock = 11_000_000;
     let after = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           patient: job({
             args: {},
@@ -586,7 +586,7 @@ describe("journal integrity", () => {
     clock = 12_000_000;
     let externalCalls = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           careful: job({
             args: {},
@@ -625,7 +625,7 @@ describe("journal integrity", () => {
     clock = 12_500_000;
     let externalCalls = 0;
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           strict: job({
             args: {},
@@ -666,7 +666,7 @@ describe("journal integrity", () => {
       },
     });
     await start(
-      declareJobs({
+      testRegistry({
         flows: {
           bound: job({
             args: { input: v.string() },
@@ -691,7 +691,6 @@ describe("journal integrity", () => {
       id: 1,
       address: "api.admin.surgery",
       args: { id: handle.id, argsJson: '{"input":"replaced"}' },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });

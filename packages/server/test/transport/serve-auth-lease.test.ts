@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,7 @@ import { Engine } from "../../src/database/engine.ts";
 import { procedure, sseProcedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
@@ -178,7 +180,7 @@ describe("HTTP and SSE credential leases", () => {
     server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
     runtime = new Runtime({
       engine,
-      registry: server.loadFunctionModules(functions),
+      registry: server.registerDefinitions(testDefinitions(functions)),
       verifier,
     });
     await runtime.start();
@@ -212,7 +214,7 @@ describe("HTTP and SSE credential leases", () => {
     });
     expect(() => new Runtime({
       engine,
-      registry: new Registry(functions),
+      registry: testRegistry(functions),
       verifier: invalid,
     })).toThrow(
       "verifier invalidation deadlineMs cannot exceed revocationDeadlineMs",

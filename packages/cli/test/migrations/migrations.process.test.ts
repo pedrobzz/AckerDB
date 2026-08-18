@@ -196,7 +196,7 @@ describe("ackerdb startup migrations", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -260,7 +260,7 @@ describe("ackerdb startup migrations", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -322,7 +322,7 @@ throw new Error("runtime-only verifier failure");
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -367,7 +367,7 @@ throw new Error("runtime-only verifier failure");
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);

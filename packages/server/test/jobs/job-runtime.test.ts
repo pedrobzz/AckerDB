@@ -14,14 +14,14 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { v } from "../../src/validation/v.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testDefinitions, testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
-import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts";
+import { job } from "../../src/jobs/definition.ts";
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { outcomeFromError } from "../../src/runtime/outcome.ts";
-import { testHttpCodec } from "../support/http.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,7 +62,7 @@ function limits(overrides: Partial<ServiceLimits["jobs"]> = {}): ServiceLimits {
 }
 
 async function start(
-  jobs: DeclaredJob[],
+  registry: Registry,
   customLimits = limits(),
   functions: Record<string, Record<string, unknown>> = {},
 ): Promise<void> {
@@ -70,27 +70,26 @@ async function start(
   directories.push(directory);
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  for (const definition of testDefinitions(functions)) registry.add(definition);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry,
     limits: customLimits,
-    jobs,
     now: () => clock,
   });
   await runtime.start();
 }
 
 /** Reopen the same database file with a fresh Runtime: the restart seam. */
-async function restart(jobs: DeclaredJob[], customLimits = limits()): Promise<void> {
+async function restart(registry: Registry, customLimits = limits()): Promise<void> {
   await runtime.drain().catch(() => {});
   engine.close("clean");
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry({}),
+    registry,
     limits: customLimits,
-    jobs,
     now: () => clock,
   });
   await runtime.start();
@@ -169,7 +168,7 @@ describe("procedure-mode Jobs", () => {
   test("claims, runs the handler as a system operation, and settles the outcome", async () => {
     clock = 1_000_000;
     const seen: unknown[] = [];
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         greet: job({
           args: { who: v.string() },
@@ -205,7 +204,7 @@ describe("procedure-mode Jobs", () => {
   test("a failed run reports nextRetryAt and the next run retries on schedule", async () => {
     clock = 2_000_000;
     let attempts = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         flaky: job({
           args: {},
@@ -253,7 +252,7 @@ describe("procedure-mode Jobs", () => {
   test("exhausted retries fail the Job, and a manual retry adds a run to it", async () => {
     clock = 3_000_000;
     let runs = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         doomed: job({
           args: {},
@@ -293,7 +292,7 @@ describe("procedure-mode Jobs", () => {
     const started = deferred<void>();
     const finish = deferred<string>();
     let abortedInHandler = false;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         slow: job({
           args: {},
@@ -334,7 +333,7 @@ describe("procedure-mode Jobs", () => {
 describe("dedupe and memoization", () => {
   test("in-flight dedupe collapses equal args into one Job; fresh args run fresh", async () => {
     clock = 5_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         send: job({
           args: { to: v.string() },
@@ -367,7 +366,7 @@ describe("dedupe and memoization", () => {
 
   test("a dedupe hit is write-free: it changes no row and creates no run", async () => {
     clock = 5_500_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         once: job({
           args: { key: v.string() },
@@ -404,7 +403,7 @@ describe("dedupe and memoization", () => {
   test("two settles in one millisecond resolve to the newer outcome, not the luckier row", async () => {
     clock = 5_800_000;
     let runs = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         beat: job({
           args: {},
@@ -440,7 +439,7 @@ describe("dedupe and memoization", () => {
   test("a completed window memoizes, and expiry releases a fresh run", async () => {
     clock = 6_000_000;
     let runs = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         memo: job({
           args: { key: v.string() },
@@ -480,7 +479,7 @@ describe("concurrency", () => {
     let maxPerKey = 0;
     let totalConcurrent = 0;
     const gates = new Map<string, Deferred<void>>();
-    await start(declareJobs({
+    await start(testRegistry({
       carts: {
         process: job({
           args: { cart: v.string(), step: v.int() },
@@ -529,7 +528,7 @@ describe("concurrency", () => {
     let peak = 0;
     let active = 0;
     const gate = deferred<void>();
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         fan: job({
           args: { n: v.int() },
@@ -558,7 +557,7 @@ describe("recurrence", () => {
   test("repeat mints the next occurrence at settle regardless of outcome", async () => {
     clock = 9_000_000;
     let runs = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         tick: job({
           args: {},
@@ -608,7 +607,7 @@ describe("recurrence", () => {
 describe("durability", () => {
   test("pending work survives restart and fires once the clock reaches it", async () => {
     clock = 10_000_000;
-    const jobs = () => declareJobs({
+    const jobs = () => testRegistry({
       work: {
         note: job({
           mode: "mutation" as const,
@@ -637,7 +636,7 @@ describe("durability", () => {
     clock = 11_000_000;
     const hang = deferred<never>();
     let secondRun = false;
-    const jobs = (hangFirst: boolean) => declareJobs({
+    const jobs = (hangFirst: boolean) => testRegistry({
       work: {
         crashy: job({
           args: {},
@@ -663,9 +662,8 @@ describe("durability", () => {
     reconcile(engine);
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: jobs(false),
       limits: limits({ leaseMs: 30_000 }),
-      jobs: jobs(false),
       now: () => clock,
     });
     await runtime.start();
@@ -692,7 +690,7 @@ describe("durability", () => {
     clock = 14_000_000;
     const hang = deferred<never>();
     let recovered = 0;
-    const jobs = () => declareJobs({
+    const jobs = () => testRegistry({
       work: {
         stuck: job({
           args: {},
@@ -718,9 +716,8 @@ describe("durability", () => {
     reconcile(engine);
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: jobs(),
       limits: limits({ leaseMs: 30_000 }),
-      jobs: jobs(),
       now: () => clock,
     });
     await runtime.start();
@@ -734,7 +731,7 @@ describe("durability", () => {
 
   test("dedupe identity survives more than 64 retained same-identity Jobs", async () => {
     clock = 15_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         tick: job({
           mode: "mutation" as const,
@@ -760,7 +757,7 @@ describe("durability", () => {
   test("a gate-blocked overdue row parks the runner instead of spinning", async () => {
     clock = 16_000_000;
     const first = deferred<string>();
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         serial: job({
           args: { n: v.int() },
@@ -789,7 +786,7 @@ describe("durability", () => {
     clock = 17_000_000;
     const gate = deferred<string>();
     let otherRan = false;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         keyed: job({
           args: { n: v.int() },
@@ -823,7 +820,7 @@ describe("durability", () => {
   test("drain delivers a typed outcome to stranded waiters instead of holding them", async () => {
     clock = 18_000_000;
     const never = deferred<never>();
-    await start(declareJobs({
+    await start(testRegistry({
       work: { forever: job({ args: {}, handler: async () => await never.promise }) },
     }));
     const handle = await runtime.jobs.enqueue("work.forever", {});
@@ -844,7 +841,7 @@ describe("durability", () => {
 
   test("a terminal Job and its runs are reaped after the retention window", async () => {
     clock = 12_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         brief: job({
           mode: "mutation" as const,
@@ -870,7 +867,7 @@ describe("durability", () => {
 
   test("retention outlives a longer dedupe window rather than cutting it short", async () => {
     clock = 19_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         cached: job({
           mode: "mutation" as const,
@@ -897,7 +894,7 @@ describe("durability", () => {
 
   test("a failed run of a live Job expires on its own, bounding a long retry chain", async () => {
     clock = 20_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         grinding: job({
           args: {},
@@ -929,7 +926,7 @@ describe("durability", () => {
 
   test("a terminal Job never loses the run its outcome is read from", async () => {
     clock = 25_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         brief: job({
           mode: "mutation" as const,
@@ -998,7 +995,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       },
     });
     await start(
-      declareJobs({
+      testRegistry({
         work: { steady: job({ args: {}, handler: async () => null }) },
       }),
       limits(),
@@ -1009,7 +1006,6 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       id: 1,
       address: "api.admin.enqueue",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });
@@ -1020,7 +1016,6 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       id: requestId,
       address: "api.admin.surgery",
       args: { id, field },
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });
@@ -1063,7 +1058,7 @@ describe("administration transitions", () => {
   test("run again re-submits through dedupe; force adds a run under one identity", async () => {
     clock = 21_000_000;
     let runs = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         report: job({
           args: { day: v.string() },
@@ -1105,7 +1100,7 @@ describe("administration transitions", () => {
 
   test("canceling one occurrence does not disable the definition's repeat policy", async () => {
     clock = 24_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         tick: job({
           args: {},
@@ -1130,7 +1125,7 @@ describe("administration transitions", () => {
 
   test("retention wakes an idle runner, and a full page brings it straight back", async () => {
     clock = 26_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         brief: job({
           mode: "mutation" as const,
@@ -1168,7 +1163,7 @@ describe("administration transitions", () => {
 
   test("cancel before the claim creates no run at all", async () => {
     clock = 22_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: { later: job({ args: {}, handler: async () => "never" }) },
     }));
     const handle = await runtime.jobs.enqueue("work.later", {}, { delayMs: 60_000 });
@@ -1180,7 +1175,7 @@ describe("administration transitions", () => {
 
   test("reopening a terminal Job restamps the run it leaves behind as history", async () => {
     clock = 27_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         cached: job({
           mode: "mutation" as const,
@@ -1208,7 +1203,7 @@ describe("administration transitions", () => {
 
   test("deleting a Job removes every run it owns", async () => {
     clock = 23_000_000;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         twice: job({
           args: {},
@@ -1245,7 +1240,7 @@ describe("administration transitions", () => {
     // savepoint took the claim down with it. The two envelopes had drifted.
     clock = 31_000_000;
     let ran = 0;
-    await start(declareJobs({
+    await start(testRegistry({
       work: {
         readArgs: job({
           mode: "mutation",
@@ -1309,7 +1304,7 @@ describe("the injected clock", () => {
       },
     });
     await start(
-      declareJobs({ work: { steady: job({ args: {}, handler: async () => null }) } }),
+      testRegistry({ work: { steady: job({ args: {}, handler: async () => null }) } }),
       limits(),
       { admin: { enqueue } },
     );
@@ -1319,7 +1314,6 @@ describe("the injected clock", () => {
       id: 1,
       address: "api.admin.enqueue",
       args: {},
-      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });

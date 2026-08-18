@@ -15,7 +15,7 @@ import {
   type Renames,
 } from "@ackerdb/server";
 import { withFrameworkTables } from "@ackerdb/server/database/framework-schema";
-import { importApp } from "../app/manifest.ts";
+import { importEntrypoint } from "../app/manifest.ts";
 import { databasePath, type AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
 import { planFingerprint, probeOptimisticRefusals } from "./plan.ts";
@@ -58,7 +58,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
     throw new Error(`apply the ${pending.length} pending migration(s) first — start \`acker dev\``);
   }
 
-  const schema = (await importApp(config)).schema;
+  const schema = (await importEntrypoint(config)).schema;
   const number = (chain.at(-1)?.number ?? 0) + 1;
   // Generation's classification is pure (no database); optimistic previews run
   // here and its refusals flow into the scaffold alongside the shape-classified

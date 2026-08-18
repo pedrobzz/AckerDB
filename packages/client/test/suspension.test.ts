@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -607,7 +608,7 @@ describe("suspension against a real ackerdb server", () => {
       },
     };
     const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
-    const registry = server.loadFunctionModules(modules);
+    const registry = server.registerDefinitions(testDefinitions(modules));
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     await runtime.start();
     server.activate(runtime);

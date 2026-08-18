@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,7 @@ import { mutation, procedure, query, sseProcedure } from "../../src/app/function
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { openApiBytes, openApiDocument } from "../../src/transport/openapi.ts";
@@ -463,7 +465,7 @@ beforeEach(async () => {
   server = new AckerDBServer({ limits, port: 0 });
   runtime = new Runtime({
     engine,
-    registry: server.loadFunctionModules(functions),
+    registry: server.registerDefinitions(testDefinitions(functions)),
     verifier,
     limits,
   });
@@ -648,7 +650,7 @@ describe("health and protected status", () => {
       reconcile(earlyEngine);
       earlyRuntime = new Runtime({
         engine: earlyEngine,
-        registry: early.loadFunctionModules(functions),
+        registry: early.registerDefinitions(testDefinitions(functions)),
         verifier,
         limits,
       });
@@ -1139,7 +1141,7 @@ describe("exposed HTTP procedures", () => {
     const fairServer = new AckerDBServer({ limits: fairLimits, port: 0 });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: fairServer.loadFunctionModules(functions),
+      registry: fairServer.registerDefinitions(testDefinitions(functions)),
       verifier: fairVerifier,
       limits: fairLimits,
     });
@@ -1798,7 +1800,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     });
     let registry: Registry;
     try {
-      registry = documentedServer.loadFunctionModules(modules);
+      registry = documentedServer.registerDefinitions(testDefinitions(modules));
     } catch (error) {
       engine.close("clean");
       rmSync(dir, { recursive: true, force: true });
@@ -1836,7 +1838,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     // The endpoint and `acker openapi` publish one encoding of one document.
     const served = new Uint8Array(await response.arrayBuffer());
     expect(served).toEqual(
-      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions), info))),
+      Uint8Array.from(openApiBytes(openApiDocument(testRegistry(functions), info))),
     );
 
     const document = JSON.parse(new TextDecoder().decode(served)) as Ctx;
@@ -2136,7 +2138,7 @@ describe("WebSocket Session transport", () => {
     const fairServer = new AckerDBServer({ limits: fairLimits, port: 0 });
     const fairRuntime = new Runtime({
       engine: fairEngine,
-      registry: fairServer.loadFunctionModules(functions),
+      registry: fairServer.registerDefinitions(testDefinitions(functions)),
       verifier: new TestVerifier(),
       limits: fairLimits,
     });
@@ -2258,7 +2260,7 @@ describe("WebSocket Session transport", () => {
     const overlapServer = new AckerDBServer({ limits: overlapLimits, port: 0 });
     const overlapRuntime = new Runtime({
       engine: overlapEngine,
-      registry: overlapServer.loadFunctionModules(functions),
+      registry: overlapServer.registerDefinitions(testDefinitions(functions)),
       limits: overlapLimits,
     });
     await overlapRuntime.start();
@@ -2368,7 +2370,7 @@ describe("lifecycle drain", () => {
     const slowServer = new AckerDBServer({ limits: slowLimits, port: 0 });
     const slowRuntime = new Runtime({
       engine: slowEngine,
-      registry: slowServer.loadFunctionModules(functions),
+      registry: slowServer.registerDefinitions(testDefinitions(functions)),
       limits: slowLimits,
     });
     await slowRuntime.start();

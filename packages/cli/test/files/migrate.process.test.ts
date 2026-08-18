@@ -11,7 +11,7 @@ import {
   resolveFileStoreBinding,
 } from "@ackerdb/server/files/binding";
 import { loadConfig } from "../../src/app/config.ts";
-import { importApp } from "../../src/app/manifest.ts";
+import { importEntrypoint } from "../../src/app/manifest.ts";
 import { createFileStore } from "../../src/files/store.ts";
 import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
 import { runCli } from "../support/process.ts";
@@ -45,7 +45,7 @@ async function seedFile(
       { contentLength: bytes.byteLength },
     );
   }
-  const app = await importApp(config);
+  const app = await importEntrypoint(config);
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
   try {
     reconcile(engine);
@@ -140,7 +140,7 @@ describe("acker files migrate", () => {
     mkdirSync(staging, { recursive: true });
     writeFileSync(sentinel, "in progress");
 
-    const app = await importApp(config);
+    const app = await importEntrypoint(config);
     const owner = new Engine(app.schema, join(config.dbDir, "data.db"));
     try {
       resolveFileStoreBinding(owner, await (await createFileStore(config.files)).identity());
@@ -165,7 +165,7 @@ describe("acker files migrate", () => {
       const resolvedTarget = loadConfig(directory);
       writeFileSync(configPath, JSON.stringify({ files: sourceDocument }));
       mkdirSync(sourceConfig.dbDir, { recursive: true });
-      const app = await importApp(sourceConfig);
+      const app = await importEntrypoint(sourceConfig);
       const engine = new Engine(app.schema, join(sourceConfig.dbDir, "data.db"));
       try {
         reconcile(engine);
@@ -214,7 +214,7 @@ describe("acker files migrate", () => {
     }));
     const source = loadConfig(directory);
     mkdirSync(source.dbDir, { recursive: true });
-    const app = await importApp(source);
+    const app = await importEntrypoint(source);
     const engine = new Engine(app.schema, join(source.dbDir, "data.db"));
     try {
       reconcile(engine);

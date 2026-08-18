@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
+  APPLICATION_ADDRESS_ROOT,
   decode,
   httpPathForAddress,
   parseSseAckRequest,
@@ -34,11 +35,11 @@ import {
   EXPOSED_HTTP_METHODS,
   IDEMPOTENCY_KEY_HEADER,
   SSE_STREAM_HEADERS,
-  validateApplicationHttpPath,
+  assertApplicationHttpPath,
 } from "./http-surface.ts";
 import {
-  compileExposedHttpCodec,
-  type ExposedHttpCodec,
+  decodeHttpArgs,
+  prepareHttpContract,
 } from "./http-codec.ts";
 import {
   CORS,
@@ -50,7 +51,7 @@ import {
 } from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import { HttpRegistry } from "./routing/registry.ts";
-import type { HttpMethod, HttpParams } from "./routing/path.ts";
+import { validateRoutePath, type HttpMethod, type HttpParams } from "./routing/path.ts";
 import {
   frameworkHttp,
   type AnyHttpHandler,
@@ -58,12 +59,10 @@ import {
   type HttpHandlers,
   type HttpRouteCtx,
   type HttpRouteResult,
-  type RuntimeHttp,
+  type Http,
 } from "./routing/route.ts";
-import {
-  Registry,
-  type LoadedModules,
-} from "../app/registry.ts";
+import { Registry } from "../app/registry.ts";
+import type { CollectedDefinition } from "../definitions.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import type { Runtime } from "../runtime/runtime.ts";
@@ -515,20 +514,29 @@ async function parseHttpBody<T>(
  * standard-JSON codec so a caller obeying the published document is understood.
  * Absent or empty args mean `{}`.
  */
-function decodeArgs(text: string | null, codec: ExposedHttpCodec): unknown {
-  if (text === null || text === "") return codec.decodeArgs({});
-  return codec.decodeArgs(parsedOrMalformed(text, JSON.parse, "args are not valid JSON"));
+function decodeArgs(
+  text: string | null,
+  address: string,
+  fn: AnyRegistered,
+): unknown {
+  if (text === null || text === "") return decodeHttpArgs(address, fn, {});
+  return decodeHttpArgs(
+    address,
+    fn,
+    parsedOrMalformed(text, JSON.parse, "args are not valid JSON"),
+  );
 }
 
 async function parseArgsHttpBody(
   request: Request,
-  codec: ExposedHttpCodec,
+  address: string,
+  fn: AnyRegistered,
   maxBytes: number,
   maxAgeMs: number,
 ): Promise<ParsedHttpBody<unknown>> {
-  if (request.body === null) return { value: decodeArgs(null, codec), bytes: 0 };
+  if (request.body === null) return { value: decodeArgs(null, address, fn), bytes: 0 };
   const body = await readBoundedBody(request, maxBytes, maxAgeMs);
-  return { value: decodeArgs(body.text, codec), bytes: body.bytes };
+  return { value: decodeArgs(body.text, address, fn), bytes: body.bytes };
 }
 
 /**
@@ -538,14 +546,15 @@ async function parseArgsHttpBody(
  */
 function parseArgsSearchParameter(
   url: URL,
-  codec: ExposedHttpCodec,
+  address: string,
+  fn: AnyRegistered,
   maxBytes: number,
 ): ParsedHttpBody<unknown> {
   const raw = url.searchParams.get("args");
-  if (raw === null) return { value: decodeArgs(null, codec), bytes: 0 };
+  if (raw === null) return { value: decodeArgs(null, address, fn), bytes: 0 };
   const bytes = utf8ByteLength(raw);
   if (bytes > maxBytes) throw requestTooLarge();
-  return { value: decodeArgs(raw, codec), bytes };
+  return { value: decodeArgs(raw, address, fn), bytes };
 }
 
 function configuredStatusScope(value: string | undefined): string {
@@ -591,7 +600,7 @@ export class AckerDBServer {
   private readonly openapiInfo: OpenApiInfo | undefined;
   /** The listener's one route table; `fetch` asks it and nothing else. */
   private readonly routes: HttpRegistry;
-  /** The OpenAPI document assembled at activation, or null while it is not served. */
+  /** The OpenAPI document assembled during definition registration, or null when disabled. */
   private openapi: Uint8Array<ArrayBuffer> | null = null;
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
   private listener: Server<WsData> | null = null;
@@ -740,27 +749,51 @@ export class AckerDBServer {
     this.startup = phase;
   }
 
-  /**
-   * Load the application's function modules into their two actual owners:
-   * addressed functions and channels enter the application Registry, while
-   * every HTTP route enters the listener's already-live HTTP registry.
-   */
-  loadFunctionModules(modules: LoadedModules): Registry {
+  /** Register every collected definition with its one persistent owner. */
+  registerDefinitions(collected: readonly CollectedDefinition[]): Registry {
     if (this.lifecycle !== "starting" || this.loadedRegistry !== null) {
-      throw new Error("server can only load function modules once while starting");
+      throw new Error("server can only register definitions once while starting");
     }
     try {
-      const registry = new Registry(modules, (http) => this.routes.add(http));
-      for (const [address, fn] of registry.functions) {
-        if (httpExposure(fn.http, `function "${address}" http`) === null) continue;
-        const where = `HTTP-exposed function "${address}"`;
-        const path = validateApplicationHttpPath(httpPathForAddress(address), where);
-        const codec = compileExposedHttpCodec(address, fn);
-        this.routes.add(frameworkHttp(path, {
-          ...everyMethod(EXPOSED_HTTP_METHODS[fn.kind], (_ctx, request) =>
-            this.call(request, new URL(request.url), address, fn.kind, codec, this.requestSource(request))),
-          OPTIONS: preflight,
-        }));
+      const registry = new Registry();
+      for (const item of collected) {
+        registry.add(item);
+        const definition = item.definition;
+        switch (definition.kind) {
+          case "http":
+            assertApplicationHttpPath(definition.path, `http route "${item.name}"`);
+            this.routes.add(definition);
+            break;
+          case "query":
+          case "mutation":
+          case "procedure":
+          case "sse": {
+            const address = `${APPLICATION_ADDRESS_ROOT}.${item.name}`;
+            if (httpExposure(definition.http, `function "${address}" http`) === null) break;
+            const where = `HTTP-exposed function "${address}"`;
+            const path = validateRoutePath(httpPathForAddress(address), where);
+            assertApplicationHttpPath(path, where);
+            prepareHttpContract(address, definition);
+            this.routes.add(frameworkHttp(path, {
+              ...everyMethod(EXPOSED_HTTP_METHODS[definition.kind], (_ctx, request) =>
+                this.call(
+                  request,
+                  new URL(request.url),
+                  address,
+                  definition,
+                  this.requestSource(request),
+                )),
+              OPTIONS: preflight,
+            }));
+            break;
+          }
+          case "channel":
+          case "job":
+            break;
+          default:
+            definition satisfies never;
+            break;
+        }
       }
       if (this.openapiInfo !== undefined) {
         this.openapi = openApiBytes(openApiDocument(registry, this.openapiInfo));
@@ -831,7 +864,7 @@ export class AckerDBServer {
    * request, so probes answer throughout Boot; the rest answer the lifecycle
    * themselves, because when a route is reachable is its own policy.
    */
-  private frameworkRoutes(): readonly RuntimeHttp[] {
+  private frameworkRoutes(): readonly Http[] {
     const grants = ACKERDB_HTTP_ROUTES.fileDownload;
     // GET and HEAD are the same route behaviour, so they are the same handler
     // value under two keys rather than two closures that must stay equal.
@@ -965,8 +998,7 @@ export class AckerDBServer {
     request: Request,
     url: URL,
     address: string,
-    kind: AnyRegistered["kind"],
-    codec: ExposedHttpCodec,
+    fn: AnyRegistered,
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
@@ -987,10 +1019,11 @@ export class AckerDBServer {
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
-        ? parseArgsSearchParameter(url, codec, runtime.limits.maxRequestBytes)
+        ? parseArgsSearchParameter(url, address, fn, runtime.limits.maxRequestBytes)
         : await parseArgsHttpBody(
             request,
-            codec,
+            address,
+            fn,
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
@@ -1002,12 +1035,11 @@ export class AckerDBServer {
         id,
         address,
         args,
-        codec,
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
       }, bytes, invalidations);
-      if (kind === "sse") {
+      if (fn.kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
         lease = undefined;
@@ -1026,7 +1058,7 @@ export class AckerDBServer {
         }
       }
       const httpRequest = { ...input, respond: valueResponder };
-      if (kind === "mutation") {
+      if (fn.kind === "mutation") {
         // Replay protection is opt-in per request: without the header the
         // mutation executes like any other REST POST.
         const idempotencyKey = request.headers.get(IDEMPOTENCY_KEY_HEADER);
@@ -1034,7 +1066,7 @@ export class AckerDBServer {
           ? httpRequest
           : { ...httpRequest, idempotencyKey });
       }
-      return await (kind === "query"
+      return await (fn.kind === "query"
         ? runtime.runQuery(httpRequest)
         : runtime.runProcedure(httpRequest));
     } catch (error) {

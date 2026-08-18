@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +26,6 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { until } from "ackerdb-test-support/async";
-import { testHttpCodec } from "../support/http.ts";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
 // through a dispatch path that commits INSIDE its handler (a procedure, via
@@ -78,7 +78,7 @@ async function fixture(): Promise<{ runtime: Runtime }> {
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry({ records: { listRecords, commitRecord } }),
+    registry: testRegistry({ records: { listRecords, commitRecord } }),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
@@ -149,7 +149,6 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
     id: 1,
     address: "api.records.commitRecord",
     args: { value: "burger" },
-    codec: testHttpCodec,
     principal: bob,
     respond: ({ body, status }) => new Response(body, { status }),
   });

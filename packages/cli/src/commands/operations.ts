@@ -21,7 +21,7 @@ import {
   rebindRestoredFileStore,
   resolveFileStoreBinding,
 } from "@ackerdb/server/files/binding";
-import { importApp } from "../app/manifest.ts";
+import { importEntrypoint } from "../app/manifest.ts";
 import { createFileStore } from "../files/store.ts";
 import { databasePath, type AppConfig } from "../app/config.ts";
 import {
@@ -277,7 +277,7 @@ function removeBackupCandidates(artifact: string, filesPublished: boolean): read
 export async function inspectDatabase(config: AppConfig): Promise<StatusReport> {
   const path = databasePath(config);
   requireDatabase(path);
-  const schema = (await importApp(config)).schema;
+  const schema = (await importEntrypoint(config)).schema;
   const engine = new Engine(schema, path, {
     durability: config.durability,
     integrityCheck: "full",
@@ -326,7 +326,7 @@ export async function createVerifiedBackup(
   if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
   if (existsSync(filesPath)) throw new Error(`backup File destination already exists: ${filesPath}`);
 
-  const app = await importApp(config);
+  const app = await importEntrypoint(config);
   let manifest: VerifiedBackupManifest | null = null;
   let filesPublished = false;
   const engine = new Engine(app.schema, source, {
@@ -414,7 +414,12 @@ export async function verifyBackupArtifact(
   let failed = false;
   let failure: unknown;
   try {
-    await restoreVerifiedDatabase(artifact, restored, databaseManifest(manifest), () => importApp(config));
+    await restoreVerifiedDatabase(
+      artifact,
+      restored,
+      databaseManifest(manifest),
+      () => importEntrypoint(config),
+    );
     await verifyFilesBackup(artifact, manifest.files, restored);
   } catch (error) {
     failed = true;
@@ -463,7 +468,7 @@ export async function restoreVerifiedBackup(
       artifact,
       target,
       databaseManifest(manifest),
-      () => importApp(config),
+      () => importEntrypoint(config),
       {
         ...filePublication,
         prepareStagedDatabase: (engine) => {
