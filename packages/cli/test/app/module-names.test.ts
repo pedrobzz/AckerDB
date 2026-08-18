@@ -69,14 +69,6 @@ describe("definition module names", () => {
     expect(() => names(dir)).toThrow("path segments become names and must be identifiers");
   });
 
-  test("refuses the entrypoint when a definition root includes it", () => {
-    const dir = fixture({
-      ".ackerdb.config.json": JSON.stringify({ definitions: ["."] }),
-      "app.ts": "export default {};",
-    });
-    expect(() => names(dir)).toThrow(/application entrypoint .* is also discovered/);
-  });
-
   test("refuses one physical file discovered through overlapping roots", () => {
     const dir = fixture({
       ".ackerdb.config.json": JSON.stringify({ definitions: ["./app", "./app/orders.ts"] }),

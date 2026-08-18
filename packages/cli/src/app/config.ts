@@ -357,6 +357,10 @@ export function loadConfig(
     throw new Error("oidc and credentialVerifier are mutually exclusive authentication sources");
   }
   const abs = (p: string) => (isAbsolute(p) ? p : resolve(dir, p));
+  const definitions = definitionEntries(raw.definitions).map(abs);
+  if (definitions.includes(dir)) {
+    throw new Error('definitions must not include the application root "."');
+  }
   const dbDir = abs(raw.db ?? "./.ackerdb");
   const hostname = listenerHostname(raw.hostname);
   const port = listenerPort(raw.port);
@@ -370,7 +374,7 @@ export function loadConfig(
   return {
     appDir: dir,
     entrypoint: abs(raw.entrypoint ?? "./app.ts"),
-    definitions: definitionEntries(raw.definitions).map(abs),
+    definitions,
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir,

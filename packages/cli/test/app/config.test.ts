@@ -37,6 +37,18 @@ describe("production profile configuration", () => {
     }
   });
 
+  test("rejects the application root as a definition root", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ definitions: ["."] }));
+      expect(() => loadConfig(dir, {})).toThrow(
+        'definitions must not include the application root "."',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("rejects unknown configuration fields", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {

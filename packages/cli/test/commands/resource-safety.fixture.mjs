@@ -160,6 +160,7 @@ reconcile(engine);
 const server = new AckerDBServer({ limits, port });
 const registry = server.registerDefinitions(collectDefinitions([
   { name: "items", exports: functions.items, origin: import.meta.url },
+  { name: "pressure", exports: functions.pressure, origin: import.meta.url },
 ]));
 const runtime = new Runtime({
   engine,
