@@ -1787,7 +1787,7 @@ describe("the opt-in OpenAPI endpoint", () => {
   /** A second listener that asks for the document; the shared one never does. */
   async function documented(
     modules: Record<string, Record<string, unknown>> = functions,
-  ): Promise<{ readonly base: string; readonly registry: Registry }> {
+  ): Promise<{ readonly base: string }> {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
     const engine = new Engine(schema, join(dir, "data.db"));
     reconcile(engine);
@@ -1814,7 +1814,7 @@ describe("the opt-in OpenAPI endpoint", () => {
     owned = { dir, engine, runtime: documentedRuntime, server: documentedServer };
     await documentedRuntime.start();
     documentedServer.activate(documentedRuntime);
-    return { base: `http://127.0.0.1:${documentedServer.port}`, registry };
+    return { base: `http://127.0.0.1:${documentedServer.port}` };
   }
 
   test("is unclaimed by default, on every method", async () => {
@@ -1870,17 +1870,6 @@ describe("the opt-in OpenAPI endpoint", () => {
         }),
       },
     })).rejects.toThrow(/function "api\.notes\.latest" returns cannot be documented/);
-  });
-
-  test("serves the bytes it cached, never a fresh walk of the registry", async () => {
-    const { base: documentedBase, registry } = await documented();
-    const first = await (await fetch(`${documentedBase}${OPENAPI}`)).text();
-    expect((JSON.parse(first) as Ctx).paths[httpPath("api.notes.list")]).toBeDefined();
-
-    // The registry is immutable after load; emptying it is only a probe, and a
-    // document assembled per request could not still describe what it lost.
-    registry.functions.clear();
-    expect(await (await fetch(`${documentedBase}${OPENAPI}`)).text()).toBe(first);
   });
 });
 

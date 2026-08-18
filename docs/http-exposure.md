@@ -10,9 +10,8 @@ This document covers the *contract* surface: functions served through their
 `v` validators and published in OpenAPI. Endpoints whose shapes an external
 party dictates — webhooks verifying an HMAC over raw bytes, OAuth callbacks —
 are the contract-less side of the same surface, owned by
-[HTTP routes](http-routes.md). Both sides are the same `Http` value in the same
-registry — see [ADR-0033](adr/0033-one-http-route-model-and-one-registry.md);
-what differs is that this side derives its path from an address and is served
+[HTTP routes](http-routes.md). Both sides are `Http` values in the same
+registry; what differs is that this side derives its path from an address and is served
 through its contract.
 
 ## Motivation

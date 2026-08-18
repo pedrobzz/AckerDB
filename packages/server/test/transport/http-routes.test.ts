@@ -520,42 +520,19 @@ describe("lifecycle decides reachability, not the route table", () => {
     }
   });
 
-  test("two routes claiming one path and method are refused", async () => {
-    // Path ownership has one owner, and only it also knows the framework's
-    // routes — a route the loader admits can still be refused here. A
-    // parameter's name is the author's vocabulary rather than the URL's, and
-    // unique addresses do not imply unique paths. (An application claiming a
-    // path AckerDB owns is namespace policy and never reaches this seam; the
-    // loader refuses it, proved in app/registry.test.ts.)
-    const refuse = async (
-      modules: Record<string, Record<string, unknown>>,
-    ): Promise<string> => {
-      const home = mkdtempSync(join(tmpdir(), "ackerdb-http-claim-"));
-      const store = new Engine(schema, join(home, "data.db"));
-      reconcile(store);
-      const listener = new AckerDBServer({ limits, port: 0 });
-      let other: Runtime | undefined;
-      try {
-        other = new Runtime({
-          engine: store,
-          registry: listener.loadFunctionModules(modules),
-          limits,
-        });
-        await other.start();
-        listener.activate(other);
-        return "loading was not refused";
-      } catch (error) {
-        expect(listener.state).toBe("stopped");
-        return (error as Error).message;
-      } finally {
-        await listener.drain().catch(() => {});
-        await other?.drain().catch(() => {});
-        store.close("clean");
-        rmSync(home, { recursive: true, force: true });
-      }
-    };
+  function refusedLoad(modules: Record<string, Record<string, unknown>>): string {
+    const listener = new AckerDBServer({ limits, port: 0 });
+    try {
+      listener.loadFunctionModules(modules);
+      return "loading was not refused";
+    } catch (error) {
+      expect(listener.state).toBe("stopped");
+      return (error as Error).message;
+    }
+  }
 
-    expect(await refuse({
+  test("refuses invalid or conflicting routes while loading", () => {
+    expect(refusedLoad({
       hooks: {
         byId: http("/people/:id", { GET: () => new Response(null) }),
         bySlug: http("/people/:slug", { GET: () => new Response(null) }),
@@ -565,13 +542,11 @@ describe("lifecycle decides reachability, not the route table", () => {
     // The projection joins on `/` where the address joined on `.`, so a
     // string-named export can reach a path another address already derives.
     const exposedNote = () => query({ access: "public", http: true, args: {}, handler: () => [] });
-    expect(await refuse({
+    expect(refusedLoad({
       notes: { ["echo/deep"]: exposedNote() },
       "notes.echo": { deep: exposedNote() },
     })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
-  });
 
-  test("compiles an exposed function's HTTP boundary while registering its route", () => {
     const unrepresentable = query({
       access: "public",
       http: true,
@@ -579,12 +554,34 @@ describe("lifecycle decides reachability, not the route table", () => {
       returns: v.primaryKey(),
       handler: () => 1n,
     });
-    const listener = new AckerDBServer({ limits, port: 0 });
-
-    expect(() => listener.loadFunctionModules({ notes: { unrepresentable } })).toThrow(
+    expect(refusedLoad({ notes: { unrepresentable } })).toMatch(
       /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary/,
     );
-    expect(listener.state).toBe("stopped");
+
+    const reserved = { ...functions.hooks.stripe, path: "/_ws" } as never;
+    expect(refusedLoad({ hooks: { reserved } })).toContain(
+      'http route "hooks.reserved" claims AckerDB-owned path "/_ws"',
+    );
+
+    expect(refusedLoad({ notes: { ["echo(1)"]: exposedNote() } })).toContain(
+      "contains matcher syntax",
+    );
+
+    const malformed = { ...exposedNote(), http: { openapi: "yes" } } as never;
+    expect(refusedLoad({ notes: { malformed } })).toContain(
+      'function "api.notes.malformed" http must be true, false, or { openapi: boolean }',
+    );
+  });
+
+  test("the http factory rejects malformed paths and method maps", () => {
+    const handlers = { GET: () => new Response(null) };
+    for (const path of ["nope", "/a//b", "/a/*/b", "/:id/:id", "/a/:", "/a/**"]) {
+      expect(() => http(path as never, handlers)).toThrow();
+    }
+    expect(() => http("/a", {})).toThrow("http requires a handler");
+    expect(() => http("/a", { TRACE: () => new Response(null) } as never)).toThrow(
+      "http handlers must use",
+    );
   });
 
   test("the same path is reachable after activation and unavailable while draining", async () => {

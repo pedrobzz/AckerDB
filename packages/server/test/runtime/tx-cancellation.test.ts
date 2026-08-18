@@ -12,7 +12,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { exposedHttpCodec } from "../support/http.ts";
+import { testHttpCodec } from "../support/http.ts";
 
 // Cancellation ownership around `ctx.tx`: what a canceled request does to the
 // writer transaction it owns, to a COMMIT that already reached durability, and
@@ -146,7 +146,7 @@ async function call(address: string, signal: AbortSignal): Promise<unknown> {
     id: ++requestId,
     address,
     args: {},
-    codec: exposedHttpCodec(runtime, address),
+    codec: testHttpCodec,
     principal: ANONYMOUS_PRINCIPAL,
     signal,
     respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),

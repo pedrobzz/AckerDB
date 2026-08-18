@@ -25,7 +25,7 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { until } from "ackerdb-test-support/async";
-import { exposedHttpCodec } from "../support/http.ts";
+import { testHttpCodec } from "../support/http.ts";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
 // through a dispatch path that commits INSIDE its handler (a procedure, via
@@ -149,7 +149,7 @@ test("a subscription recomputes cleanly after another principal's procedure ctx.
     id: 1,
     address: "api.records.commitRecord",
     args: { value: "burger" },
-    codec: exposedHttpCodec(runtime, "api.records.commitRecord"),
+    codec: testHttpCodec,
     principal: bob,
     respond: ({ body, status }) => new Response(body, { status }),
   });

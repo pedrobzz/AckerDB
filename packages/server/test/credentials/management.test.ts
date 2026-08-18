@@ -41,7 +41,7 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { request } from "../support/credential-fixture.ts";
-import { exposedHttpCodec } from "../support/http.ts";
+import { testHttpCodec } from "../support/http.ts";
 
 const schema = defineSchema({
   audit: defineTable({ id: v.primaryKey(), line: v.string() }),
@@ -441,7 +441,7 @@ describe("global credential administration", () => {
       id: 900,
       address: "api.admin.revokeManyThenFail",
       args: { ids: [first.id, second.id] },
-      codec: exposedHttpCodec(runtime, "api.admin.revokeManyThenFail"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: { body: string; status: number }) =>
         new Response(body, { status }),

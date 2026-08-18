@@ -15,12 +15,18 @@ import {
   OUTCOME_CODES,
   ACKERDB_VERSION,
   RESOURCE_CLASSES,
+  httpPathForAddress,
   type SseChunkMessage,
   type SseDoneMessage,
   type SseErrorMessage,
   type SseMessage,
 } from "@ackerdb/core";
-import type { AnyRegisteredSse, ErrorDeclaration } from "../app/functions.ts";
+import {
+  httpExposure,
+  type AnyRegistered,
+  type AnyRegisteredSse,
+  type ErrorDeclaration,
+} from "../app/functions.ts";
 import type { Registry } from "../app/registry.ts";
 import {
   DECIMAL_PATTERN,
@@ -35,8 +41,7 @@ import {
   RECEIPT_HEADERS,
   SSE_FRAME_TYPES,
   SSE_STREAM_HEADERS,
-  exposedFunction,
-  type ExposedFunction,
+  validateApplicationHttpPath,
 } from "./http-surface.ts";
 
 const OPENAPI_VERSION = "3.1.1";
@@ -46,6 +51,12 @@ const EVENT_STREAM_MEDIA_TYPE = "text/event-stream";
 const utf8 = new TextEncoder();
 
 type JsonObject = Record<string, unknown>;
+
+interface DocumentedFunction {
+  readonly address: string;
+  readonly path: string;
+  readonly fn: AnyRegistered;
+}
 
 /**
  * The document's identity. AckerDB has no name for an application, so the
@@ -266,7 +277,7 @@ function applicationErrorSchema(
 
 /** Declared errors, one response per declared status; a shared status is a union. */
 function applicationErrorResponses(
-  exposed: ExposedFunction,
+  exposed: DocumentedFunction,
   receipt: JsonObject,
 ): readonly (readonly [string, JsonObject])[] {
   const byStatus = new Map<number, { codes: string[]; schemas: JsonObject[] }>();
@@ -295,8 +306,8 @@ function applicationErrorResponses(
     ] as const);
 }
 
-function successResponse(exposed: ExposedFunction, receipt: JsonObject): JsonObject {
-  if (exposed.kind === "sse") {
+function successResponse(exposed: DocumentedFunction, receipt: JsonObject): JsonObject {
+  if (exposed.fn.kind === "sse") {
     const { yields } = exposed.fn as AnyRegisteredSse;
     return {
       description: SSE_STREAM_DESCRIPTION,
@@ -333,10 +344,10 @@ function successResponse(exposed: ExposedFunction, receipt: JsonObject): JsonObj
   };
 }
 
-function responses(exposed: ExposedFunction): JsonObject {
+function responses(exposed: DocumentedFunction): JsonObject {
   // A committed mutation answers with its receipt even when the application
   // rejected the call, exactly as the served surface does.
-  const receipt = exposed.kind === "mutation" ? { headers: RECEIPT_RESPONSE_HEADERS } : {};
+  const receipt = exposed.fn.kind === "mutation" ? { headers: RECEIPT_RESPONSE_HEADERS } : {};
   const documented: JsonObject = { "200": successResponse(exposed, receipt) };
   for (const [status, response] of applicationErrorResponses(exposed, receipt)) {
     documented[status] = response;
@@ -346,7 +357,7 @@ function responses(exposed: ExposedFunction): JsonObject {
 }
 
 function operation(
-  exposed: ExposedFunction,
+  exposed: DocumentedFunction,
   method: string,
   id: string,
   args: JsonObject,
@@ -370,7 +381,7 @@ function operation(
           }],
         }
       : {
-          ...(exposed.kind === "mutation" ? { parameters: [IDEMPOTENCY_KEY_PARAMETER] } : {}),
+          ...(exposed.fn.kind === "mutation" ? { parameters: [IDEMPOTENCY_KEY_PARAMETER] } : {}),
           requestBody: {
             required: argsRequired,
             content: { [JSON_MEDIA_TYPE]: { schema: args } },
@@ -381,7 +392,7 @@ function operation(
 }
 
 function pathItem(
-  exposed: ExposedFunction,
+  exposed: DocumentedFunction,
   /** Every operationId already claimed, mapped to the address that claimed it. */
   claimed: Map<string, string>,
 ): Record<string, JsonObject> {
@@ -389,7 +400,7 @@ function pathItem(
     argsJsonSchema(exposed.fn.args)));
   const required = Array.isArray(args["required"]) && args["required"].length > 0;
   const item: Record<string, JsonObject> = {};
-  for (const method of EXPOSED_HTTP_METHODS[exposed.kind]) {
+  for (const method of EXPOSED_HTTP_METHODS[exposed.fn.kind]) {
     // Distinct paths can still name one operation — a query at "notes.list" and
     // a function at "notes.list.get" both own "notes.list.get" — and the walk
     // refuses to emit a document codegen would reject or silently dedupe.
@@ -413,12 +424,17 @@ export function openApiDocument(registry: Registry, info: OpenApiInfo): OpenApiD
   const claimed = new Map<string, string>();
   const exposedFunctions = [...registry.functions]
     .flatMap(([address, fn]) => {
-      const exposed = exposedFunction(address, fn);
-      return exposed === null ? [] : [exposed];
+      const exposure = httpExposure(fn.http, `function "${address}" http`);
+      if (exposure?.openapi !== true) return [];
+      const where = `HTTP-exposed function "${address}"`;
+      return [{
+        address,
+        path: validateApplicationHttpPath(httpPathForAddress(address), where),
+        fn,
+      }];
     })
     .sort((a, b) => a.path.localeCompare(b.path));
   for (const exposed of exposedFunctions) {
-    if (!exposed.openapi) continue;
     paths[exposed.path] = pathItem(exposed, claimed);
     tags.add(topLevelModule(exposed.address));
   }

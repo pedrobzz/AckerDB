@@ -4,10 +4,12 @@ import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
   decode,
+  httpPathForAddress,
   parseSseAckRequest,
   stableEncode,
   type SseAckRequest,
 } from "@ackerdb/core";
+import { httpExposure, type AnyRegistered } from "../app/functions.ts";
 import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
@@ -32,8 +34,7 @@ import {
   EXPOSED_HTTP_METHODS,
   IDEMPOTENCY_KEY_HEADER,
   SSE_STREAM_HEADERS,
-  exposedFunction,
-  type ExposedFunction,
+  validateApplicationHttpPath,
 } from "./http-surface.ts";
 import {
   compileExposedHttpCodec,
@@ -73,10 +74,6 @@ import { utf8ByteLength } from "../shared/bytes.ts";
 import { finiteMillis } from "../shared/clock.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
-
-interface ServedFunction extends ExposedFunction {
-  readonly codec: ExposedHttpCodec;
-}
 
 /** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
 export type AckerDBStartupPhase =
@@ -755,15 +752,13 @@ export class AckerDBServer {
     try {
       const registry = new Registry(modules, (http) => this.routes.add(http));
       for (const [address, fn] of registry.functions) {
-        const exposed = exposedFunction(address, fn);
-        if (exposed === null) continue;
-        const served = Object.freeze({
-          ...exposed,
-          codec: compileExposedHttpCodec(address, fn),
-        });
-        this.routes.add(frameworkHttp(served.path, {
-          ...everyMethod(EXPOSED_HTTP_METHODS[served.kind], (_ctx, request) =>
-            this.call(request, new URL(request.url), served, this.requestSource(request))),
+        if (httpExposure(fn.http, `function "${address}" http`) === null) continue;
+        const where = `HTTP-exposed function "${address}"`;
+        const path = validateApplicationHttpPath(httpPathForAddress(address), where);
+        const codec = compileExposedHttpCodec(address, fn);
+        this.routes.add(frameworkHttp(path, {
+          ...everyMethod(EXPOSED_HTTP_METHODS[fn.kind], (_ctx, request) =>
+            this.call(request, new URL(request.url), address, fn.kind, codec, this.requestSource(request))),
           OPTIONS: preflight,
         }));
       }
@@ -969,7 +964,9 @@ export class AckerDBServer {
   private async call(
     request: Request,
     url: URL,
-    exposed: ServedFunction,
+    address: string,
+    kind: AnyRegistered["kind"],
+    codec: ExposedHttpCodec,
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
@@ -986,15 +983,14 @@ export class AckerDBServer {
       // listener's own sequence rather than a client input. The path already
       // names the function, so even a malformed body reports what it targeted.
       const id = ++this.httpRequests;
-      const address = exposed.address;
       lease = await this.authenticate(request);
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
-        ? parseArgsSearchParameter(url, exposed.codec, runtime.limits.maxRequestBytes)
+        ? parseArgsSearchParameter(url, codec, runtime.limits.maxRequestBytes)
         : await parseArgsHttpBody(
             request,
-            exposed.codec,
+            codec,
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,
           );
@@ -1006,12 +1002,12 @@ export class AckerDBServer {
         id,
         address,
         args,
-        codec: exposed.codec,
+        codec,
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
       }, bytes, invalidations);
-      if (exposed.kind === "sse") {
+      if (kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
         lease = undefined;
@@ -1030,7 +1026,7 @@ export class AckerDBServer {
         }
       }
       const httpRequest = { ...input, respond: valueResponder };
-      if (exposed.kind === "mutation") {
+      if (kind === "mutation") {
         // Replay protection is opt-in per request: without the header the
         // mutation executes like any other REST POST.
         const idempotencyKey = request.headers.get(IDEMPOTENCY_KEY_HEADER);
@@ -1038,7 +1034,7 @@ export class AckerDBServer {
           ? httpRequest
           : { ...httpRequest, idempotencyKey });
       }
-      return await (exposed.kind === "query"
+      return await (kind === "query"
         ? runtime.runQuery(httpRequest)
         : runtime.runProcedure(httpRequest));
     } catch (error) {

@@ -28,7 +28,7 @@ That split is the point:
   specific pattern, extracting and decoding captures, selecting a method,
   answering `405` with a complete `Allow`, and answering an unmatched path.
   Matching is `rou3`, a radix router; AckerDB owns the published grammar and
-  translates it once at insertion (see [ADR-0033](adr/0033-one-http-route-model-and-one-registry.md)).
+  translates it once at insertion.
 - **Handlers own AckerDB policy.** Reachability, admission, authentication,
   validation, codecs, idempotency, body limits, response shaping. A route being
   registered and a route being reachable are different questions.

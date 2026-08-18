@@ -21,7 +21,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { storedIdentityForAccount } from "../support/identities.ts";
-import { exposedHttpCodec } from "../support/http.ts";
+import { testHttpCodec } from "../support/http.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -195,7 +195,7 @@ async function invoke(
     id,
     address,
     args,
-    codec: exposedHttpCodec(runtime, address),
+    codec: testHttpCodec,
     principal,
     respond: ({ body, status }) => new Response(body, { status }),
   });

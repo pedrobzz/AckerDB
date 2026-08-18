@@ -43,7 +43,8 @@ import type {
   SessionRuntimeContext,
 } from "../../src/subscriptions/session/contract.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
-import { exposedHttpCodec } from "../support/http.ts";
+import { testHttpCodec } from "../support/http.ts";
+import { compileExposedHttpCodec } from "../../src/transport/http-codec.ts";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
 
@@ -915,7 +916,7 @@ describe("runtime commit and replay ownership", () => {
       id: 21,
       address: "api.messages.missing",
       args: { id: 7n },
-      codec: exposedHttpCodec(runtime, "api.messages.missing"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -936,7 +937,7 @@ describe("runtime commit and replay ownership", () => {
       id: 22,
       address: "api.messages.list",
       args: { channelId: 1n },
-      codec: exposedHttpCodec(runtime, "api.messages.list"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -948,7 +949,7 @@ describe("runtime commit and replay ownership", () => {
       id: 23,
       address: "api.ops.echo",
       args: { value: "x" },
-      codec: exposedHttpCodec(runtime, "api.ops.echo"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -964,7 +965,7 @@ describe("runtime commit and replay ownership", () => {
         id: 24,
         address: "api.messages.list",
         args: { channelId: 1n },
-        codec: exposedHttpCodec(runtime, "api.messages.list"),
+        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
         respond: ({ body, status }) => new Response(body, { status }),
       });
@@ -997,7 +998,7 @@ describe("runtime commit and replay ownership", () => {
       id: 11,
       address: "api.ops.reject",
       args: { reason: "not now" },
-      codec: exposedHttpCodec(runtime, "api.ops.reject"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -1584,7 +1585,7 @@ describe("system execution root", () => {
       id: 301,
       address: "api.ops.enterSystem",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.enterSystem"),
+      codec: testHttpCodec,
       principal: user("system-caller"),
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2053,7 +2054,7 @@ describe("procedures and bounded SSE", () => {
         id: index + 10,
         address: ref,
         args: {},
-        codec: exposedHttpCodec(runtime, ref),
+        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
         signal: controller.signal,
         respond: ({ body, status }) => new Response(body, { status }),
@@ -2078,7 +2079,7 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.pipeline",
       args: { channelId: 4n },
-      codec: exposedHttpCodec(runtime, "api.ops.pipeline"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2088,7 +2089,7 @@ describe("procedures and bounded SSE", () => {
       id: 2,
       address: "api.ops.nestedTx",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.nestedTx"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2101,7 +2102,7 @@ describe("procedures and bounded SSE", () => {
       id: 3,
       address: "api.ops.catchTxThrow",
       args: { channelId: 30n },
-      codec: exposedHttpCodec(runtime, "api.ops.catchTxThrow"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2137,7 +2138,7 @@ describe("procedures and bounded SSE", () => {
         id,
         address,
         args,
-        codec: exposedHttpCodec(runtime, address),
+        codec: testHttpCodec,
         principal,
         respond: ({ body, status }) => new Response(body, { status }),
       });
@@ -2178,7 +2179,7 @@ describe("procedures and bounded SSE", () => {
       id: 89,
       address: "api.ops.failEmoji",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.failEmoji"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     });
@@ -2193,7 +2194,7 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.stream",
       args: { count: 2 },
-      codec: exposedHttpCodec(runtime, "api.ops.stream"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     expect(response.streamId).toMatch(/^[A-Za-z0-9_-]{22}$/);
@@ -2257,7 +2258,7 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.streamed",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.streamed"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2270,7 +2271,10 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.invalidChunk",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.invalidChunk"),
+      codec: compileExposedHttpCodec(
+        "api.ops.invalidChunk",
+        runtime.registry.get("api.ops.invalidChunk")!,
+      ),
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2287,7 +2291,7 @@ describe("procedures and bounded SSE", () => {
       id: 1,
       address: "api.ops.failingStream",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.failingStream"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     const messages = await collectSse(response);
@@ -2328,7 +2332,7 @@ describe("direct ingress", () => {
       id: 85,
       address: oversized,
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.echo"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
       bytes: 0,
@@ -2338,7 +2342,7 @@ describe("direct ingress", () => {
       id: 86,
       address: oversized,
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.stream"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       bytes: 0,
     };
@@ -2367,7 +2371,7 @@ describe("direct ingress", () => {
       id: 88,
       address: "api.ops.echo",
       args: { value: "accepted" },
-      codec: exposedHttpCodec(runtime, "api.ops.echo"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
       bytes: 257,
@@ -2379,7 +2383,7 @@ describe("direct ingress", () => {
       id: 89,
       address: "api.ops.stream",
       args: { count: 0 },
-      codec: exposedHttpCodec(runtime, "api.ops.stream"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       bytes: 257,
     };
@@ -2393,7 +2397,7 @@ describe("direct ingress", () => {
       id: 90,
       address: "api.ops.echo",
       args: { value: "accepted canonically after the claim" },
-      codec: exposedHttpCodec(runtime, "api.ops.echo"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     }, 257, undefined);
@@ -2412,15 +2416,15 @@ describe("direct ingress", () => {
     const respond = ({ body, status }: RuntimeHttpResponse) => new Response(body, { status });
     const run = {
       query: async (input: Ctx) =>
-        (await runtime.runQuery({ ...input, codec: exposedHttpCodec(runtime, input.address), respond })).status,
+        (await runtime.runQuery({ ...input, codec: testHttpCodec, respond })).status,
       mutation: async (input: Ctx) =>
-        (await runtime.runMutation({ ...input, codec: exposedHttpCodec(runtime, input.address), respond })).status,
+        (await runtime.runMutation({ ...input, codec: testHttpCodec, respond })).status,
       procedure: async (input: Ctx) =>
-        (await runtime.runProcedure({ ...input, codec: exposedHttpCodec(runtime, input.address), respond })).status,
+        (await runtime.runProcedure({ ...input, codec: testHttpCodec, respond })).status,
       sse: async (input: Ctx) => {
         const response = await runtime.runSse({
           ...input,
-          codec: exposedHttpCodec(runtime, input.address),
+          codec: testHttpCodec,
         });
         expect((await collectSse(response)).at(-1)?.t).toBe("sse_done");
         return 200;
@@ -2495,7 +2499,7 @@ describe("jobs runner and lifecycle", () => {
       id: 96,
       address: "api.reminders.schedule",
       args: { message: "http", attempt: 1, at: Date.now() - 1 },
-      codec: exposedHttpCodec(runtime, "api.reminders.schedule"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });
@@ -2568,7 +2572,7 @@ describe("jobs runner and lifecycle", () => {
       id: 85,
       address: "api.ops.waitForAbort",
       args: {},
-      codec: exposedHttpCodec(runtime, "api.ops.waitForAbort"),
+      codec: testHttpCodec,
       principal: ANONYMOUS_PRINCIPAL,
     });
     await eventually(() => runtime.sseSnapshot(response.streamId)?.unackedFrames === 1);
@@ -2592,7 +2596,7 @@ describe("jobs runner and lifecycle", () => {
         id,
         address: "api.ops.holdSse",
         args: {},
-        codec: exposedHttpCodec(runtime, "api.ops.holdSse"),
+        codec: testHttpCodec,
         principal: ANONYMOUS_PRINCIPAL,
       });
       await started.promise;

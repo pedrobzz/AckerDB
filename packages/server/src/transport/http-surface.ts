@@ -17,15 +17,11 @@
  */
 import {
   APPLICATION_ADDRESS_ROOT,
-  httpPathForAddress,
   RESERVED_MARKER,
   type SseAckRequest,
   type SseMessage,
 } from "@ackerdb/core";
-import {
-  httpExposure,
-  type AnyRegistered,
-} from "../app/functions.ts";
+import type { AnyRegistered } from "../app/functions.ts";
 import type { HttpMethod } from "./routing/path.ts";
 import { validateRoutePath } from "./routing/path.ts";
 
@@ -88,59 +84,12 @@ export function validateApplicationHttpPath(path: string, where: string): string
   return validated;
 }
 
-/** Every registered kind the exposed surface serves, narrowed from an erased kind. */
-export type ExposedHttpKind = "query" | "mutation" | "procedure" | "sse";
-
-export function exposedHttpKind(kind: string): ExposedHttpKind | undefined {
-  switch (kind) {
-    case "query":
-    case "mutation":
-    case "procedure":
-    case "sse":
-      return kind;
-    default:
-      return undefined;
-  }
-}
-
-/** The HTTP surface derived from one addressable function, before a listener compiles its codec. */
-export interface ExposedFunction {
-  readonly address: string;
-  readonly path: string;
-  readonly openapi: boolean;
-  readonly kind: ExposedHttpKind;
-  readonly fn: AnyRegistered;
-}
-
-/** Derive one function's optional plain-HTTP surface without retaining a second registry. */
-export function exposedFunction(
-  address: string,
-  fn: AnyRegistered,
-): ExposedFunction | null {
-  const exposure = httpExposure(fn.http, `function "${address}" http`);
-  if (exposure === null) return null;
-  const kind = exposedHttpKind(fn.kind);
-  if (kind === undefined) {
-    throw new Error(
-      `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
-    );
-  }
-  const where = `HTTP-exposed function "${address}"`;
-  return Object.freeze({
-    address,
-    path: validateApplicationHttpPath(httpPathForAddress(address), where),
-    openapi: exposure.openapi,
-    kind,
-    fn,
-  });
-}
-
 /**
  * Methods each served kind answers, and the `Allow` header a wrong method
  * receives. GET exists for queries alone: it is the cacheable, curl-able read;
  * an SSE `EventSource` variant cannot carry `Authorization`, so it has none.
  */
-export const EXPOSED_HTTP_METHODS: Readonly<Record<ExposedHttpKind, readonly HttpMethod[]>> =
+export const EXPOSED_HTTP_METHODS: Readonly<Record<AnyRegistered["kind"], readonly HttpMethod[]>> =
   Object.freeze({
     query: ["GET", "POST"],
     mutation: ["POST"],
