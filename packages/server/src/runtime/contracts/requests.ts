@@ -2,11 +2,14 @@ import type { MutationReceipt } from "@ackerdb/core";
 import type { Principal } from "../../auth/credentials.ts";
 import type { HttpParams } from "../../transport/routing/path.ts";
 import type { AnyHttpHandler } from "../../transport/routing/route.ts";
+import type { ExposedHttpCodec } from "../../transport/http-codec.ts";
 
 export interface RuntimeExternalRequest {
   readonly id: number;
   readonly address: string;
   readonly args: unknown;
+  /** Compiled by the route that admitted this HTTP call; Runtime uses it before commit. */
+  readonly codec: ExposedHttpCodec;
   readonly principal: Principal;
   readonly signal?: AbortSignal;
   readonly fairnessKey?: string;

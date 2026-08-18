@@ -32,8 +32,13 @@ import {
   EXPOSED_HTTP_METHODS,
   IDEMPOTENCY_KEY_HEADER,
   SSE_STREAM_HEADERS,
+  exposedFunction,
+  type ExposedFunction,
 } from "./http-surface.ts";
-import type { ExposedHttpCodec } from "./http-codec.ts";
+import {
+  compileExposedHttpCodec,
+  type ExposedHttpCodec,
+} from "./http-codec.ts";
 import {
   CORS,
   json,
@@ -56,7 +61,6 @@ import {
 } from "./routing/route.ts";
 import {
   Registry,
-  type ExposedFunction,
   type LoadedModules,
 } from "../app/registry.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
@@ -69,6 +73,11 @@ import { utf8ByteLength } from "../shared/bytes.ts";
 import { finiteMillis } from "../shared/clock.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
+
+interface ServedFunction extends ExposedFunction {
+  readonly codec: ExposedHttpCodec;
+}
+
 /** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
 export type AckerDBStartupPhase =
   | "listening"
@@ -745,10 +754,16 @@ export class AckerDBServer {
     }
     try {
       const registry = new Registry(modules, (http) => this.routes.add(http));
-      for (const exposed of registry.exposed.values()) {
-        this.routes.add(frameworkHttp(exposed.path, {
-          ...everyMethod(EXPOSED_HTTP_METHODS[exposed.kind], (_ctx, request) =>
-            this.call(request, new URL(request.url), exposed, this.requestSource(request))),
+      for (const [address, fn] of registry.functions) {
+        const exposed = exposedFunction(address, fn);
+        if (exposed === null) continue;
+        const served = Object.freeze({
+          ...exposed,
+          codec: compileExposedHttpCodec(address, fn),
+        });
+        this.routes.add(frameworkHttp(served.path, {
+          ...everyMethod(EXPOSED_HTTP_METHODS[served.kind], (_ctx, request) =>
+            this.call(request, new URL(request.url), served, this.requestSource(request))),
           OPTIONS: preflight,
         }));
       }
@@ -954,7 +969,7 @@ export class AckerDBServer {
   private async call(
     request: Request,
     url: URL,
-    exposed: ExposedFunction,
+    exposed: ServedFunction,
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
@@ -991,6 +1006,7 @@ export class AckerDBServer {
         id,
         address,
         args,
+        codec: exposed.codec,
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,

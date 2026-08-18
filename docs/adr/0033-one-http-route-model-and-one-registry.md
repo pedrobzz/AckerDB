@@ -120,11 +120,13 @@ answers both "which route" and "which methods does it serve".
 - `httpHandler` is deleted outright, with no alias, shim, or second
   declaration shape. `Registry.httpHandler(address)`, the path-keyed
   `registry.exposed` map, `registry.httpRoutes` as a path map, and the
-  address-keyed raw-handler map are gone; `registry.exposed` is keyed by
-  address, which is what OpenAPI and the Runtime actually consume. A raw
-  `Http` has no application address and no second holding collection: the
-  loader contributes the validated value directly to the listener's live
-  `HttpRegistry`. `Runtime.runHttpHandler(address, …)` becomes
+  address-keyed raw-handler map are gone. `registry.functions` is the only
+  addressable-function collection. The listener derives each exposed function
+  from it, compiles the function's codec, and registers the resulting handler
+  directly in the live `HttpRegistry`; OpenAPI walks the same function
+  collection independently. A raw `Http` has no application address and no
+  second holding collection: the loader contributes the validated value
+  directly to that same `HttpRegistry`. `Runtime.runHttpHandler(address, …)` becomes
   `runHttpRoute(route, …)`: the route value travels instead of a name to be
   looked up again.
 - **Explicit paths may live outside `/api/`.** The reserved set is the built-in

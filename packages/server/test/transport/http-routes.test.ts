@@ -571,6 +571,22 @@ describe("lifecycle decides reachability, not the route table", () => {
     })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
   });
 
+  test("compiles an exposed function's HTTP boundary while registering its route", () => {
+    const unrepresentable = query({
+      access: "public",
+      http: true,
+      args: {},
+      returns: v.primaryKey(),
+      handler: () => 1n,
+    });
+    const listener = new AckerDBServer({ limits, port: 0 });
+
+    expect(() => listener.loadFunctionModules({ notes: { unrepresentable } })).toThrow(
+      /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary/,
+    );
+    expect(listener.state).toBe("stopped");
+  });
+
   test("the same path is reachable after activation and unavailable while draining", async () => {
     expect((await fetch(`${base}/users/7`)).status).toBe(200);
 

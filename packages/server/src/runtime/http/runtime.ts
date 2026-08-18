@@ -368,7 +368,7 @@ export class RuntimeHttp {
         { ref: request.address, args: request.args },
         provenance?.bytes,
       ),
-      codec: this.codec(request.address),
+      codec: request.codec,
       fairnessKey: request.fairnessKey
         ?? callerFairnessKey(request.principal, DIRECT_RUNTIME_SOURCE),
       invalidations: provenance?.invalidations ?? this.options.immediateInvalidations,
@@ -397,14 +397,6 @@ export class RuntimeHttp {
       functionRef: request.address,
       argsFingerprint: digestOfWire(request.args),
     };
-  }
-
-  private codec(address: string): ExposedHttpCodec {
-    const exposed = this.options.registry.exposed.get(address);
-    if (exposed === undefined) {
-      throw new AckerDBError("not_found", `"${address}" is not exposed over HTTP`);
-    }
-    return exposed.codec;
   }
 
   private expect(

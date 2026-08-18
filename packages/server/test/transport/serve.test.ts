@@ -1879,7 +1879,7 @@ describe("the opt-in OpenAPI endpoint", () => {
 
     // The registry is immutable after load; emptying it is only a probe, and a
     // document assembled per request could not still describe what it lost.
-    registry.exposed.clear();
+    registry.functions.clear();
     expect(await (await fetch(`${documentedBase}${OPENAPI}`)).text()).toBe(first);
   });
 });

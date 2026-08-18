@@ -232,10 +232,10 @@ describe("openapi document", () => {
       "/api/messages/tail",
     ]);
     // Hidden from the document, still callable at its path.
-    expect(registry.exposed.has("api.messages.purge")).toBe(true);
+    expect(registry.functions.get("api.messages.purge")?.http).toEqual({ openapi: false });
     expect(openapi.paths["/api/messages/purge"]).toBeUndefined();
     // Never exposed: absent from both.
-    expect(registry.exposed.has("/api/messages/sweep")).toBe(false);
+    expect(registry.functions.get("api.messages.sweep")?.http).toBeUndefined();
     expect(openapi.paths["/api/messages/sweep"]).toBeUndefined();
   });
 
@@ -408,8 +408,7 @@ describe("openapi document", () => {
         }),
       },
     });
-    // Only the application's routes exist: the framework contributes none.
-    expect(registry.exposed.size).toBe(2);
+    expect(registry.functions.size).toBe(2);
     expect(() => openApiDocument(registry, info)).toThrow(
       'functions "api.notes.list" and "api.notes.list.get" both document operationId "api.notes.list.get"',
     );

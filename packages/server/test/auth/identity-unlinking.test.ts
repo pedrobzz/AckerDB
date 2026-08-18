@@ -32,6 +32,7 @@ import {
 import { Session } from "../../src/subscriptions/session/session.ts";
 import { deferred, type Deferred } from "ackerdb-test-support/async";
 import { storedIdentityForAccount } from "../support/identities.ts";
+import { exposedHttpCodec } from "../support/http.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -273,6 +274,7 @@ async function invoke(
     id: ++requestId,
     address,
     args,
+    codec: exposedHttpCodec(harness.runtime, address),
     principal,
     ...(signal === undefined ? {} : { signal }),
     respond: ({ body, status }: RuntimeHttpResponse) => {

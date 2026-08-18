@@ -21,6 +21,7 @@ import { declareJobs, job, type DeclaredJob } from "../../src/jobs/definition.ts
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
+import { exposedHttpCodec } from "../support/http.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -690,6 +691,7 @@ describe("journal integrity", () => {
       id: 1,
       address: "api.admin.surgery",
       args: { id: handle.id, argsJson: '{"input":"replaced"}' },
+      codec: exposedHttpCodec(runtime, "api.admin.surgery"),
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });

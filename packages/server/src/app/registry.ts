@@ -13,13 +13,8 @@
 import {
   APPLICATION_ADDRESS_ROOT,
   EVENTS_NAMESPACE,
-  httpPathForAddress,
-  RESERVED_MARKER,
 } from "@ackerdb/core";
-import {
-  httpExposure,
-  type AnyRegistered,
-} from "./functions.ts";
+import type { AnyRegistered } from "./functions.ts";
 import {
   validateRegisteredHttp,
   type RuntimeHttp,
@@ -30,16 +25,8 @@ import {
 } from "../definitions.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 import {
-  claimsReservedName,
-  exposedHttpKind,
-  isAckerDBHttpRoute,
-  type ExposedHttpKind,
+  validateApplicationHttpPath,
 } from "../transport/http-surface.ts";
-import {
-  compileExposedHttpCodec,
-  type ExposedHttpCodec,
-} from "../transport/http-codec.ts";
-import { validateRoutePath } from "../transport/routing/path.ts";
 
 interface ModuleExport {
   /** Module path joined to export name, without the fixed `api.` root. */
@@ -47,31 +34,17 @@ interface ModuleExport {
   readonly value: unknown;
 }
 
-/** One HTTP-exposed function: the path it owns and whether OpenAPI documents it. */
-export interface ExposedFunction {
-  readonly address: string;
-  readonly path: string;
-  readonly openapi: boolean;
-  /** Narrowed once, here: the served surface and the document both read it. */
-  readonly kind: ExposedHttpKind;
-  readonly fn: AnyRegistered;
-  /** The standard-JSON boundary the served surface and the document share. */
-  readonly codec: ExposedHttpCodec;
-}
-
 /** Modules keyed by dot path (functions/messages.ts -> "messages"), each its exports by name. */
 export type LoadedModules = Record<string, Record<string, unknown>>;
 
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
-  /** HTTP-exposed functions keyed by address; their path is derived from it. */
-  readonly exposed = new Map<string, ExposedFunction>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   private readonly addressByObject = new Map<object, string>();
 
   /**
    * `modules` is keyed by dot path: functions/messages.ts -> "messages".
-   * A listener supplies `registerHttp`; metadata-only consumers omit it.
+   * A listener supplies `registerHttp` so raw routes enter its live HTTP registry.
    */
   constructor(
     modules: LoadedModules,
@@ -98,7 +71,7 @@ export class Registry {
         case "http": {
           const where = `http route "${name}"`;
           const http = validateRegisteredHttp(definition, where);
-          this.refuseAckerDBPath(http.path, where);
+          validateApplicationHttpPath(http.path, where);
           registerHttp?.(http);
           break;
         }
@@ -111,36 +84,6 @@ export class Registry {
         case "job":
           throw new TypeError(`function module export "${name}" is a job definition`);
       }
-    }
-
-    for (const [address, fn] of this.functions) {
-      const exposure = httpExposure(fn.http, `function "${address}" http`);
-      if (exposure === null) continue;
-      // The kind is narrowed once, at load: an exposure no method serves is a
-      // registration error like every other malformed one, never a 404 at call
-      // time and a silent omission from the document.
-      const kind = exposedHttpKind(fn.kind);
-      if (kind === undefined) {
-        throw new Error(
-          `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
-        );
-      }
-      // A derived path is a path like any other: an export named through a
-      // string literal can project one the route grammar does not admit. An
-      // explicit path was already checked by the factory that built it.
-      const where = `HTTP-exposed function "${address}"`;
-      const path = validateRoutePath(httpPathForAddress(address), where);
-      this.refuseAckerDBPath(path, where);
-      // The codec is compiled here, once: a contract that cannot cross the
-      // surface's standard-JSON boundary fails the load, never a caller.
-      this.exposed.set(address, Object.freeze({
-        address,
-        path,
-        openapi: exposure.openapi,
-        kind,
-        fn,
-        codec: compileExposedHttpCodec(address, fn),
-      }));
     }
   }
 
@@ -179,19 +122,6 @@ export class Registry {
       // Registration already normalized and froze it. Re-normalizing here
       // would mean validating a value dispatch may not be enforcing.
       checkRequirementAgainstVocabulary(fn.scopes, vocabulary, `function "${address}"`);
-    }
-  }
-
-  /**
-   * The application's HTTP namespace policy, derived paths and explicit ones
-   * alike: an application may not claim a path AckerDB owns.
-   */
-  private refuseAckerDBPath(path: string, where: string): void {
-    if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
-      throw new Error(
-        `${where} claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
-          `paths and every name marked "${RESERVED_MARKER}"`,
-      );
     }
   }
 

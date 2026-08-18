@@ -20,6 +20,7 @@ import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.t
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session/contract.ts";
 import { mutationMessage, queryMessage, request } from "../support/credential-fixture.ts";
+import { exposedHttpCodec } from "../support/http.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 const schema = defineSchema({});
@@ -95,6 +96,7 @@ describe("owner-scoped credential operations", () => {
       id: 3,
       address: "api.ordinary.transact",
       args: {},
+      codec: exposedHttpCodec(runtime, "api.ordinary.transact"),
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });

@@ -8,8 +8,10 @@ import { http, type Http } from "../../src/transport/routing/route.ts";
 import {
   ACKERDB_HTTP_ROUTES,
   claimsReservedName,
+  exposedFunction,
   isAckerDBHttpRoute,
 } from "../../src/transport/http-surface.ts";
+import { compileExposedHttpCodec } from "../../src/transport/http-codec.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 const exposed = procedure({
@@ -49,33 +51,48 @@ describe("HTTP-exposed function paths", () => {
       notes: { echo: exposed },
     });
 
-    // Every route is the application's: the framework registers none.
-    expect([...registry.exposed.keys()].sort()).toEqual([
+    expect([...registry.functions]
+      .flatMap(([address, fn]) => exposedFunction(address, fn) ? [address] : [])
+      .sort()).toEqual([
       "api.admin.messages.purge",
       "api.messages.list",
       "api.notes.echo",
     ]);
-    const echo = registry.exposed.get("api.notes.echo");
+    const echo = exposedFunction("api.notes.echo", registry.get("api.notes.echo")!);
     expect(echo).toMatchObject({
       address: "api.notes.echo",
       path: "/api/notes/echo",
       openapi: true,
     });
     expect(echo?.fn).toBe(registry.get("api.notes.echo")!);
-    expect(registry.exposed.get("api.admin.messages.purge")).toMatchObject({
+    expect(exposedFunction(
+      "api.admin.messages.purge",
+      registry.get("api.admin.messages.purge")!,
+    )).toMatchObject({
       address: "api.admin.messages.purge",
       openapi: false,
     });
-    expect(registry.exposed.get("api.messages.unexposed")).toBeUndefined();
+    expect(exposedFunction(
+      "api.messages.unexposed",
+      registry.get("api.messages.unexposed")!,
+    )).toBeNull();
     expect(registry.get("api.messages.unexposed")).toBe(unexposed);
   });
 
   test("refuses the AckerDB-owned module prefix", () => {
-    expect(() => new Registry({ _internal: { echo: exposed } })).toThrow(
+    const reservedRegistry = new Registry({ _internal: { echo: exposed } });
+    expect(() => exposedFunction(
+      "api._internal.echo",
+      reservedRegistry.get("api._internal.echo")!,
+    )).toThrow(
       'HTTP-exposed function "api._internal.echo" claims AckerDB-owned path "/api/_internal/echo"',
     );
     // Only the reserved prefix is AckerDB's; deeper segments belong to the app.
-    expect(() => new Registry({ notes: { _echo: exposed } })).not.toThrow();
+    const nestedRegistry = new Registry({ notes: { _echo: exposed } });
+    expect(() => exposedFunction(
+      "api.notes._echo",
+      nestedRegistry.get("api.notes._echo")!,
+    )).not.toThrow();
     // A raw route claims its explicit path through the same check.
     const reserved = { ...hook, path: "/_ws" } as never;
     expect(() => new Registry({ hooks: { reserved } })).toThrow(
@@ -130,13 +147,14 @@ describe("HTTP-exposed function paths", () => {
       notes: { ["echo/deep"]: exposed },
       "notes.echo": { deep: listing },
     });
-    expect([...registry.exposed.values()].map((one) => one.path))
+    expect([...registry.functions].map(([address, fn]) => exposedFunction(address, fn)!.path))
       .toEqual(["/api/notes/echo/deep", "/api/notes/echo/deep"]);
   });
 
   test("refuses a malformed http field from an untyped export", () => {
     const untyped = { ...exposed, http: { openapi: "yes" } } as never;
-    expect(() => new Registry({ notes: { untyped } })).toThrow(
+    const registry = new Registry({ notes: { untyped } });
+    expect(() => exposedFunction("api.notes.untyped", registry.get("api.notes.untyped")!)).toThrow(
       'function "api.notes.untyped" http must be true, false, or { openapi: boolean }',
     );
   });
@@ -164,7 +182,6 @@ describe("application-owned raw routes", () => {
     expect(routes).toHaveLength(1);
     expect(routes[0]).toBe(hook);
     expect(registry.get("api.hooks.stripe")).toBeUndefined();
-    expect(registry.exposed.get("api.hooks.stripe")).toBeUndefined();
     expect(registry.kindOf("api.hooks.stripe")).toBeUndefined();
     expect(registry.addressOf(hook)).toBeUndefined();
     expect(Object.hasOwn(hook, "isAckerDBServerOnly")).toBe(false);
@@ -190,7 +207,8 @@ describe("the http factory", () => {
   test("refuses a derived path the route grammar does not admit", () => {
     // An export named through a string literal can project a path carrying
     // matcher syntax; it is checked exactly like an explicit one.
-    expect(() => new Registry({ notes: { ["echo(1)"]: exposed } })).toThrow(
+    const registry = new Registry({ notes: { ["echo(1)"]: exposed } });
+    expect(() => exposedFunction("api.notes.echo(1)", registry.get("api.notes.echo(1)")!)).toThrow(
       "contains matcher syntax",
     );
   });
@@ -218,7 +236,11 @@ describe("the exposed surface's standard-JSON codec", () => {
       errors: { "notes.gone": { body: v.object({ at: v.bigint() }), status: Status.Gone } },
       handler: (_ctx, args) => Err("notes.gone", { at: args.rank }, Status.Gone),
     });
-    const { codec } = new Registry({ notes: { roundTrip } }).exposed.get("api.notes.roundTrip")!;
+    const registry = new Registry({ notes: { roundTrip } });
+    const codec = compileExposedHttpCodec(
+      "api.notes.roundTrip",
+      registry.get("api.notes.roundTrip")!,
+    );
 
     expect(codec.decodeArgs({ rank: "12", blob: "AQI=" })).toEqual({
       rank: 12n,
@@ -243,7 +265,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       args: {},
       handler: () => ({ id: 9n, blob: new Uint8Array([255]) }),
     });
-    const { codec } = new Registry({ notes: { untyped } }).exposed.get("api.notes.untyped")!;
+    const codec = compileExposedHttpCodec("api.notes.untyped", untyped);
 
     expect(codec.encodeValue({ id: 9n, blob: new Uint8Array([255]) }))
       .toEqual({ id: "9", blob: "/w==" });
@@ -274,7 +296,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       returns: opaque,
       handler: () => ({ id: 3n }),
     });
-    const { codec } = new Registry({ notes: { foreign } }).exposed.get("api.notes.foreign")!;
+    const codec = compileExposedHttpCodec("api.notes.foreign", foreign);
 
     expect(codec.encodeValue({ id: 3n })).toEqual({ id: "3" });
     expect(() => codec.encodeValue({ id: "3" })).toThrow(/expected a bigint/);
@@ -288,7 +310,7 @@ describe("the exposed surface's standard-JSON codec", () => {
       returns: v.primaryKey(),
       handler: () => 1n,
     });
-    expect(() => new Registry({ notes: { unrepresentable } })).toThrow(
+    expect(() => compileExposedHttpCodec("api.notes.unrepresentable", unrepresentable)).toThrow(
       /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary: .*v\.primaryKey\(\) is not a standard-JSON value/,
     );
     // Unexposed, the same contract is only the WebSocket protocol's business.

@@ -21,7 +21,7 @@ import {
   type SseMessage,
 } from "@ackerdb/core";
 import type { AnyRegisteredSse, ErrorDeclaration } from "../app/functions.ts";
-import type { ExposedFunction, Registry } from "../app/registry.ts";
+import type { Registry } from "../app/registry.ts";
 import {
   DECIMAL_PATTERN,
   argsJsonSchema,
@@ -35,6 +35,8 @@ import {
   RECEIPT_HEADERS,
   SSE_FRAME_TYPES,
   SSE_STREAM_HEADERS,
+  exposedFunction,
+  type ExposedFunction,
 } from "./http-surface.ts";
 
 const OPENAPI_VERSION = "3.1.1";
@@ -404,14 +406,18 @@ function pathItem(
   return item;
 }
 
-/** Walk the registry: one operation per exposed, documented function, in path order. */
+/** Walk the address registry: one operation per exposed, documented function, in path order. */
 export function openApiDocument(registry: Registry, info: OpenApiInfo): OpenApiDocument {
   const paths: Record<string, Record<string, JsonObject>> = {};
   const tags = new Set<string>();
   const claimed = new Map<string, string>();
-  for (
-    const exposed of [...registry.exposed.values()].sort((a, b) => a.path.localeCompare(b.path))
-  ) {
+  const exposedFunctions = [...registry.functions]
+    .flatMap(([address, fn]) => {
+      const exposed = exposedFunction(address, fn);
+      return exposed === null ? [] : [exposed];
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
+  for (const exposed of exposedFunctions) {
     if (!exposed.openapi) continue;
     paths[exposed.path] = pathItem(exposed, claimed);
     tags.add(topLevelModule(exposed.address));

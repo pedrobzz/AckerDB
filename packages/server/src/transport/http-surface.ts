@@ -17,11 +17,17 @@
  */
 import {
   APPLICATION_ADDRESS_ROOT,
+  httpPathForAddress,
   RESERVED_MARKER,
   type SseAckRequest,
   type SseMessage,
 } from "@ackerdb/core";
+import {
+  httpExposure,
+  type AnyRegistered,
+} from "../app/functions.ts";
 import type { HttpMethod } from "./routing/path.ts";
+import { validateRoutePath } from "./routing/path.ts";
 
 /** The root of the File byte routes; the segments below it name one handle. */
 const FILES_ROOT = "/_files";
@@ -70,6 +76,18 @@ export function claimsReservedName(path: string): boolean {
   return first === APPLICATION_ADDRESS_ROOT && second?.startsWith(RESERVED_MARKER) === true;
 }
 
+/** Refuse every path reserved to AckerDB before it reaches the live HTTP registry. */
+export function validateApplicationHttpPath(path: string, where: string): string {
+  const validated = validateRoutePath(path, where);
+  if (isAckerDBHttpRoute(validated) || claimsReservedName(validated)) {
+    throw new Error(
+      `${where} claims AckerDB-owned path "${validated}": AckerDB owns its built-in ` +
+        `paths and every name marked "${RESERVED_MARKER}"`,
+    );
+  }
+  return validated;
+}
+
 /** Every registered kind the exposed surface serves, narrowed from an erased kind. */
 export type ExposedHttpKind = "query" | "mutation" | "procedure" | "sse";
 
@@ -83,6 +101,38 @@ export function exposedHttpKind(kind: string): ExposedHttpKind | undefined {
     default:
       return undefined;
   }
+}
+
+/** The HTTP surface derived from one addressable function, before a listener compiles its codec. */
+export interface ExposedFunction {
+  readonly address: string;
+  readonly path: string;
+  readonly openapi: boolean;
+  readonly kind: ExposedHttpKind;
+  readonly fn: AnyRegistered;
+}
+
+/** Derive one function's optional plain-HTTP surface without retaining a second registry. */
+export function exposedFunction(
+  address: string,
+  fn: AnyRegistered,
+): ExposedFunction | null {
+  const exposure = httpExposure(fn.http, `function "${address}" http`);
+  if (exposure === null) return null;
+  const kind = exposedHttpKind(fn.kind);
+  if (kind === undefined) {
+    throw new Error(
+      `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
+    );
+  }
+  const where = `HTTP-exposed function "${address}"`;
+  return Object.freeze({
+    address,
+    path: validateApplicationHttpPath(httpPathForAddress(address), where),
+    openapi: exposure.openapi,
+    kind,
+    fn,
+  });
 }
 
 /**

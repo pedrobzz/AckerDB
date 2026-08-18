@@ -21,6 +21,7 @@ import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import { mutation } from "../../src/app/functions.ts";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { outcomeFromError } from "../../src/runtime/outcome.ts";
+import { exposedHttpCodec } from "../support/http.ts";
 
 // Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1008,6 +1009,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       id: 1,
       address: "api.admin.enqueue",
       args: {},
+      codec: exposedHttpCodec(runtime, "api.admin.enqueue"),
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });
@@ -1018,6 +1020,7 @@ describe("the jobs table is guarded exactly at the state machine", () => {
       id: requestId,
       address: "api.admin.surgery",
       args: { id, field },
+      codec: exposedHttpCodec(runtime, "api.admin.surgery"),
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });
@@ -1316,6 +1319,7 @@ describe("the injected clock", () => {
       id: 1,
       address: "api.admin.enqueue",
       args: {},
+      codec: exposedHttpCodec(runtime, "api.admin.enqueue"),
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }: Ctx) => new Response(body, { status }),
     });

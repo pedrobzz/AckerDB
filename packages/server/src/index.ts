@@ -433,7 +433,7 @@ export {
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
-export { Registry, type ExposedFunction, type LoadedModules } from "./app/registry.ts";
+export { Registry, type LoadedModules } from "./app/registry.ts";
 export {
   OutboundBudget,
   type OutboundBudgetSnapshot,

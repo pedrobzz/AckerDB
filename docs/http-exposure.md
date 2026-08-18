@@ -463,9 +463,13 @@ compiles from is `EXPOSED_HTTP_METHODS`, which is also what the OpenAPI walk
 reads, so the served methods and the documented ones cannot drift.
 
 The wire format reuses `compileStandardJsonCodec`
-(`validation/standard-schema.ts`) — there is no second codec. `transport/http-codec.ts` compiles one per exposed
-function and the registry hangs it on `ExposedFunction`; the listener decodes
-args through it and the Runtime encodes the return value, every sse chunk, and
-a declared error body through it. The structural mapping for values no
+(`validation/standard-schema.ts`) — there is no second codec.
+`transport/http-codec.ts` compiles one per exposed function while the listener
+registers that function's route. The route closure carries the codec: the
+listener decodes args through it, then passes it with the request so the Runtime
+encodes the return value, every sse chunk, and a declared error body through the
+same boundary. OpenAPI independently walks `registry.functions`, the sole
+addressable-function collection, and derives only the functions whose HTTP
+declaration permits documentation. The structural mapping for values no
 validator describes is `toStandardJson` in `@ackerdb/core`, which the client
 uses for the same surface's request side.

@@ -188,7 +188,6 @@ export const capabilities = http("/api/hooks/tx", {
       "api.messages.send",
       "api.messages.tail",
     ]);
-    expect(registry.exposed.get("api.messages.tail")?.path).toBe("/api/messages/tail");
     expect(registry.get("api.admin.users.compact")?.kind).toBe("mutation");
     expect(registry.get("api.admin.users.count")?.kind).toBe("query");
     // the api object produces exactly these addresses
