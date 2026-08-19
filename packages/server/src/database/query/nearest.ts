@@ -126,27 +126,27 @@ function vectorColumn(
   column: unknown,
 ): { readonly name: string; readonly validator: VectorValidator; readonly physical: string } {
   if (typeof column !== "string" || !Object.hasOwn(plan.table.columns, column)) {
-    throw new ValidationError(`${plan.displayName}.nearest: unknown vector column ${JSON.stringify(column)}`);
+    throw new ValidationError(`${plan.name}.nearest: unknown vector column ${JSON.stringify(column)}`);
   }
   const validator = baseValidator(plan.table.columns[column]!);
   if (validator.kind !== "vector") {
-    throw new ValidationError(`${plan.displayName}.nearest: ${column} is not a vector column`);
+    throw new ValidationError(`${plan.name}.nearest: ${column} is not a vector column`);
   }
-  const physical = plan.columns.get(column)!.jsName;
+  const physical = column;
   if (physical === undefined) {
-    throw new Error(`${plan.displayName}.${column}: vector column has no physical storage`);
+    throw new Error(`${plan.name}.${column}: vector column has no physical storage`);
   }
   return { name: column, validator: validator as VectorValidator, physical };
 }
 
 function vectorMetric(plan: TablePlan, options: unknown): VectorMetric {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    throw new ValidationError(`${plan.displayName}.nearest: options must contain a metric`);
+    throw new ValidationError(`${plan.name}.nearest: options must contain a metric`);
   }
   const metric = (options as { readonly metric?: unknown }).metric;
   if (metric !== "cosine" && metric !== "l2" && metric !== "dot") {
     throw new ValidationError(
-      `${plan.displayName}.nearest: metric must be "cosine", "l2", or "dot"`,
+      `${plan.name}.nearest: metric must be "cosine", "l2", or "dot"`,
     );
   }
   return metric;
@@ -204,7 +204,7 @@ class NearestQueryRuntime {
     const predicate = resolvePredicate(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.nearest.where`,
+      `${this.plan.name}.nearest.where`,
     );
     return new NearestQueryRuntime(
       this.engine,
@@ -221,7 +221,7 @@ class NearestQueryRuntime {
   async take(count: number): Promise<Array<{ row: Record<string, unknown>; distance: number }>> {
     if (!Number.isSafeInteger(count) || count <= 0) {
       throw new ValidationError(
-        `${this.plan.displayName}.nearest.take: count must be a positive safe integer`,
+        `${this.plan.name}.nearest.take: count must be a positive safe integer`,
       );
     }
     return (await this.observed(() => this.execute(count))).matches;
@@ -259,7 +259,7 @@ class NearestQueryRuntime {
     const predicate = compilePredicates(
       this.state.predicates,
       this.engine.sqliteParameterLimit,
-      `${this.plan.displayName}.nearest`,
+      `${this.plan.name}.nearest`,
     );
     const where = [
       `${quoteIdentifier(this.vector.physical)} IS NOT NULL`,
@@ -269,7 +269,7 @@ class NearestQueryRuntime {
     const statement = this.conn.prepare(sql);
     const runtime = loadVectorRuntime();
     const heap = new WinnerHeap(count);
-    const storedPath = `${this.plan.displayName}.${this.vector.name}`;
+    const storedPath = `${this.plan.name}.${this.vector.name}`;
     let candidateRowCount = 0;
     try {
       for (const raw of statement.iterate(...(predicate.params as never[])) as Iterable<Record<string, unknown>>) {
@@ -277,7 +277,7 @@ class NearestQueryRuntime {
         const id = raw["__ackerdb_pk"];
         if (typeof id !== "bigint") {
           throw new CorruptDatabaseError(
-            `${this.plan.displayName}.nearest: stored primary key is not an integer`,
+            `${this.plan.name}.nearest: stored primary key is not an integer`,
           );
         }
         const stored = vectorBlobKernelView(
@@ -325,7 +325,7 @@ class NearestQueryRuntime {
     for (const { id } of winners) {
       if (!rows.has(id)) {
         throw new CorruptDatabaseError(
-          `${this.plan.displayName}.nearest: winner row ${id} disappeared inside one SQLite snapshot`,
+          `${this.plan.name}.nearest: winner row ${id} disappeared inside one SQLite snapshot`,
         );
       }
     }
@@ -350,12 +350,12 @@ export function createNearestQuery(
   const selected = vectorColumn(plan, column);
   const normalized = selected.validator.parse(
     query,
-    `${plan.displayName}.nearest.${selected.name}`,
+    `${plan.name}.nearest.${selected.name}`,
   );
   const queryVector = Float32Array.from(normalized);
   const metric = vectorMetric(plan, options);
   if (metric === "cosine" && isZero(queryVector)) {
-    throw new ValidationError(`${plan.displayName}.nearest: cosine query vector must not be zero`);
+    throw new ValidationError(`${plan.name}.nearest: cosine query vector must not be zero`);
   }
   return new NearestQueryRuntime(
     engine,

@@ -263,5 +263,6 @@ The key field set must exactly match one declared non-null unique index;
 property order does not matter. Key fields cannot be changed by the values or
 callback. Nullable unique indexes are not valid upsert targets, and a conflict
 with another unique constraint remains an error. A discriminated-union key
-compares its discriminator, matching the expression stored in its declared
-index; the rest of the object is the row value, not part of that key.
+compares the complete object while its declared SQLite index enforces the
+stronger discriminator uniqueness. The same discriminator with a different
+payload therefore conflicts instead of updating a different logical value.

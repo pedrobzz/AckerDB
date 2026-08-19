@@ -403,7 +403,7 @@ type FoldedNode = PredicateNode | typeof TRUE | typeof FALSE;
 export function filterPredicate(plan: TablePlan, meta: TableFilterMeta): PredicateNode | null {
   if (meta.table !== plan.table) {
     throw new ValidationError(
-      `${plan.displayName}.query.where: this filter was validated for a different table`,
+      `${plan.name}.query.where: this filter was validated for a different table`,
     );
   }
   const folded = fold(plan, meta.node);

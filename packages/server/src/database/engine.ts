@@ -120,14 +120,9 @@ export function persistTagMaps(writer: Database, maps: ReadonlyMap<string, TagMa
 }
 
 export interface ColumnPlan {
-  readonly jsName: string;
   /** Unwrapped kind ("nullable" removed). */
   readonly kind: string;
   readonly nullable: boolean;
-  /** For enum: the declared type name (tag map key). */
-  readonly typeName?: string;
-  /** For enum: encode one variant to its stable storage tag. */
-  readonly variantTag?: (variant: unknown) => number | undefined;
   readonly ddl: string;
   /** Override when an index targets a value derived from the stored column. */
   readonly index?: {
@@ -138,8 +133,8 @@ export interface ColumnPlan {
   readonly fromSql: (value: unknown) => unknown;
 }
 
-export function columnIndexExpression(column: ColumnPlan): string {
-  return column.index?.expression ?? quoteIdentifier(column.jsName);
+export function columnIndexExpression(name: string, column: ColumnPlan): string {
+  return column.index?.expression ?? quoteIdentifier(name);
 }
 
 export function columnIndexValue(column: ColumnPlan, value: unknown): unknown {
@@ -148,17 +143,11 @@ export function columnIndexValue(column: ColumnPlan, value: unknown): unknown {
 
 /** Physical storage and codec ownership shared by live and snapshot-derived plans. */
 export interface PhysicalTablePlan {
-  /** The key exposed on the application's db object. */
-  readonly logicalName: string;
-  /** The physical SQLite table name. */
+  /** The table's application and SQLite name. */
   readonly name: string;
-  /** Qualified human-facing name used by validation. */
-  readonly displayName: string;
   readonly pk: string;
   readonly scheduleAt: string | null;
   readonly columns: ReadonlyMap<string, ColumnPlan>;
-  /** Column names in DDL order (pk first). */
-  readonly columnOrder: readonly string[];
   /**
    * Runtime row projection. `safeIntegers` must remain enabled for exact i64
    * values, so logical ints are cast at the result boundary to avoid
@@ -278,12 +267,12 @@ const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const FULL_TEXT_OBJECT_PREFIX = "_ackerdb_fts_";
 
 /** Compile the exact physical row shape expected by `rowFromSql`. */
-export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
+export function compileReadProjection(columns: ReadonlyMap<string, ColumnPlan>): string {
   const selected: string[] = [];
   let castsInt = false;
-  for (const column of columns) {
+  for (const [columnName, column] of columns) {
     if (column.kind === "int") castsInt = true;
-    const name = quoteIdentifier(column.jsName);
+    const name = quoteIdentifier(columnName);
     selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
   }
   return castsInt ? selected.join(", ") : "*";
@@ -443,27 +432,27 @@ export type TagsOf = (typeName: string) => TagMap;
  * and must tolerate a column the database does not physically have.
  */
 export function columnPlan(
-  jsName: string,
+  name: string,
   descriptor: Descriptor,
   tagsOf: TagsOf,
   path: string,
 ): ColumnPlan {
-  const ddl = columnDdl(jsName, descriptor, path);
+  const ddl = columnDdl(name, descriptor, path);
   const nullable = descriptor["k"] === "nullable";
   const base = (nullable ? descriptor["inner"] : descriptor) as Descriptor;
   const kind = base["k"] as string;
 
   if (kind === "pk") {
-    return { jsName, kind, nullable: false, ddl, toSql: (value) => value, fromSql: (value) => value };
+    return { kind, nullable: false, ddl, toSql: (value) => value, fromSql: (value) => value };
   }
 
-  const shared = { jsName, kind, nullable, ddl };
+  const shared = { kind, nullable, ddl };
   if (kind === "discriminatedUnion") {
     const discriminator = base["discriminator"] as string;
     return {
       ...shared,
       index: {
-        expression: descriptorIndexExpression(jsName, descriptor),
+        expression: descriptorIndexExpression(name, descriptor),
         value: (value: unknown) => value === null
           ? null
           : (value as Record<string, unknown>)[discriminator],
@@ -476,10 +465,6 @@ export function columnPlan(
     const typeName = base["name"] as string;
     return {
       ...shared,
-      typeName,
-      variantTag: (variant) => typeof variant === "string"
-        ? tagsOf(typeName).toTag.get(variant)
-        : undefined,
       toSql: (value) => {
         if (value === null) return null;
         const tagInt = tagsOf(typeName).toTag.get(value as string);
@@ -505,26 +490,21 @@ function planTable(
   tagsOf: TagsOf,
 ): TablePlan {
   const columns = new Map<string, ColumnPlan>();
-  const columnOrder: string[] = [];
   let hasVectorColumns = false;
-  for (const [jsName, validator] of Object.entries(table.columns)) {
-    const plan = columnPlan(jsName, validator.descriptor(), tagsOf, `${name}.${jsName}`);
-    columns.set(jsName, plan);
+  for (const [column, validator] of Object.entries(table.columns)) {
+    const plan = columnPlan(column, validator.descriptor(), tagsOf, `${name}.${column}`);
+    columns.set(column, plan);
     if (plan.kind === "vector") hasVectorColumns = true;
-    columnOrder.push(plan.jsName);
   }
   return Object.freeze({
     table,
-    logicalName: name,
     name,
-    displayName: name,
     pk: table.primaryKey,
     scheduleAt: table.scheduleAtColumn,
     columns,
-    environment: createPredicateEnvironment({ columns, table, displayName: name }),
+    environment: createPredicateEnvironment({ columns, table, name }),
     hasVectorColumns,
-    columnOrder: Object.freeze(columnOrder),
-    readProjection: compileReadProjection(columns.values()),
+    readProjection: compileReadProjection(columns),
     indexes: Object.freeze([...table.indexes]),
     fullText: Object.freeze(table.fullTextColumns.map((column) => fullTextTargetPlan(name, column))),
   });
@@ -1481,7 +1461,9 @@ export class Engine {
 
   indexDdl(plan: PhysicalTablePlan, index: IndexDef): string {
     const unique = index.unique ? "UNIQUE " : "";
-    const cols = index.columns.map((column) => columnIndexExpression(plan.columns.get(column)!)).join(", ");
+    const cols = index.columns.map((column) =>
+      columnIndexExpression(column, plan.columns.get(column)!)
+    ).join(", ");
     return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdentifier(indexSqlName(plan.name, index.name))} ON ${quoteIdentifier(plan.name)} (${cols})`;
   }
 
@@ -1492,7 +1474,7 @@ export class Engine {
   createFullTextTargetPhysical(plan: PhysicalTablePlan, column: string): void {
     const target = plan.fullText.find((candidate) => candidate.column === column);
     if (target === undefined) {
-      throw new Error(`${plan.displayName}.${column}: unknown full-text target`);
+      throw new Error(`${plan.name}.${column}: unknown full-text target`);
     }
     createFullTextTarget(this.writer, plan.name, plan.pk, target);
   }
@@ -1611,25 +1593,25 @@ export class Engine {
   /** Decode one SQL result object (keyed by physical column name) to a JS row. */
   rowFromSql(plan: TablePlan, sqlRow: Record<string, unknown>): Record<string, unknown> {
     const row: Record<string, unknown> = {};
-    for (const column of plan.columns.values()) {
-      row[column.jsName] = column.fromSql(sqlRow[column.jsName]);
+    for (const [name, column] of plan.columns) {
+      row[name] = column.fromSql(sqlRow[name]);
     }
     return row;
   }
 
   insertSql(plan: TablePlan): { sql: string; bind(row: Record<string, unknown>): unknown[] } {
-    const columns = [...plan.columns.values()].filter((c) => c.kind !== "pk");
-    const physicalColumns = columns.map((column) => column.jsName);
+    const columns = [...plan.columns].filter(([, column]) => column.kind !== "pk");
+    const columnNames = columns.map(([name]) => name);
     // A table whose only column is its key — `_ackerdb_identities`, where the
     // Identity *is* the row — has no column list to bind, and SQLite spells
     // that case differently.
-    const values = physicalColumns.length === 0
+    const values = columnNames.length === 0
       ? "DEFAULT VALUES"
-      : `(${physicalColumns.map(quoteIdentifier).join(", ")}) VALUES (${physicalColumns.map(() => "?").join(", ")})`;
+      : `(${columnNames.map(quoteIdentifier).join(", ")}) VALUES (${columnNames.map(() => "?").join(", ")})`;
     const sql = `INSERT INTO ${quoteIdentifier(plan.name)} ${values} RETURNING ${quoteIdentifier(plan.pk)}`;
     return {
       sql,
-      bind: (row) => columns.map((column) => column.toSql(row[column.jsName])),
+      bind: (row) => columns.map(([name, column]) => column.toSql(row[name])),
     };
   }
 

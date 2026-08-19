@@ -67,7 +67,7 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
   try {
     reconcile(engine);
     const messages = engine.plan("messages");
-    const role = messages.columns.get("role")!.variantTag!("member")!;
+    const role = messages.columns.get("role")!.toSql("member") as number;
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
       engine.writer

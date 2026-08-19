@@ -124,7 +124,7 @@ function predicateMeta(value: unknown, owner: object, path: string): PredicateMe
 export interface PredicatePlanIngredients {
   readonly columns: ReadonlyMap<string, ColumnPlan>;
   readonly table: TableDef;
-  readonly displayName: string;
+  readonly name: string;
 }
 
 /**
@@ -140,26 +140,17 @@ export function toSqlPredicateValue(
   const columnPlan = plan.columns.get(column)!;
   if (value === null) {
     throw new ValidationError(
-      `${plan.displayName}.${column}: use .isNull() or .isNotNull() for nullable values`,
+      `${plan.name}.${column}: use .isNull() or .isNotNull() for nullable values`,
     );
   }
   if (columnPlan.kind === "discriminatedUnion") {
     throw new ValidationError(
-      `${plan.displayName}.${column}: use .is(discriminator) for discriminated-union predicates`,
+      `${plan.name}.${column}: use .is(discriminator) for discriminated-union predicates`,
     );
-  }
-  if (columnPlan.kind === "enum") {
-    const tag = typeof value === "string" ? columnPlan.variantTag?.(value) : undefined;
-    if (tag === undefined) {
-      throw new ValidationError(
-        `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
-      );
-    }
-    return tag;
   }
   const checked = baseValidator(plan.table.columns[column]!).parse(
     value,
-    `${plan.displayName}.${column}`,
+    `${plan.name}.${column}`,
   );
   return columnPlan.toSql(checked);
 }
@@ -196,7 +187,7 @@ function makeColumnReference(
       compare(storedReference, "ne", value(input))) as never);
     ownMethod(reference, "in", ((inputs: unknown) => {
       if (!Array.isArray(inputs)) {
-        throw new ValidationError(`${plan.displayName}.${column}.in: expected an array`);
+        throw new ValidationError(`${plan.name}.${column}.in: expected an array`);
       }
       const values: unknown[] = [];
       const seen = new Set<unknown>();
@@ -232,12 +223,12 @@ function makeColumnReference(
     const union = baseValidator(plan.table.columns[column]!) as DiscriminatedUnionValidator;
     const discriminatorReference = Object.freeze({
       column,
-      expression: columnIndexExpression(columnPlan),
+      expression: columnIndexExpression(column, columnPlan),
     });
     ownMethod(reference, "is", ((variant: unknown) => {
       if (typeof variant !== "string" || !union.hasDiscriminatorValue(variant)) {
         throw new ValidationError(
-          `${plan.displayName}.${column}: unknown discriminator ${JSON.stringify(variant)}`,
+          `${plan.name}.${column}: unknown discriminator ${JSON.stringify(variant)}`,
         );
       }
       return compare(discriminatorReference, "eq", variant);

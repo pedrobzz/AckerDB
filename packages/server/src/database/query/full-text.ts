@@ -25,7 +25,7 @@ function declaredTarget(plan: TablePlan, column: unknown): FullTextTarget {
     : undefined;
   if (target === undefined) {
     throw new ValidationError(
-      `${plan.displayName}.fullText: ${JSON.stringify(column)} is not a declared full-text target`,
+      `${plan.name}.fullText: ${JSON.stringify(column)} is not a declared full-text target`,
     );
   }
   return target;
@@ -46,7 +46,7 @@ class FullTextQueryRuntime {
     const predicate = resolvePredicate(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.fullText.where`,
+      `${this.plan.name}.fullText.where`,
     );
     return new FullTextQueryRuntime(
       this.engine,
@@ -62,7 +62,7 @@ class FullTextQueryRuntime {
   async take(count: number): Promise<Record<string, unknown>[]> {
     if (!Number.isSafeInteger(count) || count <= 0) {
       throw new ValidationError(
-        `${this.plan.displayName}.fullText.take: count must be a positive safe integer`,
+        `${this.plan.name}.fullText.take: count must be a positive safe integer`,
       );
     }
     return await this.observed(count);
@@ -83,11 +83,11 @@ class FullTextQueryRuntime {
     const predicate = compilePredicates(
       this.state.predicates,
       this.engine.sqliteParameterLimit,
-      `${this.plan.displayName}.fullText`,
+      `${this.plan.name}.fullText`,
     );
     if (predicate.params.length + 1 > this.engine.sqliteParameterLimit) {
       throw new ValidationError(
-        `${this.plan.displayName}.fullText: query uses ${
+        `${this.plan.name}.fullText: query uses ${
           predicate.params.length + 1
         } parameters but SQLite supports at most ${this.engine.sqliteParameterLimit}`,
       );
@@ -136,7 +136,7 @@ export function createFullTextQuery(
   const target = declaredTarget(plan, column);
   const expression = engine.prepareFullTextLiteral(
     query,
-    `${plan.displayName}.fullText`,
+    `${plan.name}.fullText`,
   );
   return new FullTextQueryRuntime(
     engine,

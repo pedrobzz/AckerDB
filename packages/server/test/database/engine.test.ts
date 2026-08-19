@@ -203,8 +203,8 @@ describe("tag interning", () => {
   test("tags are stable across reopen, reorder, delete and re-add", () => {
     const path = freshPath();
     const tags = (engine: Engine, variants: readonly string[]) => {
-      const variantTag = engine.plan("items").columns.get("status")!.variantTag!;
-      return new Map(variants.map((variant) => [variant, variantTag(variant)]));
+      const status = engine.plan("items").columns.get("status")!;
+      return new Map(variants.map((variant) => [variant, status.toSql(variant)]));
     };
 
     const first = new Engine(schemaWith(["draft", "published", "archived"]), path);

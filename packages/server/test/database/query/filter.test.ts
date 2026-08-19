@@ -359,7 +359,7 @@ describe("a validated filter is an ordinary predicate", () => {
   test("a filter records the same reactive dependency a callback would", async () => {
     const plan = engine.plan("logs");
     const levelIndex = plan.indexes[0]!;
-    const errorTag = plan.columns.get("level")!.variantTag!("error")!;
+    const errorTag = plan.columns.get("level")!.toSql("error") as number;
     const recorded = async (where: unknown): Promise<Set<string>> => {
       const reads = new Set<string>();
       const reader: any = makeDbReader(engine, engine.reader, {

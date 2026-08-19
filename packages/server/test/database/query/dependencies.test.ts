@@ -63,7 +63,7 @@ describe("predicate reactive dependencies", () => {
   }
 
   function statusTag(status: "active" | "archived"): number {
-    return engine.plan("documents").columns.get("status")!.variantTag!(status)!;
+    return engine.plan("documents").columns.get("status")!.toSql(status) as number;
   }
 
   async function dependencies(

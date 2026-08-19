@@ -463,7 +463,7 @@ describe("writes", () => {
 
   test("write keys cover id, scan and every index prefix level", async () => {
     const id = await pay(5n, "active", 100);
-    const tag = engine.plan("payments").columns.get("status")!.variantTag!("active")!;
+    const tag = engine.plan("payments").columns.get("status")!.toSql("active") as number;
     const [userIndex, compositeIndex] = engine.plan("payments").indexes;
     expect(writes.keys).toEqual(
       new Set([

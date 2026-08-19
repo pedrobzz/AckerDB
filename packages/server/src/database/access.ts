@@ -145,7 +145,7 @@ function readMethods(
       assertMutationAccess();
       return await runStatement(() => {
           if (typeof id !== "bigint") {
-            throw new ValidationError(`${plan.displayName}.get: expected a bigint id`);
+            throw new ValidationError(`${plan.name}.get: expected a bigint id`);
           }
           reads?.add(idKey(plan.name, id));
           const raw = engine
@@ -176,12 +176,12 @@ function readMethods(
 /** Validate a full row (insert/replace): pk must be absent, all else checked. */
 function checkFullRow(plan: TablePlan, row: unknown, op: string): Record<string, unknown> {
   if (row === null || typeof row !== "object" || Array.isArray(row)) {
-    throw new ValidationError(`${plan.displayName}.${op}: expected a row object`);
+    throw new ValidationError(`${plan.name}.${op}: expected a row object`);
   }
   const input = row as Record<string, unknown>;
   if (Object.hasOwn(input, plan.pk) && input[plan.pk] !== undefined) {
     throw new ValidationError(
-      `${plan.displayName}.${op}: the primary key "${plan.pk}" is assigned by the database`,
+      `${plan.name}.${op}: the primary key "${plan.pk}" is assigned by the database`,
     );
   }
   const table = plan.table;
@@ -191,7 +191,7 @@ function checkFullRow(plan: TablePlan, row: unknown, op: string): Record<string,
     const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
       ? null
       : input[name];
-    out[name] = validator.parse(value, `${plan.displayName}.${op}.${name}`);
+    out[name] = validator.parse(value, `${plan.name}.${op}.${name}`);
   }
   return out;
 }
@@ -271,7 +271,7 @@ function claimFileReferences(
     const file = raw === null ? null : engine.rowFromSql(filePlan, raw);
     if (file === null || file.state === "deleting") {
       return poisonTransaction(new ValidationError(
-        `${plan.displayName}: File ${id} does not exist`,
+        `${plan.name}: File ${id} does not exist`,
       ));
     }
     if (file.state === "pending") {
@@ -295,7 +295,7 @@ function updateRow(
   },
 ): WriteOutcome<void> {
   if (input.partial === null || typeof input.partial !== "object" || Array.isArray(input.partial)) {
-    throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
+    throw new ValidationError(`${plan.name}.patch: expected a partial row object`);
   }
   const partial = input.partial as Record<string, unknown>;
   const changed: Record<string, unknown> = {};
@@ -305,17 +305,17 @@ function updateRow(
   for (const key of Object.keys(partial)) {
     if (partial[key] === undefined) continue;
     if (key === plan.pk) {
-      throw new ValidationError(`${plan.displayName}.patch: the primary key cannot be changed`);
+      throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
     }
     // TypeScript refuses a column this table does not declare; a key that
     // still arrives at runtime carries no storage and is not written.
     const validator = plan.table.columns[key];
     if (validator === undefined) continue;
-    const value = validator.parse(partial[key], `${plan.displayName}.patch.${key}`);
+    const value = validator.parse(partial[key], `${plan.name}.patch.${key}`);
     changed[key] = value;
     updated[key] = value;
     const columnPlan = plan.columns.get(key)!;
-    sets.push(`${quoteIdentifier(columnPlan.jsName)} = ?`);
+    sets.push(`${quoteIdentifier(key)} = ?`);
     params.push(columnPlan.toSql(value));
   }
   if (sets.length === 0) return { value: undefined, row: input.oldRow };
@@ -327,7 +327,7 @@ function updateRow(
       )
       .run(...(params as never[]), input.id as never);
   } catch (error) {
-    wrapUnique(plan.displayName, error);
+    wrapUnique(plan.name, error);
   }
   // A patch writes only its declared fields. Revalidating untouched File
   // columns would turn explicit File deletion into hidden reference
@@ -336,7 +336,7 @@ function updateRow(
   emitWriteKeys(plan, input.oldRow, writes.keys);
   emitWriteKeys(plan, updated, writes.keys);
   emitFullTextWriteKeys(plan, input.oldRow, updated, writes.keys);
-  if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
+  if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.name);
   return { value: undefined, row: updated };
 }
 
@@ -347,7 +347,7 @@ function writeMethods(
 ) {
   const conn = engine.writer;
   const touch = () => {
-    if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.logicalName);
+    if (plan.scheduleAt !== null) writes.scheduledTables.add(plan.name);
   };
 
   const getRow = (id: bigint): Record<string, unknown> | null => {
@@ -370,7 +370,7 @@ function writeMethods(
         try {
           inserted = engine.statement(conn, sql).get(...(bind(values) as never[])) as never;
         } catch (error) {
-          wrapUnique(plan.displayName, error);
+          wrapUnique(plan.name, error);
         }
         const id = inserted[plan.pk] as bigint;
         const full = { ...values, [plan.pk]: id };
@@ -386,7 +386,7 @@ function writeMethods(
       assertMutationAccess();
       return statementResult(() => {
         const old = getRow(id);
-        if (old === null) throw new Error(`${plan.displayName}.patch: row ${id} not found`);
+        if (old === null) throw new Error(`${plan.name}.patch: row ${id} not found`);
         return updateRow(engine, writes, plan, { id, oldRow: old, partial });
       });
     },
@@ -396,20 +396,20 @@ function writeMethods(
       return statementResult(() => {
         const values = checkFullRow(plan, row, "replace");
         const old = getRow(id);
-        if (old === null) throw new Error(`${plan.displayName}.replace: row ${id} not found`);
+        if (old === null) throw new Error(`${plan.name}.replace: row ${id} not found`);
         const sets: string[] = [];
         const params: unknown[] = [];
-        for (const columnPlan of plan.columns.values()) {
+        for (const [column, columnPlan] of plan.columns) {
           if (columnPlan.kind === "pk") continue;
-          sets.push(`${quoteIdentifier(columnPlan.jsName)} = ?`);
-          params.push(columnPlan.toSql(values[columnPlan.jsName]));
+          sets.push(`${quoteIdentifier(column)} = ?`);
+          params.push(columnPlan.toSql(values[column]));
         }
         try {
           engine
             .statement(conn, `UPDATE ${quoteIdentifier(plan.name)} SET ${sets.join(", ")} WHERE ${quoteIdentifier(plan.pk)} = ?`)
             .run(...(params as never[]), id as never);
         } catch (error) {
-          wrapUnique(plan.displayName, error);
+          wrapUnique(plan.name, error);
         }
         const full = { ...values, [plan.pk]: id };
         claimFileReferences(engine, writes, plan, full);
@@ -440,18 +440,18 @@ function writeMethods(
       assertMutationAccess();
       return await runStatement(() => {
           if (!Array.isArray(ids)) {
-            throw new ValidationError(`${plan.displayName}.deleteMany: expected an array of bigint ids`);
+            throw new ValidationError(`${plan.name}.deleteMany: expected an array of bigint ids`);
           }
           const distinct = new Set<bigint>();
           for (const id of ids) {
             if (typeof id !== "bigint") {
-              throw new ValidationError(`${plan.displayName}.deleteMany: expected bigint ids`);
+              throw new ValidationError(`${plan.name}.deleteMany: expected bigint ids`);
             }
             distinct.add(id);
           }
           if (distinct.size > DELETE_MANY_LIMIT) {
             throw new ValidationError(
-              `${plan.displayName}.deleteMany: at most ${DELETE_MANY_LIMIT} distinct ids may be deleted at once`,
+              `${plan.name}.deleteMany: at most ${DELETE_MANY_LIMIT} distinct ids may be deleted at once`,
             );
           }
           const uniqueIds = [...distinct];
@@ -491,7 +491,7 @@ function attachUpsert(
     assertMutationAccess();
     return statementResult(async () => {
       if (key === null || typeof key !== "object" || Array.isArray(key)) {
-        throw new ValidationError(`${plan.displayName}.upsert: expected a key object`);
+        throw new ValidationError(`${plan.name}.upsert: expected a key object`);
       }
       const input = key as Record<string, unknown>;
       const inputColumns = Object.keys(input);
@@ -502,12 +502,12 @@ function attachUpsert(
       );
       if (matches.length === 0) {
         throw new ValidationError(
-          `${plan.displayName}.upsert: key fields must exactly match one non-null unique index`,
+          `${plan.name}.upsert: key fields must exactly match one non-null unique index`,
         );
       }
       if (matches.length > 1) {
         throw new ValidationError(
-          `${plan.displayName}.upsert: key fields are ambiguous between unique indexes`,
+          `${plan.name}.upsert: key fields are ambiguous between unique indexes`,
         );
       }
       const index = matches[0]!;
@@ -517,17 +517,16 @@ function attachUpsert(
       for (const column of index.columns) {
         const checked = plan.table.columns[column]!.parse(
           input[column],
-          `${plan.displayName}.upsert.${column}`,
+          `${plan.name}.upsert.${column}`,
         );
         checkedKey[column] = checked;
         const columnPlan = plan.columns.get(column)!;
-        const sqlValue = columnIndexValue(columnPlan, checked);
-        if (sqlValue === null) {
-          clauses.push(`${columnIndexExpression(columnPlan)} IS NULL`);
-        } else {
-          clauses.push(`${columnIndexExpression(columnPlan)} = ?`);
-          params.push(sqlValue);
+        if (columnPlan.index !== undefined) {
+          clauses.push(`${columnIndexExpression(column, columnPlan)} = ?`);
+          params.push(columnIndexValue(columnPlan, checked));
         }
+        clauses.push(`${quoteIdentifier(column)} = ?`);
+        params.push(columnPlan.toSql(checked));
       }
       const where = clauses.join(" AND ");
       const raws = engine
@@ -537,7 +536,7 @@ function attachUpsert(
         )
         .all(...(params as never[])) as Record<string, unknown>[];
       if (raws.length > 1) {
-        throw new Error(`${plan.displayName}.upsert: unique key matched more than one row`);
+        throw new Error(`${plan.name}.upsert: unique key matched more than one row`);
       }
       const existing = raws[0] === undefined ? null : engine.rowFromSql(plan, raws[0]);
       const resolved = typeof values === "function" ? values(existing) : values;
@@ -546,15 +545,15 @@ function attachUpsert(
         (typeof resolved === "object" || typeof resolved === "function") &&
         typeof (resolved as PromiseLike<unknown>).then === "function"
       ) {
-        throw new ValidationError(`${plan.displayName}.upsert: values callback must be synchronous`);
+        throw new ValidationError(`${plan.name}.upsert: values callback must be synchronous`);
       }
       if (resolved === null || typeof resolved !== "object" || Array.isArray(resolved)) {
-        throw new ValidationError(`${plan.displayName}.upsert: expected a values object`);
+        throw new ValidationError(`${plan.name}.upsert: expected a values object`);
       }
       for (const column of index.columns) {
         if (Object.hasOwn(resolved, column)) {
           throw new ValidationError(
-            `${plan.displayName}.upsert: key field "${column}" cannot be changed by values`,
+            `${plan.name}.upsert: key field "${column}" cannot be changed by values`,
           );
         }
       }
@@ -614,7 +613,7 @@ export function makeDbReader(
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
   for (const plan of engine.plans.values()) {
-    db[plan.logicalName] = readMethods(engine, conn, reads, plan);
+    db[plan.name] = readMethods(engine, conn, reads, plan);
   }
   return db;
 }

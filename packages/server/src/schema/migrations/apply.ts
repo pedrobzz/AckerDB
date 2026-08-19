@@ -367,25 +367,20 @@ function buildTargetPlans(target: SchemaSnapshot, tags: Map<string, TagMap>): Ma
 
 function snapshotPlan(name: string, snap: TableSnapshot, tagsOf: TagsOf): PhysicalTablePlan {
   const columns = new Map<string, ColumnPlan>();
-  const columnOrder: string[] = [];
   let pk = "";
   let scheduleAt: string | null = null;
   for (const [col, desc] of Object.entries(snap.columns)) {
     const plan = columnPlan(col, desc, tagsOf, `${name}.${col}`);
     columns.set(col, plan);
-    columnOrder.push(plan.jsName);
     if (plan.kind === "pk") pk = col;
     if (plan.kind === "scheduleAt") scheduleAt = col;
   }
   return {
-    logicalName: name,
     name,
-    displayName: name,
     pk,
     scheduleAt,
     columns,
-    columnOrder,
-    readProjection: compileReadProjection(columns.values()),
+    readProjection: compileReadProjection(columns),
     indexes: snap.indexes,
     fullText: snap.fullText.map((column) => fullTextTargetPlan(name, column)),
   };
@@ -411,10 +406,10 @@ function physicalInsert(
     names.push(target.translate(plan.pk));
     params.push(pk);
   }
-  for (const column of plan.columns.values()) {
+  for (const [name, column] of plan.columns) {
     if (column.kind === "pk") continue;
-    names.push(target.translate(column.jsName));
-    params.push(column.toSql(values[column.jsName]));
+    names.push(target.translate(name));
+    params.push(column.toSql(values[name]));
   }
   for (const c of carried) {
     names.push(c.name);
@@ -537,10 +532,10 @@ function driftColumns(scope: StepScope, name: string): DriftColumn[] {
   if (storedSnap === undefined || storedSnap.kind !== "table") return [];
   const plan = targetPlans.get(name)!;
   const reverse = renames.columnReverse.get(name);
-  const targetOldPhys = new Set(plan.columnOrder.map((c) => reverse?.get(c) ?? c));
+  const targetOldPhys = new Set([...plan.columns.keys()].map((c) => reverse?.get(c) ?? c));
   const targetJsByOldJs = new Map<string, string>();
-  for (const c of plan.columns.values()) {
-    if (c.kind !== "pk") targetJsByOldJs.set(reverse?.get(c.jsName) ?? c.jsName, c.jsName);
+  for (const [name, column] of plan.columns) {
+    if (column.kind !== "pk") targetJsByOldJs.set(reverse?.get(name) ?? name, name);
   }
   const preColumns = Object.hasOwn(pre.tables, oldPhysName) ? pre.tables[oldPhysName]!.columns : {};
   const drift: DriftColumn[] = [];
@@ -661,8 +656,8 @@ async function runTransforms(
     const oldPhysName = renames.tableOldName.get(name) ?? name;
     const reverse = renames.columnReverse.get(name);
     const oldCols = new Set(Object.keys(stored.tables[oldPhysName]!.columns));
-    const pairs = planOf(name)
-      .columnOrder.map((c) => [reverse?.get(c) ?? c, c] as const)
+    const pairs = [...planOf(name).columns.keys()]
+      .map((c) => [reverse?.get(c) ?? c, c] as const)
       .filter(([old]) => oldCols.has(old));
     const carriedPhys = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").map((c) => c.physical);
     const insertCols = [...pairs.map(([, c]) => c), ...carriedPhys];

@@ -431,7 +431,7 @@ function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSn
   const writer = engine.writer;
   ops.push(() => {
     const oldPhys = new Set(Object.keys(oldTable.columns));
-    const copy = tablePlan.columnOrder.filter((c) => oldPhys.has(c)).map(quoteIdentifier).join(", ");
+    const copy = [...tablePlan.columns.keys()].filter((c) => oldPhys.has(c)).map(quoteIdentifier).join(", ");
     const tmp = `${tablePlan.name}__rebuild`;
     const seqRow = writer
       .query("SELECT seq FROM sqlite_sequence WHERE name = ?")

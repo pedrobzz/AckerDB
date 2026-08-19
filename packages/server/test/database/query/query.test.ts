@@ -105,7 +105,7 @@ describe("table query", () => {
       .take(1);
 
     expect(issuedSql).toBeDefined();
-    const statusTag = engine.plan("documents").columns.get("status")!.variantTag!("active")!;
+    const statusTag = engine.plan("documents").columns.get("status")!.toSql("active") as number;
     const plan = engine.reader
       .query(`EXPLAIN QUERY PLAN ${issuedSql!}`)
       .all(1n, statusTag) as { detail: string }[];
@@ -401,7 +401,7 @@ describe("table query", () => {
     ).rejects.toBeInstanceOf(UniqueConstraintError);
   });
 
-  test("matches a discriminated union upsert key by its indexed discriminator", async () => {
+  test("matches a discriminated union upsert key by its complete value", async () => {
     const inserted = await db.unionKeys.upsert(
       { key: { type: "text", value: "one" } },
       { slug: "first", name: "Initial" },
@@ -412,11 +412,11 @@ describe("table query", () => {
     ).returning();
 
     expect(updated).toEqual({ ...inserted, name: "Updated" });
-    const sameDiscriminator = await db.unionKeys.upsert(
+    await expect(db.unionKeys.upsert(
       { key: { type: "text", value: "different payload" } },
       { slug: "second", name: "Same discriminator" },
-    ).returning();
-    expect(sameDiscriminator).toEqual({ ...inserted, slug: "second", name: "Same discriminator" });
+    ).returning()).rejects.toBeInstanceOf(UniqueConstraintError);
+    expect(await db.unionKeys.get(inserted.id)).toEqual({ ...inserted, name: "Updated" });
 
     const emptyInserted = await db.unionKeys.upsert(
       { key: { type: "empty" } },
