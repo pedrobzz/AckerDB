@@ -56,18 +56,16 @@ export class HttpRegistry {
 
   add(route: Http): void {
     const signature = routeSignature(route.path);
-    let registered = this.routes.get(signature);
+    if (this.routes.has(signature)) {
+      throw new Error(`HTTP route "${route.path}" is already owned`);
+    }
+    const registered: RegisteredRoute = {
+      matcherParams: captureNames(route.path),
+      handlers: {},
+    };
     const methods = Object.keys(route.handlers) as HttpMethod[];
-    for (const method of methods) {
-      if (registered?.handlers[method] !== undefined) {
-        throw new Error(`HTTP route "${route.path}" already owns ${method}`);
-      }
-    }
-    if (registered === undefined) {
-      registered = { matcherParams: captureNames(route.path), handlers: {} };
-      this.routes.set(signature, registered);
-      addRoute(this.matcher, "", matcherPattern(route.path), registered);
-    }
+    this.routes.set(signature, registered);
+    addRoute(this.matcher, "", matcherPattern(route.path), registered);
     const params = captureNames(route.path);
     for (const method of methods) {
       registered.handlers[method] = { call: route.handlers[method]!, params };

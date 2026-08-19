@@ -61,7 +61,7 @@ const functions = {
   feed: {
     list: query({
       access: "public",
-      http: true,
+      http: { path: "/feed", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.db.deliveries.query().collect(),
     }),
@@ -170,11 +170,9 @@ const functions = {
     assets: http("/users/:id/assets/*", {
       GET: (ctx) => Response.json({ id: ctx.params.id, rest: ctx.params["*"] }),
     }),
-    readPerson: http("/people/:id", {
+    person: http("/people/:id", {
       GET: (ctx) => Response.json({ method: "GET", id: ctx.params.id }),
-    }),
-    writePerson: http("/people/:personId", {
-      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.personId }),
+      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.id }),
     }),
     // Captures and application capabilities are one context, not two.
     record: http("/deliveries/:type", {
@@ -275,7 +273,7 @@ describe("the registry routes before any handler runs", () => {
     expect(await response.json()).toMatchObject({ code: "malformed", retryable: false });
   });
 
-  test("different Http values may contribute methods to one path pattern", async () => {
+  test("one captured-path owner may expose several methods", async () => {
     expect(await (await fetch(`${base}/people/7`)).json()).toEqual({ method: "GET", id: "7" });
     expect(await (await fetch(`${base}/people/7`, { method: "POST" })).json())
       .toEqual({ method: "POST", id: "7" });
@@ -300,16 +298,17 @@ describe("the registry routes before any handler runs", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ stored: "payment.succeeded", dated: true });
-    const rows = (await (await fetch(`${base}/api/feed/list`)).json()) as { type: string }[];
+    const rows = (await (await fetch(`${base}/feed`)).json()) as { type: string }[];
     expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
   });
 
-  test("an exposed function keeps its derived path and its preflight", async () => {
-    expect((await fetch(`${base}/api/feed/list`)).status).toBe(200);
-    const preflight = await fetch(`${base}/api/feed/list`, { method: "OPTIONS" });
+  test("an exposed function owns its explicit path and preflight", async () => {
+    expect((await fetch(`${base}/feed`)).status).toBe(200);
+    expect((await fetch(`${base}/api/feed/list`)).status).toBe(404);
+    const preflight = await fetch(`${base}/feed`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
-    const wrong = await fetch(`${base}/api/feed/list`, { method: "DELETE" });
+    const wrong = await fetch(`${base}/feed`, { method: "DELETE" });
     expect(wrong.status).toBe(405);
     expect(wrong.headers.get("allow")).toBe("GET, POST, OPTIONS");
   });
@@ -330,7 +329,7 @@ describe("the request reaches the handler whole", () => {
     expect(await response.json()).toEqual({ received: true });
     expectUnstamped(response);
 
-    const listed = await fetch(`${base}/api/feed/list`);
+    const listed = await fetch(`${base}/feed`);
     expect(listed.status).toBe(200);
     const rows = (await listed.json()) as readonly { type: string }[];
     expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
@@ -495,42 +494,25 @@ describe("lifecycle decides reachability, not the route table", () => {
     expect(refusedLoad({
       hooks: {
         byId: http("/people/:id", { GET: () => new Response(null) }),
-        bySlug: http("/people/:slug", { GET: () => new Response(null) }),
+        bySlug: http("/people/:slug", { POST: () => new Response(null) }),
       },
-    })).toContain('HTTP route "/people/:slug" already owns GET');
+    })).toContain('HTTP route "/people/:slug" is already owned');
 
-    // The projection joins on `/` where the address joined on `.`, so a
-    // string-named export can reach a path another address already derives.
-    const exposedNote = () => query({ access: "public", http: true, args: {}, handler: () => [] });
-    expect(refusedLoad({
-      notes: { ["echo/deep"]: exposedNote() },
-      "notes.echo": { deep: exposedNote() },
-    })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
-
-    const unrepresentable = query({
+    const exposedNote = () => query({
       access: "public",
-      http: true,
+      http: { path: "/notes", openapi: true },
       args: {},
-      returns: v.primaryKey(),
-      handler: () => 1n,
+      handler: () => [],
     });
-    expect(refusedLoad({ notes: { unrepresentable } })).toMatch(
-      /HTTP-exposed function "api\.notes\.unrepresentable" returns cannot cross the HTTP surface's standard-JSON boundary/,
-    );
+    expect(refusedLoad({
+      notes: { first: exposedNote(), second: exposedNote() },
+    })).toContain('HTTP route "/notes" is already owned');
 
     const reserved = { ...functions.hooks.stripe, path: "/_ws" } as never;
     expect(refusedLoad({ hooks: { reserved } })).toContain(
       'http route "hooks.reserved" claims AckerDB-owned path "/_ws"',
     );
 
-    expect(refusedLoad({ notes: { ["echo(1)"]: exposedNote() } })).toContain(
-      "contains matcher syntax",
-    );
-
-    const malformed = { ...exposedNote(), http: { openapi: "yes" } } as never;
-    expect(refusedLoad({ notes: { malformed } })).toContain(
-      'function "api.notes.malformed" http must be true, false, or { openapi: boolean }',
-    );
   });
 
   test("the http factory rejects malformed paths and method maps", () => {

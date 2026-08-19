@@ -9,8 +9,8 @@ import {
   v,
 } from "@ackerdb/server";
 
-const check = <T>(validator: { check(value: unknown, path: string): T }, value: unknown) =>
-  validator.check(value, "value");
+const check = <T>(validator: { parse(value: unknown, path: string): T }, value: unknown) =>
+  validator.parse(value, "value");
 
 describe("v numeric validators", () => {
   test("separates safe integers, finite floats, and signed i64 bigints", () => {

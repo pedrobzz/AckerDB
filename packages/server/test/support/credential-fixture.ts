@@ -55,7 +55,7 @@ const invalidUpdateKind = v.enum("InvalidCredentialUpdateKind", ["empty", "undef
 const writeOwnedRecord = typedProcedure({
   description: "Write a row owned by the delegated Identity.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/records/writeOwnedRecord", openapi: true },
   args: { value: v.string() },
   returns: v.object({ principal: v.string(), record: v.string(), tokenId: v.string() }),
   handler: async (ctx, args) => {
@@ -77,7 +77,7 @@ const writeOwnedRecord = typedProcedure({
 const attemptSelfAdministration = typedProcedure({
   description: "Exercise the delegated-credential administration boundary.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/security/attemptSelfAdministration", openapi: true },
   args: {},
   returns: v.object({ status: v.string() }),
   handler: async (ctx) => {
@@ -98,7 +98,7 @@ const statusReturns = v.object({ status: v.string() });
 const publicScopedTool = typedQuery({
   description: "Public scope fixture.",
   access: "public",
-  http: true,
+  http: { path: "/api/records/publicScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "public" }),
@@ -107,7 +107,7 @@ const publicScopedTool = typedQuery({
 const authenticatedScopedTool = typedQuery({
   description: "Authenticated scope fixture.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/records/authenticatedScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "authenticated" }),
@@ -117,7 +117,7 @@ const anyScopedTool = typedQuery({
   description: "Any-of scope fixture.",
   access: "authenticated",
   scopes: { anyOf: ["orders.all", "orders.get"] },
-  http: true,
+  http: { path: "/api/records/anyScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "orders" }),
@@ -127,7 +127,7 @@ const allScopedTool = typedQuery({
   description: "All-of scope fixture.",
   access: "authenticated",
   scopes: { allOf: ["orders.get", "reports.all"] },
-  http: true,
+  http: { path: "/api/records/allScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "reports" }),
@@ -137,7 +137,7 @@ const exactAllTool = typedQuery({
   description: "Prove .all is an opaque exact value.",
   access: "authenticated",
   scopes: { anyOf: ["orders.all"] },
-  http: true,
+  http: { path: "/api/records/exactAllTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "admin" }),

@@ -103,7 +103,6 @@ function modules() {
     ai: {
       holdBeforeFirst: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -120,7 +119,6 @@ function modules() {
       // family the settlement path must be indifferent to.
       holdMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {

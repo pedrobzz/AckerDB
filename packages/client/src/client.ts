@@ -2,6 +2,7 @@ import {
   MAX_PROTOCOL_ID,
   MAX_RETRY_AFTER_MS,
   ACKERDB_VERSION,
+  SSE_HTTP,
   ProtocolError,
   WireError,
   Err,
@@ -10,7 +11,6 @@ import {
   decode,
   encode,
   getRef,
-  httpPathForAddress,
   parseClientMessage,
   parseCredential,
   parseOutcome,
@@ -1277,16 +1277,15 @@ export class AckerDBClient {
     if (this.suspended) {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
-    // The URL is the canonical address, segment for segment. The response is
-    // the correlation, so the request carries the args object alone — no
-    // envelope, no client id.
-    const url = `${this.httpUrl}${httpPathForAddress(getRef(ref))}`;
+    // Typed SSE calls use one framework route. The function address travels in
+    // its own header, while an optional public HTTP path remains independent.
+    const address = getRef(ref);
+    const url = `${this.httpUrl}${SSE_HTTP.open}`;
     let body: string;
     try {
-      // The exposed surface speaks the plain JSON its OpenAPI document
-      // publishes — decimal strings for bigints, base64 for bytes — not the
-      // escape form the WebSocket session carries. Absent args are that
-      // surface's empty args object.
+      // The SSE boundary speaks the contract's standard JSON — decimal strings
+      // for bigints, base64 for bytes — not the escape form the WebSocket
+      // session carries. Absent args are its empty args object.
       body = JSON.stringify(toStandardJson(args)) ?? "{}";
     } catch (error) {
       if (!(error instanceof WireError)) throw error;
@@ -1362,7 +1361,10 @@ export class AckerDBClient {
       const pendingResponse = (async () =>
         this.fetcher(url, {
           method: "POST",
-          headers: this.httpHeaders(),
+          headers: {
+            ...this.httpHeaders(),
+            [SSE_HTTP.functionHeader]: address,
+          },
           body,
           signal: fetchControl.controller.signal,
         }))().then((candidate) => {
@@ -2805,7 +2807,7 @@ export class AckerDBClient {
           const cancellationError = localError("unavailable", "SSE acknowledgment was canceled", "sse");
           const response = await raceWithAbort(
             (async () =>
-              this.fetcher(`${this.httpUrl}/_sse/ack`, {
+              this.fetcher(`${this.httpUrl}${SSE_HTTP.acknowledge}`, {
                 method: "POST",
                 headers: { "content-type": "text/plain;charset=UTF-8" },
                 body,

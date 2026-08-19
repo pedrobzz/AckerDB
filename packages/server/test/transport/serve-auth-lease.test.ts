@@ -89,13 +89,13 @@ const functions = {
   auth: {
     identity: procedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/auth/identity", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.auth.subject,
     }),
     block: procedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/auth/block", openapi: true },
       args: {},
       handler: async (ctx: Ctx) => {
         blockedProcedureStarted.resolve();
@@ -105,7 +105,7 @@ const functions = {
     }),
     once: sseProcedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/auth/once", openapi: true },
       args: {},
       yields: v.object({ phase: v.string() }),
       handler: async function* () {
@@ -114,7 +114,7 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/auth/stream", openapi: true },
       args: {},
       yields: v.object({ phase: v.string() }),
       handler: async function* (ctx: Ctx) {

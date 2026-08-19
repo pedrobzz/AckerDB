@@ -35,13 +35,13 @@ const modules = {
   notes: {
     add: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/add", openapi: true },
       args: { body: v.string() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.notes.insert(args),
     }),
     block: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/block", openapi: true },
       args: {},
       handler: async () => {
         blockedStarted?.resolve();

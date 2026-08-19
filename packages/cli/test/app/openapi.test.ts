@@ -18,7 +18,7 @@ import { mutation, query, sseProcedure } from "../_generated/server.ts";
 
 export const list = query({
   access: "public",
-  http: true,
+  http: { path: "/api/messages/list", openapi: true },
   title: "List messages",
   description: "List the newest messages in a channel.",
   args: { channelId: v.bigint() },
@@ -28,7 +28,7 @@ export const list = query({
 
 export const send = mutation({
   access: "public",
-  http: true,
+  http: { path: "/api/messages/send", openapi: true },
   args: { channelId: v.bigint(), body: v.string() },
   returns: v.bigint(),
   handler: (ctx, args) => ctx.db.messages.insert({
@@ -40,14 +40,14 @@ export const send = mutation({
 
 export const purge = mutation({
   access: "public",
-  http: { openapi: false },
+  http: { path: "/api/messages/purge", openapi: false },
   args: { channelId: v.bigint() },
   handler: () => 0n,
 });
 
 export const tail = sseProcedure({
   access: "public",
-  http: true,
+  http: { path: "/api/messages/tail", openapi: true },
   args: { channelId: v.bigint() },
   yields: v.object({ body: v.string() }),
   handler: async function* (_ctx, args) {

@@ -4,13 +4,13 @@ import type { Server, ServerWebSocket } from "bun";
 import proxyaddr from "@fastify/proxy-addr";
 import {
   APPLICATION_ADDRESS_ROOT,
+  SSE_HTTP,
   decode,
-  httpPathForAddress,
   parseSseAckRequest,
   stableEncode,
   type SseAckRequest,
 } from "@ackerdb/core";
-import { httpExposure, type AnyRegistered } from "../app/functions.ts";
+import type { AnyRegistered } from "../app/functions.ts";
 import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
@@ -38,10 +38,6 @@ import {
   assertApplicationHttpPath,
 } from "./http-surface.ts";
 import {
-  decodeHttpArgs,
-  prepareHttpContract,
-} from "./http-codec.ts";
-import {
   CORS,
   json,
   outcomeError,
@@ -51,7 +47,7 @@ import {
 } from "./response.ts";
 import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
 import { HttpRegistry } from "./routing/registry.ts";
-import { validateRoutePath, type HttpMethod, type HttpParams } from "./routing/path.ts";
+import type { HttpMethod, HttpParams } from "./routing/path.ts";
 import {
   frameworkHttp,
   type AnyHttpHandler,
@@ -511,32 +507,30 @@ async function parseHttpBody<T>(
 
 /**
  * An exposed function's args: plain JSON, decoded through the function's own
- * standard-JSON codec so a caller obeying the published document is understood.
+ * validator so a caller obeying the published document is understood.
  * Absent or empty args mean `{}`.
  */
 function decodeArgs(
   text: string | null,
-  address: string,
   fn: AnyRegistered,
 ): unknown {
-  if (text === null || text === "") return decodeHttpArgs(address, fn, {});
-  return decodeHttpArgs(
-    address,
-    fn,
-    parsedOrMalformed(text, JSON.parse, "args are not valid JSON"),
+  return fn.args.decode(
+    text === null || text === ""
+      ? {}
+      : parsedOrMalformed(text, JSON.parse, "args are not valid JSON"),
+    "args",
   );
 }
 
 async function parseArgsHttpBody(
   request: Request,
-  address: string,
   fn: AnyRegistered,
   maxBytes: number,
   maxAgeMs: number,
 ): Promise<ParsedHttpBody<unknown>> {
-  if (request.body === null) return { value: decodeArgs(null, address, fn), bytes: 0 };
+  if (request.body === null) return { value: decodeArgs(null, fn), bytes: 0 };
   const body = await readBoundedBody(request, maxBytes, maxAgeMs);
-  return { value: decodeArgs(body.text, address, fn), bytes: body.bytes };
+  return { value: decodeArgs(body.text, fn), bytes: body.bytes };
 }
 
 /**
@@ -546,15 +540,14 @@ async function parseArgsHttpBody(
  */
 function parseArgsSearchParameter(
   url: URL,
-  address: string,
   fn: AnyRegistered,
   maxBytes: number,
 ): ParsedHttpBody<unknown> {
   const raw = url.searchParams.get("args");
-  if (raw === null) return { value: decodeArgs(null, address, fn), bytes: 0 };
+  if (raw === null) return { value: decodeArgs(null, fn), bytes: 0 };
   const bytes = utf8ByteLength(raw);
   if (bytes > maxBytes) throw requestTooLarge();
-  return { value: decodeArgs(raw, address, fn), bytes };
+  return { value: decodeArgs(raw, fn), bytes };
 }
 
 function configuredStatusScope(value: string | undefined): string {
@@ -609,7 +602,7 @@ export class AckerDBServer {
   private lifecycle: AckerDBServerState = "starting";
   private startup: AckerDBStartupPhase | null = "listening";
   private connectionRejections = 0;
-  /** Server-owned request ids for path-addressed calls. */
+  /** Server-owned request ids for HTTP function calls. */
   private httpRequests = 0;
   private sseAckIngress = 0;
   private sseAckNoops = 0;
@@ -769,12 +762,8 @@ export class AckerDBServer {
           case "procedure":
           case "sse": {
             const address = `${APPLICATION_ADDRESS_ROOT}.${item.name}`;
-            if (httpExposure(definition.http, `function "${address}" http`) === null) break;
-            const where = `HTTP-exposed function "${address}"`;
-            const path = validateRoutePath(httpPathForAddress(address), where);
-            assertApplicationHttpPath(path, where);
-            prepareHttpContract(address, definition);
-            this.routes.add(frameworkHttp(path, {
+            if (definition.http === undefined) break;
+            this.routes.add(frameworkHttp(definition.http.path, {
               ...everyMethod(EXPOSED_HTTP_METHODS[definition.kind], (_ctx, request) =>
                 this.call(
                   request,
@@ -906,6 +895,27 @@ export class AckerDBServer {
           return this.upgradeWebSocket(request);
         },
       }),
+      frameworkHttp(ACKERDB_HTTP_ROUTES.sseOpen, {
+        POST: (_ctx, request) => {
+          const runtime = this.activeRuntime;
+          if (this.lifecycle !== "ready" || runtime?.state !== "ready") {
+            return outcomeError(unavailableWhile(this.lifecycle));
+          }
+          const address = request.headers.get(SSE_HTTP.functionHeader);
+          const fn = address === null ? undefined : runtime.registry.get(address);
+          if (address === null || fn?.kind !== "sse") {
+            return outcomeError(new AckerDBError("not_found", "unknown SSE function"));
+          }
+          return this.call(
+            request,
+            new URL(request.url),
+            address,
+            fn,
+            this.requestSource(request),
+          );
+        },
+        OPTIONS: preflight,
+      }),
       frameworkHttp(ACKERDB_HTTP_ROUTES.sseAck, {
         POST: (_ctx, request) => this.acknowledgeSse(
           request,
@@ -1012,17 +1022,16 @@ export class AckerDBServer {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
       // Correlation is the HTTP response itself, so the request id is the
-      // listener's own sequence rather than a client input. The path already
-      // names the function, so even a malformed body reports what it targeted.
+      // listener's own sequence rather than a client input. The public route
+      // or framework SSE header already named the function before body parsing.
       const id = ++this.httpRequests;
       lease = await this.authenticate(request);
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const { value: args, bytes } = request.method === "GET"
-        ? parseArgsSearchParameter(url, address, fn, runtime.limits.maxRequestBytes)
+        ? parseArgsSearchParameter(url, fn, runtime.limits.maxRequestBytes)
         : await parseArgsHttpBody(
             request,
-            address,
             fn,
             runtime.limits.maxRequestBytes,
             runtime.limits.readQueue.maxAgeMs,

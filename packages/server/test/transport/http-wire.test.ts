@@ -48,7 +48,7 @@ const functions = {
   catalog: {
     lookup: query({
       access: "public",
-      http: true,
+      http: { path: "/api/catalog/lookup", openapi: true },
       args: { sku: v.bigint(), stamp: v.bytes() },
       returns: v.object({ sku: v.bigint(), stamp: v.bytes(), label: v.string() }),
       errors: {
@@ -61,7 +61,7 @@ const functions = {
     }),
     tail: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/catalog/tail", openapi: true },
       args: { sku: v.bigint() },
       yields: v.object({ sku: v.bigint(), frame: v.bytes() }),
       handler: async function* (_ctx: Ctx, args: Ctx) {

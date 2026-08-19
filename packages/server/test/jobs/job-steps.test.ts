@@ -658,7 +658,6 @@ describe("journal integrity", () => {
     clock = 13_000_000;
     const surgery = mutation({
       access: "public",
-      http: true,
       args: { id: v.bigint(), argsJson: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db[JOBS_TABLE].patch(args.id, { argsJson: args.argsJson });

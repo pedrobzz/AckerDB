@@ -1,9 +1,11 @@
 /**
- * The validator protocol every `v` constructor implements: the runtime check,
+ * The validator protocol every `v` constructor implements: native parsing,
+ * Standard JSON conversion,
  * the TypeScript type text, the storage descriptor, and the nullable/optional/
  * nullish modifiers `makeValidator` installs on each validator it produces.
  */
 import {
+  createStandardJsonMethods,
   createStandardSchemaProperties,
   type StandardSchemaProperties,
 } from "./standard-schema.ts";
@@ -17,8 +19,12 @@ export interface Validator<T = unknown, K extends string = string, Input = T> {
   readonly _type?: T;
   /** Phantom: the value accepted before validation and normalization. */
   readonly _inputType?: Input;
-  /** Validate + normalize `value`; throws ValidationError mentioning `path`. */
-  check(value: unknown, path: string): T;
+  /** Validate + normalize one native runtime value. */
+  parse(value: unknown, path?: string): T;
+  /** Decode one Standard JSON value into the native runtime value. */
+  decode(value: unknown, path?: string): T;
+  /** Validate and encode one native runtime value as Standard JSON. */
+  encode(value: T, path?: string): unknown;
   /** Literal TypeScript type text, for codegen. */
   tsType(): string;
   /** JSON descriptor, for schema snapshots and diffing. */
@@ -88,6 +94,12 @@ export function fail(path: string, expected: string, value: unknown): never {
 
 type ModifierMode = "available" | "blocked" | "none";
 
+interface ValidatorImplementation<T> {
+  parse(value: unknown, path: string): T;
+  tsType(): string;
+  descriptor(): Descriptor;
+}
+
 export function makeValidator<
   T,
   K extends string,
@@ -95,7 +107,7 @@ export function makeValidator<
   Input = T,
 >(
   kind: K,
-  impl: Pick<Validator<T, K, Input>, "check" | "tsType" | "descriptor">,
+  impl: ValidatorImplementation<T>,
   extra?: Extra,
   modifierMode: ModifierMode = "available",
   description?: string,
@@ -104,11 +116,18 @@ export function makeValidator<
   const validator = {
     __proto__: prototype ?? Object.prototype,
     kind,
-    ...impl,
+    parse(value: unknown, path = "$input") {
+      return impl.parse.call(validator, value, path);
+    },
+    tsType: impl.tsType,
+    descriptor: impl.descriptor,
     ...extra,
     ...(description === undefined ? {} : { description }),
   } as unknown as ChainableValidator<T, K, Input> & Extra;
+  const standardJson = createStandardJsonMethods(validator);
   Object.defineProperties(validator, {
+    decode: { value: standardJson.decode },
+    encode: { value: standardJson.encode },
     describe: {
       value(this: ChainableValidator<T, K, Input> & Extra, nextDescription: string) {
         if (typeof nextDescription !== "string" || nextDescription.trim() === "") {
@@ -231,10 +250,10 @@ function modified<
   >(
     kind,
     {
-      check(value, path) {
+      parse(value, path) {
         if (value === null && acceptsNull) return null;
         if (value === undefined && acceptsUndefined) return undefined;
-        return inner.check(value, path) as InferValidator<V>;
+        return inner.parse(value, path) as InferValidator<V>;
       },
       tsType: () => `${inner.tsType()}${suffix}`,
       descriptor: () => ({ k: kind, inner: inner.descriptor() }),

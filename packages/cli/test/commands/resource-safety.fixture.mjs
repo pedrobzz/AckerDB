@@ -60,13 +60,13 @@ const functions = {
   pressure: {
     echo: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/echo", openapi: true },
       args: { value: v.float() },
       handler: (_ctx, args) => args.value,
     }),
     collect: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/collect", openapi: true },
       args: {},
       handler: () => {
         Bun.gc(true);
@@ -75,7 +75,7 @@ const functions = {
     }),
     endless: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/endless", openapi: true },
       args: {},
       yields: v.object({ payload: v.string() }),
       handler: () => {
@@ -91,7 +91,7 @@ const functions = {
     }),
     block: procedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/pressure/block", openapi: true },
       args: {},
       handler: async (ctx) => {
         console.log("@@block-start");

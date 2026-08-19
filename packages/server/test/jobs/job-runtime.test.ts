@@ -962,13 +962,11 @@ describe("the jobs table is guarded exactly at the state machine", () => {
     clock = 13_000_000;
     const enqueue = mutation({
       access: "public",
-      http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.jobs.work.steady.enqueue({}, { delayMs: 60_000 }),
     });
     const surgery = mutation({
       access: "public",
-      http: true,
       args: { id: v.bigint(), field: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         switch (args.field) {
@@ -1289,7 +1287,6 @@ describe("the injected clock", () => {
     let thrown: unknown;
     const enqueue = mutation({
       access: "public",
-      http: true,
       args: {},
       handler: async (ctx: Ctx) => {
         clock = Number.NaN;

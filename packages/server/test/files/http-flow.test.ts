@@ -181,7 +181,7 @@ const functions = {
   files: {
     createUpload: mutation({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/files/createUpload", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.files.createUploadSession({ maxBytes: 64 }),
     }),

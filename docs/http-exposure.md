@@ -11,15 +11,17 @@ This document covers the *contract* surface: functions served through their
 party dictates — webhooks verifying an HMAC over raw bytes, OAuth callbacks —
 are the contract-less side of the same surface, owned by
 [HTTP routes](http-routes.md). Both sides are `Http` values in the same
-registry; what differs is that this side derives its path from an address and is served
-through its contract.
+registry; what differs is that this side is served through its contract.
+Contract functions state their public path explicitly; their canonical address
+remains the transport-independent identity used by the runtime, generated
+references, jobs, and the typed SSE transport.
 
 ## Motivation
 
-Every registered function is callable today, but only through Protocol-2: the
-WebSocket session for queries and mutations, and the envelope routes
-`POST /api/call` / `POST /api/sse` for procedures. External services and
-non-JS consumers need a normal HTTP surface with per-function paths, plain
+Every registered function is callable through its native transport: the
+WebSocket session for queries, mutations, and procedures, and `POST /_sse/open`
+for SSE. External services and non-JS consumers may additionally need a normal
+HTTP surface with application-chosen paths, plain
 JSON in and out, and a machine-readable schema. The runtime already has every
 piece this needs: an HTTP listener with auth, admission, and body limits; a
 transport-free query boundary (`executeQuery`); an HTTP-native procedure path
@@ -27,13 +29,12 @@ transport-free query boundary (`executeQuery`); an HTTP-native procedure path
 
 ## The surface
 
-An exposed function at address `api.messages.list` is served at
-`/api/messages/list`: the URL is the address, segment for segment, and the
-address begins with the fixed application root `api` — see
-[Application addresses](#application-addresses). The wire format is plain JSON
-— no protocol envelope. `ref` lives in the path, correlation is the HTTP
-response itself, and the protocol version is the package version (no `/v1`
-segment; the surface versions with the lockstep release, breaks are explicit).
+An exposed function states its public URL explicitly. A function at address
+`api.messages.list` may choose `/messages`, `/v1/messages`, or
+`/api/messages/list`; the address does not decide. The wire format is plain
+JSON — no protocol envelope. The registered route already identifies the
+function, correlation is the HTTP response itself, and the protocol version is
+the package version (no implicit `/v1` segment; breaks are explicit).
 
 | Kind | Methods | Request args | Response |
 | --- | --- | --- | --- |
@@ -55,7 +56,7 @@ segment; the surface versions with the lockstep release, breaks are explicit).
   not supported; string coercion fights the validator model. Large or
   sensitive args belong in a POST body — URLs are routinely retained by HTTP infrastructure.
 - Cancellation is the HTTP request abort; there is no cancel endpoint.
-- Callers send no request id. The listener numbers path-addressed calls from
+- Callers send no request id. The listener numbers HTTP calls from
   its own monotonic sequence; the id never reaches the response.
 - A value response emits no `Cache-Control`; caching policy belongs to the
   operator. An SSE response is not policy — it sets
@@ -65,9 +66,9 @@ segment; the surface versions with the lockstep release, breaks are explicit).
   different bodies, and the GET query form is the cacheable one.
 - CORS allows the methods the listener serves: `GET, POST, OPTIONS` for the
   exposed function surface, plus `PUT, PATCH, DELETE` for raw HTTP handler
-  routes. It accepts `Idempotency-Key` beside `Content-Type` and
-  `Authorization`, and exposes the receipt and SSE stream headers so a browser
-  caller can read the values documented below.
+  routes. It accepts `Idempotency-Key` and `x-ackerdb-function` beside
+  `Content-Type` and `Authorization`, and exposes the receipt and SSE stream
+  headers so a browser caller can read the values documented below.
 
 ### Wire format
 
@@ -93,25 +94,42 @@ accepts a JSON number on the way in only when it is a safe integer, because
 every larger JSON integer literal has already lost precision by the time it is
 parsed — proto3's int64 rule.
 
-The codec is compiled from the contract once per exposed function, at
-registration:
+Each registered function retains an object validator for `args`; every
+validator owns `parse`, `decode`, and `encode`. The transport therefore calls
+`fn.args.decode(...)`, `fn.returns.encode(...)`, `fn.yields.encode(...)`, or the
+declared error body's `encode(...)` directly. There is no function-level codec
+or registration-time contract cache:
 
-- A contract AckerDB cannot carry across a JSON boundary (`v.primaryKey()`,
-  `v.scheduleAt()`, `v.tag()`) is a **registration error** naming the function
-  and the part of the contract that cannot cross, never a failure at call time.
+- A validator AckerDB cannot carry across a JSON boundary (`v.primaryKey()`,
+  `v.scheduleAt()`, `v.tag()`) is rejected when its Standard JSON operation or
+  JSON Schema is requested.
 - A value with no validator to describe it — `returns` omitted, or an
   application error whose code the function does not declare — crosses through
   the same structural mapping. Declaring a validator changes what a caller is
   *promised*, never what one receives.
 - A validator AckerDB did not build (a hand-written `Validator`, as AI chunk
-  streams use) crosses structurally too, and its own `check` remains the single
-  word on what is valid. No JSON Schema can describe such a kind, so an
-  operation carrying one fails the *document* — at export or registration, per
-  the OpenAPI rules below — not the call.
+  streams use) owns its own `parse`, `decode`, and `encode` behavior. No JSON
+  Schema can describe such a kind, so an
+  operation carrying one fails the *document* — during CLI export or runtime
+  OpenAPI assembly — not the call.
 
 ### SSE
 
-The SSE response carries the existing stream contract unchanged:
+Typed SSE calls use one framework-owned route:
+
+```http
+POST /_sse/open
+x-ackerdb-function: api.messages.tail
+
+{ "channel": "general" }
+```
+
+The header names a registered SSE function and the body is its args object in
+standard JSON. This route exists for every SSE function whether or not that
+function declares a public `http` route. Unknown addresses, non-SSE addresses,
+and a missing header all answer the same `not_found` outcome.
+
+The response carries the existing stream contract unchanged:
 `x-ackerdb-sse-stream` and `x-ackerdb-sse-max-stall-ms` response headers, and
 chunk acknowledgement at `POST /_sse/ack` with the existing
 `sse_ack` frame. Only the call route moves; the ack machinery is
@@ -126,26 +144,22 @@ send an `Authorization` header, so it would serve only anonymous streams.
 
 ## Route namespace
 
-**The framework's own routes live at the root, behind the `_` marker.** `/api/`
-belongs to application addresses, so a protocol endpoint nested under it would
-be squatting in application-owned space — there was never a principle
-separating `/ws` at the root from `/api/_files` below it, only history. `_`
-belongs to AckerDB at the HTTP root, and directly under `/api/`, so a future
-built-in route can never collide with an *exposed function's* derived path.
+**The framework's own routes live at the root, behind the `_` marker.** `_`
+belongs to AckerDB at the HTTP root, and directly under `/api/`, so future
+built-ins cannot be captured by application declarations.
 
-**Only exposed functions derive their path from an address.** A raw
-[HTTP route](http-routes.md) states its URL explicitly and may claim anything
-outside the reserved set — the root included — because an external provider
-frequently dictates it. That is why the second segment is reserved beneath
-`/api/` and nowhere else: `/webhooks/_raw` is a provider's name for a path
-AckerDB will never serve.
+Both contract functions and raw [HTTP routes](http-routes.md) state their URL
+explicitly and may claim anything outside the reserved set — the root included.
+The second segment remains reserved beneath `/api/` and nowhere else;
+`/webhooks/_raw` is an application/provider path AckerDB will never serve.
 
 | Route | Fate |
 | --- | --- |
 | `/api/call` | deleted (replaced by per-function paths) |
-| `/api/sse` | deleted (replaced by per-function paths) |
+| `/api/sse` | deleted (replaced by `POST /_sse/open`) |
 | `/ws` | → `/_ws` |
 | `/api/sse/ack` | → `/_sse/ack` |
+| — | `POST /_sse/open` (typed SSE transport) |
 | `/api/_files/<route>/…` | → `/_files/uploads/:handle`, `/_files/grants/:handle` |
 | — | new, opt-in: `GET /_openapi.json` |
 | `/live`, `/ready`, `/status` | unchanged, and unmarked |
@@ -178,18 +192,22 @@ The fixed `api` root identifies application-owned behavior. The remaining
 segments come entirely from the function module and its export. For example,
 `app/admin/users.ts` exporting `list` is addressed
 `api.admin.users.list`. Code generation exports one `api` reference tree, jobs
-record the same address, socket calls send it unchanged, and an HTTP-exposed
-function answers at `/api/admin/users/list`.
+record the same address, socket calls send it unchanged, and typed SSE calls
+carry it in the `x-ackerdb-function` header. A public HTTP path is independent
+metadata.
 
 **An address never decides admission.** Every declaration still requires an
 `access` policy, and may add a scope requirement. `access: "system"` admits
 only the local system principal; a public or authenticated declaration is
-admitted according to that policy regardless of its module name. Plain HTTP
-also remains opt-in: a function without `http` has no URL.
+admitted according to that policy regardless of its module name. Plain public
+HTTP also remains opt-in: a function without `http` has no public per-function
+URL. An SSE function without `http` is still reachable through `/_sse/open`.
 
-The module path is therefore the only application namespace. A function moved
-from `app/users.ts` to `app/admin/users.ts` deliberately changes
-from `api.users.<export>` to `api.admin.users.<export>` on every surface.
+The module path is therefore the canonical function namespace. Moving a
+function from `app/users.ts` to `app/admin/users.ts` deliberately changes its
+address from `api.users.<export>` to `api.admin.users.<export>` for generated
+references, runtime dispatch, jobs, and typed SSE. Its explicit public HTTP path
+changes only when the declaration changes.
 
 **A file named `index.ts` takes its directory's name.**
 `app/orders/index.ts` publishes `api.orders.*`, so a directory can hold a
@@ -211,30 +229,30 @@ definition:
 ```ts
 export const list = query({
   description: "List the newest messages in a channel.",
-  http: true,                    // exposed, in OpenAPI
+  http: { path: "/messages", openapi: true },
   args: { channel: v.string() },
   handler: async (ctx, args) => { ... },
 });
 
 export const purge = mutation({
   description: "Remove every message in a channel.",
-  http: { openapi: false },      // exposed, hidden from OpenAPI
+  http: { path: "/internal/messages/purge", openapi: false },
   args: { channel: v.string() },
   handler: async (ctx, args) => { ... },
 });
 ```
 
-- `http?: boolean | { openapi: boolean }` — absent or `false` means not
-  reachable over HTTP and absent from OpenAPI. `true` is shorthand for
-  `{ openapi: true }`. Because `openapi` only exists inside an exposed
-  function's config, "in OpenAPI but not callable" is unrepresentable at the
-  type level; registration validates the same shape for untyped callers.
+- `http?: { path: string; openapi: boolean }` — absence means no public route.
+  The path is exact, static, and explicit; captures are rejected because
+  function args come from the JSON body/query contract, not URL parameters.
+  `openapi: false` keeps the route callable but omits it from the document.
+  "In OpenAPI but not callable" remains unrepresentable.
 - `description` (optional, all four kinds) feeds the OpenAPI operation
   description. `title` likewise (OpenAPI summary).
-- The flags govern only this surface. WebSocket reachability is unchanged
-  and unconditional; hiding a function from HTTP does not hide it from
-  Protocol-2, and access control remains auth + function policy on both
-  transports.
+- These fields govern only the public HTTP/OpenAPI surface. Native transport
+  reachability is unchanged; omitting `http` does not hide a function from its
+  native transport, and access control remains auth + function policy on every
+  transport.
 
 ## Mutations: idempotency and receipt
 
@@ -312,8 +330,8 @@ reuse the existing HTTP ingress machinery.
 
 ## OpenAPI
 
-The generator lives in `@ackerdb/server` and walks the registry: one
-operation per exposed function with `openapi` not disabled.
+The generator lives in `@ackerdb/server` and walks the registry: one path item
+at each declaration's explicit `http.path` when `http.openapi` is true.
 
 - **Never on by default.** The default consumption path is a CLI export
   (`acker openapi <document> [app-dir]`, in the existing `@ackerdb/cli`),
@@ -343,8 +361,8 @@ operation per exposed function with `openapi` not disabled.
   `sse_error` (whose `outcome` is the `Outcome` schema) — and states the
   acknowledgement the receiver owes, because a client that reads an event as a
   bare chunk misparses every one and stalls out after one event.
-  `operationId` is the address; the top-level module — the segment after the
-  fixed root — is the tag; bearer auth is
+  `operationId` is derived from the address, never the URL; the top-level
+  module — the segment after the fixed root — is the tag; bearer auth is
   the security scheme, declared document-wide as optional because the function's
   own policy — not the transport — decides whether a caller may be anonymous.
 - A query has two operations for its two methods, and two operations cannot
@@ -363,19 +381,17 @@ operation per exposed function with `openapi` not disabled.
 
 ### Shared schema module
 
-`validation/json-schema.ts` owns every schema AckerDB publishes:
-`argsJsonSchema(args)` for an `ObjectShape` and
-`validatorJsonSchema(validator, options)` for a `returns` or `yields`. The
-OpenAPI generator is its only consumer, and the standard-JSON codec keeps only
-decode/encode. See [Scopes](scopes.md) for how a function's scopes sit
-alongside its access policy.
+`validation/json-schema.ts` owns every schema AckerDB publishes through
+`validatorJsonSchema(validator, options)`. Registered `args` are ordinary object
+validators, so OpenAPI needs no shape-specific adapter. See [Scopes](scopes.md)
+for how a function's scopes sit alongside its access policy.
 
 ## Registration-time validation
 
 - A `_`-prefixed module segment is refused during definition discovery. A raw
-  or derived application route may not claim a built-in path or one under a
+  or contract application route may not claim a built-in path or one under a
   `_`-marked namespace; route registration enforces that HTTP invariant.
-- Two routes claiming one path are refused at load naming both, whether they
+- Two routes claiming one path are refused at load, whether they
   are two exposed functions, two raw routes, or one of each. A collision with a
   framework route is refused when the application batch enters the live
   registry, which happens before readiness.
@@ -384,8 +400,6 @@ alongside its access policy.
   `app/orders/index.ts`, and an `app/index.ts` with no directory to
   be named after. The `index.ts` collapse is the only way two files reach one
   name, so this is one check rather than a rule per shape.
-- An HTTP-exposed function whose contract cannot cross the standard-JSON
-  boundary is a registration error (see *Wire format*).
 - A malformed `http` field (anything other than the documented shape) is a
   registration error.
 - A field no declaration consumes is a registration error naming it, exactly as
@@ -395,15 +409,13 @@ alongside its access policy.
 
 ## Client impact
 
-`@ackerdb/client` keeps the WebSocket for queries, mutations, and procedures
-— this surface targets external callers, and moving client transport is a
-separate discussion. The client changes are the URL renames — `sse()` calls
-the per-function path with a raw args body, and acks go to `/_sse/ack` —
-plus the wire format that path speaks: `sse()` encodes its args as standard
-JSON (`toStandardJson` in `@ackerdb/core`) and reads chunk values as standard
-JSON, never as wire escapes. The ack request itself stays a Protocol-2 frame.
-Because that path is the exposed one, an `sseProcedure` the client streams
-must carry `http`.
+`@ackerdb/client` keeps the WebSocket for queries, mutations, and procedures.
+`sse()` posts a raw standard-JSON args body to `/_sse/open` and carries the
+generated function address in `x-ackerdb-function`; acks go to `/_sse/ack`.
+It reads chunk values as standard JSON, never as wire escapes. The ack request
+itself stays a Protocol-2 frame. Code generation therefore needs only the
+canonical function address and the args/chunk types. It neither knows nor emits
+the optional public HTTP path.
 
 One consequence is open: a streamed chunk is typed by `yields` through
 codegen, but the client holds no validators, so a chunk field declared
@@ -444,15 +456,14 @@ plumbing, receipt headers, the shared schema module extraction, the OpenAPI
 walk, the CLI export, the `_` route renames, and deleting the envelope routes
 plus their core types and tests.
 
-The wire format reuses `compileStandardJsonCodec`
-(`validation/standard-schema.ts`) — there is no second codec.
-`transport/http-codec.ts` caches the compiled standard-JSON contract by the
-registered function object. The route closure retains the address and function
-for request decoding; Runtime resolves that address through its Registry and
-uses the registered definition for return values, SSE chunks, and declared
-error bodies. No codec travels with a Runtime request. OpenAPI independently
-walks `registry.functions`, the sole
-addressable-function collection, and derives only the functions whose HTTP
-declaration permits documentation. The structural mapping for values no
+The wire format is implemented by each validator's own `decode` and `encode`
+methods (`validation/standard-schema.ts` installs them on built-in validators).
+A public-route closure retains the address and function; the typed SSE route
+resolves its header address through the Registry. Runtime uses the registered
+validators directly for arguments, return values, SSE chunks, and declared
+error bodies. OpenAPI
+independently walks `registry.functions`, the sole addressable-function
+collection, and uses only definitions whose HTTP declaration permits
+documentation. The structural mapping for values no
 validator describes is `toStandardJson` in `@ackerdb/core`, which the client
 uses for the same surface's request side.

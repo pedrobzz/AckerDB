@@ -35,7 +35,7 @@ export function array<V extends StandardValidator<unknown, string>>(
   description?: string,
   baseCheck: (value: unknown, path: string) => InferValidator<V>[] = (value, path) => {
     if (!Array.isArray(value)) fail(path, "array", value);
-    return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+    return value.map((item, i) => element.parse(item, `${path}[${i}]`)) as InferValidator<V>[];
   },
 ): ArrayValidator<V> {
   const fields: ConstraintFields | undefined = constraints === undefined
@@ -44,12 +44,12 @@ export function array<V extends StandardValidator<unknown, string>>(
       ...(constraints.min === undefined ? {} : { min: constraints.min }),
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? baseCheck
     : (value: unknown, path: string): InferValidator<V>[] => {
       if (!Array.isArray(value)) fail(path, "array", value);
       checkArrayConstraints(fields!, value.length, path);
-      return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+      return value.map((item, i) => element.parse(item, `${path}[${i}]`)) as InferValidator<V>[];
     };
   return makeValidator<
     InferValidator<V>[],
@@ -59,7 +59,7 @@ export function array<V extends StandardValidator<unknown, string>>(
   >(
     "array",
     {
-      check,
+      parse,
       tsType: () => `${parenthesize(element.tsType())}[]`,
       descriptor: () => ({
         k: "array",
@@ -134,7 +134,7 @@ function setOwnField(record: Record<string, unknown>, key: string, value: unknow
 }
 
 /** Compile one strict, presence-preserving object validator from a shape. */
-export function compileShape<S extends ObjectShape>(
+function compileShape<S extends ObjectShape>(
   shape: S,
 ): (value: unknown, path: string) => InferShape<S> {
   const knownKeys: Record<string, true> = Object.create(null);
@@ -161,20 +161,11 @@ export function compileShape<S extends ObjectShape>(
       setOwnField(
         out,
         field.key,
-        field.validator.check(present ? input[field.key] : undefined, `${path}.${field.key}`),
+        field.validator.parse(present ? input[field.key] : undefined, `${path}.${field.key}`),
       );
     }
     return out as InferShape<S>;
   };
-}
-
-/** One-shot convenience for callers that do not retain a compiled shape. */
-export function checkShape<S extends ObjectShape>(
-  shape: S,
-  value: unknown,
-  path: string,
-): InferShape<S> {
-  return compileShape(shape)(value, path);
 }
 
 export interface ObjectValidator<S extends ObjectShape = ObjectShape>
@@ -185,9 +176,9 @@ export interface ObjectValidator<S extends ObjectShape = ObjectShape>
 export function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
   // Own one immutable DSL shape for runtime validation and every projection.
   // Compile its hot-path keys and omission bits once without splitting that
-  // contract or changing the receiver of a structural validator's check.
+  // contract or changing the receiver of a structural validator's parser.
   const ownedShape = ownShape(shape);
-  const check = compileShape(ownedShape);
+  const parse = compileShape(ownedShape);
   return makeValidator<
     InferShape<S>,
     "object",
@@ -196,7 +187,7 @@ export function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
   >(
     "object",
     {
-      check,
+      parse,
       tsType() {
         const fields = Object.keys(ownedShape).map((k) => {
           const field = ownedShape[k]!;
@@ -245,7 +236,7 @@ export function enum_<const V extends readonly [string, ...string[]]>(
   >(
     "enum",
     {
-      check(value, path) {
+      parse(value, path) {
         if (typeof value !== "string" || !ownedValues.includes(value)) {
           const got = typeof value === "string" ? JSON.stringify(value) : describe(value);
           throw new ValidationError(
@@ -272,7 +263,7 @@ export function literal<const V extends LiteralValue>(value: V): LiteralValidato
   return makeValidator<V, "literal", { readonly value: V }>(
     "literal",
     {
-      check(input, path) {
+      parse(input, path) {
         if (input !== value) fail(path, literalTs(value), input);
         return value;
       },
@@ -290,7 +281,7 @@ function literalTs(value: LiteralValue): string {
 
 export function tag(): StandardValidator<null, "tag"> {
   return makeValidator("tag", {
-    check(value, path) {
+    parse(value, path) {
       if (value !== null && value !== undefined) fail(path, "null (payload-less variant)", value);
       return null;
     },
@@ -357,7 +348,7 @@ export function union<M extends UnionMembers>(name: string, members: M): UnionVa
   >(
     "union",
     {
-      check(value, path) {
+      parse(value, path) {
         if (value === null || typeof value !== "object" || Array.isArray(value)) {
           fail(path, `${name} ({ tag, value })`, value);
         }
@@ -376,7 +367,7 @@ export function union<M extends UnionMembers>(name: string, members: M): UnionVa
         ) {
           return { tag: variant } as UnionValue<M>;
         }
-        const payload = member.check(input["value"], `${path}.value`);
+        const payload = member.parse(input["value"], `${path}.value`);
         return { tag: variant, value: payload } as UnionValue<M>;
       },
       tsType: () => name,
@@ -399,7 +390,7 @@ export function union<M extends UnionMembers>(name: string, members: M): UnionVa
 
 export function jsonb<T>(): ChainableValidator<T, "jsonb"> {
   return makeValidator("jsonb", {
-    check(value, path) {
+      parse(value, path) {
       if (value === undefined) fail(path, "JSON value", value);
       try {
         encode(value);

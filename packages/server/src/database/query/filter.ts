@@ -86,7 +86,7 @@ export interface FilterableFields<C extends ObjectShape = ObjectShape> {
 interface FieldPlan {
   readonly kind: string;
   readonly nullable: boolean;
-  check(value: unknown, path: string): unknown;
+  parse(value: unknown, path: string): unknown;
 }
 
 /** A checked but un-encoded clause tree; storage encoding waits for the plan. */
@@ -152,7 +152,7 @@ export function filterableFields<C extends ObjectShape>(
     plans.set(field, {
       kind: inner.kind,
       nullable: validator.kind === "nullable",
-      check: (value, path) => inner.check(value, path),
+      parse: (value, path) => inner.parse(value, path),
     });
   }
   const validator = new FilterValidator(table as TableDef, plans);
@@ -373,7 +373,7 @@ class FilterValidator {
     walk: Walk,
   ): { readonly value: unknown } | undefined {
     try {
-      return { value: plan.check(value, path) };
+      return { value: plan.parse(value, path) };
     } catch (error) {
       if (!isValidationError(error)) throw error;
       const prefix = `${path}: `;

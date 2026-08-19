@@ -11,10 +11,12 @@ import {
   type InferValidator,
   type Validator,
 } from "../validation/validator.ts";
-import type {
-  InferInputShape,
-  InferShape,
-  ObjectShape,
+import {
+  object,
+  type InferInputShape,
+  type InferShape,
+  type ObjectShape,
+  type ObjectValidator,
 } from "../validation/composites.ts";
 import {
   isAccessPolicy,
@@ -136,7 +138,7 @@ export interface EventSubscriptionDefinition<
 }
 
 interface RuntimeEventSubscriptionDefinition {
-  readonly args: ObjectShape;
+  readonly args: ObjectValidator<ObjectShape>;
   readonly access: AccessPolicy<InvocationContext, unknown>;
   readonly matches: (row: unknown, args: unknown) => boolean;
 }
@@ -194,7 +196,12 @@ export class TableDef<
     brand(this, TABLE_DEF_IDENTITY);
     this.columns = columns;
     this.kind = kind;
-    this.eventSubscription = eventSubscription as RuntimeEventSubscriptionDefinition | null;
+    this.eventSubscription = eventSubscription === null
+      ? null
+      : {
+          ...eventSubscription,
+          args: object(eventSubscription.args),
+        } as RuntimeEventSubscriptionDefinition;
     let pkCount = 0;
     let scheduleAtCount = 0;
     for (const [name, validator] of Object.entries(columns)) {
@@ -575,7 +582,7 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     }
     if (table.kind === "event") {
       claimTypeName(eventArgsTypeName(tableName), `event args for table "${tableName}"`);
-      for (const [name, validator] of Object.entries(table.eventSubscription!.args)) {
+      for (const [name, validator] of Object.entries(table.eventSubscription!.args.shape)) {
         walk(validator, `${tableName}.eventArgs.${name}`, "nested", false);
       }
     }

@@ -3,8 +3,8 @@
  * each exposed kind answers, and the headers a call carries beside its body.
  *
  * The framework's own routes live at the root behind the `_` marker. The
- * application's address-derived routes live beneath the fixed `/api/` root;
- * at the root, `_` belongs to AckerDB.
+ * application routes choose any unreserved explicit path; at the root, `_`
+ * belongs to AckerDB.
  *
  * The operational endpoints are the deliberate exception. `/live`, `/ready`,
  * and `/status` carry no marker because they are the contract with the outside
@@ -18,6 +18,7 @@
 import {
   APPLICATION_ADDRESS_ROOT,
   RESERVED_MARKER,
+  SSE_HTTP,
   type SseAckRequest,
   type SseMessage,
 } from "@ackerdb/core";
@@ -32,7 +33,8 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   ready: "/ready",
   status: "/status",
   websocket: "/_ws",
-  sseAck: "/_sse/ack",
+  sseOpen: SSE_HTTP.open,
+  sseAck: SSE_HTTP.acknowledge,
   files: FILES_ROOT,
   /** One Upload Session's bytes; the captured handle is `<id>.<secret>`. */
   fileUpload: `${FILES_ROOT}/uploads/:handle`,
@@ -55,10 +57,10 @@ export function isAckerDBHttpRoute(path: string): boolean {
  * Whether a path an application wants to claim reaches into a name marked as
  * the framework's own. `_` is AckerDB's at the root, where the protocol
  * endpoints live, and directly under the fixed `/api/` root, so a future
- * built-in route can never collide with an exposed function's derived path.
+ * built-in route can never collide with an application route in that namespace.
  *
- * The second segment is reserved only beneath `/api/`. An explicit raw route
- * owns its URL because an external provider dictated it, and `/webhooks/_raw`
+ * The second segment is reserved only beneath `/api/`. An application route
+ * owns its explicit URL, and `/webhooks/_raw`
  * is that provider's name for a path AckerDB will never serve; reserving every
  * second segment everywhere would forbid it for nothing.
  *

@@ -1093,9 +1093,9 @@ export class RuntimeJobs {
     const input = args as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const [field, validator] of Object.entries(
-      definition.args as Record<string, { check(value: unknown, where: string): unknown }>,
+      definition.args as Record<string, { parse(value: unknown, where: string): unknown }>,
     )) {
-      out[field] = validator.check(input[field], `jobs.${name}.args.${field}`);
+      out[field] = validator.parse(input[field], `jobs.${name}.args.${field}`);
     }
     return out;
   }

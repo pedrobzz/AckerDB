@@ -1,16 +1,13 @@
 import {
   isApplicationError,
   isResult,
+  toStandardJson,
   type ApplicationError,
   type Outcome,
 } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../../shared/errors.ts";
 import { standardJsonText } from "../../validation/standard-json.ts";
 import type { AnyRegistered } from "../../app/functions.ts";
-import {
-  encodeHttpError,
-  encodeHttpValue,
-} from "../../transport/http-codec.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "../outcome.ts";
 import type {
   HttpMutationReceipt,
@@ -60,7 +57,10 @@ export class RuntimeHttpResponses {
       }
       if (outcome.value.ok) {
         body = outcome.value.data;
-        toJson = (value) => encodeHttpValue(request.address, fn, value);
+        const returns = fn.returns;
+        toJson = returns === undefined
+          ? toStandardJson
+          : (value) => returns.encode(value, "returns");
         status = 200;
         proven = committed?.encoded;
       } else {
@@ -72,8 +72,19 @@ export class RuntimeHttpResponses {
         }
         const error = outcome.value.error;
         body = error;
-        toJson = (value) =>
-          encodeHttpError(request.address, fn, value as ApplicationError);
+        const declaration = fn.errors?.[error.code];
+        toJson = (value) => {
+          const applicationError = value as ApplicationError;
+          return {
+            ...applicationError,
+            body: declaration === undefined
+              ? toStandardJson(applicationError.body)
+              : declaration.body.encode(
+                  applicationError.body,
+                  `errors.${applicationError.code}.body`,
+                ),
+          };
+        };
         status = error.status;
       }
     } else {

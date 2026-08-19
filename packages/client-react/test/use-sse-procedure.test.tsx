@@ -43,7 +43,6 @@ function modules() {
     stream: {
       grouped: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ tick: v.int() }),
         handler: async function* () {
@@ -52,7 +51,6 @@ function modules() {
       }),
       ticks: sseProcedure({
         access: "public",
-        http: true,
         args: { count: v.int() },
         yields: v.object({ tick: v.int() }),
         handler: async function* (_ctx: SseCtx, args: { count: number }) {
@@ -64,7 +62,6 @@ function modules() {
       }),
       invalid: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ value: v.string() }),
         handler: async function* () {
@@ -74,7 +71,6 @@ function modules() {
       }),
       hold: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -88,7 +84,6 @@ function modules() {
       }),
       holdAfterFirst: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -102,7 +97,6 @@ function modules() {
       }),
       unmountHold: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {

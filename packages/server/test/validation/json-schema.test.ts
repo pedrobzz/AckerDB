@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { v } from "@ackerdb/server";
-import { argsJsonSchema, validatorJsonSchema } from "../../src/validation/json-schema.ts";
+import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 
 const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const DECIMAL_PATTERN = "^(?:0|-?[1-9][0-9]*)$";
@@ -8,11 +8,11 @@ const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/
 
 describe("args schemas", () => {
   test("emits one draft-2020-12 object document from a shape", () => {
-    expect(argsJsonSchema({
+    expect(validatorJsonSchema(v.object({
       channel: v.string().min(1).max(64).describe("The channel to read."),
       limit: v.int().max(100),
       cursor: v.string().optional(),
-    })).toEqual({
+    }))).toEqual({
       $schema: DRAFT_2020_12,
       type: "object",
       properties: {
@@ -35,24 +35,19 @@ describe("args schemas", () => {
   });
 
   test("omits `required` entirely when every argument is omissible", () => {
-    const schema = argsJsonSchema({ cursor: v.string().optional() });
+    const schema = validatorJsonSchema(v.object({ cursor: v.string().optional() }));
 
     expect(schema).not.toHaveProperty("required");
     expect(schema.additionalProperties).toBe(false);
   });
 
   test("keeps prototype-named arguments as own properties", () => {
-    const properties = argsJsonSchema({ ["__proto__"]: v.string() }).properties;
+    const properties = validatorJsonSchema(v.object({ ["__proto__"]: v.string() })).properties;
 
     expect(Object.getPrototypeOf(properties)).toBeNull();
     expect(Object.hasOwn(properties, "__proto__")).toBe(true);
   });
 
-  test("agrees with the same shape compiled into an object validator", () => {
-    const shape = { body: v.string(), tags: v.array(v.string()).optional() };
-
-    expect(argsJsonSchema(shape)).toEqual(validatorJsonSchema(v.object(shape)));
-  });
 });
 
 describe("validator schemas", () => {
@@ -172,12 +167,12 @@ describe("optional, nullable, and nullish", () => {
   });
 
   test("separates omissible fields from present-but-null ones", () => {
-    expect(argsJsonSchema({
+    expect(validatorJsonSchema(v.object({
       required: v.string(),
       nullable: v.string().nullable(),
       optional: v.string().optional(),
       nullish: v.string().nullish(),
-    }).required).toEqual(["required", "nullable"]);
+    })).required).toEqual(["required", "nullable"]);
   });
 });
 
@@ -220,26 +215,24 @@ describe("targets and refusals", () => {
   });
 
   test("names the path of every kind no JSON boundary can carry", () => {
-    expect(() => argsJsonSchema({ value: v.array(v.primaryKey()) }))
+    expect(() => validatorJsonSchema(v.object({ value: v.array(v.primaryKey()) })))
       .toThrow("$.value[]: v.primaryKey() is not a standard-JSON value");
-    expect(() => argsJsonSchema({ value: v.scheduleAt() }))
+    expect(() => validatorJsonSchema(v.object({ value: v.scheduleAt() })))
       .toThrow("$.value: v.scheduleAt() is not a standard-JSON value");
-    expect(() => argsJsonSchema({ value: v.array(v.tag()) }))
+    expect(() => validatorJsonSchema(v.object({ value: v.array(v.tag()) })))
       .toThrow("$.value[]: v.tag() is valid only as a direct v.union() member");
     expect(() => validatorJsonSchema({ ...v.string(), kind: "custom" } as never))
       .toThrow("$: v.custom() has no lossless standard-JSON protocol representation");
   });
 
   test("refuses contradictory validator shapes at the emitting node", () => {
-    expect(() => argsJsonSchema({ value: { ...v.string(), kind: "array" } as never }))
+    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "array" } as never })))
       .toThrow("$.value: v.array() has no element validator");
-    expect(() => argsJsonSchema({ value: { ...v.string(), kind: "nullable" } as never }))
+    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "nullable" } as never })))
       .toThrow("$.value: .nullable() has no inner validator");
-    expect(() => argsJsonSchema({ value: { ...v.string(), kind: "enum", values: [1] } as never }))
+    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "enum", values: [1] } as never })))
       .toThrow("$.value: v.enum() has invalid string values");
-    expect(() => argsJsonSchema({ value: { ...v.string(), kind: "union" } as never }))
+    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "union" } as never })))
       .toThrow("$.value: v.union() has invalid members");
-    expect(() => argsJsonSchema(null as never))
-      .toThrow("$: an object shape must be a plain object of validators");
   });
 });

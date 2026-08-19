@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   Err,
   ACKERDB_VERSION,
+  SSE_HTTP,
   Status,
   decode,
   encode,
@@ -110,14 +111,14 @@ const functions = {
   notes: {
     list: query({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/list", openapi: true },
       args: { rank: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.notes.query().where((row: Ctx) => row.rank.eq(args.rank)).collect(),
     }),
     add: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/add", openapi: true },
       args: { body: v.string(), rank: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.notes.insert(args);
@@ -128,7 +129,7 @@ const functions = {
     /** A second writer with the same args, so a key can differ by function alone. */
     beep: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/beep", openapi: true },
       args: { body: v.string(), rank: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db.beeps.insert({ n: Number(args.rank) });
@@ -137,7 +138,7 @@ const functions = {
     }),
     rejectMutation: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/rejectMutation", openapi: true },
       args: {},
       errors: {
         "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
@@ -147,7 +148,7 @@ const functions = {
     /** Writes, then declares an error: `rollbackWhen` must discard the write. */
     rejectAfterWrite: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/rejectAfterWrite", openapi: true },
       args: { body: v.string(), rank: v.bigint() },
       errors: {
         "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
@@ -160,7 +161,7 @@ const functions = {
     /** Writes, then returns a declared value no single frame can carry. */
     addOversized: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/addOversized", openapi: true },
       args: { body: v.string(), rank: v.bigint() },
       returns: v.string(),
       handler: async (ctx: Ctx, args: Ctx) => {
@@ -171,7 +172,7 @@ const functions = {
     /** Writes, then returns a value no `returns` describes and no JSON carries. */
     addUnencodable: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/addUnencodable", openapi: true },
       args: { body: v.string(), rank: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db.notes.insert(args);
@@ -180,7 +181,7 @@ const functions = {
     }),
     echo: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/echo", openapi: true },
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
@@ -191,13 +192,13 @@ const functions = {
     }),
     numbers: procedure({
       access: "public",
-      http: { openapi: false },
+      http: { path: "/api/notes/numbers", openapi: false },
       args: { values: v.array(v.float()) },
       handler: (_ctx: Ctx, args: Ctx) => args.values.length,
     }),
     identity: procedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/notes/identity", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ({
         kind: ctx.auth.kind,
@@ -207,7 +208,7 @@ const functions = {
     }),
     identityQuery: query({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/notes/identityQuery", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ({
         kind: ctx.auth.kind,
@@ -217,7 +218,7 @@ const functions = {
     }),
     conflict: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/conflict", openapi: true },
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "already exists");
@@ -225,7 +226,7 @@ const functions = {
     }),
     explode: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/explode", openapi: true },
       args: {},
       handler: () => {
         throw new Error("secret implementation detail");
@@ -233,7 +234,7 @@ const functions = {
     }),
     chat: sseProcedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/notes/chat", openapi: true },
       args: { text: v.string() },
       yields: v.jsonb(),
       handler: async function* (_ctx: Ctx, args: Ctx) {
@@ -246,12 +247,12 @@ const functions = {
       args: {},
       yields: v.jsonb(),
       handler: async function* () {
-        yield { phase: "unreachable" };
+        yield { phase: "internal" };
       },
     }),
     badChunk: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/badChunk", openapi: true },
       args: {},
       yields: v.object({ value: v.string() }),
       handler: async function* () {
@@ -261,7 +262,7 @@ const functions = {
     }),
     failLate: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/failLate", openapi: true },
       args: {},
       yields: v.jsonb(),
       handler: async function* () {
@@ -271,7 +272,7 @@ const functions = {
     }),
     stayOpen: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/stayOpen", openapi: true },
       args: {},
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
@@ -285,7 +286,7 @@ const functions = {
     }),
     block: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/block", openapi: true },
       args: {},
       handler: async () => {
         blockedProcedureStarted?.resolve();
@@ -306,13 +307,13 @@ const functions = {
   ops: {
     count: query({
       access: "public",
-      http: true,
+      http: { path: "/api/ops/count", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.db.notes.query().count(),
     }),
     purge: mutation({
       access: "system",
-      http: true,
+      http: { path: "/api/ops/purge", openapi: true },
       args: {},
       handler: () => "purged",
     }),
@@ -481,7 +482,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Address segments map directly to path segments: "api.notes.echo" -> "/api/notes/echo". */
+/** This fixture deliberately gives each public function its conventional address-shaped path. */
 function httpPath(address: string): string {
   return `/${address.replaceAll(".", "/")}`;
 }
@@ -1717,26 +1718,57 @@ describe("SSE", () => {
     expect(verifier.verified).toEqual(["user-token"]);
   });
 
-  test("serves streams only from per-function paths, and only for exposed functions", async () => {
-    // The envelope route is gone; nothing owns `/api/sse` any more.
+  test("opens every SSE function through one framework route, independently of public HTTP", async () => {
+    // The former envelope route stays gone.
     const envelope = await fetch(`${base}/api/sse`, {
       method: "POST",
       body: encode({ t: "call", id: 1, ref: "api.notes.chat", args: { text: "no" } }),
     });
     expect(envelope.status).toBe(404);
 
-    // Unexposed is indistinguishable from nonexistent, and there is no GET.
+    // Without `http`, the function has no public per-function route.
     const unexposed = await fetch(`${base}${httpPath("api.notes.hiddenChat")}`, { method: "POST" });
     expect(unexposed.status).toBe(404);
-
-    // An sseProcedure that was never given `http` is the mistake this feature
-    // makes most likely, so its 404 must decode as `not_found` rather than
-    // reaching the client's frame parser as plain text.
     expect(JSON.parse(await unexposed.text())).toMatchObject({ code: "not_found" });
 
-    const wrongMethod = await fetch(`${base}${httpPath("api.notes.chat")}`);
+    // Typed clients can still open it through the stable transport route.
+    const opened = await fetch(`${base}${SSE_HTTP.open}`, {
+      method: "POST",
+      headers: { [SSE_HTTP.functionHeader]: "api.notes.hiddenChat" },
+      body: JSON.stringify({}),
+    });
+    expect(opened.status).toBe(200);
+    const reader = readSse(opened);
+    const chunk = await reader.next();
+    expect(chunk).toMatchObject({ t: "sse_chunk", value: { phase: "internal" } });
+    expect((await acknowledgeSse(base, reader.streamId, chunk!)).status).toBe(204);
+    const done = await reader.next();
+    expect(done).toMatchObject({ t: "sse_done" });
+    expect((await acknowledgeSse(base, reader.streamId, done!)).status).toBe(204);
+    expect(await reader.next()).toBeNull();
+
+    // Missing, nonexistent, and non-SSE addresses expose the same small oracle.
+    const unknownBodies: string[] = [];
+    for (const address of [undefined, "api.notes.missing", "api.notes.echo"] as const) {
+      const response = await fetch(`${base}${SSE_HTTP.open}`, {
+        method: "POST",
+        headers: address === undefined ? {} : { [SSE_HTTP.functionHeader]: address },
+        body: JSON.stringify({}),
+      });
+      expect(response.status).toBe(404);
+      unknownBodies.push(await response.text());
+    }
+    expect(new Set(unknownBodies).size).toBe(1);
+    expect(JSON.parse(unknownBodies[0]!)).toMatchObject({ code: "not_found" });
+
+    const wrongMethod = await fetch(`${base}${SSE_HTTP.open}`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST, OPTIONS");
+    const preflight = await fetch(`${base}${SSE_HTTP.open}`, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-headers")).toContain(
+      SSE_HTTP.functionHeader,
+    );
     expect(runtime.status().activeSse).toBe(0);
   });
 
@@ -1865,7 +1897,7 @@ describe("the opt-in OpenAPI endpoint", () => {
       notes: {
         latest: query({
           access: "public",
-          http: true,
+          http: { path: "/api/notes/latest", openapi: true },
           args: {},
           returns: v.literal(Number.NaN),
           handler: () => Number.NaN,

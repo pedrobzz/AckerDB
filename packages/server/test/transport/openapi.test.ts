@@ -4,7 +4,7 @@ import { Err, ACKERDB_VERSION, Status, parseSseAckRequest } from "@ackerdb/core"
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { argsJsonSchema, validatorJsonSchema } from "../../src/validation/json-schema.ts";
+import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
 import { SSE_STREAM_HEADERS } from "../../src/transport/http-surface.ts";
 
@@ -18,7 +18,7 @@ const functions = () => ({
   messages: {
     list: query({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/list", openapi: true },
       title: "List messages",
       description: "List the newest messages in a channel.",
       args: { channel: v.string(), limit: v.int().optional() },
@@ -27,7 +27,7 @@ const functions = () => ({
     }),
     send: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/send", openapi: true },
       args: { channel: v.string(), body: v.string() },
       returns: v.bigint(),
       errors: {
@@ -47,7 +47,7 @@ const functions = () => ({
     /** Callable over HTTP, deliberately absent from the document. */
     purge: mutation({
       access: "public",
-      http: { openapi: false },
+      http: { path: "/api/messages/purge", openapi: false },
       args: { channel: v.string() },
       handler: () => 0n,
     }),
@@ -59,13 +59,13 @@ const functions = () => ({
     }),
     ping: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/ping", openapi: true },
       args: {},
       handler: () => ({ pong: true }),
     }),
     tail: sseProcedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/messages/tail", openapi: true },
       args: { channel: v.string() },
       yields: v.object({ body: v.string() }),
       handler: async function* (_ctx: Ctx, args: Ctx) {
@@ -76,7 +76,7 @@ const functions = () => ({
   admin: {
     stats: query({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/admin/stats", openapi: true },
       args: {},
       returns: v.object({ count: v.int() }),
       handler: () => ({ count: 0 }),
@@ -253,7 +253,7 @@ describe("openapi document", () => {
     expect(list.get.summary).toBe("List messages");
     expect(list.post.description).toBe("List the newest messages in a channel.");
 
-    const { $schema: _dialect, ...args } = argsJsonSchema(functions().messages.list.args);
+    const { $schema: _dialect, ...args } = validatorJsonSchema(functions().messages.list.args);
     expect(list.get.parameters).toEqual([{
       name: "args",
       in: "query",
@@ -391,7 +391,7 @@ describe("openapi document", () => {
       notes: {
         list: query({
           access: "public",
-          http: true,
+          http: { path: "/notes", openapi: true },
           args: {},
           handler: () => [],
         }),
@@ -399,7 +399,7 @@ describe("openapi document", () => {
       "notes.list": {
         get: query({
           access: "public",
-          http: true,
+          http: { path: "/notes/get", openapi: true },
           args: {},
           handler: () => null,
         }),
@@ -444,7 +444,7 @@ describe("openapi document", () => {
       messages: {
         latest: query({
           access: "public",
-          http: true,
+          http: { path: "/latest-message", openapi: true },
           args: {},
           returns: v.literal(Number.NaN),
           handler: () => Number.NaN,

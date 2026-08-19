@@ -7,8 +7,9 @@ HMAC over the exact wire bytes, OAuth redirect callbacks, challenge echoes —
 any endpoint whose request and response shapes, and whose URL, are dictated by
 an external party rather than by the application's own contract.
 
-An `http` route is served raw; a function with `http: true` is served through
-its contract (see [HTTP exposure](http-exposure.md)). Those are the two ways
+An `http` route is served raw; a function with an explicit
+`http: { path, openapi }` declaration is served through its contract (see
+[HTTP exposure](http-exposure.md)). Those are the two ways
 onto the HTTP surface, and each is complete for its side: pressure to add
 validators here belongs on an exposed procedure, and pressure to add raw-body
 access there belongs here.
@@ -60,12 +61,13 @@ export const stripe = http("/hooks/stripe", {
 - **Methods are keys, not a list.** A route serving `GET` and `POST` names both
   and writes no `request.method` switch. When two methods share an
   implementation deliberately, assign the same handler value to both keys.
-  Separate `Http` values may contribute disjoint methods to the same pattern;
-  claiming an owned path-and-method pair is a registration error.
+  One `Http` value owns the whole path. A second value claiming that path is a
+  registration error even when its methods are disjoint; shared ownership
+  would split one route's policy across unrelated factories.
 - `http` returns the opaque executable `Http` value the registry consumes.
   Application code declares only the path and handlers; routing machinery is
   not part of its interface.
-- Validation is userland: any `v` validator's own `check` runs by hand inside
+- Validation is userland: any `v` validator's own `parse` runs by hand inside
   the handler, and the response to invalid input is the handler's decision —
   Stripe's "answer 200 for unrecognized events" is expressible here and
   nowhere else.
@@ -129,11 +131,11 @@ them would cost more than it is worth:
 
 An explicit path may claim any URL AckerDB has not reserved. Reserved is:
 
-- the built-in paths (`/live`, `/ready`, `/status`, `/_ws`, `/_sse/ack`,
+- the built-in paths (`/live`, `/ready`, `/status`, `/_ws`, `/_sse/open`, `/_sse/ack`,
   `/_files/…`, `/_openapi.json`);
 - any path whose first segment carries the `_` marker;
 - any path under `/api/` whose second segment carries it, so a future built-in
-  route can never collide with an exposed function's derived path.
+  route can never collide with an application route in that namespace.
 
 Everything else is the application's, including the root and including `/api/`
 itself — a raw route may sit beside exposed functions if that is the URL a

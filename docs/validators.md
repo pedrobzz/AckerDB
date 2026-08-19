@@ -4,6 +4,17 @@ AckerDB has one validator DSL: `v` from `@ackerdb/server`. The same validator va
 drives TypeScript inference, runtime checks, stored schema snapshots, and the
 Standard JSON Schema published for the exposed HTTP surface.
 
+Every validator exposes three value operations:
+
+- `parse(value, path?)` validates and normalizes a native runtime value.
+- `decode(value, path?)` converts Standard JSON into that native value.
+- `encode(value, path?)` validates the native value and converts it to Standard
+  JSON.
+
+For example, `v.bigint().parse(7n)` returns `7n`,
+`v.bigint().decode("7")` returns `7n`, and `v.bigint().encode(7n)` returns
+`"7"`. Composite validators apply those operations through their children.
+
 ## Numeric types
 
 Choose the JavaScript type and SQLite storage class deliberately:

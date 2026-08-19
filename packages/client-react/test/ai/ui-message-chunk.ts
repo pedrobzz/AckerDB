@@ -1,3 +1,4 @@
+import { toStandardJson } from "@ackerdb/core";
 import { ValidationError, type Validator } from "@ackerdb/server";
 import type { UIMessageChunk } from "ai";
 
@@ -60,9 +61,9 @@ function describe(value: unknown): string {
 }
 
 export function uiMessageChunk(): Validator<UIMessageChunk, "uiMessageChunk"> {
-  return {
+  const validator: Validator<UIMessageChunk, "uiMessageChunk"> = {
     kind: "uiMessageChunk",
-    check(value, path) {
+    parse(value, path = "$input") {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         throw new ValidationError(`${path}: expected UIMessageChunk object, got ${describe(value)}`);
       }
@@ -86,7 +87,14 @@ export function uiMessageChunk(): Validator<UIMessageChunk, "uiMessageChunk"> {
       }
       return value as UIMessageChunk;
     },
+    decode(value, path = "$input") {
+      return validator.parse(value, path);
+    },
+    encode(value, path = "$output") {
+      return toStandardJson(validator.parse(value, path));
+    },
     tsType: () => "UIMessageChunk",
     descriptor: () => ({ k: "uiMessageChunk" }),
   };
+  return validator;
 }

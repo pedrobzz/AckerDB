@@ -60,7 +60,6 @@ import { mutation, query, sseProcedure } from "../_generated/server.ts";
 
 export const tail = sseProcedure({
   access: "public",
-  http: true,
   args: { channelId: v.bigint() },
   yields: v.object({ body: v.string() }),
   handler: async function* (_ctx, args) {

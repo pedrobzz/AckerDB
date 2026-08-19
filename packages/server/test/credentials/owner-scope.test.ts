@@ -45,7 +45,7 @@ async function bareRuntime(): Promise<{ readonly runtime: Runtime; readonly sess
   });
   const transact = typedProcedure({
     access: "public",
-    http: true,
+    http: { path: "/api/ordinary/transact", openapi: true },
     args: {},
     handler: (ctx) => ctx.tx((tx) => tx.credentials.query().collect()),
   });

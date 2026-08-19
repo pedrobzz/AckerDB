@@ -134,7 +134,7 @@ const revokeAny = typedMutation({
 const revokeManyThenFail = typedProcedure({
   description: "Revoke a set, then discard the whole transaction.",
   access: "public",
-  http: true,
+  http: { path: "/api/admin/revokeManyThenFail", openapi: true },
   args: { ids: v.array(v.string()) },
   returns: v.object({ rolledBack: v.boolean() }),
   handler: async (ctx, args) => {

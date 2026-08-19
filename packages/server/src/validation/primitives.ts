@@ -34,7 +34,7 @@ export interface StringValidator extends BoundedValidator<string, "string", numb
 
 export function primaryKey(): StandardValidator<bigint, "pk"> {
   return makeValidator("pk", {
-    check(value, path) {
+    parse(value, path) {
       if (typeof value !== "bigint") fail(path, "bigint (primary key)", value);
       return value;
     },
@@ -63,7 +63,7 @@ export function string(
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
       ...(constraints.regex === undefined ? {} : { regex: constraints.regex.source }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? checkString
     : (value: unknown, path: string): string => {
       const checked = checkString(value, path);
@@ -73,7 +73,7 @@ export function string(
   return makeValidator<string, "string", Pick<StringValidator, "min" | "max" | "regex">>(
     "string",
     {
-      check,
+      parse,
       tsType: () => "string",
       descriptor: () => ({
         k: "string",
@@ -110,7 +110,7 @@ function boundedNumber<K extends "int" | "float">(
       ...(constraints.min === undefined ? {} : { min: constraints.min }),
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? baseCheck
     : (value: unknown, path: string): number => {
       const checked = baseCheck(value, path);
@@ -120,7 +120,7 @@ function boundedNumber<K extends "int" | "float">(
   return makeValidator<number, K, Pick<BoundedValidator<number, K, number>, "min" | "max">>(
     kind,
     {
-      check,
+      parse,
       tsType: () => "number",
       descriptor: () => ({
         k: kind,
@@ -154,14 +154,6 @@ function checkBigint(value: unknown, path: string): bigint {
   return checkI64(value, path, "bigint");
 }
 
-/** @internal Base-check identities for the one sanctioned structural test; not in the package barrel. */
-export const validatorBaseChecksForTest = Object.freeze({
-  string: checkString,
-  int: checkInt,
-  float: checkFloat,
-  bigint: checkBigint,
-});
-
 export function bigint(
   constraints?: Bounds<bigint>,
   description?: string,
@@ -172,7 +164,7 @@ export function bigint(
       ...(constraints.min === undefined ? {} : { min: constraints.min.toString() }),
       ...(constraints.max === undefined ? {} : { max: constraints.max.toString() }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? checkBigint
     : (value: unknown, path: string): bigint => {
       const checked = checkBigint(value, path);
@@ -186,7 +178,7 @@ export function bigint(
   >(
     "bigint",
     {
-      check,
+      parse,
       tsType: () => "bigint",
       descriptor: () => ({
         k: "bigint",
@@ -202,7 +194,7 @@ export function bigint(
 
 export function identity(): ChainableValidator<Identity, "identity"> {
   return makeValidator("identity", {
-    check: (value, path) => checkI64(value, path, "Identity (bigint)") as Identity,
+    parse: (value, path) => checkI64(value, path, "Identity (bigint)") as Identity,
     tsType: () => "Identity",
     descriptor: () => ({ k: "identity" }),
   });
@@ -212,7 +204,7 @@ export type FileValidator = ChainableValidator<FileId, "file">;
 
 export function file(): FileValidator {
   return makeValidator("file", {
-    check: (value, path) => checkI64(value, path, "FileId (bigint)") as FileId,
+    parse: (value, path) => checkI64(value, path, "FileId (bigint)") as FileId,
     tsType: () => "FileId",
     descriptor: () => ({ k: "file" }),
   });
@@ -222,7 +214,7 @@ export type FileGrantValidator = ChainableValidator<FileGrantId, "fileGrant">;
 
 export function fileGrant(): FileGrantValidator {
   return makeValidator("fileGrant", {
-    check: (value, path) => checkI64(value, path, "FileGrantId (bigint)") as FileGrantId,
+    parse: (value, path) => checkI64(value, path, "FileGrantId (bigint)") as FileGrantId,
     tsType: () => "FileGrantId",
     descriptor: () => ({ k: "fileGrant" }),
   });
@@ -230,7 +222,7 @@ export function fileGrant(): FileGrantValidator {
 
 export function boolean(): ChainableValidator<boolean, "boolean"> {
   return makeValidator("boolean", {
-    check(value, path) {
+    parse(value, path) {
       if (typeof value !== "boolean") fail(path, "boolean", value);
       return value;
     },
@@ -241,7 +233,7 @@ export function boolean(): ChainableValidator<boolean, "boolean"> {
 
 export function bytes(): ChainableValidator<Uint8Array, "bytes"> {
   return makeValidator("bytes", {
-    check(value, path) {
+    parse(value, path) {
       if (!(value instanceof Uint8Array)) fail(path, "Uint8Array", value);
       return value;
     },
@@ -265,7 +257,7 @@ export function vector(dimensions: number): VectorValidator {
   >(
     "vector",
     {
-      check: (value, path) => normalizeVector(value, size, path),
+      parse: (value, path) => normalizeVector(value, size, path),
       tsType: () => "readonly number[]",
       descriptor: () => ({ k: "vector", dimensions: size }),
     },
@@ -275,7 +267,7 @@ export function vector(dimensions: number): VectorValidator {
 
 export function scheduleAt(): StandardValidator<number, "scheduleAt"> {
   return makeValidator("scheduleAt", {
-    check(value, path) {
+    parse(value, path) {
       if (typeof value !== "number" || !Number.isFinite(value)) {
         fail(path, "timestamp (finite number)", value);
       }

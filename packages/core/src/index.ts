@@ -62,7 +62,6 @@ export {
   type RegisteredFunction,
   type RegisteredChannelContract,
   type ApiFromModules,
-  httpPathForAddress,
   APPLICATION_ADDRESS_ROOT,
   EVENTS_ADDRESS_PREFIX,
   EVENTS_NAMESPACE,

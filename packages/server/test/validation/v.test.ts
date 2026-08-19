@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { v, ValidationError, type Identity } from "@ackerdb/server";
 
-const check = <T>(v: { check(value: unknown, path: string): T }, value: unknown) =>
-  v.check(value, "t");
+const check = <T>(v: { parse(value: unknown, path: string): T }, value: unknown) =>
+  v.parse(value, "t");
 
 describe("scalar validators", () => {
   test("string / number / boolean / bigint / bytes accept and reject", () => {
@@ -184,14 +184,14 @@ describe("Standard Schema contract", () => {
     expect(() => plain.describe("  ")).toThrow("non-empty");
   });
 
-  test("keeps runtime-native Standard Schema honest until a protocol codec is compiled", () => {
+  test("keeps the native Standard Schema view distinct from Standard JSON", () => {
     expect(() => v.bigint()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("$: v.bigint() requires a standard-JSON protocol codec");
+      .toThrow("$: v.bigint() requires a Standard JSON schema projection");
     expect(() => v.identity()["~standard"].jsonSchema.output({ target: "draft-2020-12" }))
-      .toThrow("requires a standard-JSON protocol codec");
+      .toThrow("requires a Standard JSON schema projection");
     expect(() => v.bytes()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("requires a standard-JSON protocol codec");
+      .toThrow("requires a Standard JSON schema projection");
     expect(() => v.literal(1n)["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("v.literal(bigint) requires a standard-JSON protocol codec");
+      .toThrow("v.literal(bigint) requires a Standard JSON schema projection");
   });
 });

@@ -159,7 +159,7 @@ export function toSqlPredicateValue(
     }
     return tag;
   }
-  const checked = baseValidator(plan.table.columns[column]!).check(
+  const checked = baseValidator(plan.table.columns[column]!).parse(
     value,
     `${plan.displayName}.${column}`,
   );

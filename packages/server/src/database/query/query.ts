@@ -172,7 +172,7 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
     }
     try {
       const logical = column.fromSql([value]);
-      plan.table.columns[columnName]!.check(logical, path);
+      plan.table.columns[columnName]!.parse(logical, path);
     } catch (error) {
       if (!isValidationError(error)) throw error;
       throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);

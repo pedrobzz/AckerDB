@@ -159,7 +159,6 @@ const functions = {
   messages: {
     list: query({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.query().where((row: Ctx) => row.channelId.eq(args.channelId)).collect(),
@@ -213,7 +212,6 @@ const functions = {
     }),
     missing: query({
       access: "public",
-      http: true,
       args: { id: v.bigint() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("message-not-found", { id: args.id }, Status.NotFound),
@@ -407,7 +405,6 @@ const functions = {
     }),
     schedule: mutation({
       access: "public",
-      http: true,
       args: { message: v.string(), attempt: v.int(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.jobs.scheduled.fire.enqueue(
@@ -419,13 +416,11 @@ const functions = {
   ops: {
     echo: procedure({
       access: "public",
-      http: true,
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     enterSystem: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async (ctx: Ctx): Promise<unknown> => {
         const nested: unknown = await runtime.system.run(
@@ -443,14 +438,12 @@ const functions = {
     }),
     reject: procedure({
       access: "public",
-      http: true,
       args: { reason: v.string() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("procedure-rejected", { reason: args.reason }, Status.UnprocessableContent),
     }),
     block: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async () => {
         externalProcedureStarted?.resolve(undefined);
@@ -460,7 +453,6 @@ const functions = {
     }),
     blockRejectingCancellation: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async (ctx: Ctx) => {
         externalProcedureStarted?.resolve(undefined);
@@ -471,7 +463,6 @@ const functions = {
     }),
     pipeline: procedure({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch("data:text/plain,external")).text();
@@ -489,13 +480,11 @@ const functions = {
     }),
     nestedTx: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
     }),
     catchTxThrow: procedure({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         try {
@@ -514,7 +503,6 @@ const functions = {
     }),
     failEmoji: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "💥".repeat(512));
@@ -522,7 +510,6 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
-      http: true,
       args: { count: v.int() },
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx, args: Ctx) {
@@ -535,7 +522,6 @@ const functions = {
     }),
     streamed: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () =>
@@ -548,7 +534,6 @@ const functions = {
     }),
     invalidChunk: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.object({ value: v.string() }),
       handler: async function* () {
@@ -558,7 +543,6 @@ const functions = {
     }),
     failingStream: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () => {
@@ -567,7 +551,6 @@ const functions = {
     }),
     waitForAbort: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
@@ -580,7 +563,6 @@ const functions = {
     }),
     holdSse: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* () {

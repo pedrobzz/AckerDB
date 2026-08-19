@@ -510,10 +510,12 @@ function GenerateButton() {
 }
 ```
 
-The HTTP request starts on the first stream read, each pull credits the
-previous chunk, and `stream.cancel()` or a supplied abort signal releases the
-request. SSE procedures do not reconnect or restart; validation, disconnect,
-and terminal outcomes error the stream with the exact `AckerDBClientError`.
+The HTTP request starts on the first stream read: the client posts args to
+`/_sse/open` and sends the generated address in `x-ackerdb-function`, so the
+procedure needs no public `http` declaration. Each pull credits the previous
+chunk, and `stream.cancel()` or a supplied abort signal releases the request.
+SSE procedures do not reconnect or restart; validation, disconnect, and
+terminal outcomes error the stream with the exact `AckerDBClientError`.
 
 ## Live events
 

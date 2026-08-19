@@ -59,7 +59,9 @@ export function validateDeclaration(
     typeof value !== "object" ||
     value === null ||
     typeof (value as Validator).kind !== "string" ||
-    typeof (value as Validator).check !== "function"
+    typeof (value as Validator).parse !== "function" ||
+    typeof (value as Validator).decode !== "function" ||
+    typeof (value as Validator).encode !== "function"
   ) {
     throw new TypeError(`${path} must be a v validator`);
   }

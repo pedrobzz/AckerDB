@@ -5,9 +5,10 @@
  * types so every call is end-to-end typed through codegen.
  *
  * **An application address begins with `api`.**
- * `api.<...module segments>.<export name>` is the whole rule, and it holds
- * everywhere an address appears — the socket, the registry's keys, and the
- * URL.
+ * `api.<...module segments>.<export name>` is the whole rule wherever an
+ * address appears — the socket, the registry's keys, jobs, channels, and the
+ * framework-owned SSE protocol. Public HTTP paths are declared independently
+ * by each function factory.
  */
 
 import type { ErrResult, OkResult } from "./result.ts";
@@ -129,15 +130,6 @@ export function getRef(
     throw new Error("not a ackerdb function reference");
   }
   return address;
-}
-
-/**
- * The wire contract for an exposed function's URL: the address, segment for
- * segment. The listener claiming the path and the client building it read one
- * rule over one value and cannot drift.
- */
-export function httpPathForAddress(address: string): string {
-  return `/${address.replaceAll(".", "/")}`;
 }
 
 export type ChannelArgs<Ref extends AnyChannelRef> =

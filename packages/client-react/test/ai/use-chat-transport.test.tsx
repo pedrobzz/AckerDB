@@ -60,7 +60,6 @@ function modules() {
       // UIMessageStream and returned from the handler as-is.
       chat: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (_ctx: SseCtx, args: { chatId: string }) => {
@@ -113,7 +112,6 @@ function modules() {
       // returned directly as its UI message stream.
       model: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: () => {
@@ -148,7 +146,6 @@ function modules() {
       // Custom argument shape: only reachable through the typed mapper.
       custom: sseProcedure({
         access: "public",
-        http: true,
         args: {
           sessionId: v.string(),
           prompt: v.string(),
@@ -171,7 +168,6 @@ function modules() {
       // exactly when the runtime releases the handler's iterator.
       holdBeforeFirst: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -185,7 +181,6 @@ function modules() {
       }),
       holdMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -201,7 +196,6 @@ function modules() {
       }),
       malformed: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -211,7 +205,6 @@ function modules() {
       }),
       failing: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (): never => {
@@ -220,7 +213,6 @@ function modules() {
       }),
       failingMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {

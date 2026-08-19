@@ -30,7 +30,7 @@ export interface RuntimeHttpResponse {
 /** Constructs the HTTP response; return is the measured application handoff, not network delivery. */
 export type RuntimeHttpResponder = (response: RuntimeHttpResponse) => Response;
 
-/** One path-addressed HTTP call; every kind answers through the same responder. */
+/** One HTTP function call; every kind answers through the same responder. */
 export interface RuntimeHttpRequest extends RuntimeExternalRequest {
   readonly respond: RuntimeHttpResponder;
 }

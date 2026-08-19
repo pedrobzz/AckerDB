@@ -49,7 +49,7 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/link", openapi: true },
       args: { rawBearerToken: v.string() },
       handler: async (ctx: Ctx, args: { rawBearerToken: string }) => {
         await ctx.linkAccount(args.rawBearerToken);
@@ -60,7 +60,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/create", openapi: true },
       args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -72,7 +72,7 @@ const functions = {
     }),
     current: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/current", openapi: true },
       args: {},
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");

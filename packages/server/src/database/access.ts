@@ -186,7 +186,7 @@ function checkFullRow(plan: TablePlan, row: unknown, op: string): Record<string,
     const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
       ? null
       : input[name];
-    out[name] = validator.check(value, `${plan.displayName}.${op}.${name}`);
+    out[name] = validator.parse(value, `${plan.displayName}.${op}.${name}`);
   }
   return out;
 }
@@ -306,7 +306,7 @@ function updateRow(
     // still arrives at runtime carries no storage and is not written.
     const validator = plan.table.columns[key];
     if (validator === undefined) continue;
-    const value = validator.check(partial[key], `${plan.displayName}.patch.${key}`);
+    const value = validator.parse(partial[key], `${plan.displayName}.patch.${key}`);
     changed[key] = value;
     updated[key] = value;
     const columnPlan = plan.columns.get(key)!;
@@ -516,7 +516,7 @@ function attachUpsert(
       const clauses: string[] = [];
       const params: unknown[] = [];
       for (const column of index.columns) {
-        const checked = plan.table.columns[column]!.check(
+        const checked = plan.table.columns[column]!.parse(
           input[column],
           `${plan.displayName}.upsert.${column}`,
         );
@@ -601,7 +601,7 @@ function eventWriteMethods(
           const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
             ? null
             : input[name];
-          out[name] = validator.check(value, `${logicalName}.insert.${name}`);
+          out[name] = validator.parse(value, `${logicalName}.insert.${name}`);
         }
         writes.events.push({ table: logicalName, row: { [pk]: nextEventId(logicalName), ...out } });
       } catch (error) {

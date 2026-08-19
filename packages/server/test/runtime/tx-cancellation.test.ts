@@ -55,7 +55,6 @@ async function gate(key: string, signal: AbortSignal): Promise<void> {
 
 const activeTransaction = typedProcedure({
   access: "public",
-  http: true,
   args: {},
   handler: async (ctx) => {
     const done = await ctx.tx(async (tx) => {
@@ -69,7 +68,6 @@ const activeTransaction = typedProcedure({
 
 const committedTransaction = typedProcedure({
   access: "public",
-  http: true,
   args: {},
   handler: async (ctx) => {
     const committed = await ctx.tx((tx) => tx.db.records.insert({ label: "committed" }));
@@ -80,7 +78,6 @@ const committedTransaction = typedProcedure({
 
 const holdWriter = typedProcedure({
   access: "public",
-  http: true,
   args: {},
   handler: async (ctx) => {
     const held = await ctx.tx(async (tx) => {
@@ -94,7 +91,6 @@ const holdWriter = typedProcedure({
 
 const queuedTransaction = typedProcedure({
   access: "public",
-  http: true,
   args: {},
   handler: async (ctx) => {
     const queued = await ctx.tx((tx) => tx.db.records.insert({ label: "queued" }));

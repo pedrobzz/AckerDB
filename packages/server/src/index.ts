@@ -120,7 +120,6 @@ export {
   type VectorValidator,
 } from "./validation/primitives.ts";
 export {
-  checkShape,
   type InferInputShape,
   type LiteralValidator,
   type ObjectShape,
@@ -426,10 +425,8 @@ export {
   type ImportedDefinitionModule,
 } from "./definitions.ts";
 export {
-  type StandardJsonCodec,
   type StandardJsonInput,
   type StandardJsonOutput,
-  type StandardJsonProtocolSchema,
   type StandardJsonSchemaOptions,
   type StandardSchemaIssue,
   type StandardSchemaOptions,

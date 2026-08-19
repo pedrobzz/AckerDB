@@ -77,7 +77,7 @@ export function rejectUnrepresentable(validator: StandardValidator, where: strin
 
 function requireProtocol(emission: Emission, where: string, source: string): void {
   if (!emission.protocol) {
-    throw new TypeError(`${where}: ${source} requires a standard-JSON protocol codec`);
+    throw new TypeError(`${where}: ${source} requires a Standard JSON schema projection`);
   }
 }
 
@@ -322,17 +322,6 @@ function schemaUri(target: JsonSchemaTarget | undefined): string {
 
 function emissionOf(options: JsonSchemaOptions): Emission {
   return { mode: options.mode ?? "input", protocol: options.protocol ?? true };
-}
-
-/**
- * The request schema for a function's or tool's `args`. Arguments always cross a
- * JSON protocol boundary in the input direction, so the shape is the only input.
- */
-export function argsJsonSchema(args: ObjectShape): JsonObjectSchema {
-  return {
-    $schema: JSON_SCHEMA_2020_12,
-    ...shapeSchema(args, "$", { mode: "input", protocol: true }),
-  } as JsonObjectSchema;
 }
 
 /**

@@ -4,7 +4,7 @@ import { v } from "@ackerdb/server";
 describe("v.vector", () => {
   test("normalizes coordinates once to canonical Float32 values", () => {
     const input = [1.1, -0, 16_777_217];
-    const value = v.vector(3).check(input, "embedding");
+    const value = v.vector(3).parse(input, "embedding");
 
     expect(value).toEqual([1.100000023841858, 0, 16_777_216]);
     expect(value).not.toBe(input);
@@ -17,15 +17,15 @@ describe("v.vector", () => {
     }
 
     const vector = v.vector(2);
-    expect(() => vector.check([1], "embedding")).toThrow("got 1 dimensions");
-    expect(() => vector.check(new Float32Array([1, 2]), "embedding"))
+    expect(() => vector.parse([1], "embedding")).toThrow("got 1 dimensions");
+    expect(() => vector.parse(new Float32Array([1, 2]), "embedding"))
       .toThrow("expected a 2-dimensional vector");
-    expect(() => vector.check([NaN, 2], "embedding")).toThrow("embedding[0]");
-    expect(() => vector.check([1, Infinity], "embedding")).toThrow("embedding[1]");
+    expect(() => vector.parse([NaN, 2], "embedding")).toThrow("embedding[0]");
+    expect(() => vector.parse([1, Infinity], "embedding")).toThrow("embedding[1]");
     const sparse = new Array<number>(2);
     sparse[0] = 1;
-    expect(() => vector.check(sparse, "embedding")).toThrow("embedding[1]");
-    expect(() => vector.check([Number.MAX_VALUE, 2], "embedding"))
+    expect(() => vector.parse(sparse, "embedding")).toThrow("embedding[1]");
+    expect(() => vector.parse([Number.MAX_VALUE, 2], "embedding"))
       .toThrow("overflows Float32");
   });
 

@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { toStandardJson } from "@ackerdb/core";
 import type {
   InferValidator,
   NullableValidator,
@@ -23,7 +22,7 @@ import {
   type JsonSchemaTarget,
 } from "./json-schema.ts";
 import { assertStandardJson } from "./standard-json.ts";
-import { isValidationError, ValidationError } from "./error.ts";
+import { ValidationError } from "./error.ts";
 
 const DECIMAL = new RegExp(DECIMAL_PATTERN);
 const BASE64 = new RegExp(BASE64_PATTERN);
@@ -58,31 +57,6 @@ export interface StandardSchemaProperties<Input, Output = Input> {
     readonly input: (options: StandardJsonSchemaOptions) => Readonly<Record<string, unknown>>;
     readonly output: (options: StandardJsonSchemaOptions) => Readonly<Record<string, unknown>>;
   };
-}
-
-/**
- * One lossless standard-JSON boundary compiled from a AckerDB validator. HTTP and
- * local model adapters consume the same codec; AckerDB's ordinary runtime input
- * type remains unchanged. Schemas are not part of it — every published document
- * comes from `json-schema.ts`.
- */
-export interface StandardJsonCodec<
-  Output,
-  ProtocolInput = unknown,
-  ProtocolOutput = unknown,
-> {
-  readonly decode: (value: unknown, path?: string) => Output;
-  readonly encode: (value: unknown, path?: string) => unknown;
-  /** Validate canonical model input JSON without converting the exposed value. */
-  readonly inputProtocolSchema: StandardJsonProtocolSchema<ProtocolInput>;
-  /** Validate canonical structured output JSON without converting the exposed value. */
-  readonly outputProtocolSchema: StandardJsonProtocolSchema<ProtocolOutput>;
-  readonly "~standard": StandardSchemaProperties<unknown, Output>;
-}
-
-/** Standard Schema view consumed by JSON-native model/tool runtimes. */
-export interface StandardJsonProtocolSchema<Value = unknown> {
-  readonly "~standard": StandardSchemaProperties<Value, Value>;
 }
 
 type OmissibleProtocolKey<S extends ObjectShape> = {
@@ -152,18 +126,11 @@ const PASSTHROUGH: ProtocolNode = Object.freeze({
 });
 
 /**
- * A validator AckerDB did not build. Its kind has no AckerDB meaning, so nothing
- * here interprets its values: they cross structurally, exactly as a value with
- * no validator at all does, and the validator's own `check` stays the single
- * word on what is valid. No JSON Schema can describe such a kind, so every
- * published document still refuses it — `rejectUnrepresentable` is where that
- * refusal lives, and AckerDB's own JSON-less kinds are refused here too.
+ * A validator AckerDB did not build owns its conversion methods because its
+ * kind has no AckerDB meaning. No JSON Schema can describe such a kind, so
+ * published documents still refuse it; AckerDB's own JSON-less kinds are
+ * refused here too.
  */
-const FOREIGN: ProtocolNode = Object.freeze({
-  decode: (value: unknown) => value,
-  encode: (value: unknown) => toStandardJson(value),
-});
-
 function protocolError(path: string, expected: string, value: unknown): never {
   const got = value === null
     ? "null"
@@ -451,14 +418,17 @@ function compileNode(validator: StandardValidator, where: string): ProtocolNode 
       if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
         rejectUnrepresentable(validator, where);
       }
-      return FOREIGN;
+      return {
+        decode: (value, path) => validator.decode(value, path),
+        encode: (value, path) => validator.encode(value, path),
+      };
   }
 }
 
 /**
- * The Standard Schema view over the shared emitter. A plain validator describes
- * only what its runtime values already are; a compiled codec additionally
- * carries bigint, Identity, FileId, FileGrantId, and bytes across the JSON boundary.
+ * The Standard Schema view over the shared emitter describes native runtime
+ * values. `decode` and `encode` additionally carry bigint, Identity, FileId,
+ * FileGrantId, and bytes across the Standard JSON boundary.
  */
 function standardJsonSchema(
   validator: StandardValidator,
@@ -482,7 +452,7 @@ export function createStandardSchemaProperties<Input, Output>(
     vendor: "ackerdb" as const,
     validate(value: unknown): StandardSchemaResult<Output> {
       try {
-        return { value: validator.check(value, "$input") };
+        return { value: validator.parse(value, "$input") };
       } catch (error) {
         if (!validationError(error)) throw error;
         return { issues: [{ message: error.message }] };
@@ -497,94 +467,28 @@ export function createStandardSchemaProperties<Input, Output>(
   });
 }
 
-export function compileStandardJsonCodec<V extends StandardValidator>(
+/**
+ * Install the Standard JSON operations directly on one validator. The protocol
+ * walk is lazy so declaration-only validators such as `v.tag()` can be created
+ * and embedded in the context that gives them meaning.
+ */
+export function createStandardJsonMethods<V extends StandardValidator>(
   validator: V,
-): StandardJsonCodec<InferValidator<V>, StandardJsonInput<V>, StandardJsonOutput<V>> {
-  const node = compileNode(validator, "$");
+): {
+  readonly decode: (value: unknown, path?: string) => InferValidator<V>;
+  readonly encode: (value: InferValidator<V>, path?: string) => unknown;
+} {
+  let compiled: ProtocolNode | undefined;
+  const node = () => compiled ??= compileNode(validator, "$");
   const decode = (value: unknown, path = "$input") => {
     assertStandardJson(value, path);
-    return validator.check(node.decode(value, path, "input"), path) as InferValidator<V>;
+    return validator.parse(node().decode(value, path, "input"), path) as InferValidator<V>;
   };
-  const encode = (value: unknown, path = "$output") => {
-    node.preflight?.(value, path);
-    const encoded = node.encode(validator.check(value, path), path);
+  const encode = (value: InferValidator<V>, path = "$output") => {
+    node().preflight?.(value, path);
+    const encoded = node().encode(validator.parse(value, path), path);
     assertStandardJson(encoded, path);
     return encoded;
   };
-  const protocolSchema = <Value>(mode: JsonSchemaMode): StandardJsonProtocolSchema<Value> => Object.freeze({
-    "~standard": Object.freeze({
-      version: 1 as const,
-      vendor: "ackerdb" as const,
-      validate(value: unknown): StandardSchemaResult<Value> {
-        const path = mode === "input" ? "$input" : "$output";
-        try {
-          assertStandardJson(value, path);
-          validator.check(node.decode(value, path, mode), path);
-          return { value: value as Value };
-        } catch (error) {
-          if (!isValidationError(error)) throw error;
-          return { issues: [{ message: error.message }] };
-        }
-      },
-      jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) =>
-          standardJsonSchema(validator, mode, options, true),
-        output: (options: StandardJsonSchemaOptions) =>
-          standardJsonSchema(validator, mode, options, true),
-      }),
-    }),
-  });
-  const codec: StandardJsonCodec<
-    InferValidator<V>,
-    StandardJsonInput<V>,
-    StandardJsonOutput<V>
-  > = {
-    decode,
-    encode,
-    inputProtocolSchema: protocolSchema<StandardJsonInput<V>>("input"),
-    outputProtocolSchema: protocolSchema<StandardJsonOutput<V>>("output"),
-    "~standard": Object.freeze({
-      version: 1 as const,
-      vendor: "ackerdb" as const,
-      validate(value: unknown): StandardSchemaResult<InferValidator<V>> {
-        try {
-          return { value: decode(value) };
-        } catch (error) {
-          if (!isValidationError(error)) throw error;
-          return { issues: [{ message: error.message }] };
-        }
-      },
-      jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) =>
-          standardJsonSchema(validator, "input", options, true),
-        output: (options: StandardJsonSchemaOptions) =>
-          standardJsonSchema(validator, "output", options, true),
-      }),
-    }),
-  };
-  return Object.freeze(codec);
-}
-
-/**
- * Compile one contract validator into a standard-JSON codec, refusing a
- * contract no JSON boundary can carry where it is declared rather than at the
- * first call. `surface` names the boundary in the error, so the same rule reads
- * correctly whichever boundary is refusing it.
- */
-export function compileContractCodec(
-  validator: StandardValidator | { readonly kind: string },
-  where: string,
-  surface: string,
-): StandardJsonCodec<unknown> {
-  try {
-    // Declarations type their validators as the erased `Validator` face;
-    // registration already refuses anything `v` did not build.
-    return compileStandardJsonCodec(validator as StandardValidator);
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw new TypeError(
-      `${where} cannot cross the ${surface}'s standard-JSON boundary: ${detail}`,
-      { cause },
-    );
-  }
+  return Object.freeze({ decode, encode });
 }

@@ -348,7 +348,7 @@ export function createNearestQuery(
   options: unknown,
 ): unknown {
   const selected = vectorColumn(plan, column);
-  const normalized = selected.validator.check(
+  const normalized = selected.validator.parse(
     query,
     `${plan.displayName}.nearest.${selected.name}`,
   );

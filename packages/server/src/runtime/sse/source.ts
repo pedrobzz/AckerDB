@@ -1,6 +1,5 @@
 import type { AnyRegisteredSse, SseSource } from "../../app/functions.ts";
 import { AckerDBError } from "../../shared/errors.ts";
-import { encodeHttpValue } from "../../transport/http-codec.ts";
 import { transportError } from "../execution/operation-runner.ts";
 
 interface SseChunkIterator {
@@ -54,7 +53,6 @@ function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
  * invocation ownership.
  */
 export function validatedSseSource(
-  address: string,
   fn: AnyRegisteredSse,
   source: SseSource<unknown>,
   handlerContext: <T>(work: () => T) => T,
@@ -70,7 +68,7 @@ export function validatedSseSource(
         }
         let chunk: unknown;
         try {
-          chunk = encodeHttpValue(address, fn, part.value);
+          chunk = fn.yields.encode(part.value, "chunk");
         } catch (error) {
           // The source's own cleanup failures cannot mask the validation error.
           void Promise.resolve()

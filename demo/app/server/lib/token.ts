@@ -73,8 +73,8 @@ export async function verifyDemoCredential(
     ) {
       throw new Error("invalid guest claims");
     }
-    const email = emailInput.check(payload.email, "credential.email").toLowerCase();
-    const name = guestNameInput.check(payload.name, "credential.name");
+    const email = emailInput.parse(payload.email, "credential.email").toLowerCase();
+    const name = guestNameInput.parse(payload.name, "credential.name");
     if (payload.sub !== `guest:${email}`)
       throw new Error("subject does not match email");
     return {

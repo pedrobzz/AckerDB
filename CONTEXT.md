@@ -225,7 +225,8 @@ triggered it.
 ## HTTP surface
 
 **HTTP route** — One entry on AckerDB's HTTP surface: an explicit path and a
-non-empty map from HTTP method to the handler answering it. Every entry is one
+non-empty map from HTTP method to the handler answering it. That value owns the
+whole path; another value cannot add disjoint methods later. Every entry is one
 — a health probe, a File byte route, the WebSocket door, an exposed function's
 compiled surface, an application webhook — so a new entry is a value rather
 than another branch in the listener.
@@ -715,12 +716,13 @@ vocabulary, `_*` covers the declared names beginning with `_`.
 _Avoid_: Role, superuser flag, permission group
 
 **Function address** — The one dotted name every registered function answers
-to, in process and over every transport: the fixed `api` root, then the
-directory segments of the module declaring it, then the export name. An
-HTTP-exposed function's URL is that address segment for segment; an HTTP route
-states its own path and is not addressed by it. A file named `index.ts`
-contributes its directory's name rather than its own, so a directory may hold a
-module of its own name beside its siblings.
+to in process and through its native transport: the fixed `api` root, then the
+directory segments of the module declaring it, then the export name. Generated
+references and jobs carry it unchanged; typed SSE sends it in
+`x-ackerdb-function`. Public HTTP is separate: a function that opts in states
+its exact path, just as an HTTP route does. A file named `index.ts` contributes
+its directory's name rather than its own, so a directory may hold a module of
+its own name beside its siblings.
 _Avoid_: Function name, ref string, route
 
 **Identity credential** — An opaque bearer credential that *is* an Identity:

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import {
   isResult,
+  toStandardJson,
   uuidV7Timestamp,
   type SseAckRequest,
 } from "@ackerdb/core";
@@ -23,7 +24,6 @@ import {
   BoundedSseProducer,
   type SseDeliverySnapshot,
 } from "../../subscriptions/delivery/sse.ts";
-import { encodeHttpValue } from "../../transport/http-codec.ts";
 import { callerFairnessKey, transportSource } from "../caller.ts";
 import type {
   RuntimeExternalRequest,
@@ -123,6 +123,7 @@ export class RuntimeHttp {
 
   runMutation(request: RuntimeHttpMutationRequest): Promise<Response> {
     const fn = this.expect(request.address, "mutation");
+    const returns = fn.returns;
     const { requestBytes, fairnessKey, invalidations } =
       this.claim(request);
     let committed: CommittedHttpMutation | undefined;
@@ -153,7 +154,9 @@ export class RuntimeHttp {
           }
           encoded = this.responses.encodeBody(
             value.data,
-            (body) => encodeHttpValue(request.address, fn, body),
+            returns === undefined
+              ? toStandardJson
+              : (body) => returns.encode(body, "returns"),
             "mutation",
             null,
           );
@@ -315,7 +318,7 @@ export class RuntimeHttp {
           },
         });
         const completion = handler.then(async (result: SseSource<unknown>) => {
-          const source = validatedSseSource(request.address, fn, result, handlerContext);
+          const source = validatedSseSource(fn, result, handlerContext);
           try {
             await producer!.merge(source);
           } catch (error) {

@@ -24,7 +24,12 @@ import type {
   InferValidatorInput,
   Validator,
 } from "../validation/validator.ts";
-import type { InferShape, ObjectShape } from "../validation/composites.ts";
+import {
+  object,
+  type InferShape,
+  type ObjectShape,
+  type ObjectValidator,
+} from "../validation/composites.ts";
 import {
   type AuthorizationError,
   type AuthorizationState,
@@ -214,7 +219,7 @@ export interface RegisteredChannel<
     ChannelAuthorizationCtx<S, RoomOutput<Room>>,
     AuthorizationReturn
   > {
-  readonly args: A;
+  readonly args: ObjectValidator<A>;
   readonly room?: Room;
   readonly clientEvents: ClientDeclarations;
   readonly serverEvents: ServerDeclarations;
@@ -309,6 +314,7 @@ export const channel: ChannelBuilder<Schema> = <
     );
   }
   validateArgsShape(definition.args);
+  const args = object(definition.args);
   validateEventDeclarations(definition.clientEvents, "clientEvents");
   validateEventDeclarations(definition.serverEvents, "serverEvents");
   if (definition.room !== undefined) {
@@ -340,6 +346,7 @@ export const channel: ChannelBuilder<Schema> = <
   const registered = Object.freeze({
     kind: "channel" as const,
     ...definition,
+    args,
     handler: definition.authorize ?? (() => undefined),
   }) as unknown as RegisteredChannel<
     A,
@@ -349,10 +356,7 @@ export const channel: ChannelBuilder<Schema> = <
     AuthorizationReturn,
     Schema
   >;
-  compileInvocation(registered as unknown as {
-    readonly args: ObjectShape;
-    readonly access: AccessPolicy<InvocationContext, unknown>;
-  });
+  compileInvocation(registered);
   return registered;
 };
 
