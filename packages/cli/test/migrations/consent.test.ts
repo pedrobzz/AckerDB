@@ -36,10 +36,10 @@ function scriptedAsk(answers: string[]): Ask & { prompts: string[] } {
 }
 
 const EVENT_OPTS = { args: {}, access: "public", matches: () => true } as const;
-const NON_UNIQUE_A_INDEX = "s_n_b_1_a";
-const NON_UNIQUE_B_INDEX = "s_n_b_1_b";
-const UNIQUE_AB_INDEX = "s_u_b_1_a_1_b";
-const UNIQUE_A_INDEX = "s_u_b_1_a";
+const NON_UNIQUE_A_INDEX = "s_n_1_a";
+const NON_UNIQUE_B_INDEX = "s_n_1_b";
+const UNIQUE_AB_INDEX = "s_u_1_a_1_b";
+const UNIQUE_A_INDEX = "s_u_1_a";
 
 describe("describeSafeChanges", () => {
   test("safe column work renders; refused columns are subtracted by site", () => {

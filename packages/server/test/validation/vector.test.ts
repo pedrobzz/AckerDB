@@ -45,22 +45,22 @@ describe("v.vector", () => {
     });
   });
 
-  test("composes inside function arrays, objects, and union payloads", () => {
+  test("composes inside function arrays, objects, and discriminated unions", () => {
     const args = v.object({
       batches: v.array(v.vector(2)),
-      choice: v.union("VectorChoice", {
-        dense: v.vector(2),
-        none: v.tag(),
-      }),
+      choice: v.discriminatedUnion("type", [
+        v.object({ type: v.literal("dense"), value: v.vector(2) }),
+        v.object({ type: v.literal("none") }),
+      ]),
     });
 
     expect(args["~standard"].validate({
       batches: [[1.1, 2]],
-      choice: { tag: "dense", value: [3, 4] },
+      choice: { type: "dense", value: [3, 4] },
     })).toEqual({
       value: {
         batches: [[1.100000023841858, 2]],
-        choice: { tag: "dense", value: [3, 4] },
+        choice: { type: "dense", value: [3, 4] },
       },
     });
     expect(args["~standard"].jsonSchema.input({ target: "draft-2020-12" }))

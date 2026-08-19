@@ -132,7 +132,7 @@ function vectorColumn(
   if (validator.kind !== "vector") {
     throw new ValidationError(`${plan.displayName}.nearest: ${column} is not a vector column`);
   }
-  const physical = plan.columns.get(column)!.phys[0]?.name;
+  const physical = plan.columns.get(column)!.jsName;
   if (physical === undefined) {
     throw new Error(`${plan.displayName}.${column}: vector column has no physical storage`);
   }

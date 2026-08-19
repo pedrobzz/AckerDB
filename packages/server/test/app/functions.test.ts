@@ -26,17 +26,25 @@ describe("sseProcedure declaration", () => {
     ).toThrow("sse yields must be a v validator");
   });
 
-  test("rejects storage-only validators as chunk validators", () => {
-    for (const yields of [v.primaryKey(), v.scheduleAt(), v.tag()]) {
-      expect(() =>
-        sseProcedure({
-          args: {},
-          yields,
-          access: "public",
-          handler: async function* () {},
-        } as never),
-      ).toThrow(`yields: v.${yields.kind}() is not a valid chunk validator`);
-    }
+  test("accepts JSON-representable storage validators", () => {
+    const primaryKeys = sseProcedure({
+      args: {},
+      yields: v.primaryKey(),
+      access: "public",
+      handler: async function* () {
+        yield 1n;
+      },
+    });
+    const schedule = sseProcedure({
+      args: {},
+      yields: v.scheduleAt(),
+      access: "public",
+      handler: async function* () {
+        yield 1;
+      },
+    });
+    expect(v.primaryKey().encode(1n)).toBe("1");
+    expect(schedule.yields.encode(1)).toBe(1);
   });
 
   test("keeps the transport-boundary and access invariants of other kinds", () => {
@@ -61,14 +69,13 @@ describe("sseProcedure declaration", () => {
         handler: async function* () {},
       } as never),
     ).toThrow("sse access must be public, authenticated, system, or a policy callback");
-    expect(() =>
-      sseProcedure({
-        args: { at: v.scheduleAt() },
-        yields: v.string(),
-        access: "public",
-        handler: async function* () {},
-      } as never),
-    ).toThrow("args.at: v.scheduleAt() is not a valid argument validator");
+    const scheduled = sseProcedure({
+      args: { at: v.scheduleAt(), id: v.primaryKey() },
+      yields: v.string(),
+      access: "public",
+      handler: async function* () {},
+    });
+    expect(scheduled.args.decode({ at: 1.5, id: "7" })).toEqual({ at: 1.5, id: 7n });
   });
 });
 

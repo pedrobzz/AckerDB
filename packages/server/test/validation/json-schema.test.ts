@@ -77,52 +77,43 @@ describe("validator schemas", () => {
     });
   });
 
-  test("emits one oneOf branch per union member, tags included", () => {
-    const payload = v.union("Payload", {
-      text: v.string(),
-      count: v.int().optional(),
-      none: v.tag(),
-    });
+  test("emits one object schema per discriminated union member", () => {
+    const payload = v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("count"), value: v.int().optional() }),
+      v.object({ type: v.literal("none") }),
+    ]);
 
     expect(validatorJsonSchema(payload)).toEqual({
       $schema: DRAFT_2020_12,
       oneOf: [
         {
           type: "object",
-          properties: { tag: { const: "text" }, value: { type: "string" } },
-          required: ["tag", "value"],
+          properties: { type: { const: "text" }, value: { type: "string" } },
+          required: ["type", "value"],
           additionalProperties: false,
         },
         {
           type: "object",
           properties: {
-            tag: { const: "count" },
+            type: { const: "count" },
             value: {
               type: "integer",
               minimum: Number.MIN_SAFE_INTEGER,
               maximum: Number.MAX_SAFE_INTEGER,
             },
           },
-          required: ["tag"],
+          required: ["type"],
           additionalProperties: false,
         },
         {
           type: "object",
-          properties: { tag: { const: "none" }, value: { type: "null" } },
-          required: ["tag"],
+          properties: { type: { const: "none" } },
+          required: ["type"],
           additionalProperties: false,
         },
       ],
     });
-  });
-
-  test("requires the payload-less variant's null value on the way out", () => {
-    const schema = validatorJsonSchema(
-      v.union("Payload", { none: v.tag() }),
-      { mode: "output" },
-    ) as { readonly oneOf: readonly { readonly required: readonly string[] }[] };
-
-    expect(schema.oneOf[0]!.required).toEqual(["tag", "value"]);
   });
 
   test("describes enums and literals as constrained strings", () => {
@@ -140,6 +131,12 @@ describe("validator schemas", () => {
     const validator = v.object({ body: v.string() });
     const first = validatorJsonSchema(validator);
 
+    expect(validator.toJsonSchema()).toEqual({
+      type: "object",
+      properties: { body: { type: "string" } },
+      required: ["body"],
+      additionalProperties: false,
+    });
     expect(first).not.toBe(validatorJsonSchema(validator));
     expect(Object.isFrozen(first)).toBe(false);
   });
@@ -204,7 +201,7 @@ describe("standard-JSON protocol constraints", () => {
   });
 });
 
-describe("targets and refusals", () => {
+describe("targets and validator-owned refusals", () => {
   test("defaults to draft 2020-12 and supports draft-07 explicitly", () => {
     expect(validatorJsonSchema(v.string(), { target: "draft-07" })).toEqual({
       $schema: "http://json-schema.org/draft-07/schema#",
@@ -214,25 +211,33 @@ describe("targets and refusals", () => {
       .toThrow("draft-2020-12 and draft-07");
   });
 
-  test("names the path of every kind no JSON boundary can carry", () => {
-    expect(() => validatorJsonSchema(v.object({ value: v.array(v.primaryKey()) })))
-      .toThrow("$.value[]: v.primaryKey() is not a standard-JSON value");
-    expect(() => validatorJsonSchema(v.object({ value: v.scheduleAt() })))
-      .toThrow("$.value: v.scheduleAt() is not a standard-JSON value");
-    expect(() => validatorJsonSchema(v.object({ value: v.array(v.tag()) })))
-      .toThrow("$.value[]: v.tag() is valid only as a direct v.union() member");
-    expect(() => validatorJsonSchema({ ...v.string(), kind: "custom" } as never))
-      .toThrow("$: v.custom() has no lossless standard-JSON protocol representation");
+  test("lets primary keys and schedule timestamps own ordinary JSON representations", () => {
+    expect(validatorJsonSchema(v.object({ id: v.primaryKey(), at: v.scheduleAt() })))
+      .toEqual({
+        $schema: DRAFT_2020_12,
+        type: "object",
+        properties: {
+          id: { type: ["integer", "string"], pattern: DECIMAL_PATTERN },
+          at: { type: "number" },
+        },
+        required: ["id", "at"],
+        additionalProperties: false,
+      });
   });
 
-  test("refuses contradictory validator shapes at the emitting node", () => {
-    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "array" } as never })))
-      .toThrow("$.value: v.array() has no element validator");
-    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "nullable" } as never })))
-      .toThrow("$.value: .nullable() has no inner validator");
-    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "enum", values: [1] } as never })))
-      .toThrow("$.value: v.enum() has invalid string values");
-    expect(() => validatorJsonSchema(v.object({ value: { ...v.string(), kind: "union" } as never })))
-      .toThrow("$.value: v.union() has invalid members");
+  test("uses the validator's behavior instead of reinterpreting its kind metadata", () => {
+    const renamed = { ...v.string(), kind: "custom" };
+    expect(validatorJsonSchema(renamed as typeof renamed & ReturnType<typeof v.string>)).toEqual({
+      $schema: DRAFT_2020_12,
+      type: "string",
+    });
+  });
+
+  test("keeps an unsupported JSON value local to the validator that declares it", () => {
+    const impossible = v.literal(Number.POSITIVE_INFINITY);
+    expect(() => impossible.encode(Number.POSITIVE_INFINITY))
+      .toThrow("v.literal(Infinity) has no Standard JSON value");
+    expect(() => validatorJsonSchema(v.object({ value: impossible })))
+      .toThrow("$.value: v.literal(Infinity) has no Standard JSON value");
   });
 });

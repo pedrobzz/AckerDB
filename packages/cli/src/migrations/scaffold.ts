@@ -22,7 +22,7 @@
  *
  * Type rendering is STRUCTURAL: old and new type names can collide across the two
  * worlds, so nothing is emitted by name — enums render as unions of string
- * literals, unions as `{ tag; value }` unions, everything else recursively. Same
+ * literals, discriminated unions render their object members, everything else recursively. Same
  * inputs yield byte-identical artifacts (tables sorted, columns in snapshot
  * order, refusal comments in classification order).
  */
@@ -115,8 +115,8 @@ function literalTs(value: unknown): string {
  * structural type text. bigint/identity/pk as bigint, File references as FileId,
  * File Grant references as FileGrantId,
  * int/float/scheduleAt as number, bytes as Uint8Array, jsonb as the codegen
- * convention (`unknown`), enums as string-literal unions, unions as
- * discriminated `{ tag; value }` unions, objects/arrays/nullables recursively.
+ * convention (`unknown`), enums as string-literal unions, discriminated unions,
+ * objects, arrays, and nullables recursively.
  */
 const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   pk: () => "bigint",
@@ -132,16 +132,13 @@ const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   bytes: () => "Uint8Array",
   vector: () => "readonly number[]",
   jsonb: () => "unknown",
-  tag: () => "null",
   literal: (desc) => literalTs(decode(JSON.stringify(desc["v"]))),
   enum: (desc) => (desc["values"] as string[]).map((v) => JSON.stringify(v)).join(" | "),
   nullable: (desc) => `${renderType(desc["inner"] as Descriptor)} | null`,
   array: (desc) => `${paren(renderType(desc["el"] as Descriptor))}[]`,
   object: (desc) => renderShape(desc["shape"] as Record<string, Descriptor>),
-  union: (desc) =>
-    Object.entries(desc["members"] as Record<string, Descriptor>)
-      .map(([tag, member]) => `{ tag: ${JSON.stringify(tag)}; value: ${renderType(member)} }`)
-      .join(" | "),
+  discriminatedUnion: (desc) =>
+    Object.values(desc["members"] as Record<string, Descriptor>).map(renderType).join(" | "),
 };
 
 function renderType(desc: Descriptor): string {

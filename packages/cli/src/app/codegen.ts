@@ -22,9 +22,8 @@ import {
   eventArgsTypeName,
   rowTypeName,
   type Schema,
+  type DiscriminatedUnionValidator,
   type EnumValidator,
-  type UnionValidator,
-  type Validator,
 } from "@ackerdb/server";
 import { EVENTS_NAMESPACE } from "@ackerdb/core";
 import { importEntrypoint, listDefinitionModules, type ModuleFile } from "./manifest.ts";
@@ -243,22 +242,9 @@ function typesTs(config: AppConfig, schema: Schema): string {
         "",
       );
     } else {
-      const members = (validator as UnionValidator).members;
-      const variantType = (variant: string, member: Validator<unknown, string>) =>
-        `{ tag: ${JSON.stringify(variant)}; value: ${member.tsType()} }`;
+      const members = (validator as DiscriminatedUnionValidator).members;
       parts.push(
-        `export type ${name} =`,
-        ...Object.entries(members).map(
-          ([variant, member], i, all) =>
-            `  | ${variantType(variant, member)}${i === all.length - 1 ? ";" : ""}`,
-        ),
-        `export const ${name} = {`,
-        ...Object.entries(members).map(([variant, member]) =>
-          member.kind === "tag"
-            ? `  ${variant}: (): ${variantType(variant, member)} => ({ tag: ${JSON.stringify(variant)}, value: null }),`
-            : `  ${variant}: (value: ${member.tsType()}): ${variantType(variant, member)} => ({ tag: ${JSON.stringify(variant)}, value }),`,
-        ),
-        `};`,
+        `export type ${name} = ${members.map((member) => member.tsType()).join(" | ")};`,
         "",
       );
     }

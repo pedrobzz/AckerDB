@@ -7,10 +7,11 @@ import type {
   Validator,
 } from "../../validation/validator.ts";
 import type {
+  DiscriminatedUnionValidator,
   EnumValidator,
+  LiteralValidator,
   ObjectShape,
-  UnionMembers,
-  UnionValidator,
+  ObjectValidator,
 } from "../../validation/composites.ts";
 import type {
   IndexMeta,
@@ -33,8 +34,18 @@ type ComparableValue<V> = BaseValidator<V> extends EnumValidator<infer Variant>
   ? Variant
   : InferValidator<BaseValidator<V>>;
 
-type NarrowUnionColumn<Row, K extends keyof Row, Variant extends string> = Expand<{
-  [P in keyof Row]: P extends K ? Extract<Row[P], { tag: Variant }> : Row[P];
+type DiscriminatorValue<D extends string, M extends readonly ObjectValidator<any>[]> =
+  M[number] extends ObjectValidator<infer S>
+    ? S[D] extends LiteralValidator<infer Value> ? Value : never
+    : never;
+
+type NarrowDiscriminatedColumn<
+  Row,
+  K extends keyof Row,
+  D extends string,
+  Variant,
+> = Expand<{
+  [P in keyof Row]: P extends K ? Extract<Row[P], Record<D, Variant>> : Row[P];
 }>;
 
 declare const PREDICATE_EXPRESSION: unique symbol;
@@ -102,19 +113,20 @@ interface NullableColumn<Row> {
   isNotNull(): PredicateExpression<Row>;
 }
 
-type UnionColumn<
-  Members extends UnionMembers,
+type DiscriminatedUnionColumn<
+  D extends string,
+  M extends readonly [ObjectValidator<any>, ObjectValidator<any>, ...ObjectValidator<any>[]],
   Row,
   Key extends keyof Row,
 > = {
-  is<const Variant extends keyof Members & string>(
+  is<const Variant extends DiscriminatorValue<D, M>>(
     variant: Variant,
-  ): PredicateExpression<NarrowUnionColumn<Row, Key, Variant>, Row>;
+  ): PredicateExpression<NarrowDiscriminatedColumn<Row, Key, D, Variant>, Row>;
 };
 
 type ScalarColumn<V, Row, Key extends keyof Row> =
-  BaseValidator<V> extends UnionValidator<infer Members>
-    ? UnionColumn<Members, Row, Key>
+  BaseValidator<V> extends DiscriminatedUnionValidator<infer D, infer M>
+    ? DiscriminatedUnionColumn<D, M, Row, Key>
     : BaseValidator<V> extends Validator<unknown, infer Kind>
       ? Kind extends "string" | "int" | "float" | "bigint" | "identity" | "pk" | "scheduleAt"
         ? OrderedColumn<ComparableValue<V>, Row> &

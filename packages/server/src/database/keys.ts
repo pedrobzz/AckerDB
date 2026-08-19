@@ -4,7 +4,7 @@
  * A query records, for every ctx.db read, one key describing what it
  * depended on. A mutation records, for every row it writes, the keys that
  * write could have affected. A subscription re-runs iff the two sets
- * intersect. Keys use *storage-form* values (enum/union variants as their
+ * intersect. Keys use *storage-form* values (enum variants as their
  * integer tags), so both sides agree by construction.
  *
  *   id:<table>:<pk>                    one row, by primary key
@@ -20,7 +20,7 @@
  * before fan-out, never shipped).
  */
 import { stableEncode } from "@ackerdb/core";
-import type { TablePlan } from "./engine.ts";
+import { columnIndexValue, type TablePlan } from "./engine.ts";
 
 export function idKey(table: string, id: bigint): string {
   return `id:${table}:${id}`;
@@ -45,7 +45,7 @@ export function emitWriteKeys(plan: TablePlan, row: Record<string, unknown>, int
   for (const index of plan.indexes) {
     const prefix: unknown[] = [];
     for (const column of index.columns) {
-      prefix.push(plan.columns.get(column)!.toSql(row[column])[0]);
+      prefix.push(columnIndexValue(plan.columns.get(column)!, row[column]));
       into.add(ixKey(plan.name, index.name, prefix));
     }
   }

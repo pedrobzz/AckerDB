@@ -35,8 +35,8 @@ describe("schema snapshots", () => {
     });
 
     expect(snapshotOf(withFrameworkTables(schema)).tables.entries!.indexes.map((index) => index.name)).toEqual([
-      "s_n_b_1_z",
-      "s_n_b_2_aa",
+      "s_n_1_z",
+      "s_n_2_aa",
     ]);
   });
 });

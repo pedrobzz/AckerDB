@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { v, ValidationError, type Identity } from "@ackerdb/server";
+import { makeValidator } from "../../src/validation/validator.ts";
 
 const check = <T>(v: { parse(value: unknown, path: string): T }, value: unknown) =>
   v.parse(value, "t");
@@ -49,6 +50,38 @@ describe("composite validators", () => {
     expect(() => check(validator, { y: "a" })).toThrow("t.x");
   });
 
+  test("decode and encode traverse every composite child exactly once", () => {
+    let parses = 0;
+    let decodes = 0;
+    let encodes = 0;
+    const child = makeValidator("counted", {
+      parse(value, path) {
+        parses++;
+        if (typeof value !== "string") throw new ValidationError(`${path}: expected string`);
+        return value;
+      },
+      decode(value, path) {
+        decodes++;
+        return this.parse(value, path);
+      },
+      encode(value, path) {
+        encodes++;
+        return this.parse(value, path);
+      },
+      toJsonSchema: () => ({ type: "string" }),
+      tsType: () => "string",
+      descriptor: () => ({ k: "counted" }),
+    });
+    const validator = v.object({ items: v.array(child) });
+
+    expect(validator.decode({ items: ["a", "b"] })).toEqual({ items: ["a", "b"] });
+    expect({ parses, decodes, encodes }).toEqual({ parses: 2, decodes: 2, encodes: 0 });
+
+    parses = 0;
+    expect(validator.encode({ items: ["a", "b"] })).toEqual({ items: ["a", "b"] });
+    expect({ parses, decodes, encodes }).toEqual({ parses: 2, decodes: 2, encodes: 2 });
+  });
+
   test("nullable preserves null, rejects undefined, and is terminal", () => {
     const validator = v.float().nullable();
     expect(check(validator, null)).toBe(null);
@@ -87,25 +120,31 @@ describe("composite validators", () => {
     });
   });
 
-  test("union validates tagged values and exposes constructors", () => {
-    const payload = v.union("MessagePayload", {
-      text: v.string(),
-      image: v.object({ url: v.string(), width: v.float() }),
-      nothing: v.tag(),
-    });
-    expect(payload.union.text("hi")).toEqual({ tag: "text", value: "hi" });
-    expect(payload.union.nothing()).toEqual({ tag: "nothing", value: null });
-    expect(check(payload, { tag: "text", value: "hi" })).toEqual({ tag: "text", value: "hi" });
-    expect(check(payload, { tag: "nothing", value: null })).toEqual({ tag: "nothing", value: null });
-    expect(() => check(payload, { tag: "gif", value: 1 })).toThrow("t.tag");
-    expect(() => check(payload, { tag: "text", value: 3 })).toThrow("t.value");
-    expect(() => check(payload, { tag: "text", value: "x", extra: 1 })).toThrow("unknown field");
+  test("discriminated union validates object members", () => {
+    const members = [
+      v.object({ type: v.literal("text"), text: v.string() }),
+      v.object({ type: v.literal("image"), url: v.string(), width: v.float() }),
+      v.object({ type: v.literal("nothing") }),
+    ] as const;
+    const payload = v.discriminatedUnion("type", members, "MessagePayload");
+    expect(check(payload, { type: "text", text: "hi" })).toEqual({ type: "text", text: "hi" });
+    expect(check(payload, { type: "nothing" })).toEqual({ type: "nothing" });
+    expect(() => check(payload, { type: "gif" })).toThrow("t.type");
+    expect(() => check(payload, { type: "text", text: 3 })).toThrow("t.text");
+    expect(() => check(payload, { type: "text", text: "x", extra: 1 })).toThrow("unknown field");
+    expect(payload.members).not.toBe(members);
+    expect(Object.isFrozen(payload.members)).toBe(true);
+    expect(payload.codegenName).toBe("MessagePayload");
+    expect(payload.tsType()).toBe("MessagePayload");
+    expect(Object.hasOwn(payload.descriptor(), "name")).toBe(false);
   });
 
   test("jsonb accepts wire-encodable values only", () => {
     const validator = v.jsonb<{ n: bigint }>();
     expect(check(validator, { n: 1n })).toEqual({ n: 1n });
     expect(() => check(validator, { fn: () => 1 })).toThrow("wire-encodable");
+    expect(() => validator.decode({ n: 1n })).toThrow("standard JSON");
+    expect(() => validator.encode({ n: 1n })).toThrow("standard JSON");
   });
 });
 

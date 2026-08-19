@@ -27,7 +27,8 @@ stored representation is a headerless little-endian Float32 BLOB of exactly
 Vectors may be nested in function argument and result validators because their
 wire value is a fixed-length JSON number array. A persisted vector must be a
 direct table column, optionally nullable; nesting it inside a persisted array,
-object, or union is rejected. Ordinary indexes cannot contain vector columns.
+object, or discriminated union is rejected. Ordinary indexes cannot contain
+vector columns.
 
 Generate embeddings outside a database transaction. A procedure can perform
 the model call first and persist the result in a short explicit transaction:

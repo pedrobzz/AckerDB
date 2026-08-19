@@ -408,9 +408,9 @@ describe("predicate reactive dependencies", () => {
     const active = statusTag("active");
     const archived = statusTag("archived");
     const eq = (column: string, value: unknown): PredicateNode =>
-      ({ kind: "comparison", column, op: "eq", value });
+      ({ kind: "comparison", reference: { column }, op: "eq", value });
     const ne = (column: string, value: unknown): PredicateNode =>
-      ({ kind: "comparison", column, op: "ne", value });
+      ({ kind: "comparison", reference: { column }, op: "ne", value });
     const cases: readonly (readonly PredicateNode[])[] = [
       [eq("tenantId", 1n), eq("status", active)],
       [{ kind: "in", column: "tenantId", values: [1n, 2n] }, {
@@ -457,7 +457,7 @@ describe("predicate reactive dependencies", () => {
 
     const plan = engine.plan("documents");
     const storageValue = (row: Record<string, unknown>, column: string): unknown =>
-      plan.columns.get(column)!.toSql(row[column])[0];
+      plan.columns.get(column)!.toSql(row[column]);
     const compare = (left: unknown, right: unknown): number => {
       if (typeof left === "number" && typeof right === "number") return left - right;
       if (typeof left === "bigint" && typeof right === "bigint") {
@@ -471,7 +471,7 @@ describe("predicate reactive dependencies", () => {
     const evaluate = (node: PredicateNode, row: Record<string, unknown>): boolean => {
       switch (node.kind) {
         case "comparison": {
-          const value = storageValue(row, node.column);
+          const value = storageValue(row, node.reference.column);
           if (value === null) return false;
           switch (node.op) {
             case "eq": return value === node.value;

@@ -14,7 +14,6 @@ import type { Schema } from "../schema/definition.ts";
 import type { DbReader } from "../database/query/types.ts";
 import type { ObjectShape, InferShape, InferInputShape } from "../validation/composites.ts";
 import type { Expand } from "../validation/validator.ts";
-import { validateArgsShape } from "../validation/declarations.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
 import type { AnyJobsNamespace } from "./api.ts";
 import type { SystemPrincipal } from "../auth/credentials.ts";
@@ -346,7 +345,6 @@ export function job<
   if (mode !== "procedure" && mode !== "mutation") {
     throw new TypeError('job mode must be "procedure" or "mutation"');
   }
-  validateArgsShape(definition.args);
   if (typeof definition.handler !== "function") {
     throw new TypeError("job handler must be a function");
   }

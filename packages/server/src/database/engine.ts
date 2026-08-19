@@ -13,16 +13,12 @@
  *   - boolean                INTEGER (0/1)
  *   - bytes                  BLOB
  *   - enum                   INTEGER (stable interned tag, see _ackerdb_tags)
- *   - union                  INTEGER tag column + TEXT payload column "<col>__p"
+ *   - discriminated union    TEXT complete object payload
  *   - array / object / jsonb TEXT (wire-encoded, so bigints/bytes round-trip)
  *
- * Enum/union tags are interned once per (type name, variant name) in
- * `_ackerdb_tags` and never change and are never reused: reordering variants is
- * cosmetic, renames keep storage, deletions retire the tag forever.
- *
- * Direct indexes execute as SQLite b-tree indexes: same API and semantics;
- * the array-backed layout is a later optimization if production evidence demands it
- * (the same "only if it wins" rule the wiki applies to sized numerics).
+ * Enum tags are interned once per (type name, variant) in `_ackerdb_tags` and
+ * never change or get reused. Discriminated-union indexes are SQLite expression
+ * indexes over the string discriminator inside the stored JSON object.
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -123,23 +119,31 @@ export function persistTagMaps(writer: Database, maps: ReadonlyMap<string, TagMa
   }
 }
 
-interface PhysCol {
-  readonly name: string;
-  readonly ddl: string;
-}
-
 export interface ColumnPlan {
   readonly jsName: string;
   /** Unwrapped kind ("nullable" removed). */
   readonly kind: string;
   readonly nullable: boolean;
-  /** For enum/union: the declared type name (tag map key). */
+  /** For enum: the declared type name (tag map key). */
   readonly typeName?: string;
-  /** For enum/union: encode one declared variant to its stable storage tag. */
-  readonly variantTag?: (variant: string) => number | undefined;
-  readonly phys: readonly PhysCol[];
-  readonly toSql: (value: unknown) => unknown[];
-  readonly fromSql: (values: unknown[]) => unknown;
+  /** For enum: encode one variant to its stable storage tag. */
+  readonly variantTag?: (variant: unknown) => number | undefined;
+  readonly ddl: string;
+  /** Override when an index targets a value derived from the stored column. */
+  readonly index?: {
+    readonly expression: string;
+    readonly value: (storedValue: unknown) => unknown;
+  };
+  readonly toSql: (value: unknown) => unknown;
+  readonly fromSql: (value: unknown) => unknown;
+}
+
+export function columnIndexExpression(column: ColumnPlan): string {
+  return column.index?.expression ?? quoteIdentifier(column.jsName);
+}
+
+export function columnIndexValue(column: ColumnPlan, value: unknown): unknown {
+  return column.index?.value(value) ?? column.toSql(value);
 }
 
 /** Physical storage and codec ownership shared by live and snapshot-derived plans. */
@@ -153,8 +157,8 @@ export interface PhysicalTablePlan {
   readonly pk: string;
   readonly scheduleAt: string | null;
   readonly columns: ReadonlyMap<string, ColumnPlan>;
-  /** Physical column names in DDL order (pk first). */
-  readonly physOrder: readonly string[];
+  /** Column names in DDL order (pk first). */
+  readonly columnOrder: readonly string[];
   /**
    * Runtime row projection. `safeIntegers` must remain enabled for exact i64
    * values, so logical ints are cast at the result boundary to avoid
@@ -265,7 +269,7 @@ export interface RestorePublicationHook {
  * older build is refused here — cleanly, by version — rather than meeting a
  * reconcile that would try to create a table it can already see.
  */
-const ENGINE_SCHEMA_VERSION = 15;
+const ENGINE_SCHEMA_VERSION = 14;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
@@ -279,10 +283,8 @@ export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
   let castsInt = false;
   for (const column of columns) {
     if (column.kind === "int") castsInt = true;
-    for (const physical of column.phys) {
-      const name = quoteIdentifier(physical.name);
-      selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
-    }
+    const name = quoteIdentifier(column.jsName);
+    selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
   }
   return castsInt ? selected.join(", ") : "*";
 }
@@ -398,7 +400,7 @@ function storedTableName(value: unknown, path: string): string {
   return storedName(value, path);
 }
 
-export function physicalColumnDdl(name: string, descriptor: Descriptor, path: string): string[] {
+export function columnDdl(name: string, descriptor: Descriptor, path: string): string {
   if (!storedRecord(descriptor) || typeof descriptor["k"] !== "string") {
     corruptSnapshot(`${path} is not a validator descriptor`);
   }
@@ -408,21 +410,29 @@ export function physicalColumnDdl(name: string, descriptor: Descriptor, path: st
     corruptSnapshot(`${path} has an invalid nullable descriptor`);
   }
   const notNull = nullable ? "" : " NOT NULL";
-  if (base["k"] === "pk") return [`${quoteIdentifier(name)} INTEGER PRIMARY KEY AUTOINCREMENT`];
-  if (base["k"] === "union") {
-    return [`${quoteIdentifier(name)} INTEGER${notNull}`, `${quoteIdentifier(`${name}__p`)} TEXT${notNull}`];
-  }
+  if (base["k"] === "pk") return `${quoteIdentifier(name)} INTEGER PRIMARY KEY AUTOINCREMENT`;
   const sqlType = sqlTypeOf(base["k"] as string);
   if (sqlType === undefined) corruptSnapshot(`${path} cannot be stored as a table column`);
-  return [`${quoteIdentifier(name)} ${sqlType}${notNull}`];
+  return `${quoteIdentifier(name)} ${sqlType}${notNull}`;
 }
 
-/** Resolve one named enum/union type to the tag map owning its stable storage tags. */
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function descriptorIndexExpression(name: string, descriptor: Descriptor): string {
+  const base = descriptor["k"] === "nullable" ? descriptor["inner"] as Descriptor : descriptor;
+  if (base["k"] !== "discriminatedUnion") return quoteIdentifier(name);
+  const path = `$.${JSON.stringify(base["discriminator"] as string)}`;
+  return `json_extract(${quoteIdentifier(name)}, ${sqlString(path)})`;
+}
+
+/** Resolve one named enum type to the tag map owning its stable storage tags. */
 export type TagsOf = (typeName: string) => TagMap;
 
 /**
- * The one descriptor-to-physical-column codec: DDL, physical column names, and
- * the encode/decode pair, for every site that has to put a column on disk.
+ * The one descriptor-to-column codec: DDL, index/predicate expression, and the
+ * encode/decode pair, for every site that puts a column on disk.
  *
  * Only the tag maps differ between those sites, so they are the only thing
  * passed in: a live plan resolves them through the Engine's interned tags,
@@ -438,36 +448,28 @@ export function columnPlan(
   tagsOf: TagsOf,
   path: string,
 ): ColumnPlan {
-  const ddls = physicalColumnDdl(jsName, descriptor, path);
+  const ddl = columnDdl(jsName, descriptor, path);
   const nullable = descriptor["k"] === "nullable";
   const base = (nullable ? descriptor["inner"] : descriptor) as Descriptor;
   const kind = base["k"] as string;
-  const phys = ddls.length === 2
-    ? [{ name: jsName, ddl: ddls[0]! }, { name: `${jsName}__p`, ddl: ddls[1]! }]
-    : [{ name: jsName, ddl: ddls[0]! }];
 
   if (kind === "pk") {
-    return { jsName, kind, nullable: false, phys, toSql: (value) => [value], fromSql: (values) => values[0] };
+    return { jsName, kind, nullable: false, ddl, toSql: (value) => value, fromSql: (value) => value };
   }
 
-  const shared = { jsName, kind, nullable, phys };
-  if (kind === "union") {
-    const typeName = base["name"] as string;
+  const shared = { jsName, kind, nullable, ddl };
+  if (kind === "discriminatedUnion") {
+    const discriminator = base["discriminator"] as string;
     return {
       ...shared,
-      typeName,
-      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
-      toSql: (value) => {
-        if (value === null) return [null, null];
-        const { tag, value: payload } = value as { tag: string; value: unknown };
-        const tagInt = tagsOf(typeName).toTag.get(tag);
-        if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${tag}"`);
-        return [tagInt, encode(payload)];
-      },
-      fromSql: (values) =>
-        values[0] === null
+      index: {
+        expression: descriptorIndexExpression(jsName, descriptor),
+        value: (value: unknown) => value === null
           ? null
-          : { tag: tagsOf(typeName).toName.get(Number(values[0]))!, value: decode(values[1] as string) },
+          : (value as Record<string, unknown>)[discriminator],
+      },
+      toSql: (value) => value === null ? null : encode(value),
+      fromSql: (value) => value === null ? null : decode(value as string),
     };
   }
   if (kind === "enum") {
@@ -475,22 +477,24 @@ export function columnPlan(
     return {
       ...shared,
       typeName,
-      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
+      variantTag: (variant) => typeof variant === "string"
+        ? tagsOf(typeName).toTag.get(variant)
+        : undefined,
       toSql: (value) => {
-        if (value === null) return [null];
+        if (value === null) return null;
         const tagInt = tagsOf(typeName).toTag.get(value as string);
         if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${String(value)}"`);
-        return [tagInt];
+        return tagInt;
       },
-      fromSql: (values) => (values[0] === null ? null : tagsOf(typeName).toName.get(Number(values[0]))!),
+      fromSql: (value) => (value === null ? null : tagsOf(typeName).toName.get(Number(value))!),
     };
   }
   const encodeScalar = scalarEncoder(base);
   const decodeScalar = scalarDecoder(base, path);
   return {
     ...shared,
-    toSql: (value) => [value === null ? null : encodeScalar(value)],
-    fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
+    toSql: (value) => value === null ? null : encodeScalar(value),
+    fromSql: (value) => value === null ? null : decodeScalar(value),
   };
 }
 
@@ -501,13 +505,13 @@ function planTable(
   tagsOf: TagsOf,
 ): TablePlan {
   const columns = new Map<string, ColumnPlan>();
-  const physOrder: string[] = [];
+  const columnOrder: string[] = [];
   let hasVectorColumns = false;
   for (const [jsName, validator] of Object.entries(table.columns)) {
     const plan = columnPlan(jsName, validator.descriptor(), tagsOf, `${name}.${jsName}`);
     columns.set(jsName, plan);
     if (plan.kind === "vector") hasVectorColumns = true;
-    for (const phys of plan.phys) physOrder.push(phys.name);
+    columnOrder.push(plan.jsName);
   }
   return Object.freeze({
     table,
@@ -519,7 +523,7 @@ function planTable(
     columns,
     environment: createPredicateEnvironment({ columns, table, displayName: name }),
     hasVectorColumns,
-    physOrder: Object.freeze(physOrder),
+    columnOrder: Object.freeze(columnOrder),
     readProjection: compileReadProjection(columns.values()),
     indexes: Object.freeze([...table.indexes]),
     fullText: Object.freeze(table.fullTextColumns.map((column) => fullTextTargetPlan(name, column))),
@@ -561,7 +565,7 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
       }
       if (descriptor["k"] === "pk") primaryKeys++;
       if (descriptor["k"] === "scheduleAt") scheduleColumns++;
-      physicalColumnDdl(column, descriptor as Descriptor, `${tableName}.${column}`);
+      columnDdl(column, descriptor as Descriptor, `${tableName}.${column}`);
     }
     if (primaryKeys !== 1) corruptSnapshot(`${tableName} has ${primaryKeys} primary keys`);
     if (scheduleColumns > 1 || (value["kind"] === "event" && scheduleColumns > 0)) {
@@ -581,7 +585,7 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
         ) ||
         new Set(index["columns"]).size !== index["columns"].length ||
         typeof index["unique"] !== "boolean" ||
-        (index["algorithm"] !== "btree" && index["algorithm"] !== "direct")
+        Object.keys(index).some((key) => key !== "name" && key !== "columns" && key !== "unique")
       ) {
         corruptSnapshot(`${tableName}.${name} has an invalid definition`);
       }
@@ -658,13 +662,13 @@ function namedDefinitionsOf(snapshot: SchemaSnapshot): ReadonlyMap<string, Store
       for (const field of Object.values(descriptor["shape"] as Record<string, Descriptor>)) visit(field);
       return;
     }
-    if (kind !== "enum" && kind !== "union") return;
+    if (kind === "discriminatedUnion") {
+      for (const member of Object.values(descriptor["members"] as Record<string, Descriptor>)) visit(member);
+      return;
+    }
+    if (kind !== "enum") return;
     const name = storedName(descriptor["name"], "named type");
-    const variants = kind === "enum"
-      ? descriptor["values"]
-      : storedRecord(descriptor["members"])
-        ? Object.keys(descriptor["members"])
-        : null;
+    const variants = descriptor["values"];
     if (
       !Array.isArray(variants) ||
       variants.length === 0 ||
@@ -681,9 +685,6 @@ function namedDefinitionsOf(snapshot: SchemaSnapshot): ReadonlyMap<string, Store
       corruptSnapshot(`named type ${name} has conflicting definitions`);
     }
     definitions.set(name, definition);
-    if (kind === "union") {
-      for (const member of Object.values(descriptor["members"] as Record<string, Descriptor>)) visit(member);
-    }
   };
   for (const table of Object.values(snapshot.tables)) {
     for (const descriptor of Object.values(table.columns)) visit(descriptor);
@@ -695,8 +696,8 @@ function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
   const objects: StoredObject[] = [];
   for (const [tableName, table] of Object.entries(snapshot.tables)) {
     if (table.kind === "event") continue;
-    const columns = Object.entries(table.columns).flatMap(([column, descriptor]) =>
-      physicalColumnDdl(column, descriptor, `${tableName}.${column}`),
+    const columns = Object.entries(table.columns).map(([column, descriptor]) =>
+      columnDdl(column, descriptor, `${tableName}.${column}`),
     );
     objects.push({
       type: "table",
@@ -710,7 +711,7 @@ function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
         type: "index",
         name,
         table: tableName,
-        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdentifier(name)} ON ${quoteIdentifier(tableName)} (${index.columns.map(quoteIdentifier).join(", ")})`,
+        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdentifier(name)} ON ${quoteIdentifier(tableName)} (${index.columns.map((column) => descriptorIndexExpression(column, table.columns[column]!)).join(", ")})`,
       });
     }
     const scheduleAt = Object.entries(table.columns).find(([, descriptor]) => descriptor["k"] === "scheduleAt")?.[0];
@@ -951,10 +952,6 @@ function normalizeStorageError(error: unknown): unknown {
     return new CorruptDatabaseError(`database storage is corrupt (${code})`, { cause: error });
   }
   return error;
-}
-
-function sqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function checkRows(db: Database, pragma: "quick_check" | "integrity_check"): string[] {
@@ -1369,17 +1366,15 @@ export class Engine {
   }
 
   /**
-   * Assign stable tags to every named enum/union variant in the application
+   * Assign stable tags to every named enum variant in the application
    * schema. Reads `_ackerdb_tags` but never writes it — `persistTagMaps` commits
    * the assignment in the caller-owned schema transaction.
    */
   private internTags(): void {
     const select = this.writer.query("SELECT variant, tag FROM _ackerdb_tags WHERE type = ?");
     for (const [typeName, validator] of this.schema.namedTypes) {
-      const variants =
-        validator.kind === "enum"
-          ? [...(validator as unknown as { values: readonly string[] }).values]
-          : Object.keys((validator as unknown as { members: Record<string, unknown> }).members);
+      if (validator.kind !== "enum") continue;
+      const variants = [...(validator as unknown as { values: readonly string[] }).values];
       const map: TagMap = { toTag: new Map(), toName: new Map() };
       let max = -1;
       for (const row of select.all(typeName) as { variant: string; tag: bigint }[]) {
@@ -1407,7 +1402,7 @@ export class Engine {
    * rebuilt maps up on their next encode.
    */
   reinternTags(): void {
-    for (const typeName of this.schema.namedTypes.keys()) this.tags.delete(typeName);
+    this.tags.clear();
     this.internTags();
   }
 
@@ -1463,10 +1458,7 @@ export class Engine {
   // -- DDL -------------------------------------------------------------------
 
   createTableDdl(plan: PhysicalTablePlan, nameOverride?: string, extraColumnDdls: string[] = []): string {
-    const cols: string[] = [];
-    for (const column of plan.columns.values()) {
-      for (const phys of column.phys) cols.push(phys.ddl);
-    }
+    const cols = [...plan.columns.values()].map((column) => column.ddl);
     cols.push(...extraColumnDdls); // rebuilds append carried columns absent from the plan
     return `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(nameOverride ?? plan.name)} (${cols.join(", ")})`;
   }
@@ -1489,7 +1481,7 @@ export class Engine {
 
   indexDdl(plan: PhysicalTablePlan, index: IndexDef): string {
     const unique = index.unique ? "UNIQUE " : "";
-    const cols = index.columns.map((c) => quoteIdentifier(c)).join(", ");
+    const cols = index.columns.map((column) => columnIndexExpression(plan.columns.get(column)!)).join(", ");
     return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdentifier(indexSqlName(plan.name, index.name))} ON ${quoteIdentifier(plan.name)} (${cols})`;
   }
 
@@ -1620,25 +1612,24 @@ export class Engine {
   rowFromSql(plan: TablePlan, sqlRow: Record<string, unknown>): Record<string, unknown> {
     const row: Record<string, unknown> = {};
     for (const column of plan.columns.values()) {
-      row[column.jsName] = column.fromSql(column.phys.map((p) => sqlRow[p.name]));
+      row[column.jsName] = column.fromSql(sqlRow[column.jsName]);
     }
     return row;
   }
 
   insertSql(plan: TablePlan): { sql: string; bind(row: Record<string, unknown>): unknown[] } {
-    const physCols: string[] = [];
     const columns = [...plan.columns.values()].filter((c) => c.kind !== "pk");
-    for (const column of columns) for (const phys of column.phys) physCols.push(phys.name);
+    const physicalColumns = columns.map((column) => column.jsName);
     // A table whose only column is its key — `_ackerdb_identities`, where the
     // Identity *is* the row — has no column list to bind, and SQLite spells
     // that case differently.
-    const values = physCols.length === 0
+    const values = physicalColumns.length === 0
       ? "DEFAULT VALUES"
-      : `(${physCols.map(quoteIdentifier).join(", ")}) VALUES (${physCols.map(() => "?").join(", ")})`;
+      : `(${physicalColumns.map(quoteIdentifier).join(", ")}) VALUES (${physicalColumns.map(() => "?").join(", ")})`;
     const sql = `INSERT INTO ${quoteIdentifier(plan.name)} ${values} RETURNING ${quoteIdentifier(plan.pk)}`;
     return {
       sql,
-      bind: (row) => columns.flatMap((c) => c.toSql(row[c.jsName])),
+      bind: (row) => columns.map((column) => column.toSql(row[column.jsName])),
     };
   }
 

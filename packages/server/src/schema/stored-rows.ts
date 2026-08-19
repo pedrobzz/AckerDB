@@ -1,10 +1,9 @@
 /**
  * Descriptor-driven reads of historical rows. Reconciliation probes and
  * migration transforms share this exact decoder so nested wire values and
- * enum/union tags can never acquire two interpretations of stored data.
+ * enum tags can never acquire two interpretations of stored data.
  */
 import type { Database } from "bun:sqlite";
-import { decode } from "@ackerdb/core";
 import type { Descriptor } from "../validation/validator.ts";
 import type { TableSnapshot } from "./snapshot.ts";
 import { scalarDecoder } from "./descriptor-kinds.ts";
@@ -18,9 +17,9 @@ export type StoredTags = ReadonlyMap<string, ReadonlyMap<number, string>>;
 
 export interface StoredColumn {
   readonly col: string;
-  readonly phys: readonly string[];
+  readonly physical: string;
   readonly present: boolean;
-  decode(values: unknown[]): unknown;
+  decode(value: unknown): unknown;
 }
 
 export interface StoredTable {
@@ -31,15 +30,6 @@ export interface StoredTable {
 
 function baseOf(desc: Descriptor): Descriptor {
   return desc["k"] === "nullable" ? desc["inner"] as Descriptor : desc;
-}
-
-/** Physical column names represented by a stored table snapshot. */
-export function physicalColumnsOf(table: TableSnapshot): Set<string> {
-  return new Set(
-    Object.entries(table.columns).flatMap(([column, descriptor]) =>
-      baseOf(descriptor)["k"] === "union" ? [column, `${column}__p`] : [column],
-    ),
-  );
 }
 
 /**
@@ -63,7 +53,7 @@ export function loadStoredTags(writer: Database): StoredTags {
   return tags;
 }
 
-/** Build one descriptor-owned scalar/enum/union column decoder. */
+/** Build one descriptor-owned scalar/enum column decoder. */
 export function storedColumn(
   col: string,
   desc: Descriptor,
@@ -73,41 +63,26 @@ export function storedColumn(
 ): StoredColumn {
   const base = baseOf(desc);
   const kind = base["k"] as string;
-  const logicalPhys = kind === "union" ? [col, `${col}__p`] : [col];
-  const phys = logicalPhys.map(physicalName);
-  const present = phys.every((name) => physicalCols.has(name));
-  if (!present) return { col, phys, present, decode: () => null };
-  if (kind === "union") {
-    const typeName = base["name"] as string;
-    return {
-      col,
-      phys,
-      present,
-      decode: (values) => values[0] === null
-        ? null
-        : {
-            tag: tags.get(typeName)!.get(Number(values[0]))!,
-            value: decode(values[1] as string),
-          },
-    };
-  }
+  const physical = physicalName(col);
+  const present = physicalCols.has(physical);
+  if (!present) return { col, physical, present, decode: () => null };
   if (kind === "enum") {
     const typeName = base["name"] as string;
     return {
       col,
-      phys,
+      physical,
       present,
-      decode: (values) => values[0] === null
+      decode: (value) => value === null
         ? null
-        : tags.get(typeName)!.get(Number(values[0]))!,
+        : tags.get(typeName)!.get(Number(value))!,
     };
   }
   const scalar = scalarDecoder(base, col);
   return {
     col,
-    phys,
+    physical,
     present,
-    decode: (values) => values[0] === null ? null : scalar(values[0]),
+    decode: (value) => value === null ? null : scalar(value),
   };
 }
 
@@ -137,7 +112,7 @@ export function buildStoredTable(
 export function decodeStoredRow(table: StoredTable, sqlRow: StoredRow): StoredRow {
   const row = Object.create(null) as StoredRow;
   for (const column of table.columns) {
-    row[column.col] = column.decode(column.phys.map((name) => sqlRow[name]));
+    row[column.col] = column.decode(sqlRow[column.physical]);
   }
   return row;
 }

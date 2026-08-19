@@ -114,7 +114,7 @@ await acker.system.run("fixture.typed", async (ctx) => {
       channelId: 1n,
       body: transactionPrincipal,
       role: "admin",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
   });
   // @ts-expect-error SystemCtx is bound to this application's tables.
@@ -145,7 +145,7 @@ const store: HttpHandlerPOST<"/users/:id"> = async (ctx) => {
     channelId: 1n,
     body: ctx.params.id,
     role: "admin",
-    payload: { tag: "nothing", value: null },
+    payload: { type: "nothing" },
   }));
   return new Response(null);
 };
@@ -246,7 +246,7 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     expect(typecheckFixture(dir)).toBe("");
   });
 
-  test("types.ts carries enum namespaces, union constructors and row types", async () => {
+  test("types.ts carries enum namespaces and row types", async () => {
     const dir = fixture();
     const config = loadConfig(dir);
     await runCodegen(config);
@@ -256,10 +256,7 @@ export const pending = query({ access: "public", args: {}, handler: () => [] });
     expect(types).toContain('export type Role = "admin" | "member";');
     expect(types).toContain("export const Role = {");
     expect(types).toContain(
-      '  text: (value: string): { tag: "text"; value: string } => ({ tag: "text", value }),',
-    );
-    expect(types).toContain(
-      '  nothing: (): { tag: "nothing"; value: null } => ({ tag: "nothing", value: null }),',
+      'export type MessagesPayload = { type: "text"; value: string } | { type: "nothing" };',
     );
     expect(types).toContain('export type Message = RowOf<Schema, "messages">;');
     expect(types).toContain('export type TypingEvent = RowOf<Schema, "typingEvents">;');

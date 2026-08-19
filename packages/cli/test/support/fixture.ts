@@ -28,10 +28,10 @@ export const FIXTURE_APP = `
 import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const role = v.enum("Role", ["admin", "member"]);
-const payload = v.union("Payload", {
-  text: v.string(),
-  nothing: v.tag(),
-});
+const payload = v.discriminatedUnion("type", [
+  v.object({ type: v.literal("text"), value: v.string() }),
+  v.object({ type: v.literal("nothing") }),
+]);
 
 const schema = defineSchema({
   messages: defineTable({
@@ -81,7 +81,7 @@ export const send = mutation({
     const id = await ctx.db.messages.insert({
       ...args,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     await ctx.db.typingEvents.insert({ channelId: args.channelId });
     return id;
@@ -109,7 +109,7 @@ export const record = job({
       channelId: 0n,
       body: args.note,
       role: "admin",
-      payload: { tag: "text", value: "job" },
+      payload: { type: "text", value: "job" },
     });
   },
 });

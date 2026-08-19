@@ -12,7 +12,7 @@ only the explicitly optimistic class performs the data probes described below:
 
 - **Shape-safe** changes apply automatically, identically on an empty dev table
   and a full production one, with no migration file: adding a table, adding a
-  nullable column, adding or reordering enum/union variants, widening a column
+  nullable column, adding or reordering enum variants, widening a column
   to nullable, loosening validator constraints, any non-unique index change,
   dropping any index, and every event-table change.
 - **Optimistic** changes are attempted against the stored data: adding a unique
@@ -22,8 +22,8 @@ only the explicitly optimistic class performs the data probes described below:
   migration with a volunteered dedupe or validation transform.
 - **Shape-unsafe** changes pose a per-row question and always require a
   migration, even on an empty table: a column type change, narrowing to
-  required, adding a required column, removing a variant, changing a union
-  payload, dropping a column or table, and any rename (a diff reads it as
+  required, adding a required column, removing an enum variant, changing a
+  discriminated-union member, dropping a column or table, and any rename (a diff reads it as
   drop-plus-add until declared).
 
 For vectors, adding a nullable direct column is shape-safe. Adding a required
@@ -135,8 +135,10 @@ new row out (pk preserved by the engine), `null` deletes the row. `ctx.before`
 is the frozen before-state for cross-table lookups; `ctx.insert` emits rows
 into any table of the new schema. Transforms never observe each other's output
 or emits, may be async, and should be deterministic — network access is on
-you. A variant rename keeps its interned tag with zero row rewrites; a genuine
-removal forces you (in the types) to map or delete the rows that hold it.
+you. An enum variant rename keeps its interned tag with zero row rewrites. A
+discriminated-union literal rename changes the object itself, so it is a removal
+plus an addition and requires a transform. A genuine removal forces you (in the
+types) to map or delete the rows that hold it.
 Constraint-refusal scaffolds use the same table transform: repair the invalid
 value, map the row to another valid shape, or return `null` to delete it. The
 engine validates every returned and emitted row against the target constraints

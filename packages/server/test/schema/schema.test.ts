@@ -27,8 +27,6 @@ describe("defineTable", () => {
       .toThrow('column "x": v.literal() has no column storage');
     expect(() => defineTable({ id: v.primaryKey(), x: v.literal(1).nullable() as never }))
       .toThrow('column "x": v.literal() has no column storage');
-    expect(() => defineTable({ id: v.primaryKey(), x: v.tag() as never }))
-      .toThrow('column "x": v.tag() is only valid inside a union');
   });
 
   test("index rules: existence, order, kinds, pk, duplicates", () => {
@@ -57,25 +55,9 @@ describe("defineTable", () => {
       name: index.name,
       columns: index.columns,
     }))).toEqual([
-      { name: "s_n_b_9_channelId", columns: ["channelId"] },
-      { name: "s_n_b_9_channelId_4_body", columns: ["channelId", "body"] },
+      { name: "s_n_9_channelId", columns: ["channelId"] },
+      { name: "s_n_9_channelId_4_body", columns: ["channelId", "body"] },
     ]);
-  });
-
-  test("direct indexes: single dense-integer column only", () => {
-    const make = () =>
-      defineTable({
-        id: v.primaryKey(),
-        seq: v.bigint(),
-        role: v.enum("SRole", ["a", "b"]),
-        name: v.string(),
-      });
-    expect(make().index(["seq"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
-    expect(make().index(["role"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
-    expect(() => make().index(["name"], { algorithm: "direct" })).toThrow("dense");
-    expect(() => make().index(["seq", "role"] as never, { algorithm: "direct" })).toThrow(
-      "single-column",
-    );
   });
 
   test("full-text declarations accept one explicit set of direct string columns", () => {
@@ -154,11 +136,13 @@ describe("defineTable", () => {
       access: "invalid" as never,
       matches: () => true,
     })).toThrow("event subscription access");
-    expect(() => defineEventTable(pkCols(), {
+    const withPrimaryKeyArg = defineEventTable(pkCols(), {
       args: { id: v.primaryKey() },
       access: "public",
       matches: () => true,
-    })).toThrow("not a valid argument validator");
+    });
+    expect(withPrimaryKeyArg.eventSubscription?.args.decode({ id: "7" }))
+      .toEqual({ id: 7n });
     expect(() => defineEventTable(pkCols(), {
       args: {},
       access: "public",

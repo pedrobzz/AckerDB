@@ -417,9 +417,9 @@ function fold(plan: TablePlan, node: ValidatedNode): FoldedNode {
     case "column":
       return {
         kind: "comparison",
-        column: node.column,
+        reference: { column: node.column },
         op: node.op,
-        value: toSqlPredicateValue(plan, node.column, node.value, false),
+        value: toSqlPredicateValue(plan, node.column, node.value),
       };
     case "null":
       return { kind: "null", column: node.column, isNull: node.isNull };
@@ -428,7 +428,7 @@ function fold(plan: TablePlan, node: ValidatedNode): FoldedNode {
       const membership: PredicateNode = {
         kind: "in",
         column: node.column,
-        values: node.values.map((value) => toSqlPredicateValue(plan, node.column, value, false)),
+        values: node.values.map((value) => toSqlPredicateValue(plan, node.column, value)),
       };
       return node.negated ? { kind: "not", expression: membership } : membership;
     }

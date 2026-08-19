@@ -43,7 +43,6 @@ import {
   type ScopeRequirement,
 } from "../auth/scopes.ts";
 import type { Schema } from "../schema/definition.ts";
-import { validateArgsShape } from "../validation/declarations.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
 import type {
   CredentialMutationCapability,
@@ -438,6 +437,7 @@ function isValidator(value: unknown): value is Validator<unknown, string> {
     typeof (value as Validator).parse === "function" &&
     typeof (value as Validator).decode === "function" &&
     typeof (value as Validator).encode === "function" &&
+    typeof (value as Validator).toJsonSchema === "function" &&
     typeof (value as Validator).tsType === "function"
   );
 }
@@ -537,9 +537,6 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
   if (!isValidator(yields)) {
     throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
   }
-  if (yields.kind === "pk" || yields.kind === "scheduleAt" || yields.kind === "tag") {
-    throw new Error(`yields: v.${yields.kind}() is not a valid chunk validator`);
-  }
 }
 
 /**
@@ -573,7 +570,6 @@ function register<K extends RegisteredFunctionKind>(kind: K) {
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
-    validateArgsShape(def.args);
     const args = object(def.args);
     validateOutputDeclarations(def as never);
     const exposure = exposureFields(def, kind);
@@ -671,7 +667,6 @@ export function sseProcedure<
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
-  validateArgsShape(def.args);
   const args = object(def.args);
   validateYields(def.yields);
   const exposure = exposureFields(def, "sse");

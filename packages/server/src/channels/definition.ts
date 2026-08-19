@@ -38,7 +38,6 @@ import {
   authorizationResult as channelAuthorizationResult,
   validateDeclaration,
   validateEventDeclarations,
-  validateArgsShape,
 } from "../validation/declarations.ts";
 
 export type ChannelEventDeclarations = Readonly<
@@ -313,7 +312,6 @@ export const channel: ChannelBuilder<Schema> = <
       "channel access must be public, authenticated, system, or a policy callback",
     );
   }
-  validateArgsShape(definition.args);
   const args = object(definition.args);
   validateEventDeclarations(definition.clientEvents, "clientEvents");
   validateEventDeclarations(definition.serverEvents, "serverEvents");

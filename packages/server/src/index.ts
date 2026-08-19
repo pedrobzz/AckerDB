@@ -127,10 +127,7 @@ export {
   type InferShape,
   type ArrayValidator,
   type EnumValidator,
-  type UnionValidator,
-  type UnionMembers,
-  type UnionValue,
-  type UnionNamespace,
+  type DiscriminatedUnionValidator,
 } from "./validation/composites.ts";
 export { v } from "./validation/v.ts";
 export { ValidationError, isValidationError } from "./validation/error.ts";
@@ -433,6 +430,12 @@ export {
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
+export {
+  type JsonSchema,
+  type JsonSchemaMode,
+  type JsonSchemaOptions,
+  type JsonSchemaTarget,
+} from "./validation/json-schema.ts";
 export { Registry } from "./app/registry.ts";
 export {
   OutboundBudget,

@@ -24,7 +24,7 @@ import { StaleConsentError, writeMigration } from "../../src/migrations/write.ts
 import { makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
-const UNIQUE_EMAIL_INDEX = "s_u_b_5_email";
+const UNIQUE_EMAIL_INDEX = "s_u_5_email";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -226,14 +226,17 @@ describe("generateMigration: types companion", () => {
     expect(typesTs).toContain("export type ProfilesRow = { id: bigint; blurb: string };");
   });
 
-  test("renders structural enums, unions, arrays, objects, nullables and scalars", () => {
+  test("renders structural enums, discriminated unions, arrays, objects, nullables and scalars", () => {
     const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), v: v.string() }) });
     const target = defineSchema({
       t: defineTable({ id: v.primaryKey(), v: v.float() }),
       shapes: defineTable({
         id: v.primaryKey(),
         e: v.enum("E", ["x", "y"]),
-        u: v.union("U", { text: v.string(), nada: v.tag() }),
+        u: v.discriminatedUnion("type", [
+          v.object({ type: v.literal("text"), value: v.string() }),
+          v.object({ type: v.literal("nada") }),
+        ]),
         arr: v.array(v.string().nullable()),
         obj: v.object({ a: v.bigint(), b: v.bytes() }),
         maybe: v.boolean().nullable(),
@@ -241,11 +244,11 @@ describe("generateMigration: types companion", () => {
     });
     const { typesTs } = generateMigration({ number: 1, name: "m", pre: snapshotOf(pre), schema: target });
     expect(typesTs).toContain(
-      'export type ShapesRow = { id: bigint; e: "x" | "y"; u: { tag: "text"; value: string } | { tag: "nada"; value: null }; arr: (string | null)[]; obj: { a: bigint; b: Uint8Array }; maybe: boolean | null };',
+      'export type ShapesRow = { id: bigint; e: "x" | "y"; u: { type: "text"; value: string } | { type: "nada" }; arr: (string | null)[]; obj: { a: bigint; b: Uint8Array }; maybe: boolean | null };',
     );
     // insert shape: pk omitted, nullable optional
     expect(typesTs).toContain(
-      'type ShapesInsert = { e: "x" | "y"; u: { tag: "text"; value: string } | { tag: "nada"; value: null }; arr: (string | null)[]; obj: { a: bigint; b: Uint8Array }; maybe?: boolean | null };',
+      'type ShapesInsert = { e: "x" | "y"; u: { type: "text"; value: string } | { type: "nada" }; arr: (string | null)[]; obj: { a: bigint; b: Uint8Array }; maybe?: boolean | null };',
     );
   });
 
@@ -427,41 +430,6 @@ export default defineApp({ schema });
     expect(outcome.safe).toEqual([]);
   });
 
-  test("post-answer generation probes through a variant rename and scaffolds the newly visible repair", async () => {
-    const before = defineSchema({
-      items: defineTable({
-        id: v.primaryKey(),
-        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
-      }),
-    });
-    const targetAppTs = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
-const schema = defineSchema({
-  items: defineTable({
-    id: v.primaryKey(),
-    body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
-  }),
-});
-export default defineApp({ schema });
-`;
-    const dir = makeFixture({ "app.ts": targetAppTs });
-    dirs.push(dir);
-    const config = loadConfig(dir);
-    mkdirSync(config.dbDir, { recursive: true });
-    await seed(before, join(config.dbDir, "data.db"), async (d) => {
-      await d.items.insert({ body: { tag: "legacy", value: { label: "x" } } });
-    });
-
-    const [migrationPath] = await writeMigration(config, {
-      name: "rename_and_validate",
-      renames: { variants: { Body: { legacy: "current" } } },
-    });
-    const migrationTs = readFileSync(migrationPath!, "utf8");
-    expect(migrationTs).toContain('renames: { variants: { Body: { legacy: "current" } } },');
-    expect(migrationTs).toContain(
-      "// TODO(items.body): constraints tightened; 1 existing row(s) violate the target validator",
-    );
-    expect(migrationTs).toContain("items: (row): ItemsRow => {");
-  });
 });
 
 // -- compile-time guarantees: one tsc run over generated + usage files --------

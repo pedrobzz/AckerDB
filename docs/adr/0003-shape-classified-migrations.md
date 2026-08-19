@@ -12,11 +12,11 @@ three interlocking rules.
 
 **1. Safety is classified by the shape of the change, always presuming rows
 exist — never by data.** Shape-safe changes (cannot lose or invalidate data
-whatever it is: add table, add nullable column, add/reorder variants, widen to
+whatever it is: add table, add nullable column, add/reorder enum variants, widen to
 nullable, non-unique index changes, event-table changes) auto-apply
 identically in dev and prod with no file. Shape-unsafe changes (pose a
 per-row question: type change, nullable→required, required-column add,
-variant removal, union payload change, drops, apparent drops that are really
+enum-variant removal, structured-validator change, drops, apparent drops that are really
 renames) always require a migration file, even on an empty table. The sole
 optimistic change (unique-index addition) poses only a cross-row question and
 touches no rows: it is attempted, refuses cleanly with counts if duplicates

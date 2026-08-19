@@ -27,7 +27,10 @@ describe("File reference schema", () => {
     for (const nested of [
       v.array(v.file()),
       v.object({ file: v.file() }),
-      v.union("FilePayload", { file: v.file() }),
+      v.discriminatedUnion("type", [
+        v.object({ type: v.literal("file"), value: v.file() }),
+        v.object({ type: v.literal("none") }),
+      ]),
     ]) {
       expect(() => defineTable({ id: v.primaryKey(), nested })).toThrow(
         "v.file() may only be stored as a direct column",

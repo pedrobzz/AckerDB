@@ -4,16 +4,15 @@
  * type, scalar wire encode/decode, and structural validation. Adding a kind is
  * one entry here; every descriptor-driven site reads its facet from this table.
  *
- * Two facets stay at their sites by necessity: enum/union encode/decode need the
+ * Two facets stay at their sites by necessity: enum encode/decode needs the
  * site-specific tag maps (live engine tags, a step's interned tags, an old
- * snapshot's tags), and the CLI's structural TYPE renderer emits TypeScript text
+ * snapshot's tags), and the CLI's structural type renderer emits TypeScript text
  * (a codegen concern owning its own error type), so it stays co-located in the
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@ackerdb/core";
 import {
   refuseUnknownKeys,
-  refuseUnknownUnionKeys,
   ValidationError,
 } from "../validation/error.ts";
 import type { Descriptor } from "../validation/validator.ts";
@@ -51,7 +50,7 @@ interface CheckArgs {
 type CheckFn = (args: CheckArgs) => unknown;
 
 export interface DescriptorKind {
-  /** SQLite type of the single-column layout; absent for pk/union (custom DDL) and non-storable kinds. */
+  /** SQLite type of the single-column layout; absent for pk and non-storable kinds. */
   sqlType?: SqlType;
   /** Wire-encode a non-null scalar; absent means identity (or a tag/identity-mapped kind, whose codec lives at its site). */
   encode?: (value: unknown, desc: Descriptor) => unknown;
@@ -169,12 +168,6 @@ const KINDS: Record<string, DescriptorKind> = {
       return value;
     },
   },
-  tag: {
-    check: ({ value, expect }) => {
-      expect(value === null || value === undefined, "null (payload-less variant)");
-      return null;
-    },
-  },
   array: {
     sqlType: "TEXT",
     ...wire,
@@ -209,24 +202,19 @@ const KINDS: Record<string, DescriptorKind> = {
       return out;
     },
   },
-  union: {
+  discriminatedUnion: {
+    sqlType: "TEXT",
+    ...wire,
     check: ({ desc, value, path, expect }) => {
-      expect(value !== null && typeof value === "object" && !Array.isArray(value), "{ tag, value }");
+      expect(value !== null && typeof value === "object" && !Array.isArray(value), "discriminated union object");
       const input = value as Record<string, unknown>;
+      const discriminator = desc["discriminator"] as string;
       const members = desc["members"] as Record<string, Descriptor>;
-      const variant = input["tag"];
-      if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
-        throw new ValidationError(`${path}.tag: expected one of ${Object.keys(members).map((v) => JSON.stringify(v)).join(" | ")}`);
+      const variant = input[discriminator];
+      if (typeof variant === "string" && Object.hasOwn(members, variant)) {
+        return checkDescriptor(members[variant]!, value, path);
       }
-      refuseUnknownUnionKeys(input, path);
-      const member = members[variant]!;
-      if (
-        !Object.hasOwn(input, "value") &&
-        (member["k"] === "optional" || member["k"] === "nullish")
-      ) {
-        return { tag: variant };
-      }
-      return { tag: variant, value: checkDescriptor(member, input["value"], `${path}.value`) };
+      throw new ValidationError(`${path}.${discriminator}: unknown discriminator value`);
     },
   },
   jsonb: {
@@ -247,7 +235,7 @@ const KINDS: Record<string, DescriptorKind> = {
 
 const identity = (value: unknown): unknown => value;
 
-/** The SQLite type of a kind's single-column layout, or `undefined` when it has none (pk/union/non-storable). */
+/** The SQLite type of a kind's single-column layout, or `undefined` for custom/non-storable kinds. */
 export function sqlTypeOf(kind: string): SqlType | undefined {
   return KINDS[kind]?.sqlType;
 }
@@ -266,7 +254,7 @@ export function scalarDecoder(desc: Descriptor, path: string): (value: unknown) 
 
 /**
  * Structural mirror of the v validators over a descriptor, for migration
- * transform output and emits: kind + finiteness checks, i64 range, enum/union
+ * transform output and emits: kind + finiteness checks, i64 range, enum
  * membership with payload recursion, strict object keys, jsonb wire-encodability.
  * Returns the normalized value while preserving optional-key presence; unknown keys reject.
  */

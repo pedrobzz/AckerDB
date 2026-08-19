@@ -3,7 +3,7 @@ import type { Descriptor } from "../validation/validator.ts";
 import { validateConstraintDescriptor } from "../validation/constraints.ts";
 import { ValidationError } from "../validation/error.ts";
 
-type DescriptorRole = "column" | "nested" | "union-member";
+type DescriptorRole = "column" | "nested";
 
 const FIELDS = {
   pk: ["k"],
@@ -20,10 +20,9 @@ const FIELDS = {
   vector: ["k", "dimensions"],
   enum: ["k", "name", "values"],
   literal: ["k", "v"],
-  tag: ["k"],
   array: ["k", "el", "min", "max"],
   object: ["k", "shape"],
-  union: ["k", "name", "members"],
+  discriminatedUnion: ["k", "discriminator", "members"],
   jsonb: ["k"],
   nullable: ["k", "inner"],
   optional: ["k", "inner"],
@@ -115,7 +114,7 @@ function validate(
       if (!modifierAllowed) fail(path, "redundant stored presence modifier");
       {
         const inner = record(descriptor["inner"], `${path}.inner`);
-        if (inner["k"] === "pk" || inner["k"] === "scheduleAt" || inner["k"] === "tag") {
+        if (inner["k"] === "pk" || inner["k"] === "scheduleAt") {
           fail(path, `v.${String(inner["k"])}() cannot be nullable`);
         }
         validate(inner, `${path}.inner`, role, false);
@@ -124,9 +123,6 @@ function validate(
     case "pk":
     case "scheduleAt":
       if (role !== "column") fail(path, `v.${typedKind}() must be a top-level column`);
-      return;
-    case "tag":
-      if (role !== "union-member") fail(path, "v.tag() must be a direct union member");
       return;
     case "literal":
       if (role === "column") fail(path, "v.literal() cannot be stored as a top-level column");
@@ -176,15 +172,26 @@ function validate(
       }
       return;
     }
-    case "union": {
-      name(descriptor["name"], `${path}.name`);
-      const members = record(descriptor["members"], `${path}.members`);
-      const variants = Object.keys(members);
-      if (variants.length === 0) fail(`${path}.members`, "expected at least one union variant");
-      for (const variant of variants) {
-        name(variant, `${path}.members variant`);
-        validate(members[variant], `${path}.members.${variant}`, "union-member", true);
+    case "discriminatedUnion": {
+      const discriminator = descriptor["discriminator"];
+      if (typeof discriminator !== "string" || discriminator.length === 0) {
+        fail(`${path}.discriminator`, "expected a non-empty field name");
       }
+      const members = record(descriptor["members"], `${path}.members`);
+      const entries = Object.entries(members);
+      if (entries.length < 2) {
+        fail(`${path}.members`, "expected at least two object validators");
+      }
+      entries.forEach(([value, member]) => {
+        const memberPath = `${path}.members.${JSON.stringify(value)}`;
+        const object = record(member, memberPath);
+        if (object["k"] !== "object") fail(memberPath, "expected an object validator");
+        const shape = record(object["shape"], `${memberPath}.shape`);
+        const literal = record(shape[discriminator], `${memberPath}.shape.${discriminator}`);
+        if (literal["k"] !== "literal") fail(`${memberPath}.shape.${discriminator}`, "expected a literal validator");
+        if (literal["v"] !== value) fail(`${memberPath}.shape.${discriminator}`, `expected v.literal(${JSON.stringify(value)})`);
+        validate(object, memberPath, "nested", true);
+      });
       return;
     }
     case "identity":

@@ -1,6 +1,6 @@
 /**
  * Renames: the migration's statement that a dropped and an added name (table,
- * column, or enum/union variant) are the same thing renamed, so its data and
+ * column, or enum variant) are the same thing renamed, so its data and
  * identity carry over instead of being dropped and recreated.
  *
  * `planRenames` validates the declarations (a `MigrationError` touching nothing)
@@ -14,7 +14,6 @@ import type { Database } from "bun:sqlite";
 import type { Descriptor } from "../../validation/validator.ts";
 import { compareCodeUnits } from "../../shared/ordering.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
-import { namedOf } from "../diff.ts";
 import { MigrationError, type Migration } from "./types.ts";
 
 function ownValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
@@ -36,7 +35,7 @@ export interface RenamePlan {
   renamedCurrent: SchemaSnapshot;
   /** new table name -> old table name, for tables whose name changed. */
   tableOldName: Map<string, string>;
-  /** new table name -> physical [old, new] column pairs (a union contributes both). */
+  /** new table name -> physical [old, new] column pairs. */
   columnPhys: Map<string, [string, string][]>;
   /** new table name -> new physical column name -> old physical column name. */
   columnReverse: Map<string, Map<string, string>>;
@@ -76,10 +75,6 @@ export function renameRoutes(target: SchemaSnapshot, raw: NormalizedRenames): Re
       }
       pairs.push([oldColumn, newColumn]);
       reverse.set(newColumn, oldColumn);
-      if (namedOf(targetColumn)?.kind === "union") {
-        pairs.push([`${oldColumn}__p`, `${newColumn}__p`]);
-        reverse.set(`${newColumn}__p`, `${oldColumn}__p`);
-      }
     }
     columnPhys.set(table, pairs);
     columnReverse.set(table, reverse);
@@ -91,7 +86,7 @@ export function renameRoutes(target: SchemaSnapshot, raw: NormalizedRenames): Re
  * Validate the rename declarations (MigrationError, nothing touched) and derive
  * the renamed-stored snapshot plus the physical rename work. `columns` are keyed
  * by the TARGET table name, so table renames are resolved first; a column's
- * physical arity comes from its TARGET descriptor (a union contributes two).
+ * physical arity comes from its TARGET descriptor.
  */
 export function planRenames(writer: Database, current: SchemaSnapshot, target: SchemaSnapshot, migration: Migration): RenamePlan {
   const raw: NormalizedRenames = {
@@ -217,9 +212,9 @@ export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): S
 }
 
 /**
- * Rewrite variant names of the named `type` on a TOP-LEVEL column descriptor
+ * Rewrite enum variant names of the named `type` on a TOP-LEVEL column descriptor
  * only (through nullable). A tag relabel is zero-rewrite only where variants
- * are stored as interned tags — the top level; nested enum/union values are
+ * are stored as interned tags — the top level; nested enum values are
  * wire-encoded STRINGS, so a deep rewrite would erase the diff while stranding
  * stale variant strings the new type cannot validate. Left untouched, a nested
  * use of the renamed type surfaces as an honest type-changed refusal whose
@@ -232,17 +227,10 @@ function renameVariants(desc: Descriptor, type: string, vmap: Record<string, str
   if (desc["k"] === "enum" && desc["name"] === type) {
     return { ...desc, values: (desc["values"] as string[]).map((variant) => renamedName(vmap, variant)) };
   }
-  if (desc["k"] === "union" && desc["name"] === type) {
-    const members = Object.create(null) as Record<string, Descriptor>;
-    for (const [variant, d] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-      members[renamedName(vmap, variant)] = d; // payload descriptors untouched: nested uses must diff
-    }
-    return { ...desc, members };
-  }
   return desc;
 }
 
-/** Collect the variant set of every named enum/union in a snapshot, by type name. */
+/** Collect the variant set of every named enum in a snapshot, by type name. */
 export function variantSets(snapshot: SchemaSnapshot): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   const visit = (desc: Descriptor): void => {
@@ -258,14 +246,8 @@ export function variantSets(snapshot: SchemaSnapshot): Map<string, Set<string>> 
         for (const v of desc["values"] as string[]) set.add(v);
         return;
       }
-      case "union": {
-        const set = out.get(desc["name"] as string) ?? out.set(desc["name"] as string, new Set()).get(desc["name"] as string)!;
-        for (const [variant, d] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-          set.add(variant);
-          visit(d);
-        }
-        return;
-      }
+      case "discriminatedUnion":
+        return void Object.values(desc["members"] as Record<string, Descriptor>).forEach(visit);
     }
   };
   for (const table of Object.values(snapshot.tables)) for (const desc of Object.values(table.columns)) visit(desc);

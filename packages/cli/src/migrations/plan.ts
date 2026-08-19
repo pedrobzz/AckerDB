@@ -182,7 +182,8 @@ function describeColumn(
   if (col.op === "variants-changed") {
     for (const v of col.variants) {
       if (sites.variants.has([table, col.column, v.variant].join(SEP))) continue;
-      lines.push(`${col.typeName}: variant "${v.variant}" ${v.op === "payload-changed" ? "payload changed" : v.op}`);
+      const owner = col.kind === "enum" ? col.typeName : site;
+      lines.push(`${owner}: variant "${v.variant}" ${v.op === "payload-changed" ? "payload changed" : v.op}`);
     }
     return;
   }
@@ -222,14 +223,14 @@ export interface CandidateGroup {
 /**
  * The ambiguous drop/add pairs a diff cannot resolve into renames on its own:
  * dropped vs added real TABLES (global pool), per surviving table dropped vs
- * added COLUMNS, and per enum/union type removed vs added VARIANTS. The form
+ * added COLUMNS, and per enum type removed vs added VARIANTS. The form
  * pairs them; the diff only presents them.
  */
 export interface RenameCandidates {
   tables: CandidateGroup;
   /** Keyed by the (stable) table name. */
   columns: Record<string, CandidateGroup>;
-  /** Keyed by the enum/union type name. */
+  /** Keyed by the enum type name. */
   variants: Record<string, CandidateGroup>;
 }
 
@@ -258,7 +259,7 @@ export function renameCandidates(diff: SchemaDiff): RenameCandidates {
       for (const col of change.columns) {
         if (col.op === "dropped") group.dropped.push(col.column);
         else if (col.op === "added") group.added.push(col.column);
-        else if (col.op === "variants-changed") {
+        else if (col.op === "variants-changed" && col.kind === "enum") {
           const vg = variantGroup(col.typeName);
           for (const v of col.variants) {
             if (v.op === "removed") vg.dropped.add(v.variant);

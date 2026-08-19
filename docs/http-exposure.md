@@ -95,14 +95,17 @@ every larger JSON integer literal has already lost precision by the time it is
 parsed — proto3's int64 rule.
 
 Each registered function retains an object validator for `args`; every
-validator owns `parse`, `decode`, and `encode`. The transport therefore calls
+validator owns `parse`, `decode`, `encode`, and `toJsonSchema`. The transport therefore calls
 `fn.args.decode(...)`, `fn.returns.encode(...)`, `fn.yields.encode(...)`, or the
 declared error body's `encode(...)` directly. There is no function-level codec
 or registration-time contract cache:
 
-- A validator AckerDB cannot carry across a JSON boundary (`v.primaryKey()`,
-  `v.scheduleAt()`, `v.tag()`) is rejected when its Standard JSON operation or
-  JSON Schema is requested.
+- `v.primaryKey()` carries the same decimal JSON as `v.bigint()`, while
+  `v.scheduleAt()` carries the same finite JSON number as `v.float()`; their
+  database meaning and documentation do not create a different wire type.
+- A value a particular validator cannot carry, such as
+  `v.literal(Infinity)`, is rejected by that validator's own `encode` and
+  `toJsonSchema` implementation. There is no registry-wide kind classifier.
 - A value with no validator to describe it — `returns` omitted, or an
   application error whose code the function does not declare — crosses through
   the same structural mapping. Declaring a validator changes what a caller is
@@ -456,8 +459,9 @@ plumbing, receipt headers, the shared schema module extraction, the OpenAPI
 walk, the CLI export, the `_` route renames, and deleting the envelope routes
 plus their core types and tests.
 
-The wire format is implemented by each validator's own `decode` and `encode`
-methods (`validation/standard-schema.ts` installs them on built-in validators).
+The wire format and schema are implemented by each validator's own `decode`,
+`encode`, and `toJsonSchema` methods. Composite validators invoke those same
+methods on their children; no external compiler reinterprets validator kinds.
 A public-route closure retains the address and function; the typed SSE route
 resolves its header address through the Registry. Runtime uses the registered
 validators directly for arguments, return values, SSE chunks, and declared

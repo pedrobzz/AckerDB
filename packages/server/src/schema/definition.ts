@@ -25,7 +25,6 @@ import {
 } from "../app/access.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import { sqlTypeOf } from "./descriptor-kinds.ts";
-import { validateArgsShape } from "../validation/declarations.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 const SCHEMA_IDENTITY = Symbol.for("@ackerdb/server/Schema/v1");
@@ -59,12 +58,9 @@ function assertStoredValidator(
     return;
   }
   // A direct column must have a physical layout: its own SQLite type, or the
-  // custom pk/union layouts. Refuse here, at definition time with the column
+  // custom primary-key layout. Refuse here, at definition time with the column
   // named, rather than deep inside plan construction.
-  if (directColumn && validator.kind !== "pk" && validator.kind !== "union") {
-    if (validator.kind === "tag") {
-      throw new ValidationError(`${where}: v.tag() is only valid inside a union`);
-    }
+  if (directColumn && validator.kind !== "pk") {
     if (sqlTypeOf(validator.kind) === undefined) {
       throw new ValidationError(`${where}: v.${validator.kind}() has no column storage`);
     }
@@ -100,29 +96,26 @@ function assertStoredValidator(
     }
     return;
   }
-  if (validator.kind === "union") {
+  if (validator.kind === "discriminatedUnion") {
     const members = (validator as unknown as {
-      readonly members: Record<string, Validator<unknown, string>>;
+      readonly members: readonly Validator<unknown, string>[];
     }).members;
-    for (const [name, member] of Object.entries(members)) {
-      assertStoredValidator(member, `${where}<${name}>`);
+    for (const [index, member] of members.entries()) {
+      assertStoredValidator(member, `${where}[${index}]`);
     }
   }
 }
 
-const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "file", "fileGrant", "boolean", "enum", "union", "scheduleAt"]);
-const DIRECT_INDEXABLE = new Set(["int", "bigint", "identity", "enum", "union"]);
+const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "file", "fileGrant", "boolean", "enum", "discriminatedUnion", "scheduleAt"]);
 
 export interface IndexOptions {
   unique?: boolean;
-  algorithm?: "btree" | "direct";
 }
 
 export interface IndexDef {
   readonly name: string;
   readonly columns: readonly string[];
   readonly unique: boolean;
-  readonly algorithm: "btree" | "direct";
 }
 
 export interface EventSubscriptionDefinition<
@@ -146,7 +139,6 @@ interface RuntimeEventSubscriptionDefinition {
 export type IndexMeta = {
   readonly columns: readonly string[];
   readonly unique: boolean;
-  readonly algorithm: "btree" | "direct";
 };
 
 type FullTextColumnKey<Cols extends ObjectShape> = {
@@ -167,10 +159,10 @@ type FullTextColumnKey<Cols extends ObjectShape> = {
  */
 function structuralIndexName(
   columns: readonly string[],
-  options: Required<IndexOptions>,
+  unique: boolean,
 ): string {
   const encodedColumns = columns.map((column) => `${column.length}_${column}`).join("_");
-  return `s_${options.unique ? "u" : "n"}_${options.algorithm === "direct" ? "d" : "b"}_${encodedColumns}`;
+  return `s_${unique ? "u" : "n"}_${encodedColumns}`;
 }
 
 export class TableDef<
@@ -244,7 +236,6 @@ export class TableDef<
       {
         columns: C;
         unique: O["unique"] extends true ? true : false;
-        algorithm: O["algorithm"] extends "direct" ? "direct" : "btree";
       },
     ],
     Kind,
@@ -288,21 +279,9 @@ export class TableDef<
         );
       }
     }
-    const algorithm = opts?.algorithm ?? "btree";
-    if (algorithm === "direct") {
-      if (columns.length !== 1) {
-        throw new ValidationError("index: direct indexes are single-column");
-      }
-      const validator = this.columns[columns[0]!]!;
-      if (!DIRECT_INDEXABLE.has(validator.kind)) {
-        throw new ValidationError(
-          "index: direct indexes need a dense non-negative integer column (bigint, identity, enum or union tag)",
-        );
-      }
-    }
     const unique = opts?.unique ?? false;
-    const name = structuralIndexName(columns, { unique, algorithm });
-    this.indexes.push({ name, columns, unique, algorithm });
+    const name = structuralIndexName(columns, unique);
+    this.indexes.push({ name, columns, unique });
     return this as unknown as TableDef<
       Cols,
       readonly [
@@ -310,7 +289,6 @@ export class TableDef<
         {
           columns: C;
           unique: O["unique"] extends true ? true : false;
-          algorithm: O["algorithm"] extends "direct" ? "direct" : "btree";
         },
       ],
       Kind,
@@ -385,7 +363,6 @@ export function defineEventTable<Cols extends ObjectShape, Args extends ObjectSh
   ) {
     throw new TypeError("event subscription args must be an object shape");
   }
-  validateArgsShape(subscription.args, "event args");
   if (typeof subscription.matches !== "function") {
     throw new TypeError("event subscription matches must be a function");
   }
@@ -414,7 +391,7 @@ function singularize(word: string): string {
 
 export class Schema<T extends Record<string, TableDef> = Record<string, TableDef>> {
   readonly tables: T;
-  /** Named enum/union validators, by declared name. */
+  /** Validators that codegen emits as named aliases. */
   readonly namedTypes: ReadonlyMap<string, Validator<unknown, string>>;
 
   constructor(tables: T, namedTypes: Map<string, Validator<unknown, string>>) {
@@ -435,7 +412,7 @@ export function isSchema(value: unknown): value is Schema {
  * Composition is the one way two declared table sets ever meet — the framework
  * schema is assembled from its domain modules' contributions, and the root
  * schema is that composition beside the application's. Both table names and
- * named enum/union types must be unique across contributions: a silent
+ * generated types must be unique across contributions: a silent
  * overwrite would let one contribution answer for another's rows, and the
  * failure would surface as a decode error long after the schema was built.
  *
@@ -483,6 +460,11 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
   const namedDescriptors = new Map<string, string>();
   const typeNames = new Map<string, string>(); // generated type name -> "table x" | "enum y"
 
+  const derivedTypeName = (address: string): string => {
+    const words = address.match(/[a-zA-Z0-9]+/g) ?? [];
+    return words.map((word) => word[0]!.toUpperCase() + word.slice(1)).join("");
+  };
+
   const claimTypeName = (name: string, owner: string) => {
     const existing = typeNames.get(name);
     if (existing !== undefined) {
@@ -506,8 +488,6 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
       case "scheduleAt":
         if (context !== "column") throw new ValidationError(`${where}: v.scheduleAt() must be a top-level column`);
         return;
-      case "tag":
-        throw new ValidationError(`${where}: v.tag() is only valid inside a union`);
       case "nullable":
         walk((validator as { inner?: Validator<unknown, string> }).inner!, where, context, stored);
         return;
@@ -535,8 +515,7 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
         }
         return;
       }
-      case "enum":
-      case "union": {
+      case "enum": {
         const name = (validator as { name?: string }).name!;
         checkName(name, "type name");
         const descriptor = JSON.stringify(validator.descriptor());
@@ -550,14 +529,30 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
             `${where}: ${validator.kind} name "${name}" is declared twice with different definitions`,
           );
         }
-        if (validator.kind === "union") {
-          const members = (validator as { members?: Record<string, Validator<unknown, string>> }).members!;
-          for (const variant of Object.keys(members)) {
-            checkName(variant, "union variant");
-            const member = members[variant]!;
-            if (member.kind === "tag") continue;
-            walk(member, `${where}<${variant}>`, "nested", stored);
-          }
+        return;
+      }
+      case "discriminatedUnion": {
+        const union = validator as unknown as {
+          codegenName?: string;
+          discriminator: string;
+          members: readonly ObjectValidator[];
+        };
+        const name = union.codegenName ?? derivedTypeName(where);
+        checkName(name, "generated union type name");
+        const descriptor = JSON.stringify(validator.descriptor());
+        const existing = namedDescriptors.get(name);
+        if (existing === undefined) {
+          namedDescriptors.set(name, descriptor);
+          namedTypes.set(name, validator);
+          claimTypeName(name, `discriminated union at ${where}`);
+        } else if (existing !== descriptor) {
+          throw new ValidationError(
+            `${where}: generated discriminated-union name "${name}" is already used by a different definition`,
+          );
+        }
+        for (const member of union.members) {
+          const literal = member.shape[union.discriminator] as unknown as { value: string };
+          walk(member, `${where}.${literal.value}`, "nested", stored);
         }
         return;
       }

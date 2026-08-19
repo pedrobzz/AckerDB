@@ -177,35 +177,62 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     b.engine.close("clean");
   });
 
-  test("enum & union variants: adding and reordering apply with rows present", async () => {
+  test("enum variants can be added and reordered with rows present", async () => {
     const path = freshPath();
-    const withUnion = (variants: Record<string, ReturnType<typeof v.object> | ReturnType<typeof v.string>>) =>
-      defineSchema({
-        users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index(["name"]),
-        posts: defineTable({ id: v.primaryKey(), body: v.union("PBody", variants) }),
-      });
-    const a = open(withUnion({ text: v.string(), image: v.object({ url: v.string() }) }), path);
+    const a = open(defineSchema({
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index(["name"]),
+    }), path);
     await a.db.users.insert({ name: "m", role: "member" });
-    await a.db.posts.insert({ body: { tag: "text", value: "hi" } });
     a.engine.close("clean");
 
-    // reorder + add an enum variant, add a union variant: both are tag-stable
     const grown = defineSchema({
       users: defineTable({
         id: v.primaryKey(),
         name: v.string(),
         role: v.enum("RRole", ["guest", "admin", "trial", "member"]),
       }).index(["name"]),
-      posts: defineTable({
-        id: v.primaryKey(),
-        body: v.union("PBody", { text: v.string(), image: v.object({ url: v.string() }), video: v.string() }),
-      }),
     });
     const b = open(grown, path);
     expect((await b.db.users.get(1n)).role).toBe("member"); // stable tag
-    expect((await b.db.posts.get(1n)).body).toEqual({ tag: "text", value: "hi" });
     await b.db.users.insert({ name: "t", role: "trial" }); // new variant usable
-    await b.db.posts.insert({ body: { tag: "video", value: "v" } });
+    b.engine.close("clean");
+  });
+
+  test("discriminated-union members can be added and reordered without rewriting stored objects", async () => {
+    const before = defineSchema({
+      events: defineTable({
+        id: v.primaryKey(),
+        payload: v.discriminatedUnion("type", [
+          v.object({ type: v.literal("text"), text: v.string() }),
+          v.object({ type: v.literal("deleted") }),
+        ]),
+      }).index(["payload"]),
+    });
+    const path = freshPath();
+    const a = open(before, path);
+    await a.db.events.insert({ payload: { type: "text", text: "hello" } });
+    const originalPayload = (a.engine.writer.query("SELECT payload FROM events WHERE id = 1").get() as {
+      payload: string;
+    }).payload;
+    a.engine.close("clean");
+
+    const after = defineSchema({
+      events: defineTable({
+        id: v.primaryKey(),
+        payload: v.discriminatedUnion("type", [
+          v.object({ type: v.literal("count"), count: v.int() }),
+          v.object({ type: v.literal("deleted") }),
+          v.object({ type: v.literal("text"), text: v.string() }),
+        ]),
+      }).index(["payload"]),
+    });
+    const b = open(after, path);
+    expect((b.engine.writer.query("SELECT payload FROM events WHERE id = 1").get() as {
+      payload: string;
+    }).payload).toBe(originalPayload);
+    expect(await b.db.events.get(1n)).toMatchObject({ payload: { type: "text", text: "hello" } });
+    await b.db.events.insert({ payload: { type: "count", count: 2 } });
+    expect(await b.db.events.query().where((row: any) => row.payload.is("count")).count()).toBe(1);
     b.engine.close("clean");
   });
 
@@ -332,13 +359,51 @@ describe("reconcile: shape-unsafe changes refuse even on an empty table", () => 
     );
   });
 
-  test("union variant payload changed", () => {
-    const body = (image: ReturnType<typeof v.object>) =>
-      defineSchema({ posts: defineTable({ id: v.primaryKey(), body: v.union("PBody", { text: v.string(), image }) }) });
+  test("discriminated-union member removed", () => {
     refusesEmpty(
-      body(v.object({ url: v.string() })),
-      body(v.object({ href: v.string() })),
-      "variant 'image' payload changed",
+      defineSchema({
+        events: defineTable({
+          id: v.primaryKey(),
+          payload: v.discriminatedUnion("type", [
+            v.object({ type: v.literal("text"), text: v.string() }),
+            v.object({ type: v.literal("deleted") }),
+          ]),
+        }),
+      }),
+      defineSchema({
+        events: defineTable({
+          id: v.primaryKey(),
+          payload: v.discriminatedUnion("type", [
+            v.object({ type: v.literal("text"), text: v.string() }),
+            v.object({ type: v.literal("created"), at: v.int() }),
+          ]),
+        }),
+      }),
+      "variant 'deleted' removed",
+    );
+  });
+
+  test("discriminated-union member shape changed", () => {
+    refusesEmpty(
+      defineSchema({
+        events: defineTable({
+          id: v.primaryKey(),
+          payload: v.discriminatedUnion("type", [
+            v.object({ type: v.literal("text"), text: v.string() }),
+            v.object({ type: v.literal("deleted") }),
+          ]),
+        }),
+      }),
+      defineSchema({
+        events: defineTable({
+          id: v.primaryKey(),
+          payload: v.discriminatedUnion("type", [
+            v.object({ type: v.literal("text"), body: v.string() }),
+            v.object({ type: v.literal("deleted") }),
+          ]),
+        }),
+      }),
+      "variant 'text' payload changed",
     );
   });
 
@@ -484,7 +549,7 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
     return Object.assign(query, { calls });
   };
   const cols = { email: {} }; // a physically-present column
-  const emailIndex = "s_u_b_5_email";
+  const emailIndex = "s_u_5_email";
 
   test("clean → null; duplicates → the target-world refusal carrying the count", () => {
     expect(probeUniqueIndex(fakeQuery(0), "users", emailIndex, ["email"], cols)).toBeNull();
@@ -499,13 +564,13 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
 
   test("a column not physically present yet cannot have duplicates — no query runs", () => {
     const q = fakeQuery(99); // even if the DB would report dupes, an absent column is never probed
-    expect(probeUniqueIndex(q, "users", "s_u_b_4_slug", ["slug"], cols)).toBeNull();
+    expect(probeUniqueIndex(q, "users", "s_u_4_slug", ["slug"], cols)).toBeNull();
     expect(q.calls).toEqual([]);
   });
 
   test("prototype names are not mistaken for physically present columns", () => {
     const q = fakeQuery(99);
-    expect(probeUniqueIndex(q, "users", "s_u_b_8_toString", ["toString"], {})).toBeNull();
+    expect(probeUniqueIndex(q, "users", "s_u_8_toString", ["toString"], {})).toBeNull();
     expect(q.calls).toEqual([]);
   });
 

@@ -52,7 +52,6 @@ describe("structural indexes", () => {
             name: "by_tenant",
             columns: ["tenantId"],
             unique: false,
-            algorithm: "btree",
           }],
         },
       },

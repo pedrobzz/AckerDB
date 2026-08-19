@@ -68,14 +68,13 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
     reconcile(engine);
     const messages = engine.plan("messages");
     const role = messages.columns.get("role")!.variantTag!("member")!;
-    const payload = messages.columns.get("payload")!.variantTag!("nothing")!;
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
       engine.writer
         .query(
-          "INSERT INTO messages (channelId, body, role, payload, payload__p) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO messages (channelId, body, role, payload) VALUES (?, ?, ?, ?)",
         )
-        .run(7n, "preserved", role, payload, encode(null));
+        .run(7n, "preserved", role, encode({ type: "nothing" }));
       const staged = engine[mutationReplayOwner].stage({
         sessionId: replayRecord.sessionId,
         requestId: replayRecord.requestId,

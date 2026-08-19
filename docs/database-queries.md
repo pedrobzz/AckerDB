@@ -33,10 +33,14 @@ Column references expose only meaningful operations:
 - ordered scalars: `lt`, `lte`, `gt`, `gte`, and `between`;
 - nullable columns: `isNull` and `isNotNull`;
 - expressions: `and`, `or`, and `not`;
-- union discriminants: `is("variant")`, which narrows the row type positively.
+- discriminated unions: `is(literal)` compares the indexed discriminator and
+  narrows the row value to the selected member.
 
-Structured values and vectors do not pretend to have scalar SQL ordering.
-Enum and union labels are also not orderable: their stored tags are stable
+Objects, arrays, discriminated unions, and vectors do not pretend to have
+scalar equality or ordering. A discriminated union exposes only `is`, because
+it compares the string discriminator extracted from the complete stored object.
+When indexed, the corresponding SQLite expression index stores that extracted
+value. Enum labels are also not orderable: their stored tags are stable
 identities, not a logical declaration order. Booleans retain `false` then
 `true` ordering.
 All predicate values cross the column's validator and storage codec before
@@ -229,14 +233,12 @@ const documents = defineTable({
 })
   .index(["accountId"])
   .index(["accountId", "status", "createdAt"])
-  .index(["status"], { algorithm: "direct" });
+  .index(["status"]);
 ```
 
 Composite, reversed, prefix-related, and multiple distinct indexes are all
 supported. Repeating or conflicting over the same ordered columns is rejected.
-The current `direct` algorithm has the same SQLite b-tree performance shape as
-the default; it remains structural configuration rather than a query entry
-point.
+Every declared index is a SQLite B-tree; there is no algorithm option.
 
 Reactive reads conservatively derive declared equality prefixes from the
 predicate expression. If a safe prefix cannot be proven within the dependency
@@ -260,6 +262,6 @@ const id = await ctx.db.users.upsert(
 The key field set must exactly match one declared non-null unique index;
 property order does not matter. Key fields cannot be changed by the values or
 callback. Nullable unique indexes are not valid upsert targets, and a conflict
-with another unique constraint remains an error. Union keys compare both tag
-and payload; a same-tag/different-payload key conflicts with the stronger
-tag-only storage constraint rather than updating a different logical value.
+with another unique constraint remains an error. A discriminated-union key
+compares its discriminator, matching the expression stored in its declared
+index; the rest of the object is the row value, not part of that key.

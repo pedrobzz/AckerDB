@@ -4,12 +4,15 @@ AckerDB has one validator DSL: `v` from `@ackerdb/server`. The same validator va
 drives TypeScript inference, runtime checks, stored schema snapshots, and the
 Standard JSON Schema published for the exposed HTTP surface.
 
-Every validator exposes three value operations:
+Every validator owns four contract operations:
 
 - `parse(value, path?)` validates and normalizes a native runtime value.
 - `decode(value, path?)` converts Standard JSON into that native value.
 - `encode(value, path?)` validates the native value and converts it to Standard
   JSON.
+- `toJsonSchema(options?)` describes that validator's own JSON representation;
+  objects, arrays, unions, and modifiers compose their child validators through
+  the same method.
 
 For example, `v.bigint().parse(7n)` returns `7n`,
 `v.bigint().decode("7")` returns `7n`, and `v.bigint().encode(7n)` returns
@@ -131,6 +134,30 @@ arrays (`{"type": ["boolean", "null"]}`) rather than `anyOf` unions, because a
 consumer that ignores `anyOf` member types degrades every scalar to a string.
 With these schemas, no caller-side coercion or repair is needed; arguments
 validate as declared.
+
+## Discriminated unions
+
+Use a discriminated union of object validators. Every member must own a unique
+string `v.literal` at the discriminator field:
+
+```ts
+const message = v.discriminatedUnion("type", [
+  v.object({ type: v.literal("text"), text: v.string() }),
+  v.object({ type: v.literal("deleted") }),
+], "Message");
+```
+
+The optional third argument only names the generated TypeScript alias. When it
+is omitted, codegen derives the alias from the column address; for example,
+`messages.payload` becomes `MessagesPayload`. It does not affect schema,
+storage, migrations, or database identity.
+
+The runtime selects the member from the literal and validates the object once.
+A stored union remains one complete Standard JSON object in a `TEXT` column.
+`row.message.is("text")` compares its discriminator through SQLite
+`json_extract`; declaring an index for the column creates an expression index
+over that same discriminator expression and narrows the resulting value to the
+matching object member.
 
 The same principle governs int64 ids. `v.bigint()` / `v.identity()` args follow
 proto3's JSON mapping since 0.3.2: they *serialize* as canonical decimal

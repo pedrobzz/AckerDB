@@ -27,11 +27,13 @@ test("only approved validator families expose constraint methods", () => {
     v.object({ value: v.string() }),
     v.enum("Role", ["admin"]),
     v.literal("x"),
-    v.union("Payload", { text: v.string() }),
+    v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text") }),
+      v.object({ type: v.literal("none") }),
+    ]),
     v.jsonb<unknown>(),
     v.primaryKey(),
     v.scheduleAt(),
-    v.tag(),
   ]) {
     expect("min" in validator).toBe(false);
     expect("max" in validator).toBe(false);
@@ -319,11 +321,14 @@ test("object validators own one immutable shape across their public contract", (
     .toThrow('unknown field "toString"');
 });
 
-test("live and descriptor validation reject prototype-named fields and variants", () => {
-  expect(() => v.union("Payload", { text: v.string() }).parse(
-    { tag: "toString", value: "payload" },
+test("live and descriptor validation reject inherited discriminator values", () => {
+  expect(() => v.discriminatedUnion("type", [
+    v.object({ type: v.literal("text") }),
+    v.object({ type: v.literal("image") }),
+  ]).parse(
+    { type: "toString" },
     "value",
-  )).toThrow('value.tag: expected one of "text"');
+  )).toThrow("value.type: expected one of");
 
   expect(() => checkDescriptor(
     { k: "object", shape: {} },
@@ -332,13 +337,20 @@ test("live and descriptor validation reject prototype-named fields and variants"
   )).toThrow('unknown field "toString"');
 
   expect(() => checkDescriptor(
-    { k: "union", name: "Payload", members: { text: { k: "string" } } },
-    { tag: "toString", value: "payload" },
+    {
+      k: "discriminatedUnion",
+      discriminator: "type",
+      members: {
+        text: { k: "object", shape: { type: { k: "literal", v: "text" } } },
+        image: { k: "object", shape: { type: { k: "literal", v: "image" } } },
+      },
+    },
+    { type: "toString" },
     "value",
-  )).toThrow('value.tag: expected one of "text"');
+  )).toThrow("value.type: unknown discriminator value");
 });
 
-test("declared prototype-named fields and variants remain own through every validator projection", () => {
+test("declared prototype-named fields remain own through every validator projection", () => {
   const object = v.object({ ["__proto__"]: v.string() });
   const input = JSON.parse('{"__proto__":"kept"}');
   const live = object.parse(input, "value") as Record<string, unknown>;
@@ -352,16 +364,14 @@ test("declared prototype-named fields and variants remain own through every vali
   expect(Object.hasOwn(stored, "__proto__")).toBe(true);
   expect(stored["__proto__"]).toBe("kept");
 
-  const union = v.union("PrototypeVariant", { ["__proto__"]: v.string() });
-  expect(Object.hasOwn(union.union, "__proto__")).toBe(true);
-  expect(union.union.__proto__("payload")).toEqual({
-    tag: "__proto__",
-    value: "payload",
-  });
-  expect(Object.hasOwn(union.descriptor()["members"] as object, "__proto__")).toBe(true);
+  const union = v.discriminatedUnion("__proto__", [
+    v.object({ ["__proto__"]: v.literal("payload") }),
+    v.object({ ["__proto__"]: v.literal("other") }),
+  ]);
+  const unionInput = JSON.parse('{"__proto__":"payload"}');
   expect(checkDescriptor(
     union.descriptor(),
-    { tag: "__proto__", value: "payload" },
+    unionInput,
     "value",
-  )).toEqual({ tag: "__proto__", value: "payload" });
+  )).toEqual(unionInput);
 });

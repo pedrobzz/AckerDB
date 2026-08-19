@@ -34,7 +34,7 @@ export const send = mutation({
   handler: (ctx, args) => ctx.db.messages.insert({
     ...args,
     role: "member",
-    payload: { tag: "nothing", value: null },
+    payload: { type: "nothing" },
   }),
 });
 

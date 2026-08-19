@@ -10,7 +10,7 @@ import { compareCodeUnits } from "../shared/ordering.ts";
 export interface TableSnapshot {
   kind: "table" | "event";
   columns: Record<string, Descriptor>;
-  indexes: { name: string; columns: string[]; unique: boolean; algorithm: "btree" | "direct" }[];
+  indexes: { name: string; columns: string[]; unique: boolean }[];
   fullText: string[];
 }
 
@@ -36,7 +36,6 @@ export function snapshotOf(schema: Schema): SchemaSnapshot {
           name: ix.name,
           columns: [...ix.columns],
           unique: ix.unique,
-          algorithm: ix.algorithm,
         })),
       fullText: [...table.fullTextColumns].sort(compareCodeUnits),
     };

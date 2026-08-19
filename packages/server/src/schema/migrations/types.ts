@@ -46,7 +46,7 @@ export type RowTransform = (
  * Rename declarations: which dropped-plus-added names are the same thing
  * renamed, so data and identity carry over. `tables` maps old table name to
  * new; `columns` is keyed by the table's name in the TARGET schema; `variants`
- * is keyed by the enum/union type name. Applied to the diff first (see
+ * is keyed by the enum type name. Applied to the diff first (see
  * `applyRenames`): a pure rename yields no diff, a rename with a change pairs up
  * and the normal transform machinery fires.
  */

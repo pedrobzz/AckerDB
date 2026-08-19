@@ -11,7 +11,7 @@
  *     — the STORED snapshot is the physical truth, so the diff is what the
  *     database actually is versus where this step is contracted to go;
  *   - encodes rows and builds DDL from the step's TARGET descriptors (index and
- *     column DDL, enum/union interned tags), never the live plan;
+ *     column DDL, enum interned tags), never the live plan;
  *   - decodes old rows and the frozen before-state from the step's PRE
  *     descriptors, guarded by physical presence: a pre column not physically
  *     present reads `null`, a pre table not physically present reads empty. That
@@ -39,7 +39,7 @@ import {
   columnPlan,
   compileReadProjection,
   persistTagMaps,
-  physicalColumnDdl,
+  columnDdl,
   type ColumnPlan,
   type Engine,
   type PhysicalTablePlan,
@@ -50,7 +50,7 @@ import { transactionAsync } from "../../database/transaction.ts";
 import { fullTextTargetPlan } from "../../database/full-text.ts";
 import { isFrameworkTable } from "../../database/framework-schema.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
-import { constraintDirection, diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
+import { constraintDirection, diffSnapshots, unwrapDesc } from "../diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { SchemaPlanner, UnsafeSchemaChange, verifyPlanProbes } from "../planner.ts";
 import {
@@ -58,7 +58,6 @@ import {
   decodeStoredRow as decodeOldRow,
   loadStoredTags as loadOldTags,
   pageStoredRows as pageRows,
-  physicalColumnsOf as physColsOf,
   STORED_ROW_BATCH as MIGRATE_BATCH,
   storedColumn as oldColumn,
   type StoredTags as OldTags,
@@ -271,8 +270,8 @@ export async function applyStep(
  * Perform a pure structural rename LAST, once every transform has read the old
  * physical names. `ALTER TABLE ... RENAME TO` rewrites the table's stored DDL
  * canonically but leaves index names stale, so a renamed table drops and
- * recreates its indexes from the new plan; `RENAME COLUMN` (both physical
- * columns of a union) canonically rewrites the table and any index it touches,
+ * recreates its indexes from the new plan; `RENAME COLUMN` canonically rewrites
+ * the table and any index it touches,
  * so a name-stable table needs no index work.
  */
 function applyPureRename(
@@ -368,13 +367,13 @@ function buildTargetPlans(target: SchemaSnapshot, tags: Map<string, TagMap>): Ma
 
 function snapshotPlan(name: string, snap: TableSnapshot, tagsOf: TagsOf): PhysicalTablePlan {
   const columns = new Map<string, ColumnPlan>();
-  const physOrder: string[] = [];
+  const columnOrder: string[] = [];
   let pk = "";
   let scheduleAt: string | null = null;
   for (const [col, desc] of Object.entries(snap.columns)) {
     const plan = columnPlan(col, desc, tagsOf, `${name}.${col}`);
     columns.set(col, plan);
-    for (const p of plan.phys) physOrder.push(p.name);
+    columnOrder.push(plan.jsName);
     if (plan.kind === "pk") pk = col;
     if (plan.kind === "scheduleAt") scheduleAt = col;
   }
@@ -385,7 +384,7 @@ function snapshotPlan(name: string, snap: TableSnapshot, tagsOf: TagsOf): Physic
     pk,
     scheduleAt,
     columns,
-    physOrder,
+    columnOrder,
     readProjection: compileReadProjection(columns.values()),
     indexes: snap.indexes,
     fullText: snap.fullText.map((column) => fullTextTargetPlan(name, column)),
@@ -414,8 +413,8 @@ function physicalInsert(
   }
   for (const column of plan.columns.values()) {
     if (column.kind === "pk") continue;
-    for (const phys of column.phys) names.push(target.translate(phys.name));
-    params.push(...column.toSql(values[column.jsName]));
+    names.push(target.translate(column.jsName));
+    params.push(column.toSql(values[column.jsName]));
   }
   for (const c of carried) {
     names.push(c.name);
@@ -468,7 +467,7 @@ function buildBefore(engine: Engine, pre: SchemaSnapshot, stored: SchemaSnapshot
       };
       continue;
     }
-    const old = buildOldTable(snap, physColsOf(physical), oldTags);
+    const old = buildOldTable(snap, new Set(Object.keys(physical.columns)), oldTags);
     before[name] = {
       async get(id) {
         const raw = writer.query(`SELECT * FROM ${quoteIdentifier(name)} WHERE ${quoteIdentifier(old.pk)} = ?`).get(id as never) as MigrationRow | null;
@@ -517,10 +516,10 @@ interface DriftColumn {
   jsName: string;
   /** Stored descriptor (kept nullable-as-stored). */
   descriptor: Descriptor;
-  /** Stored physical names (a union contributes both `col` and `col__p`). */
-  phys: string[];
-  /** tmp DDL for a `carried` column (empty for `defaults` — the plan already declares it). */
-  ddls: string[];
+  /** Stored physical name. */
+  physical: string;
+  /** tmp DDL for a `carried` column (absent for `defaults` — the plan already declares it). */
+  ddl?: string;
 }
 
 /**
@@ -538,20 +537,19 @@ function driftColumns(scope: StepScope, name: string): DriftColumn[] {
   if (storedSnap === undefined || storedSnap.kind !== "table") return [];
   const plan = targetPlans.get(name)!;
   const reverse = renames.columnReverse.get(name);
-  const targetOldPhys = new Set(plan.physOrder.map((c) => reverse?.get(c) ?? c));
+  const targetOldPhys = new Set(plan.columnOrder.map((c) => reverse?.get(c) ?? c));
   const targetJsByOldJs = new Map<string, string>();
   for (const c of plan.columns.values()) {
-    if (c.kind !== "pk") targetJsByOldJs.set(reverse?.get(c.phys[0]!.name) ?? c.jsName, c.jsName);
+    if (c.kind !== "pk") targetJsByOldJs.set(reverse?.get(c.jsName) ?? c.jsName, c.jsName);
   }
   const preColumns = Object.hasOwn(pre.tables, oldPhysName) ? pre.tables[oldPhysName]!.columns : {};
   const drift: DriftColumn[] = [];
   for (const [col, desc] of Object.entries(storedSnap.columns)) {
     if (Object.hasOwn(preColumns, col)) continue; // the migration knew this column; a target dropping it is deliberate
-    const phys = namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col];
-    if (phys.some((p) => targetOldPhys.has(p))) {
-      drift.push({ kind: "defaults", oldJs: col, jsName: targetJsByOldJs.get(col)!, descriptor: desc, phys, ddls: [] });
+    if (targetOldPhys.has(col)) {
+      drift.push({ kind: "defaults", oldJs: col, jsName: targetJsByOldJs.get(col)!, descriptor: desc, physical: col });
     } else {
-      drift.push({ kind: "carried", oldJs: col, jsName: col, descriptor: desc, phys, ddls: physicalColumnDdl(col, desc, col) });
+      drift.push({ kind: "carried", oldJs: col, jsName: col, descriptor: desc, physical: col, ddl: columnDdl(col, desc, col) });
     }
   }
   return drift;
@@ -649,7 +647,7 @@ async function runTransforms(
     const oldPhys = renames.tableOldName.get(name) ?? name;
     const tmp = `${name}__migrate`;
     tmpOf.set(name, tmp);
-    const carriedDdls = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").flatMap((c) => c.ddls);
+    const carriedDdls = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").map((c) => c.ddl!);
     writer.exec(engine.createTableDdl(planOf(name), tmp, carriedDdls));
     const seq = writer.query("SELECT seq FROM sqlite_sequence WHERE name = ?").get(oldPhys) as { seq: bigint } | null;
     if (seq !== null) writer.query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(tmp, seq.seq);
@@ -662,11 +660,11 @@ async function runTransforms(
   for (const name of [...identityRebuilt].sort()) {
     const oldPhysName = renames.tableOldName.get(name) ?? name;
     const reverse = renames.columnReverse.get(name);
-    const oldCols = physColsOf(stored.tables[oldPhysName]!);
+    const oldCols = new Set(Object.keys(stored.tables[oldPhysName]!.columns));
     const pairs = planOf(name)
-      .physOrder.map((c) => [reverse?.get(c) ?? c, c] as const)
+      .columnOrder.map((c) => [reverse?.get(c) ?? c, c] as const)
       .filter(([old]) => oldCols.has(old));
-    const carriedPhys = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").flatMap((c) => c.phys);
+    const carriedPhys = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").map((c) => c.physical);
     const insertCols = [...pairs.map(([, c]) => c), ...carriedPhys];
     const selectCols = [...pairs.map(([old]) => old), ...carriedPhys];
     writer.exec(
@@ -686,7 +684,7 @@ async function runTransforms(
   // reads, so they spool to an engine-owned TEMP table (bounded, never the heap)
   // and flush after every transform has run; emits into rebuilt tables go to the
   // (invisible) tmp and stay immediate. The spool stores the wire-encoded
-  // *validated* row — before `toSql`, so enum/union values survive as their JS
+  // *validated* row — before `toSql`, so enum values survive as their JS
   // forms and the plan's tag maps resolve them at flush. `_ackerdb_emit_spool` is
   // `_ackerdb`-prefixed, so `ctx.before` (which reads only named old tables) never
   // sees it. The whole step is one transaction, so a rollback discards the spool;
@@ -721,7 +719,8 @@ async function runTransforms(
     // Safe drift: a pre table with no physical presence has no old rows to
     // replay (a rebuilt table stays the empty tmp; a salvage is a no-op).
     if (preSnap === undefined || physical === undefined || physical.kind !== "table") continue;
-    const old = buildOldTable(preSnap, physColsOf(physical), oldTags);
+    const physicalColumns = new Set(Object.keys(physical.columns));
+    const old = buildOldTable(preSnap, physicalColumns, oldTags);
     if (!rebuilt.has(name)) {
       for (const raw of pageRows(writer, oldPhys, old.physicalPk)) await fn(decodeOldRow(old, raw), ctx); // salvage: emits only
       continue;
@@ -739,7 +738,10 @@ async function runTransforms(
     // `validateDrift` already refused any default whose type conflicts.
     const defaults = drift
       .filter((d) => d.kind === "defaults")
-      .map((d) => ({ jsName: d.jsName, old: oldColumn(d.oldJs, d.descriptor, physColsOf(physical), oldTags) }));
+      .map((d) => ({
+        jsName: d.jsName,
+        old: oldColumn(d.oldJs, d.descriptor, physicalColumns, oldTags),
+      }));
     for (const raw of pageRows(writer, oldPhys, old.physicalPk)) {
       const decoded = decodeOldRow(old, raw);
       const result = await fn(decoded, ctx);
@@ -749,11 +751,11 @@ async function runTransforms(
         out = { ...out }; // never mutate the transform's returned object
         for (const d of defaults) {
           if (!Object.hasOwn(out, d.jsName) || out[d.jsName] === undefined) {
-            out[d.jsName] = d.old.decode(d.old.phys.map((p) => raw[p]));
+            out[d.jsName] = d.old.decode(raw[d.old.physical]);
           }
         }
       }
-      const carriedValues = carried.flatMap((c) => c.phys.map((p) => ({ name: p, value: raw[p] })));
+      const carriedValues = carried.map((c) => ({ name: c.physical, value: raw[c.physical] }));
       physicalInsert(engine, plan, emit, checkRow(name, target.tables[name]!, out, "transform"), decoded[old.pk] as bigint, carriedValues);
     }
   }

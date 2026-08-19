@@ -143,6 +143,53 @@ describe("migrate: rebuild transforms", () => {
     engine.close("clean");
   });
 
+  test("a discriminated-union member shape change is resolved by a table transform", async () => {
+    const before = defineSchema({
+      events: defineTable({
+        id: v.primaryKey(),
+        payload: v.discriminatedUnion("type", [
+          v.object({ type: v.literal("text"), text: v.string() }),
+          v.object({ type: v.literal("deleted") }),
+        ]),
+      }).index(["payload"]),
+    });
+    const target = defineSchema({
+      events: defineTable({
+        id: v.primaryKey(),
+        payload: v.discriminatedUnion("type", [
+          v.object({ type: v.literal("text"), body: v.string() }),
+          v.object({ type: v.literal("deleted") }),
+        ]),
+      }).index(["payload"]),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.events.insert({ payload: { type: "text", text: "hello" } });
+      await d.events.insert({ payload: { type: "deleted" } });
+    });
+
+    const { engine, db: migrated } = await migrate(
+      target,
+      path,
+      defineMigration({
+        tables: {
+          events: (row) => {
+            const payload = row.payload as
+              | { type: "text"; text: string }
+              | { type: "deleted" };
+            return payload.type === "text"
+              ? { ...row, payload: { type: "text", body: payload.text } }
+              : row;
+          },
+        },
+      }),
+    );
+    expect((await migrated.events.get(1n)).payload).toEqual({ type: "text", body: "hello" });
+    expect((await migrated.events.get(2n)).payload).toEqual({ type: "deleted" });
+    expect(await migrated.events.query().where((row: any) => row.payload.is("text")).count()).toBe(1);
+    engine.close("clean");
+  });
+
   test("a null return deletes the row", async () => {
     const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
     const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
@@ -577,7 +624,7 @@ describe("migrate: renames", () => {
     engine.close("clean");
   });
 
-  test("applyRenames preserves own __proto__ table, column, and union member keys", () => {
+  test("applyRenames preserves own __proto__ table, column, and enum variants", () => {
     const current: SchemaSnapshot = {
       version: 2,
       tables: {
@@ -588,12 +635,9 @@ describe("migrate: renames", () => {
             ["old", v.string().descriptor()],
             ["__proto__", v.string().descriptor()],
             ["choice", {
-              k: "union",
+              k: "enum",
               name: "Choice",
-              members: Object.fromEntries([
-                ["old", v.string().descriptor()],
-                ["__proto__", v.string().descriptor()],
-              ]),
+              values: ["old", "__proto__"],
             }],
           ]),
           indexes: [],
@@ -610,8 +654,7 @@ describe("migrate: renames", () => {
     expect(Object.hasOwn(renamed.tables, "__proto__")).toBe(true);
     const columns = renamed.tables["__proto__"]!.columns;
     expect(Object.hasOwn(columns, "__proto__")).toBe(true);
-    const members = columns.choice!["members"] as Record<string, unknown>;
-    expect(Object.keys(members).sort()).toEqual(["__proto__", "current"]);
+    expect(columns.choice!["values"]).toEqual(["current", "__proto__"]);
   });
 
   test("a pure table rename keeps rows, ids, and indexes; reopen passes", async () => {
@@ -649,25 +692,29 @@ describe("migrate: renames", () => {
     again.engine.close("clean");
   });
 
-  test("a column rename rebuilds its structural index and keeps plain and union data", async () => {
+  test("a column rename rebuilds its structural index and keeps structured data", async () => {
+    const payload = () => v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("nothing") }),
+    ]);
     const a = defineSchema({
       users: defineTable({
         id: v.primaryKey(),
         street: v.string(),
-        note: v.union("Payload", { text: v.string(), nothing: v.tag() }),
+        note: payload(),
       }).index(["street"]),
     });
     const b = defineSchema({
       users: defineTable({
         id: v.primaryKey(),
         streetName: v.string(),
-        memo: v.union("Payload", { text: v.string(), nothing: v.tag() }),
+        memo: payload(),
       }).index(["streetName"]),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
-      await d.users.insert({ street: "main", note: { tag: "text", value: "hi" } }); // id 1
-      await d.users.insert({ street: "elm", note: { tag: "nothing", value: null } }); // id 2
+      await d.users.insert({ street: "main", note: { type: "text", value: "hi" } }); // id 1
+      await d.users.insert({ street: "elm", note: { type: "nothing" } }); // id 2
     });
 
     const { engine, db: d, applied } = await migrate(
@@ -676,15 +723,15 @@ describe("migrate: renames", () => {
       defineMigration({ renames: { columns: { users: { street: "streetName", note: "memo" } } } }),
     );
     expect(applied).toContain("0001_m: migrated table users");
-    expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
-    expect((await d.users.get(2n)).memo).toEqual({ tag: "nothing", value: null });
+    expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { type: "text", value: "hi" } });
+    expect((await d.users.get(2n)).memo).toEqual({ type: "nothing" });
     // the index followed the renamed column
     const found = await d.users.query().where((row: any) => row.streetName.eq("main")).collect();
     expect(found.map((r: any) => r.id)).toEqual([1n]);
     engine.close("clean");
 
     const again = reopen(b, path);
-    expect(await again.db.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
+    expect(await again.db.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { type: "text", value: "hi" } });
     again.engine.close("clean");
   });
 
@@ -723,73 +770,6 @@ describe("migrate: renames", () => {
     const again = reopen(b, path);
     expect((await again.db.users.get(1n)).status).toBe("Foo");
     again.engine.close("clean");
-  });
-
-  test("a variant rename and clean nested constraint tightening share the renamed tag view", async () => {
-    const before = defineSchema({
-      items: defineTable({
-        id: v.primaryKey(),
-        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
-      }),
-    });
-    const target = defineSchema({
-      items: defineTable({
-        id: v.primaryKey(),
-        body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
-      }),
-    });
-    const path = freshPath();
-    await seed(before, path, async (d) => {
-      await d.items.insert({ body: { tag: "legacy", value: { label: "ok" } } });
-    });
-
-    const engine = new Engine(target, path);
-    await reconcile(engine, [{
-      number: 1,
-      name: "rename_and_tighten",
-      pre: snapshotOf(withFrameworkTables(before)),
-      target: snapshotOf(withFrameworkTables(target)),
-      code: "",
-      migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
-    }]);
-    expect((await db(engine).items.get(1n)).body).toEqual({ tag: "current", value: { label: "ok" } });
-    expect(history(engine)).toHaveLength(1);
-    engine.close("clean");
-  });
-
-  test("a variant rename plus violating nested tightening refuses as data, not tag corruption", async () => {
-    const before = defineSchema({
-      items: defineTable({
-        id: v.primaryKey(),
-        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
-      }),
-    });
-    const target = defineSchema({
-      items: defineTable({
-        id: v.primaryKey(),
-        body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
-      }),
-    });
-    const path = freshPath();
-    await seed(before, path, async (d) => {
-      await d.items.insert({ body: { tag: "legacy", value: { label: "x" } } });
-    });
-
-    const engine = new Engine(target, path);
-    await expect(reconcile(engine, [{
-      number: 1,
-      name: "rename_and_tighten",
-      pre: snapshotOf(withFrameworkTables(before)),
-      target: snapshotOf(withFrameworkTables(target)),
-      code: "",
-      migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
-    }])).rejects.toThrow("1 existing row(s) violate the target validator");
-    expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(before)));
-    expect(history(engine)).toEqual([]);
-    expect(engine.writer.query("SELECT variant FROM _ackerdb_tags WHERE type = 'Body'").all()).toEqual([
-      { variant: "legacy" },
-    ]);
-    engine.close("clean");
   });
 
   test("an undeclared drop+add is not inferred as a rename", async () => {
@@ -939,7 +919,7 @@ describe("migrate: renames", () => {
     });
     // the counted refusal names the target-world site; the probe read old names
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(
-      /auditLogs\.s_u_b_4_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
+      /auditLogs\.s_u_4_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
     );
     expect(engine.loadSnapshot()).toEqual(snapshotOf(withFrameworkTables(a))); // database untouched
     expect(engine.writer.query("SELECT COUNT(*) AS n FROM logs").get()).toEqual({ n: 2n });

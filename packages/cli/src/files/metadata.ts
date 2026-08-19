@@ -67,9 +67,9 @@ function liveFile(engine: Engine, raw: Record<string, unknown>): LiveFile {
 
 export function checkpointTotals(engine: Engine, throughId: bigint): FileMigrationTotals {
   const plan = engine.plan(FILES_TABLE);
-  const primaryKey = plan.columns.get(plan.pk)?.phys[0]?.name;
-  const state = plan.columns.get("state")?.phys[0]?.name;
-  const size = plan.columns.get("size")?.phys[0]?.name;
+  const primaryKey = plan.columns.get(plan.pk)?.jsName;
+  const state = plan.columns.get("state")?.jsName;
+  const size = plan.columns.get("size")?.jsName;
   if (primaryKey === undefined || state === undefined || size === undefined) {
     throw new Error("File framework schema is unavailable");
   }
@@ -87,8 +87,8 @@ export function checkpointTotals(engine: Engine, throughId: bigint): FileMigrati
 
 export function liveFileAt(engine: Engine, id: bigint): LiveFile | null {
   const plan = engine.plan(FILES_TABLE);
-  const primaryKey = plan.columns.get(plan.pk)?.phys[0]?.name;
-  const state = plan.columns.get("state")?.phys[0]?.name;
+  const primaryKey = plan.columns.get(plan.pk)?.jsName;
+  const state = plan.columns.get("state")?.jsName;
   if (primaryKey === undefined || state === undefined) {
     throw new Error("File framework schema is unavailable");
   }
@@ -103,8 +103,8 @@ export function liveFileAt(engine: Engine, id: bigint): LiveFile | null {
 /** Enumerate bounded pages in File-id order; no global row collection is retained. */
 export async function* liveFiles(engine: Engine, afterId: bigint): AsyncGenerator<LiveFile> {
   const plan = engine.plan(FILES_TABLE);
-  const primaryKey = plan.columns.get(plan.pk)?.phys[0]?.name;
-  const state = plan.columns.get("state")?.phys[0]?.name;
+  const primaryKey = plan.columns.get(plan.pk)?.jsName;
+  const state = plan.columns.get("state")?.jsName;
   if (primaryKey === undefined || state === undefined) {
     throw new Error("File framework schema is unavailable");
   }

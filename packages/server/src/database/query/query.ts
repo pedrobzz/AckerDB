@@ -171,7 +171,7 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
       }
     }
     try {
-      const logical = column.fromSql([value]);
+      const logical = column.fromSql(value);
       plan.table.columns[columnName]!.parse(logical, path);
     } catch (error) {
       if (!isValidationError(error)) throw error;
@@ -469,7 +469,7 @@ class TableQueryRuntime {
 
   private extremeValue(fn: "MIN" | "MAX", column: string): unknown {
     const raw = this.aggregateRaw(`${fn}(${quoteIdentifier(column)})`);
-    return raw === null ? null : this.plan.columns.get(column)!.fromSql([raw]);
+    return raw === null ? null : this.plan.columns.get(column)!.fromSql(raw);
   }
 
   async min(callback: unknown): Promise<unknown> {
@@ -559,7 +559,7 @@ class TableQueryRuntime {
       : opaqueCursor({
           version: 1,
           values: order.map(({ column }) =>
-            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])[0]),
+            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])),
           ),
         });
     return { items, nextCursor };

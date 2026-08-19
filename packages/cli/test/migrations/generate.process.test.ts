@@ -90,7 +90,7 @@ export const list = query({
 });
 `;
 
-const UNIQUE_LABEL_INDEX = "s_u_b_5_label";
+const UNIQUE_LABEL_INDEX = "s_u_5_label";
 
 // Engine-visible snapshots: stored and generated root schemas carry every framework table.
 const V1 = snapshotOf(withFrameworkTables(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) })));

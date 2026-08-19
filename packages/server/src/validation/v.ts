@@ -2,7 +2,7 @@
  * The `v` validator DSL. Validators describe the runtime validation, the
  * TypeScript type and the storage form of every column, argument and return
  * value in a ackerdb app. They compose like Zod: validators nest inside arrays,
- * objects and unions, then finish with a nullable/optional/nullish modifier.
+ * objects and discriminated unions, then finish with a nullable/optional/nullish modifier.
  */
 import {
   bigint,
@@ -18,7 +18,7 @@ import {
   string,
   vector,
 } from "./primitives.ts";
-import { array, enum_, jsonb, literal, object, tag, union } from "./composites.ts";
+import { array, discriminatedUnion, enum_, jsonb, literal, object } from "./composites.ts";
 
 export const v = {
   primaryKey,
@@ -36,8 +36,7 @@ export const v = {
   object,
   enum: enum_,
   literal,
-  union,
-  tag,
+  discriminatedUnion,
   jsonb,
   scheduleAt,
 };

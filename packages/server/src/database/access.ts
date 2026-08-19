@@ -4,7 +4,12 @@
  */
 import type { Database } from "bun:sqlite";
 import { ValidationError } from "../validation/error.ts";
-import type { Engine, TablePlan } from "./engine.ts";
+import {
+  columnIndexExpression,
+  columnIndexValue,
+  type Engine,
+  type TablePlan,
+} from "./engine.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { TableDef } from "../schema/definition.ts";
 import { emitFullTextWriteKeys, emitWriteKeys, idKey } from "./keys.ts";
@@ -310,11 +315,8 @@ function updateRow(
     changed[key] = value;
     updated[key] = value;
     const columnPlan = plan.columns.get(key)!;
-    const sqlValues = columnPlan.toSql(value);
-    columnPlan.phys.forEach((phys, index) => {
-      sets.push(`${quoteIdentifier(phys.name)} = ?`);
-      params.push(sqlValues[index]);
-    });
+    sets.push(`${quoteIdentifier(columnPlan.jsName)} = ?`);
+    params.push(columnPlan.toSql(value));
   }
   if (sets.length === 0) return { value: undefined, row: input.oldRow };
   try {
@@ -399,11 +401,8 @@ function writeMethods(
         const params: unknown[] = [];
         for (const columnPlan of plan.columns.values()) {
           if (columnPlan.kind === "pk") continue;
-          const sqlValues = columnPlan.toSql(values[columnPlan.jsName]);
-          columnPlan.phys.forEach((phys, i) => {
-            sets.push(`${quoteIdentifier(phys.name)} = ?`);
-            params.push(sqlValues[i]);
-          });
+          sets.push(`${quoteIdentifier(columnPlan.jsName)} = ?`);
+          params.push(columnPlan.toSql(values[columnPlan.jsName]));
         }
         try {
           engine
@@ -522,16 +521,12 @@ function attachUpsert(
         );
         checkedKey[column] = checked;
         const columnPlan = plan.columns.get(column)!;
-        const sqlValues = columnPlan.toSql(checked);
-        for (let position = 0; position < columnPlan.phys.length; position++) {
-          const physical = quoteIdentifier(columnPlan.phys[position]!.name);
-          const sqlValue = sqlValues[position];
-          if (sqlValue === null) {
-            clauses.push(`${physical} IS NULL`);
-          } else {
-            clauses.push(`${physical} = ?`);
-            params.push(sqlValue);
-          }
+        const sqlValue = columnIndexValue(columnPlan, checked);
+        if (sqlValue === null) {
+          clauses.push(`${columnIndexExpression(columnPlan)} IS NULL`);
+        } else {
+          clauses.push(`${columnIndexExpression(columnPlan)} = ?`);
+          params.push(sqlValue);
         }
       }
       const where = clauses.join(" AND ");

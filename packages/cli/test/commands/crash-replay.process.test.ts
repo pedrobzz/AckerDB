@@ -40,13 +40,13 @@ export const crashBeforeCommit = mutation({
       ...args,
       body: \`\${args.body}:first\`,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     await ctx.db.messages.insert({
       ...args,
       body: \`\${args.body}:second\`,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     if (!existsSync(crashSentinel)) {
       writeFileSync(crashSentinel, "SQL work completed before SIGKILL", { flag: "wx" });
