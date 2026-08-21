@@ -11,7 +11,6 @@ import { join } from "node:path";
 import {
   LocalFileStore,
   boot,
-  collectDefinitions,
   defineApp,
   defineSchema,
   defineTable,
@@ -46,11 +45,11 @@ const running = await boot({
   load: {
     app: async () => ({ app, migrations: [] }),
     runtime: async () => ({
-      definitions: collectDefinitions(Object.entries(modules).map(([name, exports]) => ({
+      modules: Object.entries(modules).map(([name, exports]) => ({
         name,
         exports,
         origin: import.meta.url,
-      }))),
+      })),
     }),
   },
 });

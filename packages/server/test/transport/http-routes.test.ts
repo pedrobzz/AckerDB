@@ -479,19 +479,20 @@ describe("framework-authored responses speak the bare Outcome", () => {
 });
 
 describe("lifecycle decides reachability, not the route table", () => {
-  function refusedLoad(modules: Record<string, Record<string, unknown>>): string {
+  async function refusedLoad(modules: Record<string, Record<string, unknown>>): Promise<string> {
     const listener = new AckerDBServer({ limits, port: 0 });
     try {
       listener.registerDefinitions(testDefinitions(modules));
       return "loading was not refused";
     } catch (error) {
+      await listener.drain();
       expect(listener.state).toBe("stopped");
       return (error as Error).message;
     }
   }
 
-  test("refuses invalid or conflicting routes while loading", () => {
-    expect(refusedLoad({
+  test("refuses invalid or conflicting routes while loading", async () => {
+    expect(await refusedLoad({
       hooks: {
         byId: http("/people/:id", { GET: () => new Response(null) }),
         bySlug: http("/people/:slug", { POST: () => new Response(null) }),
@@ -504,12 +505,12 @@ describe("lifecycle decides reachability, not the route table", () => {
       args: {},
       handler: () => [],
     });
-    expect(refusedLoad({
+    expect(await refusedLoad({
       notes: { first: exposedNote(), second: exposedNote() },
     })).toContain('HTTP route "/notes" is already owned');
 
     const reserved = { ...functions.hooks.stripe, path: "/_ws" } as never;
-    expect(refusedLoad({ hooks: { reserved } })).toContain(
+    expect(await refusedLoad({ hooks: { reserved } })).toContain(
       'http route "hooks.reserved" claims AckerDB-owned path "/_ws"',
     );
 

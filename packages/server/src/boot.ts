@@ -25,7 +25,10 @@
  */
 import type { DurabilityPolicy } from "@ackerdb/core";
 import type { App } from "./app/definition.ts";
-import type { CollectedDefinition } from "./definitions.ts";
+import {
+  collectDefinitions,
+  type ImportedDefinitionModule,
+} from "./definitions.ts";
 import type { AppSystemCtx, SystemRunner } from "./app/system.ts";
 import type { CredentialVerifier, ScopeResolver } from "./auth/credentials.ts";
 import { Engine, type EngineCloseDisposition } from "./database/engine.ts";
@@ -53,7 +56,7 @@ export interface LoadedApp<A extends App = App> {
 
 /** What the request runtime needs; loaded only after durable schema work commits. */
 export interface LoadedRuntime {
-  readonly definitions: readonly CollectedDefinition[];
+  readonly modules: readonly ImportedDefinitionModule[];
   readonly verifier?: CredentialVerifier;
   readonly resolveScopes?: ScopeResolver;
 }
@@ -222,7 +225,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // commits.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    const registry = server.registerDefinitions(loaded.definitions);
+    const registry = server.registerDefinitions(collectDefinitions(loaded.modules));
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);

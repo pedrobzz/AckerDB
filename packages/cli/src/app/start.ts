@@ -12,7 +12,6 @@ import {
   assertCredentialVerifier,
   boot,
   createOidcVerifier,
-  collectDefinitions,
   type BootOptions,
   type CredentialVerifier,
   type RunningApp,
@@ -158,7 +157,7 @@ export async function startApp<const A extends App = App>(
           importDefinitionModules(config),
         ]);
         return {
-          definitions: collectDefinitions(modules),
+          modules,
           ...(verifier === undefined ? {} : { verifier }),
           ...(resolveScopes === undefined ? {} : { resolveScopes }),
         };

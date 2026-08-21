@@ -21,7 +21,7 @@ import { snapshotOf } from "../src/schema/snapshot.ts";
 import { v } from "../src/validation/v.ts";
 import { AckerDBError } from "../src/shared/errors.ts";
 import {
-  testDefinitions,
+  testModules,
   type TestDefinitionModules,
 } from "ackerdb-test-support/server";
 import {
@@ -106,7 +106,7 @@ function parts(overrides: PartsOverrides = {}): BootOptions & { readonly dir: st
     load: {
       app: async () => ({ app, migrations: overrides.migrations ?? [] }),
       runtime: overrides.loadRuntime ?? (async () => ({
-        definitions: testDefinitions(overrides.definitions ?? functions),
+        modules: testModules(overrides.definitions ?? functions),
       })),
     },
   };
@@ -262,7 +262,7 @@ describe("boot", () => {
       loadRuntime: async (signal) => {
         loading.resolve();
         await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-        return { definitions: testDefinitions(functions) };
+        return { modules: testModules(functions) };
       },
     }));
     await loading.promise;
@@ -402,7 +402,7 @@ describe("boot", () => {
     const app = await start({
       loadRuntime: async () => {
         events.push("runtime loaded");
-        return { definitions: testDefinitions(functions, jobs) };
+        return { modules: testModules(functions, jobs) };
       },
     });
     expect(events[0]).toBe("runtime loaded");

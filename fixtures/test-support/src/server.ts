@@ -6,6 +6,7 @@ import {
   collectDefinitions,
   type AckerDBServerOptions,
   type CollectedDefinition,
+  type ImportedDefinitionModule,
   type RuntimeOptions,
 } from "@ackerdb/server";
 
@@ -13,16 +14,23 @@ export type TestDefinitionModules = Readonly<
   Record<string, Readonly<Record<string, unknown>>>
 >;
 
-/** Give in-memory modules the same collected shape as production discovery. */
-export function testDefinitions(
+/** Give in-memory exports the same imported-module shape as production discovery. */
+export function testModules(
   ...sources: readonly TestDefinitionModules[]
-): readonly CollectedDefinition[] {
-  return collectDefinitions(sources.flatMap((modules, source) =>
+): readonly ImportedDefinitionModule[] {
+  return sources.flatMap((modules, source) =>
     Object.entries(modules).map(([name, exports]) => ({
       name,
       origin: `<test:${source}:${name}>`,
       exports,
-    }))));
+    })));
+}
+
+/** Collect in-memory modules for direct Registry and listener tests. */
+export function testDefinitions(
+  ...sources: readonly TestDefinitionModules[]
+): readonly CollectedDefinition[] {
+  return collectDefinitions(testModules(...sources));
 }
 
 /** Build the addressed Registry used by direct Runtime tests. */

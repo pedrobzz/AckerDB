@@ -6,15 +6,6 @@ import type { AnyJobDefinition } from "../jobs/definition.ts";
 import type { CollectedDefinition, Definition } from "../definitions.ts";
 import { checkRequirementAgainstVocabulary } from "../auth/scopes.ts";
 
-const REGISTRY_KINDS: ReadonlySet<Definition["kind"]> = new Set([
-  "query",
-  "mutation",
-  "procedure",
-  "sse",
-  "channel",
-  "job",
-]);
-
 export class Registry {
   private readonly functionDefinitions = new Map<string, AnyRegistered>();
   private readonly channelDefinitions = new Map<string, AnyRegisteredChannel>();
@@ -34,8 +25,6 @@ export class Registry {
 
   add(item: CollectedDefinition): void {
     const { definition, name } = item;
-    if (!REGISTRY_KINDS.has(definition.kind)) return;
-
     switch (definition.kind) {
       case "query":
       case "mutation":

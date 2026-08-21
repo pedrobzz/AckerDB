@@ -790,9 +790,10 @@ export class AckerDBServer {
       this.loadedRegistry = registry;
       return registry;
     } catch (error) {
-      this.startup = null;
-      this.lifecycle = "stopped";
-      void this.listener?.stop(true).catch(() => {});
+      // Loading is terminal once any route has been published. Start the same
+      // drain every owner awaits, so direct hosts release the listener and Boot
+      // observes that exact cleanup rather than a second fire-and-forget stop.
+      void this.drain().catch(() => {});
       throw error;
     }
   }
