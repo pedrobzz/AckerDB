@@ -12,7 +12,13 @@
 import type { FunctionReference, Result } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import type { DbReader } from "../database/query/types.ts";
-import type { ObjectShape, InferShape, InferInputShape } from "../validation/composites.ts";
+import {
+  object,
+  type ObjectShape,
+  type ObjectValidator,
+  type InferShape,
+  type InferInputShape,
+} from "../validation/composites.ts";
 import type { Expand } from "../validation/validator.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
 import type { AnyJobsNamespace } from "./api.ts";
@@ -227,7 +233,7 @@ export interface MutationJobDefinition<
 export interface JobDefinition<A extends ObjectShape = ObjectShape, R = unknown> {
   readonly kind: "job";
   readonly mode: "procedure" | "mutation";
-  readonly args: A;
+  readonly args: ObjectValidator<A>;
   readonly concurrency: number;
   readonly key: ((args: never) => string | number | bigint) | null;
   readonly retry: JobRetry;
@@ -357,11 +363,12 @@ export function job<
   const retention = definition.retention === undefined
     ? DEFAULT_JOB_RETENTION_MS
     : normalizeWindow(definition.retention, "job retention");
+  const args = object(definition.args);
 
   const declared: JobDefinition<A, R> = {
     kind: "job",
     mode,
-    args: definition.args,
+    args,
     concurrency,
     key: (definition.key as JobDefinition["key"]) ?? null,
     retry: normalizeRetry(definition.retry),

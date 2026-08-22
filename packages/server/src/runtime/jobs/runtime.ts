@@ -189,7 +189,7 @@ export class RuntimeJobs {
   async bootstrap(): Promise<void> {
     const repeating = [...this.options.registry.jobs.entries()].filter(
       ([, definition]) =>
-        definition.repeat !== null && Object.keys(definition.args).length === 0,
+        definition.repeat !== null && Object.keys(definition.args.shape).length === 0,
     );
     if (repeating.length === 0) return;
     await this.options.executor.jobsWrite(this.options.signal(), async (surface) => {
@@ -1087,17 +1087,7 @@ export class RuntimeJobs {
     name: string,
     args: unknown,
   ): Record<string, unknown> {
-    if (args === null || typeof args !== "object" || Array.isArray(args)) {
-      throw new ValidationError(`jobs.${name}: expected an args object`);
-    }
-    const input = args as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const [field, validator] of Object.entries(
-      definition.args as Record<string, { parse(value: unknown, where: string): unknown }>,
-    )) {
-      out[field] = validator.parse(input[field], `jobs.${name}.args.${field}`);
-    }
-    return out;
+    return definition.args.parse(args, `jobs.${name}.args`);
   }
 
   private insertJob(
