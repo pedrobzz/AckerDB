@@ -928,7 +928,7 @@ export class RuntimeJobs {
     let delay: number | null = null;
     // A step refusal — journal/code mismatch, corrupt journal, or exhausted
     // journal bounds — fails without consulting the retry policy: retrying
-    // into unchanged code cannot fix code (ADR-0022).
+    // into unchanged code cannot fix code.
     if (definition !== undefined && !(error instanceof StepRefusalError)) {
       try {
         delay = definition.retry(run.number, error);

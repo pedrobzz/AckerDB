@@ -13,7 +13,7 @@ arguments, scheduling intent, dedupe identity. A Job run is one claim through
 one settlement, with its own timing, outcome, and error. A dedupe hit produces
 no run at all, because no handler executes.
 
-Jobs supersede scheduled tables (ADR-0018). A Job is one unit of work with an
+Jobs supersede scheduled tables. A Job is one unit of work with an
 envelope and a policy. No client can address a job — clients observe job state
 only through functions the application authors.
 
@@ -128,7 +128,7 @@ repeat: { cron: "0 12 * * *", tz: "America/Sao_Paulo" },
 
 ## Durable steps
 
-Steps give a procedure-mode Job memory across runs (ADR-0022). Each completed
+Steps give a procedure-mode Job memory across runs. Each completed
 step's identity and result are recorded in the Job's step journal — the journal
 belongs to the Job because it outlives one run; a resumed run replays the
 handler, recorded steps answer instead of executing, and the first unrecorded

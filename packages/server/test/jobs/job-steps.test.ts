@@ -1,9 +1,8 @@
 /**
- * Durable steps (ADR-0022) at the Runtime seam: a real Engine and Runtime
- * over a real database file, an injected clock, and step-using job handlers.
- * Everything is observed through public surfaces — outcomes, `_ackerdb_jobs`
- * rows and their step journals, and counted side effects — never through
- * runner internals.
+ * Durable steps at the Runtime seam: a real Engine and Runtime over a real
+ * database file, an injected clock, and step-using job handlers. Everything is
+ * observed through public surfaces — outcomes, `_ackerdb_jobs` rows and their
+ * step journals, and counted side effects — never through runner internals.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

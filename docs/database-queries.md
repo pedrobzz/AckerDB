@@ -213,7 +213,7 @@ An expression is either a clause or a group:
   limit. Exceeding any of them is an issue, not a throw.
 
 There is no index selection and no way to name one: indexes stay transparent
-and planner-owned (ADR-0008). Every value crosses its column's validator and
+and planner-owned. Every value crosses its column's validator and
 storage codec before SQLite sees it, exactly as a callback's values do, and a
 validated filter is an ordinary predicate afterwards — it composes with more
 `.where` calls, ordering, aggregates, pagination, and reactive dependency

@@ -103,11 +103,10 @@ export type JobStepQueryCtx<
 };
 
 /**
- * Durable steps (ADR-0022): named, journaled units of work inside a
- * procedure-mode Job handler. A completed step's recorded result stands in
- * for re-execution when the run resumes. The name is a contract — same name,
- * same meaning — and everything effectful in a step-using handler belongs
- * inside a step.
+ * Durable steps are named, journaled units of work inside a procedure-mode Job
+ * handler. A completed step's recorded result stands in for re-execution when
+ * the run resumes. The name is a contract — same name, same meaning — and
+ * everything effectful in a step-using handler belongs inside a step.
  */
 export interface JobStep<
   S extends Schema = Schema,

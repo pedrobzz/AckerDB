@@ -1,8 +1,8 @@
 # Migrations
 
 How AckerDB evolves a database when the root schema in `app.ts` changes. The model
-is recorded in ADR 0003 and the CONTEXT.md glossary; this document is the
-operator/developer guide.
+is recorded in the CONTEXT.md glossary; this document is the operator/developer
+guide.
 
 ## The model
 

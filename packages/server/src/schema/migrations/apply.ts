@@ -321,7 +321,7 @@ function validateEntries(
   // Ownership is a rule about writes, not only about shapes. Pinning keeps an
   // application step from *reshaping* a framework table; this keeps it from
   // rebuilding one — a transform over `_ackerdb_jobs` returning `null` would
-  // delete every durable job, which is precisely the promise ADR-0018 makes.
+  // delete every durable job, violating the Job durability contract.
   if (owner === "application") {
     const framework = Object.keys(entries).filter(isFrameworkTable).sort();
     if (framework.length > 0) {

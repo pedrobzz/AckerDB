@@ -1225,12 +1225,12 @@ describe("administration transitions", () => {
   });
 
   test("a mutation Job whose stored arguments no longer decode fails instead of wedging", async () => {
-    // ADR-0018 promises an admitted Job is durable, and durable includes
-    // reaching an end. Arguments that cannot be decoded — bytes corrupted
-    // underneath us, or an encoding this version no longer reads — used to
-    // throw out of the claim transaction before any savepoint existed, rolling
-    // the claim back and leaving the Job due: claimed again, thrown out of
-    // again, forever, with no run to show for it. It must fail once, durably.
+    // An admitted Job is durable, and durable includes reaching an end.
+    // Arguments that cannot be decoded — bytes corrupted underneath us, or an
+    // encoding this version no longer reads — used to throw out of the claim
+    // transaction before any savepoint existed, rolling the claim back and
+    // leaving the Job due: claimed again, thrown out of again, forever, with no
+    // run to show for it. It must fail once, durably.
     //
     // The mode matters. A procedure-mode Job decodes inside its settlement
     // boundary and always failed correctly; the mutation envelope collapses

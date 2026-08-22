@@ -816,7 +816,7 @@ export class AckerDBServer {
   /**
    * Leave readiness and close transport admission while the Runtime stays live.
    * Trusted in-process work keeps its authority across this window: `drain` is
-   * what closes system-run admission (ADR-0015), so an owner that must release
+   * what closes system-run admission, so an owner that must release
    * application-owned resources through `system.run` calls this first, releases
    * them, and only then drains. Idempotent, and a no-op once shutdown began.
    */

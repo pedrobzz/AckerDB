@@ -76,8 +76,8 @@ OpenSRC and its primary sources first.
 
 Most mature systems problems already have prior art. Before inventing, inspect
 current OpenSRC snapshots and primary sources. Put AckerDB terminology and
-settled domain boundaries in `CONTEXT.md`; put material AckerDB tradeoffs in the
-decision ledger. Revisit both when later evidence changes a decision.
+settled domain boundaries in `CONTEXT.md`. Revisit it when later evidence
+changes the model.
 
 Verify at the boundary that previously failed; prove the old failure path is
 gone rather than masked.
@@ -111,4 +111,4 @@ The five canonical triage roles, each mapped to its own label string. See `docs/
 
 ### Domain docs
 
-Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily by `/domain-modeling`). See `docs/agents/domain.md`.
+Single-context — one `CONTEXT.md` at the repo root (created lazily by `/domain-modeling`). See `docs/agents/domain.md`.

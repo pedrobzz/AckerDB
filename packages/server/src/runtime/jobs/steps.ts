@@ -1,8 +1,7 @@
 /**
- * Durable steps (ADR-0022): the per-run `ctx.step` surface of a
- * procedure-mode Job. Completed steps are recorded in the row's `stepsJson`
- * journal; a resumed run replays the handler, and a recorded entry answers
- * instead of executing.
+ * Durable steps are the per-run `ctx.step` surface of a procedure-mode Job.
+ * Completed steps are recorded in the row's `stepsJson` journal; a resumed run
+ * replays the handler, and a recorded entry answers instead of executing.
  *
  * Step identity is the name, and the name is a contract: same name, same
  * meaning. Strictness is applied exactly where it is free of false

@@ -5,8 +5,7 @@
  * them. `any` — OR — is in the contract from the first version, because the
  * server's predicate layer already composes AND, OR, and NOT; the serializable
  * form mirrors that layer rather than describing a weaker one. Indexes never
- * appear: they are transparent, planner-owned storage configuration
- * (ADR-0008).
+ * appear: they are transparent, planner-owned storage configuration.
  *
  * Core owns only the shapes that cross the wire. Validating an expression
  * against a table's declared filterable fields, and compiling it into

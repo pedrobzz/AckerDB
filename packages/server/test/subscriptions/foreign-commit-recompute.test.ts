@@ -32,7 +32,7 @@ import { until } from "ackerdb-test-support/async";
 // ctx.tx). Post-commit recomputation on the subscriber's behalf then runs while
 // the mutating invocation's async context is still ambient; the recompute is
 // top-level work for the subscriber and must not be mistaken for a nested
-// invocation of the mutator (whose principal differs). ADR-0002.
+// invocation of the mutator (whose principal differs).
 
 const schema = defineSchema({
   records: defineTable({
