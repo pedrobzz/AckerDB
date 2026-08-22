@@ -208,16 +208,7 @@ export function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
     };
   });
   const parse = (value: unknown, path: string): InferShape<S> => {
-    if (
-      value === null ||
-      typeof value !== "object" ||
-      Array.isArray(value) ||
-      value instanceof Uint8Array
-    ) {
-      fail(path, "object", value);
-    }
-    const input = value as Record<string, unknown>;
-    refuseUnknownKeys(input, (key) => knownKeys[key] === true, path);
+    const input = inputRecord(value, path, false);
     const out: Record<string, unknown> = {};
     for (const field of fields) {
       const present = Object.hasOwn(input, field.key);
