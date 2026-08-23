@@ -8,6 +8,7 @@ export {
 export {
   boot,
   MigrationsHeldError,
+  type AckerDBStartupPhase,
   type BootFiles,
   type BootLoaders,
   type BootOptions,
@@ -524,7 +525,6 @@ export {
   type AckerDBServerOptions,
   type AckerDBServerState,
   type AckerDBServerStatus,
-  type AckerDBStartupPhase,
 } from "./transport/server.ts";
 export {
   defineTable,

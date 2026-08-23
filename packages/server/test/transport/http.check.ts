@@ -41,7 +41,7 @@ type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 
 
 /* ------------------------------------------- the path grammar, positively -- */
 
-type _static = Expect<Eq<ValidHttpPath<"/live">, unknown>>;
+type _static = Expect<Eq<ValidHttpPath<"/health">, unknown>>;
 type _root = Expect<Eq<ValidHttpPath<"/">, unknown>>;
 type _oneParam = Expect<Eq<ValidHttpPath<"/users/:id">, unknown>>;
 type _manyParams = Expect<Eq<ValidHttpPath<"/o/:org/r/:repo">, unknown>>;
@@ -51,7 +51,7 @@ type _erased = Expect<Eq<ValidHttpPath<string>, unknown>>;
 
 /* --------------------------------------------- the captures a path declares -- */
 
-type _noParams = Expect<Eq<HttpParams<"/live">, Readonly<Record<never, string>>>>;
+type _noParams = Expect<Eq<HttpParams<"/health">, Readonly<Record<never, string>>>>;
 type _idParam = Expect<Eq<HttpParams<"/users/:id">, { readonly id: string }>>;
 type _bothParams = Expect<
   Eq<HttpParams<"/o/:org/r/:repo">, { readonly org: string; readonly repo: string }>
@@ -138,7 +138,7 @@ void ctxIsBound;
 
 /* --------------------------------------------------------------- negatives -- */
 
-typedHttp("/live", {
+typedHttp("/health", {
   // @ts-expect-error a static path invents no parameter keys
   GET: (ctx) => new Response(ctx.params.id),
 });

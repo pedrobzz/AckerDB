@@ -95,7 +95,10 @@ test("start() makes it ready: repeat jobs are minted, the runner is armed, opera
   await expect(runtime.system.run("test.ready", async () => "ran")).resolves.toBe("ran");
 
   server.activate(runtime);
-  expect((await (await fetch(`http://127.0.0.1:${server.port}/ready`)).json()).ready).toBe(true);
+  expect(await (await fetch(`http://127.0.0.1:${server.port}/health`)).json()).toEqual({
+    version: 1,
+    ok: true,
+  });
 });
 
 test("start() twice is misuse", async () => {

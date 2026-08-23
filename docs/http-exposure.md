@@ -165,10 +165,10 @@ The second segment remains reserved beneath `/api/` and nowhere else;
 | — | `POST /_sse/open` (typed SSE transport) |
 | `/api/_files/<route>/…` | → `/_files/uploads/:handle`, `/_files/grants/:handle` |
 | — | new, opt-in: `GET /_openapi.json` |
-| `/live`, `/ready`, `/status` | unchanged, and unmarked |
+| `/health`, `/status` | unmarked |
 
-**The operational endpoints do not move and carry no marker.** `/live`,
-`/ready`, and `/status` are the contract with the outside world — Kubernetes
+**The operational endpoints do not move and carry no marker.** `/health`
+and `/status` are the contract with the outside world — Kubernetes
 probes, load-balancer health checks — and their names live in configuration
 that is not ours to rename. The reserved-name list in
 `packages/server/src/transport/http-surface.ts` is what stops an application
@@ -316,7 +316,7 @@ mirroring `ApplicationErrorMessage.receipt`.
 - Infrastructure and protocol outcomes map through the existing
   `outcomeHttpStatus` and answer with the bare `Outcome` object. No response on
   this surface carries a protocol frame — including the `503` an application
-  path answers before the server is ready.
+  path answers while draining.
 - Unknown paths, unexposed functions, and kind/method mismatches are `404`
   (unexposed is indistinguishable from nonexistent by design) or `405` with
   an `Allow` header where the path exists but the method is wrong. Both answer

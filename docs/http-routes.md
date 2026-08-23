@@ -16,8 +16,8 @@ access there belongs here.
 
 ## One model, one table
 
-There is exactly one HTTP route model, and the framework uses it too. `/live`,
-`/ready`, `/status`, the File byte routes, the WebSocket door, the SSE receiver
+There is exactly one HTTP route model, and the framework uses it too. `/health`,
+`/status`, the File byte routes, the WebSocket door, the SSE receiver
 credit, the OpenAPI document, every exposed function, and every route below are
 the same value — an explicit path and a method-keyed map of handlers — living
 in one registry. The listener's `fetch` is one permanent function that asks
@@ -122,8 +122,8 @@ them would cost more than it is worth:
 
 - A parameter matches an empty segment. `/users//x` matches `/users/:id/x`
   with `ctx.params.id === ""`; a handler that cares checks for it.
-- Exactly one trailing slash is stripped, so `/live/` reaches `/live` but
-  `/live//` does not.
+- Exactly one trailing slash is stripped, so `/health/` reaches `/health` but
+  `/health//` does not.
 - A wildcard capture is decoded as one string, so a `%2F` inside it is
   indistinguishable from a separator.
 
@@ -131,7 +131,7 @@ them would cost more than it is worth:
 
 An explicit path may claim any URL AckerDB has not reserved. Reserved is:
 
-- the built-in paths (`/live`, `/ready`, `/status`, `/_ws`, `/_sse/open`, `/_sse/ack`,
+- the built-in paths (`/health`, `/status`, `/_ws`, `/_sse/open`, `/_sse/ack`,
   `/_files/…`, `/_openapi.json`);
 - any path whose first segment carries the `_` marker;
 - any path under `/api/` whose second segment carries it, so a future built-in
@@ -225,11 +225,12 @@ headers, body, signal. `params` is on the context rather than on a framework
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
 - Application routes enter the live table through synchronous registration
-  before `Runtime.start()`, and activation later makes their handlers reachable.
-  Before activation, and while draining, they answer
+  before `Runtime.start()`, and activation later binds the listener and makes
+  their handlers reachable.
+  While draining, they answer
   the established unavailable outcome rather than a 404: unreachable and
-  absent are different statements. `/live` and `/ready` are registered before
-  the port is bound and answer throughout Boot.
+  absent are different statements. `/health` is registered with the other
+  framework routes and answers only after the listener binds.
 - The listener numbers raw-route requests from the same monotonic sequence as
   contract calls; the id never reaches the response. Cancellation is the
   request abort, surfaced as `ctx.abortSignal`.

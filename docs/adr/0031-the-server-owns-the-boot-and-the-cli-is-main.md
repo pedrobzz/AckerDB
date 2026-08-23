@@ -1,10 +1,17 @@
 # The server owns the boot; the CLI is main
 
+> Amended: listen is the last step of boot, not the first. The phase order
+> below is `codegen → loading → opening-storage → migrating | reconciling →
+> loading-runtime → starting-runtime`, then activation binds the listener.
+> `/live` and `/ready` are gone; `GET /health` is the one unauthenticated
+> traffic-readiness probe. Everything else this decision settled — `boot()` as
+> the one home, the loaders, the reporter, the hold gate, one AbortSignal, the
+> Runtime's created state and explicit `start()`, and the owned drain — stands.
+
 > Amended by [ADR-0032](0032-ackerdb-provides-credentials-not-an-administration-product.md): the Admin Credential is gone, and with it the
 > boot's `issuing-credential` phase, its reporter callback, and every ordering
-> rule about minting before application code. Read the sequence below without
-> that step: `listening → codegen → loading → opening-storage → migrating |
-> reconciling → loading-runtime → starting-runtime`, then activation. Everything
+> rule about minting before application code. Read the sequence without
+> that step. Everything
 > else this decision settled — `boot()` as the one home, the loaders, the
 > reporter, the hold gate, one AbortSignal, the Runtime's created state and
 > explicit `start()`, and the owned drain — stands unchanged.
@@ -89,9 +96,9 @@ boot events; nothing here commits to a plugin API.
 
 ## Consequences
 
-- Phase order is `listening → codegen → loading → opening-storage →
+- Phase order is `codegen → loading → opening-storage →
   migrating | reconciling → loading-runtime → starting-runtime`, then
-  activation. `starting-runtime` is new.
+  activation binds the listener.
 - The hold gate (`pendingMigrations: "hold"`) peeks the stored migration
   history read-only before opening storage and rejects with
   `MigrationsHeldError` carrying the pending count. The read-only peek moved

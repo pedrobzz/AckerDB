@@ -1,8 +1,8 @@
 /**
- * The boot, observed from outside: what the listener answers, what the
- * reporter was told, what storage looks like after drain, and that a failed
- * or interrupted boot releases ownership so the next boot succeeds. No test
- * here asserts constructor order or private wiring.
+ * The boot, observed from outside: what the listener answers after it binds,
+ * what the reporter was told, what storage looks like after drain, and that a
+ * failed or interrupted boot releases ownership so the next boot succeeds. No
+ * test here asserts constructor order or private wiring.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -31,7 +31,7 @@ import {
   type BootReporter,
   type RunningApp,
 } from "../src/boot.ts";
-import type { AckerDBStartupPhase } from "../src/transport/server.ts";
+import type { AckerDBStartupPhase } from "../src/boot.ts";
 import { within } from "ackerdb-test-support/async";
 
 const limits = defineServiceLimits({ ...PRODUCTION_LIMITS, gracefulShutdownMs: 2_000 });
@@ -139,7 +139,7 @@ describe("boot", () => {
   test("boots, answers readiness, serves functions, and drains storage clean", async () => {
     const app = await start();
     const base = `http://127.0.0.1:${app.server.port}`;
-    expect(await (await fetch(`${base}/ready`)).json()).toEqual({ version: 1, ready: true, state: "ready" });
+    expect(await (await fetch(`${base}/health`)).json()).toEqual({ version: 1, ok: true });
     const added = await fetch(`${base}/api/notes/add`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -164,7 +164,6 @@ describe("boot", () => {
       },
     });
     expect(phases).toEqual([
-      "listening",
       "codegen",
       "loading",
       "opening-storage",
@@ -180,7 +179,6 @@ describe("boot", () => {
     const again: AckerDBStartupPhase[] = [];
     await start({ dir: app.dir, reporter: { phase: (phase) => again.push(phase) } });
     expect(again).toEqual([
-      "listening",
       "loading",
       "opening-storage",
       "reconciling",
@@ -221,7 +219,7 @@ describe("boot", () => {
     }
   });
 
-  test("interruption stops the boot at the next boundary, drains, and releases the port", async () => {
+  test("interruption stops the boot at the next boundary and drains", async () => {
     const lifecycle = new AbortController();
     const preparationEntered = Promise.withResolvers<void>();
     const preparationStopped = Promise.withResolvers<void>();
@@ -244,32 +242,8 @@ describe("boot", () => {
     lifecycle.abort();
     await expect(startup).rejects.toBe(lifecycle.signal.reason);
     await preparationStopped.promise;
-    expect(phases).toEqual(["listening", "codegen"]);
+    expect(phases).toEqual(["codegen"]);
     expect(existsSync(options.storage.path)).toBe(false);
-  });
-
-  test("interruption during runtime loading rejects with the reason and releases the listener port", async () => {
-    const lifecycle = new AbortController();
-    const loading = Promise.withResolvers<void>();
-    const port = await new Promise<number>((resolve) => {
-      const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
-      const chosen = probe.port!;
-      void probe.stop(true).then(() => resolve(chosen));
-    });
-    const startup = boot(parts({
-      port,
-      signal: lifecycle.signal,
-      loadRuntime: async (signal) => {
-        loading.resolve();
-        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-        return { modules: testModules(functions) };
-      },
-    }));
-    await loading.promise;
-    expect((await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).phase).toBe("loading-runtime");
-    lifecycle.abort();
-    await expect(startup).rejects.toBe(lifecycle.signal.reason);
-    await bindable(port);
   });
 
   test("runs trusted work directly under the system principal", async () => {
@@ -339,7 +313,7 @@ describe("boot", () => {
     expect(shutdownMarker(failed.dir)).toBe(1n);
   });
 
-  test("a startup failure releases the listener, the Runtime and storage ownership before retry", async () => {
+  test("a startup failure releases Runtime and storage ownership before retry", async () => {
     const port = await new Promise<number>((resolve) => {
       const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
       const chosen = probe.port!;
@@ -355,7 +329,7 @@ describe("boot", () => {
     }))).rejects.toThrow("module import exploded");
 
     const retried = await start({ dir, port });
-    expect((await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).ready).toBe(true);
+    expect(await (await fetch(`http://127.0.0.1:${port}/health`)).json()).toEqual({ version: 1, ok: true });
     await retried.drain();
     await bindable(port);
   });
@@ -363,10 +337,9 @@ describe("boot", () => {
   test("binds the configured listener hostname", async () => {
     const app = await start({ hostname: "0.0.0.0" });
     expect(app.server.hostname).toBe("0.0.0.0");
-    expect(await (await fetch(`http://127.0.0.1:${app.server.port}/ready`)).json()).toEqual({
+    expect(await (await fetch(`http://127.0.0.1:${app.server.port}/health`)).json()).toEqual({
       version: 1,
-      ready: true,
-      state: "ready",
+      ok: true,
     });
   });
 

@@ -6,8 +6,8 @@
  * application routes choose any unreserved explicit path; at the root, `_`
  * belongs to AckerDB.
  *
- * The operational endpoints are the deliberate exception. `/live`, `/ready`,
- * and `/status` carry no marker because they are the contract with the outside
+ * The operational endpoints are the deliberate exception. `/health` and
+ * `/status` carry no marker because they are the contract with the outside
  * world — Kubernetes probes, load-balancer health checks — and their names live
  * in configuration that is not ours to rename. The reserved-name list below is
  * what stops an application route from hijacking them.
@@ -29,8 +29,7 @@ import type { HttpMethod } from "./routing/path.ts";
 const FILES_ROOT = "/_files";
 
 export const ACKERDB_HTTP_ROUTES = Object.freeze({
-  live: "/live",
-  ready: "/ready",
+  health: "/health",
   status: "/status",
   websocket: "/_ws",
   sseOpen: SSE_HTTP.open,

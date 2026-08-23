@@ -157,7 +157,7 @@ afterEach(async () => {
 
 async function portResponds(port: number): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/live`, {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(200),
     });
     await response.arrayBuffer();

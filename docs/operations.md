@@ -225,12 +225,11 @@ for a commit acknowledgement or verified backup.
 
 ## Health and protected status
 
-The server exposes three versioned JSON endpoints:
+The server exposes two versioned JSON endpoints:
 
 | Endpoint | Authentication | 200 contract | 503 contract |
 | --- | --- | --- | --- |
-| `GET /live` | none | `{ "version": 1, "live": true }` while the listener is starting, ready, or draining | `live: false` if a request reaches failed/stopped teardown; no HTTP response exists after the listener closes |
-| `GET /ready` | none | `{ "version": 1, "ready": true, "state": "ready" }` only when both transport and runtime are `ready` | `{ version: 1, ready: false, state, phase? }` while starting, draining, stopped, or failed |
+| `GET /health` | none | `{ "version": 1, "ok": true }` only when both transport and runtime are `ready` | `{ "version": 1, "ok": false }` while draining, or if a request reaches a Runtime that has left `ready`; no HTTP response exists before the listener binds or after it closes |
 | `GET /status` | workload bearer plus configured scope | `{ "version": 1, "state": ..., "connections": ..., "httpIngress": ..., "outboundBytes": ..., "runtime": ... }` | transport/runtime availability failures |
 
 `/status` requires the external workload principal and selected scope described
@@ -249,23 +248,18 @@ With the CLI and no configured OIDC provider, no bearer can authenticate, so
 operators must configure a workload provider that selects `scope` before
 `/status` is usable.
 
-`acker start` binds one listener before code generation and keeps that port live
-through the monotonic startup phases `listening`, `codegen`, `loading`,
+`acker start` runs the monotonic startup phases `codegen`, `loading`,
 `opening-storage`, `migrating` (when a migration chain is present) or
 `reconciling`, `loading-runtime` for credential verifiers and the configured
 definition modules, and `starting-runtime` (the Runtime's own start:
 repeat jobs minted, the job runner armed). Runtime-only modules load after
 durable schema work commits, so their configuration cannot block a pending
 migration. The sequence is `boot()` in `@ackerdb/server`; `acker start` calls
-it and prints what it reports. `/live` and `/ready`
-remain reachable;
-`OPTIONS` receives its finite control response, and a syntactically valid SSE
-acknowledgement passes bounded admission but is an oracle-free no-op before a
-Runtime producer exists. Application, WebSocket, and protected-status traffic
-receives typed `unavailable`. After storage validation, schema reconciliation,
+it and prints what it reports. Activation binds the listener last: a boot that
+cannot serve never owns a port. After storage validation, schema reconciliation,
 registry construction, and the Runtime's start all succeed, activation attaches
-the Runtime and flips readiness atomically. A
-startup failure or signal-triggered interruption drains the listener and closes
+the Runtime, binds the socket, and flips health atomically. A
+startup failure or signal-triggered interruption drains what it built and closes
 any acquired storage ownership; it can never activate later from an abandoned
 import/preparation promise.
 
@@ -280,9 +274,9 @@ probes should derive them from protected status and their own policy.
 `SIGTERM` handlers. The first signal starts the idempotent `RunningApp.drain()`
 path and removes those handlers:
 
-1. set transport state to `draining` synchronously, making readiness false and
-   rejecting new application, WebSocket, and protected-status admissions while
-   keeping health and the finite SSE acknowledgement control route reachable;
+1. set transport state to `draining` synchronously, making `/health` answer
+   503 and rejecting new application, WebSocket, and protected-status admissions
+   while keeping `/health` and the finite SSE acknowledgement control route reachable;
 2. close WebSocket sessions with `draining` and fail active SSE producers,
    retaining their acknowledgement capabilities through terminal delivery or
    terminal grace expiry;
@@ -333,7 +327,7 @@ The operator workflow is therefore:
    `.manifest.json` file, and its adjacent `.files` directory;
 3. rehearse recovery with `acker restore` into a fresh configured database
    directory; and
-4. start the restored application and check `/live`, `/ready`, and authorized
+4. start the restored application and check `/health` and authorized
    `/status` before returning it to service.
 
 A failed drain is not a clean backup boundary. Let the next open run recovery
