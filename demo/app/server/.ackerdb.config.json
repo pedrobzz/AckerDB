@@ -1,4 +1,6 @@
 {
+  "entrypoint": "./app.ts",
+  "definitions": ["./functions"],
   "credentialVerifier": "./credential-verifier.ts",
   "generated": "../../packages/ackerdb-codegen/src",
   "port": 3212

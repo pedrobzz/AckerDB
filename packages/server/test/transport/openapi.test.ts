@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Err, ACKERDB_VERSION, Status, parseSseAckRequest } from "@ackerdb/core";
 import { v } from "../../src/validation/v.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { argsJsonSchema, validatorJsonSchema } from "../../src/validation/json-schema.ts";
+import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
 import { SSE_STREAM_HEADERS } from "../../src/transport/http-surface.ts";
 
@@ -17,7 +18,7 @@ const functions = () => ({
   messages: {
     list: query({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/list", openapi: true },
       title: "List messages",
       description: "List the newest messages in a channel.",
       args: { channel: v.string(), limit: v.int().optional() },
@@ -26,7 +27,7 @@ const functions = () => ({
     }),
     send: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/send", openapi: true },
       args: { channel: v.string(), body: v.string() },
       returns: v.bigint(),
       errors: {
@@ -46,7 +47,7 @@ const functions = () => ({
     /** Callable over HTTP, deliberately absent from the document. */
     purge: mutation({
       access: "public",
-      http: { openapi: false },
+      http: { path: "/api/messages/purge", openapi: false },
       args: { channel: v.string() },
       handler: () => 0n,
     }),
@@ -58,13 +59,13 @@ const functions = () => ({
     }),
     ping: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/messages/ping", openapi: true },
       args: {},
       handler: () => ({ pong: true }),
     }),
     tail: sseProcedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/messages/tail", openapi: true },
       args: { channel: v.string() },
       yields: v.object({ body: v.string() }),
       handler: async function* (_ctx: Ctx, args: Ctx) {
@@ -75,7 +76,7 @@ const functions = () => ({
   admin: {
     stats: query({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/admin/stats", openapi: true },
       args: {},
       returns: v.object({ count: v.int() }),
       handler: () => ({ count: 0 }),
@@ -83,7 +84,7 @@ const functions = () => ({
   },
 });
 
-const document = () => openApiDocument(new Registry(functions()), info) as Ctx;
+const document = () => openApiDocument(testRegistry(functions()), info) as Ctx;
 
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
@@ -222,7 +223,7 @@ describe("openapi document", () => {
   });
 
   test("documents exactly the exposed functions openapi allows", () => {
-    const registry = new Registry(functions());
+    const registry = testRegistry(functions());
     const openapi = openApiDocument(registry, info) as Ctx;
     expect(Object.keys(openapi.paths)).toEqual([
       "/api/admin/stats",
@@ -231,11 +232,7 @@ describe("openapi document", () => {
       "/api/messages/send",
       "/api/messages/tail",
     ]);
-    // Hidden from the document, still callable at its path.
-    expect(registry.exposed.has("api.messages.purge")).toBe(true);
     expect(openapi.paths["/api/messages/purge"]).toBeUndefined();
-    // Never exposed: absent from both.
-    expect(registry.exposed.has("/api/messages/sweep")).toBe(false);
     expect(openapi.paths["/api/messages/sweep"]).toBeUndefined();
   });
 
@@ -256,7 +253,7 @@ describe("openapi document", () => {
     expect(list.get.summary).toBe("List messages");
     expect(list.post.description).toBe("List the newest messages in a channel.");
 
-    const { $schema: _dialect, ...args } = argsJsonSchema(functions().messages.list.args);
+    const { $schema: _dialect, ...args } = validatorJsonSchema(functions().messages.list.args);
     expect(list.get.parameters).toEqual([{
       name: "args",
       in: "query",
@@ -390,11 +387,11 @@ describe("openapi document", () => {
   test("refuses a document where two addresses claim one operationId", () => {
     // Distinct paths, one operationId: the registry's own collision check
     // cannot see this, and codegen tools reject or silently dedupe it.
-    const registry = new Registry({
+    const registry = testRegistry({
       notes: {
         list: query({
           access: "public",
-          http: true,
+          http: { path: "/notes", openapi: true },
           args: {},
           handler: () => [],
         }),
@@ -402,14 +399,12 @@ describe("openapi document", () => {
       "notes.list": {
         get: query({
           access: "public",
-          http: true,
+          http: { path: "/notes/get", openapi: true },
           args: {},
           handler: () => null,
         }),
       },
     });
-    // Only the application's routes exist: the framework contributes none.
-    expect(registry.exposed.size).toBe(2);
     expect(() => openApiDocument(registry, info)).toThrow(
       'functions "api.notes.list" and "api.notes.list.get" both document operationId "api.notes.list.get"',
     );
@@ -423,13 +418,13 @@ describe("openapi document", () => {
   });
 
   test("two exports of one application are byte-identical", () => {
-    const first = JSON.stringify(openApiDocument(new Registry(functions()), info));
-    const second = JSON.stringify(openApiDocument(new Registry(functions()), info));
+    const first = JSON.stringify(openApiDocument(testRegistry(functions()), info));
+    const second = JSON.stringify(openApiDocument(testRegistry(functions()), info));
     expect(second).toBe(first);
   });
 
   test("an application with nothing exposed documents nothing", () => {
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         sweep: procedure({ access: "public", args: {}, handler: () => "swept" }),
       },
@@ -445,11 +440,11 @@ describe("openapi document", () => {
     // registry refuses it when it compiles the function's HTTP codec. What is
     // left for the document to refuse is a value that crosses the wire as
     // itself and has no schema — a non-finite literal.
-    const registry = new Registry({
+    const registry = testRegistry({
       messages: {
         latest: query({
           access: "public",
-          http: true,
+          http: { path: "/latest-message", openapi: true },
           args: {},
           returns: v.literal(Number.NaN),
           handler: () => Number.NaN,

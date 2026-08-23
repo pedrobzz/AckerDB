@@ -117,7 +117,7 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
   try {
     parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
-    throw new ValidationError(`${plan.displayName}.paginate.cursor: malformed cursor`);
+    throw new ValidationError(`${plan.name}.paginate.cursor: malformed cursor`);
   }
   if (
     parsed === null ||
@@ -127,16 +127,16 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
     !Array.isArray((parsed as { values?: unknown }).values) ||
     Object.keys(parsed).some((key) => key !== "version" && key !== "values")
   ) {
-    throw new ValidationError(`${plan.displayName}.paginate.cursor: malformed versioned cursor`);
+    throw new ValidationError(`${plan.name}.paginate.cursor: malformed versioned cursor`);
   }
   const encodedValues = (parsed as { values: unknown[] }).values;
   if (encodedValues.length !== order.length) {
     throw new ValidationError(
-      `${plan.displayName}.paginate.cursor: expected ${order.length} ordering values, got ${encodedValues.length}`,
+      `${plan.name}.paginate.cursor: expected ${order.length} ordering values, got ${encodedValues.length}`,
     );
   }
   return encodedValues.map((encoded, position) => {
-    const path = `${plan.displayName}.paginate.cursor[${position}]`;
+    const path = `${plan.name}.paginate.cursor[${position}]`;
     const value = decodeCursorValue(
       encoded,
       path,
@@ -146,7 +146,7 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
     if (value === null) {
       if (!column.nullable) {
         throw new ValidationError(
-          `${path}: ${column.jsName} is not nullable`,
+          `${path}: ${columnName} is not nullable`,
         );
       }
       return null;
@@ -162,20 +162,20 @@ function parseCursor(cursor: string, plan: TablePlan, order: readonly QueryOrder
             : typeof value === "number" && Number.isFinite(value);
     if (!storageTypeValid) {
       throw new ValidationError(
-        `${path}: value is incompatible with ${column.jsName}`,
+        `${path}: value is incompatible with ${columnName}`,
       );
     }
     if (column.kind === "pk") {
       if (typeof value !== "bigint" || value < -(2n ** 63n) || value > 2n ** 63n - 1n) {
-        throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
+        throw new ValidationError(`${path}: value is incompatible with ${columnName}`);
       }
     }
     try {
-      const logical = column.fromSql([value]);
-      plan.table.columns[columnName]!.check(logical, path);
+      const logical = column.fromSql(value);
+      plan.table.columns[columnName]!.parse(logical, path);
     } catch (error) {
       if (!isValidationError(error)) throw error;
-      throw new ValidationError(`${path}: value is incompatible with ${column.jsName}`);
+      throw new ValidationError(`${path}: value is incompatible with ${columnName}`);
     }
     return value;
   });
@@ -250,7 +250,7 @@ class TableQueryRuntime {
       ? resolvePredicate(
           this.plan.environment,
           callback,
-          `${this.plan.displayName}.query.where`,
+          `${this.plan.name}.query.where`,
         )
       : filterPredicate(this.plan, filter);
     if (predicate === null) return this;
@@ -262,26 +262,26 @@ class TableQueryRuntime {
 
   orderBy(callback: unknown): TableQueryRuntime {
     if (this.state.order.length !== 0) {
-      throw new ValidationError(`${this.plan.displayName}.query: .orderBy() may only be called once`);
+      throw new ValidationError(`${this.plan.name}.query: .orderBy() may only be called once`);
     }
     return this.next({
       ...this.state,
-      order: [resolveOrder(this.plan.environment, callback, `${this.plan.displayName}.query.orderBy`)],
+      order: [resolveOrder(this.plan.environment, callback, `${this.plan.name}.query.orderBy`)],
     });
   }
 
   thenBy(callback: unknown): TableQueryRuntime {
     if (this.state.order.length === 0) {
-      throw new ValidationError(`${this.plan.displayName}.query: .thenBy() requires .orderBy()`);
+      throw new ValidationError(`${this.plan.name}.query: .thenBy() requires .orderBy()`);
     }
     const order = resolveOrder(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.query.thenBy`,
+      `${this.plan.name}.query.thenBy`,
     );
     if (this.state.order.some(({ column }) => column === order.column)) {
       throw new ValidationError(
-        `${this.plan.displayName}.query: column ${JSON.stringify(order.column)} is ordered more than once`,
+        `${this.plan.name}.query: column ${JSON.stringify(order.column)} is ordered more than once`,
       );
     }
     return this.next({ ...this.state, order: [...this.state.order, order] });
@@ -318,7 +318,7 @@ class TableQueryRuntime {
     limit: number,
     cursor?: { readonly sql: string; readonly params: readonly unknown[] },
   ): { readonly sql: string; readonly params: readonly unknown[] } {
-    const path = `${this.plan.displayName}.query`;
+    const path = `${this.plan.name}.query`;
     const predicate = compilePredicates(
       this.state.predicates,
       this.engine.sqliteParameterLimit,
@@ -380,7 +380,7 @@ class TableQueryRuntime {
 
   async take(count: number): Promise<Record<string, unknown>[]> {
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new ValidationError(`${this.plan.displayName}.query.take: count must be a non-negative safe integer`);
+      throw new ValidationError(`${this.plan.name}.query.take: count must be a non-negative safe integer`);
     }
     return await runStatement(() => this.rowsArray(count));
   }
@@ -392,7 +392,7 @@ class TableQueryRuntime {
   private uniqueRow(): Record<string, unknown> | null {
     const rows = this.rowsArray(2);
     if (rows.length > 1) {
-      throw new Error(`${this.plan.displayName}: .unique() matched more than one row`);
+      throw new Error(`${this.plan.name}: .unique() matched more than one row`);
     }
     return rows[0] ?? null;
   }
@@ -407,7 +407,7 @@ class TableQueryRuntime {
     const predicate = compilePredicates(
       this.state.predicates,
       this.engine.sqliteParameterLimit,
-      `${this.plan.displayName}.query`,
+      `${this.plan.name}.query`,
     );
     const where = predicate.sql === "" ? "" : ` WHERE ${predicate.sql}`;
     const row = this.engine
@@ -421,7 +421,7 @@ class TableQueryRuntime {
   }
 
   private sumValue(column: string, kind: string): number | bigint {
-    const path = `${this.plan.displayName}.query.sum`;
+    const path = `${this.plan.name}.query.sum`;
     let raw: unknown;
     try {
       raw = this.aggregateRaw(`SUM(${quoteIdentifier(column)})`);
@@ -448,7 +448,7 @@ class TableQueryRuntime {
     const { column, kind } = resolveAggregateColumn(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.query.sum`,
+      `${this.plan.name}.query.sum`,
       SUMMABLE_KINDS,
     );
     return await runStatement(() => this.sumValue(column, kind));
@@ -458,7 +458,7 @@ class TableQueryRuntime {
     const { column } = resolveAggregateColumn(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.query.avg`,
+      `${this.plan.name}.query.avg`,
       SUMMABLE_KINDS,
     );
     return await runStatement(() => {
@@ -469,14 +469,14 @@ class TableQueryRuntime {
 
   private extremeValue(fn: "MIN" | "MAX", column: string): unknown {
     const raw = this.aggregateRaw(`${fn}(${quoteIdentifier(column)})`);
-    return raw === null ? null : this.plan.columns.get(column)!.fromSql([raw]);
+    return raw === null ? null : this.plan.columns.get(column)!.fromSql(raw);
   }
 
   async min(callback: unknown): Promise<unknown> {
     const { column } = resolveAggregateColumn(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.query.min`,
+      `${this.plan.name}.query.min`,
       MINMAX_KINDS,
     );
     return await runStatement(() => this.extremeValue("MIN", column));
@@ -486,7 +486,7 @@ class TableQueryRuntime {
     const { column } = resolveAggregateColumn(
       this.plan.environment,
       callback,
-      `${this.plan.displayName}.query.max`,
+      `${this.plan.name}.query.max`,
       MINMAX_KINDS,
     );
     return await runStatement(() => this.extremeValue("MAX", column));
@@ -511,7 +511,7 @@ class TableQueryRuntime {
       options.pageSize <= 0
     ) {
       throw new ValidationError(
-        `${this.plan.displayName}.query.paginate: pageSize must be a positive safe integer`,
+        `${this.plan.name}.query.paginate: pageSize must be a positive safe integer`,
       );
     }
     // A page size normally arrives from a caller, so the bound is the
@@ -519,11 +519,11 @@ class TableQueryRuntime {
     // clamping would hand back a page that does not match what was asked for.
     if (options.pageSize > MAX_PAGE_SIZE) {
       throw new ValidationError(
-        `${this.plan.displayName}.query.paginate: pageSize must be at most ${MAX_PAGE_SIZE}`,
+        `${this.plan.name}.query.paginate: pageSize must be at most ${MAX_PAGE_SIZE}`,
       );
     }
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
-      throw new ValidationError(`${this.plan.displayName}.query.paginate: cursor must be a string or null`);
+      throw new ValidationError(`${this.plan.name}.query.paginate: cursor must be a string or null`);
     }
     return await runStatement(() => this.page(options));
   }
@@ -559,7 +559,7 @@ class TableQueryRuntime {
       : opaqueCursor({
           version: 1,
           values: order.map(({ column }) =>
-            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])[0]),
+            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])),
           ),
         });
     return { items, nextCursor };

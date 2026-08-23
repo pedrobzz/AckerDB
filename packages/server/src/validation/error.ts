@@ -28,11 +28,3 @@ export function refuseUnknownKeys(
     }
   }
 }
-
-export function refuseUnknownUnionKeys(input: Record<string, unknown>, path: string): void {
-  for (const key of Object.keys(input)) {
-    if (key !== "tag" && key !== "value" && input[key] !== undefined) {
-      throw new ValidationError(`${path}: unknown field "${key}" on union value`);
-    }
-  }
-}

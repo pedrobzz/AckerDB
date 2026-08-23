@@ -3,8 +3,8 @@
  * each exposed kind answers, and the headers a call carries beside its body.
  *
  * The framework's own routes live at the root behind the `_` marker. The
- * application's address-derived routes live beneath the fixed `/api/` root;
- * at the root, `_` belongs to AckerDB.
+ * application routes choose any unreserved explicit path; at the root, `_`
+ * belongs to AckerDB.
  *
  * The operational endpoints are the deliberate exception. `/live`, `/ready`,
  * and `/status` carry no marker because they are the contract with the outside
@@ -18,9 +18,11 @@
 import {
   APPLICATION_ADDRESS_ROOT,
   RESERVED_MARKER,
+  SSE_HTTP,
   type SseAckRequest,
   type SseMessage,
 } from "@ackerdb/core";
+import type { AnyRegistered } from "../app/functions.ts";
 import type { HttpMethod } from "./routing/path.ts";
 
 /** The root of the File byte routes; the segments below it name one handle. */
@@ -31,7 +33,8 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   ready: "/ready",
   status: "/status",
   websocket: "/_ws",
-  sseAck: "/_sse/ack",
+  sseOpen: SSE_HTTP.open,
+  sseAck: SSE_HTTP.acknowledge,
   files: FILES_ROOT,
   /** One Upload Session's bytes; the captured handle is `<id>.<secret>`. */
   fileUpload: `${FILES_ROOT}/uploads/:handle`,
@@ -54,10 +57,10 @@ export function isAckerDBHttpRoute(path: string): boolean {
  * Whether a path an application wants to claim reaches into a name marked as
  * the framework's own. `_` is AckerDB's at the root, where the protocol
  * endpoints live, and directly under the fixed `/api/` root, so a future
- * built-in route can never collide with an exposed function's derived path.
+ * built-in route can never collide with an application route in that namespace.
  *
- * The second segment is reserved only beneath `/api/`. An explicit raw route
- * owns its URL because an external provider dictated it, and `/webhooks/_raw`
+ * The second segment is reserved only beneath `/api/`. An application route
+ * owns its explicit URL, and `/webhooks/_raw`
  * is that provider's name for a path AckerDB will never serve; reserving every
  * second segment everywhere would forbid it for nothing.
  *
@@ -70,18 +73,13 @@ export function claimsReservedName(path: string): boolean {
   return first === APPLICATION_ADDRESS_ROOT && second?.startsWith(RESERVED_MARKER) === true;
 }
 
-/** Every registered kind the exposed surface serves, narrowed from an erased kind. */
-export type ExposedHttpKind = "query" | "mutation" | "procedure" | "sse";
-
-export function exposedHttpKind(kind: string): ExposedHttpKind | undefined {
-  switch (kind) {
-    case "query":
-    case "mutation":
-    case "procedure":
-    case "sse":
-      return kind;
-    default:
-      return undefined;
+/** Refuse every application claim on AckerDB's reserved path namespace. */
+export function assertApplicationHttpPath(path: string, where: string): void {
+  if (isAckerDBHttpRoute(path) || claimsReservedName(path)) {
+    throw new Error(
+      `${where} claims AckerDB-owned path "${path}": AckerDB owns its built-in ` +
+        `paths and every name marked "${RESERVED_MARKER}"`,
+    );
   }
 }
 
@@ -90,7 +88,7 @@ export function exposedHttpKind(kind: string): ExposedHttpKind | undefined {
  * receives. GET exists for queries alone: it is the cacheable, curl-able read;
  * an SSE `EventSource` variant cannot carry `Authorization`, so it has none.
  */
-export const EXPOSED_HTTP_METHODS: Readonly<Record<ExposedHttpKind, readonly HttpMethod[]>> =
+export const EXPOSED_HTTP_METHODS: Readonly<Record<AnyRegistered["kind"], readonly HttpMethod[]>> =
   Object.freeze({
     query: ["GET", "POST"],
     mutation: ["POST"],

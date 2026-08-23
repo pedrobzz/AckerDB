@@ -34,7 +34,7 @@ slash:
 }
 ```
 
-**2. A protected query** in `functions/`:
+**2. A protected query** in a configured definition root:
 
 ```ts
 export const me = query({

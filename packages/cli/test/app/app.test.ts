@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { importApp } from "../../src/app/manifest.ts";
+import { importEntrypoint } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { makeFixture } from "../support/fixture.ts";
 
@@ -22,7 +22,7 @@ export default defineApp({ schema });
     });
     dirs.push(dir);
 
-    const app = await importApp(loadConfig(dir));
+    const app = await importEntrypoint(loadConfig(dir));
     expect(Object.keys(app.schema.tables)).toEqual(["records"]);
   });
 
@@ -34,8 +34,8 @@ export default defineSchema({});
 `,
     });
     dirs.push(legacyOnly);
-    await expect(importApp(loadConfig(legacyOnly))).rejects.toThrow(
-      `application manifest not found at ${join(legacyOnly, "app.ts")}`,
+    await expect(importEntrypoint(loadConfig(legacyOnly))).rejects.toThrow(
+      `application entrypoint not found at ${join(legacyOnly, "app.ts")}`,
     );
 
     const schemaOnly = makeFixture({
@@ -45,7 +45,7 @@ export default defineSchema({});
 `,
     });
     dirs.push(schemaOnly);
-    await expect(importApp(loadConfig(schemaOnly))).rejects.toThrow(
+    await expect(importEntrypoint(loadConfig(schemaOnly))).rejects.toThrow(
       "must default-export defineApp(...)",
     );
   });

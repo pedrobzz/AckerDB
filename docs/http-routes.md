@@ -7,8 +7,9 @@ HMAC over the exact wire bytes, OAuth redirect callbacks, challenge echoes —
 any endpoint whose request and response shapes, and whose URL, are dictated by
 an external party rather than by the application's own contract.
 
-An `http` route is served raw; a function with `http: true` is served through
-its contract (see [HTTP exposure](http-exposure.md)). Those are the two ways
+An `http` route is served raw; a function with an explicit
+`http: { path, openapi }` declaration is served through its contract (see
+[HTTP exposure](http-exposure.md)). Those are the two ways
 onto the HTTP surface, and each is complete for its side: pressure to add
 validators here belongs on an exposed procedure, and pressure to add raw-body
 access there belongs here.
@@ -28,7 +29,7 @@ That split is the point:
   specific pattern, extracting and decoding captures, selecting a method,
   answering `405` with a complete `Allow`, and answering an unmatched path.
   Matching is `rou3`, a radix router; AckerDB owns the published grammar and
-  translates it once at insertion (see [ADR-0033](adr/0033-one-http-route-model-and-one-registry.md)).
+  translates it once at insertion.
 - **Handlers own AckerDB policy.** Reachability, admission, authentication,
   validation, codecs, idempotency, body limits, response shaping. A route being
   registered and a route being reachable are different questions.
@@ -36,7 +37,7 @@ That split is the point:
 ## Declaring a route
 
 ```ts
-// functions/hooks.ts
+// app/hooks.ts
 import { http } from "../_generated/server.ts";
 
 export const stripe = http("/hooks/stripe", {
@@ -55,17 +56,18 @@ export const stripe = http("/hooks/stripe", {
 - **The path is explicit.** A webhook URL is a thing pasted into a provider's
   dashboard, and the provider frequently dictates its shape; a path derived
   from a module and export name cannot answer that. The export's address
-  (`api.hooks.stripe`) still names the export — for duplicate-export refusals
-  and for the loader's diagnostics — but it no longer decides the URL.
+  (`hooks.stripe`) still names the definition for collision diagnostics, but it
+  no longer decides the URL.
 - **Methods are keys, not a list.** A route serving `GET` and `POST` names both
   and writes no `request.method` switch. When two methods share an
   implementation deliberately, assign the same handler value to both keys.
-  Separate `Http` values may contribute disjoint methods to the same pattern;
-  claiming an owned path-and-method pair is a registration error.
+  One `Http` value owns the whole path. A second value claiming that path is a
+  registration error even when its methods are disjoint; shared ownership
+  would split one route's policy across unrelated factories.
 - `http` returns the opaque executable `Http` value the registry consumes.
   Application code declares only the path and handlers; routing machinery is
   not part of its interface.
-- Validation is userland: any `v` validator's own `check` runs by hand inside
+- Validation is userland: any `v` validator's own `parse` runs by hand inside
   the handler, and the response to invalid input is the handler's decision —
   Stripe's "answer 200 for unrecognized events" is expressible here and
   nowhere else.
@@ -129,11 +131,11 @@ them would cost more than it is worth:
 
 An explicit path may claim any URL AckerDB has not reserved. Reserved is:
 
-- the built-in paths (`/live`, `/ready`, `/status`, `/_ws`, `/_sse/ack`,
+- the built-in paths (`/live`, `/ready`, `/status`, `/_ws`, `/_sse/open`, `/_sse/ack`,
   `/_files/…`, `/_openapi.json`);
 - any path whose first segment carries the `_` marker;
 - any path under `/api/` whose second segment carries it, so a future built-in
-  route can never collide with an exposed function's derived path.
+  route can never collide with an application route in that namespace.
 
 Everything else is the application's, including the root and including `/api/`
 itself — a raw route may sit beside exposed functions if that is the URL a
@@ -222,9 +224,9 @@ headers, body, signal. `params` is on the context rather than on a framework
 - The kind exists only at the HTTP boundary. It has no Protocol-2 form, no
   client reference (generated APIs erase the export), and no OpenAPI
   operation — ever, not as an option.
-- Application routes enter the live table through synchronous `add` calls
-  during activation, followed by the readiness transition; no request can run
-  between those operations. Before that, and while draining, they answer
+- Application routes enter the live table through synchronous registration
+  before `Runtime.start()`, and activation later makes their handlers reachable.
+  Before activation, and while draining, they answer
   the established unavailable outcome rather than a 404: unreachable and
   absent are different statements. `/live` and `/ready` are registered before
   the port is bound and answer throughout Boot.

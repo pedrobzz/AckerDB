@@ -20,6 +20,7 @@ import {
   type SessionApplicationMessage,
   type SessionRuntimeContext,
 } from "@ackerdb/server";
+import { testRegistry } from "ackerdb-test-support/server";
 
 const schema = defineSchema({
   documents: defineTable({
@@ -242,7 +243,7 @@ describe("query prefix reactivity", () => {
     reconcile(engine);
     runtime = new Runtime({
       engine,
-      registry: new Registry(functions),
+      registry: testRegistry(functions),
       limits: PRODUCTION_LIMITS,
     });
     await runtime.start();

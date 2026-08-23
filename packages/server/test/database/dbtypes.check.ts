@@ -27,7 +27,10 @@ const schema = defineSchema({
     id: v.primaryKey(),
     email: v.string(),
     name: v.string(),
-    payload: v.union("UPayloadT", { text: v.string(), nothing: v.tag() }),
+    payload: v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("nothing") }),
+    ]),
   })
     .index(["email"], { unique: true })
     .index(["payload"]),
@@ -89,6 +92,9 @@ export async function _typecheckUsage(): Promise<void> {
   await rdb.payments.query().where((row) => row.userId.eq(1n)).count();
   await rdb.payments.query().where((row) => row.status.eq("active")).count();
 
+  const texts = await rdb.users.query().where((row) => row.payload.is("text")).collect();
+  const _payloadValue: string = texts[0]!.payload.value;
+
   // @ts-expect-error unknown enum variant
   rdb.payments.query().where((row) => row.status.eq("bogus"));
   // @ts-expect-error bigint column takes bigint, not number
@@ -97,10 +103,6 @@ export async function _typecheckUsage(): Promise<void> {
   rdb.payments.query().where((row) => row.status.gte("active"));
   // @ts-expect-error named index accessors are not part of the public API
   void rdb.payments.byUserStatusAmount;
-
-  // union variant predicates narrow the row type to the variant payload
-  const texts = await rdb.users.query().where((row) => row.payload.is("text")).collect();
-  const _payloadValue: string = texts[0]!.payload.value;
 
   // @ts-expect-error write methods do not exist on a query's ctx.db
   void rdb.payments.insert;
@@ -124,7 +126,7 @@ export async function _typecheckUsage(): Promise<void> {
   // @ts-expect-error bulk deletion accepts only primary-key bigints
   await wdb.payments.deleteMany([1]);
   const upserted = await wdb.users
-    .upsert({ email: "a@x.com" }, { name: "A", payload: { tag: "nothing", value: null } })
+    .upsert({ email: "a@x.com" }, { name: "A", payload: { type: "nothing" } })
     .returning();
   const _upsertEmail: string = upserted.email;
   // @ts-expect-error the primary key is assigned by the database
@@ -132,11 +134,11 @@ export async function _typecheckUsage(): Promise<void> {
 
   await wdb.users.upsert(
     { email: "a@x.com" },
-    { name: "A", payload: { tag: "nothing", value: null } },
+    { name: "A", payload: { type: "nothing" } },
   );
   await wdb.users.upsert({ email: "a@x.com" }, (existing) => ({
     name: existing?.name ?? "A",
-    payload: { tag: "nothing", value: null },
+    payload: { type: "nothing" },
   }));
   // @ts-expect-error upsert only exists on tables with a non-null unique index
   void wdb.payments.upsert;

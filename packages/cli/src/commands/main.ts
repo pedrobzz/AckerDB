@@ -451,7 +451,7 @@ async function dev(appDir: string): Promise<void> {
   });
   // Bun's recursive macOS watcher can start after the server reaches readiness.
   // Own the manifest separately so an immediate first edit cannot be lost.
-  const appWatcher = existsSync(config.appPath) ? watch(config.appPath, trigger) : null;
+  const appWatcher = existsSync(config.entrypoint) ? watch(config.entrypoint, trigger) : null;
 
   const shutdown = () => {
     treeWatcher.close();

@@ -7,12 +7,13 @@
 import { writeFileSync } from "node:fs";
 import {
   Registry,
+  collectDefinitions,
   openApiBytes,
   openApiDocument,
   type OpenApiDocument,
 } from "@ackerdb/server";
 import { runCodegen } from "./codegen.ts";
-import { importApp, importFunctionModules } from "./manifest.ts";
+import { importDefinitionModules } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
 export interface OpenApiExport {
@@ -30,12 +31,11 @@ export async function exportOpenApi(config: AppConfig, file: string): Promise<Op
   // Function modules import `_generated/server.ts`; generate it first exactly
   // as `acker start` does, so a fresh checkout exports in one pass.
   await runCodegen(config);
-  const app = await importApp(config);
   // The document's identity is the application's own, because it describes
   // that application's API rather than AckerDB's: its package manifest, read
   // once in the configuration.
   const document = openApiDocument(
-    new Registry(await importFunctionModules(config)),
+    Registry.from(collectDefinitions(await importDefinitionModules(config))),
     { title: config.application.name, version: config.application.version },
   );
   writeFileSync(file, openApiBytes(document));

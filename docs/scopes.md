@@ -5,8 +5,7 @@ the application, a grant on every Identity, a requirement on any function, and
 identity credentials that make agents first-class users. Access policies decide
 *whether a caller is admitted at all*; scopes decide *what an admitted caller
 may reach*. See [Authentication and authorization](authentication.md) for the
-first half and [ADR-0025](adr/0025-scopes-and-wildcards-are-the-one-authorization-vocabulary.md)
-for why the two are one system.
+first half.
 
 ## The vocabulary
 

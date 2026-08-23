@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,7 @@ import { until } from "ackerdb-test-support/async";
 // ctx.tx). Post-commit recomputation on the subscriber's behalf then runs while
 // the mutating invocation's async context is still ambient; the recompute is
 // top-level work for the subscriber and must not be mistaken for a nested
-// invocation of the mutator (whose principal differs). ADR-0002.
+// invocation of the mutator (whose principal differs).
 
 const schema = defineSchema({
   records: defineTable({
@@ -51,7 +52,6 @@ const listRecords = typedQuery({
 
 const commitRecord = typedProcedure({
   access: (ctx) => ctx.auth.kind === "user",
-  http: true,
   args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
@@ -77,7 +77,7 @@ async function fixture(): Promise<{ runtime: Runtime }> {
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry({ records: { listRecords, commitRecord } }),
+    registry: testRegistry({ records: { listRecords, commitRecord } }),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();

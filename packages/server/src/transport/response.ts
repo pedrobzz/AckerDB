@@ -9,6 +9,7 @@
  */
 import {
   ACKERDB_VERSION,
+  SSE_HTTP,
   encode,
   type ErrorMessage,
   type Outcome,
@@ -23,7 +24,7 @@ export const CORS = Object.freeze({
   // PATCH, PUT and DELETE are raw HTTP handler methods; the exposed function
   // surface serves only GET and POST.
   "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, content-disposition, authorization, idempotency-key, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range",
+  "access-control-allow-headers": `content-type, content-disposition, authorization, idempotency-key, ${SSE_HTTP.functionHeader}, range, if-match, if-none-match, if-modified-since, if-unmodified-since, if-range`,
   "access-control-expose-headers": [
     ...Object.values(SSE_STREAM_HEADERS),
     ...Object.values(RECEIPT_HEADERS),
@@ -131,7 +132,7 @@ function receiptHeaders(receipt: HttpMutationReceipt): Record<string, string> {
 }
 
 /**
- * Every path-addressed call hands its encoded value to the same response shape.
+ * Every HTTP function call hands its encoded value to the same response shape.
  * No `Cache-Control` is emitted: caching policy belongs to the operator.
  */
 export const valueResponder: RuntimeHttpResponder = ({ body, status, receipt }) => new Response(body, {

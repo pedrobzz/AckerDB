@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { v } from "../../src/validation/v.ts";
 import {
-  httpExposure,
   mutation,
   procedure,
   query,
@@ -27,17 +26,25 @@ describe("sseProcedure declaration", () => {
     ).toThrow("sse yields must be a v validator");
   });
 
-  test("rejects storage-only validators as chunk validators", () => {
-    for (const yields of [v.primaryKey(), v.scheduleAt(), v.tag()]) {
-      expect(() =>
-        sseProcedure({
-          args: {},
-          yields,
-          access: "public",
-          handler: async function* () {},
-        } as never),
-      ).toThrow(`yields: v.${yields.kind}() is not a valid chunk validator`);
-    }
+  test("accepts JSON-representable storage validators", () => {
+    const primaryKeys = sseProcedure({
+      args: {},
+      yields: v.primaryKey(),
+      access: "public",
+      handler: async function* () {
+        yield 1n;
+      },
+    });
+    const schedule = sseProcedure({
+      args: {},
+      yields: v.scheduleAt(),
+      access: "public",
+      handler: async function* () {
+        yield 1;
+      },
+    });
+    expect(v.primaryKey().encode(1n)).toBe("1");
+    expect(schedule.yields.encode(1)).toBe(1);
   });
 
   test("keeps the transport-boundary and access invariants of other kinds", () => {
@@ -49,7 +56,7 @@ describe("sseProcedure declaration", () => {
         yield { label: args.label };
       },
     });
-    expect(declared).toMatchObject({ isAckerDB: true, kind: "sse" });
+    expect(declared).toMatchObject({ kind: "sse" });
     expect(declared.yields.kind).toBe("object");
     expect(() => (declared as unknown as () => void)()).toThrow(
       "sses cannot be called in-process",
@@ -62,14 +69,13 @@ describe("sseProcedure declaration", () => {
         handler: async function* () {},
       } as never),
     ).toThrow("sse access must be public, authenticated, system, or a policy callback");
-    expect(() =>
-      sseProcedure({
-        args: { at: v.scheduleAt() },
-        yields: v.string(),
-        access: "public",
-        handler: async function* () {},
-      } as never),
-    ).toThrow("args.at: v.scheduleAt() is not a valid argument validator");
+    const scheduled = sseProcedure({
+      args: { at: v.scheduleAt(), id: v.primaryKey() },
+      yields: v.string(),
+      access: "public",
+      handler: async function* () {},
+    });
+    expect(scheduled.args.decode({ at: 1.5, id: "7" })).toEqual({ at: 1.5, id: 7n });
   });
 });
 
@@ -78,59 +84,64 @@ describe("HTTP exposure declaration", () => {
 
   test("stores every documented form and its surface documentation", () => {
     for (const [kind, register] of Object.entries(kinds)) {
+      const path = `/${kind}`;
       const exposed = register({
         args: {},
         access: "public",
-        http: true,
+        http: { path, openapi: true },
         title: `${kind} title`,
         description: `${kind} description`,
         handler: () => null,
       });
       expect(exposed).toMatchObject({
         kind,
-        http: true,
+        http: { path, openapi: true },
         title: `${kind} title`,
         description: `${kind} description`,
       });
-      expect(httpExposure(exposed.http)).toEqual({ openapi: true });
+      expect(Object.isFrozen(exposed.http)).toBe(true);
 
-      const hidden = register({ args: {}, access: "public", http: { openapi: false }, handler: () => null });
-      expect(httpExposure(hidden.http)).toEqual({ openapi: false });
-
-      const disabled = register({ args: {}, access: "public", http: false, handler: () => null });
-      expect(httpExposure(disabled.http)).toBeNull();
+      const hidden = register({
+        args: {},
+        access: "public",
+        http: { path: `/hidden-${kind}`, openapi: false },
+        handler: () => null,
+      });
+      expect(hidden.http).toEqual({ path: `/hidden-${kind}`, openapi: false });
 
       const absent = register({ args: {}, access: "public", handler: () => null });
       expect(absent.http).toBeUndefined();
-      expect(httpExposure(absent.http)).toBeNull();
     }
 
     const stream = sseProcedure({
       args: {},
       yields: v.string(),
       access: "public",
-      http: { openapi: true },
+      http: { path: "/stream", openapi: true },
       description: "stream description",
       handler: async function* () {},
     });
-    expect(httpExposure(stream.http)).toEqual({ openapi: true });
+    expect(stream.http).toEqual({ path: "/stream", openapi: true });
     expect(stream.description).toBe("stream description");
   });
 
   test("rejects every malformed exposure at registration", () => {
     for (const http of [
+      true,
+      false,
       "true",
       1,
       null,
       {},
+      { path: "/notes" },
       { openapi: "yes" },
-      { openapi: true, extra: true },
+      { path: "/notes", openapi: true, extra: true },
       { openApi: true },
     ]) {
       for (const register of Object.values(kinds)) {
         expect(() =>
           register({ args: {}, access: "public", http, handler: () => null } as never),
-        ).toThrow("http must be true, false, or { openapi: boolean }");
+        ).toThrow("http must be { path: string, openapi: boolean }");
       }
       expect(() =>
         sseProcedure({
@@ -140,7 +151,18 @@ describe("HTTP exposure declaration", () => {
           http,
           handler: async function* () {},
         } as never),
-      ).toThrow("http must be true, false, or { openapi: boolean }");
+      ).toThrow("http must be { path: string, openapi: boolean }");
+    }
+
+    for (const path of ["notes", "/notes/:id", "/notes/*", "/_internal"]) {
+      expect(() =>
+        query({
+          args: {},
+          access: "public",
+          http: { path, openapi: true },
+          handler: () => null,
+        }),
+      ).toThrow();
     }
 
     for (const field of ["description", "title"] as const) {

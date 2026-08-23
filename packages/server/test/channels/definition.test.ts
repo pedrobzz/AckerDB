@@ -14,7 +14,6 @@ describe("channel declarations", () => {
       },
     });
 
-    expect(declared.isAckerDBChannel).toBe(true);
     expect(declared.kind).toBe("channel");
     expect(declared.room?.kind).toBe("string");
     expect(Object.isFrozen(declared)).toBe(true);

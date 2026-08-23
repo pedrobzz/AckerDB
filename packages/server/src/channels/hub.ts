@@ -20,7 +20,6 @@ import { AckerDBError } from "../shared/errors.ts";
 import { positiveSafeInteger } from "../shared/numbers.ts";
 import { settleOnAbort } from "../runtime/abort.ts";
 import type { Validator } from "../validation/validator.ts";
-import { compileShape, type ObjectShape } from "../validation/composites.ts";
 import {
   channelAuthorizationResult,
   type AnyRegisteredChannel,
@@ -78,8 +77,6 @@ interface Member {
   tail: Promise<void>;
 }
 
-type ArgsDecoder = (value: unknown, path: string) => unknown;
-
 const EMPTY_ROOM = Symbol("ackerdb.channel.noRoom");
 const DEFAULT_DISCONNECT_TIMEOUT_MS = 5_000;
 
@@ -110,7 +107,6 @@ export class ChannelHub {
   private readonly registry: Registry;
   private readonly bySession = new Map<ChannelSessionAdapter, Map<number, Member>>();
   private readonly audiences = new Map<string, Set<Member>>();
-  private readonly argsDecoders = new WeakMap<AnyRegisteredChannel, ArgsDecoder>();
   private readonly observeDisconnectTimeout?: () => void;
   private members = 0;
 
@@ -250,7 +246,7 @@ export class ChannelHub {
     if (declaration === undefined || handler === undefined) {
       throw new AckerDBError("validation", `unknown client channel event "${event}"`);
     }
-    const validated = deepFreeze(declaration.check(payload, `event.${event}`));
+    const validated = deepFreeze(declaration.parse(payload, `event.${event}`));
     return this.enqueue(member, () =>
       this.invoke(member, requestBytes, (ctx) => handler(ctx as never, validated))
     );
@@ -442,7 +438,7 @@ export class ChannelHub {
     if (!hasRoom) {
       throw new AckerDBError("validation", "roomed channel requires a room");
     }
-    return deepFreeze(definition.room.check(rawRoom, "room"));
+    return deepFreeze(definition.room.parse(rawRoom, "room"));
   }
 
   private sendMember(
@@ -485,14 +481,7 @@ export class ChannelHub {
     definition: AnyRegisteredChannel,
     rawArgs: unknown,
   ): unknown {
-    let decode = this.argsDecoders.get(definition);
-    if (decode === undefined) {
-      decode = compileShape(
-        definition.args as ObjectShape,
-      ) as ArgsDecoder;
-      this.argsDecoders.set(definition, decode);
-    }
-    return deepFreeze(decode(rawArgs === undefined ? {} : rawArgs, "args"));
+    return deepFreeze(definition.args.parse(rawArgs === undefined ? {} : rawArgs, "args"));
   }
 
   private validateServerEvent(
@@ -506,7 +495,7 @@ export class ChannelHub {
     if (declaration === undefined) {
       throw new AckerDBError("validation", `unknown server channel event "${event}"`);
     }
-    return deepFreeze(declaration.check(payload, `event.${event}`));
+    return deepFreeze(declaration.parse(payload, `event.${event}`));
   }
 
   private async publishAudience(

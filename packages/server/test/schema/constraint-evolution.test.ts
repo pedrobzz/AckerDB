@@ -84,26 +84,26 @@ describe("constraint-aware schema diff", () => {
   test("recurses through composite descriptors without treating field names as constraint slots", () => {
     const before = v.object({
       min: v.string(),
-      payload: v.array(v.union("Payload", {
-        text: v.object({ regex: v.string(), score: v.int() }),
-        count: v.bigint(),
-      })),
+      payload: v.array(v.discriminatedUnion("type", [
+        v.object({ type: v.literal("text"), regex: v.string(), score: v.int() }),
+        v.object({ type: v.literal("count"), value: v.bigint() }),
+      ])),
     });
     const tightened = v.object({
       min: v.string(),
-      payload: v.array(v.union("Payload", {
-        text: v.object({ regex: v.string(), score: v.int().min(0) }),
-        count: v.bigint(),
-      })),
+      payload: v.array(v.discriminatedUnion("type", [
+        v.object({ type: v.literal("text"), regex: v.string(), score: v.int().min(0) }),
+        v.object({ type: v.literal("count"), value: v.bigint() }),
+      ])),
     });
     expect(constraintDirection(before.descriptor(), tightened.descriptor())).toBe("tighten");
 
     const changedField = v.object({
       min: v.int(),
-      payload: v.array(v.union("Payload", {
-        text: v.object({ regex: v.string(), score: v.int() }),
-        count: v.bigint(),
-      })),
+      payload: v.array(v.discriminatedUnion("type", [
+        v.object({ type: v.literal("text"), regex: v.string(), score: v.int() }),
+        v.object({ type: v.literal("count"), value: v.bigint() }),
+      ])),
     });
     expect(constraintDirection(before.descriptor(), changedField.descriptor())).toBe("incompatible");
   });

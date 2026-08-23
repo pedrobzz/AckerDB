@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,8 +8,6 @@ import { AckerDBClient, type AckerDBWebSocket, type QueryRef } from "@ackerdb/cl
 import {
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -20,7 +19,6 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AckerDBProvider, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -42,7 +40,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-query-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     messages: {
       list: query({
         access: "public",
@@ -55,15 +53,16 @@ async function createApp(): Promise<App> {
         handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert({ body: args.body }),
       }),
     },
+  };
+  const running = await startTestServer({
+    engine,
+    definitions: testDefinitions(modules),
+    limits: PRODUCTION_LIMITS,
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  await runtime.start();
-  const server = listen(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
+    base: running.base,
     async close() {
-      await server.drain();
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

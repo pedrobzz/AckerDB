@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import type {
   VerifiedCredential,
 } from "../../src/auth/credentials.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { LocalFileStore } from "../../src/files/store/local.ts";
@@ -22,10 +22,11 @@ import type {
   FileStoreRange,
 } from "../../src/files/store/contract.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
+import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { v } from "../../src/validation/v.ts";
-import { listen } from "ackerdb-test-support/listen";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import { FILE_UPLOADS_TABLE } from "../../src/files/tables.ts";
 
 class BlockingDeleteStore implements FileStore {
@@ -180,7 +181,7 @@ const functions = {
   files: {
     createUpload: mutation({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/files/createUpload", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.files.createUploadSession({ maxBytes: 64 }),
     }),
@@ -221,7 +222,7 @@ describe("File HTTP flow", () => {
   let directory: string;
   let engine: Engine;
   let runtime: Runtime;
-  let server: ReturnType<typeof listen>;
+  let server: AckerDBServer;
   let base: string;
   let fileStore: BlockingDeleteStore;
 
@@ -233,9 +234,10 @@ describe("File HTTP flow", () => {
     }), join(directory, "data.db"));
     reconcile(engine);
     fileStore = new BlockingDeleteStore(new LocalFileStore({ root: join(directory, "files") }));
+    server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
     runtime = new Runtime({
       engine,
-      registry: new Registry(functions),
+      registry: server.registerDefinitions(testDefinitions(functions)),
       verifier: new TestVerifier(),
       files: {
         publicUrl: "https://files.example.test/",
@@ -243,7 +245,7 @@ describe("File HTTP flow", () => {
       },
     });
     await runtime.start();
-    server = listen(runtime);
+    server.activate(runtime);
     base = `http://127.0.0.1:${server.port}`;
   });
 

@@ -9,12 +9,10 @@ import {
 } from "@ackerdb/server";
 import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { checkDescriptor } from "../../src/schema/descriptor-kinds.ts";
-import { validatorBaseChecksForTest } from "../../src/validation/primitives.ts";
-import { checkShape } from "../../src/validation/composites.ts";
 import { withFrameworkTables } from "../../src/database/framework-schema.ts";
 
-const check = <T>(validator: { check(value: unknown, path: string): T }, value: unknown) =>
-  validator.check(value, "value");
+const check = <T>(validator: { parse(value: unknown, path: string): T }, value: unknown) =>
+  validator.parse(value, "value");
 
 test("only approved validator families expose constraint methods", () => {
   expect(v.string()).toMatchObject({ min: expect.any(Function), max: expect.any(Function), regex: expect.any(Function) });
@@ -29,11 +27,13 @@ test("only approved validator families expose constraint methods", () => {
     v.object({ value: v.string() }),
     v.enum("Role", ["admin"]),
     v.literal("x"),
-    v.union("Payload", { text: v.string() }),
+    v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text") }),
+      v.object({ type: v.literal("none") }),
+    ]),
     v.jsonb<unknown>(),
     v.primaryKey(),
     v.scheduleAt(),
-    v.tag(),
   ]) {
     expect("min" in validator).toBe(false);
     expect("max" in validator).toBe(false);
@@ -293,26 +293,6 @@ describe("constraint Standard JSON Schema projection", () => {
   });
 });
 
-test("unconstrained validators retain their direct base check", () => {
-  const plainString = v.string();
-  const constrainedString = plainString.min(0);
-  expect(Object.keys(plainString)).toEqual(["kind", "check", "tsType", "descriptor"]);
-  expect(Object.hasOwn(plainString, "min")).toBe(false);
-  expect(Object.getPrototypeOf(constrainedString)).toBe(Object.getPrototypeOf(plainString));
-  expect(v.string().check).toBe(validatorBaseChecksForTest.string);
-  expect(v.int().check).toBe(validatorBaseChecksForTest.int);
-  expect(v.float().check).toBe(validatorBaseChecksForTest.float);
-  expect(v.bigint().check).toBe(validatorBaseChecksForTest.bigint);
-  expect(constrainedString.check).not.toBe(validatorBaseChecksForTest.string);
-  expect(v.int().max(0).check).not.toBe(validatorBaseChecksForTest.int);
-  expect(v.float().min(0).check).not.toBe(validatorBaseChecksForTest.float);
-  expect(v.bigint().max(0n).check).not.toBe(validatorBaseChecksForTest.bigint);
-
-  const plainArray = v.array(v.string());
-  expect(plainArray.check.toString()).not.toContain("checkArrayConstraints");
-  expect(plainArray.min(0).check.toString()).toContain("checkArrayConstraints");
-});
-
 test("object validators own one immutable shape across their public contract", () => {
   const source: ObjectShape = { name: v.string() };
   const owned = v.object(source);
@@ -321,31 +301,34 @@ test("object validators own one immutable shape across their public contract", (
   source.name = v.int();
   source.extra = v.boolean();
 
-  expect(owned.check({ name: "Ada" }, "value")).toEqual({ name: "Ada" });
-  expect(() => owned.check({ name: "Ada", extra: true }, "value")).toThrow(
+  expect(owned.parse({ name: "Ada" }, "value")).toEqual({ name: "Ada" });
+  expect(() => owned.parse({ name: "Ada", extra: true }, "value")).toThrow(
     'unknown field "extra"',
   );
   expect(owned.tsType()).toBe("{ name: string }");
   expect(owned.descriptor()).toEqual({ k: "object", shape: { name: { k: "string" } } });
 
   const thisAware = v.string();
-  const baseCheck = thisAware.check;
-  thisAware.check = function (this: typeof thisAware, value, path) {
-    if (this !== thisAware) throw new Error("field check received the wrong validator receiver");
-    return baseCheck(value, path);
+  const baseParse = thisAware.parse;
+  thisAware.parse = function (this: typeof thisAware, value, path) {
+    if (this !== thisAware) throw new Error("field parser received the wrong validator receiver");
+    return baseParse(value, path);
   };
-  expect(v.object({ value: thisAware }).check({ value: "ok" }, "value"))
+  expect(v.object({ value: thisAware }).parse({ value: "ok" }, "value"))
     .toEqual({ value: "ok" });
 
-  expect(() => checkShape({}, { toString: "declared by Object.prototype" }, "value"))
+  expect(() => v.object({}).parse({ toString: "declared by Object.prototype" }, "value"))
     .toThrow('unknown field "toString"');
 });
 
-test("live and descriptor validation reject prototype-named fields and variants", () => {
-  expect(() => v.union("Payload", { text: v.string() }).check(
-    { tag: "toString", value: "payload" },
+test("live and descriptor validation reject inherited discriminator values", () => {
+  expect(() => v.discriminatedUnion("type", [
+    v.object({ type: v.literal("text") }),
+    v.object({ type: v.literal("image") }),
+  ]).parse(
+    { type: "toString" },
     "value",
-  )).toThrow('value.tag: expected one of "text"');
+  )).toThrow("value.type: expected one of");
 
   expect(() => checkDescriptor(
     { k: "object", shape: {} },
@@ -354,16 +337,23 @@ test("live and descriptor validation reject prototype-named fields and variants"
   )).toThrow('unknown field "toString"');
 
   expect(() => checkDescriptor(
-    { k: "union", name: "Payload", members: { text: { k: "string" } } },
-    { tag: "toString", value: "payload" },
+    {
+      k: "discriminatedUnion",
+      discriminator: "type",
+      members: {
+        text: { k: "object", shape: { type: { k: "literal", v: "text" } } },
+        image: { k: "object", shape: { type: { k: "literal", v: "image" } } },
+      },
+    },
+    { type: "toString" },
     "value",
-  )).toThrow('value.tag: expected one of "text"');
+  )).toThrow("value.type: unknown discriminator value");
 });
 
-test("declared prototype-named fields and variants remain own through every validator projection", () => {
+test("declared prototype-named fields remain own through every validator projection", () => {
   const object = v.object({ ["__proto__"]: v.string() });
   const input = JSON.parse('{"__proto__":"kept"}');
-  const live = object.check(input, "value") as Record<string, unknown>;
+  const live = object.parse(input, "value") as Record<string, unknown>;
   const descriptor = object.descriptor();
   const stored = checkDescriptor(descriptor, input, "value") as Record<string, unknown>;
 
@@ -374,16 +364,14 @@ test("declared prototype-named fields and variants remain own through every vali
   expect(Object.hasOwn(stored, "__proto__")).toBe(true);
   expect(stored["__proto__"]).toBe("kept");
 
-  const union = v.union("PrototypeVariant", { ["__proto__"]: v.string() });
-  expect(Object.hasOwn(union.union, "__proto__")).toBe(true);
-  expect(union.union.__proto__("payload")).toEqual({
-    tag: "__proto__",
-    value: "payload",
-  });
-  expect(Object.hasOwn(union.descriptor()["members"] as object, "__proto__")).toBe(true);
+  const union = v.discriminatedUnion("__proto__", [
+    v.object({ ["__proto__"]: v.literal("payload") }),
+    v.object({ ["__proto__"]: v.literal("other") }),
+  ]);
+  const unionInput = JSON.parse('{"__proto__":"payload"}');
   expect(checkDescriptor(
     union.descriptor(),
-    { tag: "__proto__", value: "payload" },
+    unionInput,
     "value",
-  )).toEqual({ tag: "__proto__", value: "payload" });
+  )).toEqual(unionInput);
 });

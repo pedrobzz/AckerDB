@@ -4,6 +4,7 @@
  * while the Runtime is still live, and only then close system-run admission.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,6 @@ import { Engine } from "../../src/database/engine.ts";
 import { mutation, procedure } from "../../src/app/functions.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
@@ -35,13 +35,13 @@ const modules = {
   notes: {
     add: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/add", openapi: true },
       args: { body: v.string() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.notes.insert(args),
     }),
     block: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/block", openapi: true },
       args: {},
       handler: async () => {
         blockedStarted?.resolve();
@@ -63,7 +63,11 @@ beforeEach(async () => {
   engine = new Engine(schema, join(dir, "data.db"));
   await reconcile(engine, []);
   server = new AckerDBServer({ limits, port: 0 });
-  runtime = new Runtime({ engine, registry: new Registry(modules), limits });
+  runtime = new Runtime({
+    engine,
+    registry: server.registerDefinitions(testDefinitions(modules)),
+    limits,
+  });
   await runtime.start();
   server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;

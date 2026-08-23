@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,8 +16,6 @@ import {
 import {
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -29,7 +28,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
 import { within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -67,7 +65,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-mutation-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     messages: {
       list: query({
         access: "public",
@@ -84,10 +82,13 @@ async function createApp(): Promise<App> {
         handler: async (ctx: Ctx, args: Ctx) => await ctx.db.messages.insert(args),
       }),
     },
+  };
+  const running = await startTestServer({
+    engine,
+    definitions: testDefinitions(modules),
+    limits: PRODUCTION_LIMITS,
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  await runtime.start();
-  const server = listen(runtime);
+  const { server } = running;
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,
@@ -103,8 +104,7 @@ async function createApp(): Promise<App> {
       observer.close();
       proxy.assertBytePreserving();
       await proxy.close();
-      await server.drain();
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
       await assertTcpPortReleased(proxyPort);
       await assertTcpPortReleased(serverPort);

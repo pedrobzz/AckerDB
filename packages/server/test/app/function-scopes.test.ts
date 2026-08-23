@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import type { Identity } from "@ackerdb/core";
 import { defineApp } from "../../src/app/definition.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
@@ -119,7 +120,7 @@ describe("function scope declarations", () => {
 
 describe("registry vocabulary cross-check", () => {
   function registryWith(fn: unknown) {
-    return new Registry({ notes: { list: fn as never } });
+    return testRegistry({ notes: { list: fn as never } });
   }
   const scoped = query({
     args: {},

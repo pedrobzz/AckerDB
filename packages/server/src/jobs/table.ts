@@ -80,10 +80,10 @@ export function buildJobsTable(): TableDef {
      */
     nextRunTrigger: v.string().nullable(),
     /**
-     * The step journal (ADR-0022): completed steps' identities and recorded
-     * results, replayed on resume so a run re-executes only unrecorded work. It
-     * belongs to the Job because it outlives one run — a retry resumes it, and
-     * only a force run again clears it. Null reads as an empty journal.
+     * The step journal holds completed steps' identities and recorded results,
+     * replayed on resume so a run re-executes only unrecorded work. It belongs
+     * to the Job because it outlives one run — a retry resumes it, and only a
+     * force run again clears it. Null reads as an empty journal.
      */
     stepsJson: v.string().nullable(),
     enqueuedAt: v.float(),

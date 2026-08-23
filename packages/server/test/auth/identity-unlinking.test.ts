@@ -20,6 +20,7 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeHttpResponse } from "../../src/runtime/contracts/requests.ts";
@@ -74,14 +75,14 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/link", openapi: true },
       args: { rawBearerToken: v.string() },
       handler: (ctx: Ctx, args: { rawBearerToken: string }) =>
         ctx.linkAccount(args.rawBearerToken),
     }),
     unlink: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/unlink", openapi: true },
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
@@ -90,7 +91,7 @@ const functions = {
     }),
     unlinkThenFail: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/unlinkThenFail", openapi: true },
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
@@ -99,7 +100,7 @@ const functions = {
     }),
     unlinkAndWait: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/unlinkAndWait", openapi: true },
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         const stall = unlinkStall;
@@ -114,7 +115,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/create", openapi: true },
       args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -126,7 +127,7 @@ const functions = {
     }),
     current: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/current", openapi: true },
       args: {},
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -211,7 +212,7 @@ async function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unl
   const verifier = new UnlinkVerifier();
   const runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: testRegistry(functions),
     verifier,
     now: () => NOW,
   });

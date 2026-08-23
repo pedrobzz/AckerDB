@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anyApi, EVENTS_ADDRESS_PREFIX, getRef, httpPathForAddress } from "@ackerdb/core";
+import { anyApi, EVENTS_ADDRESS_PREFIX, getRef } from "@ackerdb/core";
 
 describe("function references", () => {
   test("anyApi builds dot-joined addresses under the fixed application root", () => {
@@ -11,10 +11,6 @@ describe("function references", () => {
 
   test("a reference carries only its fixed-root address", () => {
     expect(Object.keys(anyApi.messages.list)).toEqual(["$ref"]);
-  });
-
-  test("an exposed function's URL is its address, segment for segment", () => {
-    expect(httpPathForAddress(anyApi.messages.list.$ref)).toBe("/api/messages/list");
   });
 
   test("getRef accepts references and strings", () => {

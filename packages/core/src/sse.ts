@@ -13,6 +13,13 @@ const utf8 = new TextEncoder();
 // version's JSON form is quoted once here instead of on every chunk.
 const VERSION_JSON = JSON.stringify(ACKERDB_VERSION);
 
+/** Framework-owned HTTP transport used by typed SSE clients. */
+export const SSE_HTTP = Object.freeze({
+  open: "/_sse/open",
+  acknowledge: "/_sse/ack",
+  functionHeader: "x-ackerdb-function",
+});
+
 /** Encode one exposed-JSON application value in its Protocol-2 SSE envelope. */
 export function encodeSseChunk(
   seq: number,

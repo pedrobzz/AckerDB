@@ -40,13 +40,13 @@ export const crashBeforeCommit = mutation({
       ...args,
       body: \`\${args.body}:first\`,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     await ctx.db.messages.insert({
       ...args,
       body: \`\${args.body}:second\`,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     if (!existsSync(crashSentinel)) {
       writeFileSync(crashSentinel, "SQL work completed before SIGKILL", { flag: "wx" });
@@ -62,15 +62,16 @@ const COMMIT_FAULT_SERVER = `
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
-  Registry,
+  PRODUCTION_LIMITS,
   Runtime,
+  collectDefinitions,
   reconcile,
   type RuntimeHooks,
 } from "@ackerdb/server";
-import { listen } from "ackerdb-test-support/listen";
 import app from "./app.ts";
-import * as messages from "./functions/messages.ts";
+import * as messages from "./app/messages.ts";
 
 const port = Number(process.argv[2]);
 const fault = process.env.ACKERDB_COMMIT_FAULT;
@@ -93,13 +94,17 @@ const hooks: RuntimeHooks | undefined = fault !== "wait" && fault !== "throw" ? 
     if (fault === "throw") throw new Error("injected post-commit hook failure");
   },
 };
+const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port });
 const runtime = new Runtime({
   engine,
-  registry: new Registry({ messages }),
+  registry: server.registerDefinitions(collectDefinitions([
+    { name: "messages", exports: messages, origin: import.meta.url },
+  ])),
   ...(hooks === undefined ? {} : { hooks }),
+  limits: PRODUCTION_LIMITS,
 });
 await runtime.start();
-const server = listen(runtime, { port });
+server.activate(runtime);
 let draining: Promise<void> | undefined;
 const drain = () => draining ??= server.drain().then(
   () => engine.close("clean"),
@@ -308,7 +313,7 @@ function storedMutation(
 async function makeCommitFaultFixture(port: number): Promise<string> {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
-    "functions/messages.ts": FIXTURE_MESSAGES,
+    "app/messages.ts": FIXTURE_MESSAGES,
     "commit-fault-server.ts": COMMIT_FAULT_SERVER,
     ".ackerdb.config.json": JSON.stringify({ port }),
   });
@@ -323,8 +328,8 @@ describe("process crash replay", () => {
     await assertNoServer(port);
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
-      "functions/messages.ts": FIXTURE_MESSAGES,
-      "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
+      "app/messages.ts": FIXTURE_MESSAGES,
+      "app/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);

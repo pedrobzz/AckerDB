@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ACKERDB_VERSION,
+  SSE_HTTP,
   anyApi,
   decode,
   encode,
@@ -109,16 +110,10 @@ function sseEvent(frame: unknown): string {
   return `data: ${encode(frame)}\n\n`;
 }
 
-/** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
-const SSE_ACK_PATH = "/_sse/ack";
-
-/** The canonical address maps segment for segment onto its HTTP path. */
-function ssePath(address: string): string {
-  return `/${address.replaceAll(".", "/")}`;
-}
+const SSE_ACK_PATH = SSE_HTTP.acknowledge;
 
 function isSseCall(url: string): boolean {
-  return !url.endsWith(SSE_ACK_PATH);
+  return url.endsWith(SSE_HTTP.open);
 }
 
 function sseResponse(
@@ -901,11 +896,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const acknowledgmentAuthorizations: Array<string | null> = [];
     const acknowledgmentContentTypes: Array<string | null> = [];
     let streamAuthorization: string | null = null;
+    let streamAddress: string | null = null;
     let streamUrl: string | undefined;
     let streamBody: unknown;
     const fetcher: AckerDBClientOptions["fetch"] = async (url, init) => {
       if (isSseCall(url)) {
-        streamAuthorization = new Headers(init?.headers).get("authorization");
+        const headers = new Headers(init?.headers);
+        streamAuthorization = headers.get("authorization");
+        streamAddress = headers.get(SSE_HTTP.functionHeader);
         streamUrl = url;
         streamBody = decode(String(init?.body));
         return sseResponse([
@@ -929,8 +927,9 @@ describe("AckerDBClient protocol 2 ownership", () => {
     })[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: { delta: "a" }, done: false });
-    // The address is the path and the body is the args object alone.
-    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.stream.ordered")}`);
+    // The route is framework-owned; the address and args stay independent.
+    expect(streamUrl).toBe(`http://ackerdb.test${SSE_HTTP.open}`);
+    expect(streamAddress as string | null).toBe("api.stream.ordered");
     expect(streamBody).toEqual({ topic: "weather" });
     expect(acknowledgments).toEqual([]);
     let secondSettled = false;
@@ -1229,21 +1228,24 @@ describe("AckerDBClient protocol 2 ownership", () => {
     framed.client.close();
   });
 
-  test("derives a stream URL directly from its fixed-root reference address", async () => {
+  test("sends typed and hand-written addresses through the framework SSE route", async () => {
     let streamUrl = "";
+    const streamAddresses: Array<string | null> = [];
     const { client } = createHarness({
-      fetch: async (url) => {
+      fetch: async (url, init) => {
         streamUrl = url;
+        streamAddresses.push(new Headers(init?.headers).get(SSE_HTTP.functionHeader));
         return sseResponse([{ v: ACKERDB_VERSION, t: "sse_chunk", seq: 1, proof: "p-1", value: "chunk" }]);
       },
     });
     const ref = anyApi.ops.tail as SseRef<Record<string, never>, string>;
     await client.sse(ref, {})[Symbol.asyncIterator]().next();
-    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.ops.tail")}`);
+    expect(streamUrl).toBe(`http://ackerdb.test${SSE_HTTP.open}`);
 
     // A hand-written address is the same one value.
     await client.sse("api.ops.tail", {})[Symbol.asyncIterator]().next();
-    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("api.ops.tail")}`);
+    expect(streamUrl).toBe(`http://ackerdb.test${SSE_HTTP.open}`);
+    expect(streamAddresses).toEqual(["api.ops.tail", "api.ops.tail"]);
     client.close();
   });
 

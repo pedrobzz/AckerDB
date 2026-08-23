@@ -10,19 +10,20 @@
  * through user-authored functions over the jobs tables.
  */
 import type { FunctionReference, Result } from "@ackerdb/core";
-import type { LoadedModules } from "../app/registry.ts";
-import { brand, hasBrand } from "../shared/identity.ts";
 import type { Schema } from "../schema/definition.ts";
 import type { DbReader } from "../database/query/types.ts";
-import type { ObjectShape, InferShape, InferInputShape } from "../validation/composites.ts";
+import {
+  object,
+  type ObjectShape,
+  type ObjectValidator,
+  type InferShape,
+  type InferInputShape,
+} from "../validation/composites.ts";
 import type { Expand } from "../validation/validator.ts";
-import { validateArgsShape } from "../validation/declarations.ts";
 import type { MutationCtx, ProcedureCtx, FunctionResult } from "../app/functions.ts";
 import type { AnyJobsNamespace } from "./api.ts";
 import type { SystemPrincipal } from "../auth/credentials.ts";
 import { cronNext, parseCronExpression } from "./cron.ts";
-
-const JOB_IDENTITY = Symbol.for("@ackerdb/server/Job/v1");
 
 /** A Job's own state. `retrying` is non-terminal: its next run is scheduled. */
 export const JOB_STATES = [
@@ -78,7 +79,7 @@ export interface JobDedupe {
   readonly failed?: JobWindow;
 }
 
-/** The transaction powers of a mutation-kind job handler. */
+/** The transaction powers of a mutation-mode Job handler. */
 export type JobTxCtx<
   S extends Schema = Schema,
   TxJobs extends object = AnyJobsNamespace,
@@ -108,11 +109,10 @@ export type JobStepQueryCtx<
 };
 
 /**
- * Durable steps (ADR-0022): named, journaled units of work inside a
- * procedure-kind job handler. A completed step's recorded result stands in
- * for re-execution when the run resumes. The name is a contract — same name,
- * same meaning — and everything effectful in a step-using handler belongs
- * inside a step.
+ * Durable steps are named, journaled units of work inside a procedure-mode Job
+ * handler. A completed step's recorded result stands in for re-execution when
+ * the run resumes. The name is a contract — same name, same meaning — and
+ * everything effectful in a step-using handler belongs inside a step.
  */
 export interface JobStep<
   S extends Schema = Schema,
@@ -149,7 +149,7 @@ export interface JobStep<
   sleep(name: string, durationMs: number): Promise<void>;
 }
 
-/** The powers of a procedure-kind job handler: external work plus explicit tx. */
+/** The powers of a procedure-mode Job handler: external work plus explicit tx. */
 export type JobCtx<
   S extends Schema = Schema,
   Jobs extends object = AnyJobsNamespace,
@@ -185,14 +185,14 @@ export interface JobBuilder<
       JobTxCtx<S, TxJobs>,
       R
     >,
-  ): Job<A, Awaited<R>>;
+  ): JobDefinition<A, Awaited<R>>;
   <A extends ObjectShape, R>(
     definition: ProcedureJobDefinition<
       A,
       JobCtx<S, Jobs, TxJobs>,
       R
     >,
-  ): Job<A, Awaited<R>>;
+  ): JobDefinition<A, Awaited<R>>;
 }
 
 interface JobDefinitionBase<A extends ObjectShape> {
@@ -216,7 +216,7 @@ export interface ProcedureJobDefinition<
   Ctx,
   R,
 > extends JobDefinitionBase<A> {
-  readonly kind?: "procedure";
+  readonly mode?: "procedure";
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => R | Promise<R>;
 }
 
@@ -225,14 +225,15 @@ export interface MutationJobDefinition<
   TxCtx,
   R,
 > extends JobDefinitionBase<A> {
-  readonly kind: "mutation";
+  readonly mode: "mutation";
   readonly handler: (tx: TxCtx, args: Expand<InferShape<A>>) => R | Promise<R>;
 }
 
-/** One registered job: normalized policy plus the handler, frozen. */
-export interface Job<A extends ObjectShape = ObjectShape, R = unknown> {
-  readonly kind: "procedure" | "mutation";
-  readonly args: A;
+/** One Job definition: normalized policy plus the handler, frozen. */
+export interface JobDefinition<A extends ObjectShape = ObjectShape, R = unknown> {
+  readonly kind: "job";
+  readonly mode: "procedure" | "mutation";
+  readonly args: ObjectValidator<A>;
   readonly concurrency: number;
   readonly key: ((args: never) => string | number | bigint) | null;
   readonly retry: JobRetry;
@@ -245,9 +246,9 @@ export interface Job<A extends ObjectShape = ObjectShape, R = unknown> {
   readonly _retType?: R;
 }
 
-// Job registries deliberately erase each job's concrete context and args.
+// Job registries deliberately erase each definition's concrete context and args.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyJob = Job<any, any>;
+export type AnyJobDefinition = JobDefinition<any, any>;
 
 export const DEFAULT_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -318,7 +319,7 @@ function normalizeRepeat(repeat: JobRepeat | JobRepeatConfig | undefined): JobRe
 
 function normalizeDedupe(
   dedupe: JobDedupe | "inflight" | undefined,
-): Job["dedupe"] {
+): JobDefinition["dedupe"] {
   if (dedupe === undefined) return null;
   if (dedupe === "inflight") return Object.freeze({ completed: 0, failed: 0 });
   if (typeof dedupe !== "object" || dedupe === null) {
@@ -341,15 +342,14 @@ export function job<
   R,
 >(
   definition: ProcedureJobDefinition<A, Ctx, R> | MutationJobDefinition<A, TxCtx, R>,
-): Job<A, R> {
+): JobDefinition<A, R> {
   if (typeof definition !== "object" || definition === null || Array.isArray(definition)) {
     throw new TypeError("job definition must be a plain object");
   }
-  const kind = definition.kind ?? "procedure";
-  if (kind !== "procedure" && kind !== "mutation") {
-    throw new TypeError('job kind must be "procedure" or "mutation"');
+  const mode = definition.mode ?? "procedure";
+  if (mode !== "procedure" && mode !== "mutation") {
+    throw new TypeError('job mode must be "procedure" or "mutation"');
   }
-  validateArgsShape(definition.args);
   if (typeof definition.handler !== "function") {
     throw new TypeError("job handler must be a function");
   }
@@ -363,65 +363,19 @@ export function job<
   const retention = definition.retention === undefined
     ? DEFAULT_JOB_RETENTION_MS
     : normalizeWindow(definition.retention, "job retention");
+  const args = object(definition.args);
 
-  const declared: Job<A, R> = {
-    kind,
-    args: definition.args,
+  const declared: JobDefinition<A, R> = {
+    kind: "job",
+    mode,
+    args,
     concurrency,
-    key: (definition.key as Job["key"]) ?? null,
+    key: (definition.key as JobDefinition["key"]) ?? null,
     retry: normalizeRetry(definition.retry),
     repeat: normalizeRepeat(definition.repeat),
     dedupe: normalizeDedupe(definition.dedupe),
     retention,
-    handler: definition.handler as Job["handler"],
+    handler: definition.handler as JobDefinition["handler"],
   };
-  brand(declared, JOB_IDENTITY);
   return Object.freeze(declared);
-}
-
-/** True for a job created by any compatible @ackerdb/server instance. */
-export function isJob(value: unknown): value is AnyJob {
-  return hasBrand(value, JOB_IDENTITY);
-}
-
-/** One job and the exact name rows and ctx.jobs report. */
-export interface DeclaredJob {
-  readonly name: string;
-  readonly job: AnyJob;
-}
-
-/**
- * Resolve job modules to declarations, mirroring the function
- * registry: `jobs/emails.ts` exporting `sendReceipt` is `emails.sendReceipt`,
- * in deterministic module-then-export order. Helpers are ignored; an unbranded
- * export *shaped* like a job is the residue of forgetting `job(...)` and fails
- * loudly instead of never running.
- */
-export function declareJobs(modules: LoadedModules): DeclaredJob[] {
-  const declared: DeclaredJob[] = [];
-  const names = new Set<string>();
-  for (const [modulePath, exports] of Object.entries(modules).sort(([a], [b]) =>
-    a.localeCompare(b))) {
-    for (const [exportName, value] of Object.entries(exports).sort(([a], [b]) =>
-      a.localeCompare(b))) {
-      const name = `${modulePath}.${exportName}`;
-      if (isJob(value)) {
-        if (names.has(name)) throw new TypeError(`duplicate job name "${name}"`);
-        names.add(name);
-        declared.push({ name, job: value });
-        continue;
-      }
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        typeof (value as { readonly handler?: unknown }).handler === "function" &&
-        Object.hasOwn(value, "args")
-      ) {
-        throw new TypeError(
-          `job module export "${name}" has a handler but was not created with job(...)`,
-        );
-      }
-    }
-  }
-  return declared;
 }

@@ -25,7 +25,7 @@ import { mutation, procedure, query, sseProcedure } from "../../src/app/function
 import { channel } from "../../src/channels/definition.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type {
@@ -33,7 +33,7 @@ import type {
   RuntimeSseResponse,
 } from "../../src/runtime/contracts/requests.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { declareJobs, job } from "../../src/jobs/definition.ts";
+import { job } from "../../src/jobs/definition.ts";
 import { JOB_RUNS_TABLE, JOBS_TABLE } from "../../src/jobs/table.ts";
 import type {
   RuntimePublication,
@@ -122,10 +122,10 @@ const schema = defineSchema({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
 
-const declaredJobs = () => declareJobs({
-  reminders: {
+const jobModules = () => ({
+  scheduled: {
     fire: job({
-      kind: "mutation",
+      mode: "mutation",
       args: { message: v.string(), attempt: v.int() },
       handler: async (tx: Ctx, args: Ctx) => {
         scheduledAttempts++;
@@ -159,7 +159,6 @@ const functions = {
   messages: {
     list: query({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.query().where((row: Ctx) => row.channelId.eq(args.channelId)).collect(),
@@ -213,7 +212,6 @@ const functions = {
     }),
     missing: query({
       access: "public",
-      http: true,
       args: { id: v.bigint() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("message-not-found", { id: args.id }, Status.NotFound),
@@ -390,7 +388,7 @@ const functions = {
       access: "public",
       args: {},
       handler: (ctx: Ctx) =>
-        ctx.jobs.reminders.fire
+        ctx.jobs.scheduled.fire
           .query()
           .where((row: Ctx) => row.state.eq("pending"))
           .collect(),
@@ -407,10 +405,9 @@ const functions = {
     }),
     schedule: mutation({
       access: "public",
-      http: true,
       args: { message: v.string(), attempt: v.int(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.jobs.reminders.fire.enqueue(
+        ctx.jobs.scheduled.fire.enqueue(
           { message: args.message, attempt: args.attempt },
           { at: args.at },
         ),
@@ -419,13 +416,11 @@ const functions = {
   ops: {
     echo: procedure({
       access: "public",
-      http: true,
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     enterSystem: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async (ctx: Ctx): Promise<unknown> => {
         const nested: unknown = await runtime.system.run(
@@ -443,14 +438,12 @@ const functions = {
     }),
     reject: procedure({
       access: "public",
-      http: true,
       args: { reason: v.string() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("procedure-rejected", { reason: args.reason }, Status.UnprocessableContent),
     }),
     block: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async () => {
         externalProcedureStarted?.resolve(undefined);
@@ -460,7 +453,6 @@ const functions = {
     }),
     blockRejectingCancellation: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: async (ctx: Ctx) => {
         externalProcedureStarted?.resolve(undefined);
@@ -471,7 +463,6 @@ const functions = {
     }),
     pipeline: procedure({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch("data:text/plain,external")).text();
@@ -489,13 +480,11 @@ const functions = {
     }),
     nestedTx: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
     }),
     catchTxThrow: procedure({
       access: "public",
-      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         try {
@@ -514,7 +503,6 @@ const functions = {
     }),
     failEmoji: procedure({
       access: "public",
-      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "💥".repeat(512));
@@ -522,7 +510,6 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
-      http: true,
       args: { count: v.int() },
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx, args: Ctx) {
@@ -535,7 +522,6 @@ const functions = {
     }),
     streamed: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () =>
@@ -548,7 +534,6 @@ const functions = {
     }),
     invalidChunk: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.object({ value: v.string() }),
       handler: async function* () {
@@ -558,7 +543,6 @@ const functions = {
     }),
     failingStream: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () => {
@@ -567,7 +551,6 @@ const functions = {
     }),
     waitForAbort: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
@@ -580,7 +563,6 @@ const functions = {
     }),
     holdSse: sseProcedure({
       access: "public",
-      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* () {
@@ -741,9 +723,8 @@ async function start(customLimits = limits()): Promise<void> {
   reconcile(engine);
   runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
-    limits: customLimits,
-    jobs: declaredJobs(),
+  registry: testRegistry(functions, jobModules()),
+  limits: customLimits,
     now: () => currentTime ?? Date.now(),
   });
   await runtime.start();
@@ -940,16 +921,6 @@ describe("runtime commit and replay ownership", () => {
     expect(value.status).toBe(200);
     expect(JSON.parse(await value.text())).toEqual([]);
 
-    // Kind dispatch is the registry's, so a procedure address is never a query.
-    const mismatched = await runtime.runQuery({
-      id: 23,
-      address: "api.ops.echo",
-      args: { value: "x" },
-      principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }) => new Response(body, { status }),
-    });
-    expect(mismatched.status).toBe(400);
-    expect(JSON.parse(await mismatched.text())).toMatchObject({ code: "validation" });
   });
 
   test("refuses to run a query on a clock that stopped returning milliseconds", async () => {
@@ -2307,24 +2278,6 @@ describe("direct ingress", () => {
       mutationRequestId: uuidV7(Date.now(), 82),
       issuedAt: Date.now(),
     }, 0))).rejects.toMatchObject(expected);
-    const procedure = {
-      id: 85,
-      address: oversized,
-      args: {},
-      principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
-      bytes: 0,
-    };
-    await expect(runtime.runProcedure(procedure)).rejects.toMatchObject(expected);
-    const sse = {
-      id: 86,
-      address: oversized,
-      args: {},
-      principal: ANONYMOUS_PRINCIPAL,
-      bytes: 0,
-    };
-    await expect(runtime.runSse(sse)).rejects.toMatchObject(expected);
-
     expect(runtime.status()).toMatchObject({
       activeOperations: 0,
       writer: { active: 0, admitted: 0, queue: { queuedItems: 0 } },
@@ -2389,11 +2342,16 @@ describe("direct ingress", () => {
     // cost the same admission bytes whichever kind answers them.
     const respond = ({ body, status }: RuntimeHttpResponse) => new Response(body, { status });
     const run = {
-      query: async (input: Ctx) => (await runtime.runQuery({ ...input, respond })).status,
-      mutation: async (input: Ctx) => (await runtime.runMutation({ ...input, respond })).status,
-      procedure: async (input: Ctx) => (await runtime.runProcedure({ ...input, respond })).status,
+      query: async (input: Ctx) =>
+        (await runtime.runQuery({ ...input, respond })).status,
+      mutation: async (input: Ctx) =>
+        (await runtime.runMutation({ ...input, respond })).status,
+      procedure: async (input: Ctx) =>
+        (await runtime.runProcedure({ ...input, respond })).status,
       sse: async (input: Ctx) => {
-        const response = await runtime.runSse(input);
+        const response = await runtime.runSse({
+          ...input,
+        });
         expect((await collectSse(response)).at(-1)?.t).toBe("sse_done");
         return 200;
       },
@@ -2431,7 +2389,7 @@ describe("jobs runner and lifecycle", () => {
       .query(`SELECT state, runCount FROM "${JOBS_TABLE}" ORDER BY id`)
       .all() as { state: string; runCount: number | bigint }[];
 
-  test("runs a due mutation-kind job exactly once in one commit", async () => {
+  test("runs a due mutation-mode Job exactly once in one commit", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
     const attempt = Number.MAX_SAFE_INTEGER;
@@ -2508,7 +2466,7 @@ describe("jobs runner and lifecycle", () => {
     const dueAt = Date.now() + 100_000;
     await session.mutation(1, "api.reminders.schedule", { message: "live", attempt: 1, at: dueAt });
     await eventually(() => pendingRows()?.length === 1);
-    expect(pendingRows()[0]).toMatchObject({ name: "reminders.fire", state: "pending" });
+    expect(pendingRows()[0]).toMatchObject({ name: "scheduled.fire", state: "pending" });
 
     currentTime = dueAt;
     await runtime.runJobs();

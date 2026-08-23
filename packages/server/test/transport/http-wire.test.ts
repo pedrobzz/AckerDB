@@ -7,6 +7,7 @@
  * promised plain JSON.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,14 +15,12 @@ import { Err, Ok, Status, parseSseMessage, type SseMessage } from "@ackerdb/core
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query, sseProcedure } from "../../src/app/functions.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { openApiDocument } from "../../src/transport/openapi.ts";
-import type { AckerDBServer } from "../../src/transport/server.ts";
-import { listen } from "ackerdb-test-support/listen";
+import { AckerDBServer } from "../../src/transport/server.ts";
 import { jsonSchemaViolations } from "../support/json-schema-check.ts";
 
 // The document is plain JSON; navigating it in tests is not a typed contract.
@@ -49,7 +48,7 @@ const functions = {
   catalog: {
     lookup: query({
       access: "public",
-      http: true,
+      http: { path: "/api/catalog/lookup", openapi: true },
       args: { sku: v.bigint(), stamp: v.bytes() },
       returns: v.object({ sku: v.bigint(), stamp: v.bytes(), label: v.string() }),
       errors: {
@@ -62,7 +61,7 @@ const functions = {
     }),
     tail: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/catalog/tail", openapi: true },
       args: { sku: v.bigint() },
       yields: v.object({ sku: v.bigint(), frame: v.bytes() }),
       handler: async function* (_ctx: Ctx, args: Ctx) {
@@ -83,10 +82,11 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-wire-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  const registry = new Registry(functions);
+  server = new AckerDBServer({ limits, port: 0 });
+  const registry = server.registerDefinitions(testDefinitions(functions));
   runtime = new Runtime({ engine, registry, limits });
   await runtime.start();
-  server = listen(runtime);
+  server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
   document = openApiDocument(registry, info);
 });

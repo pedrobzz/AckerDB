@@ -29,7 +29,14 @@ export type ColumnChange =
       target: Descriptor;
     }
   | { op: "nullability-changed"; column: string; to: "nullable" | "required" }
-  | { op: "variants-changed"; column: string; typeName: string; variants: VariantChange[] };
+  | ({
+      op: "variants-changed";
+      column: string;
+      variants: VariantChange[];
+    } & (
+      | { kind: "enum"; typeName: string }
+      | { kind: "discriminatedUnion" }
+    ));
 
 /** `unique` is the flag of the resulting index (added/changed) or the removed one (dropped). */
 export interface IndexChange {
@@ -59,10 +66,9 @@ export type TableChange =
 export type SchemaDiff = TableChange[];
 
 export interface Named {
-  kind: "enum" | "union";
+  kind: "enum";
   name: string;
   variants: string[];
-  members?: Record<string, Descriptor>;
 }
 
 export function unwrapDesc(desc: Descriptor): { base: Descriptor; nullable: boolean } {
@@ -76,10 +82,6 @@ export function namedOf(desc: Descriptor): Named | null {
   if (base["k"] === "enum") {
     return { kind: "enum", name: base["name"] as string, variants: [...(base["values"] as string[])] };
   }
-  if (base["k"] === "union") {
-    const members = base["members"] as Record<string, Descriptor>;
-    return { kind: "union", name: base["name"] as string, variants: Object.keys(members), members };
-  }
   return null;
 }
 
@@ -87,7 +89,7 @@ export function namedOf(desc: Descriptor): Named | null {
  * How two descriptors relate when their storage/TypeScript shape is held
  * constant. The walk is kind-aware: only the durable constraint slots on the
  * five constrained validator kinds are ignored for structural comparison, so
- * an object field or union variant literally named `min`, `max`, or `regex`
+ * an object field literally named `min`, `max`, or `regex`
  * remains ordinary schema structure.
  */
 export type ConstraintDirection = "same" | "loosen" | "tighten" | "incompatible";
@@ -108,12 +110,13 @@ function structuralDescriptor(desc: Descriptor): unknown {
       }
       return { k: "object", shape };
     }
-    case "union": {
-      const members = Object.create(null) as Record<string, unknown>;
-      for (const [variant, member] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-        members[variant] = structuralDescriptor(member);
-      }
-      return { k: "union", name: desc["name"], members };
+    case "discriminatedUnion": {
+      const members = discriminatedMembers(desc);
+      return {
+        k: "discriminatedUnion",
+        discriminator: desc["discriminator"],
+        members: [...members].map(([variant, member]) => [variant, structuralDescriptor(member)]),
+      };
     }
     case "nullable":
     case "optional":
@@ -179,11 +182,11 @@ function nestedConstraintMotion(before: Descriptor, after: Descriptor): Constrai
       }
       return motion;
     }
-    case "union": {
-      const oldMembers = before["members"] as Record<string, Descriptor>;
-      const newMembers = after["members"] as Record<string, Descriptor>;
-      for (const variant of Object.keys(oldMembers)) {
-        motion = mergeMotion(motion, nestedConstraintMotion(oldMembers[variant]!, newMembers[variant]!));
+    case "discriminatedUnion": {
+      const oldMembers = discriminatedMembers(before);
+      const newMembers = discriminatedMembers(after);
+      for (const [variant, member] of oldMembers) {
+        motion = mergeMotion(motion, nestedConstraintMotion(member, newMembers.get(variant)!));
       }
       return motion;
     }
@@ -260,10 +263,12 @@ function diffColumns(oldTable: TableSnapshot, newTable: TableSnapshot): ColumnCh
       continue;
     }
     if (direction === "same") continue;
-    const variants = diffVariants(oldDesc, newDesc);
+    const variants = diffVariants(oldDesc, newDesc) ?? diffDiscriminatedVariants(oldDesc, newDesc);
     if (variants !== null) {
       if (variants.changes.length > 0) {
-        changes.push({ op: "variants-changed", column, typeName: variants.typeName, variants: variants.changes });
+        changes.push(variants.kind === "enum"
+          ? { op: "variants-changed", column, kind: "enum", typeName: variants.typeName, variants: variants.changes }
+          : { op: "variants-changed", column, kind: "discriminatedUnion", variants: variants.changes });
       }
       continue;
     }
@@ -282,11 +287,15 @@ function diffColumns(oldTable: TableSnapshot, newTable: TableSnapshot): ColumnCh
 }
 
 /**
- * Variant-level delta for a top-level enum/union column whose type name and
+ * Variant-level delta for a top-level enum column whose type name and
  * nullability are unchanged. `null` means this is not a variant change — the
  * column is a genuine type change and the caller classifies it as one.
  */
-function diffVariants(oldDesc: Descriptor, newDesc: Descriptor): { typeName: string; changes: VariantChange[] } | null {
+function diffVariants(oldDesc: Descriptor, newDesc: Descriptor): {
+  kind: "enum";
+  typeName: string;
+  changes: VariantChange[];
+} | null {
   const oldNamed = namedOf(oldDesc);
   const newNamed = namedOf(newDesc);
   if (
@@ -302,17 +311,51 @@ function diffVariants(oldDesc: Descriptor, newDesc: Descriptor): { typeName: str
   for (const variant of oldNamed.variants) {
     if (!newNamed.variants.includes(variant)) {
       changes.push({ variant, op: "removed" });
-    } else if (
-      oldNamed.kind === "union" &&
-      JSON.stringify(oldNamed.members![variant]) !== JSON.stringify(newNamed.members![variant])
-    ) {
-      changes.push({ variant, op: "payload-changed" });
     }
   }
   for (const variant of newNamed.variants) {
     if (!oldNamed.variants.includes(variant)) changes.push({ variant, op: "added" });
   }
-  return { typeName: newNamed.name, changes };
+  return { kind: "enum", typeName: newNamed.name, changes };
+}
+
+function discriminatedMembers(desc: Descriptor): Map<string, Descriptor> {
+  const entries = Object.entries(desc["members"] as Record<string, Descriptor>);
+  entries.sort(([left], [right]) => left.localeCompare(right));
+  return new Map(entries);
+}
+
+function diffDiscriminatedVariants(oldDesc: Descriptor, newDesc: Descriptor): {
+  kind: "discriminatedUnion";
+  changes: VariantChange[];
+} | null {
+  const oldBase = unwrapDesc(oldDesc);
+  const newBase = unwrapDesc(newDesc);
+  if (
+    oldBase.base["k"] !== "discriminatedUnion" ||
+    newBase.base["k"] !== "discriminatedUnion" ||
+    oldBase.base["discriminator"] !== newBase.base["discriminator"] ||
+    oldBase.nullable !== newBase.nullable
+  ) {
+    return null;
+  }
+  const before = discriminatedMembers(oldBase.base);
+  const after = discriminatedMembers(newBase.base);
+  const changes: VariantChange[] = [];
+  for (const [key, member] of before) {
+    const target = after.get(key);
+    if (target === undefined) changes.push({ variant: key, op: "removed" });
+    else if (JSON.stringify(member) !== JSON.stringify(target)) {
+      changes.push({ variant: key, op: "payload-changed" });
+    }
+  }
+  for (const key of after.keys()) {
+    if (!before.has(key)) changes.push({ variant: key, op: "added" });
+  }
+  return {
+    kind: "discriminatedUnion",
+    changes,
+  };
 }
 
 function diffIndexes(oldTable: TableSnapshot, newTable: TableSnapshot): IndexChange[] {

@@ -12,7 +12,7 @@ describe("native vector runtime", () => {
       `
         import { createRequire } from "node:module";
         import { v } from "@ackerdb/server";
-        v.vector(3).check([1, 2, 3], "argument");
+        v.vector(3).parse([1, 2, 3], "argument");
         const require = createRequire(import.meta.url);
         if (Object.keys(require.cache).some((path) => path.includes("numkong"))) process.exit(17);
       `,

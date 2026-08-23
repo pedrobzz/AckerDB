@@ -8,11 +8,13 @@
  * (queries, mutations) recovering independently is proven alongside.
  */
 import { describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ACKERDB_VERSION,
+  SSE_HTTP,
   decode,
   encode,
   parseSseAckRequest,
@@ -29,8 +31,8 @@ import { ManualClock } from "ackerdb-test-support/client-transport";
 import { createHarness, mustErr, type ClientHarness } from "./support/harness.ts";
 import {
   Engine,
+  AckerDBServer,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineSchema,
@@ -40,14 +42,15 @@ import {
   type SseCtx,
 } from "@ackerdb/server";
 import { deferred, until, waitForAbort, within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const encoder = new TextEncoder();
 
 /** A scripted SSE exchange journal shared by every fake-fetch harness. */
 interface HttpJournal {
-  /** Chronological per-function stream paths the client dispatched to. */
+  /** Chronological framework stream paths the client dispatched to. */
   readonly dispatches: string[];
+  /** Function addresses carried independently from the framework route. */
+  readonly functions: Array<string | null>;
   /** Every `/_sse/ack` request the client issued, parsed. */
   readonly acknowledgments: SseAckRequest[];
 }
@@ -68,7 +71,7 @@ function harness(
   routes: { readonly sse?: Route },
   overrides: Partial<AckerDBClientOptions> = {},
 ): Harness {
-  const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
+  const journal: HttpJournal = { dispatches: [], functions: [], acknowledgments: [] };
   const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
     if (path === "/_sse/ack") {
@@ -76,6 +79,7 @@ function harness(
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     journal.dispatches.push(path);
+    journal.functions.push(new Headers(init?.headers).get(SSE_HTTP.functionHeader));
     const route = routes.sse;
     if (!route) throw new Error(`no scripted route for ${path}`);
     return Promise.resolve(route(init));
@@ -248,7 +252,8 @@ describe("non-resumable work started while suspended", () => {
       Symbol.asyncIterator
     ]();
     expect(await fresh.next()).toEqual({ done: false, value: { tick: 0 } });
-    expect(journal.dispatches).toEqual(["/api/stream/ticks"]);
+    expect(journal.dispatches).toEqual([SSE_HTTP.open]);
+    expect(journal.functions).toEqual(["api.stream.ticks"]);
     await fresh.return(undefined);
     client.close();
   });
@@ -273,7 +278,8 @@ describe("non-resumable work started while suspended", () => {
 
     scripted.chunk(1, { tick: 0 });
     expect(await createdSuspended.next()).toEqual({ done: false, value: { tick: 0 } });
-    expect(journal.dispatches).toEqual(["/api/stream/hold"]);
+    expect(journal.dispatches).toEqual([SSE_HTTP.open]);
+    expect(journal.functions).toEqual(["api.stream.hold"]);
     await createdSuspended.return(undefined);
     client.close();
   });
@@ -412,7 +418,8 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const iterator = client.sse("api.stream.hold", {})[Symbol.asyncIterator]();
     const first = iterator.next().catch((error) => error);
     await Bun.sleep(0);
-    expect(journal.dispatches).toEqual(["/api/stream/hold"]);
+    expect(journal.dispatches).toEqual([SSE_HTTP.open]);
+    expect(journal.functions).toEqual(["api.stream.hold"]);
 
     port.suspend();
     expectSuspensionOutcome(await first, {
@@ -659,11 +666,10 @@ describe("suspension settlement against a real ackerdb server", () => {
     const holdReleased = deferred<void>();
     const procedureStarted = deferred<void>();
     const procedureGate = deferred<void>();
-    const registry = new Registry({
+    const modules = {
       stream: {
         holdAfterFirst: sseProcedure({
           access: "public",
-          http: true,
           args: {},
           yields: v.object({ phase: v.string() }),
           handler: async function* (ctx: SseCtx) {
@@ -677,7 +683,6 @@ describe("suspension settlement against a real ackerdb server", () => {
         }),
         ticks: sseProcedure({
           access: "public",
-          http: true,
           args: {},
           yields: v.object({ tick: v.int() }),
           handler: async function* () {
@@ -696,10 +701,12 @@ describe("suspension settlement against a real ackerdb server", () => {
           },
         }),
       },
-    });
+    };
+    const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
+    const registry = server.registerDefinitions(testDefinitions(modules));
     const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
     await runtime.start();
-    const server = listen(runtime);
+    server.activate(runtime);
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.
     const clock = new ManualClock(Date.now());

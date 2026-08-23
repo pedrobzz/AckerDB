@@ -23,10 +23,11 @@ import {
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import type { RuntimeOptions } from "../../src/runtime/contracts/options.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { AckerDBServer } from "../../src/transport/server.ts";
+import { testDefinitions, testRegistry } from "ackerdb-test-support/server";
 import type {
   RuntimePublication,
   RuntimeRequest,
@@ -54,7 +55,7 @@ const invalidUpdateKind = v.enum("InvalidCredentialUpdateKind", ["empty", "undef
 const writeOwnedRecord = typedProcedure({
   description: "Write a row owned by the delegated Identity.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/records/writeOwnedRecord", openapi: true },
   args: { value: v.string() },
   returns: v.object({ principal: v.string(), record: v.string(), tokenId: v.string() }),
   handler: async (ctx, args) => {
@@ -76,7 +77,7 @@ const writeOwnedRecord = typedProcedure({
 const attemptSelfAdministration = typedProcedure({
   description: "Exercise the delegated-credential administration boundary.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/security/attemptSelfAdministration", openapi: true },
   args: {},
   returns: v.object({ status: v.string() }),
   handler: async (ctx) => {
@@ -97,7 +98,7 @@ const statusReturns = v.object({ status: v.string() });
 const publicScopedTool = typedQuery({
   description: "Public scope fixture.",
   access: "public",
-  http: true,
+  http: { path: "/api/records/publicScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "public" }),
@@ -106,7 +107,7 @@ const publicScopedTool = typedQuery({
 const authenticatedScopedTool = typedQuery({
   description: "Authenticated scope fixture.",
   access: "authenticated",
-  http: true,
+  http: { path: "/api/records/authenticatedScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "authenticated" }),
@@ -116,7 +117,7 @@ const anyScopedTool = typedQuery({
   description: "Any-of scope fixture.",
   access: "authenticated",
   scopes: { anyOf: ["orders.all", "orders.get"] },
-  http: true,
+  http: { path: "/api/records/anyScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "orders" }),
@@ -126,7 +127,7 @@ const allScopedTool = typedQuery({
   description: "All-of scope fixture.",
   access: "authenticated",
   scopes: { allOf: ["orders.get", "reports.all"] },
-  http: true,
+  http: { path: "/api/records/allScopedTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "reports" }),
@@ -136,7 +137,7 @@ const exactAllTool = typedQuery({
   description: "Prove .all is an opaque exact value.",
   access: "authenticated",
   scopes: { anyOf: ["orders.all"] },
-  http: true,
+  http: { path: "/api/records/exactAllTool", openapi: true },
   args: {},
   returns: statusReturns,
   handler: () => ({ status: "admin" }),
@@ -265,10 +266,15 @@ export interface CredentialFixture {
   close(): Promise<void>;
 }
 
+export interface ServedCredentialFixture extends CredentialFixture {
+  readonly server: AckerDBServer;
+}
+
 export interface CredentialFixtureOptions {
   readonly limits?: ServiceLimits;
   readonly now?: RuntimeOptions["now"];
   readonly resolveScopes?: RuntimeOptions["resolveScopes"];
+  readonly serve?: boolean;
 }
 
 export function databasePath(prefix: string): string {
@@ -277,38 +283,61 @@ export function databasePath(prefix: string): string {
   return join(directory, "data.db");
 }
 
+export function fixture(
+  path: string,
+  verifier: CredentialVerifier | undefined,
+  extraModules: Record<string, Record<string, unknown>>,
+  options: CredentialFixtureOptions & { readonly serve: true },
+): Promise<ServedCredentialFixture>;
+export function fixture(
+  path: string,
+  verifier?: CredentialVerifier,
+  extraModules?: Record<string, Record<string, unknown>>,
+  options?: CredentialFixtureOptions,
+): Promise<CredentialFixture>;
 export async function fixture(
   path: string,
   verifier?: CredentialVerifier,
   extraModules: Record<string, Record<string, unknown>> = {},
   options: CredentialFixtureOptions = {},
-): Promise<CredentialFixture> {
+): Promise<CredentialFixture | ServedCredentialFixture> {
   const engine = new Engine(schema, path);
   reconcile(engine);
+  const limits = options.limits ?? {
+    ...PRODUCTION_LIMITS,
+    credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
+  };
+  const applicationModules = { ...modules, ...extraModules };
+  const server = options.serve === true
+    ? new AckerDBServer({ limits, port: 0 })
+    : undefined;
   const runtime = new Runtime({
     engine,
-    registry: new Registry({ ...modules, ...extraModules }),
+    registry: server === undefined
+      ? testRegistry(applicationModules)
+      : server.registerDefinitions(testDefinitions(applicationModules)),
     verifier,
     scopes: FIXTURE_SCOPES,
     // Parent identities hold the full vocabulary unless a test narrows it,
     // so child-credential intersections read a real issuer grant.
     resolveScopes: options.resolveScopes ?? (() => FIXTURE_SCOPES),
     ...(options.now === undefined ? {} : { now: options.now }),
-    limits: options.limits ?? {
-      ...PRODUCTION_LIMITS,
-      credentials: { ...PRODUCTION_LIMITS.credentials, maxPerIdentity: 2 },
-    },
+    limits,
   });
   await runtime.start();
+  server?.activate(runtime);
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
-    await runtime.drain().catch(() => {});
+    if (server === undefined) await runtime.drain().catch(() => {});
+    else await server.drain().catch(() => {});
     engine.close("clean");
   };
   cleanups.push(close);
-  return { engine, runtime, close };
+  return server === undefined
+    ? { engine, runtime, close }
+    : { engine, runtime, server, close };
 }
 
 export function trackCleanup(cleanup: () => Promise<void>): void {

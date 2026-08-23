@@ -9,7 +9,14 @@ import {
 const stringValidator: StringValidator = v.string().describe("A label.").min(1).max(8).regex(/x/);
 const intValidator: BoundedValidator<number, "int", number> = v.int().min(0.5).max(10);
 const floatValidator: BoundedValidator<number, "float", number> = v.float().min(-1).max(1);
-const bigintValidator: BoundedValidator<bigint, "bigint", bigint> = v.bigint().min(0n).max(10n);
+const bigintValidator: BoundedValidator<
+  bigint,
+  "bigint",
+  bigint,
+  bigint,
+  number | string,
+  string
+> = v.bigint().min(0n).max(10n);
 const arrayValidator: ArrayValidator<StringValidator> = v.array(v.string()).min(1).max(3);
 void stringValidator;
 void intValidator;
@@ -49,13 +56,15 @@ v.object({ value: v.string() }).min(1);
 v.enum("Role", ["admin"]).regex(/admin/);
 // @ts-expect-error literal has no constraints
 v.literal("x").min(1);
-// @ts-expect-error union has no constraints
-v.union("Payload", { text: v.string() }).max(1);
+const discriminated = v.discriminatedUnion("type", [
+  v.object({ type: v.literal("text"), value: v.string() }),
+  v.object({ type: v.literal("none") }),
+]);
+// @ts-expect-error discriminated union has no constraints
+discriminated.max(1);
 // @ts-expect-error opaque JSON has no constraints
 v.jsonb<unknown>().min(1);
 // @ts-expect-error primary keys have no constraints
 v.primaryKey().min(1n);
 // @ts-expect-error schedule timestamps have no constraints
 v.scheduleAt().min(0);
-// @ts-expect-error payload-less tags have no constraints
-v.tag().min(1);

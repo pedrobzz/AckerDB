@@ -1,9 +1,10 @@
 import { join } from "node:path";
 import {
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
+  collectDefinitions,
   v,
   defineSchema,
   defineServiceLimits,
@@ -14,7 +15,6 @@ import {
   reconcile,
   sseProcedure,
 } from "@ackerdb/server";
-import { listen } from "ackerdb-test-support/listen";
 
 const KiB = 1024;
 const port = Number(process.argv[2]);
@@ -60,13 +60,13 @@ const functions = {
   pressure: {
     echo: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/echo", openapi: true },
       args: { value: v.float() },
       handler: (_ctx, args) => args.value,
     }),
     collect: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/collect", openapi: true },
       args: {},
       handler: () => {
         Bun.gc(true);
@@ -75,7 +75,7 @@ const functions = {
     }),
     endless: sseProcedure({
       access: "public",
-      http: true,
+      http: { path: "/api/pressure/endless", openapi: true },
       args: {},
       yields: v.object({ payload: v.string() }),
       handler: () => {
@@ -91,7 +91,7 @@ const functions = {
     }),
     block: procedure({
       access: "authenticated",
-      http: true,
+      http: { path: "/api/pressure/block", openapi: true },
       args: {},
       handler: async (ctx) => {
         console.log("@@block-start");
@@ -157,14 +157,19 @@ const limits = defineServiceLimits({
 
 const engine = new Engine(schema, join(directory, "data.db"));
 reconcile(engine);
+const server = new AckerDBServer({ limits, port });
+const registry = server.registerDefinitions(collectDefinitions([
+  { name: "items", exports: functions.items, origin: import.meta.url },
+  { name: "pressure", exports: functions.pressure, origin: import.meta.url },
+]));
 const runtime = new Runtime({
   engine,
-  registry: new Registry(functions),
+  registry,
   verifier,
   limits,
 });
 await runtime.start();
-const server = listen(runtime, { port });
+server.activate(runtime);
 
 let shutdown;
 const drain = () => shutdown ??= server.drain().then(

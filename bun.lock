@@ -42,6 +42,7 @@
       "name": "ackerdb-test-support",
       "version": "0.0.0",
       "devDependencies": {
+        "@ackerdb/server": "workspace:*",
         "@happy-dom/global-registrator": "^20.10.6",
       },
     },

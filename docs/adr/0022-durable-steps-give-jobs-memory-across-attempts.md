@@ -16,10 +16,10 @@ row and its state machine. A parallel workflow entity would rebuild all of
 it and then drift from it.
 
 The decision: jobs gain a step journal, and "workflow" never becomes a
-runtime noun. `ctx.step` exists on procedure-kind job handlers — using it is
-the opt-in; a handler with no steps is untouched, and mutation-kind jobs
+runtime noun. `ctx.step` exists on procedure-mode Job handlers — using it is
+the opt-in; a handler with no steps is untouched, and mutation-mode Jobs
 exclude it by construction, since their single writer transaction would roll
-journal writes back with everything else (a mutation-kind job *is* one
+journal writes back with everything else (a mutation-mode Job *is* one
 atomic step). Steps are journal entries, not child job rows; child jobs
 remain the tool for parallel fan-out with independent policies.
 

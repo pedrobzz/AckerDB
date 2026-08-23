@@ -12,7 +12,7 @@ import { Database } from "bun:sqlite";
 import { defineApp } from "../src/app/definition.ts";
 import { mutation, procedure } from "../src/app/functions.ts";
 import { LocalFileStore } from "../src/files/store/local.ts";
-import { declareJobs, job } from "../src/jobs/definition.ts";
+import { job } from "../src/jobs/definition.ts";
 import { JOBS_TABLE } from "../src/jobs/table.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../src/runtime/limits.ts";
 import { defineSchema, defineTable } from "../src/schema/definition.ts";
@@ -20,7 +20,10 @@ import type { MigrationStep } from "../src/schema/migrations/types.ts";
 import { snapshotOf } from "../src/schema/snapshot.ts";
 import { v } from "../src/validation/v.ts";
 import { AckerDBError } from "../src/shared/errors.ts";
-import type { LoadedModules } from "../src/app/registry.ts";
+import {
+  testModules,
+  type TestDefinitionModules,
+} from "ackerdb-test-support/server";
 import {
   boot,
   MigrationsHeldError,
@@ -42,17 +45,17 @@ const schema = defineSchema({
 });
 const app = defineApp({ schema });
 
-const functions: LoadedModules = {
+const functions: TestDefinitionModules = {
   notes: {
     add: mutation({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/add", openapi: true },
       args: { body: v.string() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.notes.insert(args),
     }),
     ping: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/notes/ping", openapi: true },
       args: {},
       handler: () => "pong",
     }),
@@ -81,8 +84,7 @@ interface PartsOverrides {
   readonly prepare?: (signal: AbortSignal) => Promise<unknown>;
   readonly pendingMigrations?: "apply" | "hold";
   readonly migrations?: MigrationStep[];
-  readonly functions?: LoadedModules;
-  readonly jobs?: LoadedModules;
+  readonly definitions?: TestDefinitionModules;
   readonly loadRuntime?: BootOptions["load"]["runtime"];
 }
 
@@ -104,8 +106,7 @@ function parts(overrides: PartsOverrides = {}): BootOptions & { readonly dir: st
     load: {
       app: async () => ({ app, migrations: overrides.migrations ?? [] }),
       runtime: overrides.loadRuntime ?? (async () => ({
-        functions: overrides.functions ?? functions,
-        jobs: overrides.jobs ?? {},
+        modules: testModules(overrides.definitions ?? functions),
       })),
     },
   };
@@ -261,7 +262,7 @@ describe("boot", () => {
       loadRuntime: async (signal) => {
         loading.resolve();
         await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-        return { functions, jobs: {} };
+        return { modules: testModules(functions) };
       },
     }));
     await loading.promise;
@@ -397,12 +398,11 @@ describe("boot", () => {
 
   test("issues no credential, and starts an application that has none", async () => {
     const events: string[] = [];
-    const jobs = declareJobsModule(() => events.push("job ran"));
+    const jobs = jobModules(() => events.push("job ran"));
     const app = await start({
-      jobs,
       loadRuntime: async () => {
         events.push("runtime loaded");
-        return { functions, jobs };
+        return { modules: testModules(functions, jobs) };
       },
     });
     expect(events[0]).toBe("runtime loaded");
@@ -430,8 +430,8 @@ describe("boot", () => {
   });
 });
 
-function declareJobsModule(onRun: () => void): LoadedModules {
-  const declared = declareJobs({
+function jobModules(onRun: () => void): TestDefinitionModules {
+  return {
     beat: {
       tick: job({
         args: {},
@@ -441,7 +441,5 @@ function declareJobsModule(onRun: () => void): LoadedModules {
         },
       }),
     },
-  });
-  // declareJobs is what boot applies; hand it back the module shape it reads.
-  return { beat: { tick: declared[0]!.job } };
+  };
 }

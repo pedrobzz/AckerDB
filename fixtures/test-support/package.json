@@ -7,9 +7,10 @@
     "./async": "./src/async.ts",
     "./client-transport": "./src/client-transport.ts",
     "./dom": "./src/dom.ts",
-    "./listen": "./src/listen.ts"
+    "./server": "./src/server.ts"
   },
   "devDependencies": {
+    "@ackerdb/server": "workspace:*",
     "@happy-dom/global-registrator": "^20.10.6"
   }
 }

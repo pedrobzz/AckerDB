@@ -44,11 +44,11 @@ const schema = defineSchema({
   unionKeys: defineTable({
     id: v.primaryKey(),
     slug: v.string(),
-    key: v.union("RuntimeUnionKey", {
-      text: v.string(),
-      count: v.int(),
-      empty: v.tag(),
-    }),
+    key: v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("count"), value: v.int() }),
+      v.object({ type: v.literal("empty") }),
+    ]),
     name: v.string(),
   })
     .index(["slug"], { unique: true })
@@ -105,7 +105,7 @@ describe("table query", () => {
       .take(1);
 
     expect(issuedSql).toBeDefined();
-    const statusTag = engine.plan("documents").columns.get("status")!.variantTag!("active")!;
+    const statusTag = engine.plan("documents").columns.get("status")!.toSql("active") as number;
     const plan = engine.reader
       .query(`EXPLAIN QUERY PLAN ${issuedSql!}`)
       .all(1n, statusTag) as { detail: string }[];
@@ -401,32 +401,31 @@ describe("table query", () => {
     ).rejects.toBeInstanceOf(UniqueConstraintError);
   });
 
-  test("matches a union upsert key by both its tag and payload", async () => {
+  test("matches a discriminated union upsert key by its complete value", async () => {
     const inserted = await db.unionKeys.upsert(
-      { key: { tag: "text", value: "one" } },
+      { key: { type: "text", value: "one" } },
       { slug: "first", name: "Initial" },
     ).returning();
     const updated = await db.unionKeys.upsert(
-      { key: { tag: "text", value: "one" } },
+      { key: { type: "text", value: "one" } },
       { slug: "first", name: "Updated" },
     ).returning();
 
     expect(updated).toEqual({ ...inserted, name: "Updated" });
-    await expect(
-      db.unionKeys.upsert(
-        { key: { tag: "text", value: "different payload" } },
-        { slug: "second", name: "Must conflict" },
-      ),
-    ).rejects.toBeInstanceOf(UniqueConstraintError);
+    await expect(db.unionKeys.upsert(
+      { key: { type: "text", value: "different payload" } },
+      { slug: "second", name: "Same discriminator" },
+    ).returning()).rejects.toBeInstanceOf(UniqueConstraintError);
+    expect(await db.unionKeys.get(inserted.id)).toEqual({ ...inserted, name: "Updated" });
 
-    const tagInserted = await db.unionKeys.upsert(
-      { key: { tag: "empty", value: null } },
-      { slug: "empty", name: "Tag initial" },
+    const emptyInserted = await db.unionKeys.upsert(
+      { key: { type: "empty" } },
+      { slug: "empty", name: "Empty initial" },
     ).returning();
-    const tagUpdated = await db.unionKeys.upsert(
-      { key: { tag: "empty", value: null } },
-      { slug: "empty", name: "Tag updated" },
+    const emptyUpdated = await db.unionKeys.upsert(
+      { key: { type: "empty" } },
+      { slug: "empty", name: "Empty updated" },
     ).returning();
-    expect(tagUpdated).toEqual({ ...tagInserted, name: "Tag updated" });
+    expect(emptyUpdated).toEqual({ ...emptyInserted, name: "Empty updated" });
   });
 });

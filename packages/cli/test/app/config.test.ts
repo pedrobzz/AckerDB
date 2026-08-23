@@ -7,7 +7,8 @@ import { loadConfig } from "../../src/app/config.ts";
 describe("production profile configuration", () => {
   test("defaults to production durability", () => {
     expect(loadConfig(".", {})).toMatchObject({
-      appPath: resolve("app.ts"),
+      entrypoint: resolve("app.ts"),
+      definitions: [resolve("app")],
       dbDir: resolve(".ackerdb"),
       hostname: "127.0.0.1",
       durability: "production",
@@ -20,14 +21,29 @@ describe("production profile configuration", () => {
     });
   });
 
-  test("selects one application manifest and rejects the removed schema path", () => {
+  test("selects the entrypoint and definition roots", () => {
     const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ app: "./backend.ts" }));
-      expect(loadConfig(dir, {})).toMatchObject({ appPath: resolve(dir, "backend.ts") });
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        entrypoint: "./backend.ts",
+        definitions: ["./domain", "./health.ts"],
+      }));
+      expect(loadConfig(dir, {})).toMatchObject({
+        entrypoint: resolve(dir, "backend.ts"),
+        definitions: [resolve(dir, "domain"), resolve(dir, "health.ts")],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ schema: "./schema.ts" }));
-      expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: schema");
+  test("rejects the application root as a definition root", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ definitions: ["."] }));
+      expect(() => loadConfig(dir, {})).toThrow(
+        'definitions must not include the application root "."',
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

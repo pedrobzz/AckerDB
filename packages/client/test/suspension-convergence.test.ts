@@ -8,6 +8,7 @@
 // the at-most-one-server-effect guarantee with actual commits, including a
 // server stopped and restarted while the application is backgrounded.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,10 +35,9 @@ import { FakeSocket, ManualClock, parseSentFrame } from "ackerdb-test-support/cl
 import { createHarness, cursor, mustOk } from "./support/harness.ts";
 
 import {
-  type AckerDBServer,
+  AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
   Runtime,
   v,
   defineEventTable,
@@ -52,7 +52,6 @@ import {
   assertTcpPortReleased,
 } from "../../server/test/support/frame-proxy.ts";
 import { until, within } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -832,8 +831,8 @@ function armSendGate(body: string): SendGate {
   };
 }
 
-function realRegistry(): Registry {
-  return new Registry({
+function realModules() {
+  return {
     messages: {
       list: query({
         access: "public",
@@ -868,7 +867,7 @@ function realRegistry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface MessageRow {
@@ -887,13 +886,14 @@ async function createRealApp(): Promise<RealApp> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-suspension-convergence-"));
   const engine = new Engine(realSchema, join(directory, "data.db"));
   reconcile(engine);
+  const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
   const runtime = new Runtime({
     engine,
-    registry: realRegistry(),
+    registry: server.registerDefinitions(testDefinitions(realModules())),
     limits: PRODUCTION_LIMITS,
   });
   await runtime.start();
-  const server = listen(runtime);
+  server.activate(runtime);
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,
@@ -1367,13 +1367,14 @@ describe("server unavailable at activation against a real ackerdb server", () =>
       const database = join(directory, "data.db");
       const engine = new Engine(realSchema, database);
       reconcile(engine);
+      const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
       const runtime = new Runtime({
         engine,
-        registry: realRegistry(),
+        registry: server.registerDefinitions(testDefinitions(realModules())),
         limits: PRODUCTION_LIMITS,
       });
       await runtime.start();
-      const server = listen(runtime);
+      server.activate(runtime);
       const serverPort = server.port;
 
       let lifecyclePort: AckerDBLifecyclePort | undefined;
@@ -1440,13 +1441,18 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         // The server returns at the same address with the same durable state.
         const engine2 = new Engine(realSchema, database);
         reconcile(engine2);
+        const server2 = new AckerDBServer({
+          limits: PRODUCTION_LIMITS,
+          port: serverPort,
+        });
         const runtime2 = new Runtime({
           engine: engine2,
-          registry: realRegistry(),
+          registry: server2.registerDefinitions(testDefinitions(realModules())),
           limits: PRODUCTION_LIMITS,
         });
         await runtime2.start();
-        restarted = { server: listen(runtime2, { port: serverPort }), engine: engine2 };
+        server2.activate(runtime2);
+        restarted = { server: server2, engine: engine2 };
 
         const id = await within(result, "the post-restart settlement");
         expect(settlements).toBe(1);
@@ -1499,13 +1505,14 @@ describe("server unavailable at activation against a real ackerdb server", () =>
       const database = join(directory, "data.db");
       const engine = new Engine(realSchema, database);
       reconcile(engine);
+      const server = new AckerDBServer({ limits: PRODUCTION_LIMITS, port: 0 });
       const runtime = new Runtime({
         engine,
-        registry: realRegistry(),
+        registry: server.registerDefinitions(testDefinitions(realModules())),
         limits: PRODUCTION_LIMITS,
       });
       await runtime.start();
-      const server = listen(runtime);
+      server.activate(runtime);
       const upstreamPort = server.port;
       const proxy = await FrameProxy.listen({ upstreamPort });
       const { client, port } = suspendableClient(proxy.url);
@@ -1563,13 +1570,18 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         await assertTcpPortReleased(upstreamPort);
         const engine2 = new Engine(realSchema, database);
         reconcile(engine2);
+        const server2 = new AckerDBServer({
+          limits: PRODUCTION_LIMITS,
+          port: upstreamPort,
+        });
         const runtime2 = new Runtime({
           engine: engine2,
-          registry: realRegistry(),
+          registry: server2.registerDefinitions(testDefinitions(realModules())),
           limits: PRODUCTION_LIMITS,
         });
         await runtime2.start();
-        restarted = { server: listen(runtime2, { port: upstreamPort }), engine: engine2 };
+        server2.activate(runtime2);
+        restarted = { server: server2, engine: engine2 };
 
         port.resume();
         const id = await within(result, "the durable replay settlement");

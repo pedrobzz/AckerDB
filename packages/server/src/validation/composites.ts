@@ -1,6 +1,6 @@
 /** The `v` validators that compose other validators: arrays, objects, unions. */
 import { encode, WireError } from "@ackerdb/core";
-import { refuseUnknownKeys, refuseUnknownUnionKeys, ValidationError } from "./error.ts";
+import { refuseUnknownKeys, ValidationError } from "./error.ts";
 import { lengthBound, nextBounds, numberBounds, type Bounds } from "./bounds.ts";
 import { checkArrayConstraints, type ConstraintFields } from "./constraints.ts";
 import {
@@ -13,9 +13,15 @@ import {
   type Descriptor,
   type InferValidator,
   type InferValidatorInput,
+  type InferValidatorJsonInput,
+  type InferValidatorJsonOutput,
   type StandardValidator,
   type Validator,
 } from "./validator.ts";
+import {
+  requireJsonProtocol,
+  type JsonSchema,
+} from "./json-schema.ts";
 
 /** Parenthesize type text when embedding it in `T[]`. */
 function parenthesize(ts: string): string {
@@ -25,7 +31,14 @@ function parenthesize(ts: string): string {
 export interface ArrayValidator<
   V extends StandardValidator<unknown, string> = StandardValidator<unknown, string>,
 >
-  extends BoundedValidator<InferValidator<V>[], "array", number, InferValidatorInput<V>[]> {
+  extends BoundedValidator<
+    InferValidator<V>[],
+    "array",
+    number,
+    InferValidatorInput<V>[],
+    InferValidatorJsonInput<V>[],
+    InferValidatorJsonOutput<V>[]
+  > {
   readonly element: V;
 }
 
@@ -35,7 +48,7 @@ export function array<V extends StandardValidator<unknown, string>>(
   description?: string,
   baseCheck: (value: unknown, path: string) => InferValidator<V>[] = (value, path) => {
     if (!Array.isArray(value)) fail(path, "array", value);
-    return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+    return value.map((item, i) => element.parse(item, `${path}[${i}]`)) as InferValidator<V>[];
   },
 ): ArrayValidator<V> {
   const fields: ConstraintFields | undefined = constraints === undefined
@@ -44,22 +57,47 @@ export function array<V extends StandardValidator<unknown, string>>(
       ...(constraints.min === undefined ? {} : { min: constraints.min }),
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? baseCheck
     : (value: unknown, path: string): InferValidator<V>[] => {
       if (!Array.isArray(value)) fail(path, "array", value);
       checkArrayConstraints(fields!, value.length, path);
-      return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+      return value.map((item, i) => element.parse(item, `${path}[${i}]`)) as InferValidator<V>[];
     };
+  const checkContainer = (value: unknown, path: string): unknown[] => {
+    if (!Array.isArray(value)) fail(path, "array", value);
+    if (fields !== undefined) checkArrayConstraints(fields, value.length, path);
+    return value;
+  };
   return makeValidator<
     InferValidator<V>[],
     "array",
     Pick<ArrayValidator<V>, "element">,
-    InferValidatorInput<V>[]
+    InferValidatorInput<V>[],
+    InferValidatorJsonInput<V>[],
+    InferValidatorJsonOutput<V>[]
   >(
     "array",
     {
-      check,
+      parse,
+      decode(value, path) {
+        return checkContainer(value, path).map(
+          (item, index) => element.decode(item, `${path}[${index}]`),
+        ) as InferValidator<V>[];
+      },
+      encode(value, path) {
+        return checkContainer(value, path).map(
+          (item, index) => element.encode(item, `${path}[${index}]`),
+        ) as InferValidatorJsonOutput<V>[];
+      },
+      toJsonSchema(context) {
+        return {
+          type: "array",
+          items: element.toJsonSchema({ ...context, path: `${context.path}[]` }),
+          ...(fields?.min === undefined ? {} : { minItems: fields.min }),
+          ...(fields?.max === undefined ? {} : { maxItems: fields.max }),
+        };
+      },
       tsType: () => `${parenthesize(element.tsType())}[]`,
       descriptor: () => ({
         k: "array",
@@ -107,6 +145,16 @@ export type InferInputShape<S extends ObjectShape> = {
 } & {
   [K in OmissibleShapeKey<S>]?: InferValidatorInput<S[K]>;
 };
+export type InferJsonInputShape<S extends ObjectShape> = {
+  [K in Exclude<keyof S, OmissibleShapeKey<S>>]: InferValidatorJsonInput<S[K]>;
+} & {
+  [K in OmissibleShapeKey<S>]?: InferValidatorJsonInput<S[K]>;
+};
+export type InferJsonOutputShape<S extends ObjectShape> = {
+  [K in Exclude<keyof S, OmissibleShapeKey<S>>]: InferValidatorJsonOutput<S[K]>;
+} & {
+  [K in OmissibleShapeKey<S>]?: InferValidatorJsonOutput<S[K]>;
+};
 
 interface CompiledShapeField {
   readonly key: string;
@@ -133,13 +181,25 @@ function setOwnField(record: Record<string, unknown>, key: string, value: unknow
   });
 }
 
-/** Compile one strict, presence-preserving object validator from a shape. */
-export function compileShape<S extends ObjectShape>(
-  shape: S,
-): (value: unknown, path: string) => InferShape<S> {
+export interface ObjectValidator<S extends ObjectShape = ObjectShape>
+  extends ChainableValidator<
+    InferShape<S>,
+    "object",
+    InferInputShape<S>,
+    InferJsonInputShape<S>,
+    InferJsonOutputShape<S>
+  > {
+  readonly shape: S;
+}
+
+export function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
+  // Own one immutable DSL shape for runtime validation and every projection.
+  // Compile its hot-path keys and omission bits once without splitting that
+  // contract or changing the receiver of a structural validator's parser.
+  const ownedShape = ownShape(shape);
   const knownKeys: Record<string, true> = Object.create(null);
-  const fields = Object.keys(shape).map((key): CompiledShapeField => {
-    const field = shape[key]!;
+  const fields = Object.keys(ownedShape).map((key): CompiledShapeField => {
+    const field = ownedShape[key]!;
     knownKeys[key] = true;
     return {
       key,
@@ -147,13 +207,8 @@ export function compileShape<S extends ObjectShape>(
       omissible: field.kind === "optional" || field.kind === "nullish",
     };
   });
-
-  return (value, path) => {
-    if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
-      fail(path, "object", value);
-    }
-    const input = value as Record<string, unknown>;
-    refuseUnknownKeys(input, (key) => knownKeys[key] === true, path);
+  const parse = (value: unknown, path: string): InferShape<S> => {
+    const input = inputRecord(value, path, false);
     const out: Record<string, unknown> = {};
     for (const field of fields) {
       const present = Object.hasOwn(input, field.key);
@@ -161,42 +216,101 @@ export function compileShape<S extends ObjectShape>(
       setOwnField(
         out,
         field.key,
-        field.validator.check(present ? input[field.key] : undefined, `${path}.${field.key}`),
+        field.validator.parse(present ? input[field.key] : undefined, `${path}.${field.key}`),
       );
     }
     return out as InferShape<S>;
   };
-}
-
-/** One-shot convenience for callers that do not retain a compiled shape. */
-export function checkShape<S extends ObjectShape>(
-  shape: S,
-  value: unknown,
-  path: string,
-): InferShape<S> {
-  return compileShape(shape)(value, path);
-}
-
-export interface ObjectValidator<S extends ObjectShape = ObjectShape>
-  extends ChainableValidator<InferShape<S>, "object", InferInputShape<S>> {
-  readonly shape: S;
-}
-
-export function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
-  // Own one immutable DSL shape for runtime validation and every projection.
-  // Compile its hot-path keys and omission bits once without splitting that
-  // contract or changing the receiver of a structural validator's check.
-  const ownedShape = ownShape(shape);
-  const check = compileShape(ownedShape);
+  const inputRecord = (
+    value: unknown,
+    path: string,
+    standardJson: boolean,
+  ): Record<string, unknown> => {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      value instanceof Uint8Array ||
+      (standardJson && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+    ) {
+      fail(path, "object", value);
+    }
+    const input = value as Record<string, unknown>;
+    refuseUnknownKeys(input, (key) => knownKeys[key] === true, path);
+    return input;
+  };
   return makeValidator<
     InferShape<S>,
     "object",
     { readonly shape: S },
-    InferInputShape<S>
+    InferInputShape<S>,
+    InferJsonInputShape<S>,
+    InferJsonOutputShape<S>
   >(
     "object",
     {
-      check,
+      parse,
+      decode(value, path) {
+        const input = inputRecord(value, path, true);
+        const decoded: Record<string, unknown> = {};
+        for (const field of fields) {
+          if (!Object.hasOwn(input, field.key)) {
+            if (field.omissible) continue;
+            throw new ValidationError(`${path}.${field.key}: required input field is missing`);
+          }
+          setOwnField(
+            decoded,
+            field.key,
+            field.validator.decode(input[field.key], `${path}.${field.key}`),
+          );
+        }
+        return decoded as InferShape<S>;
+      },
+      encode(value, path) {
+        const input = inputRecord(value, path, false);
+        const encoded = Object.create(null) as Record<string, unknown>;
+        for (const field of fields) {
+          if (
+            field.omissible &&
+            (!Object.hasOwn(input, field.key) || input[field.key] === undefined)
+          ) {
+            continue;
+          }
+          if (!Object.hasOwn(input, field.key)) {
+            throw new ValidationError(`${path}.${field.key}: required output field is missing`);
+          }
+          setOwnField(
+            encoded,
+            field.key,
+            field.validator.encode(
+              input[field.key],
+              `${path}.${field.key}`,
+            ),
+          );
+        }
+        return encoded as InferJsonOutputShape<S>;
+      },
+      toJsonSchema(context) {
+        const properties = Object.create(null) as Record<string, JsonSchema>;
+        const required: string[] = [];
+        for (const field of fields) {
+          setOwnField(
+            properties,
+            field.key,
+            field.validator.toJsonSchema({
+              ...context,
+              path: `${context.path}.${field.key}`,
+            }),
+          );
+          if (!field.omissible) required.push(field.key);
+        }
+        return {
+          type: "object",
+          properties,
+          ...(required.length === 0 ? {} : { required }),
+          additionalProperties: false,
+        };
+      },
       tsType() {
         const fields = Object.keys(ownedShape).map((k) => {
           const field = ownedShape[k]!;
@@ -245,7 +359,7 @@ export function enum_<const V extends readonly [string, ...string[]]>(
   >(
     "enum",
     {
-      check(value, path) {
+      parse(value, path) {
         if (typeof value !== "string" || !ownedValues.includes(value)) {
           const got = typeof value === "string" ? JSON.stringify(value) : describe(value);
           throw new ValidationError(
@@ -254,6 +368,7 @@ export function enum_<const V extends readonly [string, ...string[]]>(
         }
         return value as V[number];
       },
+      toJsonSchema: () => ({ type: "string", enum: [...ownedValues] }),
       tsType: () => name,
       descriptor: () => ({ k: "enum", name, values: [...ownedValues] }),
     },
@@ -261,20 +376,53 @@ export function enum_<const V extends readonly [string, ...string[]]>(
   );
 }
 
-type LiteralValue = string | number | boolean | bigint;
+export type LiteralValue = string | number | boolean | bigint;
+type LiteralJson<V extends LiteralValue> = V extends bigint ? `${V}` : V;
 
 export interface LiteralValidator<V extends LiteralValue = LiteralValue>
-  extends ChainableValidator<V, "literal"> {
+  extends ChainableValidator<V, "literal", V, LiteralJson<V>, LiteralJson<V>> {
   readonly value: V;
 }
 
 export function literal<const V extends LiteralValue>(value: V): LiteralValidator<V> {
-  return makeValidator<V, "literal", { readonly value: V }>(
+  const jsonValue = typeof value === "bigint" ? value.toString() : value;
+  return makeValidator<
+    V,
+    "literal",
+    { readonly value: V },
+    V,
+    LiteralJson<V>,
+    LiteralJson<V>
+  >(
     "literal",
     {
-      check(input, path) {
+      parse(input, path) {
         if (input !== value) fail(path, literalTs(value), input);
         return value;
+      },
+      decode(input, path) {
+        if (typeof value !== "bigint") return this.parse(input, path);
+        if (input !== jsonValue) {
+          throw new ValidationError(
+            `${path}: expected ${JSON.stringify(jsonValue)}, got ${describe(input)}`,
+          );
+        }
+        return this.parse(value, path);
+      },
+      encode(input, path) {
+        this.parse(input, path);
+        if (typeof value === "number" && !Number.isFinite(value)) {
+          throw new TypeError(`${path}: v.literal(${String(value)}) has no Standard JSON value`);
+        }
+        return jsonValue as LiteralJson<V>;
+      },
+      toJsonSchema(context) {
+        if (typeof value === "bigint") {
+          requireJsonProtocol(context, "v.literal(bigint)");
+        } else if (typeof value === "number" && !Number.isFinite(value)) {
+          throw new TypeError(`${context.path}: v.literal(${String(value)}) has no Standard JSON value`);
+        }
+        return { const: jsonValue };
       },
       tsType: () => literalTs(value),
       descriptor: () => ({ k: "literal", v: JSON.parse(encode(value)) }),
@@ -288,118 +436,136 @@ function literalTs(value: LiteralValue): string {
   return typeof value === "string" ? JSON.stringify(value) : String(value);
 }
 
-export function tag(): StandardValidator<null, "tag"> {
-  return makeValidator("tag", {
-    check(value, path) {
-      if (value !== null && value !== undefined) fail(path, "null (payload-less variant)", value);
-      return null;
-    },
-    tsType: () => "null",
-    descriptor: () => ({ k: "tag" }),
-  }, undefined, "none");
-}
+type DiscriminatedMembers = readonly [ObjectValidator<any>, ObjectValidator<any>, ...ObjectValidator<any>[]];
 
-export type UnionMembers = Record<string, StandardValidator<unknown, string>>;
-
-export type UnionValue<M extends UnionMembers> = {
-  [K in keyof M & string]: M[K] extends Validator<unknown, "optional" | "nullish", unknown>
-    ? { tag: K; value?: InferValidator<M[K]> }
-    : { tag: K; value: InferValidator<M[K]> };
-}[keyof M & string];
-
-export type UnionInput<M extends UnionMembers> = {
-  [K in keyof M & string]: M[K] extends Validator<unknown, "tag", unknown>
-    ? { tag: K; value?: null }
-    : M[K] extends Validator<unknown, "optional" | "nullish", unknown>
-      ? { tag: K; value?: InferValidatorInput<M[K]> }
-      : { tag: K; value: InferValidatorInput<M[K]> };
-}[keyof M & string];
-
-export type UnionNamespace<M extends UnionMembers> = {
-  [K in keyof M & string]: M[K] extends Validator<null, "tag">
-    ? () => { tag: K; value: null }
-    : (value: InferValidator<M[K]>) => { tag: K; value: InferValidator<M[K]> };
+type ValidDiscriminatedMembers<
+  D extends string,
+  M extends DiscriminatedMembers,
+> = {
+  readonly [I in keyof M]: M[I] extends ObjectValidator<infer S>
+    ? D extends keyof S
+      ? S[D] extends LiteralValidator<string>
+        ? M[I]
+        : never
+      : never
+    : never;
 };
 
-export interface UnionValidator<M extends UnionMembers = UnionMembers>
-  extends ChainableValidator<UnionValue<M>, "union", UnionInput<M>> {
-  readonly name: string;
+export interface DiscriminatedUnionValidator<
+  D extends string = string,
+  M extends DiscriminatedMembers = DiscriminatedMembers,
+> extends ChainableValidator<
+    InferValidator<M[number]>,
+    "discriminatedUnion",
+    InferValidatorInput<M[number]>,
+    InferValidatorJsonInput<M[number]>,
+    InferValidatorJsonOutput<M[number]>
+> {
+  /** Optional generated TypeScript alias. It is not part of schema or storage identity. */
+  readonly codegenName?: string;
+  readonly discriminator: D;
   readonly members: M;
-  /** Runtime variant constructors: `MessagePayload.text("hi")`. */
-  readonly union: UnionNamespace<M>;
-  /** Phantom: `typeof myUnion.type` is the discriminated union type. */
-  readonly type: UnionValue<M>;
+  readonly hasDiscriminatorValue: (value: string) => boolean;
 }
 
-export function union<M extends UnionMembers>(name: string, members: M): UnionValidator<M> {
-  const variantNames = Object.keys(members);
-  if (variantNames.length === 0) throw new ValidationError(`union ${name}: no variants`);
-  const namespace: Record<string, (value?: unknown) => unknown> = {};
-  for (const variant of variantNames) {
-    setOwnField(
-      namespace,
-      variant,
-      members[variant]!.kind === "tag"
-        ? () => ({ tag: variant, value: null })
-        : (value: unknown) => ({ tag: variant, value }),
-    );
+export function discriminatedUnion<
+  const D extends string,
+  const M extends DiscriminatedMembers,
+>(
+  discriminator: D,
+  members: M & ValidDiscriminatedMembers<D, M>,
+  codegenName?: string,
+): DiscriminatedUnionValidator<D, M> {
+  const ownedMembers = Object.freeze([...members]) as unknown as M;
+  const memberByDiscriminator = new Map<string, ObjectValidator<any>>();
+  for (const member of ownedMembers) {
+    const literal = member.shape[discriminator] as LiteralValidator;
+    if (literal === undefined || literal.kind !== "literal" || typeof literal.value !== "string") {
+      throw new ValidationError(
+        `v.discriminatedUnion(${JSON.stringify(discriminator)}, ...): every member must have a string-literal discriminator`,
+      );
+    }
+    if (memberByDiscriminator.has(literal.value)) {
+      throw new ValidationError(
+        `v.discriminatedUnion(${JSON.stringify(discriminator)}, ...): duplicate discriminator ${literalTs(literal.value)}`,
+      );
+    }
+    memberByDiscriminator.set(literal.value, member);
   }
-  return makeValidator<
-    UnionValue<M>,
-    "union",
+  const inputRecord = (value: unknown, path: string): Record<string, unknown> => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      fail(path, "discriminated union object", value);
+    }
+    return value as Record<string, unknown>;
+  };
+  const unknownDiscriminator = (value: unknown, path: string): never => {
+    const expected = [...memberByDiscriminator.keys()].map(literalTs).join(" | ");
+    throw new ValidationError(
+      `${path}.${discriminator}: expected one of ${expected}, got ${describe(value)}`,
+    );
+  };
+  const memberFor = (value: unknown, path: string): ObjectValidator<any> => {
+    const input = inputRecord(value, path);
+    return typeof input[discriminator] === "string"
+      ? memberByDiscriminator.get(input[discriminator]) ?? unknownDiscriminator(input[discriminator], path)
+      : unknownDiscriminator(input[discriminator], path);
+  };
+  const validator = makeValidator<
+    InferValidator<M[number]>,
+    "discriminatedUnion",
     {
-      readonly name: string;
+      readonly codegenName?: string;
+      readonly discriminator: D;
       readonly members: M;
-      readonly union: UnionNamespace<M>;
-      readonly type: UnionValue<M>;
+      readonly hasDiscriminatorValue: (value: string) => boolean;
     },
-    UnionInput<M>
+    InferValidatorInput<M[number]>,
+    InferValidatorJsonInput<M[number]>,
+    InferValidatorJsonOutput<M[number]>
   >(
-    "union",
+    "discriminatedUnion",
     {
-      check(value, path) {
-        if (value === null || typeof value !== "object" || Array.isArray(value)) {
-          fail(path, `${name} ({ tag, value })`, value);
-        }
-        const input = value as Record<string, unknown>;
-        const variant = input["tag"];
-        if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
-          throw new ValidationError(
-            `${path}.tag: expected one of ${variantNames.map((v) => JSON.stringify(v)).join(" | ")}, got ${describe(variant) === "string" ? JSON.stringify(variant) : describe(variant)}`,
-          );
-        }
-        refuseUnknownUnionKeys(input, path);
-        const member = members[variant]!;
-        if (
-          !Object.hasOwn(input, "value") &&
-          (member.kind === "optional" || member.kind === "nullish")
-        ) {
-          return { tag: variant } as UnionValue<M>;
-        }
-        const payload = member.check(input["value"], `${path}.value`);
-        return { tag: variant, value: payload } as UnionValue<M>;
+      parse(value, path) {
+        return memberFor(value, path).parse(value, path) as InferValidator<M[number]>;
       },
-      tsType: () => name,
-      descriptor() {
-        const memberDesc: Record<string, Descriptor> = {};
-        for (const variant of variantNames) {
-          setOwnField(memberDesc, variant, members[variant]!.descriptor());
-        }
-        return { k: "union", name, members: memberDesc };
+      decode(value, path) {
+        return memberFor(value, path).decode(value, path) as InferValidator<M[number]>;
       },
+      encode(value, path) {
+        return memberFor(value, path).encode(value, path) as InferValidatorJsonOutput<M[number]>;
+      },
+      toJsonSchema(context) {
+        return {
+          oneOf: ownedMembers.map((member, index) =>
+            member.toJsonSchema({
+              ...context,
+              path: `${context.path}[${index}]`,
+            })
+          ),
+        };
+      },
+      tsType: () => codegenName ?? ownedMembers.map((member) => member.tsType()).join(" | "),
+      descriptor: () => ({
+        k: "discriminatedUnion",
+        discriminator,
+        members: Object.fromEntries(
+          [...memberByDiscriminator].map(([value, member]) => [value, member.descriptor()]),
+        ),
+      }),
     },
     {
-      name,
-      members,
-      union: namespace as UnionNamespace<M>,
-      type: undefined as unknown as UnionValue<M>,
+      ...(codegenName === undefined ? {} : { codegenName }),
+      discriminator,
+      members: ownedMembers,
+      hasDiscriminatorValue: (value) => memberByDiscriminator.has(value),
     },
   );
+  return validator;
 }
 
 export function jsonb<T>(): ChainableValidator<T, "jsonb"> {
   return makeValidator("jsonb", {
-    check(value, path) {
+    parse(value, path) {
       if (value === undefined) fail(path, "JSON value", value);
       try {
         encode(value);
@@ -411,6 +577,9 @@ export function jsonb<T>(): ChainableValidator<T, "jsonb"> {
       }
       return value as T;
     },
+    decode: (value) => value as T,
+    encode: (value) => value,
+    toJsonSchema: () => ({}),
     // T is erased at runtime; row-level jsonb types flow through the schema's
     // TypeScript type instead (RowOf<Schema, ...> in generated types).
     tsType: () => "unknown",

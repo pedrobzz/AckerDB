@@ -1,5 +1,6 @@
 import { parseSentFrame } from "ackerdb-test-support/client-transport";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,8 +17,6 @@ import {
   AckerDBError,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -41,7 +40,6 @@ import {
 } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
 import { deferred, until, type Deferred } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -94,7 +92,7 @@ async function createApp(): Promise<App> {
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const calls: RecordedCall[] = [];
-  const registry = new Registry({
+  const modules = {
     tools: {
       echo: procedure({
         access: "public",
@@ -123,11 +121,13 @@ async function createApp(): Promise<App> {
         },
       }),
     },
+  };
+  const running = await startTestServer({
+    engine,
+    definitions: testDefinitions(modules),
+    limits: PRODUCTION_LIMITS,
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS });
-  await runtime.start();
-  const server = listen(runtime);
-  const base = `http://127.0.0.1:${server.port}`;
+  const base = running.base;
   return {
     base,
     calls,
@@ -140,8 +140,7 @@ async function createApp(): Promise<App> {
       };
     },
     async close() {
-      await server.drain();
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

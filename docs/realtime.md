@@ -161,6 +161,11 @@ subscription for reconstructible application state.
 or event subscription protocol. Its chunks have no subscription cursor or
 automatic replay; reconnect means starting a new procedure call.
 
+Typed clients open every SSE procedure with `POST /_sse/open`, carrying the
+canonical function address in `x-ackerdb-function` and the standard-JSON args
+object in the body. This native route is independent of the procedure's
+optional public HTTP/OpenAPI declaration.
+
 Each SSE event contains one strict wire envelope:
 
 ```ts

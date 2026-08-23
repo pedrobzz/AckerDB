@@ -20,11 +20,14 @@ import {
   type SseErrorMessage,
   type SseMessage,
 } from "@ackerdb/core";
-import type { AnyRegisteredSse, ErrorDeclaration } from "../app/functions.ts";
-import type { ExposedFunction, Registry } from "../app/registry.ts";
+import {
+  type AnyRegistered,
+  type AnyRegisteredSse,
+  type ErrorDeclaration,
+} from "../app/functions.ts";
+import type { Registry } from "../app/registry.ts";
 import {
   DECIMAL_PATTERN,
-  argsJsonSchema,
   validatorJsonSchema,
 } from "../validation/json-schema.ts";
 import type { StandardValidator } from "../validation/validator.ts";
@@ -264,18 +267,19 @@ function applicationErrorSchema(
 
 /** Declared errors, one response per declared status; a shared status is a union. */
 function applicationErrorResponses(
-  exposed: ExposedFunction,
+  address: string,
+  fn: AnyRegistered,
   receipt: JsonObject,
 ): readonly (readonly [string, JsonObject])[] {
   const byStatus = new Map<number, { codes: string[]; schemas: JsonObject[] }>();
   for (
-    const [code, declaration] of Object.entries(exposed.fn.errors ?? {})
+    const [code, declaration] of Object.entries(fn.errors ?? {})
       .sort(([a], [b]) => a.localeCompare(b))
   ) {
     let entry = byStatus.get(declaration.status);
     if (entry === undefined) byStatus.set(declaration.status, (entry = { codes: [], schemas: [] }));
     entry.codes.push(code);
-    entry.schemas.push(applicationErrorSchema(exposed.address, code, declaration));
+    entry.schemas.push(applicationErrorSchema(address, code, declaration));
   }
   return [...byStatus.entries()]
     .sort(([a], [b]) => a - b)
@@ -293,21 +297,21 @@ function applicationErrorResponses(
     ] as const);
 }
 
-function successResponse(exposed: ExposedFunction, receipt: JsonObject): JsonObject {
-  if (exposed.kind === "sse") {
-    const { yields } = exposed.fn as AnyRegisteredSse;
+function successResponse(address: string, fn: AnyRegistered, receipt: JsonObject): JsonObject {
+  if (fn.kind === "sse") {
+    const { yields } = fn as AnyRegisteredSse;
     return {
       description: SSE_STREAM_DESCRIPTION,
       headers: SSE_RESPONSE_HEADERS,
       content: {
         [EVENT_STREAM_MEDIA_TYPE]: {
-          schema: sseStreamSchema(embedded(describing(exposed.address, "yields", () =>
+          schema: sseStreamSchema(embedded(describing(address, "yields", () =>
             validatorJsonSchema(yields as StandardValidator, { mode: "output" })))),
         },
       },
     };
   }
-  const returns = exposed.fn.returns;
+  const returns = fn.returns;
   // A function without a `returns` validator is documented as an untyped value
   // and flagged as one. Hiding the operation would misreport the surface.
   if (returns === undefined) {
@@ -324,19 +328,19 @@ function successResponse(exposed: ExposedFunction, receipt: JsonObject): JsonObj
     ...receipt,
     content: {
       [JSON_MEDIA_TYPE]: {
-        schema: embedded(describing(exposed.address, "returns", () =>
+        schema: embedded(describing(address, "returns", () =>
           validatorJsonSchema(returns as StandardValidator, { mode: "output" }))),
       },
     },
   };
 }
 
-function responses(exposed: ExposedFunction): JsonObject {
+function responses(address: string, fn: AnyRegistered): JsonObject {
   // A committed mutation answers with its receipt even when the application
   // rejected the call, exactly as the served surface does.
-  const receipt = exposed.kind === "mutation" ? { headers: RECEIPT_RESPONSE_HEADERS } : {};
-  const documented: JsonObject = { "200": successResponse(exposed, receipt) };
-  for (const [status, response] of applicationErrorResponses(exposed, receipt)) {
+  const receipt = fn.kind === "mutation" ? { headers: RECEIPT_RESPONSE_HEADERS } : {};
+  const documented: JsonObject = { "200": successResponse(address, fn, receipt) };
+  for (const [status, response] of applicationErrorResponses(address, fn, receipt)) {
     documented[status] = response;
   }
   documented["default"] = OUTCOME_RESPONSE;
@@ -344,13 +348,13 @@ function responses(exposed: ExposedFunction): JsonObject {
 }
 
 function operation(
-  exposed: ExposedFunction,
+  address: string,
+  fn: AnyRegistered,
   method: string,
   id: string,
   args: JsonObject,
   argsRequired: boolean,
 ): JsonObject {
-  const { fn, address } = exposed;
   return {
     operationId: id,
     tags: [topLevelModule(address)],
@@ -368,53 +372,53 @@ function operation(
           }],
         }
       : {
-          ...(exposed.kind === "mutation" ? { parameters: [IDEMPOTENCY_KEY_PARAMETER] } : {}),
+          ...(fn.kind === "mutation" ? { parameters: [IDEMPOTENCY_KEY_PARAMETER] } : {}),
           requestBody: {
             required: argsRequired,
             content: { [JSON_MEDIA_TYPE]: { schema: args } },
           },
         }),
-    responses: responses(exposed),
+    responses: responses(address, fn),
   };
 }
 
 function pathItem(
-  exposed: ExposedFunction,
+  address: string,
+  fn: AnyRegistered,
   /** Every operationId already claimed, mapped to the address that claimed it. */
   claimed: Map<string, string>,
 ): Record<string, JsonObject> {
-  const args = embedded(describing(exposed.address, "args", () =>
-    argsJsonSchema(exposed.fn.args)));
+  const args = embedded(describing(address, "args", () => validatorJsonSchema(fn.args)));
   const required = Array.isArray(args["required"]) && args["required"].length > 0;
   const item: Record<string, JsonObject> = {};
-  for (const method of EXPOSED_HTTP_METHODS[exposed.kind]) {
+  for (const method of EXPOSED_HTTP_METHODS[fn.kind]) {
     // Distinct paths can still name one operation — a query at "notes.list" and
     // a function at "notes.list.get" both own "notes.list.get" — and the walk
     // refuses to emit a document codegen would reject or silently dedupe.
-    const id = operationId(exposed.address, method);
+    const id = operationId(address, method);
     const owner = claimed.get(id);
     if (owner !== undefined) {
       throw new TypeError(
-        `functions "${owner}" and "${exposed.address}" both document operationId "${id}"; rename one address`,
+        `functions "${owner}" and "${address}" both document operationId "${id}"; rename one address`,
       );
     }
-    claimed.set(id, exposed.address);
-    item[method.toLowerCase()] = operation(exposed, method, id, args, required);
+    claimed.set(id, address);
+    item[method.toLowerCase()] = operation(address, fn, method, id, args, required);
   }
   return item;
 }
 
-/** Walk the registry: one operation per exposed, documented function, in path order. */
+/** Walk the address registry: one operation per exposed, documented function, in path order. */
 export function openApiDocument(registry: Registry, info: OpenApiInfo): OpenApiDocument {
   const paths: Record<string, Record<string, JsonObject>> = {};
   const tags = new Set<string>();
   const claimed = new Map<string, string>();
-  for (
-    const exposed of [...registry.exposed.values()].sort((a, b) => a.path.localeCompare(b.path))
-  ) {
-    if (!exposed.openapi) continue;
-    paths[exposed.path] = pathItem(exposed, claimed);
-    tags.add(topLevelModule(exposed.address));
+  const documented = [...registry.functions]
+    .filter(([, fn]) => fn.http?.openapi === true)
+    .sort(([, a], [, b]) => a.http!.path.localeCompare(b.http!.path));
+  for (const [address, fn] of documented) {
+    paths[fn.http!.path] = pathItem(address, fn, claimed);
+    tags.add(topLevelModule(address));
   }
   return {
     openapi: OPENAPI_VERSION,

@@ -29,7 +29,10 @@ describe("vector schema placement", () => {
     for (const nested of [
       v.array(v.vector(2)),
       v.object({ embedding: v.vector(2) }),
-      v.union("Payload", { embedding: v.vector(2) }),
+      v.discriminatedUnion("type", [
+        v.object({ type: v.literal("embedding"), value: v.vector(2) }),
+        v.object({ type: v.literal("none") }),
+      ]),
     ]) {
       expect(() => defineSchema({
         documents: defineTable({ id: v.primaryKey(), nested }),

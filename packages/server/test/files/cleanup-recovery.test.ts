@@ -52,7 +52,7 @@ describe("File cleanup restart recovery", () => {
     store = new LocalFileStore({ root: join(directory, "files") });
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: { store },
     });
     await runtime.start();
@@ -94,7 +94,7 @@ describe("File cleanup restart recovery", () => {
 
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: { store },
     });
     await runtime.start();
@@ -111,7 +111,7 @@ describe("File cleanup restart recovery", () => {
     let now = Date.now();
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: { store },
       now: () => now,
     });
@@ -149,7 +149,7 @@ describe("File cleanup restart recovery", () => {
     try {
       runtime = new Runtime({
         engine,
-        registry: new Registry({}),
+        registry: new Registry(),
         files: { store },
         now: () => now,
       });
@@ -243,7 +243,7 @@ describe("File cleanup restart recovery", () => {
 
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: { store },
     });
     await runtime.start();
@@ -326,7 +326,7 @@ describe("File cleanup restart recovery", () => {
 
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: { store },
     });
     await runtime.start();

@@ -6,7 +6,7 @@
  */
 import type { TableColumns } from "../schema/definition.ts";
 import type { TableQuery } from "../database/query/types.ts";
-import type { AnyJob, JobState } from "./definition.ts";
+import type { AnyJobDefinition, JobState } from "./definition.ts";
 import type { buildJobRunsTable, buildJobsTable } from "./table.ts";
 import type { JobEnqueueOptions, JobHandle, JobRunOutcome } from "../runtime/jobs/runtime.ts";
 
@@ -48,7 +48,7 @@ type ArgsOf<J> = J extends { _argsType?: infer I } ? Exclude<I, undefined> : nev
 type ResultOf<J> = J extends { _retType?: infer R } ? R : never;
 
 type JobExports<M> = {
-  [Exp in keyof M as M[Exp] extends AnyJob ? Exp : never]: M[Exp];
+  [Exp in keyof M as M[Exp] extends AnyJobDefinition ? Exp : never]: M[Exp];
 };
 
 /** One job module's ctx.jobs slice in queries; codegen nests these. */

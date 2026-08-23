@@ -25,7 +25,7 @@ import {
   resolveFilesConfig,
   type AppConfig,
 } from "../app/config.ts";
-import { importApp } from "../app/manifest.ts";
+import { importEntrypoint } from "../app/manifest.ts";
 import { createFileStore } from "./store.ts";
 import {
   migrateFileStore,
@@ -196,7 +196,7 @@ export async function migrateActiveFileStore(
     if (!existsSync(database) || !statSync(database).isFile() || statSync(database).size === 0) {
       throw new Error(`AckerDB database not found at ${database}`);
     }
-    const app = await importApp(config);
+    const app = await importEntrypoint(config);
     const engine = new Engine(app.schema, database, {
       durability: config.durability,
       integrityCheck: "full",

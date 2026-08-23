@@ -4,7 +4,7 @@ import { v } from "@ackerdb/server";
 describe("v.vector", () => {
   test("normalizes coordinates once to canonical Float32 values", () => {
     const input = [1.1, -0, 16_777_217];
-    const value = v.vector(3).check(input, "embedding");
+    const value = v.vector(3).parse(input, "embedding");
 
     expect(value).toEqual([1.100000023841858, 0, 16_777_216]);
     expect(value).not.toBe(input);
@@ -17,15 +17,15 @@ describe("v.vector", () => {
     }
 
     const vector = v.vector(2);
-    expect(() => vector.check([1], "embedding")).toThrow("got 1 dimensions");
-    expect(() => vector.check(new Float32Array([1, 2]), "embedding"))
+    expect(() => vector.parse([1], "embedding")).toThrow("got 1 dimensions");
+    expect(() => vector.parse(new Float32Array([1, 2]), "embedding"))
       .toThrow("expected a 2-dimensional vector");
-    expect(() => vector.check([NaN, 2], "embedding")).toThrow("embedding[0]");
-    expect(() => vector.check([1, Infinity], "embedding")).toThrow("embedding[1]");
+    expect(() => vector.parse([NaN, 2], "embedding")).toThrow("embedding[0]");
+    expect(() => vector.parse([1, Infinity], "embedding")).toThrow("embedding[1]");
     const sparse = new Array<number>(2);
     sparse[0] = 1;
-    expect(() => vector.check(sparse, "embedding")).toThrow("embedding[1]");
-    expect(() => vector.check([Number.MAX_VALUE, 2], "embedding"))
+    expect(() => vector.parse(sparse, "embedding")).toThrow("embedding[1]");
+    expect(() => vector.parse([Number.MAX_VALUE, 2], "embedding"))
       .toThrow("overflows Float32");
   });
 
@@ -45,22 +45,22 @@ describe("v.vector", () => {
     });
   });
 
-  test("composes inside function arrays, objects, and union payloads", () => {
+  test("composes inside function arrays, objects, and discriminated unions", () => {
     const args = v.object({
       batches: v.array(v.vector(2)),
-      choice: v.union("VectorChoice", {
-        dense: v.vector(2),
-        none: v.tag(),
-      }),
+      choice: v.discriminatedUnion("type", [
+        v.object({ type: v.literal("dense"), value: v.vector(2) }),
+        v.object({ type: v.literal("none") }),
+      ]),
     });
 
     expect(args["~standard"].validate({
       batches: [[1.1, 2]],
-      choice: { tag: "dense", value: [3, 4] },
+      choice: { type: "dense", value: [3, 4] },
     })).toEqual({
       value: {
         batches: [[1.100000023841858, 2]],
-        choice: { tag: "dense", value: [3, 4] },
+        choice: { type: "dense", value: [3, 4] },
       },
     });
     expect(args["~standard"].jsonSchema.input({ target: "draft-2020-12" }))

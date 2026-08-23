@@ -67,6 +67,11 @@ _Avoid_: Independent transaction, ordinary helper call
 
 ## Framework runtime
 
+**Server definition** — An application declaration that becomes a query,
+mutation, procedure, SSE procedure, HTTP route, Job definition, or application
+channel. Each kind is distinct from every other kind.
+_Avoid_: Registered export
+
 **Application manifest** — The application's single executable assembly point,
 declaring its root schema. Operational settings remain outside the manifest.
 
@@ -143,7 +148,7 @@ _Avoid_: Local procedure call, background job, ambient system context
 
 ## Durable jobs
 
-**Step** — One named, journaled unit of work inside a procedure-kind job
+**Step** — One named, journaled unit of work inside a procedure-mode Job
 handler. A completed step's recorded result stands in for re-execution when
 the handler replays, so a Job run executes only work the journal has not
 recorded. The name carries the author's promise that the same name means the
@@ -220,7 +225,8 @@ triggered it.
 ## HTTP surface
 
 **HTTP route** — One entry on AckerDB's HTTP surface: an explicit path and a
-non-empty map from HTTP method to the handler answering it. Every entry is one
+non-empty map from HTTP method to the handler answering it. That value owns the
+whole path; another value cannot add disjoint methods later. Every entry is one
 — a health probe, a File byte route, the WebSocket door, an exposed function's
 compiled surface, an application webhook — so a new entry is a value rather
 than another branch in the listener.
@@ -710,12 +716,13 @@ vocabulary, `_*` covers the declared names beginning with `_`.
 _Avoid_: Role, superuser flag, permission group
 
 **Function address** — The one dotted name every registered function answers
-to, in process and over every transport: the fixed `api` root, then the
-directory segments of the module declaring it, then the export name. An
-HTTP-exposed function's URL is that address segment for segment; an HTTP route
-states its own path and is not addressed by it. A file named `index.ts`
-contributes its directory's name rather than its own, so a directory may hold a
-module of its own name beside its siblings.
+to in process and through its native transport: the fixed `api` root, then the
+directory segments of the module declaring it, then the export name. Generated
+references and jobs carry it unchanged; typed SSE sends it in
+`x-ackerdb-function`. Public HTTP is separate: a function that opts in states
+its exact path, just as an HTTP route does. A file named `index.ts` contributes
+its directory's name rather than its own, so a directory may hold a module of
+its own name beside its siblings.
 _Avoid_: Function name, ref string, route
 
 **Identity credential** — An opaque bearer credential that *is* an Identity:

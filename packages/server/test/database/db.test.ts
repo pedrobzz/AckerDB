@@ -36,7 +36,10 @@ const schema = () =>
       id: v.primaryKey(),
       email: v.string(),
       name: v.string(),
-      payload: v.union("UPayload", { text: v.string(), nothing: v.tag() }),
+      payload: v.discriminatedUnion("type", [
+        v.object({ type: v.literal("text"), value: v.string() }),
+        v.object({ type: v.literal("nothing") }),
+      ]),
     })
       .index(["email"], { unique: true })
       .index(["payload"]),
@@ -357,18 +360,18 @@ describe("writes", () => {
   });
 
   test("unique index violations throw UniqueConstraintError and roll nothing forward", async () => {
-    await db.users.insert({ email: "a@x.com", name: "A", payload: { tag: "nothing", value: null } });
+    await db.users.insert({ email: "a@x.com", name: "A", payload: { type: "nothing" } });
     await expect(
-      db.users.insert({ email: "a@x.com", name: "B", payload: { tag: "nothing", value: null } }),
+      db.users.insert({ email: "a@x.com", name: "B", payload: { type: "nothing" } }),
     ).rejects.toThrow(UniqueConstraintError);
-    const b = await db.users.insert({ email: "b@x.com", name: "B", payload: { tag: "nothing", value: null } });
+    const b = await db.users.insert({ email: "b@x.com", name: "B", payload: { type: "nothing" } });
     await expect(db.users.patch(b, { email: "a@x.com" })).rejects.toThrow(UniqueConstraintError);
   });
 
   test("upsert: insert path, patch path, function form", async () => {
     const id = await db.users.upsert(
       { email: "ana@x.com" },
-      { name: "Ana", payload: { tag: "nothing", value: null } },
+      { name: "Ana", payload: { type: "nothing" } },
     );
     expect(await db.users.get(id)).toMatchObject({ email: "ana@x.com", name: "Ana" });
     const same = await db.users.upsert({ email: "ana@x.com" }, { name: "Ana Maria" });
@@ -387,7 +390,7 @@ describe("writes", () => {
     await db.users.insert({
       email: "single-read@x.com",
       name: "Before",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     const statement = engine.statement.bind(engine);
     let selects = 0;
@@ -427,7 +430,7 @@ describe("writes", () => {
 
     // upsert: the post-write row on both paths
     const created = await db.users
-      .upsert({ email: "w@x.com" }, { name: "W", payload: { tag: "nothing", value: null } })
+      .upsert({ email: "w@x.com" }, { name: "W", payload: { type: "nothing" } })
       .returning();
     expect(created).toMatchObject({ email: "w@x.com", name: "W" });
     const updated = await db.users.upsert({ email: "w@x.com" }, { name: "W2" }).returning();
@@ -460,7 +463,7 @@ describe("writes", () => {
 
   test("write keys cover id, scan and every index prefix level", async () => {
     const id = await pay(5n, "active", 100);
-    const tag = engine.plan("payments").columns.get("status")!.variantTag!("active")!;
+    const tag = engine.plan("payments").columns.get("status")!.toSql("active") as number;
     const [userIndex, compositeIndex] = engine.plan("payments").indexes;
     expect(writes.keys).toEqual(
       new Set([
@@ -542,13 +545,31 @@ describe("reads", () => {
     expect(seen).toEqual([100, 300, 200, 50]);
   });
 
-  test("union columns use an explicit variant predicate", async () => {
-    await db.users.insert({ email: "t@x.com", name: "T", payload: { tag: "text", value: "hi" } });
-    await db.users.insert({ email: "n@x.com", name: "N", payload: { tag: "nothing", value: null } });
+  test("discriminated unions query through their string discriminator", async () => {
+    await db.users.insert({ email: "t@x.com", name: "T", payload: { type: "text", value: "hi" } });
+    await db.users.insert({ email: "n@x.com", name: "N", payload: { type: "nothing" } });
+    let issuedSql: string | undefined;
+    const statement = engine.statement.bind(engine);
+    engine.statement = (connection, sql) => {
+      if (sql.includes('FROM "users"') && sql.includes("json_extract")) issuedSql = sql;
+      return statement(connection, sql);
+    };
+
     const texts = await db.users.query().where((row: any) => row.payload.is("text")).collect();
     expect(texts).toHaveLength(1);
-    expect(texts[0].payload).toEqual({ tag: "text", value: "hi" });
-    expect(() => db.users.query().where((row: any) => row.payload.is("gif"))).toThrow("variant");
+    expect(texts[0].payload).toEqual({ type: "text", value: "hi" });
+    expect(() => db.users.query().where((row: any) => row.payload.is("gif"))).toThrow("discriminator");
+
+    expect(issuedSql).toBeDefined();
+    const plan = engine.reader
+      .query(`EXPLAIN QUERY PLAN ${issuedSql!}`)
+      .all("text") as { detail: string }[];
+    const payloadIndex = engine.plan("users").indexes.find(({ columns }) =>
+      columns.length === 1 && columns[0] === "payload"
+    )!;
+    expect(plan.some(({ detail }) =>
+      detail.includes(indexSqlName("users", payloadIndex.name))
+    )).toBe(true);
   });
 
   test("read set records precise keys", async () => {

@@ -6,6 +6,7 @@
  * recovery entirely independent of those terminal settlements.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 // Registers happy-dom before any React module loads — every test file in this
 // suite must do this first (see ackerdb-test-support/dom).
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
@@ -24,8 +25,6 @@ import {
 import {
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -33,6 +32,7 @@ import {
   query,
   reconcile,
   sseProcedure,
+  type Runtime,
   type SseCtx,
 } from "@ackerdb/server";
 import type { UIMessage, UIMessageChunk } from "ai";
@@ -42,7 +42,6 @@ import { createRoot, type Root } from "react-dom/client";
 import type { AckerDBQueryState } from "@ackerdb/client-react";
 import { uiMessageChunk } from "./ai/ui-message-chunk.ts";
 import { deferred, type Deferred, until, waitForAbort } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -87,8 +86,8 @@ const standardArgs = {
   messages: v.jsonb<UIMessage[]>(),
 };
 
-function registry(): Registry {
-  return new Registry({
+function modules() {
+  return {
     messages: {
       list: query({
         access: "public",
@@ -104,7 +103,6 @@ function registry(): Registry {
     ai: {
       holdBeforeFirst: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -121,7 +119,6 @@ function registry(): Registry {
       // family the settlement path must be indifferent to.
       holdMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -141,7 +138,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface App {
@@ -154,19 +151,16 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-native-settlement-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry: registry(),
+    definitions: testDefinitions(modules()),
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  const server = listen(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
-    runtime,
+    base: running.base,
+    runtime: running.runtime,
     async close() {
-      await server.drain().catch(() => {});
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

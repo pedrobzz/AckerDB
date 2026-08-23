@@ -33,10 +33,14 @@ Column references expose only meaningful operations:
 - ordered scalars: `lt`, `lte`, `gt`, `gte`, and `between`;
 - nullable columns: `isNull` and `isNotNull`;
 - expressions: `and`, `or`, and `not`;
-- union discriminants: `is("variant")`, which narrows the row type positively.
+- discriminated unions: `is(literal)` compares the indexed discriminator and
+  narrows the row value to the selected member.
 
-Structured values and vectors do not pretend to have scalar SQL ordering.
-Enum and union labels are also not orderable: their stored tags are stable
+Objects, arrays, discriminated unions, and vectors do not pretend to have
+scalar equality or ordering. A discriminated union exposes only `is`, because
+it compares the string discriminator extracted from the complete stored object.
+When indexed, the corresponding SQLite expression index stores that extracted
+value. Enum labels are also not orderable: their stored tags are stable
 identities, not a logical declaration order. Booleans retain `false` then
 `true` ordering.
 All predicate values cross the column's validator and storage codec before
@@ -209,7 +213,7 @@ An expression is either a clause or a group:
   limit. Exceeding any of them is an issue, not a throw.
 
 There is no index selection and no way to name one: indexes stay transparent
-and planner-owned (ADR-0008). Every value crosses its column's validator and
+and planner-owned. Every value crosses its column's validator and
 storage codec before SQLite sees it, exactly as a callback's values do, and a
 validated filter is an ordinary predicate afterwards — it composes with more
 `.where` calls, ordering, aggregates, pagination, and reactive dependency
@@ -229,14 +233,12 @@ const documents = defineTable({
 })
   .index(["accountId"])
   .index(["accountId", "status", "createdAt"])
-  .index(["status"], { algorithm: "direct" });
+  .index(["status"]);
 ```
 
 Composite, reversed, prefix-related, and multiple distinct indexes are all
 supported. Repeating or conflicting over the same ordered columns is rejected.
-The current `direct` algorithm has the same SQLite b-tree performance shape as
-the default; it remains structural configuration rather than a query entry
-point.
+Every declared index is a SQLite B-tree; there is no algorithm option.
 
 Reactive reads conservatively derive declared equality prefixes from the
 predicate expression. If a safe prefix cannot be proven within the dependency
@@ -260,6 +262,7 @@ const id = await ctx.db.users.upsert(
 The key field set must exactly match one declared non-null unique index;
 property order does not matter. Key fields cannot be changed by the values or
 callback. Nullable unique indexes are not valid upsert targets, and a conflict
-with another unique constraint remains an error. Union keys compare both tag
-and payload; a same-tag/different-payload key conflicts with the stronger
-tag-only storage constraint rather than updating a different logical value.
+with another unique constraint remains an error. A discriminated-union key
+compares the complete object while its declared SQLite index enforces the
+stronger discriminator uniqueness. The same discriminator with a different
+payload therefore conflicts instead of updating a different logical value.

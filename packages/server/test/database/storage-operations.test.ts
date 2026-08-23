@@ -96,7 +96,7 @@ describe("durability and internal state", () => {
     const production = new Engine(schema, database);
     reconcile(production);
     expect(production.status()).toMatchObject({
-      engineSchemaVersion: 15,
+      engineSchemaVersion: 14,
       durability: "production",
       synchronous: "FULL",
       commitVersion: 0n,
@@ -141,11 +141,11 @@ describe("durability and internal state", () => {
     written.close("clean");
 
     const db = new Database(database);
-    db.query("UPDATE _ackerdb_meta SET value = '14' WHERE key = 'engine_schema'").run();
+    db.query("UPDATE _ackerdb_meta SET value = '13' WHERE key = 'engine_schema'").run();
     db.close();
 
     expect(() => new Engine(schema, database))
-      .toThrow("database engine schema is 14; expected 15");
+      .toThrow("database engine schema is 13; expected 14");
     expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
   });
 
@@ -386,12 +386,11 @@ describe("durability and internal state", () => {
       const engine = new Engine(schema, database);
       reconcile(engine);
       const snapshot = engine.loadSnapshot()!;
-      const malformedIndex = `s_n_b_${inheritedName.length}_${inheritedName}`;
+      const malformedIndex = `s_n_${inheritedName.length}_${inheritedName}`;
       snapshot.tables.records!.indexes.push({
         name: malformedIndex,
         columns: [inheritedName],
         unique: false,
-        algorithm: "btree",
       });
       engine.saveSnapshot(snapshot);
       expect(() => engine.loadSnapshot()).toThrow(

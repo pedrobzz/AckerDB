@@ -1,3 +1,4 @@
+import { toStandardJson } from "@ackerdb/core";
 import { ValidationError, type Validator } from "@ackerdb/server";
 import type { UIMessageChunk } from "ai";
 
@@ -8,8 +9,8 @@ import type { UIMessageChunk } from "ai";
  * - `v.object` validates exact keys, but every chunk variant carries
  *   optional fields (`providerMetadata`, `title`, ...), so a per-variant
  *   shape model rejects real AI SDK chunks.
- * - `v.union` expects ackerdb's `{ tag, value }` wire form, not the AI SDK's
- *   `type`-discriminated objects.
+ * - `v.discriminatedUnion` still requires exact object members, while AI SDK
+ *   chunks carry variant-specific open metadata fields.
  * - The AI SDK's own `uiMessageChunkSchema` validates asynchronously, while
  *   ackerdb's boundary check is synchronous by design (it sits in the stream's
  *   pull path).
@@ -59,10 +60,22 @@ function describe(value: unknown): string {
   return typeof value;
 }
 
-export function uiMessageChunk(): Validator<UIMessageChunk, "uiMessageChunk"> {
-  return {
+export function uiMessageChunk(): Validator<
+  UIMessageChunk,
+  "uiMessageChunk",
+  UIMessageChunk,
+  unknown,
+  unknown
+> {
+  const validator: Validator<
+    UIMessageChunk,
+    "uiMessageChunk",
+    UIMessageChunk,
+    unknown,
+    unknown
+  > = {
     kind: "uiMessageChunk",
-    check(value, path) {
+    parse(value, path = "$input") {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         throw new ValidationError(`${path}: expected UIMessageChunk object, got ${describe(value)}`);
       }
@@ -86,7 +99,19 @@ export function uiMessageChunk(): Validator<UIMessageChunk, "uiMessageChunk"> {
       }
       return value as UIMessageChunk;
     },
+    decode(value, path = "$input") {
+      return validator.parse(value, path);
+    },
+    encode(value, path = "$output") {
+      return toStandardJson(validator.parse(value, path));
+    },
+    toJsonSchema(options = {}) {
+      throw new TypeError(
+        `${options.path ?? "$"}: UIMessageChunk owns no JSON Schema representation`,
+      );
+    },
     tsType: () => "UIMessageChunk",
     descriptor: () => ({ k: "uiMessageChunk" }),
   };
+  return validator;
 }

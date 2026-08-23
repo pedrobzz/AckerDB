@@ -99,13 +99,13 @@ export interface JobsWriteSurface {
   readonly runs: JobRunsStore;
   /**
    * A savepoint over the open transaction plus its write collector: the
-   * mutation-kind envelope runs the handler inside one, so a failed handler
+   * mutation-mode envelope runs the handler inside one, so a failed handler
    * rolls back its writes while the same transaction still records the
    * failed run.
    */
   savepoint(): { rollback(): void; release(): void };
   /**
-   * Run a mutation-kind job handler under the same system-principal mutation
+   * Run a mutation-mode Job handler under the same system-principal mutation
    * context bindings a registered mutation would have.
    */
   runMutationHandler<T>(
@@ -614,7 +614,7 @@ export class RuntimeFunctionExecutor<C> {
   /**
    * One coordinated writer transaction for the job runner: the jobs store
    * (unguarded framework writes over `_ackerdb_jobs`) plus a system-principal
-   * mutation context for mutation-kind handlers, all inside the ordinary
+   * mutation context for mutation-mode handlers, all inside the ordinary
    * mutation access scope so table methods, write keys, publication, and
    * commit-wake behave exactly as they do for any mutation.
    */

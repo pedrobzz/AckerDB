@@ -31,6 +31,7 @@ import {
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
@@ -133,7 +134,7 @@ const revokeAny = typedMutation({
 const revokeManyThenFail = typedProcedure({
   description: "Revoke a set, then discard the whole transaction.",
   access: "public",
-  http: true,
+  http: { path: "/api/admin/revokeManyThenFail", openapi: true },
   args: { ids: v.array(v.string()) },
   returns: v.object({ rolledBack: v.boolean() }),
   handler: async (ctx, args) => {
@@ -251,7 +252,7 @@ async function start(): Promise<Harness> {
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(modules),
+    registry: testRegistry(modules),
     scopes: VOCABULARY,
     resolveScopes: () => VOCABULARY,
   });

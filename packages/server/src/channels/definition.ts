@@ -24,7 +24,12 @@ import type {
   InferValidatorInput,
   Validator,
 } from "../validation/validator.ts";
-import type { InferShape, ObjectShape } from "../validation/composites.ts";
+import {
+  object,
+  type InferShape,
+  type ObjectShape,
+  type ObjectValidator,
+} from "../validation/composites.ts";
 import {
   type AuthorizationError,
   type AuthorizationState,
@@ -33,7 +38,6 @@ import {
   authorizationResult as channelAuthorizationResult,
   validateDeclaration,
   validateEventDeclarations,
-  validateArgsShape,
 } from "../validation/declarations.ts";
 
 export type ChannelEventDeclarations = Readonly<
@@ -214,7 +218,7 @@ export interface RegisteredChannel<
     ChannelAuthorizationCtx<S, RoomOutput<Room>>,
     AuthorizationReturn
   > {
-  readonly args: A;
+  readonly args: ObjectValidator<A>;
   readonly room?: Room;
   readonly clientEvents: ClientDeclarations;
   readonly serverEvents: ServerDeclarations;
@@ -308,7 +312,7 @@ export const channel: ChannelBuilder<Schema> = <
       "channel access must be public, authenticated, system, or a policy callback",
     );
   }
-  validateArgsShape(definition.args);
+  const args = object(definition.args);
   validateEventDeclarations(definition.clientEvents, "clientEvents");
   validateEventDeclarations(definition.serverEvents, "serverEvents");
   if (definition.room !== undefined) {
@@ -338,9 +342,9 @@ export const channel: ChannelBuilder<Schema> = <
   }
 
   const registered = Object.freeze({
-    isAckerDBChannel: true as const,
     kind: "channel" as const,
     ...definition,
+    args,
     handler: definition.authorize ?? (() => undefined),
   }) as unknown as RegisteredChannel<
     A,
@@ -350,29 +354,12 @@ export const channel: ChannelBuilder<Schema> = <
     AuthorizationReturn,
     Schema
   >;
-  compileInvocation(registered as unknown as {
-    readonly args: ObjectShape;
-    readonly access: AccessPolicy<InvocationContext, unknown>;
-  });
+  compileInvocation(registered);
   return registered;
 };
 
-export type AnyRegisteredChannel = RegisteredChannel<
-  ObjectShape,
-  Validator<unknown, string> | undefined,
-  ChannelEventDeclarations,
-  ChannelEventDeclarations,
-  unknown,
-  Schema
->;
-
-export function isRegisteredChannel(value: unknown): value is AnyRegisteredChannel {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { readonly isAckerDBChannel?: unknown }).isAckerDBChannel === true &&
-    (value as { readonly kind?: unknown }).kind === "channel"
-  );
-}
+// Channel registries deliberately erase the declaration's concrete contract.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyRegisteredChannel = RegisteredChannel<any, any, any, any, any, any>;
 
 export { channelAuthorizationResult };

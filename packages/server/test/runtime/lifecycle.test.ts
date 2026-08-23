@@ -4,17 +4,18 @@
  * a fully constructed but quiescent runtime until it says otherwise.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure } from "../../src/app/functions.ts";
-import { declareJobs, job } from "../../src/jobs/definition.ts";
+import { job } from "../../src/jobs/definition.ts";
 import { JOBS_TABLE } from "../../src/jobs/table.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
@@ -36,7 +37,7 @@ const modules = {
   },
 };
 
-const jobs = declareJobs({
+const jobModules = {
   beat: {
     tick: job({
       args: {},
@@ -44,20 +45,27 @@ const jobs = declareJobs({
       handler: () => undefined,
     }),
   },
-});
+};
 
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
+let server: AckerDBServer;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-lifecycle-"));
   engine = new Engine(schema, join(dir, "data.db"));
   await reconcile(engine, []);
-  runtime = new Runtime({ engine, registry: new Registry(modules), limits, jobs });
+  server = new AckerDBServer({ limits, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: server.registerDefinitions(testDefinitions(modules, jobModules)),
+    limits,
+  });
 });
 
 afterEach(async () => {
+  await server.drain().catch(() => {});
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(dir, { recursive: true, force: true });
@@ -76,12 +84,7 @@ test("a constructed Runtime is created: it refuses operations and arms nothing",
   expect(refused).toBeInstanceOf(AckerDBError);
   expect((refused as AckerDBError).code).toBe("unavailable");
 
-  const server = new AckerDBServer({ limits, port: 0 });
-  try {
-    expect(() => server.activate(runtime)).toThrow("Runtime must be ready before activation");
-  } finally {
-    await server.drain().catch(() => {});
-  }
+  expect(() => server.activate(runtime)).toThrow("Runtime must be ready before activation");
 });
 
 test("start() makes it ready: repeat jobs are minted, the runner is armed, operations run", async () => {
@@ -91,10 +94,8 @@ test("start() makes it ready: repeat jobs are minted, the runner is armed, opera
   expect(runtime.status().jobsArmed).toBe(true);
   await expect(runtime.system.run("test.ready", async () => "ran")).resolves.toBe("ran");
 
-  const server = new AckerDBServer({ limits, port: 0 });
   server.activate(runtime);
   expect((await (await fetch(`http://127.0.0.1:${server.port}/ready`)).json()).ready).toBe(true);
-  await server.drain();
 });
 
 test("start() twice is misuse", async () => {
@@ -112,9 +113,7 @@ test("a created Runtime drains cleanly without ever having started", async () =>
 test("a failed jobs bootstrap fails start()", async () => {
   const failing = new Runtime({
     engine,
-    registry: new Registry(modules),
-    limits,
-    jobs: declareJobs({
+    registry: testRegistry(modules, {
       beat: {
         tick: job({
           args: {},
@@ -125,6 +124,7 @@ test("a failed jobs bootstrap fails start()", async () => {
         }),
       },
     }),
+    limits,
   });
   try {
     await expect(failing.start()).rejects.toThrow("repeat policy exploded");

@@ -86,7 +86,7 @@ export interface FilterableFields<C extends ObjectShape = ObjectShape> {
 interface FieldPlan {
   readonly kind: string;
   readonly nullable: boolean;
-  check(value: unknown, path: string): unknown;
+  parse(value: unknown, path: string): unknown;
 }
 
 /** A checked but un-encoded clause tree; storage encoding waits for the plan. */
@@ -152,7 +152,7 @@ export function filterableFields<C extends ObjectShape>(
     plans.set(field, {
       kind: inner.kind,
       nullable: validator.kind === "nullable",
-      check: (value, path) => inner.check(value, path),
+      parse: (value, path) => inner.parse(value, path),
     });
   }
   const validator = new FilterValidator(table as TableDef, plans);
@@ -373,7 +373,7 @@ class FilterValidator {
     walk: Walk,
   ): { readonly value: unknown } | undefined {
     try {
-      return { value: plan.check(value, path) };
+      return { value: plan.parse(value, path) };
     } catch (error) {
       if (!isValidationError(error)) throw error;
       const prefix = `${path}: `;
@@ -403,7 +403,7 @@ type FoldedNode = PredicateNode | typeof TRUE | typeof FALSE;
 export function filterPredicate(plan: TablePlan, meta: TableFilterMeta): PredicateNode | null {
   if (meta.table !== plan.table) {
     throw new ValidationError(
-      `${plan.displayName}.query.where: this filter was validated for a different table`,
+      `${plan.name}.query.where: this filter was validated for a different table`,
     );
   }
   const folded = fold(plan, meta.node);
@@ -417,9 +417,9 @@ function fold(plan: TablePlan, node: ValidatedNode): FoldedNode {
     case "column":
       return {
         kind: "comparison",
-        column: node.column,
+        reference: { column: node.column },
         op: node.op,
-        value: toSqlPredicateValue(plan, node.column, node.value, false),
+        value: toSqlPredicateValue(plan, node.column, node.value),
       };
     case "null":
       return { kind: "null", column: node.column, isNull: node.isNull };
@@ -428,7 +428,7 @@ function fold(plan: TablePlan, node: ValidatedNode): FoldedNode {
       const membership: PredicateNode = {
         kind: "in",
         column: node.column,
-        values: node.values.map((value) => toSqlPredicateValue(plan, node.column, value, false)),
+        values: node.values.map((value) => toSqlPredicateValue(plan, node.column, value)),
       };
       return node.negated ? { kind: "not", expression: membership } : membership;
     }

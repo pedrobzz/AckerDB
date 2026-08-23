@@ -18,6 +18,7 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { storedIdentityForAccount } from "../support/identities.ts";
@@ -48,7 +49,7 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
-      http: true,
+      http: { path: "/api/accounts/link", openapi: true },
       args: { rawBearerToken: v.string() },
       handler: async (ctx: Ctx, args: { rawBearerToken: string }) => {
         await ctx.linkAccount(args.rawBearerToken);
@@ -59,7 +60,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/create", openapi: true },
       args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -71,7 +72,7 @@ const functions = {
     }),
     current: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      http: true,
+      http: { path: "/api/owned/current", openapi: true },
       args: {},
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -147,7 +148,7 @@ async function open(): Promise<Harness> {
   const verifier = new LinkingVerifier(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: testRegistry(functions),
     verifier,
     now: () => NOW,
   });

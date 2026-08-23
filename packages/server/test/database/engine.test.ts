@@ -17,11 +17,11 @@ afterEach(() => {
 
 const role = () => v.enum("Role", ["admin", "member", "guest"]);
 const payload = () =>
-  v.union("Payload", {
-    text: v.string(),
-    image: v.object({ url: v.string(), width: v.int() }),
-    nothing: v.tag(),
-  });
+  v.discriminatedUnion("type", [
+    v.object({ type: v.literal("text"), value: v.string() }),
+    v.object({ type: v.literal("image"), url: v.string(), width: v.int() }),
+    v.object({ type: v.literal("nothing") }),
+  ]);
 
 const kitchenSinkSchema = () =>
   defineSchema({
@@ -163,7 +163,7 @@ describe("engine storage", () => {
       meta: { a: 42n, b: null },
       extra: { deep: [1n, 2n] },
       role: "member",
-      payload: { tag: "image", value: { url: "u", width: 10 } },
+      payload: { type: "image", url: "u", width: 10 },
       maybe: null,
       maybeRole: null,
       maybePayload: null,
@@ -181,46 +181,17 @@ describe("engine storage", () => {
 
     const second = insertAndReadBack(engine, {
       ...input,
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
       maybe: "present",
       maybeRole: "guest",
-      maybePayload: { tag: "text", value: "t" },
+      maybePayload: { type: "text", value: "t" },
     });
-    expect(second.row["payload"]).toEqual({ tag: "nothing", value: null });
+    expect(second.row["payload"]).toEqual({ type: "nothing" });
     expect(second.row["maybeRole"]).toBe("guest");
-    expect(second.row["maybePayload"]).toEqual({ tag: "text", value: "t" });
+    expect(second.row["maybePayload"]).toEqual({ type: "text", value: "t" });
     engine.close("clean");
   });
 
-  test("enum and union values are stored as integer tags", () => {
-    const engine = new Engine(kitchenSinkSchema(), freshPath());
-    engine.createAll();
-    insertAndReadBack(engine, {
-      name: "n",
-      rank: 0,
-      score: 0,
-      count: 0n,
-      ok: false,
-      blob: new Uint8Array(0),
-      tags: [],
-      meta: { a: 0n, b: null },
-      extra: {},
-      role: "guest",
-      payload: { tag: "text", value: "x" },
-      maybe: null,
-      maybeRole: null,
-      maybePayload: null,
-    });
-    const raw = engine.writer.query(`SELECT "role", "payload", "payload__p" FROM "things"`).get() as {
-      role: bigint;
-      payload: bigint;
-      payload__p: string;
-    };
-    expect(raw.role).toBe(2n); // guest is the third declared variant
-    expect(raw.payload).toBe(0n); // text is the first
-    expect(raw.payload__p).toBe('"x"');
-    engine.close("clean");
-  });
 });
 
 describe("tag interning", () => {
@@ -232,8 +203,8 @@ describe("tag interning", () => {
   test("tags are stable across reopen, reorder, delete and re-add", () => {
     const path = freshPath();
     const tags = (engine: Engine, variants: readonly string[]) => {
-      const variantTag = engine.plan("items").columns.get("status")!.variantTag!;
-      return new Map(variants.map((variant) => [variant, variantTag(variant)]));
+      const status = engine.plan("items").columns.get("status")!;
+      return new Map(variants.map((variant) => [variant, status.toSql(variant)]));
     };
 
     const first = new Engine(schemaWith(["draft", "published", "archived"]), path);

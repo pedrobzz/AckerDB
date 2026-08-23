@@ -16,7 +16,7 @@ import {
   reconcile,
 } from "@ackerdb/server";
 import { resolveFileStoreBinding } from "@ackerdb/server/files/binding";
-import { importApp } from "../../src/app/manifest.ts";
+import { importEntrypoint } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { createFileStore } from "../../src/files/store.ts";
 import { mutationReplayOwner } from "../../../server/src/database/mutation-replay.ts";
@@ -61,21 +61,20 @@ function fixture(app = FIXTURE_APP): string {
 
 async function seed(dir: string, durability: "production" | "balanced" = "production"): Promise<void> {
   const config = loadConfig(dir, { ACKERDB_DURABILITY: durability });
-  const app = await importApp(config);
+  const app = await importEntrypoint(config);
   mkdirSync(config.dbDir, { recursive: true });
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"), { durability });
   try {
     reconcile(engine);
     const messages = engine.plan("messages");
-    const role = messages.columns.get("role")!.variantTag!("member")!;
-    const payload = messages.columns.get("payload")!.variantTag!("nothing")!;
+    const role = messages.columns.get("role")!.toSql("member") as number;
     engine.writer.exec("BEGIN IMMEDIATE");
     try {
       engine.writer
         .query(
-          "INSERT INTO messages (channelId, body, role, payload, payload__p) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO messages (channelId, body, role, payload) VALUES (?, ?, ?, ?)",
         )
-        .run(7n, "preserved", role, payload, encode(null));
+        .run(7n, "preserved", role, encode({ type: "nothing" }));
       const staged = engine[mutationReplayOwner].stage({
         sessionId: replayRecord.sessionId,
         requestId: replayRecord.requestId,
@@ -110,7 +109,7 @@ async function seedFile(dir: string): Promise<{ objectKey: string; contents: str
   const stored = await store.put(objectKey, new Blob([bytes]).stream(), {
     contentLength: bytes.byteLength,
   });
-  const app = await importApp(config);
+  const app = await importEntrypoint(config);
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
   try {
     resolveFileStoreBinding(engine, await (await createFileStore(config.files)).identity());
@@ -166,7 +165,7 @@ describe("acker backup, restore, and status", () => {
     const opened = await new LocalFileStore({ root: targetConfig.files.root }).open(file.objectKey);
     expect(await new Response(opened.body).text()).toBe(file.contents);
     const restoredEngine = new Engine(
-      (await importApp(targetConfig)).schema,
+      (await importEntrypoint(targetConfig)).schema,
       join(targetConfig.dbDir, "data.db"),
     );
     try {
@@ -280,7 +279,7 @@ describe("acker backup, restore, and status", () => {
     const file = await seedFile(source);
     const config = loadConfig(source);
     if (config.files.backend !== "filesystem") throw new Error("test fixture must use local File storage");
-    const app = await importApp(config);
+    const app = await importEntrypoint(config);
     const engine = new Engine(app.schema, join(config.dbDir, "data.db"));
     try {
       engine.writer.query("UPDATE _ackerdb_files SET state = 'deleting' WHERE id = 41").run();
@@ -388,7 +387,7 @@ describe("acker backup, restore, and status", () => {
       status: { commitVersion: "1" },
     });
     const targetConfig = loadConfig(target);
-    const restored = new Engine((await importApp(targetConfig)).schema, join(targetConfig.dbDir, "data.db"), {
+    const restored = new Engine((await importEntrypoint(targetConfig)).schema, join(targetConfig.dbDir, "data.db"), {
       integrityCheck: "full",
     });
     try {
@@ -510,7 +509,7 @@ describe("acker backup, restore, and status", () => {
     const config = loadConfig(target);
     await expect(restoreVerifiedBackup(config, artifact, async () => {
       writeFileSync(
-        config.appPath,
+        config.entrypoint,
         FIXTURE_APP.replace(
           "messages: defineTable({",
           "extra: defineTable({ id: v.primaryKey() }),\n  messages: defineTable({",
@@ -529,7 +528,7 @@ describe("acker backup, restore, and status", () => {
     const target = fixture();
     await seed(target);
     const config = loadConfig(target);
-    const live = new Engine((await importApp(config)).schema, join(config.dbDir, "data.db"));
+    const live = new Engine((await importEntrypoint(config)).schema, join(config.dbDir, "data.db"));
     const sentinel = join(config.dbDir, "operator-note");
     writeFileSync(sentinel, "start winner");
     try {

@@ -364,9 +364,9 @@ export class DatabaseOwnership {
     try {
       database.exec("PRAGMA busy_timeout = 0");
       try {
-        // Not a `transaction()` site: this BEGIN IMMEDIATE is the ownership LOCK
-        // (ADR-0007). It is held for the whole process lifetime and released by
-        // `release()`, so it has no bracketed body to commit.
+        // Not a `transaction()` site: this BEGIN IMMEDIATE is the ownership lock.
+        // It is held for the whole process lifetime and released by `release()`,
+        // so it has no bracketed body to commit.
         database.exec("BEGIN IMMEDIATE");
         transactionOpen = true;
       } catch (error) {

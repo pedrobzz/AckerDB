@@ -1,90 +1,125 @@
-/** Application manifest and host function-module loading. */
-import { existsSync, readdirSync } from "node:fs";
-import { join, sep } from "node:path";
+/** Application entrypoint and definition-module discovery. */
+import {
+  existsSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import {
+  basename,
+  extname,
+  join,
+  normalize,
+  resolve,
+  sep,
+} from "node:path";
 import { pathToFileURL } from "node:url";
-import { isApp, type App } from "@ackerdb/server";
+import {
+  isApp,
+  type App,
+  type ImportedDefinitionModule,
+} from "@ackerdb/server";
 import type { AppConfig } from "./config.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
-
-/**
- * The file name that takes its directory's name instead of its own, so
- * `functions/orders/index.ts` publishes `orders.*` rather than
- * `orders.index.*`. It is the one name a module file cannot keep, which is why
- * two files can now claim one module key and why the two refusals below exist.
- */
 const INDEX_MODULE = "index";
 
 export interface ModuleFile {
-  /** Dot-joined module key: functions/admin/users.ts -> "admin.users". */
-  key: string;
-  segments: string[];
-  file: string;
+  /** Dot-joined logical module name. */
+  readonly key: string;
+  readonly segments: readonly string[];
+  readonly file: string;
 }
 
-/** Deterministically list one module directory's files (sorted by key). */
-function listModules(dir: string, kind: string): ModuleFile[] {
-  if (!existsSync(dir)) return [];
-  const claimed = new Map<string, string>();
-  const out: ModuleFile[] = [];
-  const entries = readdirSync(dir, { recursive: true }) as string[];
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith(".ts") || entry.endsWith(".d.ts")) continue;
-    const segments = entry.slice(0, -".ts".length).split(sep);
-    if (segments.some((segment) =>
-      segment.startsWith("_") || segment.startsWith(".") || !IDENTIFIER.test(segment)
-    )) {
+function moduleSegments(entry: string, directoryRoot: boolean): string[] {
+  const segments = entry.slice(0, -".ts".length).split(sep);
+  if (segments.some((segment) =>
+    segment.startsWith("_") || segment.startsWith(".") || !IDENTIFIER.test(segment)
+  )) {
+    throw new Error(
+      `definition module "${entry}": path segments become names and must be identifiers (got "${segments.join("/")}")`,
+    );
+  }
+  if (directoryRoot && segments.at(-1) === INDEX_MODULE) {
+    segments.pop();
+    if (segments.length === 0) {
       throw new Error(
-        `${kind} module "${entry}": path segments become names and must be identifiers (got "${segments.join("/")}")`,
+        `definition module "${entry}": an "${INDEX_MODULE}" file takes its directory's name, and this one has no directory — move it into one or configure the file directly`,
       );
     }
-    if (segments[segments.length - 1] === INDEX_MODULE) {
-      segments.pop();
-      // At the root there is no directory to take a name from, and the
-      // alternative — publishing exports directly below `api` — is a module
-      // with no name at all, which neither the tree nor an address can hold.
-      // Refusing it keeps the collapse one rule with no exception.
-      if (segments.length === 0) {
-        throw new Error(
-          `${kind} module "${entry}": an "${INDEX_MODULE}" file takes its directory's name, and this one has no directory — move it into one or give it a name`,
-        );
-      }
+  }
+  return segments;
+}
+
+/** Deterministically list every configured definition file in one namespace. */
+export function listDefinitionModules(config: AppConfig): ModuleFile[] {
+  const entrypoint = normalize(resolve(config.entrypoint));
+  const entrypointPhysical = existsSync(entrypoint) ? realpathSync(entrypoint) : entrypoint;
+  const claimedFiles = new Map<string, string>();
+  const claimedModules = new Map<string, string>();
+  const modules: ModuleFile[] = [];
+
+  const contribute = (
+    file: string,
+    entry: string,
+    directoryRoot: boolean,
+    rootOrigin: string,
+  ): void => {
+    const resolved = normalize(resolve(file));
+    const physical = realpathSync(resolved);
+    if (resolved === entrypoint || physical === entrypointPhysical) {
+      throw new Error(
+        `application entrypoint "${config.entrypoint}" is also discovered as definition module "${resolved}"`,
+      );
     }
+    const fileOwner = claimedFiles.get(physical);
+    if (fileOwner !== undefined) {
+      throw new Error(
+        `definition file "${physical}" is discovered through both ${fileOwner} and ${rootOrigin}`,
+      );
+    }
+    const segments = moduleSegments(entry, directoryRoot);
     const key = segments.join(".");
-    // One address, one file. The collapse is what makes this reachable —
-    // `orders.ts` and `orders/index.ts` both publish `orders` — and it would
-    // otherwise be settled silently by whichever the walk reached second.
-    const owner = claimed.get(key);
-    if (owner !== undefined) {
+    const moduleOwner = claimedModules.get(key);
+    if (moduleOwner !== undefined) {
       throw new Error(
-        `${kind} modules "${owner}" and "${entry}" both publish "${key}": an "${INDEX_MODULE}" file takes its directory's name, so one of them must be renamed`,
+        `definition modules "${moduleOwner}" and "${resolved}" both publish "${key}"`,
       );
     }
-    claimed.set(key, entry);
-    out.push({ key, segments, file: join(dir, entry) });
+    claimedFiles.set(physical, rootOrigin);
+    claimedModules.set(key, resolved);
+    modules.push({ key, segments, file: resolved });
+  };
+
+  for (const [index, root] of config.definitions.entries()) {
+    const rootOrigin = `definitions[${index}] "${root}"`;
+    if (!existsSync(root)) continue;
+    const stats = statSync(root);
+    if (stats.isFile()) {
+      if (extname(root) !== ".ts" || root.endsWith(".d.ts")) {
+        throw new Error(`definition entry "${root}" must be a directory or TypeScript file`);
+      }
+      contribute(root, basename(root), false, rootOrigin);
+      continue;
+    }
+    if (!stats.isDirectory()) {
+      throw new Error(`definition entry "${root}" must be a directory or TypeScript file`);
+    }
+    for (const entry of (readdirSync(root, { recursive: true }) as string[]).sort()) {
+      if (!entry.endsWith(".ts") || entry.endsWith(".d.ts")) continue;
+      contribute(join(root, entry), entry, true, rootOrigin);
+    }
   }
-  // Sorted by key rather than by path, because the collapse reorders them:
-  // `orders/list.ts` walks before `orders/index.ts` and publishes after it.
-  return out.sort((left, right) => left.key.localeCompare(right.key));
+  return modules.sort((left, right) => left.key.localeCompare(right.key));
 }
 
-/** Deterministically list function module files (sorted by key). */
-export function listFunctionModules(config: AppConfig): ModuleFile[] {
-  return listModules(config.functionsDir, "function");
-}
-
-/** Deterministically list job module files (sorted by key). */
-export function listJobModules(config: AppConfig): ModuleFile[] {
-  return listModules(config.jobsDir, "job");
-}
-
-export async function importApp(config: AppConfig): Promise<App> {
-  if (!existsSync(config.appPath)) {
-    throw new Error(`application manifest not found at ${config.appPath}`);
+export async function importEntrypoint(config: AppConfig): Promise<App> {
+  if (!existsSync(config.entrypoint)) {
+    throw new Error(`application entrypoint not found at ${config.entrypoint}`);
   }
-  const module = (await import(pathToFileURL(config.appPath).href)) as { default?: unknown };
+  const module = (await import(pathToFileURL(config.entrypoint).href)) as { default?: unknown };
   if (!isApp(module.default)) {
-    throw new Error(`${config.appPath} must default-export defineApp(...)`);
+    throw new Error(`${config.entrypoint} must default-export defineApp(...)`);
   }
   return module.default;
 }
@@ -103,28 +138,16 @@ export async function importConfiguredDefault(
   }
 }
 
-async function importModules(
-  files: readonly ModuleFile[],
-): Promise<Record<string, Record<string, unknown>>> {
-  const modules: Record<string, Record<string, unknown>> = {};
-  for (const { key, file } of files) {
-    modules[key] = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+export async function importDefinitionModules(
+  config: AppConfig,
+): Promise<readonly ImportedDefinitionModule[]> {
+  const modules: ImportedDefinitionModule[] = [];
+  for (const { key, file } of listDefinitionModules(config)) {
+    modules.push(Object.freeze({
+      name: key,
+      origin: file,
+      exports: (await import(pathToFileURL(file).href)) as Record<string, unknown>,
+    }));
   }
-  return modules;
-}
-
-export async function importFunctionModules(
-  config: AppConfig,
-): Promise<Record<string, Record<string, unknown>>> {
-  return importModules(listFunctionModules(config));
-}
-
-/**
- * Import job modules. The serving path and dev reloads call this; codegen
- * only lists files, so job handler imports stay out of schema tooling.
- */
-export async function importJobModules(
-  config: AppConfig,
-): Promise<Record<string, Record<string, unknown>>> {
-  return importModules(listJobModules(config));
+  return Object.freeze(modules);
 }

@@ -25,14 +25,16 @@
  */
 import type { DurabilityPolicy } from "@ackerdb/core";
 import type { App } from "./app/definition.ts";
-import { Registry, type LoadedModules } from "./app/registry.ts";
+import {
+  collectDefinitions,
+  type ImportedDefinitionModule,
+} from "./definitions.ts";
 import type { AppSystemCtx, SystemRunner } from "./app/system.ts";
 import type { CredentialVerifier, ScopeResolver } from "./auth/credentials.ts";
 import { Engine, type EngineCloseDisposition } from "./database/engine.ts";
 import { resolveFileStoreBinding } from "./files/binding.ts";
 import type { RuntimeFilesOptions } from "./files/namespace.ts";
 import type { FileStore } from "./files/store/contract.ts";
-import { declareJobs } from "./jobs/definition.ts";
 import { settleOnAbort } from "./runtime/abort.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./runtime/limits.ts";
 import { Runtime } from "./runtime/runtime.ts";
@@ -54,8 +56,7 @@ export interface LoadedApp<A extends App = App> {
 
 /** What the request runtime needs; loaded only after durable schema work commits. */
 export interface LoadedRuntime {
-  readonly functions: LoadedModules;
-  readonly jobs: LoadedModules;
+  readonly modules: readonly ImportedDefinitionModule[];
   readonly verifier?: CredentialVerifier;
   readonly resolveScopes?: ScopeResolver;
 }
@@ -224,7 +225,7 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     // commits.
     advance("loading-runtime");
     const loaded = await raced(options.load.runtime(signal));
-    const registry = new Registry(loaded.functions);
+    const registry = server.registerDefinitions(collectDefinitions(loaded.modules));
     // The App manifest and the Registry meet here: every declared scope
     // requirement must draw from the known vocabulary.
     registry.checkScopeRequirements(app.scopes);
@@ -232,7 +233,6 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
       engine,
       registry,
       limits,
-      jobs: declareJobs(loaded.jobs),
       files: options.files,
       ...(loaded.verifier === undefined ? {} : { verifier: loaded.verifier }),
       ...(loaded.resolveScopes === undefined ? {} : { resolveScopes: loaded.resolveScopes }),

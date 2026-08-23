@@ -13,7 +13,7 @@
  *   - converting an event table into a real table (event → table)
  *   - adding a nullable column
  *   - widening a column to nullable (a rebuild that preserves every row)
- *   - adding / reordering enum & union variants (tags are stable)
+ *   - adding / reordering enum variants (tags are stable)
  *   - dropping any index; adding / changing a non-unique index
  *
  * Data-dependent constraints are attempted optimistically: unique indexes probe
@@ -33,10 +33,11 @@
  * new-target plan resolver, so no positional threading crosses the seam.
  */
 import type { Database } from "bun:sqlite";
-import { Engine, indexSqlName, persistTagMaps, type PhysicalTablePlan } from "../database/engine.ts";
+import { descriptorIndexExpression, Engine, indexSqlName, persistTagMaps, type PhysicalTablePlan } from "../database/engine.ts";
 import { transaction } from "../database/transaction.ts";
 import { CorruptDatabaseError } from "../shared/errors.ts";
 import { isValidationError } from "../validation/error.ts";
+import type { Descriptor } from "../validation/validator.ts";
 import { checkDescriptor } from "./descriptor-kinds.ts";
 import { classifySchemaDiff, refusalSite, type OptimisticChange, type SafeChange, type SchemaRefusal } from "./classify.ts";
 import { diffSnapshots, type SchemaDiff } from "./diff.ts";
@@ -46,7 +47,6 @@ import {
   decodeStoredRow,
   loadStoredTags,
   pageStoredRows,
-  physicalColumnsOf,
   type StoredTags,
 } from "./stored-rows.ts";
 import { quoteIdentifier } from "../shared/sql.ts";
@@ -165,9 +165,7 @@ export class SchemaPlanner {
       case "add-column": {
         const tablePlan = planOf(table);
         const columnPlan = tablePlan.columns.get(change.column)!;
-        for (const phys of columnPlan.phys) {
-          this._ops.push(() => writer.exec(`ALTER TABLE ${quoteIdentifier(tablePlan.name)} ADD COLUMN ${phys.ddl}`));
-        }
+        this._ops.push(() => writer.exec(`ALTER TABLE ${quoteIdentifier(tablePlan.name)} ADD COLUMN ${columnPlan.ddl}`));
         this._applied.push(`added nullable column ${table}.${change.column}`);
         return;
       }
@@ -271,7 +269,9 @@ export function probeUniqueIndex(
   phys: { table: string; column: (c: string) => string } = { table, column: (c) => c },
 ): SchemaRefusal | null {
   if (!columns.every((column) => Object.hasOwn(currentColumns, column))) return null;
-  const physCols = columns.map((c) => quoteIdentifier(phys.column(c)));
+  const physCols = columns.map((column) =>
+    descriptorIndexExpression(phys.column(column), currentColumns[column] as Descriptor)
+  );
   const notNull = physCols.map((c) => `${c} IS NOT NULL`).join(" AND ");
   const dupes = query(
     `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quoteIdentifier(phys.table)} WHERE ${notNull} GROUP BY ${physCols.join(", ")} HAVING COUNT(*) > 1)`,
@@ -348,9 +348,9 @@ export function probeOptimisticChanges(
       const table = current.tables[group.table];
       if (table === undefined || table.kind !== "table") continue;
       const selected = new Set(group.changes.map((change) => change.column));
-      const physical = new Set([...physicalColumnsOf(table)].map(group.phys.column));
+      const physical = new Set(Object.keys(table.columns).map(group.phys.column));
       const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected);
-      const projection = decoder.columns.filter((column) => column.present).flatMap((column) => column.phys);
+      const projection = decoder.columns.filter((column) => column.present).map((column) => column.physical);
 
       for (const raw of pageStoredRows(writer, group.phys.table, decoder.physicalPk, projection)) {
         const row = decodeStoredRow(decoder, raw);
@@ -430,8 +430,8 @@ function createIndexOp(engine: Engine, tablePlan: PhysicalTablePlan, name: strin
 function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSnapshot, ops: Op[]): void {
   const writer = engine.writer;
   ops.push(() => {
-    const oldPhys = physicalColumnsOf(oldTable);
-    const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quoteIdentifier).join(", ");
+    const oldPhys = new Set(Object.keys(oldTable.columns));
+    const copy = [...tablePlan.columns.keys()].filter((c) => oldPhys.has(c)).map(quoteIdentifier).join(", ");
     const tmp = `${tablePlan.name}__rebuild`;
     const seqRow = writer
       .query("SELECT seq FROM sqlite_sequence WHERE name = ?")

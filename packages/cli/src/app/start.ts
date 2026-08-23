@@ -21,10 +21,9 @@ import {
 } from "@ackerdb/server";
 import { databasePath, type AppConfig } from "./config.ts";
 import {
-  importApp,
+  importEntrypoint,
   importConfiguredDefault,
-  importFunctionModules,
-  importJobModules,
+  importDefinitionModules,
 } from "./manifest.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
 import { createFileStore } from "../files/store.ts";
@@ -144,21 +143,21 @@ export async function startApp<const A extends App = App>(
     load: {
       app: async () => {
         const [app, migrations] = await Promise.all([
-          options.app === undefined ? importApp(config) as Promise<A> : Promise.resolve(options.app),
+          options.app === undefined
+            ? importEntrypoint(config) as Promise<A>
+            : Promise.resolve(options.app),
           loadMigrationChain(config),
         ]);
         return { app, migrations };
       },
       runtime: async () => {
-        const [verifier, resolveScopes, functions, jobs] = await Promise.all([
+        const [verifier, resolveScopes, modules] = await Promise.all([
           loadCredentialVerifier(),
           loadScopeResolver(),
-          importFunctionModules(config),
-          importJobModules(config),
+          importDefinitionModules(config),
         ]);
         return {
-          functions,
-          jobs,
+          modules,
           ...(verifier === undefined ? {} : { verifier }),
           ...(resolveScopes === undefined ? {} : { resolveScopes }),
         };

@@ -87,9 +87,9 @@ const reservePort = async (): Promise<{ port: number; release(): Promise<void> }
 const fixture = (port: number) => {
   const dir = makeFixture({
     "app.ts": FIXTURE_APP,
-    "functions/messages.ts": FIXTURE_MESSAGES,
-    "jobs/notes.ts": FIXTURE_JOBS,
-    "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
+    "app/messages.ts": FIXTURE_MESSAGES,
+    "app/notes.ts": FIXTURE_JOBS,
+    "app/admin/users.ts": FIXTURE_ADMIN_USERS,
     ".ackerdb.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
@@ -162,8 +162,8 @@ describe("ackerdb CLI", () => {
     const port = freePort();
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
-      "functions/identity.ts": IDENTITY_PROCEDURE,
-      "functions/messages.ts": FIXTURE_MESSAGES,
+      "app/identity.ts": IDENTITY_PROCEDURE,
+      "app/messages.ts": FIXTURE_MESSAGES,
       "credential-verifier.ts": CREDENTIAL_VERIFIER_MODULE,
       ".ackerdb.config.json": JSON.stringify({
         port,
@@ -205,8 +205,8 @@ describe("ackerdb CLI", () => {
     const port = freePort();
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
-      "functions/identity.ts": IDENTITY_PROCEDURE,
-      "functions/messages.ts": FIXTURE_MESSAGES,
+      "app/identity.ts": IDENTITY_PROCEDURE,
+      "app/messages.ts": FIXTURE_MESSAGES,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -488,7 +488,7 @@ ${FIXTURE_APP}`,
     expect(await first.child.exited).toBe(0);
 
     const db = new Database(join(dir, ".ackerdb", "data.db"));
-    db.exec("DROP INDEX ix_messages_s_n_b_9_channelId");
+    db.exec("DROP INDEX ix_messages_s_n_9_channelId");
     db.close();
 
     const failed = spawnCli(["start", dir], { });

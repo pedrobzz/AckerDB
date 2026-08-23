@@ -27,7 +27,7 @@ import {
   type TableDef as TableDefinition,
 } from "@ackerdb/server";
 import { outcomeFromError } from "../../../server/src/runtime/outcome.ts";
-import { importApp } from "../../src/app/manifest.ts";
+import { importEntrypoint } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -102,7 +102,7 @@ test("packed @ackerdb/server values keep identity across physical package copies
     );
 
     const config = loadConfig(app);
-    const schema = (await importApp(config)).schema;
+    const schema = (await importEntrypoint(config)).schema;
     const foreign = (await import(pathToFileURL(appPath).href)) as {
       records: TableDefinition;
       conflict: unknown;

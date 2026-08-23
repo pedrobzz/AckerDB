@@ -26,18 +26,50 @@ import {
   type BoundedValidator,
   type ChainableValidator,
   type StandardValidator,
+  type Validator,
 } from "./validator.ts";
+import {
+  base64JsonSchema,
+  decimalJsonSchema,
+  type JsonSchemaContext,
+} from "./json-schema.ts";
+import {
+  decodeBase64,
+  decodeDecimal,
+  encodeBase64,
+  encodeDecimal,
+} from "./standard-json.ts";
+
+function decimalJson<T extends bigint = bigint>(source: string) {
+  return {
+    decode(this: Pick<Validator<T>, "parse">, value: unknown, path: string) {
+      return this.parse(decodeDecimal(value, path), path);
+    },
+    encode(this: Pick<Validator<T>, "parse">, value: T, path: string) {
+      return encodeDecimal(this.parse(value, path));
+    },
+    toJsonSchema: (context: JsonSchemaContext) =>
+      decimalJsonSchema(context, source),
+  };
+}
 
 export interface StringValidator extends BoundedValidator<string, "string", number> {
   regex(pattern: RegExp): this;
 }
 
-export function primaryKey(): StandardValidator<bigint, "pk"> {
-  return makeValidator("pk", {
-    check(value, path) {
+export function primaryKey(): StandardValidator<
+  bigint,
+  "pk",
+  bigint,
+  number | string,
+  string
+> {
+  return makeValidator<bigint, "pk", object, bigint, number | string, string>("pk", {
+    parse(value, path) {
       if (typeof value !== "bigint") fail(path, "bigint (primary key)", value);
       return value;
     },
+    ...decimalJson("v.primaryKey()"),
     tsType: () => "bigint",
     descriptor: () => ({ k: "pk" }),
   }, undefined, "none");
@@ -63,17 +95,24 @@ export function string(
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
       ...(constraints.regex === undefined ? {} : { regex: constraints.regex.source }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? checkString
     : (value: unknown, path: string): string => {
       const checked = checkString(value, path);
       checkStringConstraints(fields!, checked, path, constraints.regex?.compiled);
       return checked;
     };
+  const schema = {
+    type: "string",
+    ...(fields?.min === undefined ? {} : { minLength: fields.min }),
+    ...(fields?.max === undefined ? {} : { maxLength: fields.max }),
+    ...(fields?.regex === undefined ? {} : { pattern: fields.regex }),
+  };
   return makeValidator<string, "string", Pick<StringValidator, "min" | "max" | "regex">>(
     "string",
     {
-      check,
+      parse,
+      toJsonSchema: () => ({ ...schema }),
       tsType: () => "string",
       descriptor: () => ({
         k: "string",
@@ -97,7 +136,6 @@ function checkFloat(value: unknown, path: string): number {
   return value;
 }
 
-
 function boundedNumber<K extends "int" | "float">(
   kind: K,
   baseCheck: (value: unknown, path: string) => number,
@@ -110,17 +148,33 @@ function boundedNumber<K extends "int" | "float">(
       ...(constraints.min === undefined ? {} : { min: constraints.min }),
       ...(constraints.max === undefined ? {} : { max: constraints.max }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? baseCheck
     : (value: unknown, path: string): number => {
       const checked = baseCheck(value, path);
       checkNumberConstraints(fields!, checked, path);
       return checked;
     };
+  const schema = kind === "int"
+    ? {
+        type: "integer",
+        minimum: fields?.min === undefined
+          ? Number.MIN_SAFE_INTEGER
+          : Math.max(Number.MIN_SAFE_INTEGER, fields.min as number),
+        maximum: fields?.max === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : Math.min(Number.MAX_SAFE_INTEGER, fields.max as number),
+      }
+    : {
+        type: "number",
+        ...(fields?.min === undefined ? {} : { minimum: fields.min }),
+        ...(fields?.max === undefined ? {} : { maximum: fields.max }),
+      };
   return makeValidator<number, K, Pick<BoundedValidator<number, K, number>, "min" | "max">>(
     kind,
     {
-      check,
+      parse,
+      toJsonSchema: () => ({ ...schema }),
       tsType: () => "number",
       descriptor: () => ({
         k: kind,
@@ -154,39 +208,50 @@ function checkBigint(value: unknown, path: string): bigint {
   return checkI64(value, path, "bigint");
 }
 
-/** @internal Base-check identities for the one sanctioned structural test; not in the package barrel. */
-export const validatorBaseChecksForTest = Object.freeze({
-  string: checkString,
-  int: checkInt,
-  float: checkFloat,
-  bigint: checkBigint,
-});
-
 export function bigint(
   constraints?: Bounds<bigint>,
   description?: string,
-): BoundedValidator<bigint, "bigint", bigint> {
+): BoundedValidator<bigint, "bigint", bigint, bigint, number | string, string> {
   const fields: ConstraintFields | undefined = constraints === undefined
     ? undefined
     : {
       ...(constraints.min === undefined ? {} : { min: constraints.min.toString() }),
       ...(constraints.max === undefined ? {} : { max: constraints.max.toString() }),
     };
-  const check = constraints === undefined
+  const parse = constraints === undefined
     ? checkBigint
     : (value: unknown, path: string): bigint => {
       const checked = checkBigint(value, path);
       checkBigintConstraints(fields!, checked, path, constraints);
       return checked;
     };
+  const boundsDescription = [
+    fields?.min === undefined
+      ? undefined
+      : `Minimum bigint value (inclusive): ${String(fields.min)}.`,
+    fields?.max === undefined
+      ? undefined
+      : `Maximum bigint value (inclusive): ${String(fields.max)}.`,
+  ].filter((part): part is string => part !== undefined).join(" ");
   return makeValidator<
     bigint,
     "bigint",
-    Pick<BoundedValidator<bigint, "bigint", bigint>, "min" | "max">
+    Pick<
+      BoundedValidator<bigint, "bigint", bigint, bigint, number | string, string>,
+      "min" | "max"
+    >,
+    bigint,
+    number | string,
+    string
   >(
     "bigint",
     {
-      check,
+      parse,
+      ...decimalJson("v.bigint()"),
+      toJsonSchema(context) {
+        const schema = decimalJsonSchema(context, "v.bigint()");
+        return boundsDescription === "" ? schema : { ...schema, description: boundsDescription };
+      },
       tsType: () => "bigint",
       descriptor: () => ({
         k: "bigint",
@@ -197,32 +262,60 @@ export function bigint(
     "available",
     description,
     BIGINT_CONSTRAINT_PROTOTYPE,
-  ) as BoundedValidator<bigint, "bigint", bigint>;
+  ) as BoundedValidator<bigint, "bigint", bigint, bigint, number | string, string>;
 }
 
-export function identity(): ChainableValidator<Identity, "identity"> {
-  return makeValidator("identity", {
-    check: (value, path) => checkI64(value, path, "Identity (bigint)") as Identity,
+export function identity(): ChainableValidator<
+  Identity,
+  "identity",
+  Identity,
+  number | string,
+  string
+> {
+  return makeValidator<Identity, "identity", object, Identity, number | string, string>("identity", {
+    parse: (value, path) => checkI64(value, path, "Identity (bigint)") as Identity,
+    ...decimalJson<Identity>("v.identity()"),
     tsType: () => "Identity",
     descriptor: () => ({ k: "identity" }),
   });
 }
 
-export type FileValidator = ChainableValidator<FileId, "file">;
+export type FileValidator = ChainableValidator<
+  FileId,
+  "file",
+  FileId,
+  number | string,
+  string
+>;
 
 export function file(): FileValidator {
-  return makeValidator("file", {
-    check: (value, path) => checkI64(value, path, "FileId (bigint)") as FileId,
+  return makeValidator<FileId, "file", object, FileId, number | string, string>("file", {
+    parse: (value, path) => checkI64(value, path, "FileId (bigint)") as FileId,
+    ...decimalJson<FileId>("v.file()"),
     tsType: () => "FileId",
     descriptor: () => ({ k: "file" }),
   });
 }
 
-export type FileGrantValidator = ChainableValidator<FileGrantId, "fileGrant">;
+export type FileGrantValidator = ChainableValidator<
+  FileGrantId,
+  "fileGrant",
+  FileGrantId,
+  number | string,
+  string
+>;
 
 export function fileGrant(): FileGrantValidator {
-  return makeValidator("fileGrant", {
-    check: (value, path) => checkI64(value, path, "FileGrantId (bigint)") as FileGrantId,
+  return makeValidator<
+    FileGrantId,
+    "fileGrant",
+    object,
+    FileGrantId,
+    number | string,
+    string
+  >("fileGrant", {
+    parse: (value, path) => checkI64(value, path, "FileGrantId (bigint)") as FileGrantId,
+    ...decimalJson<FileGrantId>("v.fileGrant()"),
     tsType: () => "FileGrantId",
     descriptor: () => ({ k: "fileGrant" }),
   });
@@ -230,21 +323,35 @@ export function fileGrant(): FileGrantValidator {
 
 export function boolean(): ChainableValidator<boolean, "boolean"> {
   return makeValidator("boolean", {
-    check(value, path) {
+    parse(value, path) {
       if (typeof value !== "boolean") fail(path, "boolean", value);
       return value;
     },
+    toJsonSchema: () => ({ type: "boolean" }),
     tsType: () => "boolean",
     descriptor: () => ({ k: "boolean" }),
   });
 }
 
-export function bytes(): ChainableValidator<Uint8Array, "bytes"> {
-  return makeValidator("bytes", {
-    check(value, path) {
+export function bytes(): ChainableValidator<
+  Uint8Array,
+  "bytes",
+  Uint8Array,
+  string,
+  string
+> {
+  return makeValidator<Uint8Array, "bytes", object, Uint8Array, string, string>("bytes", {
+    parse(value, path) {
       if (!(value instanceof Uint8Array)) fail(path, "Uint8Array", value);
       return value;
     },
+    decode(value, path) {
+      return this.parse(decodeBase64(value, path), path);
+    },
+    encode(value, path) {
+      return encodeBase64(this.parse(value, path));
+    },
+    toJsonSchema: base64JsonSchema,
     tsType: () => "Uint8Array",
     descriptor: () => ({ k: "bytes" }),
   });
@@ -265,7 +372,13 @@ export function vector(dimensions: number): VectorValidator {
   >(
     "vector",
     {
-      check: (value, path) => normalizeVector(value, size, path),
+      parse: (value, path) => normalizeVector(value, size, path),
+      toJsonSchema: () => ({
+        type: "array",
+        items: { type: "number" },
+        minItems: size,
+        maxItems: size,
+      }),
       tsType: () => "readonly number[]",
       descriptor: () => ({ k: "vector", dimensions: size }),
     },
@@ -275,17 +388,17 @@ export function vector(dimensions: number): VectorValidator {
 
 export function scheduleAt(): StandardValidator<number, "scheduleAt"> {
   return makeValidator("scheduleAt", {
-    check(value, path) {
+    parse(value, path) {
       if (typeof value !== "number" || !Number.isFinite(value)) {
         fail(path, "timestamp (finite number)", value);
       }
       return value;
     },
+    toJsonSchema: () => ({ type: "number" }),
     tsType: () => "number",
     descriptor: () => ({ k: "scheduleAt" }),
   }, undefined, "none");
 }
-
 
 const STRING_CONSTRAINT_PROTOTYPE = validatorPrototype({
   min(this: StringValidator, bound: number): StringValidator {
@@ -347,7 +460,14 @@ const NUMBER_CONSTRAINT_PROTOTYPE = validatorPrototype({
   },
 });
 
-type BigintConstraintValidator = BoundedValidator<bigint, "bigint", bigint>;
+type BigintConstraintValidator = BoundedValidator<
+  bigint,
+  "bigint",
+  bigint,
+  bigint,
+  number | string,
+  string
+>;
 const BIGINT_CONSTRAINT_PROTOTYPE = validatorPrototype({
   min(this: BigintConstraintValidator, bound: bigint): BigintConstraintValidator {
     bigintBound(bound, "min");

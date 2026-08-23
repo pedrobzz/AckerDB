@@ -5,6 +5,8 @@
 /opensrc/
 /.wiki/
 /.research/
+/.retardbench/
+/scripts/retardbench/
 /.agents/
 /.claude/
 /.codex/
@@ -27,3 +29,4 @@ sandbox/
 
 .internal-docs
 .workflow/
+scripts/retardbench/csv.ts

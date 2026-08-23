@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,12 +8,11 @@ import type { AckerDBFetch, AckerDBWebSocket, SseRef } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   reconcile,
   sseProcedure,
+  type Runtime,
   type SseCtx,
 } from "@ackerdb/server";
 import {
@@ -35,7 +35,6 @@ import {
 } from "@ackerdb/client-react/ai";
 import { uiMessageChunk } from "./ui-message-chunk.ts";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -54,14 +53,13 @@ const standardArgs = {
   messages: v.jsonb<UIMessage[]>(),
 };
 
-function registry(): Registry {
-  return new Registry({
+function modules() {
+  return {
     ai: {
       // The full chunk-family tour, written through the AI SDK's own
       // UIMessageStream and returned from the handler as-is.
       chat: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (_ctx: SseCtx, args: { chatId: string }) => {
@@ -114,7 +112,6 @@ function registry(): Registry {
       // returned directly as its UI message stream.
       model: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: () => {
@@ -149,7 +146,6 @@ function registry(): Registry {
       // Custom argument shape: only reachable through the typed mapper.
       custom: sseProcedure({
         access: "public",
-        http: true,
         args: {
           sessionId: v.string(),
           prompt: v.string(),
@@ -172,7 +168,6 @@ function registry(): Registry {
       // exactly when the runtime releases the handler's iterator.
       holdBeforeFirst: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -186,7 +181,6 @@ function registry(): Registry {
       }),
       holdMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -202,7 +196,6 @@ function registry(): Registry {
       }),
       malformed: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -212,7 +205,6 @@ function registry(): Registry {
       }),
       failing: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (): never => {
@@ -221,7 +213,6 @@ function registry(): Registry {
       }),
       failingMidStream: sseProcedure({
         access: "public",
-        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -230,7 +221,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface App {
@@ -243,19 +234,16 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-ai-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry: registry(),
+    definitions: testDefinitions(modules()),
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  const server = listen(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
-    runtime,
+    base: running.base,
+    runtime: running.runtime,
     async close() {
-      await server.drain().catch(() => {});
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

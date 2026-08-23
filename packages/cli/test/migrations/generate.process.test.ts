@@ -90,7 +90,7 @@ export const list = query({
 });
 `;
 
-const UNIQUE_LABEL_INDEX = "s_u_b_5_label";
+const UNIQUE_LABEL_INDEX = "s_u_5_label";
 
 // Engine-visible snapshots: stored and generated root schemas carry every framework table.
 const V1 = snapshotOf(withFrameworkTables(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) })));
@@ -192,7 +192,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -250,7 +250,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -330,7 +330,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -358,7 +358,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -404,7 +404,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -430,7 +430,7 @@ describe("acker generate", () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
@@ -465,7 +465,7 @@ describe("acker generate", () => {
   test("refuses when there is no database to diff against", async () => {
     const dir = makeFixture({
       "app.ts": APP_V2,
-      "functions/items.ts": ITEMS_FUNCTIONS,
+      "app/items.ts": ITEMS_FUNCTIONS,
       ".ackerdb.config.json": JSON.stringify({ port: 3999 }),
     });
     dirs.push(dir);

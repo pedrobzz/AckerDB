@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +9,6 @@ import { anyApi } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   defineTable,
@@ -33,7 +32,6 @@ import {
   type UseAuthenticationResult,
 } from "@ackerdb/client-react";
 import { until } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -89,7 +87,7 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const registry = new Registry({
+  const modules = {
     notes: {
       list: query({
         access: "authenticated",
@@ -97,22 +95,19 @@ async function createApp(): Promise<App> {
         handler: (ctx: Ctx) => ctx.db.notes.query().collect(),
       }),
     },
-  });
+  };
   const verifier = new LeaseVerifier();
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry,
+    definitions: testDefinitions(modules),
     verifier,
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  const server = listen(runtime);
   return {
-    base: `http://127.0.0.1:${server.port}`,
+    base: running.base,
     verifier,
     async close() {
-      await server.drain();
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

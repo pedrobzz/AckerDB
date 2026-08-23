@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { startTestServer, testDefinitions } from "ackerdb-test-support/server";
 import { NativeWebSocket, mountPoint } from "ackerdb-test-support/dom";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,15 +7,14 @@ import { join } from "node:path";
 import { anyApi, decode, type SseRef } from "@ackerdb/core";
 import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
-  type AckerDBServer,
   Engine,
   PRODUCTION_LIMITS,
-  Registry,
-  Runtime,
   v,
   defineSchema,
   reconcile,
   sseProcedure,
+  type AckerDBServer,
+  type Runtime,
   type SseCtx,
 } from "@ackerdb/server";
 import { useState, type ReactNode } from "react";
@@ -27,7 +27,6 @@ import {
   type SseProcedureCall,
 } from "@ackerdb/client-react";
 import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
-import { listen } from "ackerdb-test-support/listen";
 
 const schema = defineSchema({});
 
@@ -39,12 +38,11 @@ let holdReleased = deferred<void>();
 let holdAfterFirstReleased = deferred<void>();
 let unmountHoldReleased = deferred<void>();
 
-function registry(): Registry {
-  return new Registry({
+function modules() {
+  return {
     stream: {
       grouped: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ tick: v.int() }),
         handler: async function* () {
@@ -53,7 +51,6 @@ function registry(): Registry {
       }),
       ticks: sseProcedure({
         access: "public",
-        http: true,
         args: { count: v.int() },
         yields: v.object({ tick: v.int() }),
         handler: async function* (_ctx: SseCtx, args: { count: number }) {
@@ -65,7 +62,6 @@ function registry(): Registry {
       }),
       invalid: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ value: v.string() }),
         handler: async function* () {
@@ -75,7 +71,6 @@ function registry(): Registry {
       }),
       hold: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -89,7 +84,6 @@ function registry(): Registry {
       }),
       holdAfterFirst: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -103,7 +97,6 @@ function registry(): Registry {
       }),
       unmountHold: sseProcedure({
         access: "public",
-        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -116,7 +109,7 @@ function registry(): Registry {
         },
       }),
     },
-  });
+  };
 }
 
 interface App {
@@ -130,20 +123,18 @@ async function createApp(): Promise<App> {
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-sse-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  const runtime = new Runtime({
+  const running = await startTestServer({
     engine,
-    registry: registry(),
+    definitions: testDefinitions(modules()),
     limits: PRODUCTION_LIMITS,
   });
-  await runtime.start();
-  const server = listen(runtime);
+  const { runtime, server } = running;
   return {
-    base: `http://127.0.0.1:${server.port}`,
+    base: running.base,
     runtime,
     server,
     async close() {
-      await server.drain().catch(() => {});
-      engine.close("clean");
+      await running.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

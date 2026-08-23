@@ -11,7 +11,7 @@
 
 An AckerDB application boots in a fixed order — bind the listener, run codegen,
 load the manifest and the migration chain, open storage, reconcile, mint the
-Admin Credential, load the function and job modules, build the Registry and the
+Admin Credential, load the configured definition modules, build the Registry and the
 Runtime, activate. Until now the only place that knew this order was one
 function inside the CLI package. `@ackerdb/server` exported the parts and a
 second, incomplete assembly path (`serve`) that only tests used, so every
@@ -40,7 +40,7 @@ production uses.
 
 Boot takes two loaders rather than two values. `load.app()` resolves the
 manifest and the migration chain and runs before storage opens; `load.runtime()`
-resolves function modules, Job modules, the optional credential verifier and the
+resolves definition modules, the optional credential verifier and the
 optional scope resolver, and runs only after durable schema work and the
 credential commit. That order is deliberate — unrelated runtime configuration
 must never block a pending migration, and administration must never depend on

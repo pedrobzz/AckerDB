@@ -20,10 +20,8 @@ import {
   request,
   session,
   subscribeMessage,
-  trackCleanup,
   user,
 } from "../support/credential-fixture.ts";
-import { listen } from "ackerdb-test-support/listen";
 
 afterEach(cleanupCredentialFixtures);
 
@@ -152,7 +150,12 @@ describe("Identity credentials", () => {
   });
 
   test("reactively edits and revokes only the owner's descriptors", async () => {
-    const { engine, runtime } = await fixture(databasePath("ackerdb-credential-lifecycle-"));
+    const { engine, runtime, server } = await fixture(
+      databasePath("ackerdb-credential-lifecycle-"),
+      undefined,
+      {},
+      { serve: true },
+    );
     const alice = await user(runtime, "lifecycle-alice");
     const publications: SessionApplicationMessage[] = [];
     const aliceSession = session(alice, "lifecycle-alice-session", publications);
@@ -270,8 +273,6 @@ describe("Identity credentials", () => {
     await expect(runtime.authenticateCredential(created.token, "after-revoke"))
       .rejects.toMatchObject({ code: "unauthenticated" });
 
-    const server = listen(runtime);
-    trackCleanup(async () => server.drain());
     const response = await call(
       `http://127.0.0.1:${server.port}`,
       "api.records.writeOwnedRecord",
@@ -281,7 +282,12 @@ describe("Identity credentials", () => {
   });
 
   test("stores exact immutable grants and enforces explicit authenticated, any-of, and all-of policy", async () => {
-    const { engine, runtime } = await fixture(databasePath("ackerdb-credential-scopes-"));
+    const { engine, runtime, server } = await fixture(
+      databasePath("ackerdb-credential-scopes-"),
+      undefined,
+      {},
+      { serve: true },
+    );
     const alice = await user(runtime, "scoped-alice", FIXTURE_SCOPES);
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
@@ -311,8 +317,6 @@ describe("Identity credentials", () => {
 
     // Every scope decision is re-taken on the exposed HTTP surface, against
     // the credential the request bears rather than a cached authorization.
-    const server = listen(runtime);
-    trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
     const invoke = (address: string, token = created.token) =>
       call(base, address, { token });
@@ -482,7 +486,7 @@ describe("Identity credentials", () => {
     )).value as CreatedValue;
     await first.close();
 
-    const second = await fixture(path, permissiveVerifier);
+    const second = await fixture(path, permissiveVerifier, {}, { serve: true });
     const secondAlice = await user(second.runtime, "alice");
     expect(secondAlice.identity).toBe(firstAlice.identity);
     const principal = await second.runtime.authenticateCredential(
@@ -536,9 +540,7 @@ describe("Identity credentials", () => {
     }
     expect(verifierCalls).toEqual([]);
 
-    const server = listen(second.runtime);
-    trackCleanup(async () => server.drain());
-    const base = `http://127.0.0.1:${server.port}`;
+    const base = `http://127.0.0.1:${second.server.port}`;
     const called = await call(base, "api.records.writeOwnedRecord", {
       token: created.token,
       args: { value: "delegated-codex" },

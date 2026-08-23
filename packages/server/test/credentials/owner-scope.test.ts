@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,11 +45,11 @@ async function bareRuntime(): Promise<{ readonly runtime: Runtime; readonly sess
   });
   const transact = typedProcedure({
     access: "public",
-    http: true,
+    http: { path: "/api/ordinary/transact", openapi: true },
     args: {},
     handler: (ctx) => ctx.tx((tx) => tx.credentials.query().collect()),
   });
-  const registry = new Registry({ ordinary: { create, list, transact } });
+  const registry = testRegistry({ ordinary: { create, list, transact } });
 
   const directory = mkdtempSync(join(tmpdir(), "ackerdb-owner-scope-"));
   const engine = new Engine(schema, join(directory, "data.db"));

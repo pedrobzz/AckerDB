@@ -10,7 +10,7 @@ import {
 
 const vector: VectorValidator = v.vector(3);
 const input: InferValidatorInput<typeof vector> = [1, 2, 3] as const;
-const value: InferValidator<typeof vector> = vector.check(input, "embedding");
+const value: InferValidator<typeof vector> = vector.parse(input, "embedding");
 
 // @ts-expect-error normalized vector values are readonly
 value.push(4);

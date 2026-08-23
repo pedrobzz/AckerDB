@@ -353,9 +353,10 @@ export class FrameProxy {
     upstream.on("end", () => {
       if (!downstream.destroyed) downstream.end();
     });
-    downstream.on("error", (error) => {
-      if (!pair.faulted) this.failPair(pair, error);
-    });
+    // The accepted peer may disappear at any point, including before its
+    // WebSocket handshake completes. That ends this pair; it is not a proxy
+    // implementation failure.
+    downstream.on("error", () => this.drop(pair));
     upstream.on("error", (error) => {
       if (!pair.faulted) this.failPair(pair, error);
     });

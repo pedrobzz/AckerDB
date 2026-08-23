@@ -16,6 +16,7 @@ import { Engine } from "../../src/database/engine.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type {
@@ -78,7 +79,7 @@ async function open(path: string): Promise<{ engine: Engine; runtime: Runtime }>
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(functions),
+    registry: testRegistry(functions),
   });
   await runtime.start();
   instances.set(runtime, engine);

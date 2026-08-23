@@ -29,7 +29,7 @@ describe("File references and grants", () => {
     reconcile(engine);
     runtime = new Runtime({
       engine,
-      registry: new Registry({}),
+      registry: new Registry(),
       files: {
         publicUrl: "https://files.example.test/",
         store: new LocalFileStore({ root: join(directory, "files") }),

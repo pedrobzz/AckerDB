@@ -140,7 +140,7 @@ function orBranches(left: Branch[], right: Branch[]): Branch[] {
 function predicateBranches(node: PredicateNode): Branch[] {
   switch (node.kind) {
     case "comparison":
-      return node.op === "eq" ? exactValueBranch(node.column, node.value) : [[]];
+      return node.op === "eq" ? exactValueBranch(node.reference.column, node.value) : [[]];
     case "in":
       return exactBranches(node.column, node.values);
     case "null":

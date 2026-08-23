@@ -1,13 +1,19 @@
-import type { ColumnPlan } from "../engine.ts";
+import { columnIndexExpression, type ColumnPlan } from "../engine.ts";
 import type { TableDef } from "../../schema/definition.ts";
 import { ValidationError } from "../../validation/error.ts";
 import { baseValidator } from "../../validation/validator.ts";
+import type { DiscriminatedUnionValidator } from "../../validation/composites.ts";
 import { quoteIdentifier } from "../../shared/sql.ts";
 
 export type ComparisonOperator = "eq" | "ne" | "lt" | "lte" | "gt" | "gte";
 
+export interface PredicateReference {
+  readonly column: string;
+  readonly expression?: string;
+}
+
 export type PredicateNode =
-  | { readonly kind: "comparison"; readonly column: string; readonly op: ComparisonOperator; readonly value: unknown }
+  | { readonly kind: "comparison"; readonly reference: PredicateReference; readonly op: ComparisonOperator; readonly value: unknown }
   | { readonly kind: "in"; readonly column: string; readonly values: readonly unknown[] }
   | { readonly kind: "between"; readonly column: string; readonly lower: unknown; readonly upper: unknown }
   | { readonly kind: "null"; readonly column: string; readonly isNull: boolean }
@@ -118,7 +124,7 @@ function predicateMeta(value: unknown, owner: object, path: string): PredicateMe
 export interface PredicatePlanIngredients {
   readonly columns: ReadonlyMap<string, ColumnPlan>;
   readonly table: TableDef;
-  readonly displayName: string;
+  readonly name: string;
 }
 
 /**
@@ -130,40 +136,23 @@ export function toSqlPredicateValue(
   plan: PredicatePlanIngredients,
   column: string,
   value: unknown,
-  unionDiscriminant: boolean,
 ): unknown {
   const columnPlan = plan.columns.get(column)!;
   if (value === null) {
     throw new ValidationError(
-      `${plan.displayName}.${column}: use .isNull() or .isNotNull() for nullable values`,
+      `${plan.name}.${column}: use .isNull() or .isNotNull() for nullable values`,
     );
   }
-  if (columnPlan.kind === "union") {
-    if (!unionDiscriminant || typeof value !== "string") {
-      throw new ValidationError(`${plan.displayName}.${column}: use .is(variant) for union predicates`);
-    }
-    const tag = columnPlan.variantTag?.(value);
-    if (tag === undefined) {
-      throw new ValidationError(
-        `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
-      );
-    }
-    return tag;
+  if (columnPlan.kind === "discriminatedUnion") {
+    throw new ValidationError(
+      `${plan.name}.${column}: use .is(discriminator) for discriminated-union predicates`,
+    );
   }
-  if (columnPlan.kind === "enum") {
-    const tag = typeof value === "string" ? columnPlan.variantTag?.(value) : undefined;
-    if (tag === undefined) {
-      throw new ValidationError(
-        `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
-      );
-    }
-    return tag;
-  }
-  const checked = baseValidator(plan.table.columns[column]!).check(
+  const checked = baseValidator(plan.table.columns[column]!).parse(
     value,
-    `${plan.displayName}.${column}`,
+    `${plan.name}.${column}`,
   );
-  return columnPlan.toSql(checked)[0];
+  return columnPlan.toSql(checked);
 }
 
 function ownMethod(target: object, name: string, method: (...args: never[]) => unknown): void {
@@ -182,17 +171,23 @@ function makeColumnReference(
   const ordered = ORDERED_KINDS.has(columnPlan.kind);
   const expression = (node: PredicateNode): RuntimePredicate =>
     new RuntimePredicate({ owner, node });
+  const storedReference = Object.freeze({ column });
+  const compare = (
+    reference: PredicateReference,
+    op: ComparisonOperator,
+    value: unknown,
+  ): RuntimePredicate => expression({ kind: "comparison", reference, op, value });
   const value = (input: unknown): unknown =>
-    toSqlPredicateValue(plan, column, input, false);
+    toSqlPredicateValue(plan, column, input);
 
   if (equatable) {
     ownMethod(reference, "eq", ((input: unknown) =>
-      expression({ kind: "comparison", column, op: "eq", value: value(input) })) as never);
+      compare(storedReference, "eq", value(input))) as never);
     ownMethod(reference, "ne", ((input: unknown) =>
-      expression({ kind: "comparison", column, op: "ne", value: value(input) })) as never);
+      compare(storedReference, "ne", value(input))) as never);
     ownMethod(reference, "in", ((inputs: unknown) => {
       if (!Array.isArray(inputs)) {
-        throw new ValidationError(`${plan.displayName}.${column}.in: expected an array`);
+        throw new ValidationError(`${plan.name}.${column}.in: expected an array`);
       }
       const values: unknown[] = [];
       const seen = new Set<unknown>();
@@ -214,7 +209,7 @@ function makeColumnReference(
   if (ordered) {
     for (const op of ["lt", "lte", "gt", "gte"] as const) {
       ownMethod(reference, op, ((input: unknown) =>
-        expression({ kind: "comparison", column, op, value: value(input) })) as never);
+        compare(storedReference, op, value(input))) as never);
     }
     ownMethod(reference, "between", ((lower: unknown, upper: unknown) =>
       expression({
@@ -224,14 +219,20 @@ function makeColumnReference(
         upper: value(upper),
       })) as never);
   }
-  if (columnPlan.kind === "union") {
-    ownMethod(reference, "is", ((variant: unknown) =>
-      expression({
-        kind: "comparison",
-        column,
-        op: "eq",
-        value: toSqlPredicateValue(plan, column, variant, true),
-      })) as never);
+  if (columnPlan.kind === "discriminatedUnion") {
+    const union = baseValidator(plan.table.columns[column]!) as DiscriminatedUnionValidator;
+    const discriminatorReference = Object.freeze({
+      column,
+      expression: columnIndexExpression(column, columnPlan),
+    });
+    ownMethod(reference, "is", ((variant: unknown) => {
+      if (typeof variant !== "string" || !union.hasDiscriminatorValue(variant)) {
+        throw new ValidationError(
+          `${plan.name}.${column}: unknown discriminator ${JSON.stringify(variant)}`,
+        );
+      }
+      return compare(discriminatorReference, "eq", variant);
+    }) as never);
   }
   if (columnPlan.nullable) {
     ownMethod(reference, "isNull", (() => expression({ kind: "null", column, isNull: true })) as never);
@@ -373,7 +374,7 @@ function compilePredicateSql(
         gt: ">",
         gte: ">=",
       }[node.op];
-      return `${quoteIdentifier(node.column)} ${operator} ?`;
+      return `${node.reference.expression ?? quoteIdentifier(node.reference.column)} ${operator} ?`;
     }
     case "in": {
       if (node.values.length === 0) return "0";

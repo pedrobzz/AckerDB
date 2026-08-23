@@ -41,13 +41,6 @@ export type HttpHandlers<Ctx, Result extends HttpRouteResult> = {
   readonly [M in HttpMethod]?: HttpHandlerOf<M, Ctx, Result>;
 };
 
-export interface Http<Path extends string = string> {
-  readonly isAckerDB: true;
-  readonly isAckerDBServerOnly: true;
-  readonly kind: "http";
-  readonly path: Path;
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyHttpHandler = HttpHandlerOf<HttpMethod, HttpHandlerCtx<string, any>, Response>;
 export type RunHttpHandler = (
@@ -61,7 +54,9 @@ export type HttpRouteHandler = (
   request: HttpRequest,
   run: RunHttpHandler,
 ) => HttpRouteResult | Promise<HttpRouteResult>;
-export interface RuntimeHttp<Path extends string = string> extends Http<Path> {
+export interface Http<Path extends string = string> {
+  readonly kind: "http";
+  readonly path: Path;
   readonly handlers: Readonly<Partial<Record<HttpMethod, HttpRouteHandler>>>;
 }
 export type HttpBuilder<S extends Schema> = <const Path extends string>(
@@ -75,7 +70,7 @@ function buildHttp<const Path extends string>(
   path: Path,
   handlers: object,
   adapt: (handler: Handler) => HttpRouteHandler,
-): RuntimeHttp<Path> {
+): Http<Path> {
   const compiled: Partial<Record<HttpMethod, HttpRouteHandler>> = {};
   for (const [method, value] of Object.entries(handlers)) {
     if (!isHttpMethod(method) || typeof value !== "function") {
@@ -85,8 +80,6 @@ function buildHttp<const Path extends string>(
   }
   if (!Object.keys(compiled).length) throw new TypeError("http requires a handler");
   return Object.freeze({
-    isAckerDB: true,
-    isAckerDBServerOnly: true,
     kind: "http",
     path: validateRoutePath(path, "http") as Path,
     handlers: Object.freeze(compiled),
@@ -104,21 +97,7 @@ export function http<const Path extends string>(
 export function frameworkHttp<const Path extends string>(
   path: Path & ValidHttpPath<Path>,
   handlers: HttpHandlers<HttpRouteCtx<Path>, HttpRouteResult>,
-): RuntimeHttp<Path> {
+): Http<Path> {
   return buildHttp(path, handlers, (handler) => (ctx, request) =>
     handler(ctx, request) as HttpRouteResult | Promise<HttpRouteResult>);
-}
-
-export function isHttpShaped(value: unknown): value is Http {
-  return typeof value === "object" && value !== null &&
-    (value as Partial<Http>).isAckerDB === true && (value as Partial<Http>).kind === "http";
-}
-
-export function validateRegisteredHttp(value: object, where: string): RuntimeHttp {
-  if (!isHttpShaped(value) || value.isAckerDBServerOnly !== true ||
-    typeof (value as Partial<RuntimeHttp>).handlers !== "object") {
-    throw new TypeError(`${where} is not an http route`);
-  }
-  validateRoutePath(value.path, where);
-  return value as RuntimeHttp;
 }

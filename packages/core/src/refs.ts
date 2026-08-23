@@ -5,9 +5,10 @@
  * types so every call is end-to-end typed through codegen.
  *
  * **An application address begins with `api`.**
- * `api.<...module segments>.<export name>` is the whole rule, and it holds
- * everywhere an address appears — the socket, the registry's keys, and the
- * URL.
+ * `api.<...module segments>.<export name>` is the whole rule wherever an
+ * address appears — the socket, the registry's keys, jobs, channels, and the
+ * framework-owned SSE protocol. Public HTTP paths are declared independently
+ * by each function factory.
  */
 
 import type { ErrResult, OkResult } from "./result.ts";
@@ -131,15 +132,6 @@ export function getRef(
   return address;
 }
 
-/**
- * The wire contract for an exposed function's URL: the address, segment for
- * segment. The listener claiming the path and the client building it read one
- * rule over one value and cannot drift.
- */
-export function httpPathForAddress(address: string): string {
-  return `/${address.replaceAll(".", "/")}`;
-}
-
 export type ChannelArgs<Ref extends AnyChannelRef> =
   Ref extends ChannelRef<infer Args, unknown, EventMap, EventMap, unknown> ? Args : never;
 export type ChannelRoom<Ref extends AnyChannelRef> =
@@ -172,20 +164,18 @@ function makeRefProxy(address: string): unknown {
 export const anyApi: any = makeRefProxy(APPLICATION_ADDRESS_ROOT);
 
 /**
- * The marker interface every registered server function satisfies (the server
- * package's `query()`, `mutation()`, ... return types extend it). Lives in
- * core so generated `api.ts` can derive reference types from type-only imports
- * of the user's function modules without touching server code.
+ * The type-only contract every registered server function satisfies. It lives
+ * in core so generated `api.ts` can derive reference types from type-only
+ * imports of the user's function modules without touching server code.
  */
 export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = unknown, R = unknown> {
-  readonly isAckerDB: true;
   readonly kind: K;
   readonly _argsType?: A;
   readonly _retType?: R;
 }
 
 /**
- * Type-only marker implemented by the server package's `channel()` return.
+ * Type-only contract implemented by the server package's `channel()` return.
  * It lives in core so generated client APIs infer the complete event contract
  * without importing server runtime code.
  */
@@ -196,21 +186,12 @@ export interface RegisteredChannelContract<
   ServerEvents extends EventMap = EventMap,
   Error = never,
 > {
-  readonly isAckerDBChannel: true;
   readonly kind: "channel";
   readonly _argsType?: A;
   readonly _roomType?: Room;
   readonly _clientEventsType?: ClientEvents;
   readonly _serverEventsType?: ServerEvents;
   readonly _errorType?: Error;
-}
-
-/**
- * Marker for declarations that belong to the server module graph but are not
- * remotely callable AckerDB functions. Generated client APIs erase these keys.
- */
-export interface RegisteredServerOnly {
-  readonly isAckerDBServerOnly: true;
 }
 
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
@@ -224,12 +205,9 @@ type FunctionRefOf<F> = F extends RegisteredFunction<infer Kd, infer A, infer R>
 
 /**
  * Maps a record of module namespaces (arbitrarily nested) to the application's
- * typed API shape. Function files should export only AckerDB declarations;
- * server-only exports are erased.
+ * typed API shape. Server-only definitions and ordinary helper exports are erased.
  */
-export type ApiFromModules<T> = {
-  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
-  T[K] extends RegisteredChannelContract<
+type ApiValue<T> = T extends RegisteredChannelContract<
     infer A,
     infer Room,
     infer ClientEvents,
@@ -237,7 +215,16 @@ export type ApiFromModules<T> = {
     infer Error
   >
     ? ChannelRef<A, Room, ClientEvents, ServerEvents, Error>
-    : T[K] extends RegisteredFunction
-    ? FunctionRefOf<T[K]>
-    : ApiFromModules<T[K]>;
+    : T extends RegisteredFunction
+    ? FunctionRefOf<T>
+    : T extends { readonly kind: "http" | "job" }
+      ? never
+      : T extends object
+        ? keyof ApiModule<T> extends never ? never : ApiModule<T>
+        : never;
+
+type ApiModule<T> = {
+  [K in keyof T as ApiValue<T[K]> extends never ? never : K]: ApiValue<T[K]>;
 };
+
+export type ApiFromModules<T> = ApiModule<T>;

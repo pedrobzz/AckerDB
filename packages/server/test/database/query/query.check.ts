@@ -24,22 +24,22 @@ const schema = defineSchema({
     email: v.string(),
     externalId: v.string().nullable(),
     name: v.string(),
-    payload: v.union("QueryCheckPayload", {
-      text: v.string(),
-      count: v.int(),
-      empty: v.tag(),
-    }),
+    payload: v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("count"), value: v.int() }),
+      v.object({ type: v.literal("empty") }),
+    ]),
   })
     .index(["email"], { unique: true })
     .index(["externalId"], { unique: true }),
   unionKeys: defineTable({
     id: v.primaryKey(),
     slug: v.string(),
-    key: v.union("QueryCheckUnionKey", {
-      text: v.string(),
-      count: v.int(),
-      empty: v.tag(),
-    }),
+    key: v.discriminatedUnion("type", [
+      v.object({ type: v.literal("text"), value: v.string() }),
+      v.object({ type: v.literal("count"), value: v.int() }),
+      v.object({ type: v.literal("empty") }),
+    ]),
     name: v.string(),
   })
     .index(["slug"], { unique: true })
@@ -112,13 +112,13 @@ export async function _queryTypecheck(): Promise<void> {
     .query()
     .where((row) => row.payload.is("text").or(row.payload.is("count")))
     .collect();
-  const _tag: "text" | "count" = textOrCount[0]!.payload.tag;
+  const _type: "text" | "count" = textOrCount[0]!.payload.type;
 
   const notText = await reader.users
     .query()
     .where((row) => row.payload.is("text").not())
     .collect();
-  // @ts-expect-error negation does not claim a positive payload refinement
+  // @ts-expect-error negation does not claim a positive member refinement
   const _notTextValue: string = notText[0]!.payload.value;
 
   // @ts-expect-error scans were replaced by query()
@@ -164,30 +164,30 @@ export async function _queryTypecheck(): Promise<void> {
   reader.documents.query().min((row) => row.status);
   // @ts-expect-error structured columns are not aggregable
   reader.documents.query().max((row) => row.metadata);
-  // @ts-expect-error union columns are not summable
+  // @ts-expect-error discriminated union columns are not summable
   reader.users.query().avg((row) => row.payload);
 
   await writer.users.upsert(
     // @ts-expect-error nullable unique indexes are not structural upsert keys
     { externalId: "external" },
-    { email: "a@example.com", name: "A", payload: { tag: "empty", value: null } },
+    { email: "a@example.com", name: "A", payload: { type: "empty" } },
   );
   await writer.users.upsert(
     { email: "a@example.com" },
     // @ts-expect-error key fields cannot also appear in upsert values
-    { email: "changed@example.com", name: "A", payload: { tag: "empty", value: null } },
+    { email: "changed@example.com", name: "A", payload: { type: "empty" } },
   );
 
   await writer.unionKeys.upsert(
     { slug: "safe" },
-    { key: { tag: "text", value: "payload" }, name: "Safe" },
+    { key: { type: "text", value: "payload" }, name: "Safe" },
   );
   await writer.unionKeys.upsert(
-    { key: { tag: "text", value: "payload" } },
+    { key: { type: "text", value: "payload" } },
     { slug: "unsafe", name: "Unsafe" },
   );
   await writer.unionKeys.upsert(
-    { key: { tag: "empty", value: null } },
+    { key: { type: "empty" } },
     { slug: "empty", name: "Empty" },
   );
 }

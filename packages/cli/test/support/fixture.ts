@@ -28,10 +28,10 @@ export const FIXTURE_APP = `
 import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const role = v.enum("Role", ["admin", "member"]);
-const payload = v.union("Payload", {
-  text: v.string(),
-  nothing: v.tag(),
-});
+const payload = v.discriminatedUnion("type", [
+  v.object({ type: v.literal("text"), value: v.string() }),
+  v.object({ type: v.literal("nothing") }),
+]);
 
 const schema = defineSchema({
   messages: defineTable({
@@ -60,7 +60,6 @@ import { mutation, query, sseProcedure } from "../_generated/server.ts";
 
 export const tail = sseProcedure({
   access: "public",
-  http: true,
   args: { channelId: v.bigint() },
   yields: v.object({ body: v.string() }),
   handler: async function* (_ctx, args) {
@@ -82,7 +81,7 @@ export const send = mutation({
     const id = await ctx.db.messages.insert({
       ...args,
       role: "member",
-      payload: { tag: "nothing", value: null },
+      payload: { type: "nothing" },
     });
     await ctx.db.typingEvents.insert({ channelId: args.channelId });
     return id;
@@ -103,21 +102,21 @@ import { api } from "../_generated/api.ts";
 import { job } from "../_generated/server.ts";
 
 export const record = job({
-  kind: "mutation",
+  mode: "mutation",
   args: { note: v.string() },
   handler: async (tx, args) => {
     await tx.db.messages.insert({
       channelId: 0n,
       body: args.note,
       role: "admin",
-      payload: { tag: "text", value: "job" },
+      payload: { type: "text", value: "job" },
     });
   },
 });
 
 // A server-side caller names a system-only function through the same typed API.
 export const sweep = job({
-  kind: "procedure",
+  mode: "procedure",
   args: { channelId: v.bigint() },
   handler: async (ctx, args) => {
     await ctx.step.run(api.admin.users.compact, { channelId: args.channelId });

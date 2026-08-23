@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testRegistry } from "ackerdb-test-support/server";
 import { Err, Ok, Status } from "@ackerdb/core";
 import {
   Registry,
@@ -63,7 +64,7 @@ describe("ChannelHub", () => {
       },
     });
     const hub = new ChannelHub({
-      registry: new Registry({ chat: { room: chat } }),
+      registry: testRegistry({ chat: { room: chat } }),
       maxMembers: 10,
       maxMembersPerSession: 4,
     });
@@ -126,7 +127,7 @@ describe("ChannelHub", () => {
       on: {},
     });
     const hub = new ChannelHub({
-      registry: new Registry({ chat: { guarded } }),
+      registry: testRegistry({ chat: { guarded } }),
       maxMembers: 2,
       maxMembersPerSession: 2,
     });
@@ -171,7 +172,7 @@ describe("ChannelHub", () => {
       on: {},
     });
     const hub = new ChannelHub({
-      registry: new Registry({ chat: { roomless, roomed } }),
+      registry: testRegistry({ chat: { roomless, roomed } }),
       maxMembers: 2,
       maxMembersPerSession: 2,
     });
@@ -215,7 +216,7 @@ describe("ChannelHub", () => {
       },
     });
     const hub = new ChannelHub({
-      registry: new Registry({ chat: { ordered } }),
+      registry: testRegistry({ chat: { ordered } }),
       maxMembers: 2,
       maxMembersPerSession: 2,
     });
@@ -269,7 +270,7 @@ describe("ChannelHub", () => {
       },
     });
     const hub = new ChannelHub({
-      registry: new Registry({ chat: { hanging } }),
+      registry: testRegistry({ chat: { hanging } }),
       maxMembers: 2,
       maxMembersPerSession: 2,
       disconnectTimeoutMs: 10,

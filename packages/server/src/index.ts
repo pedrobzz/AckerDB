@@ -120,7 +120,6 @@ export {
   type VectorValidator,
 } from "./validation/primitives.ts";
 export {
-  checkShape,
   type InferInputShape,
   type LiteralValidator,
   type ObjectShape,
@@ -128,10 +127,7 @@ export {
   type InferShape,
   type ArrayValidator,
   type EnumValidator,
-  type UnionValidator,
-  type UnionMembers,
-  type UnionValue,
-  type UnionNamespace,
+  type DiscriminatedUnionValidator,
 } from "./validation/composites.ts";
 export { v } from "./validation/v.ts";
 export { ValidationError, isValidationError } from "./validation/error.ts";
@@ -155,13 +151,9 @@ export { restoreVerifiedDatabase } from "./database/restore.ts";
 export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
 export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
-  declareJobs,
-  isJob,
   job,
   DEFAULT_JOB_RETENTION_MS,
-  type AnyJob,
-  type DeclaredJob,
-  type Job,
+  type JobDefinition,
   type JobBuilder,
   type JobCtx,
   type JobStep,
@@ -365,7 +357,6 @@ export {
   mutation,
   procedure,
   sseProcedure,
-  isRegisteredFunction,
   type AnyRegistered,
   type AnyInvocable,
   type ArgsInput,
@@ -412,7 +403,6 @@ export {
 } from "./transport/routing/route.ts";
 export {
   channel,
-  isRegisteredChannel,
   type AnyRegisteredChannel,
   type ChannelAuthorizationCtx,
   type ChannelBuilder,
@@ -426,17 +416,27 @@ export {
   type RegisteredChannel,
 } from "./channels/definition.ts";
 export {
-  type StandardJsonCodec,
+  collectDefinitions,
+  type CollectedDefinition,
+  type Definition,
+  type ImportedDefinitionModule,
+} from "./definitions.ts";
+export {
   type StandardJsonInput,
   type StandardJsonOutput,
-  type StandardJsonProtocolSchema,
   type StandardJsonSchemaOptions,
   type StandardSchemaIssue,
   type StandardSchemaOptions,
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
-export { Registry, type ExposedFunction, type LoadedModules } from "./app/registry.ts";
+export {
+  type JsonSchema,
+  type JsonSchemaMode,
+  type JsonSchemaOptions,
+  type JsonSchemaTarget,
+} from "./validation/json-schema.ts";
+export { Registry } from "./app/registry.ts";
 export {
   OutboundBudget,
   type OutboundBudgetSnapshot,

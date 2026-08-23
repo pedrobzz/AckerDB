@@ -11,6 +11,7 @@
  * as the rest of the HTTP surface.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { testDefinitions } from "ackerdb-test-support/server";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,13 +22,11 @@ import { AckerDBError } from "../../src/shared/errors.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { query } from "../../src/app/functions.ts";
 import { http } from "../../src/transport/routing/route.ts";
-import { Registry } from "../../src/app/registry.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
-import { listen } from "ackerdb-test-support/listen";
 
 // Raw handlers carry no contract; navigating them in tests is not a typed one.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,7 +61,7 @@ const functions = {
   feed: {
     list: query({
       access: "public",
-      http: true,
+      http: { path: "/feed", openapi: true },
       args: {},
       handler: (ctx: Ctx) => ctx.db.deliveries.query().collect(),
     }),
@@ -171,11 +170,9 @@ const functions = {
     assets: http("/users/:id/assets/*", {
       GET: (ctx) => Response.json({ id: ctx.params.id, rest: ctx.params["*"] }),
     }),
-    readPerson: http("/people/:id", {
+    person: http("/people/:id", {
       GET: (ctx) => Response.json({ method: "GET", id: ctx.params.id }),
-    }),
-    writePerson: http("/people/:personId", {
-      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.personId }),
+      POST: (ctx) => Response.json({ method: "POST", id: ctx.params.id }),
     }),
     // Captures and application capabilities are one context, not two.
     record: http("/deliveries/:type", {
@@ -199,9 +196,14 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ackerdb-http-routes-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions), limits });
+  server = new AckerDBServer({ limits, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: server.registerDefinitions(testDefinitions(functions)),
+    limits,
+  });
   await runtime.start();
-  server = listen(runtime);
+  server.activate(runtime);
   base = `http://127.0.0.1:${server.port}`;
 });
 
@@ -271,7 +273,7 @@ describe("the registry routes before any handler runs", () => {
     expect(await response.json()).toMatchObject({ code: "malformed", retryable: false });
   });
 
-  test("different Http values may contribute methods to one path pattern", async () => {
+  test("one captured-path owner may expose several methods", async () => {
     expect(await (await fetch(`${base}/people/7`)).json()).toEqual({ method: "GET", id: "7" });
     expect(await (await fetch(`${base}/people/7`, { method: "POST" })).json())
       .toEqual({ method: "POST", id: "7" });
@@ -296,16 +298,17 @@ describe("the registry routes before any handler runs", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ stored: "payment.succeeded", dated: true });
-    const rows = (await (await fetch(`${base}/api/feed/list`)).json()) as { type: string }[];
+    const rows = (await (await fetch(`${base}/feed`)).json()) as { type: string }[];
     expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
   });
 
-  test("an exposed function keeps its derived path and its preflight", async () => {
-    expect((await fetch(`${base}/api/feed/list`)).status).toBe(200);
-    const preflight = await fetch(`${base}/api/feed/list`, { method: "OPTIONS" });
+  test("an exposed function owns its explicit path and preflight", async () => {
+    expect((await fetch(`${base}/feed`)).status).toBe(200);
+    expect((await fetch(`${base}/api/feed/list`)).status).toBe(404);
+    const preflight = await fetch(`${base}/feed`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
-    const wrong = await fetch(`${base}/api/feed/list`, { method: "DELETE" });
+    const wrong = await fetch(`${base}/feed`, { method: "DELETE" });
     expect(wrong.status).toBe(405);
     expect(wrong.headers.get("allow")).toBe("GET, POST, OPTIONS");
   });
@@ -326,7 +329,7 @@ describe("the request reaches the handler whole", () => {
     expect(await response.json()).toEqual({ received: true });
     expectUnstamped(response);
 
-    const listed = await fetch(`${base}/api/feed/list`);
+    const listed = await fetch(`${base}/feed`);
     expect(listed.status).toBe(200);
     const rows = (await listed.json()) as readonly { type: string }[];
     expect(rows.map((row) => row.type)).toEqual(["payment.succeeded"]);
@@ -476,77 +479,52 @@ describe("framework-authored responses speak the bare Outcome", () => {
 });
 
 describe("lifecycle decides reachability, not the route table", () => {
-  test("probes answer through Boot while application routes are still absent", async () => {
-    const starting = new AckerDBServer({ limits, port: 0 });
+  async function refusedLoad(modules: Record<string, Record<string, unknown>>): Promise<string> {
+    const listener = new AckerDBServer({ limits, port: 0 });
     try {
-      const origin = `http://127.0.0.1:${starting.port}`;
-      const live = await fetch(`${origin}/live`);
-      expect(live.status).toBe(200);
-      expect(await live.json()).toMatchObject({ live: true });
-
-      const ready = await fetch(`${origin}/ready`);
-      expect(ready.status).toBe(503);
-      expect(await ready.json()).toMatchObject({ ready: false, phase: "listening" });
-
-      // Both the call and its preflight: no framework preflight may ever speak
-      // for a handler that does not exist yet.
-      for (const method of ["POST", "OPTIONS"] as const) {
-        const response = await fetch(`${origin}/api/hooks/stripe`, {
-          method,
-          ...(method === "POST" ? { body: "{}" } : {}),
-        });
-        expect(response.status).toBe(503);
-        expect(await response.json()).toMatchObject({ code: "unavailable", retryable: true });
-      }
-    } finally {
-      await starting.drain().catch(() => {});
+      listener.registerDefinitions(testDefinitions(modules));
+      return "loading was not refused";
+    } catch (error) {
+      await listener.drain();
+      expect(listener.state).toBe("stopped");
+      return (error as Error).message;
     }
-  });
+  }
 
-  test("two routes claiming one path and method are refused", async () => {
-    // Path ownership has one owner, and only it also knows the framework's
-    // routes — a route the loader admits can still be refused here. A
-    // parameter's name is the author's vocabulary rather than the URL's, and
-    // unique addresses do not imply unique paths. (An application claiming a
-    // path AckerDB owns is namespace policy and never reaches this seam; the
-    // loader refuses it, proved in app/registry.test.ts.)
-    const refuse = async (
-      modules: Record<string, Record<string, unknown>>,
-    ): Promise<string> => {
-      const home = mkdtempSync(join(tmpdir(), "ackerdb-http-claim-"));
-      const store = new Engine(schema, join(home, "data.db"));
-      reconcile(store);
-      const other = new Runtime({ engine: store, registry: new Registry(modules), limits });
-      await other.start();
-      const listener = new AckerDBServer({ limits, port: 0 });
-      try {
-        listener.activate(other);
-        return "activation was not refused";
-      } catch (error) {
-        expect(listener.state).toBe("stopped");
-        return (error as Error).message;
-      } finally {
-        await listener.drain().catch(() => {});
-        await other.drain().catch(() => {});
-        store.close("clean");
-        rmSync(home, { recursive: true, force: true });
-      }
-    };
-
-    expect(await refuse({
+  test("refuses invalid or conflicting routes while loading", async () => {
+    expect(await refusedLoad({
       hooks: {
         byId: http("/people/:id", { GET: () => new Response(null) }),
-        bySlug: http("/people/:slug", { GET: () => new Response(null) }),
+        bySlug: http("/people/:slug", { POST: () => new Response(null) }),
       },
-    })).toContain('HTTP route "/people/:slug" already owns GET');
+    })).toContain('HTTP route "/people/:slug" is already owned');
 
-    // The projection joins on `/` where the address joined on `.`, so a
-    // string-named export can reach a path another address already derives.
-    const exposedNote = () => query({ access: "public", http: true, args: {}, handler: () => [] });
-    expect(await refuse({
-      notes: { ["echo/deep"]: exposedNote() },
-      "notes.echo": { deep: exposedNote() },
-    })).toContain('HTTP route "/api/notes/echo/deep" already owns GET');
+    const exposedNote = () => query({
+      access: "public",
+      http: { path: "/notes", openapi: true },
+      args: {},
+      handler: () => [],
+    });
+    expect(await refusedLoad({
+      notes: { first: exposedNote(), second: exposedNote() },
+    })).toContain('HTTP route "/notes" is already owned');
+
+    const reserved = { ...functions.hooks.stripe, path: "/_ws" } as never;
+    expect(await refusedLoad({ hooks: { reserved } })).toContain(
+      'http route "hooks.reserved" claims AckerDB-owned path "/_ws"',
+    );
+
+  });
+
+  test("the http factory rejects malformed paths and method maps", () => {
+    const handlers = { GET: () => new Response(null) };
+    for (const path of ["nope", "/a//b", "/a/*/b", "/:id/:id", "/a/:", "/a/**"]) {
+      expect(() => http(path as never, handlers)).toThrow();
+    }
+    expect(() => http("/a", {})).toThrow("http requires a handler");
+    expect(() => http("/a", { TRACE: () => new Response(null) } as never)).toThrow(
+      "http handlers must use",
+    );
   });
 
   test("the same path is reachable after activation and unavailable while draining", async () => {

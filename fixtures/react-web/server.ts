@@ -26,7 +26,7 @@ const schema = defineSchema({
   }),
 });
 const app = defineApp({ schema });
-const functions = {
+const modules = {
   notes: {
     list: query({
       access: "public",
@@ -44,7 +44,13 @@ const running = await boot({
   files: { store: new LocalFileStore({ root: join(dir, "files") }) },
   load: {
     app: async () => ({ app, migrations: [] }),
-    runtime: async () => ({ functions, jobs: {} }),
+    runtime: async () => ({
+      modules: Object.entries(modules).map(([name, exports]) => ({
+        name,
+        exports,
+        origin: import.meta.url,
+      })),
+    }),
   },
 });
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

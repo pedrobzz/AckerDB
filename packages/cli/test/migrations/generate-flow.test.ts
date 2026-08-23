@@ -88,6 +88,7 @@ describe("renameCandidates", () => {
         {
           op: "variants-changed",
           column: "kind",
+          kind: "enum",
           typeName: "__proto__",
           variants: [
             { op: "removed", variant: "old" },

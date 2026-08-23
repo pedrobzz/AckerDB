@@ -8,9 +8,9 @@ import {
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
 import type { Expand, Validator } from "../validation/validator.ts";
 import {
-  compileShape,
   type InferShape,
   type ObjectShape,
+  type ObjectValidator,
 } from "../validation/composites.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import type { FunctionResult, Invocable } from "./functions.ts";
@@ -34,8 +34,6 @@ interface CompiledInvocation<Ctx, Args> {
   readonly enforceAccess: AccessEnforcer<Ctx, Args>;
 }
 
-type InvocationArgsDecoder<Args> = (rawArgs: unknown, path: string) => Args;
-
 export interface InvocationOptions<Ctx, Args> {
   /** Runs after args and access pass, immediately before the handler starts. */
   readonly onAuthorized?: (ctx: Ctx, args: Args) => void;
@@ -44,7 +42,7 @@ export interface InvocationOptions<Ctx, Args> {
 }
 
 export interface AuthorizationDefinition<A extends ObjectShape, Ctx extends InvocationContext> {
-  readonly args: A;
+  readonly args: ObjectValidator<A>;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
   /**
    * Scope requirement enforced after `access` at this one funnel, in the
@@ -144,16 +142,14 @@ function scalarOutput(validator: Validator<unknown, string>): boolean {
 
 function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   definition: AuthorizationDefinition<A, Ctx>,
-  decoder?: InvocationArgsDecoder<Expand<InferShape<A>>>,
 ): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
-  const shape = definition.args;
   const enforceAccess = compileAccess(definition.access, definition.scopes);
-  const decode = decoder ?? (
-    compileShape(shape) as InvocationArgsDecoder<Expand<InferShape<A>>>
-  );
   const check = (rawArgs: unknown) =>
-    decode(rawArgs === undefined ? {} : rawArgs, "args");
-  const validateArgs = Object.values(shape).every(scalarOutput)
+    definition.args.parse(
+      rawArgs === undefined ? {} : rawArgs,
+      "args",
+    ) as Expand<InferShape<A>>;
+  const validateArgs = Object.values(definition.args.shape).every(scalarOutput)
     ? (rawArgs: unknown) => Object.freeze(check(rawArgs)) as Expand<InferShape<A>>
     : (rawArgs: unknown) => deepFreeze(check(rawArgs));
   return Object.freeze({ validateArgs, enforceAccess });
@@ -162,11 +158,10 @@ function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
 /** Compile static validation and policy work once when a function is registered. */
 export function compileInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   definition: AuthorizationDefinition<A, Ctx>,
-  decoder?: InvocationArgsDecoder<Expand<InferShape<A>>>,
 ): void {
   compiledInvocations.set(
     definition,
-    buildInvocation(definition, decoder) as CompiledInvocation<InvocationContext, unknown>,
+    buildInvocation(definition) as CompiledInvocation<InvocationContext, unknown>,
   );
 }
 
@@ -296,7 +291,7 @@ function finishInvocation<K extends string, A extends ObjectShape, Ctx extends I
   if (normalized.ok) {
     return fn.returns === undefined
       ? normalized
-      : Ok(fn.returns.check(normalized.data, "returns")) as T | OkResult<T>;
+      : Ok(fn.returns.parse(normalized.data, "returns")) as T | OkResult<T>;
   }
   if (!isApplicationError(normalized.error)) {
     throw new AckerDBError("validation", "registered Err must contain an application error");
@@ -323,7 +318,7 @@ function finishInvocation<K extends string, A extends ObjectShape, Ctx extends I
   }
   return Err(
     normalized.error.code,
-    declaration.body.check(normalized.error.body, `errors.${normalized.error.code}.body`),
+    declaration.body.parse(normalized.error.body, `errors.${normalized.error.code}.body`),
     normalized.error.status,
   ) as T | OkResult<T>;
 }

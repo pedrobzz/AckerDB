@@ -20,10 +20,12 @@ import type {
   InferValidator,
   Validator,
 } from "../validation/validator.ts";
-import type {
-  InferInputShape,
-  InferShape,
-  ObjectShape,
+import {
+  object,
+  type InferInputShape,
+  type InferShape,
+  type ObjectValidator,
+  type ObjectShape,
 } from "../validation/composites.ts";
 import type { DbReader, DbWriter } from "../database/query/types.ts";
 import {
@@ -41,7 +43,6 @@ import {
   type ScopeRequirement,
 } from "../auth/scopes.ts";
 import type { Schema } from "../schema/definition.ts";
-import { validateArgsShape } from "../validation/declarations.ts";
 import type { AnyJobsNamespace } from "../jobs/api.ts";
 import type {
   CredentialMutationCapability,
@@ -52,6 +53,8 @@ import type {
   FileProcedureCapability,
   FileQueryCapability,
 } from "../files/api.ts";
+import { assertApplicationHttpPath } from "../transport/http-surface.ts";
+import { captureNames, validateRoutePath } from "../transport/routing/path.ts";
 
 export type AuthCtx = Principal;
 
@@ -148,34 +151,10 @@ export type SseCtx<
 /** Args as the caller provides them: only optional/nullish keys may be omitted. */
 export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
 
-/**
- * Per-function opt-in to the plain-HTTP surface. Absent or `false` means the
- * function is not reachable over HTTP and absent from OpenAPI; `true` is
- * shorthand for `{ openapi: true }`. `openapi` exists only inside an exposed
- * function's config, so "documented but not callable" is unrepresentable.
- */
-export type HttpExposure = boolean | { readonly openapi: boolean };
-
-/**
- * The one interpreter of `http`: `null` when the function is not exposed,
- * otherwise its OpenAPI visibility. Untyped callers reach the same validation,
- * so a malformed field is always a registration error.
- */
-export function httpExposure(
-  value: unknown,
-  where = "http",
-): { readonly openapi: boolean } | null {
-  if (value === undefined || value === false) return null;
-  if (value === true) return { openapi: true };
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Object.keys(value).length !== 1 ||
-    typeof (value as { openapi?: unknown }).openapi !== "boolean"
-  ) {
-    throw new TypeError(`${where} must be true, false, or { openapi: boolean }`);
-  }
-  return { openapi: (value as { openapi: boolean }).openapi };
+/** One explicit public HTTP route produced by a function factory. */
+export interface HttpExposure {
+  readonly path: string;
+  readonly openapi: boolean;
 }
 
 export interface ErrorDeclaration {
@@ -382,7 +361,7 @@ export interface Invocable<
   H = R,
 > {
   readonly kind: K;
-  readonly args: A;
+  readonly args: ObjectValidator<A>;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
   readonly scopes?: NormalizedScopeRequirement;
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
@@ -398,15 +377,15 @@ export interface Invocable<
  * where the reference carries the validated chunk type while the handler
  * returns a chunk source.
  */
-export interface Registered<
-  K extends string,
+export type Registered<
+  K extends RegisteredFunctionKind,
   A extends ObjectShape,
   Ctx extends InvocationContext,
   R,
   H = R,
-> extends Invocable<K, A, Ctx, R, H>, ExposureDef {
-  readonly isAckerDB: true;
-}
+> = Invocable<K, A, Ctx, R, H> & ExposureDef;
+
+export type RegisteredFunctionKind = "query" | "mutation" | "procedure" | "sse";
 
 export type RegisteredQuery<
   A extends ObjectShape,
@@ -455,7 +434,10 @@ function isValidator(value: unknown): value is Validator<unknown, string> {
     typeof value === "object" &&
     value !== null &&
     typeof (value as Validator).kind === "string" &&
-    typeof (value as Validator).check === "function" &&
+    typeof (value as Validator).parse === "function" &&
+    typeof (value as Validator).decode === "function" &&
+    typeof (value as Validator).encode === "function" &&
+    typeof (value as Validator).toJsonSchema === "function" &&
     typeof (value as Validator).tsType === "function"
   );
 }
@@ -486,7 +468,25 @@ function exposureFields(
   def: ExposureDef,
   kind: string,
 ): ExposureDef {
-  httpExposure(def.http, `${kind} http`);
+  let http: HttpExposure | undefined;
+  if (def.http !== undefined) {
+    const value = def.http;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.keys(value).length !== 2 ||
+      typeof value.path !== "string" ||
+      typeof value.openapi !== "boolean"
+    ) {
+      throw new TypeError(`${kind} http must be { path: string, openapi: boolean }`);
+    }
+    const path = validateRoutePath(value.path, `${kind} http`);
+    if (captureNames(path).length !== 0) {
+      throw new TypeError(`${kind} http path must not contain parameters`);
+    }
+    assertApplicationHttpPath(path, `${kind} http`);
+    http = Object.freeze({ path, openapi: value.openapi });
+  }
   for (const field of ["description", "title"] as const) {
     const value = def[field];
     if (value !== undefined && typeof value !== "string") {
@@ -494,7 +494,7 @@ function exposureFields(
     }
   }
   return {
-    ...(def.http === undefined ? {} : { http: def.http }),
+    ...(http === undefined ? {} : { http }),
     ...(def.description === undefined ? {} : { description: def.description }),
     ...(def.title === undefined ? {} : { title: def.title }),
   };
@@ -537,9 +537,6 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
   if (!isValidator(yields)) {
     throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
   }
-  if (yields.kind === "pk" || yields.kind === "scheduleAt" || yields.kind === "tag") {
-    throw new Error(`yields: v.${yields.kind}() is not a valid chunk validator`);
-  }
 }
 
 /**
@@ -553,7 +550,7 @@ type ExactKeys<Definition, Allowed> = {
   readonly [K in Exclude<keyof Definition, keyof Allowed>]: never;
 };
 
-function register<K extends string>(kind: K) {
+function register<K extends RegisteredFunctionKind>(kind: K) {
   return <
     A extends ObjectShape,
     Ctx extends InvocationContext,
@@ -573,7 +570,7 @@ function register<K extends string>(kind: K) {
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
-    validateArgsShape(def.args);
+    const args = object(def.args);
     validateOutputDeclarations(def as never);
     const exposure = exposureFields(def, kind);
     const scoped = scopeFields(def, kind);
@@ -585,9 +582,8 @@ function register<K extends string>(kind: K) {
             throw new Error(`${kind}s cannot be called in-process — they exist at the transport boundary`);
           };
     const registered = Object.assign(callable, {
-      isAckerDB: true as const,
       kind,
-      args: def.args,
+      args,
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
       ...exposure,
@@ -613,7 +609,7 @@ function register<K extends string>(kind: K) {
 }
 
 /** Schema-agnostic constructors; queries and mutations are directly callable. */
-function registerCallable<K extends string>(kind: K) {
+function registerCallable<K extends Exclude<RegisteredFunctionKind, "sse">>(kind: K) {
   return register(kind) as <
     A extends ObjectShape,
     Ctx extends InvocationContext,
@@ -671,7 +667,7 @@ export function sseProcedure<
   if (!isAccessPolicy(def.access)) {
     throw new TypeError("sse access must be public, authenticated, system, or a policy callback");
   }
-  validateArgsShape(def.args);
+  const args = object(def.args);
   validateYields(def.yields);
   const exposure = exposureFields(def, "sse");
   const scoped = scopeFields(def, "sse");
@@ -680,9 +676,8 @@ export function sseProcedure<
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
   };
   const registered = Object.assign(callable, {
-    isAckerDB: true as const,
     kind: "sse" as const,
-    args: def.args,
+    args,
     yields: def.yields,
     ...exposure,
     ...scoped,
@@ -795,23 +790,23 @@ export type SseBuilder<
   >,
 ) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;
 
-// Runtime registries deliberately erase each function's concrete context.
+// Runtime registries deliberately erase each function's concrete context while
+// preserving separate literal-kind members for exhaustive narrowing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyRegistered = Registered<string, ObjectShape, any, any, any>;
+type RuntimeRegistered<K extends RegisteredFunctionKind> = Registered<K, ObjectShape, any, any, any>;
+
+type RuntimeRegisteredSse = RuntimeRegistered<"sse"> & {
+  readonly yields: Validator<unknown, string>;
+};
+
+export type AnyRegistered =
+  | RuntimeRegistered<"query">
+  | RuntimeRegistered<"mutation">
+  | RuntimeRegistered<"procedure">
+  | RuntimeRegisteredSse;
 
 // Invocation registries deliberately erase each declaration's concrete context.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyInvocable = Invocable<string, ObjectShape, any, any, any>;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyRegisteredSse = RegisteredSse<ObjectShape, any, any>;
-
-export function isRegisteredFunction(value: unknown): value is AnyRegistered {
-  return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    (value as { isAckerDB?: unknown }).isAckerDB === true &&
-    typeof (value as { kind?: unknown }).kind === "string" &&
-    isAccessPolicy((value as { access?: unknown }).access)
-  );
-}
+export type AnyRegisteredSse = RuntimeRegisteredSse;
