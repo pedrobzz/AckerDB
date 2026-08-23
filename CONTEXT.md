@@ -75,12 +75,12 @@ _Avoid_: Registered export
 **Application manifest** — The application's single executable assembly point,
 declaring its root schema. Operational settings remain outside the manifest.
 
-**Boot** — The server-owned startup sequence from a bound listener to an
-activated application: listening, codegen, loading, opening storage,
-migrating or reconciling, loading the runtime modules, starting the Runtime,
-activation. It mints nothing: an application with no credentials is a valid
-application. `boot()` in `@ackerdb/server` is its one home; `acker start` and
-every programmatic host are a `main` around it.
+**Boot** — The server-owned startup sequence from loaders to a bound, activated
+listener: codegen, loading, opening storage, migrating or reconciling, loading
+the runtime modules, starting the Runtime, activation (binds the listener). It
+mints nothing: an application with no credentials is a valid application.
+`boot()` in `@ackerdb/server` is its one home; `acker start` and every
+programmatic host are a `main` around it.
 _Avoid_: startup orchestration, serve path, composition root (in the CLI)
 
 **Started runtime** — A Runtime after `start()`: File-cleanup recovery begun,

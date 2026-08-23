@@ -80,18 +80,17 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("beginShutdown leaves readiness while liveness and system authority remain", async () => {
-  expect((await (await fetch(`${base}/ready`)).json()).ready).toBe(true);
+test("beginShutdown leaves traffic-readiness while system authority remains", async () => {
+  expect(await (await fetch(`${base}/health`)).json()).toEqual({ version: 1, ok: true });
 
   server.beginShutdown();
 
   expect(server.state).toBe("draining");
   expect(runtime.status().state).toBe("ready");
 
-  const live = await (await fetch(`${base}/live`)).json();
-  expect(live).toMatchObject({ live: true });
-  const ready = await (await fetch(`${base}/ready`)).json();
-  expect(ready).toMatchObject({ ready: false, state: "draining" });
+  const health = await fetch(`${base}/health`);
+  expect(health.status).toBe(503);
+  expect(await health.json()).toEqual({ version: 1, ok: false });
 
   // The whole point of the phase: trusted work still runs and commits.
   const written = await runtime.system.run("shutdown.cleanup", (ctx) =>

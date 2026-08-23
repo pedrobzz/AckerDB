@@ -143,7 +143,7 @@ async function assertFailedStartup(
   expect(failed.output()).not.toContain("@@ackerdb-startup");
   expect(failed.output()).not.toContain("ready on");
   try {
-    await fetch(`http://127.0.0.1:${port}/live`, { signal: AbortSignal.timeout(200) });
+    await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) });
     throw new Error("corrupt startup left a live listener");
   } catch (error) {
     if (error instanceof Error && error.message === "corrupt startup left a live listener") throw error;

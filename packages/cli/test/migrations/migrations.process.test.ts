@@ -115,7 +115,7 @@ afterEach(async () => {
 
 async function waitForReady(port: number): Promise<void> {
   await eventually(async () => {
-    const response = await fetch(`http://127.0.0.1:${port}/ready`);
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
     expect(response.status).toBe(200);
   }, `server on port ${port} to become ready`);
 }

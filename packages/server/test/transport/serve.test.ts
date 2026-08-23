@@ -568,127 +568,17 @@ function acknowledgeSse(
 }
 
 describe("health and protected status", () => {
-  test("owns its port through explicit startup phases and atomically activates one Runtime", async () => {
-    const early = new AckerDBServer({ limits, port: 0 });
-    const earlyBase = `http://127.0.0.1:${early.port}`;
-    const earlyDir = mkdtempSync(join(tmpdir(), "ackerdb-serve-startup-"));
-    let earlyEngine: Engine | undefined;
-    let earlyRuntime: Runtime | undefined;
-    try {
-      expect(await (await fetch(`${earlyBase}/live`)).json()).toEqual({ version: 1, live: true });
-      expect(early.status()).toMatchObject({
-        state: "starting",
-        startupPhase: "listening",
-        runtime: null,
-      });
-      expect(Object.isFrozen(early.limits)).toBe(true);
-      const listening = await fetch(`${earlyBase}/ready`);
-      expect(listening.status).toBe(503);
-      expect(await listening.json()).toEqual({
-        version: 1,
-        ready: false,
-        state: "starting",
-        phase: "listening",
-      });
-
-      const unavailable = {
-        code: "unavailable",
-        retryable: true,
-        resource: "connection",
-        message: "server is not ready",
-      } as const;
-      for (const path of ["/status", "/_ws"] as const) {
-        const response = await fetch(`${earlyBase}${path}`);
-        expect(response.status).toBe(503);
-        expect(parseServerMessage(decode(await response.text()))).toEqual({
-          v: ACKERDB_VERSION,
-          t: "err",
-          id: null,
-          outcome: unavailable,
-        });
-      }
-
-      // The application surface is envelope-free even before a registry
-      // exists, and the deleted `/api/sse` is now one of its ordinary paths.
-      for (const path of ["/api/notes/echo", "/api/sse"] as const) {
-        const early503 = await fetch(`${earlyBase}${path}`, {
-          method: "POST",
-          body: JSON.stringify({ value: "x" }),
-        });
-        expect(early503.status).toBe(503);
-        expect(JSON.parse(await early503.text())).toEqual(unavailable);
-      }
-
-      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/_ws`);
-      const wsResult = await within(new Promise<"opened" | "refused">((resolve) => {
-        socket.onopen = () => resolve("opened");
-        socket.onerror = () => resolve("refused");
-      }));
-      expect(wsResult).toBe("refused");
-      socket.close();
-
-      early.advanceStartup("loading");
-      early.advanceStartup("reconciling");
-      const reconciling = await fetch(`${earlyBase}/ready`);
-      expect(reconciling.status).toBe(503);
-      expect(await reconciling.json()).toEqual({
-        version: 1,
-        ready: false,
-        state: "starting",
-        phase: "reconciling",
-      });
-      early.advanceStartup("loading-runtime");
-      const loadingRuntime = await fetch(`${earlyBase}/ready`);
-      expect(loadingRuntime.status).toBe(503);
-      expect(await loadingRuntime.json()).toEqual({
-        version: 1,
-        ready: false,
-        state: "starting",
-        phase: "loading-runtime",
-      });
-
-      earlyEngine = new Engine(schema, join(earlyDir, "data.db"));
-      reconcile(earlyEngine);
-      earlyRuntime = new Runtime({
-        engine: earlyEngine,
-        registry: early.registerDefinitions(testDefinitions(functions)),
-        verifier,
-        limits,
-      });
-      await earlyRuntime.start();
-      early.activate(earlyRuntime);
-
-      const ready = await fetch(`${earlyBase}/ready`);
-      expect(ready.status).toBe(200);
-      expect(await ready.json()).toEqual({ version: 1, ready: true, state: "ready" });
-      expect(() => early.activate(earlyRuntime!)).toThrow("only be activated once");
-      expect(() => early.advanceStartup("reconciling")).toThrow("server is not starting");
-    } finally {
-      await early.drain().catch(() => {});
-      await earlyRuntime?.drain().catch(() => {});
-      earlyEngine?.close("clean");
-      rmSync(earlyDir, { recursive: true, force: true });
-    }
-  });
-
-  test("exposes detail-free liveness/readiness, removes /health, and follows Runtime readiness", async () => {
-    expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
-    expect(await (await fetch(`${base}/ready`)).json()).toEqual({
-      version: 1,
-      ready: true,
-      state: "ready",
-    });
-    expect((await fetch(`${base}/health`)).status).toBe(404);
+  test("exposes /health, follows Runtime readiness, and refuses a second activation", async () => {
+    expect(Object.isFrozen(server.limits)).toBe(true);
+    const healthy = await fetch(`${base}/health`);
+    expect(healthy.status).toBe(200);
+    expect(await healthy.json()).toEqual({ version: 1, ok: true });
+    expect(() => server.activate(runtime)).toThrow("only be activated once");
 
     await runtime.drain();
-    const ready = await fetch(`${base}/ready`);
-    expect(ready.status).toBe(503);
-    expect(await ready.json()).toEqual({
-      version: 1,
-      ready: false,
-      state: "stopped",
-    });
-    expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
+    const drained = await fetch(`${base}/health`);
+    expect(drained.status).toBe(503);
+    expect(await drained.json()).toEqual({ version: 1, ok: false });
   });
 
   test("requires a workload with the exact configured scope token", async () => {
@@ -752,7 +642,9 @@ describe("health and protected status", () => {
     });
     let response: Response;
     try {
-      response = await fetch(`${base}/ready`);
+      response = await fetch(`${base}/status`, {
+        headers: { authorization: "Bearer workload-token" },
+      });
     } finally {
       Reflect.deleteProperty(runtime, "status");
     }
@@ -2475,10 +2367,9 @@ describe("lifecycle drain", () => {
 
     const startedAt = performance.now();
     const draining = server.drain();
-    expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
-    const notReady = await fetch(`${base}/ready`);
-    expect(notReady.status).toBe(503);
-    expect(await notReady.json()).toEqual({ version: 1, ready: false, state: "draining" });
+    const notHealthy = await fetch(`${base}/health`);
+    expect(notHealthy.status).toBe(503);
+    expect(await notHealthy.json()).toEqual({ version: 1, ok: false });
     const refusedDuringDrain = await fetch(`${base}${httpPath("api.notes.echo")}`, {
       method: "POST",
       body: JSON.stringify({ value: "x" }),
@@ -2506,7 +2397,7 @@ describe("lifecycle drain", () => {
     expect(elapsed).toBeGreaterThanOrEqual(limits.gracefulShutdownMs - 15);
     expect(elapsed).toBeLessThan(limits.gracefulShutdownMs + 500);
     expect(server.state).toBe("failed");
-    const refused = await within(fetch(`${base}/live`).then(
+    const refused = await within(fetch(`${base}/health`).then(
       () => false,
       () => true,
     ));

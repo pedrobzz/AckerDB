@@ -1,21 +1,20 @@
 /**
- * The boot: the one startup sequence from a bound listener to an activated
- * application. `acker start` and any programmatic host are a `main` around it —
+ * The boot: the one startup sequence from loaders to a bound, activated
+ * listener. `acker start` and any programmatic host are a `main` around it —
  * they read configuration, build loaders and values, call `boot`, and print
  * what the reporter says. Every ordering guarantee lives here, next to the
  * things it orders:
  *
- *   listening → codegen (if `prepare`) → loading → hold check → opening-storage
- *   → migrating | reconciling → loading-runtime → starting-runtime →
- *   activation.
+ *   codegen (if `prepare`) → loading → hold check → opening-storage →
+ *   migrating | reconciling → loading-runtime → starting-runtime →
+ *   activation (binds the listener).
  *
- * The listener is built first so `/live` and `/ready` answer through a slow
- * migration. Runtime modules load only after durable schema work commits, so
- * unrelated runtime configuration cannot block a pending migration. Nothing
- * here mints a credential: an application with no credentials is a valid
- * application, and whether a root credential should exist is its decision to
- * make through its own functions. Activation is last and refuses a Runtime
- * that is not ready.
+ * The socket is the last step: a boot that cannot serve never owns a port.
+ * Runtime modules load only after durable schema work commits, so unrelated
+ * runtime configuration cannot block a pending migration. Nothing here mints a
+ * credential: an application with no credentials is a valid application, and
+ * whether a root credential should exist is its decision to make through its
+ * own functions. Activation is last and refuses a Runtime that is not started.
  *
  * Interruption is one AbortSignal, checked at every phase boundary and raced
  * only against work JavaScript cannot cancel — the caller's preparation, the
@@ -45,8 +44,17 @@ import { reconcile } from "./schema/reconcile.ts";
 import {
   AckerDBServer,
   type AckerDBServerOptions,
-  type AckerDBStartupPhase,
 } from "./transport/server.ts";
+
+/** The boot's phases, in the order `boot()` advances them. */
+export type AckerDBStartupPhase =
+  | "codegen"
+  | "loading"
+  | "opening-storage"
+  | "migrating"
+  | "reconciling"
+  | "loading-runtime"
+  | "starting-runtime";
 
 /** What durable schema work needs: the manifest and its migration chain. */
 export interface LoadedApp<A extends App = App> {
@@ -140,7 +148,6 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
     limits,
     ...(options.files.maxBytes === undefined ? {} : { fileMaxBytes: options.files.maxBytes }),
   });
-  reporter.phase?.("listening");
 
   let engine: Engine | undefined;
   let runtime: Runtime | undefined;
@@ -169,9 +176,8 @@ export async function boot<const A extends App = App>(options: BootOptions<A>): 
   const checkpoint = () => {
     if (signal.aborted) throw signal.reason;
   };
-  const advance = (phase: Exclude<AckerDBStartupPhase, "listening">) => {
+  const advance = (phase: AckerDBStartupPhase) => {
     checkpoint();
-    server.advanceStartup(phase);
     reporter.phase?.(phase);
   };
   // JavaScript cannot cancel an arbitrary import or preparation. Racing it

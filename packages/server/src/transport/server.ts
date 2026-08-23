@@ -70,17 +70,6 @@ import { finiteMillis } from "../shared/clock.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 
-/** The boot's phases, in the order `boot()` advances them; `/ready` names the current one. */
-export type AckerDBStartupPhase =
-  | "listening"
-  | "codegen"
-  | "loading"
-  | "opening-storage"
-  | "migrating"
-  | "reconciling"
-  | "loading-runtime"
-  | "starting-runtime";
-
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
@@ -103,7 +92,6 @@ export interface AckerDBServerOptions {
 
 export interface AckerDBServerStatus {
   readonly state: AckerDBServerState;
-  readonly startupPhase: AckerDBStartupPhase | null;
   readonly connections: number;
   readonly preHelloConnections: number;
   readonly connectionRejections: number;
@@ -160,16 +148,6 @@ function everyMethod(
 
 const MAX_FILE_TRANSFERS = 128;
 const MAX_FILE_TRANSFERS_PER_CALLER = 16;
-const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Object.freeze({
-  listening: 0,
-  codegen: 1,
-  loading: 2,
-  "opening-storage": 3,
-  migrating: 4,
-  reconciling: 5,
-  "loading-runtime": 6,
-  "starting-runtime": 7,
-});
 
 function unavailableWhile(state: AckerDBServerState): AckerDBError {
   return state === "draining"
@@ -596,11 +574,13 @@ export class AckerDBServer {
   /** The OpenAPI document assembled during definition registration, or null when disabled. */
   private openapi: Uint8Array<ArrayBuffer> | null = null;
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
+  private readonly bindPort: number;
+  private readonly maxRequestBodySize: number;
+  private readonly maxPayloadLength: number;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
   private loadedRegistry: Registry | null = null;
   private lifecycle: AckerDBServerState = "starting";
-  private startup: AckerDBStartupPhase | null = "listening";
   private connectionRejections = 0;
   /** Server-owned request ids for HTTP function calls. */
   private httpRequests = 0;
@@ -618,6 +598,12 @@ export class AckerDBServer {
     ) {
       throw new RangeError(`fileMaxBytes must be from 1 through ${HARD_FILE_MAX_BYTES}`);
     }
+    this.bindPort = options.port;
+    this.maxRequestBodySize = oneByteTransportLimit(
+      Math.max(this.limits.maxRequestBytes, fileMaxBytes),
+      "maxRequestBytes or configured File limit",
+    );
+    this.maxPayloadLength = oneByteTransportLimit(this.limits.maxFrameBytes, "maxFrameBytes");
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
     this.trustedProxy = options.trustedProxy === undefined
@@ -641,60 +627,18 @@ export class AckerDBServer {
       MAX_FILE_TRANSFERS_PER_CALLER,
       { owner: "File transfer", ingress: "File transfer" },
     );
-    // The live route table exists before the port does, so a probe that
-    // arrives on the first tick of Boot meets a registered route rather than a
-    // lifecycle branch. Application routes join it as their modules load.
+    // The route table exists before the port does. Application routes join it
+    // as their modules load; the socket is bound only at activation.
     this.routes = new HttpRegistry(
       () => this.unmatched(),
       (handler, path, params, request) =>
         this.applicationRouteCall(request, handler, path, params),
     );
     for (const route of this.frameworkRoutes()) this.routes.add(route);
-    try {
-      this.listener = Bun.serve<WsData, never>({
-        port: options.port,
-        hostname: this.hostname,
-        // Built-in File PUTs stream under their own per-session bound. Every
-        // other route still enforces maxRequestBytes while consuming its body.
-        maxRequestBodySize: oneByteTransportLimit(
-          Math.max(
-            this.limits.maxRequestBytes,
-            fileMaxBytes,
-          ),
-          "maxRequestBytes or configured File limit",
-        ),
-        development: false,
-        error: (error) => internalErrorResponse(error),
-        // One permanent dispatch for the listener's whole life: lifecycle
-        // transitions change what the table holds and what its handlers
-        // answer, never which function Bun calls.
-        fetch: (request) => this.routes.dispatch(new URL(request.url).pathname, request),
-        websocket: {
-          open: (socket) => this.openWebSocket(socket),
-          message: (socket, raw) => this.handleWebSocketMessage(socket, raw),
-          drain: (socket) => socket.data.sink?.onDrain(),
-          close: (socket) => this.closeWebSocket(socket),
-          maxPayloadLength: oneByteTransportLimit(
-            this.limits.maxFrameBytes,
-            "maxFrameBytes",
-          ),
-          backpressureLimit: this.limits.webSocket.maxBytesPerConnection,
-          closeOnBackpressureLimit: true,
-          idleTimeout: 120,
-        },
-      });
-    } catch (error) {
-      this.lifecycle = "failed";
-      throw error;
-    }
   }
 
   get state(): AckerDBServerState {
     return this.lifecycle;
-  }
-
-  get startupPhase(): AckerDBStartupPhase | null {
-    return this.startup;
   }
 
   get runtime(): Runtime | null {
@@ -712,7 +656,6 @@ export class AckerDBServer {
     const files = this.fileAdmission.snapshot();
     return Object.freeze({
       state: this.lifecycle,
-      startupPhase: this.startup,
       connections: this.connections.size,
       preHelloConnections: this.preHelloConnections(),
       connectionRejections: this.connectionRejections,
@@ -729,17 +672,6 @@ export class AckerDBServer {
       outboundBytes: this.outbound.snapshot().bytes,
       runtime: this.activeRuntime?.status() ?? null,
     });
-  }
-
-  /** Publish one monotonic, non-sensitive startup phase while the listener owns its port. */
-  advanceStartup(phase: Exclude<AckerDBStartupPhase, "listening">): void {
-    if (this.lifecycle !== "starting" || this.startup === null) {
-      throw new Error("server is not starting");
-    }
-    if (STARTUP_PHASE_ORDER[phase] <= STARTUP_PHASE_ORDER[this.startup]) {
-      throw new Error("startup phases must advance monotonically");
-    }
-    this.startup = phase;
   }
 
   /** Register every collected definition with its one persistent owner. */
@@ -791,14 +723,13 @@ export class AckerDBServer {
       return registry;
     } catch (error) {
       // Loading is terminal once any route has been published. Start the same
-      // drain every owner awaits, so direct hosts release the listener and Boot
-      // observes that exact cleanup rather than a second fire-and-forget stop.
+      // drain every owner awaits, so a failed registration cannot later bind.
       void this.drain().catch(() => {});
       throw error;
     }
   }
 
-  /** Attach the started Runtime built from this server's loaded Registry. */
+  /** Attach the started Runtime and bind the listener. This is the last step of boot. */
   activate(runtime: Runtime): void {
     if (this.lifecycle !== "starting" || this.activeRuntime !== null) {
       throw new Error("server can only be activated once while starting");
@@ -809,8 +740,34 @@ export class AckerDBServer {
       throw new Error("Runtime limits must match listener limits");
     }
     this.activeRuntime = runtime;
-    this.startup = null;
+    this.listen();
     this.lifecycle = "ready";
+  }
+
+  private listen(): void {
+    this.listener = Bun.serve<WsData, never>({
+      port: this.bindPort,
+      hostname: this.hostname,
+      // Built-in File PUTs stream under their own per-session bound. Every
+      // other route still enforces maxRequestBytes while consuming its body.
+        maxRequestBodySize: this.maxRequestBodySize,
+      development: false,
+      error: (error) => internalErrorResponse(error),
+      // One permanent dispatch for the listener's whole life: lifecycle
+      // transitions change what the table holds and what its handlers
+      // answer, never which function Bun calls.
+      fetch: (request) => this.routes.dispatch(new URL(request.url).pathname, request),
+      websocket: {
+        open: (socket) => this.openWebSocket(socket),
+        message: (socket, raw) => this.handleWebSocketMessage(socket, raw),
+        drain: (socket) => socket.data.sink?.onDrain(),
+        close: (socket) => this.closeWebSocket(socket),
+          maxPayloadLength: this.maxPayloadLength,
+        backpressureLimit: this.limits.webSocket.maxBytesPerConnection,
+        closeOnBackpressureLimit: true,
+        idleTimeout: 120,
+      },
+    });
   }
 
   /**
@@ -850,9 +807,9 @@ export class AckerDBServer {
   }
 
   /**
-   * The routes AckerDB always owns. `/live` and `/ready` are in the table before the first
-   * request, so probes answer throughout Boot; the rest answer the lifecycle
-   * themselves, because when a route is reachable is its own policy.
+   * The routes AckerDB always owns. `/health` answers traffic-readiness; the
+   * rest answer the lifecycle themselves, because when a route is reachable is
+   * its own policy.
    */
   private frameworkRoutes(): readonly Http[] {
     const grants = ACKERDB_HTTP_ROUTES.fileDownload;
@@ -863,26 +820,10 @@ export class AckerDBServer {
       request: Request,
     ): Promise<Response> => this.fileCall(request, "grants", ctx.params.handle);
     return [
-      frameworkHttp(ACKERDB_HTTP_ROUTES.live, {
+      frameworkHttp(ACKERDB_HTTP_ROUTES.health, {
         GET: () => {
-          const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
-          return json({ version: 1, live }, live ? 200 : 503);
-        },
-        OPTIONS: preflight,
-      }),
-      frameworkHttp(ACKERDB_HTTP_ROUTES.ready, {
-        GET: () => {
-          const runtimeState = this.activeRuntime?.status().state;
-          const ready = this.lifecycle === "ready" && runtimeState === "ready";
-          const state = this.lifecycle === "ready" && runtimeState !== "ready"
-            ? runtimeState ?? "starting"
-            : this.lifecycle;
-          return json({
-            version: 1,
-            ready,
-            state,
-            ...(this.startup === null ? {} : { phase: this.startup }),
-          }, ready ? 200 : 503);
+          const ok = this.applicationReady();
+          return json({ version: 1, ok }, ok ? 200 : 503);
         },
         OPTIONS: preflight,
       }),
@@ -945,12 +886,11 @@ export class AckerDBServer {
   }
 
   /**
-   * What a request no route claims is answered with. Before readiness and
-   * while draining the application is unreachable rather than absent, so the
-   * lifecycle outcome comes first; afterwards an unclaimed path is an ordinary
-   * 404 in the one shape every other failure here speaks — a caller decoding
-   * this surface meets `not_found`, never a plain-text body its decoder
-   * reports as malformed.
+   * What a request no route claims is answered with. While draining the
+   * application is unreachable rather than absent, so the lifecycle outcome
+   * comes first; afterwards an unclaimed path is an ordinary 404 in the one
+   * shape every other failure here speaks — a caller decoding this surface
+   * meets `not_found`, never a plain-text body its decoder reports as malformed.
    */
   private unmatched(): Response {
     return this.applicationReady()
@@ -1323,7 +1263,7 @@ export class AckerDBServer {
   }
 
   private async performDrain(deadlineAtMs: number): Promise<void> {
-    const listener = this.listener!;
+    const listener = this.listener;
     const runtime = this.activeRuntime;
     const reason = drainingError("server is draining", "connection");
     const sessions = [...this.connections].map((connection) => {
@@ -1343,7 +1283,8 @@ export class AckerDBServer {
       .then(async () => {
         // Bun leaves the awaited force-stop pending on active keep-alive/SSE
         // transports unless listener admission is closed first. Both calls stay
-        // after application drain so /live remains reachable throughout it.
+        // after application drain so /health remains reachable throughout it.
+        if (listener === null) return;
         void listener.stop(false).catch(() => {});
         await listener.stop(true);
       });
@@ -1375,7 +1316,7 @@ export class AckerDBServer {
       // Initiate the force close but do not await Bun's listener promise: Bun
       // keeps that promise pending for a handler that ignores cancellation,
       // which would defeat the finite shutdown deadline this boundary owns.
-      void listener.stop(true).catch(() => {});
+      if (listener !== null) void listener.stop(true).catch(() => {});
       throw error;
     }
   }

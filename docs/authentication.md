@@ -431,7 +431,7 @@ wire exchange, not durable processing of application side effects.
 selected string `scope` claim contains the exact configured `statusScope` token
 (default `ackerdb:status`, split on spaces). Anonymous callers, user principals,
 and workloads without that scope receive an authorization failure. Liveness
-and readiness are intentionally unauthenticated; see
+and health are intentionally unauthenticated; see
 [Operations](operations.md#health-and-protected-status).
 
 ## Authentication limitations

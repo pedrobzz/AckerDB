@@ -178,8 +178,8 @@ Validator presence rules and the complete constraint surface are documented in
 ## Deploying a migration-carrying release
 
 Deploy stays "ship code, restart": pending migrations run at startup, before
-the runtime exists, and readiness reports a distinct `migrating` phase while
-they do. Clients reconnect and resubscribe after the restart as usual.
+the runtime exists and before the listener binds. Clients reconnect and
+resubscribe after the restart as usual.
 
 Take a verified backup first. A failed migration rolls back cleanly, but a
 migration that *succeeds and was wrong* is only recoverable from a backup:
@@ -188,5 +188,5 @@ migration that *succeeds and was wrong* is only recoverable from a backup:
 2. `acker backup <artifact>` and retain the artifact, manifest, and adjacent
    `.files` directory
    (see [operations.md](operations.md));
-3. start the new release; watch `/ready` through `migrating` to serving;
+3. start the new release; watch `/health` until it answers `ok: true`;
 4. if the migration refuses, the database is untouched — fix and redeploy.
